@@ -87,5 +87,10 @@ mod test_grammar {
 
         seq!("module foo(a) -> b {\n  b = a\n}" => "module foo(a) -> b { b = a; }");
         seq!("module foo() -> b {\n  b = (and 1 2)\n}" => "module foo()-> b { b = 1 and 2; }");
+        seq!("module foo() -> b {\n  b = (and 1 2)\n}" => "module foo() -> b {
+            // This is a comment
+            b = 1 and 2;
+            /* This is also a comment */
+        }");
     }
 }

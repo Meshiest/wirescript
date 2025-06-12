@@ -4,6 +4,14 @@ use crate::helpers::*;
 
 grammar;
 
+match {
+    r"\s*" => { }, // The default whitespace skipping is disabled if an `ignore pattern` is specified
+    r"//[^\n\r]*[\n\r]*" => { }, // Skip `// comments`
+    r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/" => { },  // Skip `/* comments */`
+} else {
+    _
+}
+
 pub Module: AstModule = {
     "module" <name:Ident> "(" <inputs:Comma<Ident>> ")" "->" <outputs:Comma1<Ident>> "{" <stmts:Stmts> "}" => AstModule::new(name, strs_to_strings(inputs), strs_to_strings(outputs), stmts)
 }

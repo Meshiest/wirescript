@@ -27,6 +27,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
+name = "bearilog"
+version = "0.1.0"
+dependencies = [
+ "lalrpop",
+ "lalrpop-util 0.21.0",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -54,14 +62,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "brwire"
-version = "0.1.0"
-dependencies = [
- "lalrpop",
- "lalrpop-util 0.21.0",
 ]
 
 [[package]]
