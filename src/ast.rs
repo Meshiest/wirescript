@@ -19,7 +19,7 @@ impl Display for Literal {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BinaryOpCode {
     BoolAnd,
     BoolNand,
@@ -54,7 +54,7 @@ impl Display for BinaryOpCode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnaryOpCode {
     BoolNot,
     BitNot,
@@ -126,6 +126,10 @@ impl AstExpr {
 pub enum AstStmt {
     Assign(Vec<String>, Vec<AstExpr>),
     Const(Vec<String>, Vec<AstExpr>),
+    // TODO: buffer statement to enable cycles:
+    // buffer a
+    // ...
+    // a = a + 1;
 }
 
 impl Display for AstStmt {
