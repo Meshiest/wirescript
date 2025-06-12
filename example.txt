@@ -1,0 +1,27 @@
+module decoder8(a) -> a0, a1, a2, a3, a4, a5, a6, a7 {
+  a0 = (a & 1) > 0
+  a1 = (a & 2) > 0
+  a2 = (a & 4) > 0
+  a3 = (a & 8) > 0
+  a4 = (a & 16) > 0
+  a5 = (a & 32) > 0
+  a6 = (a & 64) > 0
+  a7 = (a & 128) > 0
+}
+
+module encoder8(a0, a1, a2, a3, a4, a5, a6, a7) -> a {
+  a =
+    a0 |
+    (a1 << 1) |
+    (a2 << 2) |
+    (a3 << 3) |
+    (a4 << 4) |
+    (a5 << 5) |
+    (a6 << 6) |
+    (a7 << 7) |
+}
+
+module muxInt(cond, a, b) -> c {
+  c = (cond * a) | ((not cond) * b)
+}
+
