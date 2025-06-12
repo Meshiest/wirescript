@@ -1,5 +1,7 @@
 use std::fmt::{Display, Write};
 
+use crate::helpers::fmt_iter;
+
 #[derive(Debug)]
 pub enum Literal {
     Float(f64),
@@ -86,12 +88,7 @@ impl Display for AstExpr {
             AstExpr::Call(n, exprs) => {
                 f.write_str(n)?;
                 f.write_char('(')?;
-                for (i, e) in exprs.iter().enumerate() {
-                    if i != 0 {
-                        f.write_str(", ")?;
-                    }
-                    e.fmt(f)?;
-                }
+                fmt_iter(f, exprs.iter(), ", ")?;
                 f.write_char(')')
             }
         }
@@ -135,36 +132,16 @@ impl Display for AstStmt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AstStmt::Assign(names, exprs) => {
-                for (i, e) in names.iter().enumerate() {
-                    if i != 0 {
-                        f.write_str(", ")?;
-                    }
-                    e.fmt(f)?;
-                }
+                fmt_iter(f, names.iter(), ", ")?;
                 f.write_str(" = ")?;
-                for (i, e) in exprs.iter().enumerate() {
-                    if i != 0 {
-                        f.write_str(", ")?;
-                    }
-                    e.fmt(f)?;
-                }
+                fmt_iter(f, exprs.iter(), ", ")?;
                 Ok(())
             }
             AstStmt::Const(names, exprs) => {
                 f.write_str("const ")?;
-                for (i, e) in names.iter().enumerate() {
-                    if i != 0 {
-                        f.write_str(", ")?;
-                    }
-                    e.fmt(f)?;
-                }
+                fmt_iter(f, names.iter(), ", ")?;
                 f.write_str(" = ")?;
-                for (i, e) in exprs.iter().enumerate() {
-                    if i != 0 {
-                        f.write_str(", ")?;
-                    }
-                    e.fmt(f)?;
-                }
+                fmt_iter(f, exprs.iter(), ", ")?;
                 Ok(())
             }
         }
@@ -201,25 +178,17 @@ impl Display for AstModule {
             f.write_str("()")?;
         } else {
             f.write_char('(')?;
-            for (i, e) in self.inputs.iter().enumerate() {
-                if i != 0 {
-                    f.write_str(", ")?;
-                }
-                e.fmt(f)?;
-            }
+            fmt_iter(f, self.inputs.iter(), ", ")?;
             f.write_char(')')?;
         }
 
+        // Outputs should never be empty either way
         if !self.outputs.is_empty() {
             f.write_str(" -> ")?;
-            for (i, e) in self.outputs.iter().enumerate() {
-                if i != 0 {
-                    f.write_str(", ")?;
-                }
-                e.fmt(f)?;
-            }
+            fmt_iter(f, self.outputs.iter(), ", ")?;
             f.write_char(' ')?;
         }
+
         f.write_str("{\n")?;
         for s in &self.statements {
             writeln!(f, "  {s}")?;
