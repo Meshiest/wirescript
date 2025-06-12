@@ -2,7 +2,7 @@ use std::fmt::{Display, Write};
 
 use crate::helpers::fmt_iter;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum Literal {
     Float(f64),
     Int(i64),
@@ -19,7 +19,7 @@ impl Display for Literal {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum BinaryOpCode {
     BoolAnd,
     BoolNand,
@@ -54,7 +54,7 @@ impl Display for BinaryOpCode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum UnaryOpCode {
     BoolNot,
     BitNot,
