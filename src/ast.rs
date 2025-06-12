@@ -124,12 +124,13 @@ impl AstExpr {
 
 #[derive(Debug)]
 pub enum AstStmt {
+    // a = 1
     Assign(Vec<String>, Vec<AstExpr>),
+    // const a = 1
     Const(Vec<String>, Vec<AstExpr>),
-    // TODO: buffer statement to enable cycles:
-    // buffer a
-    // ...
-    // a = a + 1;
+    // buffer a = 1
+    // buffer foo // assigned later
+    Buffer(Vec<String>, Option<Vec<AstExpr>>),
 }
 
 impl Display for AstStmt {
@@ -146,6 +147,15 @@ impl Display for AstStmt {
                 fmt_iter(f, names.iter(), ", ")?;
                 f.write_str(" = ")?;
                 fmt_iter(f, exprs.iter(), ", ")?;
+                Ok(())
+            }
+            AstStmt::Buffer(names, exprs) => {
+                f.write_str("buffer ")?;
+                fmt_iter(f, names.iter(), ", ")?;
+                if let Some(exprs) = exprs {
+                    f.write_str(" = ")?;
+                    fmt_iter(f, exprs.iter(), ", ")?;
+                }
                 Ok(())
             }
         }

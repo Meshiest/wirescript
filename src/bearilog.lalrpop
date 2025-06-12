@@ -17,6 +17,7 @@ pub Module: AstModule = {
 }
 
 pub Stmt: AstStmt = {
+    "buffer" <names:Comma1<Ident>> <exprs:( "=" <Comma1<Expr>> )?> => AstStmt::Buffer(strs_to_strings(names), exprs),
     <names:Comma1<Ident>> "=" <exprs:Comma1<Expr>> => AstStmt::Assign(strs_to_strings(names), exprs),
     "const" <names:Comma1<Ident>> "=" <exprs:Comma1<Expr>> => AstStmt::Const(
         strs_to_strings(names),

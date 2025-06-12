@@ -58,6 +58,8 @@ fn test_stmts() {
     seq!("b = 1" => "b = 1");
     seq!("const b = 1" => "const b = 1");
     seq!("c, d = 1, 2" => "c, d = 1, 2");
+    seq!("buffer c, d = 1, 2" => "buffer c, d = 1, 2");
+    seq!("buffer a" => "buffer a");
     seq!("const c, d = 1, 2" => "const c, d = 1, 2");
 }
 
