@@ -238,7 +238,7 @@ impl CompiledModule {
             writeln!(f, "in{i} [style=filled,color=lightblue];")?;
         }
         for (i, w) in &self.inputs {
-            writeln!(f, "in{i} -> {} [label=\"{}\"];", w.gate, w.property)?;
+            writeln!(f, "in{i} -> {} [headlabel=\"{}\"];", w.gate, w.property)?;
         }
         for (i, o) in self.outputs.iter().enumerate() {
             writeln!(f, "out{i} [style=filled,color=lightgreen];")?;
@@ -250,19 +250,19 @@ impl CompiledModule {
                     writeln!(f, "{literal} -> out{i};")?;
                 }
                 CompiledOutput::Wire(w) => {
-                    writeln!(f, "{} -> out{i} [label=\"{}\"];", w.gate, w.property)?;
+                    writeln!(f, "{} -> out{i} [taillabel=\"{}\"];", w.gate, w.property)?;
                 }
             }
         }
         for Wire { src, dst } in &self.wires {
             writeln!(
                 f,
-                "{} -> {} [label=\"{} to {}\"];",
+                "{} -> {} [taillabel=\"{}\",headlabel=\"{}\"];",
                 src.gate, dst.gate, src.property, dst.property
             )?;
         }
         for (wc, lit) in &self.gate_literals {
-            writeln!(f, "{lit} -> {} [label=\"{}\"];", wc.gate, wc.property)?;
+            writeln!(f, "{lit} -> {} [headlabel=\"{}\"];", wc.gate, wc.property)?;
         }
 
         writeln!(f, "}}")?;
