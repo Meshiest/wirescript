@@ -1,0 +1,15 @@
+module mynand(a, b) -> o {
+  o = !(a && b);
+}
+
+module myand(a, b) -> o {
+  o = !mynand(a, b);
+}
+
+module mynor(a, b) -> o {
+  o = myand(!a, !b);
+}
+
+module myor(a,b) -> o {
+  o = !mynor(a,b);
+}

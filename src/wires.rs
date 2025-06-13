@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::Display,
+    io::Write,
     sync::{Arc, atomic},
 };
 
@@ -48,6 +49,7 @@ pub struct Wire {
 #[derive(Clone, Debug)]
 pub enum GateKind {
     Buffer,
+    ReRouter,
     BinaryOp(BinaryOpCode),
     UnaryOp(UnaryOpCode),
 }
@@ -56,16 +58,25 @@ impl Display for GateKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GateKind::Buffer => f.write_str("buffer"),
+            GateKind::ReRouter => f.write_str("rerouter"),
             GateKind::BinaryOp(op) => op.fmt(f),
             GateKind::UnaryOp(op) => op.fmt(f),
         }
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct GateMeta {
+    pub is_input: bool,
+    pub is_output: bool,
+    pub label: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Gate {
     pub kind: GateKind,
     pub index: usize,
+    pub meta: GateMeta,
 }
 
 impl Display for Gate {
@@ -84,11 +95,31 @@ impl Gate {
         Self {
             kind: kind.clone(),
             index: Gate::next_index(),
+            meta: Default::default(),
         }
     }
 
+    pub fn with_label(mut self, label: impl Display) -> Self {
+        self.meta.label = Some(label.to_string());
+        self
+    }
+
+    pub fn with_input(mut self) -> Self {
+        self.meta.is_input = true;
+        self
+    }
+
+    pub fn with_output(mut self) -> Self {
+        self.meta.is_output = true;
+        self
+    }
+
     pub fn cloned(&self) -> Self {
-        Self::new(&self.kind)
+        Self {
+            kind: self.kind.clone(),
+            index: Gate::next_index(),
+            meta: self.meta.clone(),
+        }
     }
 }
 
@@ -101,7 +132,7 @@ impl GateKind {
                 let outputs = vec!["output".to_string()];
                 (inputs, outputs)
             }
-            GateKind::UnaryOp(_) | GateKind::Buffer => {
+            GateKind::UnaryOp(_) | GateKind::Buffer | GateKind::ReRouter => {
                 let inputs = vec!["input".to_string()];
                 let outputs = vec!["output".to_string()];
                 (inputs, outputs)
@@ -128,6 +159,10 @@ impl GateKind {
             wires: Default::default(),
             gates: vec![gate],
             gate_literals: Default::default(),
+            // Gates are atomic and should always be inlined
+            force_inline: true,
+            // No submodules in a single gate module
+            sub_modules: Default::default(),
         }
     }
 }
@@ -176,6 +211,7 @@ pub struct CompiledModule {
     /// A pair of (input index, WireConnection) to indicate which input this wire connects to
     pub inputs: Vec<(usize, WireConnection)>,
     /// Output wire connections that can be used to connect to the outputs of this module
+    /// Outputs may contain an optional rerouter gate
     pub outputs: Vec<CompiledOutput>,
     /// Wires that connect to gates inside the module
     pub wires: Vec<Wire>,
@@ -183,6 +219,10 @@ pub struct CompiledModule {
     pub gates: Vec<Arc<Gate>>,
     /// Literal values that will be shoved into the gates of this module
     pub gate_literals: Vec<(WireConnection, Literal)>,
+    /// Force this module to be inlined rather than being a submodule
+    pub force_inline: bool,
+    /// List of (module name, inputs, module) that this module contains
+    pub sub_modules: Vec<(String, Vec<CompiledOutput>, CompiledModule)>,
 }
 
 impl CompiledModule {
@@ -210,7 +250,7 @@ impl CompiledModule {
             outputs: self
                 .outputs
                 .iter()
-                .map(|w| w.replace_gate(&gate_lut))
+                .map(|output| output.replace_gate(&gate_lut))
                 .collect(),
             wires: self
                 .wires
@@ -226,49 +266,188 @@ impl CompiledModule {
                 .map(|(c, v)| (c.replace_gate(&gate_lut), *v))
                 .collect(),
             gates,
+            force_inline: self.force_inline,
+            sub_modules: self
+                .sub_modules
+                .iter()
+                .map(|(name, inputs, module)| {
+                    (
+                        name.clone(),
+                        inputs.iter().map(|i| i.replace_gate(&gate_lut)).collect(),
+                        module.cloned(),
+                    )
+                })
+                .collect(),
         }
     }
 
     pub fn digraph(&self) -> Result<String, Box<dyn Error>> {
-        use std::io::Write;
         let mut f = vec![];
+        self.subgraph("module", vec![], &mut Default::default(), &mut f, 0)?;
+        Ok(String::from_utf8(f)?)
+    }
 
-        writeln!(f, "digraph module {{")?;
-        // graph [splines=ortho] // (add hard lines)
-        for i in 0..self.num_inputs {
-            writeln!(f, "in{i} [style=filled,color=lightblue];")?;
-        }
-        for (i, w) in &self.inputs {
-            writeln!(f, "in{i} -> {} [headlabel=\"{}\"];", w.gate, w.property)?;
-        }
-        for (i, o) in self.outputs.iter().enumerate() {
-            writeln!(f, "out{i} [style=filled,color=lightgreen];")?;
-            match o {
-                CompiledOutput::Input(j) => {
-                    writeln!(f, "in{j} -> out{i};")?;
+    pub fn subgraph(
+        &self,
+        name: &str,
+        prefix: Vec<usize>,
+        // A map of input_index to the name of the node it corresponds to
+        input_map: &mut HashMap<Vec<usize>, String>,
+        f: &mut impl Write,
+        depth: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        static CONST_INDEX: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
+
+        let root_pad = "  ".repeat(depth);
+        let pad = "  ".repeat(depth + 1);
+
+        if depth == 0 {
+            writeln!(f, "{root_pad}digraph {name} {{")?;
+            // writeln!(f, "{pad}graph [rankdir=LR];")?;
+            // graph [splines=ortho]; // (add hard lines)
+        } else {
+            // Connect the inputs for descendant modules. This has to happen before the subgraph
+            // is created so the connected nodes are outside of the subgraph.
+            for (i, w) in &self.inputs {
+                if let Some(name) = input_map.get(&[prefix.clone(), vec![*i]].concat()) {
+                    writeln!(f, "{root_pad}{name} -> {}:{};", w.gate, w.property)?;
                 }
-                CompiledOutput::Immediate(literal) => {
-                    writeln!(f, "{literal} -> out{i};")?;
-                }
-                CompiledOutput::Wire(w) => {
-                    writeln!(f, "{} -> out{i} [taillabel=\"{}\"];", w.gate, w.property)?;
+            }
+
+            let idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
+            writeln!(f, "\n{root_pad}subgraph cluster_{idx} {{")?;
+            writeln!(f, "{pad}label=\"{name}\"; color=black;\n")?;
+        }
+
+        // Write the gates as nodes
+        for gate in &self.gates {
+            let (inputs, outputs) = gate.kind.properties();
+            let one_input = inputs.len() == 1;
+            let one_output = outputs.len() == 1;
+
+            let mut inputs = inputs.into_iter().peekable();
+            let mut outputs = outputs.into_iter().peekable();
+
+            // <input> <output> or <input,output> if there is only one input/output
+            let first_labels = match (one_input, one_output) {
+                (true, true) => format!("<{},{}>", inputs.next().unwrap(), outputs.next().unwrap()),
+                (true, false) => format!("<{}>", inputs.next().unwrap()),
+                (false, true) => format!("<{}>", outputs.next().unwrap()),
+                (false, false) => String::new(),
+            };
+
+            // If there are no inputs/outputs, we don't need a divider
+            let ports_divider = if inputs.peek().is_some() || outputs.peek().is_some() {
+                "|"
+            } else {
+                ""
+            };
+
+            let mut ports = inputs
+                .map(|i| format!("<{i}> {i}"))
+                .chain(outputs.map(|o| format!("<{o}> {o}")))
+                .collect::<Vec<_>>()
+                .join("|");
+            if !ports.is_empty() {
+                // Wrap the ports in curly braces to stack them vertically
+                ports = format!("{{{}}}", ports);
+            }
+
+            // This will format the gates as blocks
+            writeln!(
+                f,
+                "{pad}{gate} [label=\"{ports}{ports_divider}{first_labels}{display}\",shape=record{io}]",
+                // Use the gate label if it exists, otherwise use the gate's kind
+                display = gate
+                    .meta
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| gate.kind.to_string()),
+                io = if gate.meta.is_input {
+                    ",style=filled,color=lightblue"
+                } else if gate.meta.is_output {
+                    ",style=filled,color=lightgreen"
+                } else {
+                    ""
+                },
+            )?;
+        }
+
+        writeln!(f)?;
+
+        // The top level module inputs are rendered as nodes
+        if depth == 0 {
+            for i in 0..self.num_inputs {
+                input_map.insert([prefix.clone(), vec![i]].concat(), format!("in{i}"));
+                writeln!(f, "{pad}in{i} [style=filled,color=lightblue];")?;
+            }
+
+            // Connect the inputs for the root module
+            // This happens here rather than up top because the gates didn't exist yet.
+            for (i, w) in &self.inputs {
+                if let Some(name) = input_map.get(&[prefix.clone(), vec![*i]].concat()) {
+                    writeln!(f, "{pad}{name} -> {}:{};", w.gate, w.property)?;
                 }
             }
         }
+
+        // Render the subgraphs for sub-modules
+        for (i, (name, inputs, module)) in self.sub_modules.iter().enumerate() {
+            // Prefix for the submodule's inputs
+            let mod_prefix = [prefix.clone(), vec![i]].concat();
+
+            // The input connections to the submodule are scoped based on parent module
+            for (input_idx, w) in inputs.iter().enumerate() {
+                let node = match w {
+                    // This module's input is referencing an input of the parent module
+                    CompiledOutput::Input(j) => {
+                        match input_map.get(&[prefix.clone(), vec![*j]].concat()) {
+                            Some(target) => target.clone(),
+                            None => continue,
+                        }
+                    }
+                    CompiledOutput::Immediate(literal) => {
+                        let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
+                        let node = format!("lit{lit_idx}");
+                        writeln!(
+                            f,
+                            "{pad}{node} [label=\"{literal}\",style=filled,color=white];"
+                        )?;
+                        node
+                    }
+                    CompiledOutput::Wire(w) => format!("{}:{}", w.gate, w.property),
+                };
+
+                input_map.insert([mod_prefix.clone(), vec![input_idx]].concat(), node);
+            }
+
+            module.subgraph(name, mod_prefix, input_map, f, depth + 1)?;
+        }
+
+        // Outputs don't need to be rendered because they are metadata for other
+        // nodes to connect to.
+
+        writeln!(f)?;
         for Wire { src, dst } in &self.wires {
             writeln!(
                 f,
-                "{} -> {} [taillabel=\"{}\",headlabel=\"{}\"];",
-                src.gate, dst.gate, src.property, dst.property
+                "{pad}{}:{} -> {}:{};",
+                src.gate, src.property, dst.gate, dst.property
             )?;
         }
-        for (wc, lit) in &self.gate_literals {
-            writeln!(f, "{lit} -> {} [headlabel=\"{}\"];", wc.gate, wc.property)?;
+
+        writeln!(f)?;
+        for (wc, literal) in &self.gate_literals {
+            let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
+            let lit = format!("lit{lit_idx}");
+            writeln!(
+                f,
+                "{pad}{lit} [label=\"{literal}\",style=filled,color=white];"
+            )?;
+            writeln!(f, "{pad}{lit} -> {}:{};", wc.gate, wc.property)?;
         }
 
-        writeln!(f, "}}")?;
-
-        Ok(String::from_utf8(f)?)
+        Ok(writeln!(f, "{root_pad}}}")?)
     }
 }
 

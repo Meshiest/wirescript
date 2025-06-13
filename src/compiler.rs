@@ -27,7 +27,7 @@ pub enum CompileError {
     #[error("in {0}: {1}")]
     ErrorInExpression(String, Box<CompileError>),
     #[error("module input port out of range: expected <{0}, received {1}")]
-    ModuleInputOutofRange(usize, usize),
+    ModuleInputOutOfRange(usize, usize),
     #[error("buffer already assigned: {0}")]
     BufferAlreadyAssigned(String),
     #[error("output already assigned: {0}")]
@@ -67,6 +67,8 @@ struct BuildState<'a> {
     consts: HashMap<String, CompiledOutput>,
     gate_literals: Vec<(WireConnection, Literal)>,
     pending_wires: Vec<(usize, WireConnection)>,
+    /// A list of (module name, inputs, module) that have been compiled and added to this module
+    sub_modules: Vec<(String, Vec<CompiledOutput>, CompiledModule)>,
 }
 
 impl Compiler {
@@ -150,12 +152,22 @@ impl<'a> BuildState<'a> {
             pending_wires: Default::default(),
             buffers: Default::default(),
             consts: Default::default(),
+            sub_modules: Default::default(),
         })
     }
 
-    fn build(self) -> Result<CompiledModule, CompileError> {
+    fn build(mut self) -> Result<CompiledModule, CompileError> {
         let ast = self.ast.clone();
 
+        // TODO: allow inlining to be configurable (in code? globally?)
+        let is_inline = false;
+
+        if !is_inline {
+            // If this is not an inline module, add rerouters for the inputs and outputs
+            self.reroute_ports()?;
+        }
+
+        // Resolve output order by name in the ast
         let outputs = ast
             .outputs
             .iter()
@@ -175,7 +187,94 @@ impl<'a> BuildState<'a> {
             wires: self.wires,
             gates: self.gates,
             gate_literals: self.gate_literals,
+            sub_modules: self.sub_modules,
+            force_inline: is_inline,
         })
+    }
+
+    fn reroute_ports(&mut self) -> Result<(), CompileError> {
+        let mut new_wires = vec![];
+
+        let old_inputs = std::mem::take(&mut self.pending_wires);
+        let mut new_gates = vec![];
+
+        // Create new named rerouters for each input
+        for (index, name) in self.ast.clone().inputs.iter().enumerate() {
+            let rerouter = Arc::new(Gate::new(&GateKind::ReRouter).with_label(name).with_input());
+            // Add a pending wire that routes into the new rerouter input
+            self.pending_wires
+                .push((index, WireConnection::new(&rerouter, "input"))); // TODO: don't hardcode input name for rerouters
+            new_gates.push(rerouter);
+        }
+
+        // Connect the old inputs to the new rerouters
+        for (index, dst) in old_inputs {
+            // Should be unreachable, but get the new rerouter for the input
+            let Some(gate) = new_gates.get(index) else {
+                return Err(CompileError::ModuleInputOutOfRange(
+                    self.ast.inputs.len(),
+                    index,
+                ));
+            };
+
+            // Create a wire between the new rerouter and the old input
+            self.add_wire(
+                CompiledOutput::Wire(WireConnection::new(gate, "output")), // TODO: don't hardcode output name for rerouters
+                CompiledOutput::Wire(dst),
+            )?;
+        }
+
+        // Insert the named rerouters for each output
+        for (name, slot) in self.outputs.iter_mut() {
+            let Some(src) = slot.take() else {
+                return Err(CompileError::UnassignedOutput(name.to_owned()));
+            };
+
+            let src = match src {
+                // If the internal output would have connected to the input of a module,
+                // instead use the new rerouter
+                CompiledOutput::Input(i) => {
+                    let Some(gate) = new_gates.get(i) else {
+                        return Err(CompileError::ModuleInputOutOfRange(
+                            self.ast.inputs.len(),
+                            i,
+                        ));
+                    };
+                    CompiledOutput::Wire(WireConnection::new(gate, "output")) // TODO: don't hardcode outputname for rerouters
+                }
+                other => other,
+            };
+
+            // Create a rerouter for the output
+            let rerouter = Arc::new(
+                Gate::new(&GateKind::ReRouter)
+                    .with_label(name)
+                    .with_output(),
+            );
+
+            // Create a wire between the old slot and the rerouter input
+            // TODO: don't hardcode input name for rerouters
+            new_wires.push((
+                src,
+                CompiledOutput::Wire(WireConnection::new(&rerouter, "input")),
+            ));
+
+            // Update the slot to point to the rerouter output
+            *slot = Some(CompiledOutput::Wire(WireConnection::new(
+                &rerouter, "output", // TODO: don't hardcode output name for rerouters
+            )));
+
+            new_gates.push(rerouter);
+        }
+
+        self.gates.extend(new_gates);
+
+        // Add the new wires to the wires list
+        for (src, dst) in new_wires {
+            self.add_wire(src, dst)?;
+        }
+
+        Ok(())
     }
 
     /// Compile a list of expressions and return a list of input and output pending connections.
@@ -249,8 +348,9 @@ impl<'a> BuildState<'a> {
         let module = GateKind::BinaryOp(op).module();
 
         let module_outs = self.add_module(
+            &op.to_string(),
             module,
-            &[
+            vec![
                 // Unwrap safety: a_outputs and b_outputs are guaranteed to have one item each
                 a_outputs.into_iter().next().unwrap(),
                 b_outputs.into_iter().next().unwrap(),
@@ -277,8 +377,9 @@ impl<'a> BuildState<'a> {
 
         let module = GateKind::UnaryOp(op).module();
         let module_outs = self.add_module(
+            &op.to_string(),
             module,
-            &[
+            vec![
                 // Unwrap safety: outputs_expr is guaranteed to have one item
                 outputs_expr.into_iter().next().unwrap(),
             ],
@@ -313,7 +414,7 @@ impl<'a> BuildState<'a> {
         }
 
         // Wire the module inputs to the call outputs
-        let module_outs = self.add_module(module, &call_outputs)?;
+        let module_outs = self.add_module(name, module, call_outputs)?;
         outputs.extend(module_outs);
         Ok(())
     }
@@ -350,8 +451,9 @@ impl<'a> BuildState<'a> {
     /// redirect the module's inputs to the provided inputs.
     fn add_module(
         &mut self,
+        name: &str,
         module: CompiledModule,
-        inputs: &[CompiledOutput],
+        inputs: Vec<CompiledOutput>,
     ) -> Result<Vec<CompiledOutput>, CompileError> {
         assert_eq!(
             module.num_inputs,
@@ -359,37 +461,43 @@ impl<'a> BuildState<'a> {
             "Module inputs do not match",
         );
 
-        self.gates.extend(module.gates);
-        self.wires.extend(module.wires);
-        self.gate_literals.extend(module.gate_literals);
-
-        // TODO: For legibility, this is where rerouters would be inserted
-        let incomplete_to_pending = |incomplete: CompiledOutput| match incomplete {
-            CompiledOutput::Wire(w) => Ok(CompiledOutput::Wire(w)),
-            CompiledOutput::Input(p) => Ok(inputs
-                .get(p)
-                .ok_or(CompileError::ModuleInputOutofRange(inputs.len(), p))?
-                .clone()),
-            CompiledOutput::Immediate(l) => Ok(CompiledOutput::Immediate(l)),
-        };
-
-        // Connect all wires that the module depends on to the
-        // provided inputs.
-        for (i, conn) in module.inputs.into_iter() {
-            let src = inputs
+        let input_for = |i| {
+            inputs
                 .get(i)
-                .ok_or(CompileError::ModuleInputOutofRange(inputs.len(), i))?
-                .clone();
-            self.add_wire(src, CompiledOutput::Wire(conn))?;
-        }
+                .ok_or(CompileError::ModuleInputOutOfRange(inputs.len(), i))
+                .cloned()
+        };
 
         // Resolve the module outputs and return them as pending connections
         // This is necessary because an output from a module could be an input to the parent module
-        module
+        let outputs = module
             .outputs
-            .into_iter()
-            .map(incomplete_to_pending)
-            .collect::<Result<Vec<_>, _>>()
+            .iter()
+            .map(|out| match out {
+                CompiledOutput::Input(p) => input_for(*p),
+                w => Ok(w.clone()),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if module.force_inline {
+            // TODO: inline submodules in the incoming module?
+
+            self.gates.extend(module.gates);
+            self.wires.extend(module.wires);
+            self.gate_literals.extend(module.gate_literals);
+
+            // Connect all wires that the module depends on to the
+            // provided inputs.
+            for (input, dst) in module.inputs.into_iter() {
+                self.add_wire(input_for(input)?, CompiledOutput::Wire(dst))?;
+            }
+        } else {
+            // Rather than connecting all the wires to the module, the
+            // inputs are bundled with the module (to provide context)
+            self.sub_modules.push((name.to_owned(), inputs, module));
+        }
+
+        Ok(outputs)
     }
 
     /// Compile the statements in the AST module.
