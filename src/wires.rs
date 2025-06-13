@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    error::Error,
     fmt::Display,
     sync::{Arc, atomic},
 };
@@ -34,11 +35,7 @@ impl WireConnection {
 
 impl Display for WireConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}#{}.{}",
-            self.gate.kind, self.gate.index, self.property
-        )
+        write!(f, "{}.{}", self.gate, self.property)
     }
 }
 
@@ -69,6 +66,12 @@ impl Display for GateKind {
 pub struct Gate {
     pub kind: GateKind,
     pub index: usize,
+}
+
+impl Display for Gate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.kind, self.index)
+    }
 }
 
 impl Gate {
@@ -142,7 +145,7 @@ pub enum CompiledOutput {
 impl Display for CompiledOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CompiledOutput::Input(i) => write!(f, "input[{}]", i),
+            CompiledOutput::Input(i) => write!(f, "in{i}"),
             CompiledOutput::Immediate(lit) => lit.fmt(f),
             CompiledOutput::Wire(wire) => wire.fmt(f),
         }
@@ -225,6 +228,47 @@ impl CompiledModule {
             gates,
         }
     }
+
+    pub fn digraph(&self) -> Result<String, Box<dyn Error>> {
+        use std::io::Write;
+        let mut f = vec![];
+
+        writeln!(f, "digraph module {{")?;
+        for i in 0..self.num_inputs {
+            writeln!(f, "in{i} [style=filled,color=lightblue];")?;
+        }
+        for (i, w) in &self.inputs {
+            writeln!(f, "in{i} -> {} [label=\"{}\"];", w.gate, w.property)?;
+        }
+        for (i, o) in self.outputs.iter().enumerate() {
+            writeln!(f, "out{i} [style=filled,color=lightgreen];")?;
+            match o {
+                CompiledOutput::Input(j) => {
+                    writeln!(f, "in{j} -> out{i};")?;
+                }
+                CompiledOutput::Immediate(literal) => {
+                    writeln!(f, "{literal} -> out{i};")?;
+                }
+                CompiledOutput::Wire(w) => {
+                    writeln!(f, "{} -> out{i} [label=\"{}\"];", w.gate, w.property)?;
+                }
+            }
+        }
+        for Wire { src, dst } in &self.wires {
+            writeln!(
+                f,
+                "{} -> {} [label=\"{} to {}\"];",
+                src.gate, dst.gate, src.property, dst.property
+            )?;
+        }
+        for (wc, lit) in &self.gate_literals {
+            writeln!(f, "{lit} -> {} [label=\"{}\"];", wc.gate, wc.property)?;
+        }
+
+        writeln!(f, "}}")?;
+
+        Ok(String::from_utf8(f)?)
+    }
 }
 
 impl Display for CompiledModule {
@@ -245,7 +289,7 @@ impl Display for CompiledModule {
         if !self.gates.is_empty() {
             f.write_str("\nGates:\n")?;
             for gate in &self.gates {
-                write!(f, " - {}#{}\n", gate.kind, gate.index)?;
+                write!(f, " - {gate}\n")?;
             }
         }
         if !self.gate_literals.is_empty() {
