@@ -234,6 +234,7 @@ impl CompiledModule {
         let mut f = vec![];
 
         writeln!(f, "digraph module {{")?;
+        // graph [splines=ortho] // (add hard lines)
         for i in 0..self.num_inputs {
             writeln!(f, "in{i} [style=filled,color=lightblue];")?;
         }

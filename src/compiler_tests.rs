@@ -56,23 +56,31 @@ fn compile_7seg2() {
     // copywrite: smallguy
     let source = "
 module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
-    const o1 = !a2 & !a0;
-    const o2 = !a1 & a0;
-    const o3 = a1 & !a0;
-    const o4 = a2 & !a1;
-    const o5 = !a2 & a0;
-    const o6 = !a1 & !a0;
-    const o7 = a3 & a2;
-    const o8 = a3 & a1;
-    const o9 = a2 & a0;
-    const o10 = !a2 & a1;
-    a = a3 | (a2 & a0) | o3 | o1;
-    b = o1 | o2 | o3 | o4;
-    c = o5 | o2 | o4 | a3 | o3;
-    d = o6 | (a2 & !a1 & a0) | (o10 & !a0) | (o10 & a0) | (a3 & !a0);
-    e = !a0 | o4 | o7;
-    f = o3 | o1 | o7 | o8 | o4;
-    g = o10 | o3 | o7 | o9 | o8;
+    const xor1 = a3 ^ a1;
+    const xor2 = xor1 ^ a2;
+    const and1 = a0 & a2;
+    const xor3 = a1 ^ and1;
+    const nor1 = !(xor2 | xor3);
+    const nor2 = !(nor1 | xor1);
+    const or1 = nor2 | a0;
+    const xor4 = a0 ^ a3;
+    const xor5 = xor4 ^ xor2;
+    const nor3 = !(xor5 | a3);
+    const xor6 = nor3 ^ a3;
+    const and3 = nor2 & a0;
+    const and4 = xor6 & a2;
+    const or3 = and1 | xor4;
+    const or4 = nor2 | or3;
+    const nor5 = !(xor3 | and1);
+    const nor6 = !(or4 | nor5);
+    const nor7 = !(nor5 | a3);
+    a = !(xor6 | nor7);
+    b = and3 | and4;
+    c = and4 ^ nor6;
+    d = or1 & xor5;
+    e = or4 ^ a3;
+    f = !(nor2 | xor6);
+    g = nor1;
 }
     "
     .trim();
