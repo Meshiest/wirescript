@@ -7,5 +7,7 @@ edition = "2024"
 lalrpop = "0.22.2"
 
 [dependencies]
+clap = { version = "4.5.40", features = ["derive"] }
+clap-stdin = "0.6.0"
 lalrpop-util = { version = "0.21.0", features = ["lexer", "unicode"] }
 thiserror = "2.0.12"

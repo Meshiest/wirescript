@@ -1,0 +1,24 @@
+module reg64(write, data) -> res {
+  buffer r = (write * data) | (1 - write) * r;
+  res = r;
+}
+
+module reg64_addr(addr, readAddr, read, writeAddr, write, data) -> nextAddr, res {
+  nextAddr = addr + 1;
+  const isRead = read && readAddr == addr;
+  const isWrite = write && writeAddr == addr;
+  res = isRead * reg64(isWrite, data)
+}
+
+module reg64_8(addr0, readAddr, read, writeAddr, write, data) -> nextAddr, res {
+  const addr1, reg0 = reg64_addr(addr0, readAddr, writeAddr, write, data);
+  const addr2, reg1 = reg64_addr(addr1, readAddr, writeAddr, write, data);
+  const addr3, reg2 = reg64_addr(addr2, readAddr, writeAddr, write, data);
+  const addr4, reg3 = reg64_addr(addr3, readAddr, writeAddr, write, data);
+  const addr5, reg4 = reg64_addr(addr4, readAddr, writeAddr, write, data);
+  const addr6, reg5 = reg64_addr(addr5, readAddr, writeAddr, write, data);
+  const addr7, reg6 = reg64_addr(addr6, readAddr, writeAddr, write, data);
+  const addr8, reg7 = reg64_addr(addr7, readAddr, writeAddr, write, data);
+  nextAddr = addr8;
+  res = ((reg0 | reg1) | (reg2 | reg3)) | ((reg4 | reg5) | (reg6 | reg7));
+}
