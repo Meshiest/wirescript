@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     ast::{AstExpr, AstModule, BinaryOpCode, Literal, UnaryOpCode},
-    wires::{CompiledModule, Gate, GateKind, IncompleteConnection, Wire, WireConnection},
+    wires::{CompiledModule, CompiledOutput, Gate, GateKind, Wire, WireConnection},
 };
 
 pub struct Compiler {
@@ -57,14 +57,14 @@ pub enum InUseReason {
 struct BuildState<'a> {
     compiler: &'a mut Compiler,
     ast: Arc<AstModule>,
-    scope: HashMap<String, IncompleteConnection>,
-    outputs: HashMap<String, Option<IncompleteConnection>>,
+    scope: HashMap<String, CompiledOutput>,
+    outputs: HashMap<String, Option<CompiledOutput>>,
     gates: Vec<Arc<Gate>>,
     wires: Vec<Wire>,
     /// A map of buffer variable names to the port on the gate that represents them
-    buffers: HashMap<String, (Arc<Gate>, Option<IncompleteConnection>)>,
+    buffers: HashMap<String, (Arc<Gate>, Option<CompiledOutput>)>,
     /// A map of constant variable names to the port on the gate that represents them
-    consts: HashMap<String, IncompleteConnection>,
+    consts: HashMap<String, CompiledOutput>,
     gate_literals: Vec<(WireConnection, Literal)>,
     pending_wires: Vec<(usize, WireConnection)>,
 }
@@ -108,7 +108,7 @@ impl<'a> BuildState<'a> {
     fn new(compiler: &'a mut Compiler, ast: Arc<AstModule>) -> Result<Self, CompileError> {
         // The scope will be used to lookup existing wire output connections
         // Adding new consts or buffers will introduce new variables into the scope
-        let mut scope: HashMap<String, IncompleteConnection> = Default::default();
+        let mut scope: HashMap<String, CompiledOutput> = Default::default();
 
         for (i, name) in ast.inputs.iter().enumerate() {
             if scope.contains_key(name) {
@@ -117,11 +117,11 @@ impl<'a> BuildState<'a> {
                     InUseReason::DuplicateInput,
                 ));
             }
-            scope.insert(name.to_owned(), IncompleteConnection::Input(i));
+            scope.insert(name.to_owned(), CompiledOutput::Input(i));
         }
 
         // A map of output slots that can only be assigned ONCE
-        let mut outputs: HashMap<String, Option<IncompleteConnection>> = Default::default();
+        let mut outputs: HashMap<String, Option<CompiledOutput>> = Default::default();
         for o in &ast.outputs {
             if scope.contains_key(o) {
                 return Err(CompileError::VariableInUse(
@@ -182,7 +182,7 @@ impl<'a> BuildState<'a> {
     fn exprs<'b>(
         &mut self,
         exprs: impl Iterator<Item = &'b AstExpr>,
-    ) -> Result<Vec<IncompleteConnection>, CompileError> {
+    ) -> Result<Vec<CompiledOutput>, CompileError> {
         use AstExpr::*;
 
         // walk the expressions and resolve them into CompiledModules
@@ -207,16 +207,12 @@ impl<'a> BuildState<'a> {
     }
 
     /// A constant expression is a literal value that can be directly inserted
-    fn const_expr(literal: &Literal, outputs: &mut Vec<IncompleteConnection>) {
-        outputs.push(IncompleteConnection::Immediate(literal.clone()))
+    fn const_expr(literal: &Literal, outputs: &mut Vec<CompiledOutput>) {
+        outputs.push(CompiledOutput::Immediate(literal.clone()))
     }
 
     /// A variable expression is a reference to another gate and is entirely metadata
-    fn var_expr(
-        &self,
-        name: &str,
-        outputs: &mut Vec<IncompleteConnection>,
-    ) -> Result<(), CompileError> {
+    fn var_expr(&self, name: &str, outputs: &mut Vec<CompiledOutput>) -> Result<(), CompileError> {
         let Some(conn) = self.scope.get(name) else {
             return Err(CompileError::UnknownVariable(name.to_owned()));
         };
@@ -232,7 +228,7 @@ impl<'a> BuildState<'a> {
         op: BinaryOpCode,
         a: &AstExpr,
         b: &AstExpr,
-        outputs: &mut Vec<IncompleteConnection>,
+        outputs: &mut Vec<CompiledOutput>,
     ) -> Result<(), CompileError> {
         // Resolve the operands as expressions (recursively)
         let a_outputs = self.exprs([a].into_iter())?;
@@ -269,7 +265,7 @@ impl<'a> BuildState<'a> {
         &mut self,
         op: UnaryOpCode,
         input: &AstExpr,
-        outputs: &mut Vec<IncompleteConnection>,
+        outputs: &mut Vec<CompiledOutput>,
     ) -> Result<(), CompileError> {
         // Resolve the operand as an expression (recursively)
         let outputs_expr = self.exprs([input].into_iter())?;
@@ -296,7 +292,7 @@ impl<'a> BuildState<'a> {
         &mut self,
         name: &str,
         params: &[AstExpr],
-        outputs: &mut Vec<IncompleteConnection>,
+        outputs: &mut Vec<CompiledOutput>,
     ) -> Result<(), CompileError> {
         // Build or lookup a module with the given name
         let module = self
@@ -325,28 +321,24 @@ impl<'a> BuildState<'a> {
     /// Add a wire connection between two pending connections.
     /// If the wire can be realized immediately, it will be added to the wires list.
     /// Otherwise, it will be added to the pending wires list, where it may get forwarded to the next module.
-    fn add_wire(
-        &mut self,
-        src: IncompleteConnection,
-        dst: IncompleteConnection,
-    ) -> Result<(), CompileError> {
+    fn add_wire(&mut self, src: CompiledOutput, dst: CompiledOutput) -> Result<(), CompileError> {
         match (src, dst) {
             // Two wire connections can be resolved immediately
-            (IncompleteConnection::Wire(src), IncompleteConnection::Wire(dst)) => {
+            (CompiledOutput::Wire(src), CompiledOutput::Wire(dst)) => {
                 self.wires.push(Wire { src, dst });
             }
             // A wire from an input is always pending
-            (IncompleteConnection::Input(name), IncompleteConnection::Wire(dst)) => {
+            (CompiledOutput::Input(name), CompiledOutput::Wire(dst)) => {
                 // If the source is an input, we need to create a pending wire
                 self.pending_wires.push((name, dst));
             }
-            (IncompleteConnection::Immediate(literal), IncompleteConnection::Wire(dst)) => {
+            (CompiledOutput::Immediate(literal), CompiledOutput::Wire(dst)) => {
                 self.gate_literals.push((dst, literal));
             }
-            (_, IncompleteConnection::Input(_)) => {
+            (_, CompiledOutput::Input(_)) => {
                 unreachable!("Cannot wire to an input connection");
             }
-            (_, IncompleteConnection::Immediate(_)) => {
+            (_, CompiledOutput::Immediate(_)) => {
                 unreachable!("Cannot wire to an immediate");
             }
         }
@@ -359,8 +351,8 @@ impl<'a> BuildState<'a> {
     fn add_module(
         &mut self,
         module: CompiledModule,
-        inputs: &[IncompleteConnection],
-    ) -> Result<Vec<IncompleteConnection>, CompileError> {
+        inputs: &[CompiledOutput],
+    ) -> Result<Vec<CompiledOutput>, CompileError> {
         assert_eq!(
             module.num_inputs,
             inputs.len(),
@@ -372,13 +364,13 @@ impl<'a> BuildState<'a> {
         self.gate_literals.extend(module.gate_literals);
 
         // TODO: For legibility, this is where rerouters would be inserted
-        let incomplete_to_pending = |incomplete: IncompleteConnection| match incomplete {
-            IncompleteConnection::Wire(w) => Ok(IncompleteConnection::Wire(w)),
-            IncompleteConnection::Input(p) => Ok(inputs
+        let incomplete_to_pending = |incomplete: CompiledOutput| match incomplete {
+            CompiledOutput::Wire(w) => Ok(CompiledOutput::Wire(w)),
+            CompiledOutput::Input(p) => Ok(inputs
                 .get(p)
                 .ok_or(CompileError::ModuleInputOutofRange(inputs.len(), p))?
                 .clone()),
-            IncompleteConnection::Immediate(l) => Ok(IncompleteConnection::Immediate(l)),
+            CompiledOutput::Immediate(l) => Ok(CompiledOutput::Immediate(l)),
         };
 
         // Connect all wires that the module depends on to the
@@ -388,7 +380,7 @@ impl<'a> BuildState<'a> {
                 .get(i)
                 .ok_or(CompileError::ModuleInputOutofRange(inputs.len(), i))?
                 .clone();
-            self.add_wire(src, IncompleteConnection::Wire(conn))?;
+            self.add_wire(src, CompiledOutput::Wire(conn))?;
         }
 
         // Resolve the module outputs and return them as pending connections
@@ -477,7 +469,7 @@ impl<'a> BuildState<'a> {
                         // Buffers are available in the scope even when they are not assigned
                         self.scope.insert(
                             name.to_owned(),
-                            IncompleteConnection::Wire(WireConnection::new(&gate, "output")),
+                            CompiledOutput::Wire(WireConnection::new(&gate, "output")),
                         );
 
                         // Add the buffer to the state
@@ -510,7 +502,7 @@ impl<'a> BuildState<'a> {
                             // Redirect the wire write to the buffer's input
                             self.add_wire(
                                 output,
-                                IncompleteConnection::Wire(WireConnection::new(&gate, "input")), // TODO: don't hardcore buffer input name
+                                CompiledOutput::Wire(WireConnection::new(&gate, "input")), // TODO: don't hardcore buffer input name
                             )?;
                         }
                     }

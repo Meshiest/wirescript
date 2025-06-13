@@ -130,7 +130,7 @@ impl GateKind {
 }
 
 #[derive(Clone, Debug)]
-pub enum IncompleteConnection {
+pub enum CompiledOutput {
     /// An input port of a module
     Input(usize),
     /// An immediate value to be inserted into a gate
@@ -139,26 +139,26 @@ pub enum IncompleteConnection {
     Wire(WireConnection),
 }
 
-impl Display for IncompleteConnection {
+impl Display for CompiledOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IncompleteConnection::Input(i) => write!(f, "input[{}]", i),
-            IncompleteConnection::Immediate(lit) => lit.fmt(f),
-            IncompleteConnection::Wire(wire) => wire.fmt(f),
+            CompiledOutput::Input(i) => write!(f, "input[{}]", i),
+            CompiledOutput::Immediate(lit) => lit.fmt(f),
+            CompiledOutput::Wire(wire) => wire.fmt(f),
         }
     }
 }
 
-impl From<WireConnection> for IncompleteConnection {
+impl From<WireConnection> for CompiledOutput {
     fn from(wire: WireConnection) -> Self {
-        IncompleteConnection::Wire(wire)
+        CompiledOutput::Wire(wire)
     }
 }
 
-impl IncompleteConnection {
+impl CompiledOutput {
     pub fn replace_gate(&self, lut: &HashMap<usize, Arc<Gate>>) -> Self {
         match self {
-            IncompleteConnection::Wire(wire) => IncompleteConnection::Wire(wire.replace_gate(lut)),
+            CompiledOutput::Wire(wire) => CompiledOutput::Wire(wire.replace_gate(lut)),
             other => other.clone(),
         }
     }
@@ -173,7 +173,7 @@ pub struct CompiledModule {
     /// A pair of (input index, WireConnection) to indicate which input this wire connects to
     pub inputs: Vec<(usize, WireConnection)>,
     /// Output wire connections that can be used to connect to the outputs of this module
-    pub outputs: Vec<IncompleteConnection>,
+    pub outputs: Vec<CompiledOutput>,
     /// Wires that connect to gates inside the module
     pub wires: Vec<Wire>,
     /// Gates that are part of this module
