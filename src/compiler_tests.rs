@@ -29,8 +29,9 @@ module example(a, b, c, d) -> e {
 }
 
 #[test]
-fn compile_7seg() {
+fn compile_7seg1() {
     let p = bearilog::ModuleParser::new();
+    // copywrite: smallguy
     let source = "
 module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
     a = a3 || (a2 && a0) || (a1 && !a0) || (!a2 && !a0);
@@ -47,6 +48,38 @@ module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
     let mut c = Compiler::new([module]);
     let out = c.compile("decoder7seg").expect("Failed to compile module");
     println!("Source:\n{source}\n\n{}", out.digraph().unwrap());
+}
+
+#[test]
+fn compile_7seg2() {
+    let p = bearilog::ModuleParser::new();
+    // copywrite: smallguy
+    let source = "
+module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
+    const o1 = !a2 & !a0;
+    const o2 = !a1 & a0;
+    const o3 = a1 & !a0;
+    const o4 = a2 & !a1;
+    const o5 = !a2 & a0;
+    const o6 = !a1 & !a0;
+    const o7 = a3 & a2;
+    const o8 = a3 & a1;
+    const o9 = a2 & a0;
+    const o10 = !a2 & a1;
+    a = a3 | (a2 & a0) | o3 | o1;
+    b = o1 | o2 | o3 | o4;
+    c = o5 | o2 | o4 | a3 | o3;
+    d = o6 | (a2 & !a1 & a0) | (o10 & !a0) | (o10 & a0) | (a3 & !a0);
+    e = !a0 | o4 | o7;
+    f = o3 | o1 | o7 | o8 | o4;
+    g = o10 | o3 | o7 | o9 | o8;
+}
+    "
+    .trim();
+    let module = p.parse(source).expect("Failed to parse module");
+    let mut c = Compiler::new([module]);
+    let out = c.compile("decoder7seg").expect("Failed to compile module");
+    println!("Source:\n{source}\n\n{}\n\n{out}", out.digraph().unwrap());
 }
 
 #[test]
