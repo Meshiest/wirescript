@@ -12,6 +12,8 @@ match {
     _
 }
 
+pub Modules: Vec<AstModule> = Module+;
+
 pub Module: AstModule = {
     "module" <name:Ident> "(" <inputs:Comma<Ident>> ")" "->" <outputs:Comma1<Ident>> "{" <stmts:Stmts> "}" => AstModule::new(name, strs_to_strings(inputs), strs_to_strings(outputs), stmts)
 }
@@ -39,16 +41,23 @@ pub Expr: AstExpr = {
     "~" <Expr> => <>.bit_not(),
     // exponent?
     #[precedence(level="4")] #[assoc(side="left")]
-    // * / %
+    <l:Expr> "*" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Mul, Box::new(l), Box::new(r)),
+    <l:Expr> "/" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Div, Box::new(l), Box::new(r)),
+    <l:Expr> "%" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Mod, Box::new(l), Box::new(r)),
     #[precedence(level="5")] #[assoc(side="left")]
-    // + -
+    <l:Expr> "+" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Add, Box::new(l), Box::new(r)),
+    <l:Expr> "-" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Sub, Box::new(l), Box::new(r)),
     #[precedence(level="6")] #[assoc(side="left")]
     <l:Expr> "<<" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitShiftLeft, Box::new(l), Box::new(r)),
     <l:Expr> ">>" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitShiftRight, Box::new(l), Box::new(r)),
     #[precedence(level="7")] #[assoc(side="left")]
-    // < <= > >=
+    <l:Expr> "<" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Lt, Box::new(l), Box::new(r)),
+    <l:Expr> "<=" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Leq, Box::new(l), Box::new(r)),
+    <l:Expr> ">" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Gt, Box::new(l), Box::new(r)),
+    <l:Expr> ">=" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Geq, Box::new(l), Box::new(r)),
     #[precedence(level="8")] #[assoc(side="left")]
-    // == !=
+    <l:Expr> "==" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Eq, Box::new(l), Box::new(r)),
+    <l:Expr> "!=" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Neq, Box::new(l), Box::new(r)),
     #[precedence(level="9")] #[assoc(side="left")]
     <l:Expr> "&" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitAnd, Box::new(l), Box::new(r)),
     #[precedence(level="10")] #[assoc(side="left")]

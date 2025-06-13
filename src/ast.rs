@@ -33,6 +33,17 @@ pub enum BinaryOpCode {
     BitXor,
     BitShiftLeft,
     BitShiftRight,
+    Mul,
+    Div,
+    Mod,
+    Add,
+    Sub,
+    Eq,
+    Neq,
+    Lt,
+    Leq,
+    Gt,
+    Geq,
 }
 
 impl Display for BinaryOpCode {
@@ -50,6 +61,17 @@ impl Display for BinaryOpCode {
             BinaryOpCode::BitXor => "bxor",
             BinaryOpCode::BitShiftLeft => "shl",
             BinaryOpCode::BitShiftRight => "shr",
+            BinaryOpCode::Mul => "mul",
+            BinaryOpCode::Div => "div",
+            BinaryOpCode::Mod => "mod",
+            BinaryOpCode::Add => "add",
+            BinaryOpCode::Sub => "sub",
+            BinaryOpCode::Eq => "eq",
+            BinaryOpCode::Neq => "neq",
+            BinaryOpCode::Lt => "lt",
+            BinaryOpCode::Leq => "leq",
+            BinaryOpCode::Gt => "gt",
+            BinaryOpCode::Geq => "geq",
         })
     }
 }

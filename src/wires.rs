@@ -55,7 +55,7 @@ pub enum GateKind {
 impl Display for GateKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GateKind::Buffer => f.write_str("Buffer"),
+            GateKind::Buffer => f.write_str("buffer"),
             GateKind::BinaryOp(op) => op.fmt(f),
             GateKind::UnaryOp(op) => op.fmt(f),
         }
