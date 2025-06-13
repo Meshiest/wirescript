@@ -304,10 +304,10 @@ impl<'a> BuildState<'a> {
         let call_outputs = self.exprs(params.iter())?;
 
         // Ensure the outputs match the module's inputs
-        if call_outputs.len() != module.inputs.len() {
+        if call_outputs.len() != module.num_inputs {
             return Err(CompileError::MismatchedInputs(
                 name.to_owned(),
-                module.inputs.len(),
+                module.num_inputs,
                 call_outputs.len(),
             ));
         }
