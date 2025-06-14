@@ -227,20 +227,32 @@ pub struct CompiledModule {
 
 impl CompiledModule {
     /// Create a clone of this module with new gate indices and wires pointing at the respective gates.
-    pub fn cloned(&self) -> Self {
+    pub fn cloned(&self) -> (Self, HashMap<usize, Arc<Gate>>) {
         let mut gates = Vec::with_capacity(self.gates.len());
 
         // Create a lookup table for the gates
         // Give all of the gates fresh indices
         let mut gate_lut = HashMap::with_capacity(gates.len());
+
         for g in &self.gates {
             let new_gate = Arc::new(g.cloned());
             gate_lut.insert(g.index, new_gate.clone());
             gates.push(new_gate);
         }
 
+        let mut sub_modules = vec![];
+        for (name, inputs, module) in &self.sub_modules {
+            let (sub_module, more_gates) = module.cloned();
+            gate_lut.extend(more_gates);
+            sub_modules.push((
+                name.clone(),
+                inputs.iter().map(|i| i.replace_gate(&gate_lut)).collect(),
+                sub_module,
+            ));
+        }
+
         // Ensure the new gates and connections reference the new gate ids
-        Self {
+        let new_module = Self {
             num_inputs: self.num_inputs,
             inputs: self
                 .inputs
@@ -267,23 +279,18 @@ impl CompiledModule {
                 .collect(),
             gates,
             force_inline: self.force_inline,
-            sub_modules: self
-                .sub_modules
-                .iter()
-                .map(|(name, inputs, module)| {
-                    (
-                        name.clone(),
-                        inputs.iter().map(|i| i.replace_gate(&gate_lut)).collect(),
-                        module.cloned(),
-                    )
-                })
-                .collect(),
-        }
+            sub_modules,
+        };
+
+        (new_module, gate_lut)
     }
 
     pub fn digraph(&self) -> Result<String, Box<dyn Error>> {
         let mut f = vec![];
-        self.subgraph("module", vec![], &mut Default::default(), &mut f, 0)?;
+        let mut input_map = Default::default();
+
+        self.subgraph("module", vec![], &mut input_map, &mut f, 0)?;
+
         Ok(String::from_utf8(f)?)
     }
 
@@ -305,19 +312,39 @@ impl CompiledModule {
             writeln!(f, "{root_pad}digraph {name} {{")?;
             // writeln!(f, "{pad}graph [rankdir=LR];")?;
             // graph [splines=ortho]; // (add hard lines)
-        } else {
-            // Connect the inputs for descendant modules. This has to happen before the subgraph
-            // is created so the connected nodes are outside of the subgraph.
-            for (i, w) in &self.inputs {
-                if let Some(name) = input_map.get(&[prefix.clone(), vec![*i]].concat()) {
-                    writeln!(f, "{root_pad}{name} -> {}:{};", w.gate, w.property)?;
-                }
-            }
 
+            // The top level module inputs are rendered as nodes
+            for i in 0..self.num_inputs {
+                input_map.insert(vec![i], format!("in{i}"));
+                writeln!(f, "{pad}in{i} [style=filled,color=lightblue];",)?;
+            }
+            // Align inputs on the same level
+            writeln!(
+                f,
+                "{pad}{{rank=same; {}}}",
+                (0..self.num_inputs)
+                    .map(|i| format!("in{i}"))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            )?;
+            // Align outputs on the same level
+            writeln!(
+                f,
+                "{pad}{{rank=same; {}}}",
+                (0..self.outputs.len())
+                    .map(|i| format!("out{i}"))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            )?;
+        } else {
             let idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
             writeln!(f, "\n{root_pad}subgraph cluster_{idx} {{")?;
             writeln!(f, "{pad}label=\"{name}\"; color=black;\n")?;
         }
+
+        // Ids of input/output gates to vertically align together
+        let mut local_input_ids = vec![];
+        let mut local_output_ids = vec![];
 
         // Write the gates as nodes
         for gate in &self.gates {
@@ -371,69 +398,115 @@ impl CompiledModule {
                     ""
                 },
             )?;
+
+            if gate.meta.is_input {
+                local_input_ids.push(gate.to_string());
+            }
+            if gate.meta.is_output {
+                local_output_ids.push(gate.to_string());
+            }
+        }
+        if !local_input_ids.is_empty() {
+            writeln!(f, "{pad}{{rank=same; {}}}", local_input_ids.join(";"))?;
+        }
+        if !local_output_ids.is_empty() {
+            writeln!(f, "{pad}{{rank=same; {}}}", local_output_ids.join(";"))?;
         }
 
         writeln!(f)?;
 
-        // The top level module inputs are rendered as nodes
-        if depth == 0 {
-            for i in 0..self.num_inputs {
-                input_map.insert([prefix.clone(), vec![i]].concat(), format!("in{i}"));
-                writeln!(f, "{pad}in{i} [style=filled,color=lightblue];")?;
-            }
-
-            // Connect the inputs for the root module
-            // This happens here rather than up top because the gates didn't exist yet.
-            for (i, w) in &self.inputs {
-                if let Some(name) = input_map.get(&[prefix.clone(), vec![*i]].concat()) {
-                    writeln!(f, "{pad}{name} -> {}:{};", w.gate, w.property)?;
-                }
-            }
-        }
-
         // Render the subgraphs for sub-modules
-        for (i, (name, inputs, module)) in self.sub_modules.iter().enumerate() {
-            // Prefix for the submodule's inputs
-            let mod_prefix = [prefix.clone(), vec![i]].concat();
-
-            // The input connections to the submodule are scoped based on parent module
-            for (input_idx, w) in inputs.iter().enumerate() {
-                let node = match w {
-                    // This module's input is referencing an input of the parent module
-                    CompiledOutput::Input(j) => {
-                        match input_map.get(&[prefix.clone(), vec![*j]].concat()) {
-                            Some(target) => target.clone(),
-                            None => continue,
-                        }
+        for (mod_idx, (name, inputs, module)) in self.sub_modules.iter().enumerate() {
+            // Iterate inputs and populate the input map
+            for (in_idx, input) in inputs.iter().enumerate() {
+                let name = match input {
+                    CompiledOutput::Input(n) => {
+                        // lookup the input to this module
+                        let Some(target) = input_map.get(&[prefix.clone(), vec![*n]].concat())
+                        else {
+                            eprintln!(
+                                "[warning] input {n} in {name}'s {in_idx} input does not point to a real input"
+                            );
+                            continue;
+                        };
+                        target.clone()
                     }
                     CompiledOutput::Immediate(literal) => {
                         let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
-                        let node = format!("lit{lit_idx}");
+                        let lit = format!("lit{lit_idx}");
                         writeln!(
                             f,
-                            "{pad}{node} [label=\"{literal}\",style=filled,color=white];"
+                            "{pad}{lit} [label=\"{literal}\",style=filled,color=white];"
                         )?;
-                        node
+                        lit
                     }
                     CompiledOutput::Wire(w) => format!("{}:{}", w.gate, w.property),
                 };
-
-                input_map.insert([mod_prefix.clone(), vec![input_idx]].concat(), node);
+                input_map.insert([prefix.clone(), vec![mod_idx, in_idx]].concat(), name);
             }
 
+            let mod_prefix = [prefix.clone(), vec![mod_idx]].concat();
+            // Load all the gates from the submodule
             module.subgraph(name, mod_prefix, input_map, f, depth + 1)?;
+
+            // Create fake wires to connect to the module's real inputs
+            for (in_idx, dst) in &module.inputs {
+                let Some(target) =
+                    input_map.get(&[prefix.clone(), vec![mod_idx, *in_idx]].concat())
+                else {
+                    eprintln!(
+                        "[warning] input {in_idx} in {name}'s input does not point to a real input"
+                    );
+                    continue;
+                };
+                writeln!(f, "{pad}{target} -> {}:{};", dst.gate, dst.property)?;
+            }
         }
 
         // Outputs don't need to be rendered because they are metadata for other
         // nodes to connect to.
 
-        writeln!(f)?;
         for Wire { src, dst } in &self.wires {
             writeln!(
                 f,
                 "{pad}{}:{} -> {}:{};",
                 src.gate, src.property, dst.gate, dst.property
             )?;
+        }
+
+        if depth == 0 {
+            // Connect the inputs for the root module
+            // This happens here rather than up top because the gates may not exist yet.
+            for (i, w) in &self.inputs {
+                if let Some(name) = input_map.get(&vec![*i]) {
+                    writeln!(f, "{pad}{name} -> {}:{};", w.gate, w.property)?;
+                }
+            }
+
+            // Connect outputs for the root module
+            for (i, out) in self.outputs.iter().enumerate() {
+                writeln!(f, "{pad}out{i} [style=filled,color=lightgreen];")?;
+                let name = match out {
+                    CompiledOutput::Input(n) => {
+                        // lookup the input to this module
+                        let Some(target) = input_map.get(&vec![*n]) else {
+                            continue;
+                        };
+                        target.clone()
+                    }
+                    CompiledOutput::Immediate(literal) => {
+                        let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
+                        let lit = format!("lit{lit_idx}");
+                        writeln!(
+                            f,
+                            "{pad}{lit} [label=\"{literal}\",style=filled,color=white];"
+                        )?;
+                        lit
+                    }
+                    CompiledOutput::Wire(w) => format!("{}:{}", w.gate, w.property),
+                };
+                writeln!(f, "{pad}{name} -> out{i};")?;
+            }
         }
 
         writeln!(f)?;

@@ -2,14 +2,30 @@ module mynand(a, b) -> o {
   o = !(a && b);
 }
 
+module mynot(a) -> b {
+  b = mynand(a, a);
+}
+
 module myand(a, b) -> o {
-  o = !mynand(a, b);
+  o = mynot(mynand(a, b));
 }
 
 module mynor(a, b) -> o {
-  o = myand(!a, !b);
+  o = myand(mynot(a), mynot(b));
 }
 
 module myor(a,b) -> o {
-  o = !mynor(a,b);
+  o = mynot(mynor(a,b));
+}
+
+module first(c) -> d {
+  d = c;
+}
+
+module second(b) -> e {
+  e = first(b);
+}
+
+module third(a) -> f {
+  f = second(a);
 }

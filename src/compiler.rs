@@ -86,11 +86,11 @@ impl Compiler {
 
     pub fn get_or_compile(&mut self, target: &str) -> Result<CompiledModule, CompileError> {
         if let Some(module) = self.compiled_modules.get(target) {
-            return Ok(module.cloned());
+            return Ok(module.cloned().0);
         }
 
         let compiled = self.compile(target)?;
-        let clone = compiled.cloned();
+        let clone = compiled.cloned().0;
         self.compiled_modules.insert(target.to_owned(), compiled);
         Ok(clone)
     }
@@ -164,6 +164,7 @@ impl<'a> BuildState<'a> {
 
         if !is_inline {
             // If this is not an inline module, add rerouters for the inputs and outputs
+            // TODO: re-enable port rerouting
             self.reroute_ports()?;
         }
 
@@ -224,6 +225,26 @@ impl<'a> BuildState<'a> {
             )?;
         }
 
+        // Replace any of the inputs for child modules with the rerouted input
+        for (_name, inputs, _module) in self.sub_modules.iter_mut() {
+            for src in inputs.iter_mut() {
+                let CompiledOutput::Input(i) = src else {
+                    continue;
+                };
+
+                // If the the submodule's input references the original input, map
+                // it to the rerouter.
+                let Some(gate) = new_gates.get(*i) else {
+                    return Err(CompileError::ModuleInputOutOfRange(
+                        self.ast.inputs.len(),
+                        *i,
+                    ));
+                };
+
+                *src = CompiledOutput::Wire(WireConnection::new(gate, "output")) // TODO: don't hardcode outputname for rerouters
+            }
+        }
+
         // Insert the named rerouters for each output
         for (name, slot) in self.outputs.iter_mut() {
             let Some(src) = slot.take() else {
@@ -253,9 +274,9 @@ impl<'a> BuildState<'a> {
             );
 
             // Create a wire between the old slot and the rerouter input
-            // TODO: don't hardcode input name for rerouters
             new_wires.push((
                 src,
+                // TODO: don't hardcode input name for rerouters
                 CompiledOutput::Wire(WireConnection::new(&rerouter, "input")),
             ));
 
@@ -479,17 +500,15 @@ impl<'a> BuildState<'a> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        // TODO: modules with no submodules can be inlined safely
         if module.force_inline {
-            // TODO: inline submodules in the incoming module?
-
             self.gates.extend(module.gates);
             self.wires.extend(module.wires);
             self.gate_literals.extend(module.gate_literals);
 
-            // Connect all wires that the module depends on to the
-            // provided inputs.
-            for (input, dst) in module.inputs.into_iter() {
-                self.add_wire(input_for(input)?, CompiledOutput::Wire(dst))?;
+            // Connect input wires into the module
+            for (input, dst) in module.inputs.iter() {
+                self.add_wire(input_for(*input)?, CompiledOutput::Wire(dst.clone()))?;
             }
         } else {
             // Rather than connecting all the wires to the module, the
@@ -532,9 +551,9 @@ impl<'a> BuildState<'a> {
                             Some(Some(_)) => {
                                 return Err(CompileError::OutputAlreadyAssigned(name.to_owned()));
                             }
-                            Some(opt @ None) => {
+                            Some(slot @ None) => {
                                 // Assign the connection to the output slot
-                                *opt = Some(conn.clone());
+                                *slot = Some(conn.clone());
                                 // Now that the variable is assigned, it can be used as a variable
                                 self.scope.insert(name.to_owned(), conn);
                                 continue;
@@ -595,15 +614,15 @@ impl<'a> BuildState<'a> {
                         // Add the wires to the buffers
                         for (name, output) in names.iter().zip(outputs.into_iter()) {
                             let gate = {
-                                let Some((buf, opt)) = self.buffers.get_mut(name) else {
+                                let Some((buf, slot)) = self.buffers.get_mut(name) else {
                                     return Err(CompileError::UnknownVariable(name.to_owned()));
                                 };
 
                                 // Somehow the buffer is already assigned. Should be unreachable
-                                if opt.is_some() {
+                                if slot.is_some() {
                                     return Err(CompileError::ReadOnlyVariable(name.to_owned()));
                                 }
-                                *opt = Some(output.clone());
+                                *slot = Some(output.clone());
                                 Arc::clone(buf)
                             };
 
