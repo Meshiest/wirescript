@@ -10,6 +10,7 @@ use crate::{
 pub struct Compiler {
     ast_modules: HashMap<String, Arc<AstModule>>,
     compiled_modules: HashMap<String, CompiledModule>,
+    force_inline: bool,
 }
 
 #[derive(Debug, Error)]
@@ -81,7 +82,12 @@ impl Compiler {
         Self {
             ast_modules,
             compiled_modules: Default::default(),
+            force_inline: false,
         }
+    }
+
+    pub fn set_inline(&mut self) {
+        self.force_inline = true;
     }
 
     pub fn get_or_compile(&mut self, target: &str) -> Result<CompiledModule, CompileError> {
@@ -159,8 +165,7 @@ impl<'a> BuildState<'a> {
     fn build(mut self) -> Result<CompiledModule, CompileError> {
         let ast = self.ast.clone();
 
-        // TODO: allow inlining to be configurable (in code? globally?)
-        let is_inline = false;
+        let is_inline = self.compiler.force_inline || ast.inline;
 
         if !is_inline {
             // If this is not an inline module, add rerouters for the inputs and outputs

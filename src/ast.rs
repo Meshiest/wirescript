@@ -186,6 +186,7 @@ impl Display for AstStmt {
 
 pub struct AstModule {
     pub name: String,
+    pub inline: bool,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
     pub statements: Vec<AstStmt>,
@@ -194,12 +195,14 @@ pub struct AstModule {
 impl AstModule {
     pub fn new(
         name: &str,
+        inline: bool,
         inputs: Vec<String>,
         outputs: Vec<String>,
         statements: Vec<AstStmt>,
     ) -> Self {
         Self {
             name: name.to_string(),
+            inline,
             inputs,
             outputs,
             statements,

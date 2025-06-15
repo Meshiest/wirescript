@@ -1,4 +1,4 @@
-module mynand(a, b) -> o {
+inline module mynand(a, b) -> o {
   o = !(a && b);
 }
 

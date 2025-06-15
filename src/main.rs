@@ -28,6 +28,10 @@ struct Args {
     /// The module to parse
     module: String,
 
+    /// Force all modules to be inlined
+    #[arg(short, long)]
+    inline: bool,
+
     /// Generate a graphviz visual
     #[arg(short, long)]
     graph: bool,
@@ -40,6 +44,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .parse(&source)
         .map_err(|e| e.to_string())?;
     let mut compiler = compiler::Compiler::new(modules);
+
+    if args.inline {
+        compiler.set_inline();
+    }
+
     let res = match compiler.compile(&args.module) {
         Ok(res) => res,
         Err(e) => {
