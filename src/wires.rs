@@ -221,8 +221,8 @@ pub struct CompiledModule {
     pub gate_literals: Vec<(WireConnection, Literal)>,
     /// Force this module to be inlined rather than being a submodule
     pub force_inline: bool,
-    /// List of (module name, inputs, module) that this module contains
-    pub sub_modules: Vec<(String, Vec<CompiledOutput>, CompiledModule)>,
+    /// List of (module name, module) that this module contains
+    pub sub_modules: Vec<(String, CompiledModule)>,
 }
 
 impl CompiledModule {
@@ -241,14 +241,14 @@ impl CompiledModule {
         }
 
         let mut sub_modules = vec![];
-        for (name, inputs, module) in &self.sub_modules {
+
+        // Gate lookups are retained for submodules because wires in the parent
+        // module connect to gates in the submodule. If the lookups are missing
+        // then the wires in parent modules will connect to gates that don't exist
+        for (name, module) in &self.sub_modules {
             let (sub_module, more_gates) = module.cloned();
             gate_lut.extend(more_gates);
-            sub_modules.push((
-                name.clone(),
-                inputs.iter().map(|i| i.replace_gate(&gate_lut)).collect(),
-                sub_module,
-            ));
+            sub_modules.push((name.clone(), sub_module));
         }
 
         // Ensure the new gates and connections reference the new gate ids
@@ -285,11 +285,10 @@ impl CompiledModule {
         (new_module, gate_lut)
     }
 
-    pub fn digraph(&self) -> Result<String, Box<dyn Error>> {
+    pub fn graphviz(&self) -> Result<String, Box<dyn Error>> {
         let mut f = vec![];
-        let mut input_map = Default::default();
 
-        self.subgraph("module", vec![], &mut input_map, &mut f, 0)?;
+        self.subgraph("module", vec![], &mut f, 0)?;
 
         Ok(String::from_utf8(f)?)
     }
@@ -298,8 +297,6 @@ impl CompiledModule {
         &self,
         name: &str,
         prefix: Vec<usize>,
-        // A map of input_index to the name of the node it corresponds to
-        input_map: &mut HashMap<Vec<usize>, String>,
         f: &mut impl Write,
         depth: usize,
     ) -> Result<(), Box<dyn Error>> {
@@ -315,30 +312,33 @@ impl CompiledModule {
 
             // The top level module inputs are rendered as nodes
             for i in 0..self.num_inputs {
-                input_map.insert(vec![i], format!("in{i}"));
                 writeln!(f, "{pad}in{i} [style=filled,color=lightblue];",)?;
             }
             // Align inputs on the same level
-            writeln!(
-                f,
-                "{pad}{{rank=same; {}}}",
-                (0..self.num_inputs)
-                    .map(|i| format!("in{i}"))
-                    .collect::<Vec<_>>()
-                    .join(";")
-            )?;
+            if self.num_inputs > 1 {
+                writeln!(
+                    f,
+                    "{pad}{{rank=same; {}}}",
+                    (0..self.num_inputs)
+                        .map(|i| format!("in{i}"))
+                        .collect::<Vec<_>>()
+                        .join(";")
+                )?;
+            }
             // Align outputs on the same level
-            writeln!(
-                f,
-                "{pad}{{rank=same; {}}}",
-                (0..self.outputs.len())
-                    .map(|i| format!("out{i}"))
-                    .collect::<Vec<_>>()
-                    .join(";")
-            )?;
+            if self.outputs.len() > 1 {
+                writeln!(
+                    f,
+                    "{pad}{{rank=same; {}}}",
+                    (0..self.outputs.len())
+                        .map(|i| format!("out{i}"))
+                        .collect::<Vec<_>>()
+                        .join(";")
+                )?;
+            }
         } else {
             let idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
-            writeln!(f, "\n{root_pad}subgraph cluster_{idx} {{")?;
+            writeln!(f, "{root_pad}subgraph cluster_{idx} {{")?;
             writeln!(f, "{pad}label=\"{name}\"; color=black;\n")?;
         }
 
@@ -406,61 +406,20 @@ impl CompiledModule {
                 local_output_ids.push(gate.to_string());
             }
         }
-        if !local_input_ids.is_empty() {
+        if local_input_ids.len() > 1 {
             writeln!(f, "{pad}{{rank=same; {}}}", local_input_ids.join(";"))?;
         }
-        if !local_output_ids.is_empty() {
+        if local_output_ids.len() > 1 {
             writeln!(f, "{pad}{{rank=same; {}}}", local_output_ids.join(";"))?;
         }
 
         writeln!(f)?;
 
         // Render the subgraphs for sub-modules
-        for (mod_idx, (name, inputs, module)) in self.sub_modules.iter().enumerate() {
-            // Iterate inputs and populate the input map
-            for (in_idx, input) in inputs.iter().enumerate() {
-                let name = match input {
-                    CompiledOutput::Input(n) => {
-                        // lookup the input to this module
-                        let Some(target) = input_map.get(&[prefix.clone(), vec![*n]].concat())
-                        else {
-                            eprintln!(
-                                "[warning] input {n} in {name}'s {in_idx} input does not point to a real input"
-                            );
-                            continue;
-                        };
-                        target.clone()
-                    }
-                    CompiledOutput::Immediate(literal) => {
-                        let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
-                        let lit = format!("lit{lit_idx}");
-                        writeln!(
-                            f,
-                            "{pad}{lit} [label=\"{literal}\",style=filled,color=white];"
-                        )?;
-                        lit
-                    }
-                    CompiledOutput::Wire(w) => format!("{}:{}", w.gate, w.property),
-                };
-                input_map.insert([prefix.clone(), vec![mod_idx, in_idx]].concat(), name);
-            }
-
+        for (mod_idx, (name, module)) in self.sub_modules.iter().enumerate() {
             let mod_prefix = [prefix.clone(), vec![mod_idx]].concat();
             // Load all the gates from the submodule
-            module.subgraph(name, mod_prefix, input_map, f, depth + 1)?;
-
-            // Create fake wires to connect to the module's real inputs
-            for (in_idx, dst) in &module.inputs {
-                let Some(target) =
-                    input_map.get(&[prefix.clone(), vec![mod_idx, *in_idx]].concat())
-                else {
-                    eprintln!(
-                        "[warning] input {in_idx} in {name}'s input does not point to a real input"
-                    );
-                    continue;
-                };
-                writeln!(f, "{pad}{target} -> {}:{};", dst.gate, dst.property)?;
-            }
+            module.subgraph(name, mod_prefix, f, depth + 1)?;
         }
 
         // Outputs don't need to be rendered because they are metadata for other
@@ -478,22 +437,14 @@ impl CompiledModule {
             // Connect the inputs for the root module
             // This happens here rather than up top because the gates may not exist yet.
             for (i, w) in &self.inputs {
-                if let Some(name) = input_map.get(&vec![*i]) {
-                    writeln!(f, "{pad}{name} -> {}:{};", w.gate, w.property)?;
-                }
+                writeln!(f, "{pad}in{i} -> {}:{};", w.gate, w.property)?;
             }
 
             // Connect outputs for the root module
             for (i, out) in self.outputs.iter().enumerate() {
                 writeln!(f, "{pad}out{i} [style=filled,color=lightgreen];")?;
                 let name = match out {
-                    CompiledOutput::Input(n) => {
-                        // lookup the input to this module
-                        let Some(target) = input_map.get(&vec![*n]) else {
-                            continue;
-                        };
-                        target.clone()
-                    }
+                    CompiledOutput::Input(n) => format!("in{n}"),
                     CompiledOutput::Immediate(literal) => {
                         let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
                         let lit = format!("lit{lit_idx}");
@@ -509,7 +460,9 @@ impl CompiledModule {
             }
         }
 
-        writeln!(f)?;
+        if !self.gate_literals.is_empty() {
+            writeln!(f)?;
+        }
         for (wc, literal) in &self.gate_literals {
             let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
             let lit = format!("lit{lit_idx}");

@@ -47,7 +47,7 @@ module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
     let module = p.parse(source).expect("Failed to parse module");
     let mut c = Compiler::new([module]);
     let out = c.compile("decoder7seg").expect("Failed to compile module");
-    println!("Source:\n{source}\n\n{}", out.digraph().unwrap());
+    println!("Source:\n{source}\n\n{}", out.graphviz().unwrap());
 }
 
 #[test]
@@ -87,7 +87,7 @@ module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
     let module = p.parse(source).expect("Failed to parse module");
     let mut c = Compiler::new([module]);
     let out = c.compile("decoder7seg").expect("Failed to compile module");
-    println!("Source:\n{source}\n\n{}\n\n{out}", out.digraph().unwrap());
+    println!("Source:\n{source}\n\n{}\n\n{out}", out.graphviz().unwrap());
 }
 
 #[test]
@@ -128,7 +128,7 @@ module encoder8(a0, a1, a2, a3, a4, a5, a6, a7) -> a {
     let out2 = c.compile("encoder8").expect("Failed to compile module");
     println!(
         "Source:\n{source1}\n\n{}\n\nSource:\n{source2}\n\n{}",
-        out1.digraph().unwrap(),
-        out2.digraph().unwrap()
+        out1.graphviz().unwrap(),
+        out2.graphviz().unwrap()
     );
 }

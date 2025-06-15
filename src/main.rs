@@ -28,8 +28,9 @@ struct Args {
     /// The module to parse
     module: String,
 
+    /// Generate a graphviz visual
     #[arg(short, long)]
-    digraph: bool,
+    graph: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -47,8 +48,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    if args.digraph {
-        println!("{}", res.digraph()?);
+    if args.graph {
+        println!("{}", res.graphviz()?);
     } else {
         println!("{res}");
     }

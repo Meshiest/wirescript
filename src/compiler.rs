@@ -67,8 +67,8 @@ struct BuildState<'a> {
     consts: HashMap<String, CompiledOutput>,
     gate_literals: Vec<(WireConnection, Literal)>,
     pending_wires: Vec<(usize, WireConnection)>,
-    /// A list of (module name, inputs, module) that have been compiled and added to this module
-    sub_modules: Vec<(String, Vec<CompiledOutput>, CompiledModule)>,
+    /// A list of (module name, module) that have been compiled and added to this module
+    sub_modules: Vec<(String, CompiledModule)>,
 }
 
 impl Compiler {
@@ -91,8 +91,8 @@ impl Compiler {
 
         let compiled = self.compile(target)?;
         let clone = compiled.cloned().0;
-        self.compiled_modules.insert(target.to_owned(), compiled);
-        Ok(clone)
+        self.compiled_modules.insert(target.to_owned(), clone);
+        Ok(compiled)
     }
 
     pub fn compile(&mut self, target: &str) -> Result<CompiledModule, CompileError> {
@@ -164,7 +164,6 @@ impl<'a> BuildState<'a> {
 
         if !is_inline {
             // If this is not an inline module, add rerouters for the inputs and outputs
-            // TODO: re-enable port rerouting
             self.reroute_ports()?;
         }
 
@@ -193,6 +192,8 @@ impl<'a> BuildState<'a> {
         })
     }
 
+    /// Insert rerouters on the inputs and outputs of this module, rerouting
+    /// the previous connections through them
     fn reroute_ports(&mut self) -> Result<(), CompileError> {
         let mut new_wires = vec![];
 
@@ -223,26 +224,6 @@ impl<'a> BuildState<'a> {
                 CompiledOutput::Wire(WireConnection::new(gate, "output")), // TODO: don't hardcode output name for rerouters
                 CompiledOutput::Wire(dst),
             )?;
-        }
-
-        // Replace any of the inputs for child modules with the rerouted input
-        for (_name, inputs, _module) in self.sub_modules.iter_mut() {
-            for src in inputs.iter_mut() {
-                let CompiledOutput::Input(i) = src else {
-                    continue;
-                };
-
-                // If the the submodule's input references the original input, map
-                // it to the rerouter.
-                let Some(gate) = new_gates.get(*i) else {
-                    return Err(CompileError::ModuleInputOutOfRange(
-                        self.ast.inputs.len(),
-                        *i,
-                    ));
-                };
-
-                *src = CompiledOutput::Wire(WireConnection::new(gate, "output")) // TODO: don't hardcode outputname for rerouters
-            }
         }
 
         // Insert the named rerouters for each output
@@ -317,13 +298,13 @@ impl<'a> BuildState<'a> {
                 BinaryOp(op, a, b) => self.binaryop_expr(*op, a, b, &mut outputs)?,
                 UnaryOp(op, input) => self.unaryop_expr(*op, input, &mut outputs)?,
                 Call(name, params) => {
-                    // TODO: discern if this is a module or a builtin
+                    // TODO: discern if "name" is for a module or a builtin
                     self.module_expr(name, params, &mut outputs)?;
                 }
             };
         }
 
-        Ok(outputs) // TODO: Implement expression compilation
+        Ok(outputs)
     }
 
     /// A constant expression is a literal value that can be directly inserted
@@ -500,20 +481,23 @@ impl<'a> BuildState<'a> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // TODO: modules with no submodules can be inlined safely
+        // Connect input wires into the module
+        // The module's inputs are connections to its internal gates.
+        // If
+        for (input, dst) in module.inputs.iter() {
+            self.add_wire(input_for(*input)?, CompiledOutput::Wire(dst.clone()))?;
+        }
+
+        // The gates and wires of an inlined module are merged into this module
         if module.force_inline {
             self.gates.extend(module.gates);
             self.wires.extend(module.wires);
             self.gate_literals.extend(module.gate_literals);
-
-            // Connect input wires into the module
-            for (input, dst) in module.inputs.iter() {
-                self.add_wire(input_for(*input)?, CompiledOutput::Wire(dst.clone()))?;
-            }
         } else {
-            // Rather than connecting all the wires to the module, the
-            // inputs are bundled with the module (to provide context)
-            self.sub_modules.push((name.to_owned(), inputs, module));
+            // Keeping the gates and wires local to a submodule allows for it to be
+            // better visually grouped for graph visualizations and build assembling.
+            // There is no computational need to store the gates in submodules
+            self.sub_modules.push((name.to_owned(), module));
         }
 
         Ok(outputs)
@@ -583,10 +567,6 @@ impl<'a> BuildState<'a> {
                     }
                 }
                 Buffer(names, exprs) => {
-                    // ensure none of the names are duplicated in the scope or slots
-                    // update the scope with the name as an input
-                    // update the slots with the name as a buffer
-
                     // Register the buffer names in the state
                     for name in names {
                         self.ensure_unique_name(name)?;
