@@ -4,11 +4,11 @@ use clap::Parser;
 use clap_stdin::FileOrStdin;
 use lalrpop_util::lalrpop_mod;
 
-use crate::wires::CompiledModule;
+use crate::compiler::CompiledModule;
 
 mod ast;
 mod compiler;
-mod wires;
+mod graphviz;
 
 #[cfg(test)]
 mod bearilog_tests;
@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     if args.graph {
-        println!("{}", res.graphviz()?);
+        println!("{}", graphviz::render(&res)?);
     } else {
         println!("{res}");
     }
