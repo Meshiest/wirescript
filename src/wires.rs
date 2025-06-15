@@ -479,37 +479,57 @@ impl CompiledModule {
 
 impl Display for CompiledModule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CompiledModule with {} inputs", self.num_inputs)?;
+        write!(
+            f,
+            "CompiledModule with {} inputs and {} submodules",
+            self.num_inputs,
+            self.sub_modules.len()
+        )?;
         if !self.inputs.is_empty() {
             f.write_str("\nInputs:\n")?;
             for (i, conn) in &self.inputs {
-                write!(f, " - [{i}] -> {conn}\n")?;
+                writeln!(f, " - [{i}] -> {conn}")?;
             }
         }
         if !self.outputs.is_empty() {
             f.write_str("\nOutputs:\n")?;
             for conn in &self.outputs {
-                write!(f, " - {conn}\n")?;
+                writeln!(f, " - {conn}")?;
             }
         }
         if !self.gates.is_empty() {
             f.write_str("\nGates:\n")?;
             for gate in &self.gates {
-                write!(f, " - {gate}\n")?;
+                writeln!(f, " - {gate}")?;
             }
         }
         if !self.gate_literals.is_empty() {
             f.write_str("\nGate Literals:\n")?;
             for (conn, lit) in &self.gate_literals {
-                write!(f, "   {} = {}\n", conn, lit)?;
+                writeln!(f, "   {} = {}", conn, lit)?;
             }
         }
+
+        let submodules = self
+            .sub_modules
+            .iter()
+            .map(|(name, module)| {
+                format!(
+                    "\nSubmodule {name}:\n | {}",
+                    module.to_string().replace("\n", "\n | ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        submodules.fmt(f)?;
+
         if !self.wires.is_empty() {
             f.write_str("\nWires:\n")?;
             for wire in &self.wires {
-                write!(f, "  {} -> {}\n", wire.src, wire.dst)?;
+                writeln!(f, "  {} -> {}", wire.src, wire.dst)?;
             }
         }
+
         Ok(())
     }
 }
