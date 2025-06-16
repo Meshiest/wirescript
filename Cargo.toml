@@ -7,7 +7,11 @@ edition = "2024"
 lalrpop = "0.22.2"
 
 [dependencies]
+chrono = { version = "0.4.41", default-features = false }
 clap = { version = "4.5.40", features = ["derive"] }
 clap-stdin = "0.6.0"
+flate2 = { version = "1.1.2", features = ["zlib-rs"], default-features = false }
 lalrpop-util = { version = "0.21.0", features = ["lexer", "unicode"] }
+rmp = "0.8.14"
+rusqlite = { version = "0.36.0", features = ["blob", "bundled", "chrono"] }
 thiserror = "2.0.12"

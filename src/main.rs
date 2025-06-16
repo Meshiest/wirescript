@@ -7,6 +7,7 @@ use lalrpop_util::lalrpop_mod;
 use crate::compiler::CompiledModule;
 
 mod ast;
+mod brdb;
 mod compiler;
 mod graphviz;
 
