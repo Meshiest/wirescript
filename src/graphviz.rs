@@ -1,6 +1,6 @@
 use std::{error::Error, io::Write, sync::atomic};
 
-use crate::compiler::{CompiledModule, CompiledOutput, Wire};
+use crate::compiler::{CompiledModule, CompiledOutput, Gate, Wire};
 
 pub fn render(module: &CompiledModule) -> Result<String, Box<dyn Error>> {
     let mut f = vec![];
@@ -10,7 +10,7 @@ pub fn render(module: &CompiledModule) -> Result<String, Box<dyn Error>> {
     Ok(String::from_utf8(f)?)
 }
 
-pub fn subgraph(
+fn subgraph(
     module: &CompiledModule,
     name: &str,
     prefix: Vec<usize>,
@@ -25,7 +25,7 @@ pub fn subgraph(
     if depth == 0 {
         writeln!(f, "{root_pad}digraph {name} {{")?;
         // writeln!(f, "{pad}graph [rankdir=LR];")?;
-        // graph [splines=ortho]; // (add hard lines)
+        // writeln!(f, "{pad}graph [splines=ortho];")?; // (add hard lines)
 
         // The top level module inputs are rendered as nodes
         for i in 0..module.num_inputs {
@@ -56,7 +56,7 @@ pub fn subgraph(
     } else {
         let idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
         writeln!(f, "{root_pad}subgraph cluster_{idx} {{")?;
-        writeln!(f, "{pad}label=\"{name}\"; color=black;\n")?;
+        writeln!(f, "{pad}label=<<b>{name}</b>>; color=black;\n")?;
     }
 
     // Ids of input/output gates to vertically align together
@@ -65,57 +65,7 @@ pub fn subgraph(
 
     // Write the gates as nodes
     for gate in &module.gates {
-        let (inputs, outputs) = gate.kind.properties();
-        let one_input = inputs.len() == 1;
-        let one_output = outputs.len() == 1;
-
-        let mut inputs = inputs.into_iter().peekable();
-        let mut outputs = outputs.into_iter().peekable();
-
-        // <input> <output> or <input,output> if there is only one input/output
-        let first_labels = match (one_input, one_output) {
-            (true, true) => format!("<{},{}>", inputs.next().unwrap(), outputs.next().unwrap()),
-            (true, false) => format!("<{}>", inputs.next().unwrap()),
-            (false, true) => format!("<{}>", outputs.next().unwrap()),
-            (false, false) => String::new(),
-        };
-
-        // If there are no inputs/outputs, we don't need a divider
-        let ports_divider = if inputs.peek().is_some() || outputs.peek().is_some() {
-            "|"
-        } else {
-            ""
-        };
-
-        let mut ports = inputs
-            .map(|i| format!("<{i}> {i}"))
-            .chain(outputs.map(|o| format!("<{o}> {o}")))
-            .collect::<Vec<_>>()
-            .join("|");
-        if !ports.is_empty() {
-            // Wrap the ports in curly braces to stack them vertically
-            ports = format!("{{{}}}", ports);
-        }
-
-        // This will format the gates as blocks
-        writeln!(
-            f,
-            "{pad}{gate} [label=\"{ports}{ports_divider}{first_labels}{display}\",shape=record{io}]",
-            // Use the gate label if it exists, otherwise use the gate's kind
-            display = gate
-                .meta
-                .label
-                .clone()
-                .unwrap_or_else(|| gate.kind.to_string()),
-            io = if gate.meta.is_input {
-                ",style=filled,color=lightblue"
-            } else if gate.meta.is_output {
-                ",style=filled,color=lightgreen"
-            } else {
-                ""
-            },
-        )?;
-
+        write!(f, "{pad}{}", render_gate(gate))?;
         if gate.meta.is_input {
             local_input_ids.push(gate.to_string());
         }
@@ -135,12 +85,8 @@ pub fn subgraph(
     // Render the subgraphs for sub-modules
     for (mod_idx, (name, module)) in module.sub_modules.iter().enumerate() {
         let mod_prefix = [prefix.clone(), vec![mod_idx]].concat();
-        // Load all the gates from the submodule
         subgraph(module, name, mod_prefix, f, depth + 1)?;
     }
-
-    // Outputs don't need to be rendered because they are metadata for other
-    // nodes to connect to.
 
     for Wire { src, dst } in &module.wires {
         writeln!(
@@ -192,4 +138,62 @@ pub fn subgraph(
     }
 
     Ok(writeln!(f, "{root_pad}}}")?)
+}
+
+fn render_gate(gate: &Gate) -> String {
+    let (inputs, outputs) = gate.kind.properties();
+    let one_input = inputs.len() == 1;
+    let one_output = outputs.len() == 1;
+
+    let mut inputs = inputs.into_iter();
+    let mut outputs = outputs.into_iter();
+
+    let mut label = gate
+        .meta
+        .label
+        .clone()
+        .unwrap_or_else(|| gate.kind.to_string());
+    label = match (one_input, one_output) {
+        (true, true) => format!(
+            "<{},{}>{label}",
+            inputs.next().unwrap(),
+            outputs.next().unwrap()
+        ),
+        (true, false) => format!("<{}>{label}", inputs.next().unwrap()),
+        (false, true) => format!("<{}>{label}", outputs.next().unwrap()),
+        (false, false) => label,
+    };
+
+    let input_ports = inputs
+        .map(|i| format!("<{i}>{i}"))
+        .collect::<Vec<_>>()
+        .join("|");
+    let output_ports = outputs
+        .map(|i| format!("<{i}>{i}"))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    // This will format the gates as blocks
+    format!(
+        "{gate} [label=\"{{{}{label}{}}}\",shape=record{io}]",
+        // If there is only one input or output, the port is on the node name
+        if one_input {
+            "".to_string()
+        } else {
+            format!("{{{input_ports}}}|")
+        },
+        if one_output {
+            "".to_string()
+        } else {
+            format!("|{{{output_ports}}}")
+        },
+        // Use the gate label if it exists, otherwise use the gate's kind
+        io = if gate.meta.is_input {
+            ",style=filled,color=lightblue"
+        } else if gate.meta.is_output {
+            ",style=filled,color=lightgreen"
+        } else {
+            ""
+        },
+    )
 }

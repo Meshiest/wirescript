@@ -10,15 +10,20 @@ module reg64_addr(addr, readAddr, read, writeAddr, write, data) -> nextAddr, res
   res = isRead * reg64(isWrite, data)
 }
 
-module reg64_8(addr0, readAddr, read, writeAddr, write, data) -> nextAddr, res {
+module reg64_4(addr0, readAddr, read, writeAddr, write, data) -> nextAddr, res {
   const addr1, reg0 = reg64_addr(addr0, readAddr, read, writeAddr, write, data);
   const addr2, reg1 = reg64_addr(addr1, readAddr, read, writeAddr, write, data);
   const addr3, reg2 = reg64_addr(addr2, readAddr, read, writeAddr, write, data);
   const addr4, reg3 = reg64_addr(addr3, readAddr, read, writeAddr, write, data);
-  const addr5, reg4 = reg64_addr(addr4, readAddr, read, writeAddr, write, data);
-  const addr6, reg5 = reg64_addr(addr5, readAddr, read, writeAddr, write, data);
-  const addr7, reg6 = reg64_addr(addr6, readAddr, read, writeAddr, write, data);
-  const addr8, reg7 = reg64_addr(addr7, readAddr, read, writeAddr, write, data);
-  nextAddr = addr8;
-  res = ((reg0 | reg1) | (reg2 | reg3)) | ((reg4 | reg5) | (reg6 | reg7));
+  nextAddr = addr4;
+  res = (reg0 | reg1) | (reg2 | reg3);
+}
+
+module reg64_16(addr0, readAddr, read, writeAddr, write, data) -> nextAddr, res {
+  const addr1, reg0 = reg64_4(addr0, readAddr, read, writeAddr, write, data);
+  const addr2, reg1 = reg64_4(addr1, readAddr, read, writeAddr, write, data);
+  const addr3, reg2 = reg64_4(addr2, readAddr, read, writeAddr, write, data);
+  const addr4, reg3 = reg64_4(addr3, readAddr, read, writeAddr, write, data);
+  nextAddr = addr4;
+  res = (reg0 | reg1) | (reg2 | reg3);
 }
