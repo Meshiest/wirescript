@@ -93,6 +93,10 @@ pub enum BrdbSchemaError {
     ExpectedType(String, String),
     #[error("expected array items")]
     ExpectedArrayItems,
+    #[error("invalid flat type")]
+    InvalidFlatType(String),
+    #[error("invalid data size {1}/{2} for flat type {0}")]
+    InvalidFlatDataSize(String, usize, usize),
 }
 
 #[derive(Debug, Error)]

@@ -6,6 +6,7 @@ use rusqlite::params;
 use crate::brdb::{
     Brdb,
     errors::BrdbFsError,
+    revisions::BrdbPendingFs,
     tables::{BrdbBlob, BrdbFile, BrdbFolder},
 };
 
@@ -27,6 +28,28 @@ impl BrdbFs {
 
     pub fn is_file(&self) -> bool {
         matches!(self, BrdbFs::File(_))
+    }
+
+    /// Convert this filesystem to a pending filesystem with unchanged files.
+    pub fn to_pending(&self) -> BrdbPendingFs {
+        match self {
+            BrdbFs::Root(children) => BrdbPendingFs::Root(
+                children
+                    .iter()
+                    .map(|(_, child)| child.to_pending())
+                    .collect(),
+            ),
+            BrdbFs::Folder(folder, children) => BrdbPendingFs::Folder(
+                folder.name.clone(),
+                Some(
+                    children
+                        .iter()
+                        .map(|(_, child)| child.to_pending())
+                        .collect(),
+                ),
+            ),
+            BrdbFs::File(file) => BrdbPendingFs::File(file.name.clone(), None),
+        }
     }
 
     /// Navigate a brdb filesystem to a specific path.
@@ -76,14 +99,38 @@ impl BrdbFs {
         let BrdbFs::File(file) = self else {
             return Err(BrdbFsError::ExpectedFile(self.name().into()));
         };
+        file.read_blob(db)
+    }
 
-        let blob = db
+    pub fn read(&self, db: &Brdb) -> Result<Vec<u8>, BrdbFsError> {
+        let BrdbFs::File(file) = self else {
+            return Err(BrdbFsError::ExpectedFile(self.name().into()));
+        };
+        file.read(db)
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            BrdbFs::Root(_) => "".to_string(),
+            BrdbFs::Folder(folder, _) => folder.name.clone(),
+            BrdbFs::File(file) => file.name.clone(),
+        }
+    }
+}
+
+impl BrdbFile {
+    // TODO: write method, check hash and insert file. if a duplicate file exists, mark it as deleted
+    // TODO: require the Brdb to have a list of pending transactions to commit during a revision
+
+    /// Read the metadata for a file in the brdb filesystem.
+    pub fn read_blob(&self, db: &Brdb) -> Result<BrdbBlob, BrdbFsError> {
+        Ok(db
             .conn
             .query_one(
                 "SELECT blob_id, compression, size_uncompressed, size_compressed, delta_base_id, hash, content
                 FROM blobs
                 WHERE blob_id = ?1;",
-                params![file.content_id],
+                params![self.content_id],
                 |row| {
                     Ok(BrdbBlob {
                         blob_id: row.get(0)?,
@@ -94,13 +141,10 @@ impl BrdbFs {
                         hash: row.get(5)?,
                         content: row.get(6)?,
                     })
-                })?;
-
-        // TODO: decompress
-
-        Ok(blob)
+                })?)
     }
 
+    /// Read (and decompress) the content of a blob in the brdb filesystem.
     pub fn read(&self, db: &Brdb) -> Result<Vec<u8>, BrdbFsError> {
         let blob = self.read_blob(db)?;
 
@@ -145,16 +189,5 @@ impl BrdbFs {
         }
 
         Ok(content)
-    }
-
-    // TODO: write method, check hash and insert file. if a duplicate file exists, mark it as deleted
-    // TODO: require the Brdb to have a list of pending transactions to commit during a revision
-
-    fn name(&self) -> String {
-        match self {
-            BrdbFs::Root(_) => "".to_string(),
-            BrdbFs::Folder(folder, _) => folder.name.clone(),
-            BrdbFs::File(file) => file.name.clone(),
-        }
     }
 }

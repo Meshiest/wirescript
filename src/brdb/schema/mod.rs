@@ -9,11 +9,16 @@ use indexmap::{IndexMap, IndexSet};
 use rmp::{Marker, decode::RmpRead};
 
 mod intern;
+pub mod read;
 mod value;
+pub mod write;
 pub use intern::*;
 pub use value::*;
 
-use crate::brdb::errors::BrdbSchemaError;
+use crate::brdb::{
+    errors::BrdbSchemaError,
+    schema::read::{read_owned_str, read_str_from_len},
+};
 
 #[derive(Default)]
 pub struct BrdbSchemaGlobalData {
@@ -138,7 +143,7 @@ impl BrdbSchema {
             return Err(BrdbSchemaError::InvalidHeader(header));
         }
 
-        let intern = BrdbIntern::default();
+        let mut intern = BrdbIntern::default();
 
         // Read enums
         let num_enums = rmp::decode::read_map_len(&mut buf)? as usize;
@@ -201,9 +206,9 @@ impl BrdbSchema {
                         // Ensure the second element is nil
                         rmp::decode::read_nil(&mut buf)
                             .map_err(|e| BrdbSchemaError::RmpValueReadError(e))?;
-
                         BrdbSchemaStructProperty::FlatArray(intern.get_or_insert(array_type))
                     }
+
                     Marker::FixMap(len) if len != 1 => {
                         return Err(BrdbSchemaError::InvalidSchema(
                             "FixMap with length != 1 is not supported".to_string(),
@@ -291,5 +296,15 @@ impl BrdbSchema {
         }
 
         Ok(())
+    }
+}
+
+pub trait ReadBrdbSchema {
+    fn read_brdb_schema(&mut self) -> Result<Arc<BrdbSchema>, BrdbSchemaError>;
+}
+
+impl<R: Read> ReadBrdbSchema for R {
+    fn read_brdb_schema(&mut self) -> Result<Arc<BrdbSchema>, BrdbSchemaError> {
+        BrdbSchema::read(self).map(Arc::new)
     }
 }

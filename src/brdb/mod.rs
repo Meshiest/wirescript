@@ -10,12 +10,13 @@ use rusqlite::{Connection, params};
 use crate::brdb::{
     errors::{BrdbError, BrdbSchemaError},
     fs::BrdbFs,
-    schema::BrdbSchemaGlobalData,
+    schema::{BrdbSchemaGlobalData, ReadBrdbSchema},
     tables::{BrdbFile, BrdbFolder},
 };
 
 pub mod errors;
 pub mod fs;
+pub mod revisions;
 pub mod schema;
 pub mod tables;
 
@@ -51,12 +52,11 @@ impl Brdb {
 
         // Parse the GlobalData schem
         let schema_data = self.fs.cd("World/0/GlobalData.schema")?.read(self)?;
-        let schema = Arc::new(schema::BrdbSchema::read(schema_data.as_slice())?);
+        let schema = schema_data.as_slice().read_brdb_schema()?;
 
         // Parse the GlobalData struct of arrays
         let mps_data = self.fs.cd("World/0/GlobalData.mps")?.read(self)?;
-        let mps =
-            schema::BrdbValue::read_type(&schema, "BRSavedGlobalDataSoA", &mut &mps_data[..])?;
+        let mps = schema::read::read_type(&schema, "BRSavedGlobalDataSoA", &mut &mps_data[..])?;
 
         let mps_struct = mps.as_struct()?;
 
@@ -173,76 +173,80 @@ impl Brdb {
     }
 }
 
-#[test]
-fn test() -> Result<(), BrdbError> {
-    let mut db = Brdb::open("./Parkour.brdb")?;
-    let fs = db.tree(None, 0)?;
-    // let wires_schema = fs.cd("World/0/Bricks/WiresShared.schema")?.read(&db)?;
-    // println!(
-    //     "wires: {}",
-    //     schema::BrdbSchema::read(wires_schema.as_slice())?
-    // );
-    // let components_schema = fs.cd("World/0/Bricks/ComponentsShared.schema")?.read(&db)?;
-    // println!(
-    //     "components: {}",
-    //     schema::BrdbSchema::read(components_schema.as_slice())?
-    // );
-    // let chunks_schema = fs.cd("World/0/Bricks/ChunksShared.schema")?.read(&db)?;
-    // println!(
-    //     "chunks: {}",
-    //     schema::BrdbSchema::read(chunks_schema.as_slice())?
-    // );
-    // let chunks_index_schema = fs.cd("World/0/Bricks/ChunkIndexShared.schema")?.read(&db)?;
-    // println!(
-    //     "chunk index: {}",
-    //     schema::BrdbSchema::read(chunks_index_schema.as_slice())?
-    // );
-    let global_data_schema = fs.cd("World/0/GlobalData.schema")?.read(&db)?;
-    println!(
-        "global data: {}",
-        schema::BrdbSchema::read(global_data_schema.as_slice())?
-    );
+#[cfg(test)]
+mod test {
+    use crate::brdb::{
+        Brdb,
+        errors::BrdbError,
+        schema::{self, ReadBrdbSchema},
+    };
 
-    // Troubleshooting reading data
-    // let mps_data = fs.cd("World/0/GlobalData.mps")?.read(&db)?;
-    // let mut cursor = std::io::Cursor::new(mps_data);
-    // println!("len {:?}", rmp::decode::read_array_len(&mut cursor));
-    // println!("str {:?}", read_owned_str(&mut cursor));
-    // let len = rmp::decode::read_array_len(&mut cursor).unwrap();
-    // println!("len2 {len}");
-    // for _ in 0..len {
-    //     println!("str {:?}", read_owned_str(&mut cursor));
-    // }
-    // println!("marker {:?}", rmp::decode::read_marker(&mut cursor));
+    #[test]
+    fn test() -> Result<(), BrdbError> {
+        let mut db = Brdb::open("./Parkour.brdb")?;
+        // let wires_schema = fs.cd("World/0/Bricks/WiresShared.schema")?.read(&db)?;
+        // println!(
+        //     "wires: {}",
+        //     schema::BrdbSchema::read(wires_schema.as_slice())?
+        // );
+        // let components_schema = fs.cd("World/0/Bricks/ComponentsShared.schema")?.read(&db)?;
+        // println!(
+        //     "components: {}",
+        //     schema::BrdbSchema::read(components_schema.as_slice())?
+        // );
+        // let chunks_schema = fs.cd("World/0/Bricks/ChunksShared.schema")?.read(&db)?;
+        // println!(
+        //     "chunks: {}",
+        //     schema::BrdbSchema::read(chunks_schema.as_slice())?
+        // );
+        // let chunks_index_schema = fs.cd("World/0/Bricks/ChunkIndexShared.schema")?.read(&db)?;
+        // println!(
+        //     "chunk index: {}",
+        //     schema::BrdbSchema::read(chunks_index_schema.as_slice())?
+        // );
 
-    db.populate()?;
-    println!(
-        "{}",
-        db.global_data
-            .external_asset_references
-            .iter()
-            .map(|(ty, name)| format!("{ty} {name}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    println!(
-        "entity_type_names {}",
-        db.global_data
-            .entity_type_names
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    println!(
-        "wire port names {}",
-        db.global_data
-            .component_wire_port_names
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+        // Troubleshooting reading data
+        // let mps_data = fs.cd("World/0/GlobalData.mps")?.read(&db)?;
+        // let mut cursor = std::io::Cursor::new(mps_data);
+        // println!("len {:?}", rmp::decode::read_array_len(&mut cursor));
+        // println!("str {:?}", read_owned_str(&mut cursor));
+        // let len = rmp::decode::read_array_len(&mut cursor).unwrap();
+        // println!("len2 {len}");
+        // for _ in 0..len {
+        //     println!("str {:?}", read_owned_str(&mut cursor));
+        // }
+        // println!("marker {:?}", rmp::decode::read_marker(&mut cursor));
 
-    Ok(())
+        db.populate()?;
+
+        // let schema = db
+        //     .fs
+        //     .cd("World/0/Bricks/WiresShared.schema")?
+        //     .read(&db)?
+        //     .as_slice()
+        //     .read_brdb_schema()?;
+        // println!("schema: {schema}");
+        // let wires_data = db
+        //     .fs
+        //     .cd("World/0/Bricks/Grids/1/Wires/-1_-1_0.mps")?
+        //     .read(&db)?;
+        // let wires = schema::read::read_type(&schema, "BRSavedWireChunkSoA", &mut &wires_data[..])?;
+        // println!("wires: {}", wires.display(&schema));
+
+        let schema = db
+            .fs
+            .cd("World/0/Bricks/ChunksShared.schema")?
+            .read(&db)?
+            .as_slice()
+            .read_brdb_schema()?;
+        println!("schema: {schema}");
+        let data = db
+            .fs
+            .cd("World/0/Bricks/Grids/1/Chunks/-1_-1_0.mps")?
+            .read(&db)?;
+        let bricks = schema::read::read_type(&schema, "BRSavedBrickChunkSoA", &mut &data[..])?;
+        println!("bricks: {}", bricks.display(&schema));
+
+        Ok(())
+    }
 }
