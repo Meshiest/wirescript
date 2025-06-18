@@ -36,7 +36,6 @@ pub enum BrdbFsError {
     NotFound(PathBuf),
     #[error("file or directory at path is not a directory: {0}")]
     NotADirectory(PathBuf),
-
     #[error("an absolute path is not allowed outside of the brdb root")]
     AbsolutePathNotAllowed,
 }
@@ -82,8 +81,18 @@ pub enum BrdbSchemaError {
     StringNotInterned(usize),
     #[error("unknown type: {0}")]
     UnknownType(String),
+    #[error("unknown schema type: {0}")]
+    UnknownSchemaType(String),
+    #[error("unknown struct propery type: {0}")]
+    UnknownStructPropertyType(String),
+    #[error("unknown {0} asset: {1}")]
+    UnknownAsset(String, usize),
     #[error("enum {enum_name} does not have a value at index {index}")]
     EnumIndexOutOfBounds { enum_name: String, index: u64 },
+    #[error("expected type {0}, received {1}")]
+    ExpectedType(String, String),
+    #[error("expected array items")]
+    ExpectedArrayItems,
 }
 
 #[derive(Debug, Error)]

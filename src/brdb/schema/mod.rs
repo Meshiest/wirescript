@@ -1,30 +1,32 @@
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     fmt::Display,
     io::{Read, Write},
+    sync::Arc,
 };
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use rmp::{Marker, decode::RmpRead};
 
 mod intern;
 mod value;
+pub use intern::*;
+pub use value::*;
 
-use crate::brdb::{
-    errors::BrdbSchemaError,
-    schema::{
-        intern::{BrdbIntern, BrdbInterned},
-        value::{read_owned_str, read_str_from_len},
-    },
-};
+use crate::brdb::errors::BrdbSchemaError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BrdbAssetType {
-    Class,
-    Object,
+#[derive(Default)]
+pub struct BrdbSchemaGlobalData {
+    pub entity_type_names: IndexSet<String>,
+    pub basic_brick_asset_names: IndexSet<String>,
+    pub procedural_brick_asset_names: IndexSet<String>,
+    pub material_asset_names: IndexSet<String>,
+    pub component_type_names: IndexSet<String>,
+    pub component_data_struct_names: IndexSet<String>,
+    pub component_wire_port_names: IndexSet<String>,
+    pub external_asset_references: IndexSet<(String, String)>,
+    pub external_asset_types: HashSet<String>,
 }
-
-pub type SchemaGlobalData = HashMap<(BrdbAssetType, String), u32>;
 
 pub enum BrdbSchemaStructProperty {
     Type(BrdbInterned),
@@ -73,7 +75,8 @@ impl BrdbSchemaStructProperty {
 }
 
 pub struct BrdbSchema {
-    intern: BrdbIntern,
+    pub intern: BrdbIntern,
+    global_data: Arc<BrdbSchemaGlobalData>,
     pub enums: IndexMap<BrdbInterned, BrdbSchemaEnum>,
     pub structs: IndexMap<BrdbInterned, BrdbSchemaStruct>,
 }
@@ -117,8 +120,16 @@ impl BrdbSchema {
         self.structs.get(&self.intern.get(name)?)
     }
 
+    pub fn get_struct_interned(&self, id: BrdbInterned) -> Option<&BrdbSchemaStruct> {
+        self.structs.get(&id)
+    }
+
     pub fn get_enum(&self, name: &str) -> Option<&BrdbSchemaEnum> {
         self.enums.get(&self.intern.get(name)?)
+    }
+
+    pub fn get_enum_interned(&self, id: BrdbInterned) -> Option<&BrdbSchemaEnum> {
+        self.enums.get(&id)
     }
 
     pub fn read(mut buf: impl Read) -> Result<BrdbSchema, BrdbSchemaError> {
@@ -216,10 +227,20 @@ impl BrdbSchema {
         }
 
         Ok(BrdbSchema {
+            global_data: Default::default(),
             intern,
             enums,
             structs,
         })
+    }
+
+    pub fn with_global_data(mut self, global_data: Arc<BrdbSchemaGlobalData>) -> Self {
+        self.global_data = global_data;
+        self
+    }
+
+    pub fn set_global_data(&mut self, global_data: Arc<BrdbSchemaGlobalData>) {
+        self.global_data = global_data;
     }
 
     pub fn write(&self, mut buf: impl Write) -> Result<(), BrdbSchemaError> {

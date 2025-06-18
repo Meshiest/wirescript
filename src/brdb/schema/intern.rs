@@ -12,12 +12,6 @@ pub struct BrdbIntern {
 }
 
 impl BrdbIntern {
-    pub fn new() -> Self {
-        Self {
-            inner: RwLock::new(IndexSet::new()),
-        }
-    }
-
     pub fn get_or_insert(&self, value: impl AsRef<str> + Display) -> BrdbInterned {
         if let Some(index) = self.inner.read().get_index_of(value.as_ref()) {
             return BrdbInterned(index);
