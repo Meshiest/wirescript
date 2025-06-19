@@ -116,6 +116,32 @@ impl BrdbFs {
             BrdbFs::File(file) => file.name.clone(),
         }
     }
+
+    pub fn for_each(&self, func: &mut impl FnMut(&BrdbFs)) {
+        func(self);
+        match self {
+            // Invoke for_each for each of the entries in each folder
+            BrdbFs::Root(dir) | BrdbFs::Folder(_, dir) => {
+                for fs in dir.values() {
+                    fs.for_each(func)
+                }
+            }
+            BrdbFs::File(_) => {}
+        }
+    }
+
+    pub fn filter_map_file<T>(&self, mut func: impl FnMut(&BrdbFile) -> Option<T>) -> Vec<T> {
+        let mut res = vec![];
+        self.for_each(&mut |fs| match fs {
+            BrdbFs::File(file) => {
+                if let Some(r) = func(file) {
+                    res.push(r);
+                }
+            }
+            _ => {}
+        });
+        res
+    }
 }
 
 impl BrdbFile {
