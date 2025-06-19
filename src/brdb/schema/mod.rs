@@ -79,6 +79,7 @@ impl BrdbSchemaStructProperty {
     }
 }
 
+#[derive(Default)]
 pub struct BrdbSchema {
     pub intern: BrdbIntern,
     global_data: Arc<BrdbSchemaGlobalData>,
@@ -120,6 +121,13 @@ impl Display for BrdbSchema {
     }
 }
 
+pub enum BrdbStructPropRaw {
+    Type(String),
+    Array(String),
+    FlatArray(String),
+    Map(String, String),
+}
+
 impl BrdbSchema {
     pub fn get_struct(&self, name: &str) -> Option<&BrdbSchemaStruct> {
         self.structs.get(&self.intern.get(name)?)
@@ -137,57 +145,60 @@ impl BrdbSchema {
         self.enums.get(&id)
     }
 
-    pub fn read(mut buf: impl Read) -> Result<BrdbSchema, BrdbSchemaError> {
+    /// Read a schema from a msgpack .schema file into a human readable format
+    pub fn read_to_meta(
+        mut buf: impl Read,
+    ) -> Result<
+        (
+            Vec<(String, Vec<(String, i32)>)>,
+            Vec<(String, Vec<(String, BrdbStructPropRaw)>)>,
+        ),
+        BrdbSchemaError,
+    > {
         let header = rmp::decode::read_array_len(&mut buf)?;
         if header != 2 {
             return Err(BrdbSchemaError::InvalidHeader(header));
         }
 
-        let mut intern = BrdbIntern::default();
-
         // Read enums
+        let mut enums = vec![];
         let num_enums = rmp::decode::read_map_len(&mut buf)? as usize;
-        let mut enums = IndexMap::with_capacity(num_enums);
         for _ in 0..num_enums {
             let enum_name = read_owned_str(&mut buf)?;
             let value_count = rmp::decode::read_map_len(&mut buf)? as usize;
-            let mut values = BrdbSchemaEnum::with_capacity(value_count as usize);
+            let mut values = Vec::with_capacity(value_count as usize);
             for _ in 0..value_count {
                 let key = read_owned_str(&mut buf)?;
                 let value = rmp::decode::read_i32(&mut buf)?;
-                values.insert(intern.get_or_insert(key), value);
+                values.push((key, value));
             }
-            enums.insert(intern.get_or_insert(enum_name), values);
+            enums.push((enum_name, values));
         }
 
         // Read structs
+        let mut structs = vec![];
         let num_structs = rmp::decode::read_map_len(&mut buf)? as usize;
-        let mut structs = IndexMap::with_capacity(num_structs);
         for _ in 0..num_structs {
             let struct_name = read_owned_str(&mut buf)?;
 
             let num_props = rmp::decode::read_map_len(&mut buf)? as usize;
-            let mut properties = BrdbSchemaStruct::with_capacity(num_props);
+            let mut properties = Vec::with_capacity(num_props);
             for _ in 0..num_props {
-                let prop_name = intern.get_or_insert(read_owned_str(&mut buf)?);
+                let prop_name = read_owned_str(&mut buf)?;
                 let prop_type_marker = rmp::decode::read_marker(&mut buf)
                     .map_err(|e| BrdbSchemaError::RmpMarkerReadError(e.0))?;
                 let property = match prop_type_marker {
                     // Basic types
-                    Marker::FixStr(size) => BrdbSchemaStructProperty::Type(
-                        intern.get_or_insert(read_str_from_len(&mut buf, size as usize)?),
-                    ),
+                    Marker::FixStr(size) => {
+                        BrdbStructPropRaw::Type(read_str_from_len(&mut buf, size as usize)?)
+                    }
                     Marker::Str8 => {
                         let len = buf.read_data_u8()? as usize;
-                        BrdbSchemaStructProperty::Type(
-                            intern.get_or_insert(read_str_from_len(&mut buf, len)?),
-                        )
+                        BrdbStructPropRaw::Type(read_str_from_len(&mut buf, len)?)
                     }
                     Marker::Str16 => {
                         let len = buf.read_data_u16()? as usize;
-                        BrdbSchemaStructProperty::Type(
-                            intern.get_or_insert(read_str_from_len(&mut buf, len)?),
-                        )
+                        BrdbStructPropRaw::Type(read_str_from_len(&mut buf, len)?)
                     }
 
                     Marker::FixArray(len) if len == 0 => {
@@ -198,7 +209,7 @@ impl BrdbSchema {
                     // Array type
                     Marker::FixArray(len) if len == 1 => {
                         let array_type = read_owned_str(&mut buf)?;
-                        BrdbSchemaStructProperty::Array(intern.get_or_insert(array_type))
+                        BrdbStructPropRaw::Array(array_type)
                     }
                     // Flat array has a specific format: [type, nil]
                     Marker::FixArray(len) if len == 2 => {
@@ -206,7 +217,7 @@ impl BrdbSchema {
                         // Ensure the second element is nil
                         rmp::decode::read_nil(&mut buf)
                             .map_err(|e| BrdbSchemaError::RmpValueReadError(e))?;
-                        BrdbSchemaStructProperty::FlatArray(intern.get_or_insert(array_type))
+                        BrdbStructPropRaw::FlatArray(array_type)
                     }
 
                     Marker::FixMap(len) if len != 1 => {
@@ -215,9 +226,9 @@ impl BrdbSchema {
                         ));
                     }
                     Marker::FixMap(len) if len == 1 => {
-                        let key_type = intern.get_or_insert(read_owned_str(&mut buf)?);
-                        let value_type = intern.get_or_insert(read_owned_str(&mut buf)?);
-                        BrdbSchemaStructProperty::Map(key_type, value_type)
+                        let key_type = read_owned_str(&mut buf)?;
+                        let value_type = read_owned_str(&mut buf)?;
+                        BrdbStructPropRaw::Map(key_type, value_type)
                     }
                     marker => {
                         return Err(BrdbSchemaError::InvalidSchema(format!(
@@ -226,28 +237,87 @@ impl BrdbSchema {
                     }
                 };
 
-                properties.insert(prop_name, property);
+                properties.push((prop_name, property));
             }
-            structs.insert(intern.get_or_insert(struct_name), properties);
+            structs.push((struct_name, properties));
         }
 
-        Ok(BrdbSchema {
-            global_data: Default::default(),
-            intern,
-            enums,
-            structs,
-        })
+        Ok((enums, structs))
     }
 
+    /// Bulk insert enums and structs from metadata into this schema
+    pub fn add_meta(
+        &mut self,
+        enums: impl IntoIterator<Item = (String, Vec<(String, i32)>)>,
+        structs: impl IntoIterator<Item = (String, Vec<(String, BrdbStructPropRaw)>)>,
+    ) {
+        for (name, values) in enums {
+            self.add_enum(name, values);
+        }
+        for (name, props) in structs {
+            self.add_struct(name, props);
+        }
+    }
+
+    /// Read from a msgpack .schema buffer into a populated `BrdbSchema` struct
+    pub fn read(buf: impl Read) -> Result<BrdbSchema, BrdbSchemaError> {
+        let (enums, structs) = Self::read_to_meta(buf)?;
+        let mut schema = BrdbSchema::default();
+        schema.add_meta(enums, structs);
+        Ok(schema)
+    }
+
+    /// Add a single enum to the schema
+    pub fn add_enum(&mut self, name: String, values: Vec<(String, i32)>) {
+        let name = self.intern.get_or_insert(name);
+        let values = values
+            .into_iter()
+            .map(|(k, v)| (self.intern.get_or_insert(k), v))
+            .collect::<BrdbSchemaEnum>();
+        self.enums.insert(name, values);
+    }
+
+    /// Add a single struct to the schema
+    pub fn add_struct(&mut self, name: String, props: Vec<(String, BrdbStructPropRaw)>) {
+        let name = self.intern.get_or_insert(name);
+        let props = props
+            .into_iter()
+            .map(|(prop, prop_ty)| {
+                (
+                    self.intern.get_or_insert(prop),
+                    match prop_ty {
+                        BrdbStructPropRaw::Type(ty) => {
+                            BrdbSchemaStructProperty::Type(self.intern.get_or_insert(ty))
+                        }
+                        BrdbStructPropRaw::Array(ty) => {
+                            BrdbSchemaStructProperty::Array(self.intern.get_or_insert(ty))
+                        }
+                        BrdbStructPropRaw::FlatArray(ty) => {
+                            BrdbSchemaStructProperty::FlatArray(self.intern.get_or_insert(ty))
+                        }
+                        BrdbStructPropRaw::Map(k_ty, v_ty) => BrdbSchemaStructProperty::Map(
+                            self.intern.get_or_insert(k_ty),
+                            self.intern.get_or_insert(v_ty),
+                        ),
+                    },
+                )
+            })
+            .collect::<BrdbSchemaStruct>();
+        self.structs.insert(name, props);
+    }
+
+    /// Attach global data to the schema
     pub fn with_global_data(mut self, global_data: Arc<BrdbSchemaGlobalData>) -> Self {
         self.global_data = global_data;
         self
     }
 
+    /// Attach global data to the schema
     pub fn set_global_data(&mut self, global_data: Arc<BrdbSchemaGlobalData>) {
         self.global_data = global_data;
     }
 
+    /// Serialize the schema as msgpack
     pub fn write(&self, mut buf: impl Write) -> Result<(), BrdbSchemaError> {
         rmp::encode::write_array_len(&mut buf, 2)?;
 
