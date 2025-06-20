@@ -277,3 +277,82 @@ impl AsBrdbValue for BrdbValue {
         }
     }
 }
+
+macro_rules! as_brdb_int(
+    ($ty:ty, $($rest:ty),*) => {
+        as_brdb_int!($ty);
+        as_brdb_int!($($rest),*);
+    };
+    ($ty:ty) => {
+        impl AsBrdbValue for $ty {
+            fn as_brdb_bool(&self) -> Result<bool, BrdbSchemaError> {
+                Ok(*self != 0)
+            }
+            fn as_brdb_u8(&self) -> Result<u8, BrdbSchemaError> {
+                Ok(*self as u8)
+            }
+            fn as_brdb_u16(&self) -> Result<u16, BrdbSchemaError> {
+                Ok(*self as u16)
+            }
+            fn as_brdb_u32(&self) -> Result<u32, BrdbSchemaError> {
+                Ok(*self as u32)
+            }
+            fn as_brdb_u64(&self) -> Result<u64, BrdbSchemaError> {
+                Ok(*self as u64)
+            }
+            fn as_brdb_i8(&self) -> Result<i8, BrdbSchemaError> {
+                Ok(*self as i8)
+            }
+            fn as_brdb_i16(&self) -> Result<i16, BrdbSchemaError> {
+                Ok(*self as i16)
+            }
+            fn as_brdb_i32(&self) -> Result<i32, BrdbSchemaError> {
+                Ok(*self as i32)
+            }
+            fn as_brdb_i64(&self) -> Result<i64, BrdbSchemaError> {
+                Ok(*self as i64)
+            }
+            fn as_brdb_f32(&self) -> Result<f32, BrdbSchemaError> {
+                Ok(*self as f32)
+            }
+            fn as_brdb_f64(&self) -> Result<f64, BrdbSchemaError> {
+                Ok(*self as f64)
+            }
+        }
+    }
+);
+as_brdb_int!(u8, u16, u32, u64, i8, i16, i32, i64);
+
+macro_rules! as_brdb_float {
+    ($ty:ty, $($rest:ty),*) => {
+        as_brdb_float!($ty);
+        as_brdb_float!($($rest),*);
+    };
+    ($ty:ty) => {
+        impl AsBrdbValue for $ty {
+            fn as_brdb_f32(&self) -> Result<f32, BrdbSchemaError> {
+                Ok(*self as f32)
+            }
+            fn as_brdb_f64(&self) -> Result<f64, BrdbSchemaError> {
+                Ok(*self as f64)
+            }
+        }
+    };
+}
+as_brdb_float!(f32, f64);
+
+impl AsBrdbValue for bool {
+    fn as_brdb_bool(&self) -> Result<bool, BrdbSchemaError> {
+        Ok(*self)
+    }
+}
+impl AsBrdbValue for String {
+    fn as_brdb_str(&self) -> Result<&str, BrdbSchemaError> {
+        Ok(self)
+    }
+}
+impl AsBrdbValue for &str {
+    fn as_brdb_str(&self) -> Result<&str, BrdbSchemaError> {
+        Ok(self)
+    }
+}
