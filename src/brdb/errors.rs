@@ -97,6 +97,8 @@ pub enum BrdbSchemaError {
     InvalidFlatType(String),
     #[error("invalid data size {1}/{2} for flat type {0}")]
     InvalidFlatDataSize(String, usize, usize),
+    #[error("unsupported conversion from {0} to {1}")]
+    UnimplementedCast(String, &'static str),
 }
 
 #[derive(Debug, Error)]

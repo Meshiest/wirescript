@@ -14,6 +14,7 @@ mod value;
 pub mod write;
 pub use intern::*;
 pub use value::*;
+pub mod as_brdb;
 
 use crate::brdb::{
     errors::BrdbSchemaError,
