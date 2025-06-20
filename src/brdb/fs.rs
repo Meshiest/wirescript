@@ -1,4 +1,7 @@
-use std::{io::Read, path::Path};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use indexmap::IndexMap;
 use rusqlite::params;
@@ -61,8 +64,10 @@ impl BrdbFs {
 
         // Recursively resolve the path
         match self {
-            BrdbFs::Root(_) if path.components().count() == 0 => Ok(self.clone()),
-            BrdbFs::Root(children) => {
+            BrdbFs::Root(_) | BrdbFs::Folder(_, _) if path.components().count() == 0 => {
+                Ok(self.clone())
+            }
+            BrdbFs::Root(children) | BrdbFs::Folder(_, children) => {
                 // Unwrap safety - components.count() > 0
                 let first = path.components().next().unwrap();
                 if let Some(child) = children.get(first.as_os_str().to_str().unwrap()) {
@@ -70,20 +75,9 @@ impl BrdbFs {
                         .cd(path.strip_prefix(first).unwrap())
                         .map_err(|e| e.prepend(self.name()))
                 } else {
-                    Err(BrdbFsError::NotFound(self.name().into()))
-                }
-            }
-            BrdbFs::Folder(_, children) => {
-                if path.components().count() == 0 {
-                    return Ok(self.clone());
-                }
-                let first = path.components().next().unwrap();
-                if let Some(child) = children.get(first.as_os_str().to_str().unwrap()) {
-                    child
-                        .cd(path.strip_prefix(first).unwrap())
-                        .map_err(|e| e.prepend(self.name()))
-                } else {
-                    Err(BrdbFsError::NotFound(self.name().into()))
+                    Err(BrdbFsError::NotFound(
+                        PathBuf::from(self.name()).join(first.as_os_str()),
+                    ))
                 }
             }
             // Cannot cd in a file

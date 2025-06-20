@@ -19,6 +19,7 @@ pub mod fs;
 pub mod revisions;
 pub mod schema;
 pub mod tables;
+pub mod wrapper;
 
 pub struct Brdb {
     conn: Connection,
@@ -175,7 +176,11 @@ impl Brdb {
 
 #[cfg(test)]
 mod test {
-    use crate::brdb::{Brdb, errors::BrdbError, schema::ReadBrdbSchema};
+    use crate::brdb::{
+        Brdb,
+        errors::BrdbError,
+        schema::{self, ReadBrdbSchema},
+    };
 
     #[test]
     fn test() -> Result<(), BrdbError> {
@@ -196,29 +201,40 @@ mod test {
         db.populate()?;
 
         // TODO: store the human readable format somewhere...
-        let schemas = db.fs.filter_map_file(|f| {
-            Some((
-                f.name.clone(),
-                f.read(&db).ok()?.as_slice().read_brdb_schema().ok()?,
-            ))
-        });
-        for (name, schema) in schemas {
-            println!("schema {name}: {schema}");
-        }
+        // let schemas = db.fs.filter_map_file(|f| {
+        //     Some((
+        //         f.name.clone(),
+        //         f.read(&db).ok()?.as_slice().read_brdb_schema().ok()?,
+        //     ))
+        // });
+        // for (name, schema) in schemas {
+        //     println!("schema {name}: {schema}");
+        // }
 
-        // let schema = db
-        //     .fs
-        //     .cd("World/0/Bricks/ChunksShared.schema")?
-        //     .read(&db)?
-        //     .as_slice()
-        //     .read_brdb_schema()?;
-        // println!("schema: {schema}");
-        // let data = db
-        //     .fs
-        //     .cd("World/0/Bricks/Grids/1/Chunks/-1_-1_0.mps")?
-        //     .read(&db)?;
-        // let bricks = schema::read::read_type(&schema, "BRSavedBrickChunkSoA", &mut &data[..])?;
-        // println!("bricks: {}", bricks.display(&schema));
+        let schema = db
+            .fs
+            .cd("World/0/GlobalData.schema")?
+            .read(&db)?
+            .as_slice()
+            .read_brdb_schema()?;
+        println!("schema: {schema}");
+        let data = db.fs.cd("World/0/GlobalData.mps")?.read(&db)?;
+        let parsed = schema::read::read_type(&schema, "BRSavedGlobalDataSoA", &mut &data[..])?;
+        println!("global data: {}", parsed.display(&schema));
+
+        let schema = db
+            .fs
+            .cd("World/0/Bricks/ChunksShared.schema")?
+            .read(&db)?
+            .as_slice()
+            .read_brdb_schema()?;
+        println!("schema: {schema}");
+        let data = db
+            .fs
+            .cd("World/0/Bricks/Grids/1/Chunks/-1_-1_0.mps")?
+            .read(&db)?;
+        let parsed = schema::read::read_type(&schema, "BRSavedBrickChunkSoA", &mut &data[..])?;
+        println!("bricks: {}", parsed.display(&schema));
 
         Ok(())
     }
