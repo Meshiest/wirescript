@@ -2,6 +2,8 @@ use std::fmt::Display;
 
 use indexmap::IndexSet;
 
+use crate::brdb::{errors::BrdbSchemaError, schema::BrdbSchema};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BrdbInterned(pub(crate) usize);
 
@@ -30,5 +32,27 @@ impl BrdbIntern {
 
     pub fn get(&self, name: &str) -> Option<BrdbInterned> {
         self.inner.get_index_of(name).map(BrdbInterned)
+    }
+}
+
+impl BrdbInterned {
+    pub fn get(self, schema: &BrdbSchema) -> Option<&str> {
+        schema.intern.lookup_ref(self)
+    }
+
+    pub fn get_or<'b, 'a: 'b>(self, schema: &'a BrdbSchema, or: &'b str) -> &'b str {
+        schema.intern.lookup_ref(self).unwrap_or(or)
+    }
+
+    pub fn get_or_else(self, schema: &BrdbSchema, or: impl FnMut() -> String) -> String {
+        schema.intern.lookup(self).unwrap_or_else(or)
+    }
+
+    pub fn get_ok(
+        self,
+        schema: &BrdbSchema,
+        or: impl FnMut() -> BrdbSchemaError,
+    ) -> Result<&str, BrdbSchemaError> {
+        schema.intern.lookup_ref(self).ok_or_else(or)
     }
 }

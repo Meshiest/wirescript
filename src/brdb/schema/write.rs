@@ -114,14 +114,10 @@ fn write_struct(
     for (k, prop_schema) in ty {
         let prop_val = value.properties.get(k).ok_or_else(|| {
             BrdbSchemaError::MissingStructField(
-                schema
-                    .intern
-                    .lookup(value.name)
-                    .unwrap_or_else(|| "unknown struct".to_owned()),
-                schema
-                    .intern
-                    .lookup(*k)
-                    .unwrap_or_else(|| "unknown property".to_owned()),
+                value
+                    .name
+                    .get_or_else(schema, || "unknown struct".to_owned()),
+                k.get_or_else(schema, || "unknown property".to_owned()),
             )
         })?;
         write_struct_property(schema, buf, prop_schema, prop_val)?;
@@ -136,10 +132,9 @@ fn write_struct_property(
     value: &BrdbValue,
 ) -> Result<(), BrdbSchemaError> {
     let lookup = |ty: BrdbInterned| {
-        schema
-            .intern
-            .lookup_ref(ty)
-            .ok_or(BrdbSchemaError::UnknownStructPropertyType(ty.0.to_string()))
+        ty.get_ok(schema, || {
+            BrdbSchemaError::UnknownStructPropertyType(ty.0.to_string())
+        })
     };
 
     match (prop_schema, value) {
@@ -493,9 +488,9 @@ fn write_brdb_flat(
                         "flat {other} struct property"
                     )));
                 };
-                let prop_ty = schema.intern.lookup_ref(*prop_ty).ok_or(
-                    BrdbSchemaError::UnknownStructPropertyType(prop_ty.0.to_string()),
-                )?;
+                let prop_ty = prop_ty.get_ok(schema, || {
+                    BrdbSchemaError::UnknownStructPropertyType(prop_ty.0.to_string())
+                })?;
                 let prop_val = value.as_brdb_struct_prop_value(schema, *prop_id)?;
                 write_brdb_flat(schema, buf, prop_ty, &*prop_val)?;
             }

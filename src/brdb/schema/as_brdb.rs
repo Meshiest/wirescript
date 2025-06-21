@@ -233,7 +233,7 @@ impl AsBrdbValue for BrdbValue {
         };
         match s.properties.get(&prop_name) {
             Some(BrdbValue::Array(vec)) | Some(BrdbValue::FlatArray(vec)) => {
-                Ok(vec.iter().map(|v| v as &dyn AsBrdbValue).collect())
+                Ok(vec.lazy_vec_cast())
             }
             _ => Err(BrdbSchemaError::MissingStructField(
                 schema
@@ -354,5 +354,15 @@ impl AsBrdbValue for String {
 impl AsBrdbValue for &str {
     fn as_brdb_str(&self) -> Result<&str, BrdbSchemaError> {
         Ok(self)
+    }
+}
+
+pub trait LazyBrdbVec {
+    fn lazy_vec_cast(&self) -> Vec<&dyn AsBrdbValue>;
+}
+
+impl<T: AsBrdbValue> LazyBrdbVec for Vec<T> {
+    fn lazy_vec_cast(&self) -> Vec<&dyn AsBrdbValue> {
+        self.iter().map(|v| v as &dyn AsBrdbValue).collect()
     }
 }

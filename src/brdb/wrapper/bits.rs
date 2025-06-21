@@ -1,3 +1,5 @@
+use crate::brdb::schema::as_brdb::AsBrdbValue;
+
 #[derive(Clone)]
 pub struct BitFlags {
     vec: Vec<u8>,
@@ -26,5 +28,15 @@ impl BitFlags {
         } else {
             *byte &= !mask;
         }
+    }
+}
+
+impl AsBrdbValue for BitFlags {
+    fn as_brdb_struct_prop_array(
+        &self,
+        _schema: &crate::brdb::schema::BrdbSchema,
+        _prop_name: crate::brdb::schema::BrdbInterned,
+    ) -> Result<Vec<&dyn AsBrdbValue>, crate::brdb::errors::BrdbSchemaError> {
+        Ok(self.vec.iter().map(|b| b as &dyn AsBrdbValue).collect())
     }
 }
