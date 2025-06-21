@@ -1,5 +1,5 @@
 use crate::brdb::{
-    schema::as_brdb::{AsBrdbValue, LazyBrdbVec},
+    schema::as_brdb::{AsBrdbValue, BrdbArrayIter, AsBrdbIter},
     wrapper::{BitFlags, ChunkIndex},
 };
 
@@ -13,6 +13,7 @@ impl AsBrdbValue for LocalWirePortSource {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -36,6 +37,7 @@ impl AsBrdbValue for RemoteWirePortSource {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -58,6 +60,7 @@ impl AsBrdbValue for WirePortTarget {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -80,6 +83,7 @@ impl AsBrdbValue for WireChunkSoA {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         match prop_name.get(schema).unwrap() {
@@ -90,13 +94,14 @@ impl AsBrdbValue for WireChunkSoA {
     fn as_brdb_struct_prop_array(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
-    ) -> Result<Vec<&dyn AsBrdbValue>, crate::brdb::errors::BrdbSchemaError> {
+    ) -> Result<BrdbArrayIter, crate::brdb::errors::BrdbSchemaError> {
         match prop_name.get(schema).unwrap() {
-            "RemoteWireSources" => Ok(self.remote_wire_sources.lazy_vec_cast()),
-            "LocalWireSources" => Ok(self.local_wire_sources.lazy_vec_cast()),
-            "RemoteWireTargets" => Ok(self.remote_wire_targets.lazy_vec_cast()),
-            "LocalWireTargets" => Ok(self.local_wire_targets.lazy_vec_cast()),
+            "RemoteWireSources" => Ok(self.remote_wire_sources.as_brdb_iter()),
+            "LocalWireSources" => Ok(self.local_wire_sources.as_brdb_iter()),
+            "RemoteWireTargets" => Ok(self.remote_wire_targets.as_brdb_iter()),
+            "LocalWireTargets" => Ok(self.local_wire_targets.as_brdb_iter()),
             _ => unreachable!(),
         }
     }

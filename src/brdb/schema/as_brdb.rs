@@ -1,7 +1,13 @@
+use indexmap::{IndexMap, IndexSet};
+
 use crate::brdb::{
     errors::BrdbSchemaError,
     schema::{BrdbInterned, BrdbSchema, BrdbSchemaEnum, BrdbValue},
 };
+
+pub type BrdbArrayIter<'a> = Box<dyn ExactSizeIterator<Item = &'a dyn AsBrdbValue> + 'a>;
+pub type BrdbMapIter<'a> =
+    Box<dyn ExactSizeIterator<Item = (&'a dyn AsBrdbValue, &'a dyn AsBrdbValue)> + 'a>;
 
 /// A helper trait to allow serializing implementing types to msgpack schema format
 pub trait AsBrdbValue {
@@ -98,6 +104,7 @@ pub trait AsBrdbValue {
     fn as_brdb_struct_prop_value(
         &self,
         _schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
         _prop_name: BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, BrdbSchemaError> {
         Err(BrdbSchemaError::UnimplementedCast(
@@ -110,8 +117,9 @@ pub trait AsBrdbValue {
     fn as_brdb_struct_prop_array(
         &self,
         _schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
         _prop_name: BrdbInterned,
-    ) -> Result<Vec<&dyn AsBrdbValue>, BrdbSchemaError> {
+    ) -> Result<BrdbArrayIter, BrdbSchemaError> {
         Err(BrdbSchemaError::UnimplementedCast(
             "struct property array".to_owned(),
             std::any::type_name::<Self>(),
@@ -122,8 +130,9 @@ pub trait AsBrdbValue {
     fn as_brdb_struct_prop_map(
         &self,
         _schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
         _prop_name: BrdbInterned,
-    ) -> Result<Vec<(&dyn AsBrdbValue, &dyn AsBrdbValue)>, BrdbSchemaError> {
+    ) -> Result<BrdbMapIter, BrdbSchemaError> {
         Err(BrdbSchemaError::UnimplementedCast(
             "struct property map".to_owned(),
             std::any::type_name::<Self>(),
@@ -196,6 +205,7 @@ impl AsBrdbValue for BrdbValue {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
         prop_name: BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, BrdbSchemaError> {
         let BrdbValue::Struct(s) = self else {
@@ -223,8 +233,9 @@ impl AsBrdbValue for BrdbValue {
     fn as_brdb_struct_prop_array(
         &self,
         schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
         prop_name: BrdbInterned,
-    ) -> Result<Vec<&dyn AsBrdbValue>, BrdbSchemaError> {
+    ) -> Result<BrdbArrayIter, BrdbSchemaError> {
         let BrdbValue::Struct(s) = self else {
             return Err(BrdbSchemaError::ExpectedType(
                 "struct".to_owned(),
@@ -232,9 +243,7 @@ impl AsBrdbValue for BrdbValue {
             ));
         };
         match s.properties.get(&prop_name) {
-            Some(BrdbValue::Array(vec)) | Some(BrdbValue::FlatArray(vec)) => {
-                Ok(vec.lazy_vec_cast())
-            }
+            Some(BrdbValue::Array(vec)) | Some(BrdbValue::FlatArray(vec)) => Ok(vec.as_brdb_iter()),
             _ => Err(BrdbSchemaError::MissingStructField(
                 schema
                     .intern
@@ -250,8 +259,9 @@ impl AsBrdbValue for BrdbValue {
     fn as_brdb_struct_prop_map(
         &self,
         schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
         prop_name: BrdbInterned,
-    ) -> Result<Vec<(&dyn AsBrdbValue, &dyn AsBrdbValue)>, BrdbSchemaError> {
+    ) -> Result<BrdbMapIter, BrdbSchemaError> {
         let BrdbValue::Struct(s) = self else {
             return Err(BrdbSchemaError::ExpectedType(
                 "struct".to_owned(),
@@ -259,10 +269,9 @@ impl AsBrdbValue for BrdbValue {
             ));
         };
         if let Some(BrdbValue::Map(map)) = s.properties.get(&prop_name) {
-            Ok(map
-                .iter()
-                .map(|(k, v)| (k as &dyn AsBrdbValue, v as &dyn AsBrdbValue))
-                .collect())
+            Ok(Box::new(map.iter().map(|(k, v)| {
+                (k as &dyn AsBrdbValue, v as &dyn AsBrdbValue)
+            })))
         } else {
             Err(BrdbSchemaError::MissingStructField(
                 schema
@@ -357,12 +366,60 @@ impl AsBrdbValue for &str {
     }
 }
 
-pub trait LazyBrdbVec {
-    fn lazy_vec_cast(&self) -> Vec<&dyn AsBrdbValue>;
+pub trait AsBrdbIter {
+    fn as_brdb_iter(&self) -> BrdbArrayIter;
+}
+pub trait AsBrdbMapIter {
+    fn as_brdb_map_iter(&self) -> BrdbMapIter;
 }
 
-impl<T: AsBrdbValue> LazyBrdbVec for Vec<T> {
-    fn lazy_vec_cast(&self) -> Vec<&dyn AsBrdbValue> {
-        self.iter().map(|v| v as &dyn AsBrdbValue).collect()
+impl<T: AsBrdbValue> AsBrdbIter for Vec<T> {
+    fn as_brdb_iter(&self) -> BrdbArrayIter {
+        Box::new(self.iter().map(|v| v as &dyn AsBrdbValue))
     }
 }
+impl<T: AsBrdbValue> AsBrdbIter for IndexSet<T> {
+    fn as_brdb_iter(&self) -> BrdbArrayIter {
+        Box::new(self.iter().map(|v| v as &dyn AsBrdbValue))
+    }
+}
+impl<K: AsBrdbValue, V: AsBrdbValue> AsBrdbMapIter for IndexMap<K, V> {
+    fn as_brdb_map_iter(&self) -> BrdbMapIter {
+        Box::new(
+            self.iter()
+                .map(|(k, v)| (k as &dyn AsBrdbValue, v as &dyn AsBrdbValue)),
+        )
+    }
+}
+
+// Automatically implement `AsBrdbValue` for tuples of any number of elements
+// and treat them as struct properties.
+macro_rules! as_brdb_tuple {
+    ($($name:ident $index:tt),*) => {
+        impl<$($name: AsBrdbValue),*> AsBrdbValue for ($($name),*) {
+            fn as_brdb_struct_prop_value(
+                &self,
+                schema: &BrdbSchema,
+                struct_name: BrdbInterned,
+                prop_name: BrdbInterned,
+            ) -> Result<&dyn AsBrdbValue, BrdbSchemaError> {
+                let s_ty = schema.get_struct_interned(struct_name).unwrap();
+                let prop_index = s_ty.get_index_of(&prop_name);
+                match prop_index {
+                    $(
+                        Some($index) => Ok(&self.$index),
+                    )*
+                    _ => Err(BrdbSchemaError::MissingStructField(
+                        struct_name.get_or_else(schema, || "unknown struct".to_owned()),
+                        prop_name.get_or_else(schema, || "unknown property".to_owned()),
+                    )),
+                }
+            }
+        }
+    };
+}
+
+as_brdb_tuple!(A 0, B 1);
+as_brdb_tuple!(A 0, B 1, C 2);
+as_brdb_tuple!(A 0, B 1, C 2, D 3);
+as_brdb_tuple!(A 0, B 1, C 2, D 3, E 4);

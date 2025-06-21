@@ -1,4 +1,4 @@
-use crate::brdb::schema::as_brdb::AsBrdbValue;
+use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter};
 
 #[derive(Clone)]
 pub struct BitFlags {
@@ -35,8 +35,9 @@ impl AsBrdbValue for BitFlags {
     fn as_brdb_struct_prop_array(
         &self,
         _schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         _prop_name: crate::brdb::schema::BrdbInterned,
-    ) -> Result<Vec<&dyn AsBrdbValue>, crate::brdb::errors::BrdbSchemaError> {
-        Ok(self.vec.iter().map(|b| b as &dyn AsBrdbValue).collect())
+    ) -> Result<BrdbArrayIter, crate::brdb::errors::BrdbSchemaError> {
+        Ok(self.vec.as_brdb_iter())
     }
 }

@@ -404,16 +404,20 @@ pub fn write_brdb(
             if schema.global_data.external_asset_types.contains(other) {
                 let asset_index = value.as_brdb_asset(schema, other)?;
                 write_uint(buf, asset_index as u64)?;
-            } else if let Some(s_ty) = schema.get_struct(other) {
+            } else if let (Some(s_id), Some(s_ty)) =
+                (schema.intern.get(other), schema.get_struct(other))
+            {
                 for (prop_id, prop_schema) in s_ty {
                     match prop_schema {
                         BrdbSchemaStructProperty::Type(ty_id) => {
-                            let prop_value = value.as_brdb_struct_prop_value(schema, *prop_id)?;
+                            let prop_value =
+                                value.as_brdb_struct_prop_value(schema, s_id, *prop_id)?;
                             write_brdb(schema, buf, &lookup(*ty_id)?, &*prop_value)?;
                         }
                         BrdbSchemaStructProperty::Array(ty_id) => {
                             let ty = &lookup(*ty_id)?;
-                            let prop_values = value.as_brdb_struct_prop_array(schema, *prop_id)?;
+                            let prop_values =
+                                value.as_brdb_struct_prop_array(schema, s_id, *prop_id)?;
                             rmp::encode::write_array_len(buf, prop_values.len() as u32)?;
                             for prop_value in prop_values {
                                 write_brdb(schema, buf, ty, &*prop_value)?;
@@ -421,7 +425,8 @@ pub fn write_brdb(
                         }
                         BrdbSchemaStructProperty::FlatArray(ty_id) => {
                             let ty = &lookup(*ty_id)?;
-                            let prop_values = value.as_brdb_struct_prop_array(schema, *prop_id)?;
+                            let prop_values =
+                                value.as_brdb_struct_prop_array(schema, s_id, *prop_id)?;
                             // Write the length of the buffer that will be allocated
                             let type_size = flat_type_size(schema, ty);
                             rmp::encode::write_bin_len(
@@ -435,7 +440,8 @@ pub fn write_brdb(
                         BrdbSchemaStructProperty::Map(k_ty_id, v_ty_id) => {
                             let k_ty = &lookup(*k_ty_id)?;
                             let v_ty = &lookup(*v_ty_id)?;
-                            let prop_values = value.as_brdb_struct_prop_map(schema, *prop_id)?;
+                            let prop_values =
+                                value.as_brdb_struct_prop_map(schema, s_id, *prop_id)?;
                             rmp::encode::write_map_len(buf, prop_values.len() as u32)?;
                             for (key, val) in prop_values {
                                 write_brdb(schema, buf, k_ty, &*key)?;
@@ -479,7 +485,8 @@ fn write_brdb_flat(
         "f32" => write_flat_f32(buf, value.as_brdb_f32()?)?,
         "f64" => write_flat_f64(buf, value.as_brdb_f64()?)?,
         other => {
-            let Some(s_ty) = schema.get_struct(other) else {
+            let (Some(s_id), Some(s_ty)) = (schema.intern.get(other), schema.get_struct(other))
+            else {
                 return Err(BrdbSchemaError::InvalidFlatType(other.to_owned()));
             };
             for (prop_id, prop_schema) in s_ty {
@@ -491,7 +498,7 @@ fn write_brdb_flat(
                 let prop_ty = prop_ty.get_ok(schema, || {
                     BrdbSchemaError::UnknownStructPropertyType(prop_ty.0.to_string())
                 })?;
-                let prop_val = value.as_brdb_struct_prop_value(schema, *prop_id)?;
+                let prop_val = value.as_brdb_struct_prop_value(schema, s_id, *prop_id)?;
                 write_brdb_flat(schema, buf, prop_ty, &*prop_val)?;
             }
         }

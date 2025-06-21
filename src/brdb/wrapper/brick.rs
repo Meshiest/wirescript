@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::brdb::{
-    schema::as_brdb::{AsBrdbValue, LazyBrdbVec},
+    schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
     wrapper::BitFlags,
 };
 
@@ -14,6 +14,7 @@ pub struct Brick {
     pub visible: bool,
     pub color: Color,
     pub material: u8,
+    pub material_intensity: u8,
 }
 
 impl Default for Brick {
@@ -28,6 +29,7 @@ impl Default for Brick {
             collision: Default::default(),
             visible: true,
             color: Default::default(),
+            material_intensity: 5,
             material: 0,
         }
     }
@@ -57,13 +59,13 @@ pub struct Color {
     pub r: u8,
     pub g: u8,
     pub b: u8,
-    pub material_intensity: u8,
 }
 
 impl AsBrdbValue for Color {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -71,7 +73,6 @@ impl AsBrdbValue for Color {
             "R" => Ok(&self.r),
             "G" => Ok(&self.g),
             "B" => Ok(&self.b),
-            "A" => Ok(&self.material_intensity),
             _ => unreachable!(),
         }
     }
@@ -83,7 +84,6 @@ impl Default for Color {
             r: 255,
             g: 255,
             b: 255,
-            material_intensity: 5,
         }
     }
 }
@@ -114,6 +114,7 @@ impl AsBrdbValue for ChunkIndex {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -137,6 +138,7 @@ impl AsBrdbValue for BrickSize {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -160,6 +162,7 @@ impl AsBrdbValue for RelativePosition {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -254,6 +257,7 @@ impl AsBrdbValue for BrickSizeCounter {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let field = prop_name.get(schema).unwrap();
@@ -279,13 +283,15 @@ pub struct BrickChunkSoA {
     pub collision_flags_tool: BitFlags,
     pub visibility_flags: BitFlags,
     pub material_indices: Vec<u8>,
-    pub colors_and_alphas: Vec<Color>,
+    // RGBA
+    pub colors_and_alphas: Vec<(u8, u8, u8, u8)>,
 }
 
 impl AsBrdbValue for BrickChunkSoA {
     fn as_brdb_struct_prop_value(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         match prop_name.get(schema).unwrap() {
@@ -302,17 +308,18 @@ impl AsBrdbValue for BrickChunkSoA {
     fn as_brdb_struct_prop_array(
         &self,
         schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
         prop_name: crate::brdb::schema::BrdbInterned,
-    ) -> Result<Vec<&dyn AsBrdbValue>, crate::brdb::errors::BrdbSchemaError> {
+    ) -> Result<BrdbArrayIter, crate::brdb::errors::BrdbSchemaError> {
         match prop_name.get(schema).unwrap() {
-            "BrickSizeCounters" => Ok(self.brick_size_counters.lazy_vec_cast()),
-            "BrickSizes" => Ok(self.brick_sizes.lazy_vec_cast()),
-            "BrickTypeIndices" => Ok(self.brick_type_indices.lazy_vec_cast()),
-            "OwnerIndices" => Ok(self.owner_indices.lazy_vec_cast()),
-            "RelativePositions" => Ok(self.relative_positions.lazy_vec_cast()),
-            "Orientations" => Ok(self.orientations.lazy_vec_cast()),
-            "MaterialIndices" => Ok(self.material_indices.lazy_vec_cast()),
-            "ColorsAndAlphas" => Ok(self.colors_and_alphas.lazy_vec_cast()),
+            "BrickSizeCounters" => Ok(self.brick_size_counters.as_brdb_iter()),
+            "BrickSizes" => Ok(self.brick_sizes.as_brdb_iter()),
+            "BrickTypeIndices" => Ok(self.brick_type_indices.as_brdb_iter()),
+            "OwnerIndices" => Ok(self.owner_indices.as_brdb_iter()),
+            "RelativePositions" => Ok(self.relative_positions.as_brdb_iter()),
+            "Orientations" => Ok(self.orientations.as_brdb_iter()),
+            "MaterialIndices" => Ok(self.material_indices.as_brdb_iter()),
+            "ColorsAndAlphas" => Ok(self.colors_and_alphas.as_brdb_iter()),
             _ => unreachable!(),
         }
     }

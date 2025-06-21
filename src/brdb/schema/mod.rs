@@ -1,17 +1,18 @@
 use std::{
-    collections::HashSet,
     fmt::Display,
     io::{Read, Write},
     sync::Arc,
 };
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use rmp::{Marker, decode::RmpRead};
 
+mod global_data;
 mod intern;
 pub mod read;
 mod value;
 pub mod write;
+pub use global_data::*;
 pub use intern::*;
 pub use value::*;
 pub mod as_brdb;
@@ -20,19 +21,6 @@ use crate::brdb::{
     errors::BrdbSchemaError,
     schema::read::{read_owned_str, read_str_from_len},
 };
-
-#[derive(Default)]
-pub struct BrdbSchemaGlobalData {
-    pub entity_type_names: IndexSet<String>,
-    pub basic_brick_asset_names: IndexSet<String>,
-    pub procedural_brick_asset_names: IndexSet<String>,
-    pub material_asset_names: IndexSet<String>,
-    pub component_type_names: IndexSet<String>,
-    pub component_data_struct_names: IndexSet<String>,
-    pub component_wire_port_names: IndexSet<String>,
-    pub external_asset_references: IndexSet<(String, String)>,
-    pub external_asset_types: HashSet<String>,
-}
 
 pub enum BrdbSchemaStructProperty {
     Type(BrdbInterned),
