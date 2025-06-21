@@ -98,7 +98,7 @@ Comma<T>: Vec<T> = {
 };
 
 Comma1<T>: Vec<T> = {
-    <mut v:(<T> ",")*> <e:T> => {
+    <mut v:(<T> ",")*> <e:T> ","? => {
         v.push(e);
         v
     }

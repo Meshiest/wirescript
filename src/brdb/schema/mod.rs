@@ -5,6 +5,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
+use lalrpop_util::lalrpop_mod;
 use rmp::{Marker, decode::RmpRead};
 
 mod global_data;
@@ -16,6 +17,11 @@ pub use global_data::*;
 pub use intern::*;
 pub use value::*;
 pub mod as_brdb;
+
+pub(crate) type PlaintextEnumBody = Vec<(String, i32)>;
+pub(crate) type PlaintextStructBody = Vec<(String, BrdbStructPropRaw)>;
+
+lalrpop_mod!(plaintext);
 
 use crate::brdb::{
     errors::BrdbSchemaError,
@@ -78,38 +84,38 @@ pub struct BrdbSchema {
 
 impl Display for BrdbSchema {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "BrdbSchema {{\n")?;
         for (name, values) in &self.enums {
             let name = self
                 .intern
                 .lookup(*name)
                 .unwrap_or("UnknownEnum".to_owned());
-            write!(f, "  Enum {name} {{\n")?;
+            writeln!(f, "enum {name} {{")?;
             for (key, value) in values {
                 let key = self.intern.lookup(*key).unwrap_or("UnknownKey".to_owned());
-                write!(f, "    {key}: {value}\n")?;
+                writeln!(f, "    {key} = {value},")?;
             }
-            write!(f, "  }}\n")?;
+            writeln!(f, "}}")?;
         }
         for (name, properties) in &self.structs {
             let name = self
                 .intern
                 .lookup(*name)
                 .unwrap_or("UnknownStruct".to_owned());
-            write!(f, "  Struct {name} {{\n")?;
+            writeln!(f, "struct {name} {{")?;
             for (prop_name, prop_type) in properties {
                 let prop_name = self
                     .intern
                     .lookup(*prop_name)
                     .unwrap_or("UnknownProperty".to_owned());
-                write!(f, "    {prop_name}: {}\n", prop_type.as_string(self))?;
+                writeln!(f, "    {prop_name}: {},", prop_type.as_string(self))?;
             }
-            write!(f, "  }}\n")?;
+            writeln!(f, "}}")?;
         }
-        write!(f, "}}")
+        Ok(())
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrdbStructPropRaw {
     Type(String),
     Array(String),
@@ -132,6 +138,20 @@ impl BrdbSchema {
 
     pub fn get_enum_interned(&self, id: BrdbInterned) -> Option<&BrdbSchemaEnum> {
         self.enums.get(&id)
+    }
+
+    pub fn parse_to_meta(
+        input: &str,
+    ) -> Result<
+        (
+            Vec<(String, Vec<(String, i32)>)>,
+            Vec<(String, Vec<(String, BrdbStructPropRaw)>)>,
+        ),
+        String,
+    > {
+        plaintext::MetaParser::new()
+            .parse(input)
+            .map_err(|e| e.to_string())
     }
 
     /// Read a schema from a msgpack .schema file into a human readable format
@@ -365,5 +385,30 @@ pub trait ReadBrdbSchema {
 impl<R: Read> ReadBrdbSchema for R {
     fn read_brdb_schema(&mut self) -> Result<Arc<BrdbSchema>, BrdbSchemaError> {
         BrdbSchema::read(self).map(Arc::new)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_plaintext() {
+        let input = "enum Foo {
+    A = 0,
+    B = 1,
+}
+struct Bar {
+    value: i32,
+    arr: str[],
+    flat_arr: str[flat],
+    map: {str: i32},
+}
+";
+        let (enums, structs) = super::BrdbSchema::parse_to_meta(input).unwrap();
+
+        // When inserting all the enums and structs into a schema it should
+        // produce the same displayed output as the input
+        let mut schema = super::BrdbSchema::default();
+        schema.add_meta(enums.clone(), structs.clone());
+        assert_eq!(schema.to_string(), input,);
     }
 }
