@@ -45,20 +45,21 @@ pub fn read_type(
         "f32" => BrdbValue::F32(read_float32(buf)?),
         "f64" => BrdbValue::F64(read_float64(buf)?),
         "str" => BrdbValue::String(read_str(buf)?),
-        other => {
-            if schema.global_data.external_asset_types.contains(other) {
-                // Assets are stored as u64 indices
-                let id = read_uint(buf)? as usize;
-                if !schema
-                    .global_data
-                    .external_asset_references
-                    .get_index(id)
-                    .is_some_and(|(asset_ty, _)| asset_ty == ty)
-                {
+        "class" | "object" => {
+            // Assets are stored as u64 indices
+            let id = read_int(buf)?;
+            if id < 0 {
+                BrdbValue::Asset(None)
+            } else {
+                let id = id as usize;
+                if schema.global_data.external_asset_references.len() <= id {
                     return Err(BrdbSchemaError::UnknownAsset(ty.to_owned(), id));
                 }
-                BrdbValue::Asset(id)
-            } else if let Some(ty) = schema.intern.get(&other) {
+                BrdbValue::Asset(Some(id))
+            }
+        }
+        other => {
+            if let Some(ty) = schema.intern.get(&other) {
                 read_named_type(&schema, buf, ty)?
             } else {
                 return Err(BrdbSchemaError::UnknownType(other.to_string()));
@@ -240,6 +241,8 @@ fn read_uint(buf: &mut impl Read) -> Result<u64, BrdbSchemaError> {
         Marker::U16 => buf.read_data_u16()? as u64,
         Marker::U32 => buf.read_data_u32()? as u64,
         Marker::U64 => buf.read_data_u64()? as u64,
+        // It's very sneaky making values 128 thru 255 use FixNeg markers...
+        Marker::FixNeg(value) => (256 + (value as i16)) as u64,
         m => {
             return Err(BrdbSchemaError::ExpectedType(
                 "uint".to_string(),
@@ -263,7 +266,7 @@ fn read_float32(buf: &mut impl Read) -> Result<f32, BrdbSchemaError> {
         _ => {
             return Err(BrdbSchemaError::RmpMarkerReadError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Unexpected marker for float32",
+                format!("Unexpected marker {marker:?} for float32"),
             )));
         }
     })
@@ -281,11 +284,12 @@ fn read_float64(buf: &mut impl Read) -> Result<f64, BrdbSchemaError> {
         Marker::U8 => buf.read_data_u8().map_err(BrdbSchemaError::from)? as f64,
         Marker::U16 => buf.read_data_u16().map_err(BrdbSchemaError::from)? as f64,
         Marker::U32 => buf.read_data_u32().map_err(BrdbSchemaError::from)? as f64,
+        Marker::F32 => buf.read_data_f32().map_err(BrdbSchemaError::from)? as f64,
         Marker::F64 => buf.read_data_f64().map_err(BrdbSchemaError::from)?,
         _ => {
             return Err(BrdbSchemaError::RmpMarkerReadError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Unexpected marker for float64",
+                format!("Unexpected marker {marker:?} for float64"),
             )));
         }
     })
@@ -388,30 +392,9 @@ fn read_flat_struct_property(
 
     match prop {
         BrdbSchemaStructProperty::Type(ty) => read_flat_type(schema, &lookup(*ty)?, buf),
-        BrdbSchemaStructProperty::Array(ty) => Err(BrdbSchemaError::UnknownType(format!(
-            "flat array {}",
-            schema
-                .intern
-                .lookup(*ty)
-                .unwrap_or_else(|| format!("unknown ({})", ty.0))
-        ))),
-        BrdbSchemaStructProperty::FlatArray(ty) => Err(BrdbSchemaError::UnknownType(format!(
-            "flat flat array {}",
-            schema
-                .intern
-                .lookup(*ty)
-                .unwrap_or_else(|| format!("unknown ({})", ty.0))
-        ))),
-        BrdbSchemaStructProperty::Map(k_ty, v_ty) => Err(BrdbSchemaError::UnknownType(format!(
-            "flat map {},{}",
-            schema
-                .intern
-                .lookup(*k_ty)
-                .unwrap_or_else(|| format!("unknown ({})", k_ty.0)),
-            schema
-                .intern
-                .lookup(*v_ty)
-                .unwrap_or_else(|| format!("unknown ({})", v_ty.0))
+        prop => Err(BrdbSchemaError::UnknownType(format!(
+            "flat {}",
+            prop.as_string(schema)
         ))),
     }
 }

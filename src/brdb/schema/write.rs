@@ -38,16 +38,20 @@ pub fn write_type(
         ("f32", BrdbValue::F32(v)) => write_float32(buf, *v)?,
         ("f64", BrdbValue::F64(v)) => write_float64(buf, *v)?,
         ("str", BrdbValue::String(v)) => write_str(buf, &v)?,
-        (other, BrdbValue::Asset(s)) => {
+        ("class" | "object" | _, BrdbValue::Asset(None)) => {
+            // None is -1
+            write_int(buf, -1)?;
+        }
+        ("class" | "object" | _, BrdbValue::Asset(Some(s))) => {
             if let Some((asset_ty, _)) = schema.global_data.external_asset_references.get_index(*s)
             {
-                if asset_ty != other {
-                    return Err(BrdbSchemaError::UnknownAsset(other.to_owned(), *s));
+                if asset_ty != ty {
+                    return Err(BrdbSchemaError::UnknownAsset(ty.to_owned(), *s));
                 }
                 // Assets are stored as u64 indices
                 write_uint(buf, *s as u64)?;
             } else {
-                return Err(BrdbSchemaError::UnknownAsset(other.to_owned(), *s));
+                return Err(BrdbSchemaError::UnknownAsset(ty.to_owned(), *s));
             }
         }
         (other, BrdbValue::Struct(_) | BrdbValue::Enum(_)) => {
@@ -400,13 +404,16 @@ pub fn write_brdb(
         "f32" => write_float32(buf, value.as_brdb_f32()?)?,
         "f64" => write_float64(buf, value.as_brdb_f64()?)?,
         "str" => write_str(buf, value.as_brdb_str()?)?,
-        other => {
-            if schema.global_data.external_asset_types.contains(other) {
-                let asset_index = value.as_brdb_asset(schema, other)?;
+        "class" | "object" => {
+            let asset_index = value.as_brdb_asset(schema, ty)?;
+            if let Some(asset_index) = asset_index {
                 write_uint(buf, asset_index as u64)?;
-            } else if let (Some(s_id), Some(s_ty)) =
-                (schema.intern.get(other), schema.get_struct(other))
-            {
+            } else {
+                write_int(buf, -1)?;
+            }
+        }
+        other => {
+            if let (Some(s_id), Some(s_ty)) = (schema.intern.get(other), schema.get_struct(other)) {
                 for (prop_id, prop_schema) in s_ty {
                     match prop_schema {
                         BrdbSchemaStructProperty::Type(ty_id) => {

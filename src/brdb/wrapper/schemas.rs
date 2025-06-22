@@ -69,7 +69,39 @@ struct BRSavedBrickChunkIndexSoA {
 }
 
 /// World/0/Bricks/ComponentsShared.schema
-pub fn bricks_components_shared_schema() -> BrdbSchema {
+pub fn bricks_components_shared_schema_min() -> BrdbSchema {
+    let (enums, structs) = BrdbSchema::parse_to_meta(
+        "
+struct BRSavedBrickComponentTypeCounter {
+    TypeIndex: u32,
+    NumInstances: u32,
+}
+struct Quat4f {
+    X: f32,
+    Y: f32,
+    Z: f32,
+    W: f32,
+}
+struct Vector3f {
+    X: f32,
+    Y: f32,
+    Z: f32,
+}
+struct BRSavedComponentChunkSoA {
+    ComponentTypeCounters: BRSavedBrickComponentTypeCounter[],
+    ComponentBrickIndices: u32[],
+    JointBrickIndices: u32[],
+    JointEntityReferences: u32[],
+    JointInitialRelativeOffsets: Vector3f[flat],
+    JointInitialRelativeRotations: Quat4f[flat],
+}",
+    )
+    .unwrap();
+    BrdbSchema::from_meta(enums, structs)
+}
+
+/// World/0/Bricks/ComponentsShared.schema
+pub fn bricks_components_shared_schema_max() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(
         "
 enum EBrickAxis {
@@ -593,7 +625,8 @@ mod test {
         use super::*;
         let _ = bricks_chunks_schema();
         let _ = bricks_chunk_index_schema();
-        let _ = bricks_components_shared_schema();
+        let _ = bricks_components_shared_schema_min();
+        let _ = bricks_components_shared_schema_max();
         let _ = bricks_wires_shared_schema();
         let _ = owners_schema();
         let _ = entities_chunk_index_schema();

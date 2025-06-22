@@ -83,7 +83,11 @@ pub trait AsBrdbValue {
             std::any::type_name::<Self>(),
         ))
     }
-    fn as_brdb_asset(&self, _schema: &BrdbSchema, _ty: &str) -> Result<usize, BrdbSchemaError> {
+    fn as_brdb_asset(
+        &self,
+        _schema: &BrdbSchema,
+        _ty: &str,
+    ) -> Result<Option<usize>, BrdbSchemaError> {
         Err(BrdbSchemaError::UnimplementedCast(
             "asset".to_owned(),
             std::any::type_name::<Self>(),
@@ -178,7 +182,11 @@ impl AsBrdbValue for BrdbValue {
             ))
         }
     }
-    fn as_brdb_asset(&self, _schema: &BrdbSchema, _ty: &str) -> Result<usize, BrdbSchemaError> {
+    fn as_brdb_asset(
+        &self,
+        _schema: &BrdbSchema,
+        _ty: &str,
+    ) -> Result<Option<usize>, BrdbSchemaError> {
         if let BrdbValue::Asset(index) = self {
             Ok(*index)
         } else {

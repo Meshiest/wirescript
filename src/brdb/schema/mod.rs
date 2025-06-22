@@ -28,6 +28,7 @@ use crate::brdb::{
     schema::read::{read_owned_str, read_str_from_len},
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrdbSchemaStructProperty {
     Type(BrdbInterned),
     Array(BrdbInterned),
@@ -79,7 +80,7 @@ impl BrdbSchemaStructProperty {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct BrdbSchema {
     pub intern: BrdbIntern,
     global_data: Arc<BrdbSchemaGlobalData>,
@@ -378,11 +379,21 @@ impl BrdbSchema {
 
 pub trait ReadBrdbSchema {
     fn read_brdb_schema(&mut self) -> Result<Arc<BrdbSchema>, BrdbSchemaError>;
+    fn read_brdb_schema_with_data(
+        &mut self,
+        data: Arc<BrdbSchemaGlobalData>,
+    ) -> Result<Arc<BrdbSchema>, BrdbSchemaError>;
 }
 
 impl<R: Read> ReadBrdbSchema for R {
     fn read_brdb_schema(&mut self) -> Result<Arc<BrdbSchema>, BrdbSchemaError> {
         BrdbSchema::read(self).map(Arc::new)
+    }
+    fn read_brdb_schema_with_data(
+        &mut self,
+        data: Arc<BrdbSchemaGlobalData>,
+    ) -> Result<Arc<BrdbSchema>, BrdbSchemaError> {
+        BrdbSchema::read(self).map(|schema| Arc::new(schema.with_global_data(data)))
     }
 }
 

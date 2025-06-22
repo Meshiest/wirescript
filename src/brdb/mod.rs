@@ -69,6 +69,14 @@ impl Brdb {
                 .map(|s| Ok(s.as_str()?.to_owned()))
                 .collect::<Result<IndexSet<String>, BrdbSchemaError>>()
         };
+        let str_vec = |prop| {
+            mps_struct
+                .prop(prop)?
+                .as_array()?
+                .into_iter()
+                .map(|s| Ok(s.as_str()?.to_owned()))
+                .collect::<Result<Vec<String>, BrdbSchemaError>>()
+        };
 
         // Extract the asset names and types from the data
         let mut external_asset_types = HashSet::new();
@@ -92,8 +100,8 @@ impl Brdb {
             basic_brick_asset_names: str_set("BasicBrickAssetNames")?,
             procedural_brick_asset_names: str_set("ProceduralBrickAssetNames")?,
             material_asset_names: str_set("MaterialAssetNames")?,
-            component_type_names: str_set("ComponentTypeNames")?,
-            component_data_struct_names: str_set("ComponentDataStructNames")?,
+            component_type_names: str_vec("ComponentTypeNames")?,
+            component_data_struct_names: str_vec("ComponentDataStructNames")?,
             component_wire_port_names: str_set("ComponentWirePortNames")?,
         });
 
@@ -179,38 +187,36 @@ mod test {
     use crate::brdb::{
         Brdb,
         errors::BrdbError,
-        schema::{self, ReadBrdbSchema},
+        schema::{self, ReadBrdbSchema, as_brdb::AsBrdbValue},
     };
 
     #[test]
     fn test() -> Result<(), BrdbError> {
-        let mut db = Brdb::open("./Parkour.brdb")?;
-
-        // Troubleshooting reading data
-        // let mps_data = fs.cd("World/0/GlobalData.mps")?.read(&db)?;
-        // let mut cursor = std::io::Cursor::new(mps_data);
-        // println!("len {:?}", rmp::decode::read_array_len(&mut cursor));
-        // println!("str {:?}", read_owned_str(&mut cursor));
-        // let len = rmp::decode::read_array_len(&mut cursor).unwrap();
-        // println!("len2 {len}");
-        // for _ in 0..len {
-        //     println!("str {:?}", read_owned_str(&mut cursor));
-        // }
-        // println!("marker {:?}", rmp::decode::read_marker(&mut cursor));
+        let mut db = Brdb::open("./components.brdb")?;
 
         db.populate()?;
 
+        println!("{}", db.fs.render());
+
         // TODO: store the human readable format somewhere...
         // let schemas = db.fs.filter_map_file(|f| {
-        //     Some((
-        //         f.name.clone(),
-        //         f.read(&db).ok()?.as_slice().read_brdb_schema().ok()?,
-        //     ))
+        //     if !f.name.ends_with(".schema") {
+        //         return None;
+        //     }
+        //     let schema = match f.read(&db).ok()?.as_slice().read_brdb_schema() {
+        //         Ok(schema) => schema,
+        //         Err(e) => {
+        //             eprintln!("Error reading schema {}: {}", f.name, e);
+        //             panic!("Failed to read schema: {}", e);
+        //         }
+        //     };
+        //     Some((f.name.clone(), schema))
         // });
         // for (name, schema) in schemas {
         //     println!("schema {name}: {schema}");
         // }
 
+        // --- GLOBAL DATA
         let schema = db
             .fs
             .cd("World/0/GlobalData.schema")?
@@ -222,19 +228,78 @@ mod test {
         let parsed = schema::read::read_type(&schema, "BRSavedGlobalDataSoA", &mut &data[..])?;
         println!("global data: {}", parsed.display(&schema));
 
+        // --- OWNERS
+        // let owners_schema = db
+        //     .fs
+        //     .cd("World/0/Owners.schema")?
+        //     .read(&db)?
+        //     .as_slice()
+        //     .read_brdb_schema()?;
+        // println!("owners_schema: {owners_schema}");
+        // let owners_data = schema::read::read_type(
+        //     &owners_schema,
+        //     "BRSavedOwnerTableSoA",
+        //     &mut db.fs.cd("World/0/Owners.mps")?.read(&db)?.as_slice(),
+        // )?;
+        // println!("owners_data: {}", owners_data.display(&owners_schema));
+
+        // --- COMPONENT DATA
         let schema = db
             .fs
-            .cd("World/0/Bricks/ChunksShared.schema")?
+            .cd("World/0/Bricks/ComponentsShared.schema")?
             .read(&db)?
             .as_slice()
-            .read_brdb_schema()?;
+            .read_brdb_schema_with_data(db.global_data.clone())?;
         println!("schema: {schema}");
         let data = db
             .fs
-            .cd("World/0/Bricks/Grids/1/Chunks/-1_-1_0.mps")?
+            .cd("World/0/Bricks/Grids/1/Components/-1_0_0.mps")?
             .read(&db)?;
-        let parsed = schema::read::read_type(&schema, "BRSavedBrickChunkSoA", &mut &data[..])?;
-        println!("bricks: {}", parsed.display(&schema));
+        let buf = &mut &data[..];
+        let parsed = schema::read::read_type(&schema, "BRSavedComponentChunkSoA", buf)?;
+        println!("components: {}", parsed.display(&schema));
+
+        let type_counters = parsed
+            .as_struct()?
+            .prop("ComponentTypeCounters")?
+            .as_array()?;
+        for counter in type_counters {
+            let type_idx = counter
+                .as_struct()?
+                .get("TypeIndex")
+                .unwrap()
+                .as_brdb_u32()?;
+            let num_instances = counter
+                .as_struct()?
+                .get("NumInstances")
+                .unwrap()
+                .as_brdb_u32()?;
+            let type_name = db
+                .global_data
+                .component_type_names
+                .get(type_idx as usize)
+                .cloned()
+                .unwrap_or("illegal".to_string());
+            let struct_name = db
+                .global_data
+                .component_data_struct_names
+                .get(type_idx as usize)
+                .cloned()
+                .unwrap_or("illegal".to_string());
+
+            println!(
+                "Component type {type_name}/{struct_name} (index {type_idx}) has {num_instances} instances"
+            );
+
+            if struct_name == "None" {
+                continue;
+            }
+
+            for _ in 0..num_instances {
+                let component = schema::read::read_type(&schema, &struct_name, buf)?;
+                println!("Component: {}", component.display(&schema));
+            }
+        }
 
         Ok(())
     }

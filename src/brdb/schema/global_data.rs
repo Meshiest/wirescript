@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter};
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct BrdbSchemaGlobalData {
     pub entity_type_names: IndexSet<String>,
     pub basic_brick_asset_names: IndexSet<String>,
     pub procedural_brick_asset_names: IndexSet<String>,
     pub material_asset_names: IndexSet<String>,
-    pub component_type_names: IndexSet<String>,
-    pub component_data_struct_names: IndexSet<String>,
+    pub component_type_names: Vec<String>,
+    pub component_data_struct_names: Vec<String>,
     pub component_wire_port_names: IndexSet<String>,
     /// Internal set for type checking, not used in the BRDB.
     pub external_asset_types: HashSet<String>,

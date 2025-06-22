@@ -7,14 +7,14 @@ use crate::brdb::{
     schema::{BrdbInterned, BrdbSchema},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BrdbEnum {
     pub(crate) schema: Arc<BrdbSchema>,
     pub name: BrdbInterned,
     pub value: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BrdbStruct {
     pub(crate) schema: Arc<BrdbSchema>,
     pub name: BrdbInterned,
@@ -61,7 +61,7 @@ impl BrdbEnum {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum BrdbValue {
     Nil,
     Bool(bool),
@@ -76,7 +76,7 @@ pub enum BrdbValue {
     F32(f32),
     F64(f64),
     String(String),
-    Asset(usize),
+    Asset(Option<usize>),
     Enum(BrdbEnum),
     Struct(Box<BrdbStruct>),
     Array(Vec<BrdbValue>),
@@ -146,7 +146,7 @@ impl BrdbValue {
 
     fn display_inner(&self, schema: &BrdbSchema, depth: usize) -> String {
         match self {
-            BrdbValue::Nil => format!("nil"),
+            BrdbValue::Nil => "nil".to_string(),
             BrdbValue::Bool(v) => format!("{v}"),
             BrdbValue::U8(v) => format!("{v}u8"),
             BrdbValue::U16(v) => format!("{v}u16"),
@@ -159,7 +159,8 @@ impl BrdbValue {
             BrdbValue::F32(v) => format!("{v}f32"),
             BrdbValue::F64(v) => format!("{v}f64"),
             BrdbValue::String(v) => format!("\"{v}\""),
-            BrdbValue::Asset(v) => {
+            BrdbValue::Asset(None) => "none".to_string(),
+            BrdbValue::Asset(Some(v)) => {
                 if let Some((asset_ty, asset_name)) =
                     schema.global_data.external_asset_references.get_index(*v)
                 {
