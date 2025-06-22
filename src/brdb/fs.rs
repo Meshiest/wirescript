@@ -136,6 +136,39 @@ impl BrdbFs {
         });
         res
     }
+
+    pub fn render(&self) -> String {
+        self.render_inner(0)
+    }
+
+    fn render_inner(&self, depth: usize) -> String {
+        let pad = "   |".repeat(depth);
+        match self {
+            BrdbFs::Root(children) => {
+                let mut output = String::new();
+                for child in children.values() {
+                    output.push_str(&child.render_inner(depth + 1));
+                }
+                output
+            }
+            BrdbFs::Folder(dir, children) => {
+                let mut output = String::new();
+                output.push_str(&format!("{pad}-- {}/\n", dir.name));
+                for child in children.values() {
+                    output.push_str(&child.render_inner(depth + 1));
+                }
+                output
+            }
+            BrdbFs::File(brdb_file) => {
+                let file_path = if depth == 0 {
+                    brdb_file.name.clone()
+                } else {
+                    format!("{pad}-- {}", brdb_file.name)
+                };
+                format!("{file_path}\n")
+            }
+        }
+    }
 }
 
 impl BrdbFile {

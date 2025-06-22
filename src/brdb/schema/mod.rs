@@ -37,6 +37,11 @@ pub enum BrdbSchemaStructProperty {
 pub type BrdbSchemaStruct = IndexMap<BrdbInterned, BrdbSchemaStructProperty>;
 pub type BrdbSchemaEnum = IndexMap<BrdbInterned, i32>;
 
+pub type BrdbSchemaMeta = (
+    Vec<(String, Vec<(String, i32)>)>,
+    Vec<(String, Vec<(String, BrdbStructPropRaw)>)>,
+);
+
 impl BrdbSchemaStructProperty {
     pub fn as_string(&self, schema: &BrdbSchema) -> String {
         match self {
@@ -140,30 +145,14 @@ impl BrdbSchema {
         self.enums.get(&id)
     }
 
-    pub fn parse_to_meta(
-        input: &str,
-    ) -> Result<
-        (
-            Vec<(String, Vec<(String, i32)>)>,
-            Vec<(String, Vec<(String, BrdbStructPropRaw)>)>,
-        ),
-        String,
-    > {
+    pub fn parse_to_meta(input: &str) -> Result<BrdbSchemaMeta, String> {
         plaintext::MetaParser::new()
             .parse(input)
             .map_err(|e| e.to_string())
     }
 
     /// Read a schema from a msgpack .schema file into a human readable format
-    pub fn read_to_meta(
-        mut buf: impl Read,
-    ) -> Result<
-        (
-            Vec<(String, Vec<(String, i32)>)>,
-            Vec<(String, Vec<(String, BrdbStructPropRaw)>)>,
-        ),
-        BrdbSchemaError,
-    > {
+    pub fn read_to_meta(mut buf: impl Read) -> Result<BrdbSchemaMeta, BrdbSchemaError> {
         let header = rmp::decode::read_array_len(&mut buf)?;
         if header != 2 {
             return Err(BrdbSchemaError::InvalidHeader(header));
@@ -178,7 +167,7 @@ impl BrdbSchema {
             let mut values = Vec::with_capacity(value_count as usize);
             for _ in 0..value_count {
                 let key = read_owned_str(&mut buf)?;
-                let value = rmp::decode::read_i32(&mut buf)?;
+                let value = read::read_int(&mut buf)? as i32;
                 values.push((key, value));
             }
             enums.push((enum_name, values));
@@ -252,6 +241,15 @@ impl BrdbSchema {
         }
 
         Ok((enums, structs))
+    }
+
+    pub fn from_meta(
+        enums: impl IntoIterator<Item = (String, Vec<(String, i32)>)>,
+        structs: impl IntoIterator<Item = (String, Vec<(String, BrdbStructPropRaw)>)>,
+    ) -> Self {
+        let mut schema = BrdbSchema::default();
+        schema.add_meta(enums, structs);
+        schema
     }
 
     /// Bulk insert enums and structs from metadata into this schema
@@ -342,7 +340,7 @@ impl BrdbSchema {
             rmp::encode::write_map_len(&mut buf, values.len() as u32)?;
             for (key, value) in values {
                 rmp::encode::write_str(&mut buf, &lookup(*key)?)?;
-                rmp::encode::write_i32(&mut buf, *value)?;
+                write::write_int(&mut buf, *value as i64)?;
             }
         }
 

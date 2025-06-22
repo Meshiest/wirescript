@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 
 use indexmap::IndexSet;
+use serde::{Deserialize, Serialize};
 
 use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter};
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct BrdbSchemaGlobalData {
     pub entity_type_names: IndexSet<String>,
     pub basic_brick_asset_names: IndexSet<String>,

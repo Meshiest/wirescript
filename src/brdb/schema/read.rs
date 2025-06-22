@@ -203,7 +203,7 @@ fn read_str(buf: &mut impl Read) -> Result<String, BrdbSchemaError> {
 }
 
 /// Read an ambiguously encoded signed integer from the buffer.
-fn read_int(buf: &mut impl Read) -> Result<i64, BrdbSchemaError> {
+pub(crate) fn read_int(buf: &mut impl Read) -> Result<i64, BrdbSchemaError> {
     let marker =
         rmp::decode::read_marker(buf).map_err(|e| BrdbSchemaError::RmpMarkerReadError(e.0))?;
     Ok(match marker {

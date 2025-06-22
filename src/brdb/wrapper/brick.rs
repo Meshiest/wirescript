@@ -187,6 +187,16 @@ pub enum Direction {
     ZNegative,
 }
 
+impl AsBrdbValue for Direction {
+    fn as_brdb_enum(
+        &self,
+        _schema: &crate::brdb::schema::BrdbSchema,
+        _def: &crate::brdb::schema::BrdbSchemaEnum,
+    ) -> Result<i32, crate::brdb::errors::BrdbSchemaError> {
+        Ok((*self as u8) as i32)
+    }
+}
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Default)]
 pub enum Rotation {

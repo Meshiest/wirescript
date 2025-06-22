@@ -50,7 +50,7 @@ StructOrEnum: (
     Struct => (None, Some(<>)),
 };
 
-Enum: (String, EnumBody) = "enum" <name:Ident> "{" <variants:Comma1<EnumVariant>> "}" => {
+Enum: (String, EnumBody) = "enum" <name:Ident> "{" <variants:Comma<EnumVariant>> "}" => {
     (name, variants)
 };
 EnumVariant: (String, i32) = <name:Ident> "=" <value:Integer> => {
@@ -66,7 +66,7 @@ Hex: i32 =
     r"0x[0-9a-fA-F]+(_[0-9a-fA-F]+)*" => i32::from_str_radix(&remove_underscores(&<>[2..]), 16).unwrap();
 
 
-Struct: (String, StructBody) = "struct" <name:Ident> "{" <fields:Comma1<StructField>> "}" => (name, fields);
+Struct: (String, StructBody) = "struct" <name:Ident> "{" <fields:Comma<StructField>> "}" => (name, fields);
 
 StructField: (String, BrdbStructPropRaw) = <name:Ident> ":" <ty:StructProp> => (name, ty);
 
@@ -80,8 +80,9 @@ StructProp: BrdbStructPropRaw = {
   ),
 };
 
-Ident: String = r"[a-zA-Z_]\w*" => <>.to_string();
-Comma1<T>: Vec<T> = {
+Ident: String = r"[a-zA-Z_](\w|\w::\w)*" => <>.to_string();
+Comma<T>: Vec<T> = {
+    () => vec![],
     <mut v:(<T> ",")*> <e:T> ","? => {
         v.push(e);
         v
