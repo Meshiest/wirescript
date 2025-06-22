@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt::Display, path::PathBuf};
 
 use thiserror::Error;
 
@@ -57,8 +57,8 @@ impl BrdbFsError {
 
 #[derive(Debug, Error)]
 pub enum BrdbSchemaError {
-    #[error(transparent)]
-    Value(#[from] BrdbValueError),
+    #[error("{0}: {1}")]
+    Wrapped(String, Box<BrdbSchemaError>),
     #[error(transparent)]
     RmpValueReadError(#[from] rmp::decode::ValueReadError),
     #[error(transparent)]
@@ -101,5 +101,8 @@ pub enum BrdbSchemaError {
     UnimplementedCast(String, &'static str),
 }
 
-#[derive(Debug, Error)]
-pub enum BrdbValueError {}
+impl BrdbSchemaError {
+    pub fn wrap(self, label: impl Display) -> Self {
+        Self::Wrapped(label.to_string(), Box::new(self))
+    }
+}

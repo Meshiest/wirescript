@@ -74,9 +74,9 @@ fn read_named_type(
     ty: BrdbInterned,
 ) -> Result<BrdbValue, BrdbSchemaError> {
     if let Some(s) = schema.get_struct_interned(ty) {
-        read_struct(&schema, buf, ty, s)
+        read_struct(&schema, buf, ty, s).map_err(|e| e.wrap(ty.get_or(schema, "unknown struct")))
     } else if let Some(e) = schema.get_enum_interned(ty) {
-        read_enum(&schema, buf, ty, e)
+        read_enum(&schema, buf, ty, e).map_err(|e| e.wrap(ty.get_or(schema, "unknown enum")))
     } else {
         return Err(BrdbSchemaError::UnknownSchemaType(
             schema
@@ -95,7 +95,11 @@ fn read_struct(
 ) -> Result<BrdbValue, BrdbSchemaError> {
     let mut properties = HashMap::with_capacity(s.len());
     for (k, v) in s.iter() {
-        properties.insert(*k, read_struct_property(schema, buf, v)?);
+        properties.insert(
+            *k,
+            read_struct_property(schema, buf, v)
+                .map_err(|e| e.wrap(k.get_or(schema, "unknown prop")))?,
+        );
     }
     Ok(BrdbValue::Struct(Box::new(BrdbStruct {
         schema: Arc::clone(schema),
@@ -121,8 +125,8 @@ fn read_struct_property(
         BrdbSchemaStructProperty::Array(ty) => {
             let mut values = Vec::new();
             let len = rmp::decode::read_array_len(buf)? as usize;
-            for _ in 0..len {
-                values.push(read_type(schema, &lookup(*ty)?, buf)?);
+            for i in 0..len {
+                values.push(read_type(schema, &lookup(*ty)?, buf).map_err(|e| e.wrap(i))?);
             }
             Ok(BrdbValue::Array(values))
         }
@@ -152,8 +156,8 @@ fn read_struct_property(
 
             // Read the flat array items from the buffer.
             let mut items = Vec::with_capacity(flat_buf_len / ty_size);
-            for _ in 0..(flat_buf_len / ty_size) {
-                items.push(read_flat_type(schema, flat_ty, flat_buf)?);
+            for i in 0..(flat_buf_len / ty_size) {
+                items.push(read_flat_type(schema, flat_ty, flat_buf).map_err(|e| e.wrap(i))?);
             }
 
             Ok(BrdbValue::FlatArray(items))
@@ -162,8 +166,10 @@ fn read_struct_property(
             let mut map = IndexMap::new();
             let len = read_uint(buf)? as usize;
             for _ in 0..len {
-                let key = read_named_type(schema, buf, *k_ty)?;
-                let value = read_named_type(schema, buf, *v_ty)?;
+                let key = read_named_type(schema, buf, *k_ty)
+                    .map_err(|e| e.wrap(k_ty.get_or(schema, "unknown map key")))?;
+                let value = read_named_type(schema, buf, *v_ty)
+                    .map_err(|e| e.wrap(k_ty.get_or(schema, "unknown map value")))?;
                 map.insert(key, value);
             }
             Ok(BrdbValue::Map(map))
@@ -353,7 +359,7 @@ fn read_flat_type(
                 .get(other)
                 .and_then(|i| schema.structs.get(&i).map(|s| (i, s)))
             {
-                read_flat_struct(schema, buf, intern, ty)?
+                read_flat_struct(schema, buf, intern, ty).map_err(|e| e.wrap(other))?
             } else {
                 return Err(BrdbSchemaError::InvalidFlatType(other.to_owned()));
             }
@@ -369,7 +375,11 @@ fn read_flat_struct(
 ) -> Result<BrdbValue, BrdbSchemaError> {
     let mut properties = HashMap::with_capacity(s.len());
     for (k, v) in s.iter() {
-        properties.insert(*k, read_flat_struct_property(schema, buf, v)?);
+        properties.insert(
+            *k,
+            read_flat_struct_property(schema, buf, v)
+                .map_err(|e| e.wrap(k.get_or(schema, "unknown prop")))?,
+        );
     }
     Ok(BrdbValue::Struct(Box::new(BrdbStruct {
         schema: Arc::clone(schema),
@@ -384,10 +394,9 @@ fn read_flat_struct_property(
     prop: &BrdbSchemaStructProperty,
 ) -> Result<BrdbValue, BrdbSchemaError> {
     let lookup = |ty: BrdbInterned| {
-        schema
-            .intern
-            .lookup_ref(ty)
-            .ok_or(BrdbSchemaError::UnknownStructPropertyType(ty.0.to_string()))
+        ty.get_ok(schema, || {
+            BrdbSchemaError::UnknownStructPropertyType(ty.0.to_string())
+        })
     };
 
     match prop {

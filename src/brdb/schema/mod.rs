@@ -38,10 +38,9 @@ pub enum BrdbSchemaStructProperty {
 pub type BrdbSchemaStruct = IndexMap<BrdbInterned, BrdbSchemaStructProperty>;
 pub type BrdbSchemaEnum = IndexMap<BrdbInterned, i32>;
 
-pub type BrdbSchemaMeta = (
-    Vec<(String, Vec<(String, i32)>)>,
-    Vec<(String, Vec<(String, BrdbStructPropRaw)>)>,
-);
+pub type BrdbSchemaMetaEnum = (String, Vec<(String, i32)>);
+pub type BrdbSchemaMetaStruct = (String, Vec<(String, BrdbStructPropRaw)>);
+pub type BrdbSchemaMeta = (Vec<BrdbSchemaMetaEnum>, Vec<BrdbSchemaMetaStruct>);
 
 impl BrdbSchemaStructProperty {
     pub fn as_string(&self, schema: &BrdbSchema) -> String {

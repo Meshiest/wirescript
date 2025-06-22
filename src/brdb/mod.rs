@@ -96,11 +96,11 @@ impl Brdb {
         self.global_data = Arc::new(BrdbSchemaGlobalData {
             external_asset_types,
             external_asset_references,
-            entity_type_names: str_set("EntityTypeNames")?,
+            entity_type_names: str_vec("EntityTypeNames")?,
             basic_brick_asset_names: str_set("BasicBrickAssetNames")?,
             procedural_brick_asset_names: str_set("ProceduralBrickAssetNames")?,
             material_asset_names: str_set("MaterialAssetNames")?,
-            component_type_names: str_vec("ComponentTypeNames")?,
+            component_type_names: str_set("ComponentTypeNames")?,
             component_data_struct_names: str_vec("ComponentDataStructNames")?,
             component_wire_port_names: str_set("ComponentWirePortNames")?,
         });
@@ -277,7 +277,7 @@ mod test {
             let type_name = db
                 .global_data
                 .component_type_names
-                .get(type_idx as usize)
+                .get_index(type_idx as usize)
                 .cloned()
                 .unwrap_or("illegal".to_string());
             let struct_name = db
