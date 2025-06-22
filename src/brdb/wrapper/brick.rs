@@ -1,11 +1,10 @@
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use crate::brdb::{
     schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
-    wrapper::BitFlags,
+    wrapper::{BitFlags, BrdbComponent},
 };
 
-#[derive(Clone, Debug)]
 pub struct Brick {
     /// An internal ID for linking bricks in the database.
     pub id: Option<usize>,
@@ -17,6 +16,7 @@ pub struct Brick {
     pub color: Color,
     pub material: u8,
     pub material_intensity: u8,
+    pub components: Vec<Box<dyn BrdbComponent>>,
 }
 
 impl Brick {
@@ -38,6 +38,10 @@ impl Brick {
     pub fn set_id(&mut self, id: usize) {
         self.id = Some(id);
     }
+
+    pub fn add_component(&mut self, component: impl BrdbComponent + 'static) {
+        self.components.push(Box::new(component));
+    }
 }
 
 impl Default for Brick {
@@ -55,6 +59,29 @@ impl Default for Brick {
             color: Default::default(),
             material_intensity: 5,
             material: 0,
+            components: Default::default(),
+        }
+    }
+}
+
+impl Clone for Brick {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            asset: self.asset.clone(),
+            owner_index: self.owner_index.clone(),
+            position: self.position.clone(),
+            collision: self.collision.clone(),
+            visible: self.visible.clone(),
+            color: self.color.clone(),
+            material: self.material.clone(),
+            material_intensity: self.material_intensity.clone(),
+            components: self
+                .components
+                .iter()
+                // See `BoxedComponent` why this is necessary...
+                .map(|c| c.boxed_component())
+                .collect(),
         }
     }
 }

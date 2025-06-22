@@ -57,7 +57,7 @@ pub struct WorldMeta {
     pub world: WorldJson,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default)]
 pub struct World {
     pub meta: WorldMeta,
     pub main_grid: Vec<Brick>,
@@ -89,7 +89,7 @@ pub struct RemoteBrick {
     pub brick_id: usize,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct BrickGrid {
     pub id: u32,
     pub bricks: Vec<Brick>,

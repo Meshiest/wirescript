@@ -1,5 +1,7 @@
+use std::collections::HashSet;
+
 use crate::brdb::{
-    schema::as_brdb::AsBrdbValue,
+    schema::{BrdbSchemaMeta, as_brdb::AsBrdbValue},
     wrapper::{Quat4f, Vector3f},
 };
 
@@ -30,4 +32,36 @@ pub struct ComponentChunkSoA {
     pub joint_entity_references: Vec<u32>,
     pub joint_initial_relative_offsets: Vec<Vector3f>,
     pub joint_initial_relative_rotations: Vec<Quat4f>,
+}
+
+/// This trait allows BrdbComponents to be cloned
+/// despite being a dyn trait
+pub trait BoxedComponent {
+    fn boxed_component(&self) -> Box<dyn BrdbComponent>;
+}
+
+pub trait BrdbComponent: AsBrdbValue + BoxedComponent {
+    /// Emit the structs needed to use this component in a world
+    fn get_schema(&self) -> Option<BrdbSchemaMeta> {
+        None
+    }
+
+    /// Emit the "ComponentTypeName" and "ComponentDataStructName" pair for this
+    /// component
+    fn get_schema_struct(&self) -> Option<(String, Option<String>)> {
+        None
+    }
+
+    /// Emit a list of wire ports this component uses
+    fn get_wire_ports(&self) -> HashSet<String> {
+        Default::default()
+    }
+}
+
+/// Blanket implement boxed for all BrdbComponents with Clone
+/// ... enabling them to be cloned
+impl<T: Clone + BrdbComponent + 'static> BoxedComponent for T {
+    fn boxed_component(&self) -> Box<dyn BrdbComponent> {
+        Box::new(self.clone())
+    }
 }
