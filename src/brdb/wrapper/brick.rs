@@ -7,6 +7,8 @@ use crate::brdb::{
 
 #[derive(Clone, Debug)]
 pub struct Brick {
+    /// An internal ID for linking bricks in the database.
+    pub id: Option<usize>,
     pub asset: BrickType,
     pub owner_index: Option<usize>,
     pub position: Position,
@@ -17,9 +19,31 @@ pub struct Brick {
     pub material_intensity: u8,
 }
 
+impl Brick {
+    pub fn next_id() -> usize {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn with_new_id(mut self) -> Self {
+        self.id = Some(Self::next_id());
+        self
+    }
+
+    pub fn with_id(mut self, id: usize) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    pub fn set_id(&mut self, id: usize) {
+        self.id = Some(id);
+    }
+}
+
 impl Default for Brick {
     fn default() -> Self {
         Self {
+            id: None,
             asset: BrickType::Procedural {
                 kind: Arc::new(String::from("PB_DefaultBrick")),
                 size: BrickSize { x: 5, y: 5, z: 3 },
@@ -185,6 +209,7 @@ pub enum Direction {
     #[default]
     ZPositive,
     ZNegative,
+    MAX,
 }
 
 impl AsBrdbValue for Direction {
@@ -330,6 +355,30 @@ impl AsBrdbValue for BrickChunkSoA {
             "Orientations" => Ok(self.orientations.as_brdb_iter()),
             "MaterialIndices" => Ok(self.material_indices.as_brdb_iter()),
             "ColorsAndAlphas" => Ok(self.colors_and_alphas.as_brdb_iter()),
+            _ => unreachable!(),
+        }
+    }
+}
+
+pub struct BrickChunkIndexSoA {
+    pub chunk_3d_indices: Vec<ChunkIndex>,
+    pub num_bricks: Vec<u32>,
+    pub num_components: Vec<u32>,
+    pub num_wires: Vec<u32>,
+}
+
+impl AsBrdbValue for BrickChunkIndexSoA {
+    fn as_brdb_struct_prop_array(
+        &self,
+        schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
+        prop_name: crate::brdb::schema::BrdbInterned,
+    ) -> Result<BrdbArrayIter, crate::brdb::errors::BrdbSchemaError> {
+        match prop_name.get(schema).unwrap() {
+            "Chunk3DIndices" => Ok(self.chunk_3d_indices.as_brdb_iter()),
+            "NumBricks" => Ok(self.num_bricks.as_brdb_iter()),
+            "NumComponents" => Ok(self.num_components.as_brdb_iter()),
+            "NumWires" => Ok(self.num_wires.as_brdb_iter()),
             _ => unreachable!(),
         }
     }

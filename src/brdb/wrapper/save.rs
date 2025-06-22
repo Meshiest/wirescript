@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::brdb::wrapper::Brick;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleJson {
     #[serde(rename = "type")]
@@ -55,10 +57,40 @@ pub struct WorldMeta {
     pub world: WorldJson,
 }
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone)]
 pub struct World {
     pub meta: WorldMeta,
+    pub main_grid: Vec<Brick>,
+    pub grids: Vec<BrickGrid>,
+    pub wires: Vec<WireConnection>,
     // TODO: minigame, environment
 }
 
-pub struct BrickGrid {}
+#[derive(Debug, Clone)]
+pub struct WireConnection {
+    pub source: WirePort,
+    pub target: WirePort,
+}
+
+#[derive(Debug, Clone)]
+pub struct WirePort {
+    /// The remote brick where the port is located
+    pub brick: RemoteBrick,
+    /// Name of the component in the brick to connect
+    pub component: String,
+    /// Name of the port in the component to connect
+    pub port_name: String,
+}
+
+/// A reference to a brick on a remote grid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RemoteBrick {
+    pub grid_id: usize,
+    pub brick_id: usize,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct BrickGrid {
+    pub id: u32,
+    pub bricks: Vec<Brick>,
+}
