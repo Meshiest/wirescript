@@ -79,7 +79,7 @@ impl BrdbSchemaStructProperty {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct BrdbSchema {
     pub intern: BrdbIntern,
     global_data: Arc<BrdbSchemaGlobalData>,

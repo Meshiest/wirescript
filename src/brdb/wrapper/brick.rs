@@ -155,7 +155,7 @@ pub struct Position {
 
 pub const CHUNK_SIZE: i32 = 2048;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ChunkIndex {
     pub x: i16,
     pub y: i16,

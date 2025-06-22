@@ -1,6 +1,6 @@
 use crate::brdb::{
-    schema::as_brdb::{AsBrdbIter, AsBrdbValue},
-    wrapper::{BitFlags, Quat4f, Vector3f},
+    schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
+    wrapper::{BitFlags, ChunkIndex, Quat4f, Vector3f},
 };
 
 pub struct EntityTypeCounter {
@@ -135,6 +135,39 @@ impl AsBrdbValue for EntityChunkSoA {
             "LinearVelocities" => Ok(self.linear_velocities.as_brdb_iter()),
             "AngularVelocities" => Ok(self.angular_velocities.as_brdb_iter()),
             "ColorsAndAlphas" => Ok(self.colors_and_alphas.as_brdb_iter()),
+            _ => unreachable!(),
+        }
+    }
+}
+
+pub struct EntityChunkIndexSoA {
+    pub next_persistent_index: u32,
+    pub chunk_3d_indices: Vec<ChunkIndex>,
+    pub num_entities: Vec<u32>,
+}
+
+impl AsBrdbValue for EntityChunkIndexSoA {
+    fn as_brdb_struct_prop_value(
+        &self,
+        schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
+        prop_name: crate::brdb::schema::BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
+        match prop_name.get(schema).unwrap() {
+            "NextPersistentIndex" => Ok(&self.next_persistent_index),
+            _ => unreachable!(),
+        }
+    }
+
+    fn as_brdb_struct_prop_array(
+        &self,
+        schema: &crate::brdb::schema::BrdbSchema,
+        _struct_name: crate::brdb::schema::BrdbInterned,
+        prop_name: crate::brdb::schema::BrdbInterned,
+    ) -> Result<BrdbArrayIter, crate::brdb::errors::BrdbSchemaError> {
+        match prop_name.get(schema).unwrap() {
+            "Chunk3DIndices" => Ok(self.chunk_3d_indices.as_brdb_iter()),
+            "NumEntities" => Ok(self.num_entities.as_brdb_iter()),
             _ => unreachable!(),
         }
     }

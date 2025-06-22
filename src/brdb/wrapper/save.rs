@@ -1,6 +1,14 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::brdb::wrapper::Brick;
+use crate::brdb::{
+    schema::{BrdbSchema, BrdbSchemaGlobalData},
+    wrapper::{
+        Brick, BrickChunkIndexSoA, BrickChunkSoA, ChunkIndex, ComponentChunkSoA,
+        EntityChunkIndexSoA, EntityChunkSoA, OwnerTableSoA, WireChunkSoA,
+    },
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleJson {
@@ -53,7 +61,11 @@ impl Default for WorldJson {
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct WorldMeta {
+    /// Meta/Bundle.Json
     pub bundle: BundleJson,
+    /// Meta/Screenshot.jpg
+    pub screenshot: Option<Vec<u8>>,
+    /// Meta/World.json
     pub world: WorldJson,
 }
 
@@ -63,7 +75,7 @@ pub struct World {
     pub main_grid: Vec<Brick>,
     pub grids: Vec<BrickGrid>,
     pub wires: Vec<WireConnection>,
-    // TODO: minigame, environment
+    // TODO: minigame, environment, entities
 }
 
 #[derive(Debug, Clone)]
@@ -93,4 +105,40 @@ pub struct RemoteBrick {
 pub struct BrickGrid {
     pub id: u32,
     pub bricks: Vec<Brick>,
+}
+
+/// All of the dynamic data needed to serialize a world
+pub struct UnsavedFs {
+    /// Meta/
+    pub meta: WorldMeta,
+    /// World/
+    pub worlds: HashMap<usize, UnsavedWorld>,
+}
+
+pub struct UnsavedWorld {
+    /// World/N/GlobalData.mps
+    pub global_data: BrdbSchemaGlobalData,
+    /// World/N/Owners.mps
+    pub owners: OwnerTableSoA,
+    /// World/N/Bricks/Grids/[key.0]/Chunks/[key.1].mps
+    pub brick_chunks: HashMap<(usize, ChunkIndex), BrickChunkSoA>,
+    /// World/N/Bricks/Grids/[key.0]/Components/[key.1].mps
+    pub component_chunks: HashMap<(usize, ChunkIndex), ComponentChunkSoA>,
+    /// World/N/Bricks/Grids/ComponentsShared.mps
+    pub component_schema: BrdbSchema,
+    /// World/N/Bricks/Grids/[key.0]/Wires/[key.1].mps
+    pub wire_chunks: HashMap<(usize, ChunkIndex), WireChunkSoA>,
+    /// World/N/Bricks/Grids/[key.0]/ChunkIndex.mps
+    pub grid_chunk_indices: HashMap<usize, BrickChunkIndexSoA>,
+    /// World/N/Bricks/Entities/Chunks/[key].mps
+    pub entity_chunks: HashMap<ChunkIndex, EntityChunkSoA>,
+    /// World/N/Bricks/Entities/ChunksShared.mps
+    pub entity_schema: BrdbSchema,
+    /// World/N/Bricks/Entities/ChunkIndex.mps
+    pub entity_chunk_indices: EntityChunkIndexSoA,
+
+    /// World/N/Minigame.bp
+    pub minigame: Option<()>, // TODO: minigames serialization
+    /// World/N/Environment.bp
+    pub environment: Option<()>, // TODO: environment serialization
 }

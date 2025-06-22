@@ -7,7 +7,7 @@ use crate::brdb::{errors::BrdbSchemaError, schema::BrdbSchema};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BrdbInterned(pub(crate) usize);
 
-#[derive(Default, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct BrdbIntern {
     inner: IndexSet<String>,
 }
