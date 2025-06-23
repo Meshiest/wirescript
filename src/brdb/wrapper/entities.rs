@@ -140,6 +140,7 @@ impl AsBrdbValue for EntityChunkSoA {
     }
 }
 
+#[derive(Default)]
 pub struct EntityChunkIndexSoA {
     pub next_persistent_index: u32,
     pub chunk_3d_indices: Vec<ChunkIndex>,

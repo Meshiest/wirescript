@@ -1,11 +1,23 @@
 use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Guid {
     pub a: u32,
     pub b: u32,
     pub c: u32,
     pub d: u32,
 }
+impl Default for Guid {
+    fn default() -> Self {
+        Self {
+            a: u32::MAX,
+            b: u32::MAX,
+            c: u32::MAX,
+            d: u32::MAX,
+        }
+    }
+}
+
 impl AsBrdbValue for Guid {
     fn as_brdb_struct_prop_value(
         &self,
@@ -23,6 +35,14 @@ impl AsBrdbValue for Guid {
     }
 }
 
+#[derive(Default)]
+pub struct Owner {
+    pub user_id: Guid,
+    pub user_name: String,
+    pub display_name: String,
+}
+
+#[derive(Default)]
 pub struct OwnerTableSoA {
     pub user_ids: Vec<Guid>,
     pub user_names: Vec<String>,

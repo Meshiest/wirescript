@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use indexmap::IndexSet;
+
 use crate::brdb::{
     schema::{
         BrdbSchemaMeta,
@@ -67,6 +69,11 @@ pub trait BrdbComponent: AsBrdbValue + BoxedComponent {
     /// Emit the structs needed to use this component in a world
     fn get_schema(&self) -> Option<BrdbSchemaMeta> {
         None
+    }
+
+    /// Emit asset references this component uses
+    fn get_external_asset_references(&self) -> IndexSet<(String, String)> {
+        Default::default()
     }
 
     /// Emit the "ComponentTypeName" and "ComponentDataStructName" pair for this

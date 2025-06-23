@@ -3,7 +3,10 @@ use std::collections::HashSet;
 use indexmap::IndexSet;
 use serde::{Deserialize, Serialize};
 
-use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter};
+use crate::brdb::{
+    schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
+    wrapper::{Brick, BrickType},
+};
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct BrdbSchemaGlobalData {
@@ -17,6 +20,44 @@ pub struct BrdbSchemaGlobalData {
     /// Internal set for type checking, not used in the BRDB.
     pub external_asset_types: HashSet<String>,
     pub external_asset_references: IndexSet<(String, String)>,
+}
+
+impl BrdbSchemaGlobalData {
+    pub fn add_brick_meta(&mut self, brick: &Brick) {
+        // Add brick assets
+        match &brick.asset {
+            BrickType::Basic(kind) => {
+                self.basic_brick_asset_names.insert(kind.to_string());
+            }
+            BrickType::Procedural { kind, .. } => {
+                self.procedural_brick_asset_names.insert(kind.to_string());
+            }
+        }
+
+        // Add relevant asset types
+        for component in &brick.components {
+            for (asset_ty, asset_name) in component.get_external_asset_references() {
+                self.external_asset_references
+                    .insert((asset_ty.clone(), asset_name));
+                self.external_asset_types.insert(asset_ty);
+            }
+
+            // Add the struct names for components
+            if let Some((type_name, struct_name)) = component.get_schema_struct() {
+                if self.component_type_names.contains(&type_name) {
+                    continue;
+                }
+
+                self.component_type_names.insert(type_name);
+                self.component_data_struct_names
+                    .push(struct_name.unwrap_or_else(|| "None".to_owned()));
+            }
+
+            // Add the wire port names
+            self.component_wire_port_names
+                .extend(component.get_wire_ports());
+        }
+    }
 }
 
 impl AsBrdbValue for BrdbSchemaGlobalData {

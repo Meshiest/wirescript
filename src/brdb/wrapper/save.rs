@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::brdb::{
+    errors::BrdbError,
     schema::{BrdbSchema, BrdbSchemaGlobalData},
     wrapper::{
         Brick, BrickChunkIndexSoA, BrickChunkSoA, ChunkIndex, ComponentChunkSoA,
-        EntityChunkIndexSoA, EntityChunkSoA, OwnerTableSoA, WireChunkSoA,
+        EntityChunkIndexSoA, EntityChunkSoA, Guid, Owner, OwnerTableSoA, WireChunkSoA,
     },
 };
 
@@ -72,7 +74,9 @@ pub struct WorldMeta {
 #[derive(Default)]
 pub struct World {
     pub meta: WorldMeta,
-    pub main_grid: Vec<Brick>,
+    /// Bricks on the main grid
+    pub bricks: Vec<Brick>,
+    pub owners: IndexMap<Guid, Owner>,
     pub grids: Vec<BrickGrid>,
     pub wires: Vec<WireConnection>,
     // TODO: minigame, environment, entities
@@ -115,6 +119,7 @@ pub struct UnsavedFs {
     pub worlds: HashMap<usize, UnsavedWorld>,
 }
 
+#[derive(Default)]
 pub struct UnsavedWorld {
     /// World/N/GlobalData.mps
     pub global_data: BrdbSchemaGlobalData,
@@ -146,4 +151,32 @@ pub struct UnsavedGrid {
     pub components: HashMap<ChunkIndex, ComponentChunkSoA>,
     /// World/N/Bricks/Grids/I/Wires/[key].mps
     pub wires: HashMap<ChunkIndex, WireChunkSoA>,
+}
+
+impl UnsavedWorld {
+    fn add_brick_meta(&mut self, brick: &Brick) {
+        self.global_data.add_brick_meta(brick);
+
+        // Iterate the components of the brick and register
+        // their respective struct metadata with the component schema
+        for component in &brick.components {
+            let Some((enums, structs)) = component.get_schema() else {
+                continue;
+            };
+            self.component_schema.add_meta(enums, structs);
+        }
+    }
+}
+
+impl World {
+    pub fn to_unsaved(&self) -> Result<UnsavedFs, BrdbError> {
+        let unsaved_fs = UnsavedFs {
+            meta: self.meta.clone(),
+            worlds: Default::default(),
+        };
+
+        let mut world = UnsavedWorld::default();
+
+        Ok(unsaved_fs)
+    }
 }
