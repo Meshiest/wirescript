@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use crate::brdb::{
     errors::BrdbError,
+    schema::write,
     wrapper::{UnsavedFs, schemas},
 };
 
@@ -147,17 +148,32 @@ impl BrdbPendingFs {
                     .components
                     .iter()
                     .map(|(chunk, components)| {
-                        Ok(File(
-                            format!("{chunk}.mps"),
-                            Some(
-                                world
-                                    .component_schema
-                                    .write_brdb("BRSavedComponentChunkSoA", components)
-                                    .about_f(|| {
-                                        format!("Grids/{grid_id}/Components/{chunk}.mps")
-                                    })?,
-                            ),
-                        ))
+                        // Write the initial component SoA data to the buffer
+                        let mut chunk_buf = world
+                            .component_schema
+                            .write_brdb("BRSavedComponentChunkSoA", components)
+                            .about_f(|| format!("Grids/{grid_id}/Components/{chunk}.mps"))?;
+
+                        // Write each component's struct data to the chunk buffer
+                        for (i, component) in components.unwritten_struct_data.iter().enumerate() {
+                            // Unwrap safety: The component can only be added to unwritten_struct_data if
+                            // get_schema_struct() returns Some(_, Some(_))
+                            let ty = component.get_schema_struct().unwrap().1.unwrap();
+
+                            // Append to the buffer and serialize the component's data
+                            write::write_brdb(
+                                &world.component_schema,
+                                &mut chunk_buf,
+                                &ty,
+                                component.as_ref(),
+                            )
+                            .about_f(|| {
+                                format!(
+                                    "Grids/{grid_id}/Components/{chunk}.mps component {i} ({ty})"
+                                )
+                            })?;
+                        }
+                        Ok(File(format!("{chunk}.mps"), Some(chunk_buf)))
                     })
                     .collect::<Result<Vec<_>, BrdbError>>()?;
                 let wire_chunks_dir = grid
