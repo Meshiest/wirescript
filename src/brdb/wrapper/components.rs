@@ -4,7 +4,7 @@ use indexmap::IndexSet;
 
 use crate::brdb::{
     schema::{
-        BrdbSchemaMeta,
+        BrdbSchemaGlobalData, BrdbSchemaMeta,
         as_brdb::{AsBrdbIter, AsBrdbValue},
     },
     wrapper::{Quat4f, Vector3f},
@@ -30,6 +30,7 @@ impl AsBrdbValue for ComponentTypeCounter {
     }
 }
 
+#[derive(Default)]
 pub struct ComponentChunkSoA {
     pub component_type_counters: Vec<ComponentTypeCounter>,
     pub component_brick_indices: Vec<u32>,
@@ -37,6 +38,51 @@ pub struct ComponentChunkSoA {
     pub joint_entity_references: Vec<u32>,
     pub joint_initial_relative_offsets: Vec<Vector3f>,
     pub joint_initial_relative_rotations: Vec<Quat4f>,
+
+    // A copy of all components that need to be written.
+    // The `BrdbComponent` trait is writable
+    pub unwritten_struct_data: Vec<Box<dyn BrdbComponent>>,
+}
+
+impl ComponentChunkSoA {
+    pub fn add_component(
+        &mut self,
+        global_data: &BrdbSchemaGlobalData,
+        brick_index: u32,
+        component: &dyn BrdbComponent,
+    ) {
+        let Some((component_ty_name, struct_ty)) = component.get_schema_struct() else {
+            // Cannot add component without a type
+            return;
+        };
+        // Unwrap safety: The component type was already added to the global data before
+        // this function was called.
+        let type_index = global_data
+            .component_type_names
+            .get_index_of(&component_ty_name)
+            .unwrap() as u32;
+
+        // Check if the last counter matches the type index
+        if let Some(counter) = self.component_type_counters.last_mut() {
+            if counter.type_index == type_index {
+                counter.num_instances += 1;
+            } else {
+                // Add a new counter for this component type
+                self.component_type_counters.push(ComponentTypeCounter {
+                    type_index,
+                    num_instances: 1,
+                });
+            }
+        }
+        // Track the brick index for this component
+        self.component_brick_indices.push(brick_index);
+
+        // Clone the component data into unwritten_struct_data to be written later
+        // Only if the component has a struct type
+        if struct_ty.is_some() {
+            self.unwritten_struct_data.push(component.boxed_component());
+        }
+    }
 }
 
 impl AsBrdbValue for ComponentChunkSoA {

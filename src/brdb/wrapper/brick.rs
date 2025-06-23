@@ -1,10 +1,14 @@
 use std::{
+    cmp::Ordering,
     fmt::{Debug, Display},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use crate::brdb::{
-    schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
+    schema::{
+        BrdbSchemaGlobalData,
+        as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
+    },
     wrapper::{BitFlags, BrdbComponent},
 };
 
@@ -14,10 +18,12 @@ pub struct Brick {
     pub asset: BrickType,
     pub owner_index: Option<usize>,
     pub position: Position,
+    pub rotation: Rotation,
+    pub direction: Direction,
     pub collision: Collision,
     pub visible: bool,
     pub color: Color,
-    pub material: u8,
+    pub material: Arc<String>,
     pub material_intensity: u8,
     pub components: Vec<Box<dyn BrdbComponent>>,
 }
@@ -45,6 +51,44 @@ impl Brick {
     pub fn add_component(&mut self, component: impl BrdbComponent + 'static) {
         self.components.push(Box::new(component));
     }
+
+    pub fn cmp(&self, other: &Self) -> Ordering {
+        match self.asset.cmp(&other.asset) {
+            Ordering::Equal => self.position.cmp(&other.position),
+            ord => ord,
+        }
+    }
+
+    pub fn material_glass() -> Arc<String> {
+        static MAT_PLASTIC: LazyLock<Arc<String>> =
+            LazyLock::new(|| Arc::new(String::from("BMC_Plastic")));
+        MAT_PLASTIC.clone()
+    }
+    pub fn material_plastic() -> Arc<String> {
+        static MAT_GLASS: LazyLock<Arc<String>> =
+            LazyLock::new(|| Arc::new(String::from("BMC_Glass")));
+        MAT_GLASS.clone()
+    }
+    pub fn material_translucent_plastic() -> Arc<String> {
+        static MAT_TRANSLUCENT_PLASTIC: LazyLock<Arc<String>> =
+            LazyLock::new(|| Arc::new(String::from("BMC_TranslucentPlastic")));
+        MAT_TRANSLUCENT_PLASTIC.clone()
+    }
+    pub fn material_glow() -> Arc<String> {
+        static MAT_GLOW: LazyLock<Arc<String>> =
+            LazyLock::new(|| Arc::new(String::from("BMC_Glow")));
+        MAT_GLOW.clone()
+    }
+    pub fn material_metallic() -> Arc<String> {
+        static MAT_METALLIC: LazyLock<Arc<String>> =
+            LazyLock::new(|| Arc::new(String::from("BMC_Metallic")));
+        MAT_METALLIC.clone()
+    }
+    pub fn material_hologram() -> Arc<String> {
+        static MAT_HOLOGRAM: LazyLock<Arc<String>> =
+            LazyLock::new(|| Arc::new(String::from("BMC_Hologram")));
+        MAT_HOLOGRAM.clone()
+    }
 }
 
 impl Default for Brick {
@@ -52,16 +96,18 @@ impl Default for Brick {
         Self {
             id: None,
             asset: BrickType::Procedural {
-                kind: Arc::new(String::from("PB_DefaultBrick")),
+                asset: Arc::new(String::from("PB_DefaultBrick")),
                 size: BrickSize { x: 5, y: 5, z: 3 },
             },
             owner_index: None,
             position: Position { x: 0, y: 0, z: 0 },
+            rotation: Default::default(),
+            direction: Default::default(),
             collision: Default::default(),
             visible: true,
             color: Default::default(),
             material_intensity: 5,
-            material: 0,
+            material: Brick::material_plastic(),
             components: Default::default(),
         }
     }
@@ -74,6 +120,8 @@ impl Clone for Brick {
             asset: self.asset.clone(),
             owner_index: self.owner_index.clone(),
             position: self.position.clone(),
+            rotation: self.rotation.clone(),
+            direction: self.direction.clone(),
             collision: self.collision.clone(),
             visible: self.visible.clone(),
             color: self.color.clone(),
@@ -108,7 +156,7 @@ impl Default for Collision {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Color {
     pub r: u8,
     pub g: u8,
@@ -142,18 +190,65 @@ impl Default for Color {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq)]
 
 pub enum BrickType {
     Basic(Arc<String>),
-    Procedural { kind: Arc<String>, size: BrickSize },
+    Procedural { asset: Arc<String>, size: BrickSize },
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+impl BrickType {
+    pub fn is_procedural(&self) -> bool {
+        matches!(self, BrickType::Procedural { .. })
+    }
+
+    pub fn is_basic(&self) -> bool {
+        matches!(self, BrickType::Basic(_))
+    }
+}
+
+impl Ord for BrickType {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (BrickType::Basic(a), BrickType::Basic(b)) => a.cmp(b),
+            // Basic bricks sort ascending before procedural bricks
+            (BrickType::Basic(_), BrickType::Procedural { .. }) => Ordering::Less,
+            // Procedural bricks are always greater than basic bricks
+            (BrickType::Procedural { .. }, BrickType::Basic(_)) => Ordering::Greater,
+            (
+                BrickType::Procedural {
+                    asset: a,
+                    size: a_size,
+                },
+                BrickType::Procedural {
+                    asset: b,
+                    size: b_size,
+                },
+            ) => match a.cmp(b) {
+                Ordering::Equal => a_size.cmp(b_size),
+                ord => ord,
+            },
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialOrd, Eq, PartialEq)]
 pub struct Position {
     pub x: i32,
     pub y: i32,
     pub z: i32,
+}
+
+impl Ord for Position {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.z.cmp(&other.z) {
+            Ordering::Equal => match self.y.cmp(&other.y) {
+                Ordering::Equal => self.x.cmp(&other.x),
+                ord => ord,
+            },
+            ord => ord,
+        }
+    }
 }
 
 pub const CHUNK_SIZE: i32 = 2048;
@@ -186,11 +281,23 @@ impl Display for ChunkIndex {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd)]
 pub struct BrickSize {
     pub x: u16,
     pub y: u16,
     pub z: u16,
+}
+
+impl Ord for BrickSize {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.z.cmp(&other.z) {
+            Ordering::Equal => match self.y.cmp(&other.y) {
+                Ordering::Equal => self.x.cmp(&other.x),
+                ord => ord,
+            },
+            ord => ord,
+        }
+    }
 }
 
 impl AsBrdbValue for BrickSize {
@@ -339,12 +446,15 @@ impl AsBrdbValue for BrickSizeCounter {
     }
 }
 
+#[derive(Default)]
 pub struct BrickChunkSoA {
     pub procedural_brick_starting_index: u32,
     pub brick_size_counters: Vec<BrickSizeCounter>,
     pub brick_sizes: Vec<BrickSize>,
     pub brick_type_indices: Vec<u32>,
+
     pub owner_indices: Vec<u32>,
+
     pub relative_positions: Vec<RelativePosition>,
     pub orientations: Vec<u8>,
     pub collision_flags_player: BitFlags,
@@ -353,8 +463,84 @@ pub struct BrickChunkSoA {
     pub collision_flags_tool: BitFlags,
     pub visibility_flags: BitFlags,
     pub material_indices: Vec<u8>,
-    // RGBA
+    // RGB + Material intensity
     pub colors_and_alphas: Vec<(u8, u8, u8, u8)>,
+}
+
+impl BrickChunkSoA {
+    /// Add a brick to the chunk. All basic bricks must be added before procedural bricks.
+    pub(super) fn add_brick(&mut self, global_data: &BrdbSchemaGlobalData, brick: &Brick) {
+        use BrickType::*;
+
+        // Handle adding the asset type first
+        match &brick.asset {
+            Basic(asset) => {
+                // Unwrap safety: The brick meta is added to the global data before adding bricks.
+                let ty_index = global_data
+                    .basic_brick_asset_names
+                    .get_index_of(asset.as_str())
+                    .unwrap() as u32;
+                self.brick_type_indices.push(ty_index);
+                self.procedural_brick_starting_index += 1;
+            }
+            Procedural { asset: kind, size } => {
+                // Unwrap safety: The brick meta is added to the global data before adding bricks.
+                let ty_index = global_data
+                    .procedural_brick_asset_names
+                    .get_index_of(kind.as_str())
+                    .unwrap() as u32;
+
+                if let (Some(last_sizes), Some(last_size)) =
+                    (self.brick_size_counters.last_mut(), self.brick_sizes.last())
+                {
+                    // Check if the last asset and size match the current one
+                    if last_sizes.asset_index == ty_index && last_size == size {
+                        // Increment the size count for the last asset
+                        last_sizes.num_sizes += 1;
+                    } else {
+                        // Push a new size counter for the new asset
+                        self.brick_size_counters.push(BrickSizeCounter {
+                            asset_index: ty_index,
+                            num_sizes: 1,
+                        });
+                        self.brick_sizes.push(*size);
+                    }
+                } else {
+                    self.brick_size_counters.push(BrickSizeCounter {
+                        asset_index: ty_index,
+                        num_sizes: 1,
+                    });
+                }
+            }
+        }
+
+        self.owner_indices
+            .push(brick.owner_index.unwrap_or(0) as u32);
+        self.relative_positions.push(brick.position.to_relative().1);
+        self.orientations
+            .push(orientation_to_byte(brick.direction, brick.rotation));
+
+        self.collision_flags_player.push(brick.collision.player);
+        self.collision_flags_weapon.push(brick.collision.weapon);
+        self.collision_flags_interaction
+            .push(brick.collision.interact);
+        self.collision_flags_tool.push(brick.collision.tool);
+        self.visibility_flags.push(brick.visible);
+
+        self.material_indices.push(
+            global_data
+                .material_asset_names
+                .get_index_of(brick.material.as_str())
+                .unwrap() as u8, // Unwrap safety: The material is added to the global data before adding bricks.
+        );
+
+        self.colors_and_alphas.push((
+            brick.color.r,
+            brick.color.g,
+            brick.color.b,
+            brick.material_intensity,
+        ));
+    }
 }
 
 impl AsBrdbValue for BrickChunkSoA {
@@ -395,6 +581,7 @@ impl AsBrdbValue for BrickChunkSoA {
     }
 }
 
+#[derive(Default)]
 pub struct BrickChunkIndexSoA {
     pub chunk_3d_indices: Vec<ChunkIndex>,
     pub num_bricks: Vec<u32>,

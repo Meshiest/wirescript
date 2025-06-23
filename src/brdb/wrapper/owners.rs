@@ -53,6 +53,51 @@ pub struct OwnerTableSoA {
     pub wire_counts: Vec<u32>,
 }
 
+impl OwnerTableSoA {
+    pub fn new() -> Self {
+        Self {
+            user_ids: Vec::new(),
+            user_names: Vec::new(),
+            display_names: Vec::new(),
+            entity_counts: Vec::new(),
+            brick_counts: Vec::new(),
+            component_counts: Vec::new(),
+            wire_counts: Vec::new(),
+        }
+    }
+
+    pub fn add(&mut self, owner: &Owner) {
+        self.user_ids.push(owner.user_id);
+        self.user_names.push(owner.user_name.clone());
+        self.display_names.push(owner.display_name.clone());
+        self.entity_counts.push(0);
+        self.brick_counts.push(0);
+        self.component_counts.push(0);
+        self.wire_counts.push(0);
+    }
+
+    pub fn inc_entities(&mut self, index: usize) {
+        if let Some(c) = self.entity_counts.get_mut(index) {
+            *c += 1;
+        }
+    }
+    pub fn inc_bricks(&mut self, index: usize) {
+        if let Some(c) = self.brick_counts.get_mut(index) {
+            *c += 1;
+        }
+    }
+    pub fn inc_components(&mut self, index: usize, count: u32) {
+        if let Some(c) = self.component_counts.get_mut(index) {
+            *c += count;
+        }
+    }
+    pub fn inc_wires(&mut self, index: usize) {
+        if let Some(c) = self.wire_counts.get_mut(index) {
+            *c += 1;
+        }
+    }
+}
+
 impl AsBrdbValue for OwnerTableSoA {
     fn as_brdb_struct_prop_array(
         &self,

@@ -1,14 +1,16 @@
 use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct BitFlags {
     vec: Vec<u8>,
+    bits: usize,
 }
 
 impl BitFlags {
-    pub fn with_capacity(bits: usize) -> Self {
+    pub fn new(bits: usize) -> Self {
         Self {
             vec: vec![0; (bits + 7) / 8],
+            bits,
         }
     }
 
@@ -28,6 +30,15 @@ impl BitFlags {
         } else {
             *byte &= !mask;
         }
+    }
+
+    // Push a single bit value to the end of the vector.
+    pub fn push(&mut self, val: bool) {
+        if self.bits >= self.vec.len() * 8 {
+            self.vec.push(0);
+        }
+        self.set(self.bits, val);
+        self.bits += 1;
     }
 }
 

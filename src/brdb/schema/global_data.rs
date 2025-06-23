@@ -24,14 +24,23 @@ pub struct BrdbSchemaGlobalData {
 
 impl BrdbSchemaGlobalData {
     pub fn add_brick_meta(&mut self, brick: &Brick) {
+        // Add material
+        if !self.material_asset_names.contains(brick.material.as_str()) {
+            self.material_asset_names.insert(brick.material.to_string());
+        }
+
         // Add brick assets
         match &brick.asset {
-            BrickType::Basic(kind) => {
-                self.basic_brick_asset_names.insert(kind.to_string());
+            BrickType::Basic(asset) if !self.basic_brick_asset_names.contains(asset.as_str()) => {
+                self.basic_brick_asset_names.insert(asset.to_string());
             }
-            BrickType::Procedural { kind, .. } => {
-                self.procedural_brick_asset_names.insert(kind.to_string());
+            BrickType::Procedural { asset, .. }
+                if !self.procedural_brick_asset_names.contains(asset.as_str()) =>
+            {
+                self.procedural_brick_asset_names.insert(asset.to_string());
             }
+            // Material and asset are already handled above
+            _ => {}
         }
 
         // Add relevant asset types

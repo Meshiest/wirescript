@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use indexmap::IndexMap;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::brdb::{
@@ -74,10 +75,10 @@ pub struct WorldMeta {
 #[derive(Default)]
 pub struct World {
     pub meta: WorldMeta,
+    pub owners: IndexMap<Guid, Owner>,
     /// Bricks on the main grid
     pub bricks: Vec<Brick>,
-    pub owners: IndexMap<Guid, Owner>,
-    pub grids: Vec<BrickGrid>,
+    pub grids: HashMap<usize, Vec<Brick>>,
     pub wires: Vec<WireConnection>,
     // TODO: minigame, environment, entities
 }
@@ -91,24 +92,11 @@ pub struct WireConnection {
 #[derive(Debug, Clone)]
 pub struct WirePort {
     /// The remote brick where the port is located
-    pub brick: RemoteBrick,
+    pub brick_id: usize,
     /// Name of the component in the brick to connect
     pub component: String,
     /// Name of the port in the component to connect
     pub port_name: String,
-}
-
-/// A reference to a brick on a remote grid.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RemoteBrick {
-    pub grid_id: usize,
-    pub brick_id: usize,
-}
-
-#[derive(Default, Clone)]
-pub struct BrickGrid {
-    pub id: u32,
-    pub bricks: Vec<Brick>,
 }
 
 /// All of the dynamic data needed to serialize a world
@@ -140,8 +128,14 @@ pub struct UnsavedWorld {
     pub minigame: Option<()>, // TODO: minigames serialization
     /// World/N/Environment.bp
     pub environment: Option<()>, // TODO: environment serialization
+
+    /// Internal map of brick id to (grid_id, chunk_index, brick_index_in_chunk)
+    /// This is used to connect wires
+    /// and is not saved to the world file.
+    brick_id_map: HashMap<usize, (usize, ChunkIndex, usize)>,
 }
 
+#[derive(Default)]
 pub struct UnsavedGrid {
     /// World/N/Bricks/Grids/I/ChunkIndex.mps
     pub chunk_index: BrickChunkIndexSoA,
@@ -151,6 +145,10 @@ pub struct UnsavedGrid {
     pub components: HashMap<ChunkIndex, ComponentChunkSoA>,
     /// World/N/Bricks/Grids/I/Wires/[key].mps
     pub wires: HashMap<ChunkIndex, WireChunkSoA>,
+
+    /// Map of 3d chunk index to serial index in the `chunk_index` array
+    /// Used to quickly find the index of a chunk in the `chunk_index` array
+    chunk_index_map: HashMap<ChunkIndex, usize>,
 }
 
 impl UnsavedWorld {
@@ -166,6 +164,81 @@ impl UnsavedWorld {
             self.component_schema.add_meta(enums, structs);
         }
     }
+
+    fn add_bricks_to_grid(&mut self, grid_id: usize, bricks: &[Brick]) {
+        let mut grid = UnsavedGrid::default();
+
+        // Bricks are sorted by brick type, size, and position
+        for b in bricks.iter().sorted_by(|a, b| a.cmp(b)) {
+            self.add_brick_meta(b);
+
+            // Update the owner table
+            let owner_id = b.owner_index.unwrap_or(0);
+            self.owners.inc_bricks(owner_id);
+            self.owners
+                .inc_components(owner_id, b.components.len() as u32);
+
+            // Add the brick to the grid
+            let (chunk_index, brick_index) = grid.add_brick(&self.global_data, b);
+            // Track the brick for wire connections
+            if let Some(id) = b.id {
+                self.brick_id_map
+                    .insert(id, (grid_id, chunk_index, brick_index));
+            }
+        }
+    }
+}
+
+impl UnsavedGrid {
+    /// Appends a new chunk to the chunk_index SoA, returning the index of the chunk
+    fn get_chunk_index(&mut self, chunk_index: ChunkIndex) -> usize {
+        // Add the chunk to the index if it doesn't exist
+        if let Some(index) = self.chunk_index_map.get(&chunk_index) {
+            *index
+        } else {
+            self.chunk_index.chunk_3d_indices.push(chunk_index);
+            self.chunk_index.num_bricks.push(0);
+            self.chunk_index.num_components.push(0);
+            self.chunk_index.num_wires.push(0);
+            let index = self.chunk_index_map.len();
+            self.chunk_index_map.insert(chunk_index, index);
+            index
+        }
+    }
+
+    /// Add a brick to the grid, returning the chunk index and the brick index
+    fn add_brick(
+        &mut self,
+        global_data: &BrdbSchemaGlobalData,
+        brick: &Brick,
+    ) -> (ChunkIndex, usize) {
+        let chunk_index = brick.position.to_relative().0;
+        // Lookup chunk by chunk index (or create a default one if it doesn't exist)
+        self.bricks
+            .entry(chunk_index)
+            .or_insert_with(BrickChunkSoA::default)
+            .add_brick(global_data, brick); // Add the brick to the chunk
+        // Get the chunk_index SoA index for that chunk
+        let i = self.get_chunk_index(chunk_index);
+        // Get the brick index
+        let brick_index = self.chunk_index.num_bricks[i];
+        // Increment the counts for the chunk index
+        self.chunk_index.num_bricks[i] += 1;
+        self.chunk_index.num_components[i] += brick.components.len() as u32;
+
+        // Write the components to the respective component chunk
+        if !brick.components.is_empty() {
+            let chunk = self
+                .components
+                .entry(chunk_index)
+                .or_insert_with(ComponentChunkSoA::default);
+            for c in &brick.components {
+                chunk.add_component(global_data, brick_index, c.as_ref());
+            }
+        }
+
+        (chunk_index, brick_index as usize)
+    }
 }
 
 impl World {
@@ -176,6 +249,18 @@ impl World {
         };
 
         let mut world = UnsavedWorld::default();
+        for o in self.owners.values() {
+            world.owners.add(o);
+        }
+
+        // Main grid bricks are on grid 1
+        world.add_bricks_to_grid(1, &self.bricks);
+
+        // Add all grids (by grid id)
+        for (grid_id, bricks) in &self.grids {
+            // TODO: error for brick grid id 1/0
+            world.add_bricks_to_grid(*grid_id, bricks);
+        }
 
         Ok(unsaved_fs)
     }
