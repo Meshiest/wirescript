@@ -1,4 +1,7 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 
 use crate::brdb::{
     schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
@@ -175,6 +178,11 @@ impl AsBrdbValue for ChunkIndex {
             "Z" => Ok(&self.z),
             _ => unreachable!(),
         }
+    }
+}
+impl Display for ChunkIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}_{}_{}", self.x, self.y, self.z)
     }
 }
 

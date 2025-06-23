@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter};
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct BrdbSchemaGlobalData {
     pub entity_type_names: Vec<String>,
     pub basic_brick_asset_names: IndexSet<String>,

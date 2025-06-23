@@ -1,5 +1,28 @@
 use crate::brdb::schema::BrdbSchema;
 
+/// World/0/GlobalData.schema
+pub fn global_data_schema() -> BrdbSchema {
+    let (enums, structs) = BrdbSchema::parse_to_meta(
+        "
+struct BRSavedPrimaryAssetId {
+    PrimaryAssetType: str,
+    PrimaryAssetName: str,
+}
+struct BRSavedGlobalDataSoA {
+    EntityTypeNames: str[],
+    BasicBrickAssetNames: str[],
+    ProceduralBrickAssetNames: str[],
+    MaterialAssetNames: str[],
+    ComponentTypeNames: str[],
+    ComponentDataStructNames: str[],
+    ComponentWirePortNames: str[],
+    ExternalAssetReferences: BRSavedPrimaryAssetId[],
+}",
+    )
+    .unwrap();
+    BrdbSchema::from_meta(enums, structs)
+}
+
 /// World/0/Bricks/ChunksShared.schema
 pub fn bricks_chunks_schema() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(
@@ -69,7 +92,7 @@ struct BRSavedBrickChunkIndexSoA {
 }
 
 /// World/0/Bricks/ComponentsShared.schema
-pub fn bricks_components_shared_schema_min() -> BrdbSchema {
+pub fn bricks_components_schema_min() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(
         "
 struct BRSavedBrickComponentTypeCounter {
@@ -101,7 +124,7 @@ struct BRSavedComponentChunkSoA {
 }
 
 /// World/0/Bricks/ComponentsShared.schema
-pub fn bricks_components_shared_schema_max() -> BrdbSchema {
+pub fn bricks_components_schema_max() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(
         "
 enum EBrickAxis {
@@ -475,7 +498,7 @@ struct BRSavedComponentChunkSoA {
 }
 
 /// World/0/Bricks/WiresShared.schema
-pub fn bricks_wires_shared_schema() -> BrdbSchema {
+pub fn bricks_wires_schema() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(
         "
 struct BRSavedBitFlags {
@@ -623,11 +646,12 @@ mod test {
     #[test]
     fn test_schema() {
         use super::*;
+        let _ = global_data_schema();
         let _ = bricks_chunks_schema();
         let _ = bricks_chunk_index_schema();
-        let _ = bricks_components_shared_schema_min();
-        let _ = bricks_components_shared_schema_max();
-        let _ = bricks_wires_shared_schema();
+        let _ = bricks_components_schema_min();
+        let _ = bricks_components_schema_max();
+        let _ = bricks_wires_schema();
         let _ = owners_schema();
         let _ = entities_chunk_index_schema();
         let _ = entities_chunks_schema();

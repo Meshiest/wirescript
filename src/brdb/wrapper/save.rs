@@ -120,19 +120,13 @@ pub struct UnsavedWorld {
     pub global_data: BrdbSchemaGlobalData,
     /// World/N/Owners.mps
     pub owners: OwnerTableSoA,
-    /// World/N/Bricks/Grids/[key.0]/Chunks/[key.1].mps
-    pub brick_chunks: HashMap<(usize, ChunkIndex), BrickChunkSoA>,
-    /// World/N/Bricks/Grids/[key.0]/Components/[key.1].mps
-    pub component_chunks: HashMap<(usize, ChunkIndex), ComponentChunkSoA>,
     /// World/N/Bricks/Grids/ComponentsShared.mps
     pub component_schema: BrdbSchema,
-    /// World/N/Bricks/Grids/[key.0]/Wires/[key.1].mps
-    pub wire_chunks: HashMap<(usize, ChunkIndex), WireChunkSoA>,
-    /// World/N/Bricks/Grids/[key.0]/ChunkIndex.mps
-    pub grid_chunk_indices: HashMap<usize, BrickChunkIndexSoA>,
+    /// World/N/Bricks/Grids/[key.0]/
+    pub grids: HashMap<usize, UnsavedGrid>,
     /// World/N/Bricks/Entities/Chunks/[key].mps
     pub entity_chunks: HashMap<ChunkIndex, EntityChunkSoA>,
-    /// World/N/Bricks/Entities/ChunksShared.mps
+    /// World/N/Bricks/Entities/ChunksShared.schema
     pub entity_schema: BrdbSchema,
     /// World/N/Bricks/Entities/ChunkIndex.mps
     pub entity_chunk_indices: EntityChunkIndexSoA,
@@ -141,4 +135,15 @@ pub struct UnsavedWorld {
     pub minigame: Option<()>, // TODO: minigames serialization
     /// World/N/Environment.bp
     pub environment: Option<()>, // TODO: environment serialization
+}
+
+pub struct UnsavedGrid {
+    /// World/N/Bricks/Grids/I/ChunkIndex.mps
+    pub chunk_index: BrickChunkIndexSoA,
+    /// World/N/Bricks/Grids/I/Chunks/[key].mps
+    pub bricks: HashMap<ChunkIndex, BrickChunkSoA>,
+    /// World/N/Bricks/Grids/I/Components/[key].mps
+    pub components: HashMap<ChunkIndex, ComponentChunkSoA>,
+    /// World/N/Bricks/Grids/I/Wires/[key].mps
+    pub wires: HashMap<ChunkIndex, WireChunkSoA>,
 }

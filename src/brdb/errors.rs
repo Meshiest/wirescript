@@ -12,6 +12,16 @@ pub enum BrdbError {
     Fs(#[from] BrdbFsError),
     #[error(transparent)]
     Schema(#[from] BrdbSchemaError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error("{0}: {1}")]
+    Wrapped(String, Box<BrdbError>),
+}
+
+impl BrdbError {
+    pub fn wrap(self, label: impl Display) -> Self {
+        Self::Wrapped(label.to_string(), Box::new(self))
+    }
 }
 
 #[derive(Debug, Error)]

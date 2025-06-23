@@ -25,7 +25,10 @@ lalrpop_mod!(plaintext);
 
 use crate::brdb::{
     errors::BrdbSchemaError,
-    schema::read::{read_owned_str, read_str_from_len},
+    schema::{
+        as_brdb::AsBrdbValue,
+        read::{read_owned_str, read_str_from_len},
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +376,24 @@ impl BrdbSchema {
         }
 
         Ok(())
+    }
+
+    /// Serialize the schema to a vector of bytes
+    pub fn to_vec(&self) -> Result<Vec<u8>, BrdbSchemaError> {
+        let mut buf = Vec::new();
+        self.write(&mut buf)?;
+        Ok(buf)
+    }
+
+    pub fn write_brdb(
+        &self,
+        ty: &str,
+        value: &impl AsBrdbValue,
+    ) -> Result<Vec<u8>, BrdbSchemaError> {
+        let mut buf = Vec::new();
+        self.write(&mut buf)?;
+        write::write_brdb(self, &mut buf, ty, value)?;
+        Ok(buf)
     }
 }
 
