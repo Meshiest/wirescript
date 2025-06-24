@@ -21,7 +21,7 @@ lalrpop-util = { version = "0.21.0", features = ["lexer", "unicode"] }
 # Brdb msgpack-schema parsing
 rmp = "0.8.14"
 # Brdb read/write
-rusqlite = { version = "0.36.0", features = ["blob", "bundled", "chrono"] }
+rusqlite = { version = "0.36.0", features = ["blob", "bundled"] }
 # Brdb meta json file serialization
 serde = { version = "1.0.219", features = ["derive"] }
 # Brdb meta json file serialization
