@@ -332,44 +332,44 @@ impl BrdbSchema {
         rmp::encode::write_array_len(&mut buf, 2)?;
 
         let lookup = |interned: BrdbInterned| {
-            self.intern
-                .lookup_ref(interned)
+            interned
+                .get(self)
                 .ok_or(BrdbSchemaError::StringNotInterned(interned.0))
         };
 
         rmp::encode::write_map_len(&mut buf, self.enums.len() as u32)?;
         for (enum_name, values) in &self.enums {
-            rmp::encode::write_str(&mut buf, &lookup(*enum_name)?)?;
+            rmp::encode::write_str(&mut buf, lookup(*enum_name)?)?;
             rmp::encode::write_map_len(&mut buf, values.len() as u32)?;
             for (key, value) in values {
-                rmp::encode::write_str(&mut buf, &lookup(*key)?)?;
+                rmp::encode::write_str(&mut buf, lookup(*key)?)?;
                 write::write_int(&mut buf, *value as i64)?;
             }
         }
 
         rmp::encode::write_map_len(&mut buf, self.structs.len() as u32)?;
         for (struct_name, properties) in &self.structs {
-            rmp::encode::write_str(&mut buf, &lookup(*struct_name)?)?;
+            rmp::encode::write_str(&mut buf, lookup(*struct_name)?)?;
             rmp::encode::write_map_len(&mut buf, properties.len() as u32)?;
             for (prop_name, prop_type) in properties {
-                rmp::encode::write_str(&mut buf, &lookup(*prop_name)?)?;
+                rmp::encode::write_str(&mut buf, lookup(*prop_name)?)?;
                 match prop_type {
                     BrdbSchemaStructProperty::Type(t) => {
-                        rmp::encode::write_str(&mut buf, &lookup(*t)?)?
+                        rmp::encode::write_str(&mut buf, lookup(*t)?)?
                     }
                     BrdbSchemaStructProperty::Array(t) => {
                         rmp::encode::write_array_len(&mut buf, 1)?;
-                        rmp::encode::write_str(&mut buf, &lookup(*t)?)?;
+                        rmp::encode::write_str(&mut buf, lookup(*t)?)?;
                     }
                     BrdbSchemaStructProperty::FlatArray(t) => {
                         rmp::encode::write_array_len(&mut buf, 2)?;
-                        rmp::encode::write_str(&mut buf, &lookup(*t)?)?;
+                        rmp::encode::write_str(&mut buf, lookup(*t)?)?;
                         rmp::encode::write_nil(&mut buf)?;
                     }
                     BrdbSchemaStructProperty::Map(key_type, value_type) => {
                         rmp::encode::write_map_len(&mut buf, 1)?;
-                        rmp::encode::write_str(&mut buf, &lookup(*key_type)?)?;
-                        rmp::encode::write_str(&mut buf, &lookup(*value_type)?)?;
+                        rmp::encode::write_str(&mut buf, lookup(*key_type)?)?;
+                        rmp::encode::write_str(&mut buf, lookup(*value_type)?)?;
                     }
                 }
             }
@@ -391,7 +391,6 @@ impl BrdbSchema {
         value: &impl AsBrdbValue,
     ) -> Result<Vec<u8>, BrdbSchemaError> {
         let mut buf = Vec::new();
-        self.write(&mut buf)?;
         write::write_brdb(self, &mut buf, ty, value)?;
         Ok(buf)
     }
@@ -403,6 +402,11 @@ pub trait ReadBrdbSchema {
         &mut self,
         data: Arc<BrdbSchemaGlobalData>,
     ) -> Result<Arc<BrdbSchema>, BrdbSchemaError>;
+    fn read_brdb(
+        &mut self,
+        schema: &Arc<BrdbSchema>,
+        ty: &str,
+    ) -> Result<BrdbValue, BrdbSchemaError>;
 }
 
 impl<R: Read> ReadBrdbSchema for R {
@@ -414,6 +418,13 @@ impl<R: Read> ReadBrdbSchema for R {
         data: Arc<BrdbSchemaGlobalData>,
     ) -> Result<Arc<BrdbSchema>, BrdbSchemaError> {
         BrdbSchema::read(self).map(|schema| Arc::new(schema.with_global_data(data)))
+    }
+    fn read_brdb(
+        &mut self,
+        schema: &Arc<BrdbSchema>,
+        ty: &str,
+    ) -> Result<BrdbValue, BrdbSchemaError> {
+        read::read_type(schema, ty, self)
     }
 }
 

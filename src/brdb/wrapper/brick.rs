@@ -162,6 +162,11 @@ pub struct Color {
     pub g: u8,
     pub b: u8,
 }
+impl From<(u8, u8, u8)> for Color {
+    fn from((r, g, b): (u8, u8, u8)) -> Self {
+        Self { r, g, b }
+    }
+}
 
 impl AsBrdbValue for Color {
     fn as_brdb_struct_prop_value(
@@ -237,6 +242,12 @@ pub struct Position {
     pub x: i32,
     pub y: i32,
     pub z: i32,
+}
+
+impl From<(i32, i32, i32)> for Position {
+    fn from((x, y, z): (i32, i32, i32)) -> Self {
+        Self { x, y, z }
+    }
 }
 
 impl Ord for Position {

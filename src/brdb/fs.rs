@@ -9,7 +9,7 @@ use rusqlite::params;
 use crate::brdb::{
     Brdb,
     errors::BrdbFsError,
-    revisions::BrdbPendingFs,
+    pending::BrdbPendingFs,
     tables::{BrdbBlob, BrdbFile, BrdbFolder},
 };
 

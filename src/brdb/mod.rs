@@ -16,7 +16,7 @@ use crate::brdb::{
 
 pub mod errors;
 pub mod fs;
-pub mod revisions;
+pub mod pending;
 pub mod schema;
 pub mod tables;
 pub mod wrapper;
@@ -57,7 +57,8 @@ impl Brdb {
 
         // Parse the GlobalData struct of arrays
         let mps_data = self.fs.cd("World/0/GlobalData.mps")?.read(self)?;
-        let mps = schema::read::read_type(&schema, "BRSavedGlobalDataSoA", &mut &mps_data[..])?;
+        let mps =
+            schema::read::read_type(&schema, "BRSavedGlobalDataSoA", &mut mps_data.as_slice())?;
 
         let mps_struct = mps.as_struct()?;
 
@@ -187,12 +188,12 @@ mod test {
     use crate::brdb::{
         Brdb,
         errors::BrdbError,
-        schema::{self, ReadBrdbSchema, as_brdb::AsBrdbValue},
+        schema::{ReadBrdbSchema, as_brdb::AsBrdbValue},
     };
 
     #[test]
     fn test() -> Result<(), BrdbError> {
-        let mut db = Brdb::open("./components.brdb")?;
+        let mut db = Brdb::open("./Parkour.brdb")?;
 
         db.populate()?;
 
@@ -225,7 +226,7 @@ mod test {
             .read_brdb_schema()?;
         println!("schema: {schema}");
         let data = db.fs.cd("World/0/GlobalData.mps")?.read(&db)?;
-        let parsed = schema::read::read_type(&schema, "BRSavedGlobalDataSoA", &mut &data[..])?;
+        let parsed = data.as_slice().read_brdb(&schema, "BRSavedGlobalDataSoA")?;
         println!("global data: {}", parsed.display(&schema));
 
         // --- OWNERS
@@ -256,7 +257,7 @@ mod test {
             .cd("World/0/Bricks/Grids/1/Components/-1_0_0.mps")?
             .read(&db)?;
         let buf = &mut &data[..];
-        let parsed = schema::read::read_type(&schema, "BRSavedComponentChunkSoA", buf)?;
+        let parsed = buf.read_brdb(&schema, "BRSavedComponentChunkSoA")?;
         println!("components: {}", parsed.display(&schema));
 
         let type_counters = parsed
@@ -264,16 +265,8 @@ mod test {
             .prop("ComponentTypeCounters")?
             .as_array()?;
         for counter in type_counters {
-            let type_idx = counter
-                .as_struct()?
-                .get("TypeIndex")
-                .unwrap()
-                .as_brdb_u32()?;
-            let num_instances = counter
-                .as_struct()?
-                .get("NumInstances")
-                .unwrap()
-                .as_brdb_u32()?;
+            let type_idx = counter.as_struct()?.prop("TypeIndex")?.as_brdb_u32()?;
+            let num_instances = counter.as_struct()?.prop("NumInstances")?.as_brdb_u32()?;
             let type_name = db
                 .global_data
                 .component_type_names
@@ -296,7 +289,7 @@ mod test {
             }
 
             for _ in 0..num_instances {
-                let component = schema::read::read_type(&schema, &struct_name, buf)?;
+                let component = buf.read_brdb(&schema, &struct_name)?;
                 println!("Component: {}", component.display(&schema));
             }
         }

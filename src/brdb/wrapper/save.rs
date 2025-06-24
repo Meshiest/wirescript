@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::brdb::{
     errors::BrdbError,
+    pending::BrdbPendingFs,
     schema::{BrdbSchema, BrdbSchemaGlobalData},
     wrapper::{
         Brick, BrickChunkIndexSoA, BrickChunkSoA, ChunkIndex, ComponentChunkSoA,
@@ -83,6 +84,41 @@ pub struct World {
     // TODO: minigame, environment, entities
 }
 
+impl World {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn to_unsaved(&self) -> Result<UnsavedFs, BrdbError> {
+        let mut unsaved_fs = UnsavedFs {
+            meta: self.meta.clone(),
+            worlds: Default::default(),
+        };
+
+        // Only one world exists right now...
+        {
+            let mut world = UnsavedWorld::default();
+            for o in self.owners.values() {
+                world.owners.add(o);
+            }
+
+            // Main grid bricks are on grid 1
+            world.add_bricks_to_grid(1, &self.bricks);
+
+            // Add all grids (by grid id)
+            for (grid_id, bricks) in &self.grids {
+                // TODO: error for brick grid id 1/0
+                world.add_bricks_to_grid(*grid_id, bricks);
+            }
+
+            // Add the world
+            unsaved_fs.worlds.insert(1, world);
+        }
+
+        Ok(unsaved_fs)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WireConnection {
     pub source: WirePort,
@@ -105,6 +141,12 @@ pub struct UnsavedFs {
     pub meta: WorldMeta,
     /// World/
     pub worlds: HashMap<usize, UnsavedWorld>,
+}
+
+impl UnsavedFs {
+    pub fn to_pending(self) -> Result<BrdbPendingFs, BrdbError> {
+        BrdbPendingFs::from_unsaved(self)
+    }
 }
 
 #[derive(Default)]
@@ -238,30 +280,5 @@ impl UnsavedGrid {
         }
 
         (chunk_index, brick_index as usize)
-    }
-}
-
-impl World {
-    pub fn to_unsaved(&self) -> Result<UnsavedFs, BrdbError> {
-        let unsaved_fs = UnsavedFs {
-            meta: self.meta.clone(),
-            worlds: Default::default(),
-        };
-
-        let mut world = UnsavedWorld::default();
-        for o in self.owners.values() {
-            world.owners.add(o);
-        }
-
-        // Main grid bricks are on grid 1
-        world.add_bricks_to_grid(1, &self.bricks);
-
-        // Add all grids (by grid id)
-        for (grid_id, bricks) in &self.grids {
-            // TODO: error for brick grid id 1/0
-            world.add_bricks_to_grid(*grid_id, bricks);
-        }
-
-        Ok(unsaved_fs)
     }
 }
