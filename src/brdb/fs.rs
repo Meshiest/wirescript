@@ -20,7 +20,18 @@ pub enum BrdbFs {
     File(BrdbFile),
 }
 
+fn now() -> i64 {
+    // Use a high-resolution timer to get the current time in milliseconds
+    let now = std::time::SystemTime::now();
+    now.duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
 impl BrdbFs {
+    // TODO: Write a pendingFS blob to this location (needs connection)
+    // pub fn write_pending()
+
     pub fn is_root(&self) -> bool {
         matches!(self, BrdbFs::Root(_))
     }

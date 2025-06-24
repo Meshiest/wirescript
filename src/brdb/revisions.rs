@@ -37,7 +37,7 @@ where
 }
 
 impl BrdbPendingFs {
-    pub fn from_unsaved(fs: &UnsavedFs) -> Result<Self, BrdbError> {
+    pub fn from_unsaved(fs: UnsavedFs) -> Result<Self, BrdbError> {
         use BrdbPendingFs::*;
         let mut worlds = vec![];
 
@@ -48,7 +48,7 @@ impl BrdbPendingFs {
         let wires_schema = schemas::bricks_wires_schema();
         let entity_chunk_index_schema = schemas::entities_chunks_schema();
 
-        for (world_id, world) in &fs.worlds {
+        for (world_id, world) in fs.worlds {
             let mut world_dir = vec![
                 // Write GlobalData
                 File(
@@ -120,7 +120,7 @@ impl BrdbPendingFs {
             // Bricks/Grids/N/Components
             // Bricks/Grids/N/Wires
             // Bricks/Grids/N/ChunkIndex.mps
-            for (grid_id, grid) in &world.grids {
+            for (grid_id, grid) in world.grids {
                 let mut grid_dir = vec![File(
                     "ChunkIndex.mps".to_owned(),
                     Some(
@@ -132,13 +132,13 @@ impl BrdbPendingFs {
 
                 let brick_chunks_dir = grid
                     .bricks
-                    .iter()
+                    .into_iter()
                     .map(|(chunk, bricks)| {
                         Ok(File(
                             format!("{chunk}.mps"),
                             Some(
                                 brick_chunk_schema
-                                    .write_brdb("BRSavedBrickChunkSoA", bricks)
+                                    .write_brdb("BRSavedBrickChunkSoA", &bricks)
                                     .about_f(|| format!("Grids/{grid_id}/Chunks/{chunk}.mps"))?,
                             ),
                         ))
@@ -146,16 +146,18 @@ impl BrdbPendingFs {
                     .collect::<Result<Vec<_>, BrdbError>>()?;
                 let component_chunks_dir = grid
                     .components
-                    .iter()
+                    .into_iter()
                     .map(|(chunk, components)| {
                         // Write the initial component SoA data to the buffer
                         let mut chunk_buf = world
                             .component_schema
-                            .write_brdb("BRSavedComponentChunkSoA", components)
+                            .write_brdb("BRSavedComponentChunkSoA", &components)
                             .about_f(|| format!("Grids/{grid_id}/Components/{chunk}.mps"))?;
 
                         // Write each component's struct data to the chunk buffer
-                        for (i, component) in components.unwritten_struct_data.iter().enumerate() {
+                        for (i, component) in
+                            components.unwritten_struct_data.into_iter().enumerate()
+                        {
                             // Unwrap safety: The component can only be added to unwritten_struct_data if
                             // get_schema_struct() returns Some(_, Some(_))
                             let ty = component.get_schema_struct().unwrap().1.unwrap();
@@ -230,14 +232,14 @@ impl BrdbPendingFs {
             // Entities/Chunks/*
             let entities_chunks_dir = world
                 .entity_chunks
-                .iter()
+                .into_iter()
                 .map(|(chunk, entities)| {
                     Ok(File(
                         format!("{chunk}.mps"),
                         Some(
                             world
                                 .entity_schema
-                                .write_brdb("BRSavedEntityChunkIndexSoA", entities)
+                                .write_brdb("BRSavedEntityChunkIndexSoA", &entities)
                                 .about_f(|| format!("Entities/Chunks/{chunk}.mps"))?,
                         ),
                     ))
