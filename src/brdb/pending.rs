@@ -3,7 +3,13 @@ use std::fmt::Display;
 use crate::brdb::{
     errors::BrdbError,
     schema::write,
-    wrapper::{UnsavedFs, schemas},
+    wrapper::{
+        UnsavedFs,
+        schemas::{
+            self, BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, BRICK_COMPONENT_SOA, BRICK_WIRE_SOA,
+            ENTITY_CHUNK_INDEX_SOA, ENTITY_CHUNK_SOA, GLOBAL_DATA_SOA,
+        },
+    },
 };
 
 /// Describes an entire filesystem tree that needs to be written
@@ -15,9 +21,9 @@ use crate::brdb::{
 /// A revision will be created along with all of the pending
 #[derive(Debug)]
 pub enum BrdbPendingFs {
-    Root(Vec<BrdbPendingFs>),
-    Folder(String, Option<Vec<BrdbPendingFs>>),
-    File(String, Option<Vec<u8>>),
+    Root(Vec<(String, BrdbPendingFs)>),
+    Folder(Option<Vec<(String, BrdbPendingFs)>>),
+    File(Option<Vec<u8>>),
 }
 
 // Helper trait for adding context to errors
@@ -52,30 +58,32 @@ impl BrdbPendingFs {
         for (world_id, world) in fs.worlds {
             let mut world_dir = vec![
                 // Write GlobalData
-                File(
+                (
                     "GlobalData.schema".to_owned(),
-                    Some(global_data_schema.to_vec().about("GlobalData.schema")?),
+                    File(Some(
+                        global_data_schema.to_vec().about("GlobalData.schema")?,
+                    )),
                 ),
-                File(
+                (
                     "GlobalData.mps".to_owned(),
-                    Some(
+                    File(Some(
                         global_data_schema
-                            .write_brdb("BRSavedGlobalDataSoA", &world.global_data)
+                            .write_brdb(GLOBAL_DATA_SOA, &world.global_data)
                             .about("GlobalData.mps")?,
-                    ),
+                    )),
                 ),
                 // Write Owners
-                File(
+                (
                     "Owners.schema".to_owned(),
-                    Some(owners_schema.to_vec().about("Owners.schema")?),
+                    File(Some(owners_schema.to_vec().about("Owners.schema")?)),
                 ),
-                File(
+                (
                     "Owners.mps".to_owned(),
-                    Some(
+                    File(Some(
                         owners_schema
                             .write_brdb("BRSavedOwnerTableSoA", &world.owners)
                             .about("Owners.mps")?,
-                    ),
+                    )),
                 ),
             ];
 
@@ -88,31 +96,33 @@ impl BrdbPendingFs {
 
             let mut bricks_dir = vec![
                 // Shared schemas
-                File(
+                (
                     "ChunkIndexShared.schema".to_owned(),
-                    Some(
+                    File(Some(
                         brick_chunk_index_schema
                             .to_vec()
                             .about("ChunkIndexShared.schema")?,
-                    ),
+                    )),
                 ),
-                File(
+                (
                     "ChunksShared.schema".to_owned(),
-                    Some(brick_chunk_schema.to_vec().about("ChunksShared.schema")?),
+                    File(Some(
+                        brick_chunk_schema.to_vec().about("ChunksShared.schema")?,
+                    )),
                 ),
-                File(
+                (
                     "WiresShared.schema".to_owned(),
-                    Some(wires_schema.to_vec().about("WiresShared.schema")?),
+                    File(Some(wires_schema.to_vec().about("WiresShared.schema")?)),
                 ),
                 // Component schema
-                File(
+                (
                     "ComponentsShared.schema".to_owned(),
-                    Some(
+                    File(Some(
                         world
                             .component_schema
                             .to_vec()
                             .about("ComponentsShared.schema")?,
-                    ),
+                    )),
                 ),
             ];
             let mut grids_dir = vec![];
@@ -122,26 +132,26 @@ impl BrdbPendingFs {
             // Bricks/Grids/N/Wires
             // Bricks/Grids/N/ChunkIndex.mps
             for (grid_id, grid) in world.grids {
-                let mut grid_dir = vec![File(
+                let mut grid_dir = vec![(
                     "ChunkIndex.mps".to_owned(),
-                    Some(
+                    File(Some(
                         brick_chunk_index_schema
-                            .write_brdb("BRSavedBrickChunkIndexSoA", &grid.chunk_index)
+                            .write_brdb(BRICK_CHUNK_INDEX_SOA, &grid.chunk_index)
                             .about_f(|| format!("Grids/{grid_id}/ChunkIndex.mps"))?,
-                    ),
+                    )),
                 )];
 
                 let brick_chunks_dir = grid
                     .bricks
                     .into_iter()
                     .map(|(chunk, bricks)| {
-                        Ok(File(
+                        Ok((
                             format!("{chunk}.mps"),
-                            Some(
+                            File(Some(
                                 brick_chunk_schema
-                                    .write_brdb("BRSavedBrickChunkSoA", &bricks)
+                                    .write_brdb(BRICK_CHUNK_SOA, &bricks)
                                     .about_f(|| format!("Grids/{grid_id}/Chunks/{chunk}.mps"))?,
-                            ),
+                            )),
                         ))
                     })
                     .collect::<Result<Vec<_>, BrdbError>>()?;
@@ -152,7 +162,7 @@ impl BrdbPendingFs {
                         // Write the initial component SoA data to the buffer
                         let mut chunk_buf = world
                             .component_schema
-                            .write_brdb("BRSavedComponentChunkSoA", &components)
+                            .write_brdb(BRICK_COMPONENT_SOA, &components)
                             .about_f(|| format!("Grids/{grid_id}/Components/{chunk}.mps"))?;
 
                         // Write each component's struct data to the chunk buffer
@@ -176,57 +186,59 @@ impl BrdbPendingFs {
                                 )
                             })?;
                         }
-                        Ok(File(format!("{chunk}.mps"), Some(chunk_buf)))
+                        Ok((format!("{chunk}.mps"), File(Some(chunk_buf))))
                     })
                     .collect::<Result<Vec<_>, BrdbError>>()?;
                 let wire_chunks_dir = grid
                     .wires
                     .iter()
                     .map(|(chunk, wires)| {
-                        Ok(File(
+                        Ok((
                             format!("{chunk}.mps"),
-                            Some(
+                            File(Some(
                                 wires_schema
-                                    .write_brdb("BRSavedWireChunkSoA", wires)
+                                    .write_brdb(BRICK_WIRE_SOA, wires)
                                     .about_f(|| format!("Grids/{grid_id}/Wires/{chunk}.mps"))?,
-                            ),
+                            )),
                         ))
                     })
                     .collect::<Result<Vec<_>, BrdbError>>()?;
 
                 // Append non-empty chunk directories to the grid directory
                 if !brick_chunks_dir.is_empty() {
-                    grid_dir.push(Folder("Chunks".to_owned(), Some(brick_chunks_dir)));
+                    grid_dir.push(("Chunks".to_owned(), Folder(Some(brick_chunks_dir))));
                 }
                 if !component_chunks_dir.is_empty() {
-                    grid_dir.push(Folder("Components".to_owned(), Some(component_chunks_dir)));
+                    grid_dir.push(("Components".to_owned(), Folder(Some(component_chunks_dir))));
                 }
                 if !wire_chunks_dir.is_empty() {
-                    grid_dir.push(Folder("Wires".to_owned(), Some(wire_chunks_dir)));
+                    grid_dir.push(("Wires".to_owned(), Folder(Some(wire_chunks_dir))));
                 }
-                grids_dir.push(Folder(grid_id.to_string(), Some(grid_dir)));
+                grids_dir.push((grid_id.to_string(), Folder(Some(grid_dir))));
             }
 
             let mut entities_dir = vec![
-                File(
+                (
                     "ChunkIndex.schema".to_owned(),
-                    Some(
+                    File(Some(
                         entity_chunk_index_schema
                             .to_vec()
                             .about("ChunkIndex.schema")?,
-                    ),
+                    )),
                 ),
-                File(
+                (
                     "ChunkIndex.mps".to_owned(),
-                    Some(
+                    File(Some(
                         entity_chunk_index_schema
-                            .write_brdb("BRSavedEntityChunkIndexSoA", &world.entity_chunk_indices)
+                            .write_brdb(ENTITY_CHUNK_INDEX_SOA, &world.entity_chunk_indices)
                             .about("ChunkIndex.mps")?,
-                    ),
+                    )),
                 ),
-                File(
+                (
                     "ChunksShared.schema".to_owned(),
-                    Some(world.entity_schema.to_vec().about("ChunksShared.schema")?),
+                    File(Some(
+                        world.entity_schema.to_vec().about("ChunksShared.schema")?,
+                    )),
                 ),
             ];
 
@@ -235,65 +247,72 @@ impl BrdbPendingFs {
                 .entity_chunks
                 .into_iter()
                 .map(|(chunk, entities)| {
-                    Ok(File(
+                    Ok((
                         format!("{chunk}.mps"),
-                        Some(
+                        File(Some(
                             world
                                 .entity_schema
-                                .write_brdb("BRSavedEntityChunkSoA", &entities)
+                                .write_brdb(ENTITY_CHUNK_SOA, &entities)
                                 .about_f(|| format!("Entities/Chunks/{chunk}.mps"))?,
-                        ),
+                        )),
                     ))
                 })
                 .collect::<Result<Vec<_>, BrdbError>>()?;
 
             // Only add the Chunks directory if there are any chunks
             if !entities_chunks_dir.is_empty() {
-                entities_dir.push(Folder("Chunks".to_owned(), Some(entities_chunks_dir)));
+                entities_dir.push(("Chunks".to_owned(), Folder(Some(entities_chunks_dir))));
             }
-            bricks_dir.push(Folder("Grids".to_owned(), Some(grids_dir)));
-            world_dir.push(Folder("Bricks".to_owned(), Some(bricks_dir)));
-            world_dir.push(Folder("Entities".to_owned(), Some(entities_dir)));
-            worlds.push(Folder(world_id.to_string(), Some(world_dir)));
+            bricks_dir.push(("Grids".to_owned(), Folder(Some(grids_dir))));
+            world_dir.push(("Bricks".to_owned(), Folder(Some(bricks_dir))));
+            world_dir.push(("Entities".to_owned(), Folder(Some(entities_dir))));
+            worlds.push((world_id.to_string(), Folder(Some(world_dir))));
         }
 
-        let meta_dir = Folder(
+        let meta_dir = (
             "Meta".to_owned(),
-            Some(vec![
-                File(
+            Folder(Some(vec![
+                (
                     "Bundle.json".to_owned(),
-                    Some(serde_json::to_vec(&fs.meta.bundle).about("Bundle.json")?),
+                    File(Some(
+                        serde_json::to_vec(&fs.meta.bundle).about("Bundle.json")?,
+                    )),
                 ),
-                File("Screenshot.jpg".to_owned(), fs.meta.screenshot.clone()),
-                File(
+                (
+                    "Screenshot.jpg".to_owned(),
+                    File(fs.meta.screenshot.clone()),
+                ),
+                (
                     "World.json".to_owned(),
-                    Some(serde_json::to_vec(&fs.meta.bundle).about("World.json")?),
+                    File(Some(
+                        serde_json::to_vec(&fs.meta.world).about("World.json")?,
+                    )),
                 ),
-            ]),
+            ])),
         );
 
-        let world_dir = Folder("World".to_owned(), Some(worlds));
+        let world_dir = ("World".to_owned(), Folder(Some(worlds)));
 
         Ok(Root(vec![meta_dir, world_dir]))
     }
 
-    pub fn to_root(self) -> Option<Vec<BrdbPendingFs>> {
+    pub fn to_root(self) -> Option<Vec<(String, BrdbPendingFs)>> {
         match self {
             BrdbPendingFs::Root(items) => Some(items),
             _ => None,
         }
     }
 
-    pub fn to_folder(self) -> Option<(String, Vec<BrdbPendingFs>)> {
+    pub fn to_folder(self) -> Option<Vec<(String, BrdbPendingFs)>> {
         match self {
-            BrdbPendingFs::Folder(name, items) => Some((name, items?)),
+            BrdbPendingFs::Folder(items) => items,
             _ => None,
         }
     }
 
-    pub fn to_file(self) -> Option<(String, Option<Vec<u8>>)> {
+    pub fn to_file(self) -> Option<Vec<u8>> {
         match self {
-            BrdbPendingFs::File(name, items) => Some((name, items)),
+            BrdbPendingFs::File(items) => items,
             _ => None,
         }
     }
@@ -307,25 +326,25 @@ impl Display for BrdbPendingFs {
                 "[{}]",
                 items
                     .iter()
-                    .map(|i| i.to_string())
+                    .map(|(n, i)| format!("{n} {i}"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            BrdbPendingFs::Folder(n, items) => write!(
+            BrdbPendingFs::Folder(items) => write!(
                 f,
-                "{n} [{}]",
+                "[{}]",
                 items
                     .as_ref()
                     .map(|v| v
                         .iter()
-                        .map(|i| i.to_string())
+                        .map(|(n, i)| format!("{n} {i}"))
                         .collect::<Vec<_>>()
                         .join(", "))
                     .unwrap_or_else(|| "empty".to_string())
             ),
-            BrdbPendingFs::File(n, content) => write!(
+            BrdbPendingFs::File(content) => write!(
                 f,
-                "{n} ({})",
+                "({})",
                 content
                     .as_ref()
                     .map(|v| v.len().to_string())
@@ -342,7 +361,13 @@ mod tests {
     use crate::brdb::{
         pending::BrdbPendingFs,
         schema::{ReadBrdbSchema, as_brdb::AsBrdbValue},
-        wrapper::{Brick, World},
+        wrapper::{
+            Brick, World,
+            schemas::{
+                BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, BRICK_COMPONENT_SOA, BRICK_WIRE_SOA,
+                GLOBAL_DATA_SOA,
+            },
+        },
     };
 
     #[test]
@@ -359,23 +384,21 @@ mod tests {
         // Get the world from the root of the tree,
         // validate the Meta dir exists
         let world_dir = 'world: {
-            for root_dir in root {
-                let (name, children) = root_dir.to_folder().unwrap();
+            for (name, root_dir) in root {
+                let children = root_dir.to_folder().unwrap();
                 match name.as_str() {
                     // Ensure all expected meta files exist
                     "Meta" => {
-                        children
-                            .into_iter()
-                            .for_each(|c| match c.to_file().unwrap().0.as_str() {
-                                "World.json" | "Bundle.json" | "Screenshot.jpg" => {}
-                                other => panic!("unknown Meta/{other}"),
-                            });
+                        children.into_iter().for_each(|(n, _)| match n.as_str() {
+                            "World.json" | "Bundle.json" | "Screenshot.jpg" => {}
+                            other => panic!("unknown Meta/{other}"),
+                        });
                         continue;
                     }
                     "World" => {
                         assert_eq!(children.len(), 1);
                         // Get the /0 directory in the world
-                        break 'world children.into_iter().next().unwrap().to_folder().unwrap().1;
+                        break 'world children.into_iter().next().unwrap().1.to_folder().unwrap();
                     }
                     other => panic!("unknown {other}"),
                 };
@@ -390,29 +413,29 @@ mod tests {
         let mut bricks_dir = None;
         let mut entities_dir = None;
 
-        for d in world_dir {
-            match d {
-                BrdbPendingFs::File(n, Some(data)) if n == "Owners.schema" => {
+        for (n, d) in world_dir {
+            match (n.as_str(), d) {
+                ("Owners.schema", BrdbPendingFs::File(Some(data))) => {
                     owners_schema = Some(data.as_slice().read_brdb_schema()?);
                 }
-                BrdbPendingFs::File(n, data) if n == "Owners.mps" => {
+                ("Owners.mps", BrdbPendingFs::File(data)) => {
                     owners_vec = data;
                 }
-                BrdbPendingFs::File(n, Some(data)) if n == "GlobalData.schema" => {
+                ("GlobalData.schema", BrdbPendingFs::File(Some(data))) => {
                     global_data_schema = Some(data.as_slice().read_brdb_schema()?);
                 }
-                BrdbPendingFs::File(n, data) if n == "GlobalData.mps" => {
+                ("GlobalData.mps", BrdbPendingFs::File(data)) => {
                     global_data_vec = data;
                 }
-                BrdbPendingFs::Folder(n, items) if n == "Bricks" => {
+                ("Bricks", BrdbPendingFs::Folder(items)) => {
                     bricks_dir = items;
                 }
-                BrdbPendingFs::Folder(n, items) if n == "Entities" => {
+                ("Entities", BrdbPendingFs::Folder(items)) => {
                     entities_dir = items;
                 }
-                BrdbPendingFs::File(_, _) => unreachable!("no more files"),
-                BrdbPendingFs::Folder(_, _) => unreachable!("no more folders"),
-                BrdbPendingFs::Root(_) => unreachable!("no root"),
+                (name, BrdbPendingFs::File(_)) => unreachable!("{name}: no more files"),
+                (name, BrdbPendingFs::Folder(_)) => unreachable!("{name}: no more folders"),
+                (name, BrdbPendingFs::Root(_)) => unreachable!("{name}: no root"),
             }
         }
 
@@ -420,7 +443,7 @@ mod tests {
         let global_data = global_data_vec
             .unwrap()
             .as_slice()
-            .read_brdb(global_data_schema.as_ref().unwrap(), "BRSavedGlobalDataSoA")?;
+            .read_brdb(global_data_schema.as_ref().unwrap(), GLOBAL_DATA_SOA)?;
 
         // Ensure owners can read completely
         let _owners = owners_vec
@@ -434,111 +457,90 @@ mod tests {
         let mut wire_schema = None;
         let mut brick_grids = None;
 
-        for fs in bricks_dir.unwrap() {
-            match fs {
-                BrdbPendingFs::Folder(n, items) if n == "Grids" => {
+        for (n, fs) in bricks_dir.unwrap() {
+            match (n.as_str(), fs) {
+                ("Grids", BrdbPendingFs::Folder(items)) => {
                     brick_grids = items;
                 }
-                BrdbPendingFs::File(n, Some(data)) if n == "ChunkIndexShared.schema" => {
+                ("ChunkIndexShared.schema", BrdbPendingFs::File(Some(data))) => {
                     brick_index_schema = Some(data.as_slice().read_brdb_schema()?);
                 }
-                BrdbPendingFs::File(n, Some(data)) if n == "ChunksShared.schema" => {
+                ("ChunksShared.schema", BrdbPendingFs::File(Some(data))) => {
                     brick_schema = Some(data.as_slice().read_brdb_schema()?);
                 }
-                BrdbPendingFs::File(n, Some(data)) if n == "ComponentsShared.schema" => {
+                ("ComponentsShared.schema", BrdbPendingFs::File(Some(data))) => {
                     component_schema = Some(data.as_slice().read_brdb_schema()?);
                 }
-                BrdbPendingFs::File(n, Some(data)) if n == "WiresShared.schema" => {
+                ("WiresShared.schema", BrdbPendingFs::File(Some(data))) => {
                     wire_schema = Some(data.as_slice().read_brdb_schema()?);
                 }
-                other => unreachable!("unknown Bricks/{other}"),
+                (other, f) => unreachable!("unknown Bricks/{other}: {f}"),
             }
         }
 
         let component_schema = component_schema.as_ref().unwrap();
 
-        for grid in brick_grids.unwrap() {
-            let (grid_id, children) = grid.to_folder().unwrap();
-            for child in children {
-                match child {
-                    BrdbPendingFs::Folder(n, Some(chunks)) if n == "Chunks" => {
-                        for c in chunks {
-                            let _chunk = c.to_file().unwrap().1.unwrap().as_slice().read_brdb(
-                                brick_schema.as_ref().unwrap(),
-                                "BRSavedBrickChunkSoA",
-                            )?;
+        for (grid_id, grid) in brick_grids.unwrap() {
+            let children = grid.to_folder().unwrap();
+            for (n, child) in children {
+                match (n.as_str(), child) {
+                    ("Chunks", BrdbPendingFs::Folder(Some(chunks))) => {
+                        for (_, c) in chunks {
+                            let _chunk = c
+                                .to_file()
+                                .unwrap()
+                                .as_slice()
+                                .read_brdb(brick_schema.as_ref().unwrap(), BRICK_CHUNK_SOA)?;
                         }
                     }
-                    BrdbPendingFs::Folder(n, Some(chunks)) if n == "Components" => {
-                        for c in chunks {
-                            let Some((_name, Some(content))) = c.to_file() else {
-                                panic!("invalid chunk {n}")
-                            };
+                    ("Components", BrdbPendingFs::Folder(Some(chunks))) => {
+                        for (_, c) in chunks {
+                            let content = c.to_file().unwrap();
                             let buf = &mut content.as_slice();
-                            let chunk =
-                                buf.read_brdb(&component_schema, "BRSavedComponentChunkSoA")?;
+                            let chunk = buf.read_brdb(&component_schema, BRICK_COMPONENT_SOA)?;
 
-                            let type_counters = chunk
-                                .as_struct()?
-                                .prop("ComponentTypeCounters")?
-                                .as_array()?;
+                            let type_counters = chunk.prop("ComponentTypeCounters")?.as_array()?;
                             for counter in type_counters {
                                 let type_idx =
                                     counter.as_struct()?.prop("TypeIndex")?.as_brdb_u32()?;
                                 let num_instances =
                                     counter.as_struct()?.prop("NumInstances")?.as_brdb_u32()?;
-                                let type_name = global_data
-                                    .as_struct()?
-                                    .prop("ComponentTypeNames")?
-                                    .as_array()?
-                                    .get(type_idx as usize)
-                                    .map(|s| s.as_str())
-                                    .transpose()?
-                                    .unwrap_or("illegal")
-                                    .to_owned();
                                 let struct_name = global_data
-                                    .as_struct()?
                                     .prop("ComponentDataStructNames")?
-                                    .as_array()?
-                                    .get(type_idx as usize)
+                                    .index(type_idx as usize)?
                                     .map(|s| s.as_str())
                                     .transpose()?
                                     .unwrap_or("illegal")
                                     .to_owned();
-
-                                println!(
-                                    "Component type {type_name}/{struct_name} (index {type_idx}) has {num_instances} instances"
-                                );
 
                                 if struct_name == "None" {
                                     continue;
                                 }
 
                                 for _ in 0..num_instances {
-                                    let component =
+                                    let _component =
                                         buf.read_brdb(&component_schema, &struct_name)?;
-                                    println!("Component: {}", component.display(&component_schema));
                                 }
                             }
                         }
                     }
-                    BrdbPendingFs::Folder(n, Some(chunks)) if n == "Wires" => {
-                        for c in chunks {
-                            let _chunk =
-                                c.to_file().unwrap().1.unwrap().as_slice().read_brdb(
-                                    wire_schema.as_ref().unwrap(),
-                                    "BRSavedWireChunkSoA",
-                                )?;
+                    ("Wires", BrdbPendingFs::Folder(Some(chunks))) => {
+                        for (_, c) in chunks {
+                            let _chunk = c
+                                .to_file()
+                                .unwrap()
+                                .as_slice()
+                                .read_brdb(wire_schema.as_ref().unwrap(), BRICK_WIRE_SOA)?;
                         }
                     }
-                    BrdbPendingFs::File(n, data) if n == "ChunkIndex" => {
+                    ("ChunkIndex", BrdbPendingFs::File(data)) => {
                         // read the chunk index
                         let _chunk_index = data.unwrap().as_slice().read_brdb(
                             brick_index_schema.as_ref().unwrap(),
-                            "BRSavedBrickChunkIndexSoA",
+                            BRICK_CHUNK_INDEX_SOA,
                         )?;
                     }
-                    other => unreachable!("unknown Grids/{grid_id}/{other}"),
+                    (n, other) => unreachable!("unknown Grids/{grid_id}/{n}: {other}"),
                 }
             }
         }
@@ -548,23 +550,21 @@ mod tests {
         let mut _entity_schema = None;
         let mut _entity_chunks = None;
 
-        for fs in entities_dir.unwrap() {
-            match fs {
-                BrdbPendingFs::Folder(n, items) if n == "Chunks" => {
+        for (n, fs) in entities_dir.unwrap() {
+            match (n.as_str(), fs) {
+                ("Chunks", BrdbPendingFs::Folder(items)) => {
                     _entity_chunks = items;
                 }
-                BrdbPendingFs::File(n, data) if n == "ChunksShared.schema" => {
+                ("ChunksShared.schema", BrdbPendingFs::File(data)) => {
                     _entity_schema = Some(data.unwrap().as_slice().read_brdb_schema()?);
                 }
-                BrdbPendingFs::File(n, data) if n == "ChunkIndex.schema" => {
+                ("ChunkIndex.schema", BrdbPendingFs::File(data)) => {
                     _entity_index_schema = Some(data.unwrap().as_slice().read_brdb_schema()?);
                 }
-                BrdbPendingFs::File(n, data) if n == "ChunkIndex.mps" => {
+                ("ChunkIndex.mps", BrdbPendingFs::File(data)) => {
                     _entity_index_vec = data;
                 }
-                BrdbPendingFs::Folder(_, _) => unreachable!(),
-                BrdbPendingFs::File(_, _) => todo!(),
-                BrdbPendingFs::Root(_) => unreachable!(),
+                (n, other) => unreachable!("unknown Entities/{n}: {other}"),
             }
         }
 

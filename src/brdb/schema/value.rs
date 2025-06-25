@@ -119,14 +119,32 @@ impl BrdbValue {
         }
     }
 
+    pub fn prop(&self, prop: impl AsRef<str>) -> Result<&BrdbValue, BrdbSchemaError> {
+        let prop = prop.as_ref();
+        let s = self.as_struct()?;
+        s.get(prop).ok_or_else(|| {
+            BrdbSchemaError::MissingStructField(
+                s.schema
+                    .intern
+                    .lookup(s.name)
+                    .unwrap_or_else(|| "unknown struct".to_string()),
+                prop.to_owned(),
+            )
+        })
+    }
+
     pub fn as_array(&self) -> Result<&Vec<BrdbValue>, BrdbSchemaError> {
         match self {
-            Self::Array(v) => Ok(v),
+            Self::Array(v) | Self::FlatArray(v) => Ok(v),
             _ => Err(BrdbSchemaError::ExpectedType(
                 "array".to_owned(),
                 self.get_type().to_string(),
             )),
         }
+    }
+
+    pub fn index(&self, index: usize) -> Result<Option<&BrdbValue>, BrdbSchemaError> {
+        Ok(self.as_array()?.get(index))
     }
 
     pub fn as_str(&self) -> Result<&str, BrdbSchemaError> {

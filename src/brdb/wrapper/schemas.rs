@@ -1,5 +1,13 @@
 use crate::brdb::schema::BrdbSchema;
 
+pub const GLOBAL_DATA_SOA: &str = "BRSavedGlobalDataSoA";
+pub const BRICK_CHUNK_SOA: &str = "BRSavedBrickChunkSoA";
+pub const BRICK_COMPONENT_SOA: &str = "BRSavedComponentChunkSoA";
+pub const BRICK_WIRE_SOA: &str = "BRSavedWireChunkSoA";
+pub const BRICK_CHUNK_INDEX_SOA: &str = "BRSavedBrickChunkIndexSoA";
+pub const ENTITY_CHUNK_SOA: &str = "BRSavedEntityChunkSoA";
+pub const ENTITY_CHUNK_INDEX_SOA: &str = "BRSavedEntityChunkIndexSoA";
+
 /// World/0/GlobalData.schema
 pub fn global_data_schema() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(

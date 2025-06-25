@@ -65,7 +65,7 @@ impl Default for WorldJson {
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct WorldMeta {
-    /// Meta/Bundle.Json
+    /// Meta/Bundle.json
     pub bundle: BundleJson,
     /// Meta/Screenshot.jpg
     pub screenshot: Option<Vec<u8>>,
@@ -112,7 +112,7 @@ impl World {
             }
 
             // Add the world
-            unsaved_fs.worlds.insert(1, world);
+            unsaved_fs.worlds.insert(0, world);
         }
 
         Ok(unsaved_fs)
@@ -228,6 +228,9 @@ impl UnsavedWorld {
                     .insert(id, (grid_id, chunk_index, brick_index));
             }
         }
+
+        // Add the grid to the world
+        self.grids.insert(grid_id, grid);
     }
 }
 

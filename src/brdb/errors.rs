@@ -1,4 +1,4 @@
-use std::{fmt::Display, path::PathBuf};
+use std::fmt::Display;
 
 use thiserror::Error;
 
@@ -26,10 +26,14 @@ impl BrdbError {
 
 #[derive(Debug, Error)]
 pub enum BrdbFsError {
+    #[error("{0}: {1}")]
+    Wrapped(String, Box<BrdbFsError>),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
-    #[error(transparent)]
-    Decompress(#[from] std::io::Error),
+    #[error("failed to decompress data: {0}")]
+    Decompress(std::io::Error),
+    #[error("failed to compress data: {0}")]
+    Compress(std::io::Error),
     #[error("{name}: invalid size found: {found}, expected: {expected}")]
     InvalidSize {
         name: String,
@@ -38,28 +42,41 @@ pub enum BrdbFsError {
     },
     #[error("invalid hash found: {found:?}, expected: {expected:?}")]
     InvalidHash { found: Vec<u8>, expected: Vec<u8> },
-    #[error("expected a file but found a directory")]
-    ExpectedFile(PathBuf),
-    #[error("expected a directory but found a file")]
-    ExpectedDirectory(PathBuf),
-    #[error("file or directory does not exist")]
-    NotFound(PathBuf),
+    #[error("expected a file but found a directory at {0}")]
+    ExpectedFile(String),
+    #[error("file {0} does not have any content")]
+    ExpectedFileContent(String),
+    #[error("expected a directory but found a file {0}")]
+    ExpectedDirectory(String),
+    #[error("file or directory {0} does not exist")]
+    NotFound(String),
     #[error("file or directory at path is not a directory: {0}")]
-    NotADirectory(PathBuf),
+    NotADirectory(String),
     #[error("an absolute path is not allowed outside of the brdb root")]
     AbsolutePathNotAllowed,
+    #[error("invalid fs structure: {0} vs {1}")]
+    InvalidStructure(String, String),
+    #[error("cannot write entry twice in same folder: {0}")]
+    DuplicateName(String),
+    #[error("invalid path component {0}")]
+    InvalidPathComponent(String),
 }
 
 impl BrdbFsError {
-    pub fn prepend(self, path: impl Into<PathBuf>) -> Self {
+    pub fn wrap(self, label: impl Display) -> Self {
+        Self::Wrapped(label.to_string(), Box::new(self))
+    }
+}
+
+impl BrdbFsError {
+    pub fn prepend(self, path: impl Display) -> Self {
         match self {
-            BrdbFsError::ExpectedFile(p) => BrdbFsError::ExpectedFile(path.into().join(p)),
+            BrdbFsError::ExpectedFile(p) => BrdbFsError::ExpectedFile(format!("{path}/{p}")),
             BrdbFsError::ExpectedDirectory(p) => {
-                BrdbFsError::ExpectedDirectory(path.into().join(p))
+                BrdbFsError::ExpectedDirectory(format!("{path}/{p}"))
             }
-            BrdbFsError::NotFound(p) => BrdbFsError::NotFound(path.into().join(p)),
-            BrdbFsError::NotADirectory(p) => BrdbFsError::NotADirectory(path.into().join(p)),
-            BrdbFsError::AbsolutePathNotAllowed => BrdbFsError::AbsolutePathNotAllowed,
+            BrdbFsError::NotFound(p) => BrdbFsError::NotFound(format!("{path}/{p}")),
+            BrdbFsError::NotADirectory(p) => BrdbFsError::NotADirectory(format!("{path}/{p}")),
             other => other,
         }
     }
