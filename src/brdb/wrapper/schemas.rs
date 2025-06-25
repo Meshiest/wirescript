@@ -7,6 +7,7 @@ pub const BRICK_WIRE_SOA: &str = "BRSavedWireChunkSoA";
 pub const BRICK_CHUNK_INDEX_SOA: &str = "BRSavedBrickChunkIndexSoA";
 pub const ENTITY_CHUNK_SOA: &str = "BRSavedEntityChunkSoA";
 pub const ENTITY_CHUNK_INDEX_SOA: &str = "BRSavedEntityChunkIndexSoA";
+pub const OWNER_TABLE_SOA: &str = "BRSavedOwnerTableSoA";
 
 /// World/0/GlobalData.schema
 pub fn global_data_schema() -> BrdbSchema {

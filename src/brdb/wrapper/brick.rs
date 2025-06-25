@@ -59,12 +59,12 @@ impl Brick {
         }
     }
 
-    pub fn material_glass() -> Arc<String> {
+    pub fn material_plastic() -> Arc<String> {
         static MAT_PLASTIC: LazyLock<Arc<String>> =
             LazyLock::new(|| Arc::new(String::from("BMC_Plastic")));
         MAT_PLASTIC.clone()
     }
-    pub fn material_plastic() -> Arc<String> {
+    pub fn material_glass() -> Arc<String> {
         static MAT_GLASS: LazyLock<Arc<String>> =
             LazyLock::new(|| Arc::new(String::from("BMC_Glass")));
         MAT_GLASS.clone()
@@ -97,7 +97,7 @@ impl Default for Brick {
             id: None,
             asset: BrickType::Procedural {
                 asset: Arc::new(String::from("PB_DefaultBrick")),
-                size: BrickSize { x: 5, y: 5, z: 3 },
+                size: BrickSize { x: 5, y: 5, z: 6 },
             },
             owner_index: None,
             position: Position { x: 0, y: 0, z: 0 },
@@ -517,6 +517,8 @@ impl BrickChunkSoA {
                         self.brick_sizes.push(*size);
                     }
                 } else {
+                    self.brick_sizes.push(*size);
+                    self.brick_type_indices.push(ty_index);
                     self.brick_size_counters.push(BrickSizeCounter {
                         asset_index: ty_index,
                         num_sizes: 1,

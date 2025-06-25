@@ -7,7 +7,7 @@ use crate::brdb::{
         UnsavedFs,
         schemas::{
             self, BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, BRICK_COMPONENT_SOA, BRICK_WIRE_SOA,
-            ENTITY_CHUNK_INDEX_SOA, ENTITY_CHUNK_SOA, GLOBAL_DATA_SOA,
+            ENTITY_CHUNK_INDEX_SOA, ENTITY_CHUNK_SOA, GLOBAL_DATA_SOA, OWNER_TABLE_SOA,
         },
     },
 };
@@ -81,7 +81,7 @@ impl BrdbPendingFs {
                     "Owners.mps".to_owned(),
                     File(Some(
                         owners_schema
-                            .write_brdb("BRSavedOwnerTableSoA", &world.owners)
+                            .write_brdb(OWNER_TABLE_SOA, &world.owners)
                             .about("Owners.mps")?,
                     )),
                 ),
@@ -365,7 +365,7 @@ mod tests {
             Brick, World,
             schemas::{
                 BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, BRICK_COMPONENT_SOA, BRICK_WIRE_SOA,
-                GLOBAL_DATA_SOA,
+                GLOBAL_DATA_SOA, OWNER_TABLE_SOA,
             },
         },
     };
@@ -449,7 +449,7 @@ mod tests {
         let _owners = owners_vec
             .unwrap()
             .as_slice()
-            .read_brdb(&owners_schema.unwrap(), "BRSavedOwnerTableSoA")?;
+            .read_brdb(&owners_schema.unwrap(), OWNER_TABLE_SOA)?;
 
         let mut brick_index_schema = None;
         let mut brick_schema = None;

@@ -44,7 +44,7 @@ impl Default for BundleJson {
             authors: vec![],
             created_at: "0001.01.01-00.00.00".to_string(),
             updated_at: "0001.01.01-00.00.00".to_string(),
-            description: "".to_string(),
+            description: "A Generated World".to_string(),
             dependencies: vec![],
         }
     }

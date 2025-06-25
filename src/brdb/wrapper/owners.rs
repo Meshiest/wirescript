@@ -35,14 +35,22 @@ impl AsBrdbValue for Guid {
     }
 }
 
-#[derive(Default)]
 pub struct Owner {
     pub user_id: Guid,
     pub user_name: String,
     pub display_name: String,
 }
 
-#[derive(Default)]
+impl Default for Owner {
+    fn default() -> Self {
+        Self {
+            user_id: Guid::default(),
+            user_name: "PUBLIC".to_string(),
+            display_name: "PUBLIC".to_string(),
+        }
+    }
+}
+
 pub struct OwnerTableSoA {
     pub user_ids: Vec<Guid>,
     pub user_names: Vec<String>,
@@ -51,6 +59,22 @@ pub struct OwnerTableSoA {
     pub brick_counts: Vec<u32>,
     pub component_counts: Vec<u32>,
     pub wire_counts: Vec<u32>,
+}
+
+impl Default for OwnerTableSoA {
+    fn default() -> Self {
+        let mut soa = Self {
+            user_ids: Vec::new(),
+            user_names: Vec::new(),
+            display_names: Vec::new(),
+            entity_counts: Vec::new(),
+            brick_counts: Vec::new(),
+            component_counts: Vec::new(),
+            wire_counts: Vec::new(),
+        };
+        soa.add(&Owner::default());
+        soa
+    }
 }
 
 impl OwnerTableSoA {
