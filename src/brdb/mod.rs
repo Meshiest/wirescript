@@ -17,6 +17,7 @@ use crate::brdb::{
     wrapper::schemas::{GLOBAL_DATA_SOA, OWNER_TABLE_SOA},
 };
 
+pub mod assets;
 pub mod errors;
 pub mod fs;
 pub mod pending;
@@ -507,12 +508,12 @@ mod test {
     use std::path::PathBuf;
 
     use crate::brdb::{
-        Brdb,
+        Brdb, assets,
         errors::BrdbError,
         schema::{ReadBrdbSchema, as_brdb::AsBrdbValue},
         tables::BrdbBlob,
         wrapper::{
-            Brick, LiteralComponent, WirePort, World,
+            Brick, World,
             schemas::{BRICK_CHUNK_SOA, BRICK_COMPONENT_SOA, BRICK_WIRE_SOA},
         },
     };
@@ -649,43 +650,27 @@ mod test {
         let mut world = World::new();
         world.meta.bundle.description = "Test World".to_string();
 
-        let rerouter = LiteralComponent::new(
-            "Component_Internal_Rerouter",
-            "BrickComponentData_Rerouter",
-            "struct BrickComponentData_Rerouter {}",
-            [],
-            ["RER_Input".into(), "RER_Output".into()],
-        )?;
-
-        let mut a = Brick {
+        let (a, a_id) = Brick {
             position: (0, 0, 1).into(),
             color: (255, 0, 0).into(),
-            asset: Brick::ASSET_B_REROUTE.into(),
+            asset: assets::bricks::B_REROUTE,
             ..Default::default()
         }
-        .with_component(rerouter.clone());
-        let mut b = Brick {
+        .with_component(assets::components::Rerouter)
+        .with_id_split();
+        let (b, b_id) = Brick {
             position: (10, 0, 1).into(),
             color: (255, 0, 0).into(),
-            asset: Brick::ASSET_B_REROUTE.into(),
+            asset: assets::bricks::B_REROUTE,
             ..Default::default()
         }
-        .with_component(rerouter.clone());
+        .with_component(assets::components::Rerouter)
+        .with_id_split();
 
-        let a_id = a.add_id();
-        let b_id = b.add_id();
         world.add_bricks([a, b]);
         world.add_wire_connection(
-            WirePort {
-                brick_id: a_id,
-                component_type: "Component_Internal_Rerouter".into(),
-                port_name: "RER_Output".into(),
-            },
-            WirePort {
-                brick_id: b_id,
-                component_type: "Component_Internal_Rerouter".into(),
-                port_name: "RER_Input".into(),
-            },
+            assets::components::Rerouter::output_of(a_id),
+            assets::components::Rerouter::input_of(b_id),
         );
 
         db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;

@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::brdb::{
+    assets,
     schema::{
         BrdbSchemaGlobalData,
         as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
@@ -45,6 +46,16 @@ impl Brick {
         }
         self.id = Some(Self::next_id());
         self
+    }
+
+    /// Sets the ID of the brick to a new value if it does not already have one.
+    pub fn with_id_split(mut self) -> (Self, usize) {
+        if let Some(id) = self.id {
+            return (self, id);
+        }
+        let id = Self::next_id();
+        self.id = Some(id);
+        (self, id)
     }
 
     /// Adds an ID to the brick if it does not already have one.
@@ -95,17 +106,6 @@ impl Brick {
         self.set_material(material);
         self
     }
-
-    pub const MATERIAL_PLASTIC: BString = BString::str("BMC_Plastic");
-    pub const MATERIAL_GLASS: BString = BString::str("BMC_Glass");
-    pub const MATERIAL_TRANSLUCENT_PLASTIC: BString = BString::str("BMC_TranslucentPlastic");
-    pub const MATERIAL_GLOW: BString = BString::str("BMC_Glow");
-    pub const MATERIAL_METALLIC: BString = BString::str("BMC_Metallic");
-    pub const MATERIAL_HOLOGRAM: BString = BString::str("BMC_Hologram");
-
-    pub const ASSET_PB_DEFAULT_BRICK: BString = BString::str("PB_DefaultBrick");
-    pub const ASSET_B_REROUTE: BString = BString::str("B_1x1_Reroute_Node");
-    pub const ASSET_B_GATE_NOT: BString = BString::str("B_1x1_NOT_Gate");
 }
 
 impl Default for Brick {
@@ -113,7 +113,7 @@ impl Default for Brick {
         Self {
             id: None,
             asset: BrickType::Procedural {
-                asset: Brick::ASSET_PB_DEFAULT_BRICK,
+                asset: assets::bricks::PB_DEFAULT_BRICK,
                 size: BrickSize { x: 5, y: 5, z: 6 },
             },
             owner_index: None,
@@ -124,7 +124,7 @@ impl Default for Brick {
             visible: true,
             color: Default::default(),
             material_intensity: 5,
-            material: Brick::MATERIAL_PLASTIC,
+            material: assets::materials::PLASTIC,
             components: Default::default(),
         }
     }
@@ -220,12 +220,25 @@ pub enum BrickType {
 }
 
 impl BrickType {
+    pub const fn str(asset: &'static str) -> Self {
+        BrickType::Basic(BString::str(asset))
+    }
+}
+
+impl BrickType {
     pub fn is_procedural(&self) -> bool {
         matches!(self, BrickType::Procedural { .. })
     }
 
     pub fn is_basic(&self) -> bool {
         matches!(self, BrickType::Basic(_))
+    }
+
+    pub fn asset(&self) -> &BString {
+        match self {
+            BrickType::Basic(asset) => asset,
+            BrickType::Procedural { asset, .. } => asset,
+        }
     }
 }
 
