@@ -1,139 +1,17 @@
 use std::collections::HashMap;
 
-use indexmap::IndexMap;
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
 
 use crate::brdb::{
-    errors::BrdbError,
+    errors::{BrdbError, BrdbWorldError},
     pending::BrdbPendingFs,
     schema::{BrdbSchema, BrdbSchemaGlobalData},
     wrapper::{
         Brick, BrickChunkIndexSoA, BrickChunkSoA, ChunkIndex, ComponentChunkSoA,
-        EntityChunkIndexSoA, EntityChunkSoA, Guid, Owner, OwnerTableSoA, WireChunkSoA,
+        EntityChunkIndexSoA, EntityChunkSoA, LocalWirePortSource, OwnerTableSoA,
+        RemoteWirePortSource, WireChunkSoA, WireConnection, WirePortTarget, WorldMeta, schemas,
     },
 };
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BundleJson {
-    #[serde(rename = "type")]
-    pub level_type: String,
-    #[serde(rename = "iD")]
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub tags: Vec<String>,
-    pub authors: Vec<String>,
-    #[serde(rename = "createdAt")]
-    pub created_at: String,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: String,
-    pub description: String,
-    // Unknown content
-    pub dependencies: Vec<serde_json::Value>,
-}
-
-impl Default for BundleJson {
-    fn default() -> Self {
-        Self {
-            level_type: "World".to_string(),
-            id: "00000000-0000-0000-0000-000000000000".to_string(),
-            name: "".to_string(),
-            version: "".to_string(),
-            tags: vec![],
-            authors: vec![],
-            created_at: "0001.01.01-00.00.00".to_string(),
-            updated_at: "0001.01.01-00.00.00".to_string(),
-            description: "A Generated World".to_string(),
-            dependencies: vec![],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct WorldJson {
-    pub environment: String,
-}
-
-impl Default for WorldJson {
-    fn default() -> Self {
-        Self {
-            environment: "Plate".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
-pub struct WorldMeta {
-    /// Meta/Bundle.json
-    pub bundle: BundleJson,
-    /// Meta/Screenshot.jpg
-    pub screenshot: Option<Vec<u8>>,
-    /// Meta/World.json
-    pub world: WorldJson,
-}
-
-#[derive(Default)]
-pub struct World {
-    pub meta: WorldMeta,
-    pub owners: IndexMap<Guid, Owner>,
-    /// Bricks on the main grid
-    pub bricks: Vec<Brick>,
-    pub grids: HashMap<usize, Vec<Brick>>,
-    pub wires: Vec<WireConnection>,
-    // TODO: minigame, environment, entities
-}
-
-impl World {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn to_unsaved(&self) -> Result<UnsavedFs, BrdbError> {
-        let mut unsaved_fs = UnsavedFs {
-            meta: self.meta.clone(),
-            worlds: Default::default(),
-        };
-
-        // Only one world exists right now...
-        {
-            let mut world = UnsavedWorld::default();
-            for o in self.owners.values() {
-                world.owners.add(o);
-            }
-
-            // Main grid bricks are on grid 1
-            world.add_bricks_to_grid(1, &self.bricks);
-
-            // Add all grids (by grid id)
-            for (grid_id, bricks) in &self.grids {
-                // TODO: error for brick grid id 1/0
-                world.add_bricks_to_grid(*grid_id, bricks);
-            }
-
-            // Add the world
-            unsaved_fs.worlds.insert(0, world);
-        }
-
-        Ok(unsaved_fs)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct WireConnection {
-    pub source: WirePort,
-    pub target: WirePort,
-}
-
-#[derive(Debug, Clone)]
-pub struct WirePort {
-    /// The remote brick where the port is located
-    pub brick_id: usize,
-    /// Name of the component in the brick to connect
-    pub component: String,
-    /// Name of the port in the component to connect
-    pub port_name: String,
-}
 
 /// All of the dynamic data needed to serialize a world
 pub struct UnsavedFs {
@@ -149,7 +27,6 @@ impl UnsavedFs {
     }
 }
 
-#[derive(Default)]
 pub struct UnsavedWorld {
     /// World/N/GlobalData.mps
     pub global_data: BrdbSchemaGlobalData,
@@ -177,29 +54,42 @@ pub struct UnsavedWorld {
     brick_id_map: HashMap<usize, (usize, ChunkIndex, usize)>,
 }
 
-#[derive(Default)]
-pub struct UnsavedGrid {
-    /// World/N/Bricks/Grids/I/ChunkIndex.mps
-    pub chunk_index: BrickChunkIndexSoA,
-    /// World/N/Bricks/Grids/I/Chunks/[key].mps
-    pub bricks: HashMap<ChunkIndex, BrickChunkSoA>,
-    /// World/N/Bricks/Grids/I/Components/[key].mps
-    pub components: HashMap<ChunkIndex, ComponentChunkSoA>,
-    /// World/N/Bricks/Grids/I/Wires/[key].mps
-    pub wires: HashMap<ChunkIndex, WireChunkSoA>,
-
-    /// Map of 3d chunk index to serial index in the `chunk_index` array
-    /// Used to quickly find the index of a chunk in the `chunk_index` array
-    chunk_index_map: HashMap<ChunkIndex, usize>,
+impl Default for UnsavedWorld {
+    fn default() -> Self {
+        Self {
+            global_data: Default::default(),
+            owners: Default::default(),
+            component_schema: schemas::bricks_components_schema_min(),
+            grids: Default::default(),
+            entity_chunks: Default::default(),
+            entity_schema: schemas::entities_chunks_schema(),
+            entity_chunk_indices: Default::default(),
+            minigame: Default::default(),
+            environment: Default::default(),
+            brick_id_map: Default::default(),
+        }
+    }
 }
 
 impl UnsavedWorld {
     fn add_brick_meta(&mut self, brick: &Brick) {
+        // Adding the brick's data to the global data
         self.global_data.add_brick_meta(brick);
 
         // Iterate the components of the brick and register
         // their respective struct metadata with the component schema
         for component in &brick.components {
+            // Skip components without a type
+            let Some((ty_name, _)) = component.get_schema_struct() else {
+                continue;
+            };
+
+            // If the component type is already registered, skip it
+            if self.global_data.has_component_type(ty_name.as_ref()) {
+                continue;
+            }
+            self.global_data.add_component_meta(component.as_ref());
+
             let Some((enums, structs)) = component.get_schema() else {
                 continue;
             };
@@ -207,7 +97,7 @@ impl UnsavedWorld {
         }
     }
 
-    fn add_bricks_to_grid(&mut self, grid_id: usize, bricks: &[Brick]) {
+    pub(super) fn add_bricks_to_grid(&mut self, grid_id: usize, bricks: &[Brick]) {
         let mut grid = UnsavedGrid::default();
 
         // Bricks are sorted by brick type, size, and position
@@ -232,6 +122,96 @@ impl UnsavedWorld {
         // Add the grid to the world
         self.grids.insert(grid_id, grid);
     }
+
+    pub(super) fn add_wire(&mut self, wire: &WireConnection) -> Result<(), BrdbError> {
+        // Resolve source wire metadata
+        let (s_grid, s_chunk, s_brick) = self
+            .brick_id_map
+            .get(&wire.source.brick_id)
+            .ok_or_else(|| BrdbWorldError::UnknownBrickId(wire.source.brick_id))?;
+        let s_comp_ty = self
+            .global_data
+            .get_component_type_index(&wire.source.component_type)
+            .ok_or_else(|| {
+                BrdbWorldError::UnknownComponent(wire.source.component_type.to_string())
+            })?;
+        let s_port_index = self
+            .global_data
+            .get_port_index(&wire.source.port_name)
+            .ok_or_else(|| BrdbWorldError::UnknownPort(wire.source.port_name.to_string()))?;
+
+        // Resolve target wire metadata
+        let (t_grid, t_chunk, t_brick) = self
+            .brick_id_map
+            .get(&wire.target.brick_id)
+            .ok_or_else(|| BrdbWorldError::UnknownBrickId(wire.target.brick_id))?;
+        let t_comp_ty = self
+            .global_data
+            .get_component_type_index(&wire.target.component_type)
+            .ok_or_else(|| {
+                BrdbWorldError::UnknownComponent(wire.target.component_type.to_string())
+            })?;
+        let t_port_index = self
+            .global_data
+            .get_port_index(&wire.target.port_name)
+            .ok_or_else(|| BrdbWorldError::UnknownPort(wire.target.port_name.to_string()))?;
+
+        // Create the target port
+        let target = WirePortTarget {
+            brick_index_in_chunk: *t_brick as u32,
+            component_type_index: t_comp_ty,
+            port_index: t_port_index,
+        };
+
+        // Wires are inserted in the target grid
+        let grid = self
+            .grids
+            .get_mut(t_grid)
+            .ok_or_else(|| BrdbWorldError::UnknownGridId(*t_grid))?;
+
+        // Increment the wire count for the target chunk
+        let chunk_id = grid.get_chunk_index(*t_chunk);
+        grid.chunk_index.num_wires[chunk_id] += 1;
+
+        // If the target and source are in the same grid and chunk,
+        // we can use a local wire source.
+        if t_grid == s_grid && t_chunk == s_chunk {
+            let source = LocalWirePortSource {
+                brick_index_in_chunk: *s_brick as u32,
+                component_type_index: s_comp_ty,
+                port_index: s_port_index,
+            };
+            grid.add_local_wire(*t_chunk, source, target);
+        } else {
+            // Otherwise, we need to use a remote wire source.
+            let source = RemoteWirePortSource {
+                grid_persistent_index: *s_grid as u32,
+                chunk_index: *s_chunk,
+                brick_index_in_chunk: *s_brick as u32,
+                component_type_index: s_comp_ty,
+                port_index: s_port_index,
+            };
+            grid.add_remote_wire(*t_chunk, source, target);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct UnsavedGrid {
+    /// World/N/Bricks/Grids/I/ChunkIndex.mps
+    pub chunk_index: BrickChunkIndexSoA,
+    /// World/N/Bricks/Grids/I/Chunks/[key].mps
+    pub bricks: HashMap<ChunkIndex, BrickChunkSoA>,
+    /// World/N/Bricks/Grids/I/Components/[key].mps
+    pub components: HashMap<ChunkIndex, ComponentChunkSoA>,
+    /// World/N/Bricks/Grids/I/Wires/[key].mps
+    pub wires: HashMap<ChunkIndex, WireChunkSoA>,
+
+    /// Map of 3d chunk index to serial index in the `chunk_index` array
+    /// Used to quickly find the index of a chunk in the `chunk_index` array
+    chunk_index_map: HashMap<ChunkIndex, usize>,
 }
 
 impl UnsavedGrid {
@@ -283,5 +263,29 @@ impl UnsavedGrid {
         }
 
         (chunk_index, brick_index as usize)
+    }
+
+    fn add_local_wire(
+        &mut self,
+        chunk: ChunkIndex,
+        source: LocalWirePortSource,
+        target: WirePortTarget,
+    ) {
+        self.wires
+            .entry(chunk)
+            .or_insert_with(WireChunkSoA::default)
+            .add_local_wire(source, target);
+    }
+
+    fn add_remote_wire(
+        &mut self,
+        chunk: ChunkIndex,
+        source: RemoteWirePortSource,
+        target: WirePortTarget,
+    ) {
+        self.wires
+            .entry(chunk)
+            .or_insert_with(WireChunkSoA::default)
+            .add_remote_wire(source, target);
     }
 }

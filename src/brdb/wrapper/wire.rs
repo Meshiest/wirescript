@@ -1,6 +1,8 @@
+use std::fmt::Display;
+
 use crate::brdb::{
-    schema::as_brdb::{AsBrdbValue, BrdbArrayIter, AsBrdbIter},
-    wrapper::{BitFlags, ChunkIndex},
+    schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
+    wrapper::{BString, BitFlags, ChunkIndex},
 };
 
 pub struct LocalWirePortSource {
@@ -72,6 +74,8 @@ impl AsBrdbValue for WirePortTarget {
         }
     }
 }
+
+#[derive(Default)]
 pub struct WireChunkSoA {
     pub remote_wire_sources: Vec<RemoteWirePortSource>,
     pub local_wire_sources: Vec<LocalWirePortSource>,
@@ -104,5 +108,69 @@ impl AsBrdbValue for WireChunkSoA {
             "LocalWireTargets" => Ok(self.local_wire_targets.as_brdb_iter()),
             _ => unreachable!(),
         }
+    }
+}
+
+impl WireChunkSoA {
+    pub fn add_local_wire(&mut self, source: LocalWirePortSource, target: WirePortTarget) {
+        self.local_wire_sources.push(source);
+        self.local_wire_targets.push(target);
+    }
+
+    pub fn add_remote_wire(&mut self, source: RemoteWirePortSource, target: WirePortTarget) {
+        self.remote_wire_sources.push(source);
+        self.remote_wire_targets.push(target);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WireConnection {
+    pub source: WirePort,
+    pub target: WirePort,
+}
+
+impl Display for WireConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} to {}", self.source, self.target)
+    }
+}
+
+impl WireConnection {
+    pub fn new(source: WirePort, target: WirePort) -> Self {
+        Self { source, target }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WirePort {
+    /// The remote brick where the port is located
+    pub brick_id: usize,
+    /// Name of the component in the brick to connect
+    pub component_type: BString,
+    /// Name of the port in the component to connect
+    pub port_name: BString,
+}
+
+impl WirePort {
+    pub fn new(
+        brick_id: usize,
+        component_type: impl Into<BString>,
+        port_name: impl Into<BString>,
+    ) -> Self {
+        Self {
+            brick_id,
+            component_type: component_type.into(),
+            port_name: port_name.into(),
+        }
+    }
+}
+
+impl Display for WirePort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "brick {} {}.{}",
+            self.brick_id, self.component_type, self.port_name
+        )
     }
 }

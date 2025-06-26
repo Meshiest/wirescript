@@ -85,7 +85,7 @@ impl BrdbSchemaStructProperty {
 #[derive(Default, Debug, Clone)]
 pub struct BrdbSchema {
     pub intern: BrdbIntern,
-    global_data: Arc<BrdbSchemaGlobalData>,
+    pub(crate) global_data: Arc<BrdbSchemaGlobalData>,
     pub enums: IndexMap<BrdbInterned, BrdbSchemaEnum>,
     pub structs: IndexMap<BrdbInterned, BrdbSchemaStruct>,
 }
@@ -152,6 +152,14 @@ impl BrdbSchema {
         plaintext::MetaParser::new()
             .parse(input)
             .map_err(|e| e.to_string())
+    }
+
+    /// Parse a schema from a plaintext input string into a `BrdbSchema`
+    pub fn new_parsed(input: &str) -> Result<BrdbSchema, BrdbSchemaError> {
+        let (enums, structs) = Self::parse_to_meta(input).map_err(BrdbSchemaError::ParseError)?;
+        let mut schema = BrdbSchema::default();
+        schema.add_meta(enums, structs);
+        Ok(schema)
     }
 
     /// Read a schema from a msgpack .schema file into a human readable format

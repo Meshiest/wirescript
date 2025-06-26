@@ -1,7 +1,6 @@
 use std::{
     cmp::Ordering,
     fmt::{Debug, Display},
-    sync::{Arc, LazyLock},
 };
 
 use crate::brdb::{
@@ -9,7 +8,7 @@ use crate::brdb::{
         BrdbSchemaGlobalData,
         as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
     },
-    wrapper::{BitFlags, BrdbComponent},
+    wrapper::{BString, BitFlags, BrdbComponent},
 };
 
 pub struct Brick {
@@ -23,33 +22,61 @@ pub struct Brick {
     pub collision: Collision,
     pub visible: bool,
     pub color: Color,
-    pub material: Arc<String>,
+    pub material: BString,
     pub material_intensity: u8,
     pub components: Vec<Box<dyn BrdbComponent>>,
 }
 
 impl Brick {
-    pub fn next_id() -> usize {
+    fn next_id() -> usize {
         static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
-    pub fn with_new_id(mut self) -> Self {
+    /// Returns the ID of the brick if it has one.
+    pub fn get_id(&self) -> Option<usize> {
+        self.id
+    }
+
+    /// Sets the ID of the brick to a new value if it does not already have one.
+    pub fn with_id(mut self) -> Self {
+        if self.id.is_some() {
+            return self;
+        }
         self.id = Some(Self::next_id());
         self
     }
 
-    pub fn with_id(mut self, id: usize) -> Self {
+    /// Adds an ID to the brick if it does not already have one.
+    pub fn add_id(&mut self) -> usize {
+        if let Some(id) = self.id {
+            return id;
+        }
+        let id = Self::next_id();
         self.id = Some(id);
-        self
+        id
     }
 
-    pub fn set_id(&mut self, id: usize) {
-        self.id = Some(id);
-    }
-
+    /// Adds a component to the brick. The component must implement the `BrdbComponent` trait.
     pub fn add_component(&mut self, component: impl BrdbComponent + 'static) {
         self.components.push(Box::new(component));
+    }
+    /// Adds multiple components to the brick. The components must implement the `BrdbComponent` trait.
+    pub fn add_components(&mut self, components: impl IntoIterator<Item = Box<dyn BrdbComponent>>) {
+        self.components.extend(components);
+    }
+    /// Adds a component to the brick. The component must implement the `BrdbComponent` trait.
+    pub fn with_component(mut self, component: impl BrdbComponent + 'static) -> Self {
+        self.add_component(component);
+        self
+    }
+    /// Adds multiple components to the brick. The components must implement the `BrdbComponent` trait.
+    pub fn with_components(
+        mut self,
+        components: impl IntoIterator<Item = Box<dyn BrdbComponent>>,
+    ) -> Self {
+        self.add_components(components);
+        self
     }
 
     pub fn cmp(&self, other: &Self) -> Ordering {
@@ -59,36 +86,26 @@ impl Brick {
         }
     }
 
-    pub fn material_plastic() -> Arc<String> {
-        static MAT_PLASTIC: LazyLock<Arc<String>> =
-            LazyLock::new(|| Arc::new(String::from("BMC_Plastic")));
-        MAT_PLASTIC.clone()
+    /// Sets the material of the brick.
+    pub fn set_material(&mut self, material: impl Into<BString>) {
+        self.material = material.into();
     }
-    pub fn material_glass() -> Arc<String> {
-        static MAT_GLASS: LazyLock<Arc<String>> =
-            LazyLock::new(|| Arc::new(String::from("BMC_Glass")));
-        MAT_GLASS.clone()
+    /// Sets the material of the brick.
+    pub fn with_material(mut self, material: impl Into<BString>) -> Self {
+        self.set_material(material);
+        self
     }
-    pub fn material_translucent_plastic() -> Arc<String> {
-        static MAT_TRANSLUCENT_PLASTIC: LazyLock<Arc<String>> =
-            LazyLock::new(|| Arc::new(String::from("BMC_TranslucentPlastic")));
-        MAT_TRANSLUCENT_PLASTIC.clone()
-    }
-    pub fn material_glow() -> Arc<String> {
-        static MAT_GLOW: LazyLock<Arc<String>> =
-            LazyLock::new(|| Arc::new(String::from("BMC_Glow")));
-        MAT_GLOW.clone()
-    }
-    pub fn material_metallic() -> Arc<String> {
-        static MAT_METALLIC: LazyLock<Arc<String>> =
-            LazyLock::new(|| Arc::new(String::from("BMC_Metallic")));
-        MAT_METALLIC.clone()
-    }
-    pub fn material_hologram() -> Arc<String> {
-        static MAT_HOLOGRAM: LazyLock<Arc<String>> =
-            LazyLock::new(|| Arc::new(String::from("BMC_Hologram")));
-        MAT_HOLOGRAM.clone()
-    }
+
+    pub const MATERIAL_PLASTIC: BString = BString::str("BMC_Plastic");
+    pub const MATERIAL_GLASS: BString = BString::str("BMC_Glass");
+    pub const MATERIAL_TRANSLUCENT_PLASTIC: BString = BString::str("BMC_TranslucentPlastic");
+    pub const MATERIAL_GLOW: BString = BString::str("BMC_Glow");
+    pub const MATERIAL_METALLIC: BString = BString::str("BMC_Metallic");
+    pub const MATERIAL_HOLOGRAM: BString = BString::str("BMC_Hologram");
+
+    pub const ASSET_PB_DEFAULT_BRICK: BString = BString::str("PB_DefaultBrick");
+    pub const ASSET_B_REROUTE: BString = BString::str("B_1x1_Reroute_Node");
+    pub const ASSET_B_GATE_NOT: BString = BString::str("B_1x1_NOT_Gate");
 }
 
 impl Default for Brick {
@@ -96,7 +113,7 @@ impl Default for Brick {
         Self {
             id: None,
             asset: BrickType::Procedural {
-                asset: Arc::new(String::from("PB_DefaultBrick")),
+                asset: Brick::ASSET_PB_DEFAULT_BRICK,
                 size: BrickSize { x: 5, y: 5, z: 6 },
             },
             owner_index: None,
@@ -107,7 +124,7 @@ impl Default for Brick {
             visible: true,
             color: Default::default(),
             material_intensity: 5,
-            material: Brick::material_plastic(),
+            material: Brick::MATERIAL_PLASTIC,
             components: Default::default(),
         }
     }
@@ -116,7 +133,7 @@ impl Default for Brick {
 impl Clone for Brick {
     fn clone(&self) -> Self {
         Self {
-            id: self.id.clone(),
+            id: None, // IDs are not cloned, they are unique per brick
             asset: self.asset.clone(),
             owner_index: self.owner_index.clone(),
             position: self.position.clone(),
@@ -198,8 +215,8 @@ impl Default for Color {
 #[derive(Clone, Debug, PartialOrd, Eq, PartialEq)]
 
 pub enum BrickType {
-    Basic(Arc<String>),
-    Procedural { asset: Arc<String>, size: BrickSize },
+    Basic(BString),
+    Procedural { asset: BString, size: BrickSize },
 }
 
 impl BrickType {
@@ -209,6 +226,28 @@ impl BrickType {
 
     pub fn is_basic(&self) -> bool {
         matches!(self, BrickType::Basic(_))
+    }
+}
+
+impl<T: Into<BString>> From<T> for BrickType {
+    fn from(asset: T) -> Self {
+        BrickType::Basic(asset.into())
+    }
+}
+impl<T: Into<BString>> From<(T, BrickSize)> for BrickType {
+    fn from((asset, size): (T, BrickSize)) -> Self {
+        BrickType::Procedural {
+            asset: asset.into(),
+            size,
+        }
+    }
+}
+impl<T: Into<BString>> From<(BrickSize, T)> for BrickType {
+    fn from((size, asset): (BrickSize, T)) -> Self {
+        BrickType::Procedural {
+            asset: asset.into(),
+            size,
+        }
     }
 }
 
@@ -489,16 +528,15 @@ impl BrickChunkSoA {
                 // Unwrap safety: The brick meta is added to the global data before adding bricks.
                 let ty_index = global_data
                     .basic_brick_asset_names
-                    .get_index_of(asset.as_str())
+                    .get_index_of(asset.as_ref())
                     .unwrap() as u32;
                 self.brick_type_indices.push(ty_index);
-                self.procedural_brick_starting_index += 1;
             }
             Procedural { asset: kind, size } => {
                 // Unwrap safety: The brick meta is added to the global data before adding bricks.
                 let ty_index = global_data
                     .procedural_brick_asset_names
-                    .get_index_of(kind.as_str())
+                    .get_index_of(kind.as_ref())
                     .unwrap() as u32;
 
                 if let (Some(last_sizes), Some(last_size)) =
@@ -543,7 +581,7 @@ impl BrickChunkSoA {
         self.material_indices.push(
             global_data
                 .material_asset_names
-                .get_index_of(brick.material.as_str())
+                .get_index_of(brick.material.as_ref())
                 .unwrap() as u8, // Unwrap safety: The material is added to the global data before adding bricks.
         );
 

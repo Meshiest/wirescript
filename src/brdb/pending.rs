@@ -56,6 +56,20 @@ impl BrdbPendingFs {
         let entity_chunk_index_schema = schemas::entities_chunk_index_schema();
 
         for (world_id, world) in fs.worlds {
+            // This index needs to exist because the type ids of brick assets are
+            // stored in the GlobalData, and the type ids of procedural
+            // bricks are assigned starting from the end of the basic brick
+            // asset names.
+            //
+            // When new brick assets are added, the length of the basic
+            // brick asset names will increase, and the type ids of procedural
+            // bricks in older chunks will not match the new
+            // basic brick asset names.
+            //
+            // This offset allows older chunks to properly load, assuming the global
+            // data does not change the order of brick asset names.
+            let proc_brick_starting_index = world.global_data.basic_brick_asset_names.len() as u32;
+
             let mut world_dir = vec![
                 // Write GlobalData
                 (
@@ -144,7 +158,8 @@ impl BrdbPendingFs {
                 let brick_chunks_dir = grid
                     .bricks
                     .into_iter()
-                    .map(|(chunk, bricks)| {
+                    .map(|(chunk, mut bricks)| {
+                        bricks.procedural_brick_starting_index = proc_brick_starting_index;
                         Ok((
                             format!("{chunk}.mps"),
                             File(Some(

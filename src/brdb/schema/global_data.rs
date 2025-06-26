@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::brdb::{
     schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
-    wrapper::{Brick, BrickType},
+    wrapper::{BrdbComponent, Brick, BrickType},
 };
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -25,47 +25,68 @@ pub struct BrdbSchemaGlobalData {
 impl BrdbSchemaGlobalData {
     pub fn add_brick_meta(&mut self, brick: &Brick) {
         // Add material
-        if !self.material_asset_names.contains(brick.material.as_str()) {
+        if !self.material_asset_names.contains(brick.material.as_ref()) {
             self.material_asset_names.insert(brick.material.to_string());
         }
 
         // Add brick assets
         match &brick.asset {
-            BrickType::Basic(asset) if !self.basic_brick_asset_names.contains(asset.as_str()) => {
+            BrickType::Basic(asset) if !self.basic_brick_asset_names.contains(asset.as_ref()) => {
                 self.basic_brick_asset_names.insert(asset.to_string());
             }
             BrickType::Procedural { asset, .. }
-                if !self.procedural_brick_asset_names.contains(asset.as_str()) =>
+                if !self.procedural_brick_asset_names.contains(asset.as_ref()) =>
             {
                 self.procedural_brick_asset_names.insert(asset.to_string());
             }
             // Material and asset are already handled above
             _ => {}
         }
+    }
 
-        // Add relevant asset types
-        for component in &brick.components {
-            for (asset_ty, asset_name) in component.get_external_asset_references() {
-                self.external_asset_references
-                    .insert((asset_ty.clone(), asset_name));
-                self.external_asset_types.insert(asset_ty);
-            }
-
-            // Add the struct names for components
-            if let Some((type_name, struct_name)) = component.get_schema_struct() {
-                if self.component_type_names.contains(&type_name) {
-                    continue;
-                }
-
-                self.component_type_names.insert(type_name);
-                self.component_data_struct_names
-                    .push(struct_name.unwrap_or_else(|| "None".to_owned()));
-            }
-
-            // Add the wire port names
-            self.component_wire_port_names
-                .extend(component.get_wire_ports());
+    pub fn add_component_meta(&mut self, component: &dyn BrdbComponent) {
+        for (asset_ty, asset_name) in component.get_external_asset_references() {
+            self.external_asset_references
+                .insert((asset_ty.to_string(), asset_name.to_string()));
+            self.external_asset_types.insert(asset_ty.to_string());
         }
+
+        // Add the struct names for components
+        if let Some((type_name, struct_name)) = component.get_schema_struct() {
+            if self.component_type_names.contains(type_name.as_ref()) {
+                return;
+            }
+
+            self.component_type_names.insert(type_name.to_string());
+            self.component_data_struct_names.push(
+                struct_name
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "None".to_owned()),
+            );
+        }
+
+        // Add the wire port names
+        self.component_wire_port_names.extend(
+            component
+                .get_wire_ports()
+                .into_iter()
+                .map(|p| p.to_string()),
+        );
+    }
+
+    pub fn get_port_index(&self, port_name: &str) -> Option<u16> {
+        self.component_wire_port_names
+            .get_index_of(port_name)
+            .map(|i| i as u16)
+    }
+
+    pub fn get_component_type_index(&self, type_name: &str) -> Option<u16> {
+        self.component_type_names
+            .get_index_of(type_name)
+            .map(|i| i as u16)
+    }
+    pub fn has_component_type(&self, type_name: &str) -> bool {
+        self.component_type_names.contains(type_name)
     }
 }
 

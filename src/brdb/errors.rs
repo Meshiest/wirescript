@@ -16,6 +16,8 @@ pub enum BrdbError {
     Json(#[from] serde_json::Error),
     #[error("{0}: {1}")]
     Wrapped(String, Box<BrdbError>),
+    #[error(transparent)]
+    World(#[from] BrdbWorldError),
 }
 
 impl BrdbError {
@@ -126,9 +128,31 @@ pub enum BrdbSchemaError {
     InvalidFlatDataSize(String, usize, usize),
     #[error("unsupported conversion from {0} to {1}")]
     UnimplementedCast(String, &'static str),
+    #[error("failed to parse schema: {0}")]
+    ParseError(String),
 }
 
 impl BrdbSchemaError {
+    pub fn wrap(self, label: impl Display) -> Self {
+        Self::Wrapped(label.to_string(), Box::new(self))
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum BrdbWorldError {
+    #[error("{0}: {1}")]
+    Wrapped(String, Box<BrdbWorldError>),
+    #[error("unknown brick id: {0}")]
+    UnknownBrickId(usize),
+    #[error("grid not in world: {0}")]
+    UnknownGridId(usize),
+    #[error("component name not in schema: {0}")]
+    UnknownComponent(String),
+    #[error("port name not in schema: {0}")]
+    UnknownPort(String),
+}
+
+impl BrdbWorldError {
     pub fn wrap(self, label: impl Display) -> Self {
         Self::Wrapped(label.to_string(), Box::new(self))
     }
