@@ -659,18 +659,18 @@ mod test {
         .with_component(assets::components::Rerouter)
         .with_id_split();
         let (b, b_id) = Brick {
-            position: (10, 0, 1).into(),
+            position: (15, 0, 1).into(),
             color: (255, 0, 0).into(),
-            asset: assets::bricks::B_REROUTE,
+            asset: assets::bricks::B_GATE_BOOL_NOT,
             ..Default::default()
         }
-        .with_component(assets::components::Rerouter)
+        .with_component(assets::components::LogicGate::BoolNot.component())
         .with_id_split();
 
         world.add_bricks([a, b]);
         world.add_wire_connection(
             assets::components::Rerouter::output_of(a_id),
-            assets::components::Rerouter::input_of(b_id),
+            assets::components::LogicGate::BoolNot.input_of(b_id),
         );
 
         db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use crate::brdb::{
     errors::BrdbSchemaError,
@@ -33,7 +33,7 @@ impl LiteralComponent {
         component_name: impl Into<BString>,
         struct_name: impl Into<BString>,
         schema: &str,
-        data: impl IntoIterator<Item = (String, Box<dyn AsBrdbValue>)>,
+        data: impl IntoIterator<Item = (BString, Box<dyn AsBrdbValue>)>,
         ports: impl IntoIterator<Item = BString>,
     ) -> Result<Self, BrdbSchemaError> {
         let schema =
@@ -43,7 +43,7 @@ impl LiteralComponent {
             component_name: component_name.into(),
             struct_name: Some(struct_name.into()),
             schema: Some(schema),
-            data: Arc::new(data.into_iter().collect()),
+            data: Arc::new(data.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
             wire_ports: ports.into_iter().collect(),
         })
     }
@@ -83,4 +83,36 @@ impl BrdbComponent for LiteralComponent {
     fn get_wire_ports(&self) -> Vec<BString> {
         self.wire_ports.clone()
     }
+}
+
+/// A literal component representing a seat
+pub fn seat_component(
+    allow_nearby: bool,
+    hidden_interaction: bool,
+    prompt_label: impl Display,
+) -> LiteralComponent {
+    LiteralComponent::new(
+        "Component_Internal_Seat",
+        "BrickComponentData_Seat",
+        "struct BrickComponentWirePlayerInput {}
+        struct BrickComponentData_Seat {
+            PlayerInput: BrickComponentWirePlayerInput,
+            bIsOccupied: bool,
+            bAllowNearbyInteraction: bool,
+            bHiddenInteraction: bool,
+            PromptCustomLabel: str,
+        }",
+        [
+            ("PlayerInput".into(), Box::new(())),
+            ("bIsOccupied".into(), Box::new(false)),
+            ("bAllowNearbyInteraction".into(), Box::new(allow_nearby)),
+            ("bHiddenInteraction".into(), Box::new(hidden_interaction)),
+            (
+                "PromptCustomLabel".into(),
+                Box::new(prompt_label.to_string()),
+            ),
+        ] as [(BString, Box<dyn AsBrdbValue>); 5],
+        [],
+    )
+    .unwrap()
 }

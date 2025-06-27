@@ -144,6 +144,8 @@ pub trait AsBrdbValue {
     }
 }
 
+impl AsBrdbValue for () {}
+
 macro_rules! as_brdb_fn {
     ($fn_name:ident, $ty:ty, $method:ident) => {
         fn $fn_name(&self) -> Result<$ty, BrdbSchemaError> {
