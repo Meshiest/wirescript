@@ -661,7 +661,7 @@ mod test {
         let (b, b_id) = Brick {
             position: (15, 0, 1).into(),
             color: (255, 0, 0).into(),
-            asset: assets::bricks::B_GATE_BOOL_NOT,
+            asset: assets::components::LogicGate::BoolNot.brick(),
             ..Default::default()
         }
         .with_component(assets::components::LogicGate::BoolNot.component())
@@ -708,7 +708,7 @@ mod test {
 
     #[test]
     fn test() -> Result<(), BrdbError> {
-        let path = PathBuf::from("./wire_test_a.brdb");
+        let path = PathBuf::from("./brick_assets.brdb");
         if !path.exists() {
             return Ok(());
         }
@@ -717,6 +717,15 @@ mod test {
         let global_data = db.read_global_data()?;
 
         // println!("{}", db.get_fs()?.render());
+
+        println!(
+            "Basic Brick assets: {:?}",
+            global_data.basic_brick_asset_names
+        );
+        println!(
+            "Proc Brick assets: {:?}",
+            global_data.procedural_brick_asset_names
+        );
 
         let schema = db
             .read_file("World/0/Bricks/ComponentsShared.schema")?
@@ -768,14 +777,6 @@ mod test {
         println!("Bricks: {}", brick_data.display(&brick_schema));
 
         println!("Wire Ports: {:?}", global_data.component_wire_port_names);
-        println!(
-            "Basic Brick assets: {:?}",
-            global_data.basic_brick_asset_names
-        );
-        println!(
-            "Proc Brick assets: {:?}",
-            global_data.procedural_brick_asset_names
-        );
 
         let wires_schema = db
             .read_file("World/0/Bricks/WiresShared.schema")?

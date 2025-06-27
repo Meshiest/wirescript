@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use crate::brdb::{
+    assets,
     schema::{BrdbSchema, BrdbSchemaMeta, as_brdb::AsBrdbValue},
-    wrapper::{BString, BrdbComponent, WirePort},
+    wrapper::{BString, BrdbComponent, BrickType, WirePort},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -415,6 +416,48 @@ impl LogicGate {
             gate: self,
             inputs: Arc::new(self.default_inputs()),
             output: Arc::new(self.default_output()),
+        }
+    }
+
+    pub fn brick(self) -> BrickType {
+        match self {
+            Self::BoolAnd => assets::bricks::B_GATE_BOOL_AND,
+            Self::BoolOr => assets::bricks::B_GATE_BOOL_OR,
+            Self::BoolXor => assets::bricks::B_GATE_BOOL_XOR,
+            Self::BoolNand => assets::bricks::B_GATE_BOOL_NAND,
+            Self::BoolNor => assets::bricks::B_GATE_BOOL_NOR,
+            Self::BoolNot => assets::bricks::B_GATE_BOOL_NOT,
+
+            Self::BitAnd => assets::bricks::B_GATE_BIT_AND,
+            Self::BitOr => assets::bricks::B_GATE_BIT_OR,
+            Self::BitXor => assets::bricks::B_GATE_BIT_XOR,
+            Self::BitNand => assets::bricks::B_GATE_BIT_NAND,
+            Self::BitNor => assets::bricks::B_GATE_BIT_NOR,
+            Self::BitNot => assets::bricks::B_GATE_BIT_NOT,
+
+            Self::BitShiftLeft => assets::bricks::B_GATE_BIT_SHIFT_LEFT,
+            Self::BitShiftRight => assets::bricks::B_GATE_BIT_SHIFT_RIGHT,
+
+            Self::FloatAdd => assets::bricks::B_GATE_ADD,
+            Self::FloatSub => assets::bricks::B_GATE_SUBTRACT,
+            Self::FloatMul => assets::bricks::B_GATE_MULTIPLY,
+            Self::FloatModFloored => assets::bricks::B_GATE_MOD_FLOORED,
+            Self::FloatMod => assets::bricks::B_GATE_MOD,
+            Self::FloatDiv => assets::bricks::B_GATE_DIVIDE,
+            Self::FloatCeil => assets::bricks::B_GATE_CEILING,
+            Self::FloatFloor => assets::bricks::B_GATE_FLOOR,
+
+            Self::FloatEq => assets::bricks::B_GATE_EQUAL,
+            Self::FloatNeq => assets::bricks::B_GATE_NOT_EQUAL,
+            Self::FloatLt => assets::bricks::B_GATE_LESS_THAN,
+            Self::FloatLe => assets::bricks::B_GATE_LESS_THAN_EQUAL,
+            Self::FloatGt => assets::bricks::B_GATE_GREATER_THAN,
+            Self::FloatGe => assets::bricks::B_GATE_GREATER_THAN_EQUAL,
+
+            Self::ConstBool => assets::bricks::B_GATE_CONSTANT_BOOL,
+            Self::ConstInt => assets::bricks::B_GATE_CONSTANT_INT,
+            Self::ConstFloat => assets::bricks::B_GATE_CONSTANT_FLOAT,
+            Self::ConstString => assets::bricks::B_GATE_CONSTANT_STRING,
         }
     }
 }
