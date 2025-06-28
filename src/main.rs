@@ -4,6 +4,7 @@ use std::error::Error;
 
 pub mod bearilog;
 pub mod brdb;
+pub mod builder;
 
 /// Program to parse bearilog to gates
 #[derive(Parser, Debug)]

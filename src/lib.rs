@@ -3,6 +3,7 @@ use std::error::Error;
 
 pub mod bearilog;
 pub mod brdb;
+pub mod builder;
 
 pub fn compile_module(source: &str, name: &str) -> Result<CompiledModule, Box<dyn Error>> {
     let p = bearilog::grammar::ModuleParser::new();

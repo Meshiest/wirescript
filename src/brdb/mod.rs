@@ -34,7 +34,8 @@ pub mod fs;
 pub mod pending;
 pub mod schema;
 pub mod tables;
-pub mod wrapper;
+mod wrapper;
+pub use wrapper::*;
 
 pub struct Brdb {
     conn: Connection,
