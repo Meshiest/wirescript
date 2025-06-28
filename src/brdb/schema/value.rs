@@ -1,10 +1,10 @@
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, fmt::Display, hash::Hash, sync::Arc};
 
 use indexmap::IndexMap;
 
 use crate::brdb::{
     errors::BrdbSchemaError,
-    schema::{BrdbInterned, BrdbSchema},
+    schema::{BrdbInterned, BrdbSchema, as_brdb::AsBrdbValue},
 };
 
 #[derive(Clone, Debug)]
@@ -38,6 +38,45 @@ impl BrdbStruct {
                 prop.to_owned(),
             )
         })
+    }
+
+    pub fn as_hashmap(&self) -> Result<HashMap<String, Box<dyn AsBrdbValue>>, BrdbSchemaError> {
+        let mut map = HashMap::new();
+        for (k, v) in &self.properties {
+            let key = k
+                .get_ok(&self.schema, || {
+                    BrdbSchemaError::MissingStructField(
+                        self.name.get_or(&self.schema, "unknown struct").to_string(),
+                        "unknown_prop".to_string(),
+                    )
+                })?
+                .to_string();
+            map.insert(key, Box::new(v.clone()) as Box<dyn AsBrdbValue>);
+        }
+        Ok(map)
+    }
+}
+
+impl Display for BrdbStruct {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut props = self
+            .properties
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "  {}: {},\n",
+                    k.get_or(&self.schema, "unknown_prop"),
+                    v.display_inner(&self.schema, 1)
+                )
+            })
+            .collect::<Vec<_>>();
+        props.sort();
+        write!(
+            f,
+            "{} {{\n{}}}",
+            self.name.get_or(&self.schema, "unknown struct"),
+            props.join("")
+        )
     }
 }
 
@@ -145,6 +184,16 @@ impl BrdbValue {
 
     pub fn index(&self, index: usize) -> Result<Option<&BrdbValue>, BrdbSchemaError> {
         Ok(self.as_array()?.get(index))
+    }
+
+    pub fn index_unwrap(&self, index: usize) -> Result<&BrdbValue, BrdbSchemaError> {
+        let vec = self.as_array()?;
+        Ok(vec
+            .get(index)
+            .ok_or_else(|| BrdbSchemaError::ArrayIndexOutOfBounds {
+                len: vec.len(),
+                index,
+            })?)
     }
 
     pub fn as_str(&self) -> Result<&str, BrdbSchemaError> {

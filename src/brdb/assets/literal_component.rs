@@ -47,6 +47,21 @@ impl LiteralComponent {
             wire_ports: ports.into_iter().collect(),
         })
     }
+    pub fn new_from_data(
+        component_name: impl Into<BString>,
+        struct_name: impl Into<BString>,
+        schema: Option<BrdbSchemaMeta>,
+        data: Arc<HashMap<String, Box<dyn AsBrdbValue>>>,
+        ports: impl IntoIterator<Item = BString>,
+    ) -> Self {
+        Self {
+            component_name: component_name.into(),
+            struct_name: Some(struct_name.into()),
+            schema,
+            data,
+            wire_ports: ports.into_iter().collect(),
+        }
+    }
 }
 
 impl AsBrdbValue for LiteralComponent {

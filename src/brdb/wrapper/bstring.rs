@@ -1,11 +1,33 @@
 use std::{borrow::Borrow, fmt::Display, ops::Deref, sync::Arc};
 
 /// A string that can be owned, static, or shared.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone)]
 pub enum BString {
     Owned(String),
     Static(&'static str),
     Arc(Arc<String>),
+}
+
+impl Eq for BString {}
+impl PartialEq for BString {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+impl std::hash::Hash for BString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_ref().hash(state);
+    }
+}
+impl Ord for BString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_ref().cmp(other.as_ref())
+    }
+}
+impl PartialOrd for BString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.as_ref().cmp(other.as_ref()))
+    }
 }
 
 impl BString {
@@ -17,6 +39,11 @@ impl BString {
 impl From<String> for BString {
     fn from(s: String) -> Self {
         BString::Owned(s)
+    }
+}
+impl From<&String> for BString {
+    fn from(s: &String) -> Self {
+        BString::Owned(s.to_owned())
     }
 }
 impl From<&'static str> for BString {

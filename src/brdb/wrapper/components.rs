@@ -143,3 +143,6 @@ impl<T: Clone + BrdbComponent + 'static> BoxedComponent for T {
         Box::new(self.clone())
     }
 }
+
+// Empty component... may have its usecases
+impl BrdbComponent for () {}

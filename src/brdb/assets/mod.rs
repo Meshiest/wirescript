@@ -1,6 +1,7 @@
 mod literal_component;
 pub use literal_component::*;
 pub mod bricks;
+pub mod entities;
 mod gates;
 pub mod materials;
 

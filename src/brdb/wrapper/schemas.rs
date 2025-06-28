@@ -571,7 +571,7 @@ struct BRSavedOwnerTableSoA {
     BrdbSchema::from_meta(enums, structs)
 }
 
-/// World/0/Entities/ChunkIndexShared.schema
+/// World/0/Entities/ChunkIndex.schema
 pub fn entities_chunk_index_schema() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(
         "
@@ -594,8 +594,6 @@ struct BRSavedEntityChunkIndexSoA {
 pub fn entities_chunks_schema() -> BrdbSchema {
     let (enums, structs) = BrdbSchema::parse_to_meta(
         "
-struct BrickGridDynamicActor {
-}
 struct BRSavedBitFlags {
     Flags: u8[flat],
 }

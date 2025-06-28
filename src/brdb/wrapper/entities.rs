@@ -1,7 +1,53 @@
+use std::sync::Arc;
+
 use crate::brdb::{
-    schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
-    wrapper::{BitFlags, ChunkIndex, Quat4f, Vector3f},
+    assets::entities::{DYNAMIC_GRID, dynamic_grid_entity},
+    schema::{
+        BrdbSchemaGlobalData,
+        as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
+    },
+    wrapper::{BString, BitFlags, BrdbComponent, ChunkIndex, Color, Quat4f, Vector3f},
 };
+
+#[derive(Clone)]
+pub struct Entity {
+    pub asset: BString,
+    /// An internal ID for linking entities to joints, etc
+    pub id: Option<usize>,
+    pub owner_index: Option<u32>,
+    pub location: Vector3f,
+    pub rotation: Quat4f,
+    pub frozen: bool,
+    pub sleeping: bool,
+    pub velocity: Vector3f,
+    pub angular_velocity: Vector3f,
+    pub color_and_alpha: EntityColors,
+    pub data: Arc<Box<dyn BrdbComponent>>,
+}
+
+impl Entity {
+    pub fn is_brick_grid(&self) -> bool {
+        self.asset == DYNAMIC_GRID
+    }
+}
+
+impl Default for Entity {
+    fn default() -> Self {
+        Self {
+            asset: DYNAMIC_GRID,
+            id: None,
+            owner_index: None,
+            location: Vector3f::default(),
+            rotation: Quat4f::default(),
+            frozen: false,
+            sleeping: false,
+            velocity: Vector3f::default(),
+            angular_velocity: Vector3f::default(),
+            color_and_alpha: EntityColors::default(),
+            data: dynamic_grid_entity(),
+        }
+    }
+}
 
 pub struct EntityTypeCounter {
     pub type_index: u32,
@@ -23,12 +69,40 @@ impl AsBrdbValue for EntityTypeCounter {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct EntityColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
     pub a: u8,
 }
+impl EntityColor {
+    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    pub fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b, a: 255 }
+    }
+}
+
+impl TryFrom<&crate::brdb::schema::BrdbValue> for EntityColor {
+    type Error = crate::brdb::errors::BrdbSchemaError;
+    fn try_from(value: &crate::brdb::schema::BrdbValue) -> Result<Self, Self::Error> {
+        let r = value.prop("R")?.as_brdb_u8()?;
+        let g = value.prop("G")?.as_brdb_u8()?;
+        let b = value.prop("B")?.as_brdb_u8()?;
+        let a = value.prop("A")?.as_brdb_u8()?;
+        Ok(Self { r, g, b, a })
+    }
+}
+
+impl From<Color> for EntityColor {
+    fn from(color: Color) -> Self {
+        Self::rgb(color.r, color.g, color.b)
+    }
+}
+
 impl AsBrdbValue for EntityColor {
     fn as_brdb_struct_prop_value(
         &self,
@@ -56,7 +130,7 @@ impl Default for EntityColor {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct EntityColors(
     pub EntityColor,
     pub EntityColor,
@@ -67,6 +141,22 @@ pub struct EntityColors(
     pub EntityColor,
     pub EntityColor,
 );
+impl TryFrom<&crate::brdb::schema::BrdbValue> for EntityColors {
+    type Error = crate::brdb::errors::BrdbSchemaError;
+
+    fn try_from(value: &crate::brdb::schema::BrdbValue) -> Result<Self, Self::Error> {
+        Ok(Self(
+            value.prop("Color0")?.try_into()?,
+            value.prop("Color1")?.try_into()?,
+            value.prop("Color2")?.try_into()?,
+            value.prop("Color3")?.try_into()?,
+            value.prop("Color4")?.try_into()?,
+            value.prop("Color5")?.try_into()?,
+            value.prop("Color6")?.try_into()?,
+            value.prop("Color7")?.try_into()?,
+        ))
+    }
+}
 impl AsBrdbValue for EntityColors {
     fn as_brdb_struct_prop_value(
         &self,
@@ -88,6 +178,7 @@ impl AsBrdbValue for EntityColors {
     }
 }
 
+#[derive(Default)]
 pub struct EntityChunkSoA {
     pub type_counters: Vec<EntityTypeCounter>,
     pub persistent_indices: Vec<u32>,
@@ -101,6 +192,56 @@ pub struct EntityChunkSoA {
     pub linear_velocities: Vec<Vector3f>,
     pub angular_velocities: Vec<Vector3f>,
     pub colors_and_alphas: Vec<EntityColors>,
+
+    /// A copy of data that will be written after the SoA
+    pub unwritten_struct_data: Vec<Arc<Box<dyn BrdbComponent>>>,
+}
+
+impl EntityChunkSoA {
+    pub fn add_entity(&mut self, global_data: &BrdbSchemaGlobalData, entity: &Entity, index: u32) {
+        let Some((type_name, _)) = entity.data.get_schema_struct() else {
+            return;
+        };
+
+        // Unwrap safety: The entity type was already added to the global data before
+        // this function was called.
+        let type_index = global_data
+            .entity_type_names
+            .get_index_of(type_name.as_ref())
+            .unwrap() as u32;
+
+        // Add the entity to the entity chunk indices
+        self.unwritten_struct_data.push(entity.data.clone());
+
+        // Check if the last counter matches the type index
+        if let Some(counter) = self.type_counters.last_mut() {
+            if counter.type_index == type_index {
+                counter.num_entities += 1;
+            } else {
+                // Add a new counter for this entity type
+                self.type_counters.push(EntityTypeCounter {
+                    type_index,
+                    num_entities: 1,
+                });
+            }
+        } else {
+            // No counters yet, add the first one
+            self.type_counters.push(EntityTypeCounter {
+                type_index,
+                num_entities: 1,
+            });
+        }
+
+        self.persistent_indices.push(index);
+        self.owner_indices.push(entity.owner_index.unwrap_or(0));
+        self.locations.push(entity.location);
+        self.rotations.push(entity.rotation);
+        self.physics_locked_flags.push(entity.frozen);
+        self.physics_sleeping_flags.push(entity.sleeping);
+        self.linear_velocities.push(entity.velocity);
+        self.angular_velocities.push(entity.angular_velocity);
+        self.colors_and_alphas.push(entity.color_and_alpha.clone());
+    }
 }
 
 impl AsBrdbValue for EntityChunkSoA {
@@ -185,7 +326,7 @@ impl AsBrdbValue for EntityChunkIndexSoA {
 
 /// This function may only be useful for legacy worlds from steam next fest.
 /// New worlds will properly pair the class name with the entity type
-pub fn lookup_entity_data_class_name(entity_type: &str) -> Option<&'static str> {
+pub fn lookup_entity_struct_name(entity_type: &str) -> Option<&'static str> {
     Some(match entity_type {
         "Entity_Ball" => "BP_Entity_Ball_C",
         "Entity_Ball1" => "BP_Entity_Ball1_C",

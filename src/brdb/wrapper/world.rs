@@ -1,10 +1,11 @@
-use std::collections::HashMap;
-
 use indexmap::IndexMap;
 
 use crate::brdb::{
     errors::BrdbError,
-    wrapper::{Brick, Guid, Owner, UnsavedFs, UnsavedWorld, WireConnection, WirePort, WorldMeta},
+    wrapper::{
+        Brick, Entity, Guid, Owner, Position, UnsavedFs, UnsavedWorld, WireConnection, WirePort,
+        WorldMeta,
+    },
 };
 
 #[derive(Default)]
@@ -13,9 +14,11 @@ pub struct World {
     pub owners: IndexMap<Guid, Owner>,
     /// Bricks on the main grid
     pub bricks: Vec<Brick>,
-    pub grids: HashMap<usize, Vec<Brick>>,
+    /// Non-main grids require an entity to be created for them
+    pub grids: Vec<(Entity, Vec<Brick>)>,
     pub wires: Vec<WireConnection>,
-    // TODO: minigame, environment, entities
+    pub entities: Vec<Entity>,
+    // TODO: minigame, environment
 }
 
 impl World {
@@ -39,12 +42,18 @@ impl World {
             // Main grid bricks are on grid 1
             world.add_bricks_to_grid(1, &self.bricks);
 
-            // Add all grids (by grid id)
-            for (grid_id, bricks) in &self.grids {
-                // TODO: error for brick grid id 1/0
-                world.add_bricks_to_grid(*grid_id, bricks);
+            // Add all dynamic grids
+            for (entity, bricks) in &self.grids {
+                let grid_id = world.add_entity(entity);
+                world.add_bricks_to_grid(grid_id, bricks);
             }
 
+            // Add all non-grid entities
+            for entity in &self.entities {
+                world.add_entity(entity);
+            }
+
+            // Add all wires
             for (i, wire) in self.wires.iter().enumerate() {
                 world
                     .add_wire(wire)
@@ -65,6 +74,23 @@ impl World {
     /// Add multiple bricks to the world
     pub fn add_bricks(&mut self, bricks: impl IntoIterator<Item = Brick>) {
         self.bricks.extend(bricks);
+    }
+    pub fn add_entity(&mut self, entity: Entity) {
+        self.entities.push(entity);
+    }
+    pub fn add_brick_grid(&mut self, entity: Entity, bricks: impl IntoIterator<Item = Brick>) {
+        self.grids.push((
+            entity,
+            bricks
+                .into_iter()
+                .map(|mut b| {
+                    // Shift all bricks in non-main grids to the center of the chunk
+                    // Otherwise the bricks will be offset by half the chunk size
+                    b.position = b.position - Position::CHUNK_HALF;
+                    b
+                })
+                .collect(),
+        ));
     }
 
     /// Add a single wire connection to the world

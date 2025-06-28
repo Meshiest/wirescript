@@ -296,6 +296,84 @@ pub struct Position {
     pub z: i32,
 }
 
+impl Position {
+    pub const ZERO: Self = Self::new(0, 0, 0);
+    pub const CHUNK_SIZE: Self = Self::new(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
+    pub const CHUNK_HALF: Self = Self::new(CHUNK_HALF, CHUNK_HALF, CHUNK_HALF);
+    pub const fn new(x: i32, y: i32, z: i32) -> Self {
+        Self { x, y, z }
+    }
+    pub fn to_relative(self) -> (ChunkIndex, RelativePosition) {
+        // Brick positions are from -1024 to 1023 in a chunk
+        // A brick at (0, 0, 0) is positioned at -1024, -1024, -1024 in the chunk (0, 0, 0)
+        (
+            ChunkIndex {
+                x: self.x.div_euclid(CHUNK_SIZE) as i16,
+                y: self.y.div_euclid(CHUNK_SIZE) as i16,
+                z: self.z.div_euclid(CHUNK_SIZE) as i16,
+            },
+            RelativePosition {
+                x: (self.x.rem_euclid(CHUNK_SIZE) - CHUNK_HALF) as i16,
+                y: (self.y.rem_euclid(CHUNK_SIZE) - CHUNK_HALF) as i16,
+                z: (self.z.rem_euclid(CHUNK_SIZE) - CHUNK_HALF) as i16,
+            },
+        )
+    }
+
+    pub fn from_relative(chunk: ChunkIndex, pos: RelativePosition) -> Self {
+        Position {
+            x: chunk.x as i32 * CHUNK_SIZE + (CHUNK_SIZE / 2) + pos.x as i32,
+            y: chunk.y as i32 * CHUNK_SIZE + (CHUNK_SIZE / 2) + pos.y as i32,
+            z: chunk.z as i32 * CHUNK_SIZE + (CHUNK_SIZE / 2) + pos.z as i32,
+        }
+    }
+}
+
+impl std::ops::Add for Position {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        Self {
+            x: self.x + other.x,
+            y: self.y + other.y,
+            z: self.z + other.z,
+        }
+    }
+}
+impl std::ops::Sub for Position {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        Self {
+            x: self.x - other.x,
+            y: self.y - other.y,
+            z: self.z - other.z,
+        }
+    }
+}
+impl std::ops::Mul<i32> for Position {
+    type Output = Self;
+
+    fn mul(self, scalar: i32) -> Self::Output {
+        Self {
+            x: self.x * scalar,
+            y: self.y * scalar,
+            z: self.z * scalar,
+        }
+    }
+}
+impl std::ops::Div<i32> for Position {
+    type Output = Self;
+
+    fn div(self, scalar: i32) -> Self::Output {
+        Self {
+            x: self.x / scalar,
+            y: self.y / scalar,
+            z: self.z / scalar,
+        }
+    }
+}
+
 impl From<(i32, i32, i32)> for Position {
     fn from((x, y, z): (i32, i32, i32)) -> Self {
         Self { x, y, z }
@@ -315,12 +393,24 @@ impl Ord for Position {
 }
 
 pub const CHUNK_SIZE: i32 = 2048;
+pub const CHUNK_HALF: i32 = CHUNK_SIZE / 2;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ChunkIndex {
     pub x: i16,
     pub y: i16,
     pub z: i16,
+}
+impl ChunkIndex {
+    pub const ZERO: Self = Self { x: 0, y: 0, z: 0 };
+    pub const fn new(x: i16, y: i16, z: i16) -> Self {
+        Self { x, y, z }
+    }
+}
+impl From<(i16, i16, i16)> for ChunkIndex {
+    fn from((x, y, z): (i16, i16, i16)) -> Self {
+        Self { x, y, z }
+    }
 }
 impl AsBrdbValue for ChunkIndex {
     fn as_brdb_struct_prop_value(
@@ -459,34 +549,6 @@ pub fn byte_to_orientation(orientation: u8) -> (Direction, Rotation) {
     (dir, rot)
 }
 
-impl Position {
-    pub fn to_relative(self) -> (ChunkIndex, RelativePosition) {
-        let x = self.x - CHUNK_SIZE / 2;
-        let y = self.y - CHUNK_SIZE / 2;
-        let z = self.z - CHUNK_SIZE / 2;
-        (
-            ChunkIndex {
-                x: (x / CHUNK_SIZE) as i16,
-                y: (y / CHUNK_SIZE) as i16,
-                z: (z / CHUNK_SIZE) as i16,
-            },
-            RelativePosition {
-                x: (x % CHUNK_SIZE) as i16,
-                y: (y % CHUNK_SIZE) as i16,
-                z: (z % CHUNK_SIZE) as i16,
-            },
-        )
-    }
-
-    pub fn from_relative(chunk: ChunkIndex, pos: RelativePosition) -> Self {
-        Position {
-            x: chunk.x as i32 * CHUNK_SIZE + (CHUNK_SIZE / 2) + pos.x as i32,
-            y: chunk.y as i32 * CHUNK_SIZE + (CHUNK_SIZE / 2) + pos.y as i32,
-            z: chunk.z as i32 * CHUNK_SIZE + (CHUNK_SIZE / 2) + pos.z as i32,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct BrickSizeCounter {
     pub asset_index: u32,
@@ -580,6 +642,7 @@ impl BrickChunkSoA {
 
         self.owner_indices
             .push(brick.owner_index.unwrap_or(0) as u32);
+
         self.relative_positions.push(brick.position.to_relative().1);
         self.orientations
             .push(orientation_to_byte(brick.direction, brick.rotation));

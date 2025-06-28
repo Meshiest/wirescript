@@ -1,9 +1,24 @@
-use crate::brdb::schema::as_brdb::AsBrdbValue;
+use crate::brdb::{
+    schema::{BrdbValue, as_brdb::AsBrdbValue},
+    wrapper::CHUNK_SIZE,
+};
 
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Vector3f {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+}
+
+impl TryFrom<&BrdbValue> for Vector3f {
+    type Error = crate::brdb::errors::BrdbSchemaError;
+
+    fn try_from(value: &BrdbValue) -> Result<Self, Self::Error> {
+        let x = value.prop("X")?.as_brdb_f32()?;
+        let y = value.prop("Y")?.as_brdb_f32()?;
+        let z = value.prop("Z")?.as_brdb_f32()?;
+        Ok(Self { x, y, z })
+    }
 }
 
 impl AsBrdbValue for Vector3f {
@@ -22,11 +37,117 @@ impl AsBrdbValue for Vector3f {
     }
 }
 
+impl std::ops::Add for Vector3f {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        Self {
+            x: self.x + other.x,
+            y: self.y + other.y,
+            z: self.z + other.z,
+        }
+    }
+}
+impl std::ops::Sub for Vector3f {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        Self {
+            x: self.x - other.x,
+            y: self.y - other.y,
+            z: self.z - other.z,
+        }
+    }
+}
+impl std::ops::Mul<f32> for Vector3f {
+    type Output = Self;
+    fn mul(self, scalar: f32) -> Self::Output {
+        Self {
+            x: self.x * scalar,
+            y: self.y * scalar,
+            z: self.z * scalar,
+        }
+    }
+}
+impl std::ops::Div<f32> for Vector3f {
+    type Output = Self;
+    fn div(self, scalar: f32) -> Self::Output {
+        if scalar == 0.0 {
+            panic!("Division by zero in Vector3f");
+        }
+        Self {
+            x: self.x / scalar,
+            y: self.y / scalar,
+            z: self.z / scalar,
+        }
+    }
+}
+
+impl From<(f32, f32, f32)> for Vector3f {
+    fn from(tuple: (f32, f32, f32)) -> Self {
+        Self {
+            x: tuple.0,
+            y: tuple.1,
+            z: tuple.2,
+        }
+    }
+}
+
+impl Vector3f {
+    pub const UP: Self = Self::new(0.0, 1.0, 0.0);
+    pub const DOWN: Self = Self::new(0.0, -1.0, 0.0);
+    pub const LEFT: Self = Self::new(-1.0, 0.0, 0.0);
+    pub const RIGHT: Self = Self::new(1.0, 0.0, 0.0);
+    pub const FORWARD: Self = Self::new(0.0, 0.0, -1.0);
+    pub const BACKWARD: Self = Self::new(0.0, 0.0, 1.0);
+    pub const ZERO: Self = Self::new(0.0, 0.0, 0.0);
+    pub const ONE: Self = Self::new(1.0, 1.0, 1.0);
+    pub const CHUNK_SIZE: Self = Self::new(CHUNK_SIZE as f32, CHUNK_SIZE as f32, CHUNK_SIZE as f32);
+    pub const CHUNK_HALF: Self = Self::new(
+        CHUNK_SIZE as f32 / 2.0,
+        CHUNK_SIZE as f32 / 2.0,
+        CHUNK_SIZE as f32 / 2.0,
+    );
+
+    pub const fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn normalize(self) -> Self {
+        let length = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
+        if length == 0.0 {
+            return Self::default();
+        }
+        self / length
+    }
+
+    pub fn cross(self, other: Self) -> Self {
+        Self {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x,
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Quat4f {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub w: f32,
+}
+
+impl TryFrom<&BrdbValue> for Quat4f {
+    type Error = crate::brdb::errors::BrdbSchemaError;
+
+    fn try_from(value: &BrdbValue) -> Result<Self, Self::Error> {
+        let x = value.prop("X")?.as_brdb_f32()?;
+        let y = value.prop("Y")?.as_brdb_f32()?;
+        let z = value.prop("Z")?.as_brdb_f32()?;
+        let w = value.prop("W")?.as_brdb_f32()?;
+        Ok(Self { x, y, z, w })
+    }
 }
 
 impl AsBrdbValue for Quat4f {
@@ -81,6 +202,19 @@ impl Quat4f {
             y: cos_x * sin_y * cos_z + sin_x * cos_y * sin_z,
             z: cos_x * cos_y * sin_z - sin_x * sin_y * cos_z,
             w: cos_x * cos_y * cos_z + sin_x * sin_y * sin_z,
+        }
+    }
+
+    pub fn look_at(forward: Vector3f, up: Vector3f) -> Self {
+        let forward = forward.normalize();
+        let right = up.cross(forward).normalize();
+        let up = forward.cross(right);
+
+        Self {
+            x: right.x,
+            y: up.y,
+            z: forward.z,
+            w: 0.0,
         }
     }
 }

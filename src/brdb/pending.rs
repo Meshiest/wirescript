@@ -245,7 +245,7 @@ impl BrdbPendingFs {
                     "ChunkIndex.mps".to_owned(),
                     File(Some(
                         entity_chunk_index_schema
-                            .write_brdb(ENTITY_CHUNK_INDEX_SOA, &world.entity_chunk_indices)
+                            .write_brdb(ENTITY_CHUNK_INDEX_SOA, &world.entity_chunk_index)
                             .about("ChunkIndex.mps")?,
                     )),
                 ),
@@ -262,15 +262,32 @@ impl BrdbPendingFs {
                 .entity_chunks
                 .into_iter()
                 .map(|(chunk, entities)| {
-                    Ok((
-                        format!("{chunk}.mps"),
-                        File(Some(
-                            world
-                                .entity_schema
-                                .write_brdb(ENTITY_CHUNK_SOA, &entities)
-                                .about_f(|| format!("Entities/Chunks/{chunk}.mps"))?,
-                        )),
-                    ))
+                    let mut buf = world
+                        .entity_schema
+                        .write_brdb(ENTITY_CHUNK_SOA, &entities)
+                        .about_f(|| format!("Entities/Chunks/{chunk}.mps"))?;
+
+                    for (i, entity_data) in entities.unwritten_struct_data.into_iter().enumerate() {
+                        // Unwrap safety: The component can only be added to unwritten_struct_data if
+                        // get_schema_struct() returns Some(_, Some(_))
+                        let Some((_, Some(struct_ty))) = entity_data.get_schema_struct() else {
+                            // Cannot write entity data without a type
+                            continue;
+                        };
+
+                        // Append to the buffer and serialize the component's data
+                        write::write_brdb(
+                            &world.entity_schema,
+                            &mut buf,
+                            struct_ty.as_ref(),
+                            &**entity_data,
+                        )
+                        .about_f(|| {
+                            format!("Entities/Chunks/{chunk}.mps entity {i} ({struct_ty})")
+                        })?;
+                    }
+
+                    Ok((format!("{chunk}.mps"), File(Some(buf))))
                 })
                 .collect::<Result<Vec<_>, BrdbError>>()?;
 
@@ -377,10 +394,10 @@ mod tests {
         pending::BrdbPendingFs,
         schema::{ReadBrdbSchema, as_brdb::AsBrdbValue},
         wrapper::{
-            Brick, World,
+            Brick, Entity, World,
             schemas::{
                 BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, BRICK_COMPONENT_SOA, BRICK_WIRE_SOA,
-                GLOBAL_DATA_SOA, OWNER_TABLE_SOA,
+                ENTITY_CHUNK_SOA, GLOBAL_DATA_SOA, OWNER_TABLE_SOA,
             },
         },
     };
@@ -388,11 +405,23 @@ mod tests {
     #[test]
     fn test_brick_write() -> Result<(), Box<dyn Error>> {
         let mut world = World::new();
-        world.bricks.push(Brick {
+        world.add_brick(Brick {
             position: (0, 0, 3).into(),
             color: (255, 0, 0).into(),
             ..Default::default()
         });
+        world.add_brick_grid(
+            Entity {
+                frozen: true,
+                ..Default::default()
+            },
+            [Brick {
+                position: (0, 0, 3).into(),
+                color: (255, 0, 0).into(),
+                ..Default::default()
+            }],
+        );
+
         let pending = world.to_unsaved()?.to_pending()?;
         let root = pending.to_root().unwrap();
 
@@ -548,7 +577,7 @@ mod tests {
                                 .read_brdb(wire_schema.as_ref().unwrap(), BRICK_WIRE_SOA)?;
                         }
                     }
-                    ("ChunkIndex", BrdbPendingFs::File(data)) => {
+                    ("ChunkIndex.mps", BrdbPendingFs::File(data)) => {
                         // read the chunk index
                         let _chunk_index = data.unwrap().as_slice().read_brdb(
                             brick_index_schema.as_ref().unwrap(),
@@ -562,16 +591,16 @@ mod tests {
 
         let mut _entity_index_schema = None;
         let mut _entity_index_vec = None;
-        let mut _entity_schema = None;
-        let mut _entity_chunks = None;
+        let mut entity_schema = None;
+        let mut entity_chunks = None;
 
         for (n, fs) in entities_dir.unwrap() {
             match (n.as_str(), fs) {
                 ("Chunks", BrdbPendingFs::Folder(items)) => {
-                    _entity_chunks = items;
+                    entity_chunks = items;
                 }
                 ("ChunksShared.schema", BrdbPendingFs::File(data)) => {
-                    _entity_schema = Some(data.unwrap().as_slice().read_brdb_schema()?);
+                    entity_schema = Some(data.unwrap().as_slice().read_brdb_schema()?);
                 }
                 ("ChunkIndex.schema", BrdbPendingFs::File(data)) => {
                     _entity_index_schema = Some(data.unwrap().as_slice().read_brdb_schema()?);
@@ -581,6 +610,13 @@ mod tests {
                 }
                 (n, other) => unreachable!("unknown Entities/{n}: {other}"),
             }
+        }
+
+        // Ensure all the chunks can be read
+        for (_chunk_id, chunk) in entity_chunks.unwrap() {
+            let content = chunk.to_file().unwrap();
+            let buf = &mut content.as_slice();
+            let _chunk_data = buf.read_brdb(entity_schema.as_ref().unwrap(), ENTITY_CHUNK_SOA)?;
         }
 
         Ok(())

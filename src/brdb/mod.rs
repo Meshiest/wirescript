@@ -1,20 +1,31 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
+    ops::Deref,
     path::Path,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use indexmap::{IndexMap, IndexSet};
 use rusqlite::{Connection, params};
 
 use crate::brdb::{
+    assets::LiteralComponent,
     errors::{BrdbError, BrdbFsError, BrdbSchemaError},
     fs::{BrdbFs, now},
     pending::BrdbPendingFs,
-    schema::{BrdbSchemaGlobalData, BrdbStruct, BrdbValue, ReadBrdbSchema},
+    schema::{
+        BrdbSchema, BrdbSchemaGlobalData, BrdbStruct, BrdbValue, ReadBrdbSchema,
+        as_brdb::AsBrdbValue,
+    },
     tables::{BrdbBlob, BrdbFile, BrdbFolder},
-    wrapper::schemas::{GLOBAL_DATA_SOA, OWNER_TABLE_SOA},
+    wrapper::{
+        BString, BitFlags, BrdbComponent, ChunkIndex, Entity, lookup_entity_struct_name,
+        schemas::{
+            BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, ENTITY_CHUNK_INDEX_SOA, GLOBAL_DATA_SOA,
+            OWNER_TABLE_SOA,
+        },
+    },
 };
 
 pub mod assets;
@@ -53,6 +64,10 @@ impl Brdb {
         Ok(db)
     }
 
+    pub fn into_reader(self) -> BrdbReader {
+        BrdbReader::new(self)
+    }
+
     /// Open an existing BRDB database at the specified path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BrdbError> {
         let db = Self {
@@ -83,7 +98,7 @@ impl Brdb {
         Ok(())
     }
 
-    /// Read the GlobalData from the BRDB database.
+    /// Read the GlobalData
     pub fn read_global_data(&self) -> Result<Arc<BrdbSchemaGlobalData>, BrdbError> {
         // Parse the GlobalData schema
         let schema = self
@@ -136,7 +151,7 @@ impl Brdb {
         Ok(Arc::new(BrdbSchemaGlobalData {
             external_asset_types,
             external_asset_references,
-            entity_type_names: str_vec("EntityTypeNames")?,
+            entity_type_names: str_set("EntityTypeNames")?,
             basic_brick_asset_names: str_set("BasicBrickAssetNames")?,
             procedural_brick_asset_names: str_set("ProceduralBrickAssetNames")?,
             material_asset_names: str_set("MaterialAssetNames")?,
@@ -482,13 +497,54 @@ impl Brdb {
         )?;
         Ok(())
     }
+}
 
-    /// Read the Owners table from the BRDB database.
-    pub fn read_owners(&self) -> Result<BrdbStruct, BrdbError> {
-        let owners_schema = self
-            .read_file("World/0/Owners.schema")?
-            .as_slice()
-            .read_brdb_schema()?;
+pub struct BrdbReader {
+    brdb: Brdb,
+    global_data: RwLock<Option<Arc<BrdbSchemaGlobalData>>>,
+    owners_schema: RwLock<Option<Arc<BrdbSchema>>>,
+    components_schema: RwLock<Option<Arc<BrdbSchema>>>,
+    wires_schema: RwLock<Option<Arc<BrdbSchema>>>,
+    bricks_schema: RwLock<Option<Arc<BrdbSchema>>>,
+    brick_chunk_index_schema: RwLock<Option<Arc<BrdbSchema>>>,
+    entity_chunk_index_schema: RwLock<Option<Arc<BrdbSchema>>>,
+    entities_schema: RwLock<Option<Arc<BrdbSchema>>>,
+}
+impl Deref for BrdbReader {
+    type Target = Brdb;
+
+    fn deref(&self) -> &Self::Target {
+        &self.brdb
+    }
+}
+
+impl BrdbReader {
+    pub fn new(brdb: Brdb) -> Self {
+        Self {
+            brdb,
+            global_data: Default::default(),
+            owners_schema: Default::default(),
+            components_schema: Default::default(),
+            wires_schema: Default::default(),
+            bricks_schema: Default::default(),
+            brick_chunk_index_schema: Default::default(),
+            entity_chunk_index_schema: Default::default(),
+            entities_schema: Default::default(),
+        }
+    }
+
+    /// Read the GlobalData
+    pub fn global_data(&self) -> Result<Arc<BrdbSchemaGlobalData>, BrdbError> {
+        if let Some(data) = self.global_data.read().unwrap().as_ref() {
+            return Ok(data.clone());
+        }
+        let data = self.read_global_data()?;
+        self.global_data.write().unwrap().replace(data.clone());
+        Ok(data)
+    }
+    /// Read the Owners table
+    pub fn owners_soa(&self) -> Result<BrdbStruct, BrdbError> {
+        let owners_schema = self.owners_schema()?;
         let owners_data = self
             .read_file("World/0/Owners.mps")?
             .as_slice()
@@ -501,6 +557,325 @@ impl Brdb {
             ))),
         }
     }
+    /// Read the Owners schema
+    pub fn owners_schema(&self) -> Result<Arc<BrdbSchema>, BrdbError> {
+        if let Some(schema) = self.owners_schema.read().unwrap().as_ref() {
+            return Ok(schema.clone());
+        }
+        let schema = self
+            .read_file("World/0/Owners.schema")?
+            .as_slice()
+            .read_brdb_schema()?;
+        self.owners_schema.write().unwrap().replace(schema.clone());
+        Ok(schema)
+    }
+    /// Read the shared components chunk schema
+    pub fn components_schema(&self) -> Result<Arc<BrdbSchema>, BrdbError> {
+        if let Some(schema) = self.components_schema.read().unwrap().as_ref() {
+            return Ok(schema.clone());
+        }
+        let schema = self
+            .read_file("World/0/Bricks/ComponentsShared.schema")?
+            .as_slice()
+            .read_brdb_schema_with_data(self.global_data()?)?;
+        self.components_schema
+            .write()
+            .unwrap()
+            .replace(schema.clone());
+        Ok(schema)
+    }
+    /// Read the shared component chunk indices
+    pub fn component_chunk_soa(
+        &self,
+        grid_id: usize,
+        chunk: ChunkIndex,
+    ) -> Result<(BrdbStruct, Vec<BrdbStruct>), BrdbError> {
+        let global_data = self.global_data()?;
+        let schema = self.components_schema()?;
+
+        let path = format!("World/0/Bricks/Grids/{grid_id}/Components/{chunk}.mps");
+        let buf = self.read_file(path)?;
+        let buf = &mut buf.as_slice();
+
+        let mps = buf.read_brdb(&schema, BRICK_CHUNK_SOA)?;
+        let soa = match mps {
+            BrdbValue::Struct(s) => *s,
+            ty => {
+                return Err(BrdbError::Schema(BrdbSchemaError::ExpectedType(
+                    "Struct".to_string(),
+                    ty.get_type().to_owned(),
+                )));
+            }
+        };
+
+        let mut component_data = Vec::new();
+        let type_counters = soa.prop("ComponentTypeCounters")?.as_array()?;
+        for counter in type_counters {
+            let type_idx = counter.prop("TypeIndex")?.as_brdb_u32()?;
+            let num_instances = counter.prop("NumInstances")?.as_brdb_u32()?;
+            let type_name = global_data
+                .component_type_names
+                .get_index(type_idx as usize)
+                .cloned()
+                .unwrap_or("illegal".to_string());
+            let struct_name = global_data
+                .component_data_struct_names
+                .get(type_idx as usize)
+                .cloned()
+                .unwrap_or("illegal".to_string());
+
+            if struct_name == "None" {
+                continue;
+            }
+
+            for _ in 0..num_instances {
+                let BrdbValue::Struct(s) = buf
+                    .read_brdb(&schema, &struct_name)
+                    .map_err(|e| e.wrap(format!("Read component {type_name}/{struct_name}")))?
+                else {
+                    continue;
+                };
+                component_data.push(*s);
+            }
+        }
+        Ok((soa, component_data))
+    }
+    /// Read the shared wires chunk schema
+    pub fn wires_schema(&self) -> Result<Arc<BrdbSchema>, BrdbError> {
+        if let Some(schema) = self.wires_schema.read().unwrap().as_ref() {
+            return Ok(schema.clone());
+        }
+        let schema = self
+            .read_file("World/0/Bricks/WiresShared.schema")?
+            .as_slice()
+            .read_brdb_schema()?;
+        self.wires_schema.write().unwrap().replace(schema.clone());
+        Ok(schema)
+    }
+    pub fn wire_chunk_soa(
+        &self,
+        grid_id: usize,
+        chunk: ChunkIndex,
+    ) -> Result<BrdbStruct, BrdbError> {
+        let path = format!("World/0/Bricks/Grids/{grid_id}/Wires/{chunk}.mps");
+        let mps = self
+            .read_file(path)?
+            .as_slice()
+            .read_brdb(&self.wires_schema()?, BRICK_CHUNK_SOA)?;
+        match mps {
+            BrdbValue::Struct(s) => Ok(*s),
+            ty => Err(BrdbError::Schema(BrdbSchemaError::ExpectedType(
+                "Struct".to_string(),
+                ty.get_type().to_owned(),
+            ))),
+        }
+    }
+    /// Read the shared brick-chunk-index schema
+    pub fn brick_chunk_index_schema(&self) -> Result<Arc<BrdbSchema>, BrdbError> {
+        if let Some(schema) = self.brick_chunk_index_schema.read().unwrap().as_ref() {
+            return Ok(schema.clone());
+        }
+        let schema = self
+            .read_file("World/0/Bricks/ChunkIndexShared.schema")?
+            .as_slice()
+            .read_brdb_schema()?;
+        self.brick_chunk_index_schema
+            .write()
+            .unwrap()
+            .replace(schema.clone());
+        Ok(schema)
+    }
+    /// Read the shared bricks chunk schema
+    pub fn bricks_schema(&self) -> Result<Arc<BrdbSchema>, BrdbError> {
+        if let Some(schema) = self.bricks_schema.read().unwrap().as_ref() {
+            return Ok(schema.clone());
+        }
+        let schema = self
+            .read_file("World/0/Bricks/ChunksShared.schema")?
+            .as_slice()
+            .read_brdb_schema()?;
+        self.bricks_schema.write().unwrap().replace(schema.clone());
+        Ok(schema)
+    }
+    /// Read the brick chunk indices for a specific grid
+    pub fn brick_chunk_index(&self, grid_id: usize) -> Result<Vec<ChunkIndex>, BrdbError> {
+        let brick_index = self
+            .read_file(format!("World/0/Bricks/Grids/{grid_id}/ChunkIndex.mps"))?
+            .as_slice()
+            .read_brdb(&self.brick_chunk_index_schema()?, BRICK_CHUNK_INDEX_SOA)?;
+        println!(
+            "[debug] {}",
+            brick_index.display(self.brick_chunk_index_schema()?.as_ref())
+        );
+        let chunk_indices = brick_index
+            .prop("Chunk3DIndices")?
+            .as_array()?
+            .into_iter()
+            .map(|s| {
+                Ok(ChunkIndex {
+                    x: s.prop("X")?.as_brdb_i16()?,
+                    y: s.prop("Y")?.as_brdb_i16()?,
+                    z: s.prop("Z")?.as_brdb_i16()?,
+                })
+            })
+            .collect::<Result<Vec<_>, BrdbSchemaError>>()?;
+        Ok(chunk_indices)
+    }
+    pub fn brick_chunk_soa(
+        &self,
+        grid_id: usize,
+        chunk: ChunkIndex,
+    ) -> Result<BrdbStruct, BrdbError> {
+        let path = format!("World/0/Bricks/Grids/{grid_id}/Chunks/{chunk}.mps");
+        let mps = self
+            .read_file(path)?
+            .as_slice()
+            .read_brdb(&self.bricks_schema()?, BRICK_CHUNK_SOA)?;
+        match mps {
+            BrdbValue::Struct(s) => Ok(*s),
+            ty => Err(BrdbError::Schema(BrdbSchemaError::ExpectedType(
+                "Struct".to_string(),
+                ty.get_type().to_owned(),
+            ))),
+        }
+    }
+    /// Read the shared entity chunk schema
+    pub fn entities_schema(&self) -> Result<Arc<BrdbSchema>, BrdbError> {
+        if let Some(schema) = self.entities_schema.read().unwrap().as_ref() {
+            return Ok(schema.clone());
+        }
+        let schema = self
+            .read_file("World/0/Entities/ChunksShared.schema")?
+            .as_slice()
+            .read_brdb_schema_with_data(self.global_data()?)?;
+        self.entities_schema
+            .write()
+            .unwrap()
+            .replace(schema.clone());
+        Ok(schema)
+    }
+    pub fn entities_chunk_index_schema(&self) -> Result<Arc<BrdbSchema>, BrdbError> {
+        if let Some(schema) = self.entity_chunk_index_schema.read().unwrap().as_ref() {
+            return Ok(schema.clone());
+        }
+        let schema = self
+            .read_file("World/0/Entities/ChunkIndex.schema")?
+            .as_slice()
+            .read_brdb_schema()?;
+        self.entity_chunk_index_schema
+            .write()
+            .unwrap()
+            .replace(schema.clone());
+        Ok(schema)
+    }
+
+    /// Read the entity chunk indices
+    pub fn entity_chunk_index(&self) -> Result<Vec<ChunkIndex>, BrdbError> {
+        let entities_index = self
+            .read_file("World/0/Entities/ChunkIndex.mps")?
+            .as_slice()
+            .read_brdb(&self.entities_chunk_index_schema()?, ENTITY_CHUNK_INDEX_SOA)?;
+        let entity_chunks_ids = entities_index
+            .prop("Chunk3DIndices")?
+            .as_array()?
+            .into_iter()
+            .map(|s| {
+                Ok(ChunkIndex {
+                    x: s.prop("X")?.as_brdb_i16()?,
+                    y: s.prop("Y")?.as_brdb_i16()?,
+                    z: s.prop("Z")?.as_brdb_i16()?,
+                })
+            })
+            .collect::<Result<Vec<_>, BrdbSchemaError>>()?;
+        Ok(entity_chunks_ids)
+    }
+
+    pub fn entity_chunk(&self, chunk: ChunkIndex) -> Result<Vec<Entity>, BrdbError> {
+        let global_data = self.global_data()?;
+        let schema = self.entities_schema()?;
+        let path = format!("World/0/Entities/Chunks/{chunk}.mps");
+        let buf = self.read_file(path)?;
+        let buf = &mut buf.as_slice();
+        let illegal = "illegal".to_string();
+
+        let mps = buf.read_brdb(&schema, BRICK_CHUNK_SOA)?;
+        let soa = match mps {
+            BrdbValue::Struct(s) => *s,
+            ty => {
+                return Err(BrdbError::Schema(BrdbSchemaError::ExpectedType(
+                    "Struct".to_string(),
+                    ty.get_type().to_owned(),
+                )));
+            }
+        };
+
+        let mut entity_data = Vec::new();
+        let mut index = 0;
+        let locked_flags = soa.prop("PhysicsLockedFlags")?;
+        let sleeping_flags = soa.prop("PhysicsSleepingFlags")?;
+
+        for counter in soa.prop("TypeCounters")?.as_array()? {
+            let type_idx = counter.prop("TypeIndex")?.as_brdb_u32()?;
+            let num_instances = counter.prop("NumEntities")?.as_brdb_u32()?;
+            let type_name = global_data
+                .entity_type_names
+                .get_index(type_idx as usize)
+                .unwrap_or(&illegal);
+
+            let struct_name = lookup_entity_struct_name(type_name);
+            for _ in 0..num_instances {
+                let data: Arc<Box<dyn BrdbComponent>> = if let Some(struct_name) = struct_name {
+                    let value = buf
+                        .read_brdb(&schema, struct_name)
+                        .map_err(|e| e.wrap(format!("Read entity {type_name}/{struct_name}")))?;
+                    let component = LiteralComponent::new_from_data(
+                        type_name,
+                        struct_name,
+                        None,
+                        Arc::new(value.as_struct()?.as_hashmap()?),
+                        [],
+                    );
+                    Arc::new(Box::new(component))
+                } else {
+                    Arc::new(Box::new(()))
+                };
+
+                entity_data.push(Entity {
+                    asset: BString::from(type_name),
+                    id: Some(
+                        soa.prop("PersistentIndices")?
+                            .index_unwrap(index)?
+                            .as_brdb_u32()? as usize,
+                    ),
+                    owner_index: Some(
+                        soa.prop("OwnerIndices")?
+                            .index_unwrap(index)?
+                            .as_brdb_u32()?,
+                    ),
+                    location: soa.prop("Locations")?.index_unwrap(index)?.try_into()?,
+                    rotation: soa.prop("Rotations")?.index_unwrap(index)?.try_into()?,
+                    velocity: soa
+                        .prop("LinearVelocities")?
+                        .index_unwrap(index)?
+                        .try_into()?,
+                    angular_velocity: soa
+                        .prop("AngularVelocities")?
+                        .index_unwrap(index)?
+                        .try_into()?,
+                    color_and_alpha: soa
+                        .prop("ColorsAndAlphas")?
+                        .index_unwrap(index)?
+                        .try_into()?,
+
+                    frozen: BitFlags::get_from_brdb_array(locked_flags, index)?,
+                    sleeping: BitFlags::get_from_brdb_array(sleeping_flags, index)?,
+                    data,
+                });
+                index += 1;
+            }
+        }
+        Ok(entity_data)
+    }
 }
 
 #[cfg(test)]
@@ -512,10 +887,7 @@ mod test {
         errors::BrdbError,
         schema::{ReadBrdbSchema, as_brdb::AsBrdbValue},
         tables::BrdbBlob,
-        wrapper::{
-            Brick, World,
-            schemas::{BRICK_CHUNK_SOA, BRICK_COMPONENT_SOA, BRICK_WIRE_SOA},
-        },
+        wrapper::{Brick, Entity, World, lookup_entity_struct_name, schemas::ENTITY_CHUNK_SOA},
     };
 
     /// This test will copy the sqlite schema to another file
@@ -569,7 +941,7 @@ mod test {
     #[test]
     fn test_memory_save() -> Result<(), Box<dyn std::error::Error>> {
         // Ensures the memory db can be created without errors
-        let db = Brdb::new_memory()?;
+        let db = Brdb::new_memory()?.into_reader();
         let mut world = World::new();
         world.bricks.push(Brick {
             position: (0, 0, 3).into(),
@@ -578,15 +950,7 @@ mod test {
         });
         db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
 
-        let global_data = db.read_global_data()?;
-        let schema = db
-            .read_file("World/0/Bricks/ChunksShared.schema")?
-            .as_slice()
-            .read_brdb_schema_with_data(global_data)?;
-        let mps = db
-            .read_file("World/0/Bricks/Grids/1/Chunks/0_0_0.mps")?
-            .as_slice()
-            .read_brdb(&schema, BRICK_CHUNK_SOA)?;
+        let mps = db.brick_chunk_soa(1, (0, 0, 0).into())?;
         let color = mps.prop("ColorsAndAlphas")?.index(0)?.unwrap();
         assert_eq!(color.prop("R")?.as_brdb_u8()?, 255);
         assert_eq!(color.prop("G")?.as_brdb_u8()?, 0);
@@ -606,7 +970,8 @@ mod test {
             Brdb::open(path)?
         } else {
             Brdb::create(path)?
-        };
+        }
+        .into_reader();
         let mut world = World::new();
         world.meta.bundle.description = "Test World".to_string();
         world.bricks.push(Brick {
@@ -618,16 +983,8 @@ mod test {
 
         println!("{}", db.get_fs()?.render());
 
-        let global_data = db.read_global_data()?;
-        let schema = db
-            .read_file("World/0/Bricks/ChunksShared.schema")?
-            .as_slice()
-            .read_brdb_schema_with_data(global_data)?;
-        let mps = db
-            .read_file("World/0/Bricks/Grids/1/Chunks/0_0_0.mps")?
-            .as_slice()
-            .read_brdb(&schema, BRICK_CHUNK_SOA)?;
-        let color = mps.prop("ColorsAndAlphas")?.index(0)?.unwrap();
+        let soa = db.brick_chunk_soa(1, (0, 0, 0).into())?;
+        let color = soa.prop("ColorsAndAlphas")?.index(0)?.unwrap();
         assert_eq!(color.prop("R")?.as_brdb_u8()?, 255);
         assert_eq!(color.prop("G")?.as_brdb_u8()?, 0);
         assert_eq!(color.prop("B")?.as_brdb_u8()?, 0);
@@ -636,7 +993,7 @@ mod test {
         Ok(())
     }
 
-    /// Writes a world with one brick to test.brdb
+    /// Writes a world with two bricks and a wire connection to wire_test.brdb
     #[test]
     fn test_write_wire_save() -> Result<(), Box<dyn std::error::Error>> {
         let path = PathBuf::from("./wire_test.brdb");
@@ -680,6 +1037,39 @@ mod test {
         Ok(())
     }
 
+    /// Writes a world with one brick to test.brdb
+    #[test]
+    fn test_write_entity_save() -> Result<(), Box<dyn std::error::Error>> {
+        let path = PathBuf::from("./entity_test.brdb");
+
+        let db = if path.exists() {
+            Brdb::open(path)?
+        } else {
+            Brdb::create(path)?
+        };
+
+        let mut world = World::new();
+        world.meta.bundle.description = "Test World".to_string();
+        world.add_brick_grid(
+            Entity {
+                frozen: true,
+                location: (0.0, 0.0, 40.0).into(),
+                ..Default::default()
+            },
+            [Brick {
+                position: (0, 0, 3).into(),
+                color: (0, 255, 0).into(),
+                ..Default::default()
+            }],
+        );
+
+        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+
+        println!("{}", db.get_fs()?.render());
+
+        Ok(())
+    }
+
     /// Reads the world generated by `test_write_save` and prints the data.
     #[test]
     fn test_read_test() -> Result<(), BrdbError> {
@@ -687,36 +1077,27 @@ mod test {
         if !path.exists() {
             return Ok(());
         }
-        let db = Brdb::open(path)?;
-
-        let global_data = db.read_global_data()?;
+        let db = Brdb::open(path)?.into_reader();
 
         println!("{}", db.get_fs()?.render());
 
-        let schema = db
-            .read_file("World/0/Bricks/ChunksShared.schema")?
-            .as_slice()
-            .read_brdb_schema_with_data(global_data.clone())?;
-
-        let data = db.read_file("World/0/Bricks/Grids/1/Chunks/0_0_0.mps")?;
-        let buf = &mut data.as_slice();
-        let parsed = buf.read_brdb(&schema, BRICK_CHUNK_SOA)?;
-        println!("data: {}", parsed.display(&schema));
+        let data = db.brick_chunk_soa(1, (0, 0, 0).into())?;
+        println!("data: {data}");
 
         Ok(())
     }
 
     #[test]
     fn test() -> Result<(), BrdbError> {
-        let path = PathBuf::from("./brick_assets.brdb");
+        let path = PathBuf::from("./entity.brdb");
         if !path.exists() {
             return Ok(());
         }
-        let db = Brdb::open(path)?;
+        let db = Brdb::open(path)?.into_reader();
 
         let global_data = db.read_global_data()?;
 
-        // println!("{}", db.get_fs()?.render());
+        println!("{}", db.get_fs()?.render());
 
         println!(
             "Basic Brick assets: {:?}",
@@ -726,67 +1107,47 @@ mod test {
             "Proc Brick assets: {:?}",
             global_data.procedural_brick_asset_names
         );
+        println!("Entity assets: {:?}", global_data.entity_type_names);
 
-        let schema = db
-            .read_file("World/0/Bricks/ComponentsShared.schema")?
-            .as_slice()
-            .read_brdb_schema_with_data(global_data.clone())?;
+        let bricks = db.brick_chunk_soa(3, (-1, -1, -1).into())?;
+        println!("Bricks: {bricks}");
 
-        let chunk_data = db.read_file("World/0/Bricks/Grids/1/Components/0_0_0.mps")?;
-        let buf = &mut chunk_data.as_slice();
-        let parsed = buf.read_brdb(&schema, BRICK_COMPONENT_SOA)?;
-        println!("Components: {}", parsed.display(&schema));
+        let entity_schema = db.entities_schema()?;
 
-        let type_counters = parsed.prop("ComponentTypeCounters")?.as_array()?;
-        for counter in type_counters {
-            let type_idx = counter.prop("TypeIndex")?.as_brdb_u32()?;
-            let num_instances = counter.prop("NumInstances")?.as_brdb_u32()?;
-            let type_name = global_data
-                .component_type_names
-                .get_index(type_idx as usize)
-                .cloned()
-                .unwrap_or("illegal".to_string());
-            let struct_name = global_data
-                .component_data_struct_names
-                .get(type_idx as usize)
-                .cloned()
-                .unwrap_or("illegal".to_string());
+        for chunk in db.entity_chunk_index()? {
+            let buf = db.read_file(format!("World/0/Entities/Chunks/{chunk}.mps"))?;
+            let buf = &mut buf.as_slice();
 
-            println!(
-                "Component type {type_name}/{struct_name} (index {type_idx}) has {num_instances} instances"
-            );
+            let entities = buf.read_brdb(&entity_schema, ENTITY_CHUNK_SOA)?;
+            println!("entities: {}", entities.display(&entity_schema));
 
-            if struct_name == "None" {
-                continue;
-            }
+            let type_counters = entities.prop("TypeCounters")?.as_array()?;
+            for counter in type_counters {
+                let type_idx = counter.prop("TypeIndex")?.as_brdb_u32()?;
+                let num_instances = counter.prop("NumEntities")?.as_brdb_u32()?;
+                let type_name = global_data
+                    .entity_type_names
+                    .get_index(type_idx as usize)
+                    .cloned()
+                    .unwrap_or("illegal".to_string());
+                let struct_name = lookup_entity_struct_name(&type_name)
+                    .unwrap_or("unknown")
+                    .to_string();
 
-            for _ in 0..num_instances {
-                let component = buf.read_brdb(&schema, &struct_name)?;
-                println!("Component: {}", component.display(&schema));
+                println!(
+                    "Component type {type_name}/{struct_name} (index {type_idx}) has {num_instances} instances"
+                );
+
+                if struct_name == "None" {
+                    continue;
+                }
+
+                for _ in 0..num_instances {
+                    let component = buf.read_brdb(&entity_schema, &struct_name)?;
+                    println!("Component: {}", component.display(&entity_schema));
+                }
             }
         }
-
-        let brick_schema = db
-            .read_file("World/0/Bricks/ChunksShared.schema")?
-            .as_slice()
-            .read_brdb_schema_with_data(global_data.clone())?;
-        let brick_data = db
-            .read_file("World/0/Bricks/Grids/1/Chunks/0_0_0.mps")?
-            .as_slice()
-            .read_brdb(&brick_schema, BRICK_CHUNK_SOA)?;
-        println!("Bricks: {}", brick_data.display(&brick_schema));
-
-        println!("Wire Ports: {:?}", global_data.component_wire_port_names);
-
-        let wires_schema = db
-            .read_file("World/0/Bricks/WiresShared.schema")?
-            .as_slice()
-            .read_brdb_schema()?;
-        let wires_data = db
-            .read_file("World/0/Bricks/Grids/1/Wires/0_0_0.mps")?
-            .as_slice()
-            .read_brdb(&wires_schema, BRICK_WIRE_SOA)?;
-        println!("Wires: {}", wires_data.display(&wires_schema));
 
         Ok(())
     }

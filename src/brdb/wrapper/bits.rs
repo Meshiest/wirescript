@@ -1,4 +1,10 @@
-use crate::brdb::schema::as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter};
+use crate::brdb::{
+    errors::BrdbSchemaError,
+    schema::{
+        BrdbValue,
+        as_brdb::{AsBrdbIter, AsBrdbValue, BrdbArrayIter},
+    },
+};
 
 #[derive(Clone, Default)]
 pub struct BitFlags {
@@ -14,10 +20,24 @@ impl BitFlags {
         }
     }
 
-    pub fn get(&self, bit: usize) -> bool {
-        let byte = self.vec.get(bit / 8).map(|v| *v).unwrap_or_default();
+    pub fn get_from_brdb_array(vec: &BrdbValue, bit: usize) -> Result<bool, BrdbSchemaError> {
+        let byte = vec
+            .index(bit / 8)?
+            .map(|v| v.as_brdb_u8())
+            .transpose()?
+            .unwrap_or_default();
+        let mask = 1 << (bit & 7);
+        Ok(byte & mask > 0)
+    }
+
+    pub fn get_from_vec(vec: &[u8], bit: usize) -> bool {
+        let byte = vec.as_ref().get(bit / 8).map(|v| *v).unwrap_or_default();
         let mask = 1 << (bit & 7);
         byte & mask > 0
+    }
+
+    pub fn get(&self, bit: usize) -> bool {
+        Self::get_from_vec(&self.vec, bit)
     }
 
     pub fn set(&mut self, bit: usize, val: bool) {

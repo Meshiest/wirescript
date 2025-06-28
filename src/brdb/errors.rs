@@ -118,6 +118,8 @@ pub enum BrdbSchemaError {
     UnknownAsset(String, usize),
     #[error("enum {enum_name} does not have a value at index {index}")]
     EnumIndexOutOfBounds { enum_name: String, index: u64 },
+    #[error("index {index} out of bounds, length is {len}")]
+    ArrayIndexOutOfBounds { index: usize, len: usize },
     #[error("expected type {0}, received {1}")]
     ExpectedType(String, String),
     #[error("expected array items")]

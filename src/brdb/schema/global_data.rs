@@ -10,7 +10,7 @@ use crate::brdb::{
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct BrdbSchemaGlobalData {
-    pub entity_type_names: Vec<String>,
+    pub entity_type_names: IndexSet<String>,
     pub basic_brick_asset_names: IndexSet<String>,
     pub procedural_brick_asset_names: IndexSet<String>,
     pub material_asset_names: IndexSet<String>,
@@ -87,6 +87,9 @@ impl BrdbSchemaGlobalData {
     }
     pub fn has_component_type(&self, type_name: &str) -> bool {
         self.component_type_names.contains(type_name)
+    }
+    pub fn add_entity_type(&mut self, type_name: &str) {
+        self.entity_type_names.insert(type_name.to_string());
     }
 }
 

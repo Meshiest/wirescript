@@ -7,7 +7,7 @@ use crate::brdb::{
     pending::BrdbPendingFs,
     schema::{BrdbSchema, BrdbSchemaGlobalData},
     wrapper::{
-        Brick, BrickChunkIndexSoA, BrickChunkSoA, ChunkIndex, ComponentChunkSoA,
+        Brick, BrickChunkIndexSoA, BrickChunkSoA, ChunkIndex, ComponentChunkSoA, Entity,
         EntityChunkIndexSoA, EntityChunkSoA, LocalWirePortSource, OwnerTableSoA,
         RemoteWirePortSource, WireChunkSoA, WireConnection, WirePortTarget, WorldMeta, schemas,
     },
@@ -41,7 +41,7 @@ pub struct UnsavedWorld {
     /// World/N/Bricks/Entities/ChunksShared.schema
     pub entity_schema: BrdbSchema,
     /// World/N/Bricks/Entities/ChunkIndex.mps
-    pub entity_chunk_indices: EntityChunkIndexSoA,
+    pub entity_chunk_index: EntityChunkIndexSoA,
 
     /// World/N/Minigame.bp
     pub minigame: Option<()>, // TODO: minigames serialization
@@ -52,6 +52,8 @@ pub struct UnsavedWorld {
     /// This is used to connect wires
     /// and is not saved to the world file.
     brick_id_map: HashMap<usize, (usize, ChunkIndex, usize)>,
+    // Maps entity internal id to persistent index
+    entity_index_map: HashMap<usize, u32>,
 }
 
 impl Default for UnsavedWorld {
@@ -63,10 +65,11 @@ impl Default for UnsavedWorld {
             grids: Default::default(),
             entity_chunks: Default::default(),
             entity_schema: schemas::entities_chunks_schema(),
-            entity_chunk_indices: Default::default(),
+            entity_chunk_index: Default::default(),
             minigame: Default::default(),
             environment: Default::default(),
             brick_id_map: Default::default(),
+            entity_index_map: Default::default(),
         }
     }
 }
@@ -97,6 +100,17 @@ impl UnsavedWorld {
         }
     }
 
+    fn add_entity_meta(&mut self, entity: &Entity) {
+        let Some((ty_name, _)) = entity.data.get_schema_struct() else {
+            return;
+        };
+        self.global_data.add_entity_type(&ty_name);
+        let Some((enums, structs)) = entity.data.get_schema() else {
+            return;
+        };
+        self.entity_schema.add_meta(enums, structs);
+    }
+
     pub(super) fn add_bricks_to_grid(&mut self, grid_id: usize, bricks: &[Brick]) {
         let mut grid = UnsavedGrid::default();
 
@@ -121,6 +135,42 @@ impl UnsavedWorld {
 
         // Add the grid to the world
         self.grids.insert(grid_id, grid);
+    }
+
+    pub(super) fn add_entity(&mut self, entity: &Entity) -> usize {
+        // Add the entity metadata to the global data
+        self.add_entity_meta(entity);
+
+        // Update the owner table
+        let owner_id = entity.owner_index.unwrap_or(0);
+        self.owners.inc_entities(owner_id as usize);
+
+        // Increment the entity persistent index
+        let entity_index = self.entity_chunk_index.next_persistent_index;
+        self.entity_chunk_index.next_persistent_index += 1;
+
+        // There is only one entity chunk right now...
+        let chunk_index = ChunkIndex::ZERO;
+        // Create a new entity chunk if it doesn't exist
+        if self.entity_chunk_index.chunk_3d_indices.is_empty() {
+            self.entity_chunk_index.chunk_3d_indices.push(chunk_index);
+        }
+        if self.entity_chunk_index.num_entities.is_empty() {
+            self.entity_chunk_index.num_entities.push(0);
+        }
+        self.entity_chunk_index.num_entities[0] += 1;
+
+        self.entity_chunks
+            .entry(chunk_index)
+            .or_insert_with(EntityChunkSoA::default)
+            .add_entity(&self.global_data, entity, entity_index);
+
+        // Map the internal entity id to its persistent index
+        if let Some(id) = entity.id {
+            self.entity_index_map.insert(id, entity_index);
+        }
+
+        entity_index as usize
     }
 
     pub(super) fn add_wire(&mut self, wire: &WireConnection) -> Result<(), BrdbError> {

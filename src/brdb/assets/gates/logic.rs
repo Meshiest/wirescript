@@ -85,24 +85,34 @@ impl LogicGate {
     pub const COMPONENT_CONST_FLOAT: BString = BString::str("Component_ConstantFloat");
     pub const COMPONENT_CONST_STRING: BString = BString::str("Component_ConstantString");
 
-    pub const STRUCT_BINARY_BOOL_BOOL: BString =
-        BString::str("BrickComponentData_GateBinary_BoolBool");
-    pub const STRUCT_BINARY_FLOAT_BOOL: BString =
-        BString::str("BrickComponentData_GateBinary_FloatBool");
+    pub const STRUCT_BINARY_BOOL_BOOL_STR: &str = "BrickComponentData_GateBinary_BoolBool";
+    pub const STRUCT_BINARY_FLOAT_BOOL_STR: &str = "BrickComponentData_GateBinary_FloatBool";
+    pub const STRUCT_BINARY_FLOAT_FLOAT_STR: &str = "BrickComponentData_GateBinary_FloatFloat";
+    pub const STRUCT_BINARY_INT_INT_STR: &str = "BrickComponentData_GateBinary_IntInt";
+
+    pub const STRUCT_UNARY_BOOL_BOOL_STR: &str = "BrickComponentData_GateUnary_BoolBool";
+    pub const STRUCT_UNARY_FLOAT_FLOAT_STR: &str = "BrickComponentData_GateUnary_FloatFloat";
+    pub const STRUCT_UNARY_INT_INT_STR: &str = "BrickComponentData_GateUnary_IntInt";
+
+    pub const STRUCT_CONSTANT_BOOL_STR: &str = "BrickComponentData_ConstantBool";
+    pub const STRUCT_CONSTANT_FLOAT_STR: &str = "BrickComponentData_ConstantFloat";
+    pub const STRUCT_CONSTANT_INT_STR: &str = "BrickComponentData_ConstantInt";
+    pub const STRUCT_CONSTANT_STRING_STR: &str = "BrickComponentData_ConstantString";
+
+    pub const STRUCT_BINARY_BOOL_BOOL: BString = BString::str(Self::STRUCT_BINARY_BOOL_BOOL_STR);
+    pub const STRUCT_BINARY_FLOAT_BOOL: BString = BString::str(Self::STRUCT_BINARY_FLOAT_BOOL_STR);
     pub const STRUCT_BINARY_FLOAT_FLOAT: BString =
-        BString::str("BrickComponentData_GateBinary_FloatFloat");
-    pub const STRUCT_BINARY_INT_INT: BString = BString::str("BrickComponentData_GateBinary_IntInt");
+        BString::str(Self::STRUCT_BINARY_FLOAT_FLOAT_STR);
+    pub const STRUCT_BINARY_INT_INT: BString = BString::str(Self::STRUCT_BINARY_INT_INT_STR);
 
-    pub const STRUCT_UNARY_BOOL_BOOL: BString =
-        BString::str("BrickComponentData_GateUnary_BoolBool");
-    pub const STRUCT_UNARY_FLOAT_FLOAT: BString =
-        BString::str("BrickComponentData_GateUnary_FloatFloat");
-    pub const STRUCT_UNARY_INT_INT: BString = BString::str("BrickComponentData_GateUnary_IntInt");
+    pub const STRUCT_UNARY_BOOL_BOOL: BString = BString::str(Self::STRUCT_UNARY_BOOL_BOOL_STR);
+    pub const STRUCT_UNARY_FLOAT_FLOAT: BString = BString::str(Self::STRUCT_UNARY_FLOAT_FLOAT_STR);
+    pub const STRUCT_UNARY_INT_INT: BString = BString::str(Self::STRUCT_UNARY_INT_INT_STR);
 
-    pub const STRUCT_CONSTANT_BOOL: BString = BString::str("BrickComponentData_ConstantBool");
-    pub const STRUCT_CONSTANT_FLOAT: BString = BString::str("BrickComponentData_ConstantFloat");
-    pub const STRUCT_CONSTANT_INT: BString = BString::str("BrickComponentData_ConstantInt");
-    pub const STRUCT_CONSTANT_STRING: BString = BString::str("BrickComponentData_ConstantString");
+    pub const STRUCT_CONSTANT_BOOL: BString = BString::str(Self::STRUCT_CONSTANT_BOOL_STR);
+    pub const STRUCT_CONSTANT_FLOAT: BString = BString::str(Self::STRUCT_CONSTANT_FLOAT_STR);
+    pub const STRUCT_CONSTANT_INT: BString = BString::str(Self::STRUCT_CONSTANT_INT_STR);
+    pub const STRUCT_CONSTANT_STRING: BString = BString::str(Self::STRUCT_CONSTANT_STRING_STR);
 
     pub const BOOL_INPUT: BString = BString::str("bInput");
     pub const BOOL_INPUT_A: BString = BString::str("bInputA");
@@ -215,32 +225,36 @@ impl LogicGate {
     }
 
     pub fn schema(&self) -> BrdbSchemaMeta {
-        let schema_str = match self.struct_name() {
-            Self::STRUCT_BINARY_BOOL_BOOL => {
+        let schema_str = match self.struct_name().as_ref() {
+            Self::STRUCT_BINARY_BOOL_BOOL_STR => {
                 "struct BrickComponentData_GateBinary_BoolBool { bInputA: bool, bInputB: bool, bOutput: bool }"
             }
-            Self::STRUCT_BINARY_FLOAT_BOOL => {
+            Self::STRUCT_BINARY_FLOAT_BOOL_STR => {
                 "struct BrickComponentData_GateBinary_FloatBool { InputA: f64, InputB: f64, bOutput: bool }"
             }
-            Self::STRUCT_BINARY_FLOAT_FLOAT => {
+            Self::STRUCT_BINARY_FLOAT_FLOAT_STR => {
                 "struct BrickComponentData_GateBinary_FloatFloat { InputA: f64, InputB: f64, Output: f64 }"
             }
-            Self::STRUCT_BINARY_INT_INT => {
+            Self::STRUCT_BINARY_INT_INT_STR => {
                 "struct BrickComponentData_GateBinary_IntInt { InputA: i64, InputB: i64, Output: i64 }"
             }
-            Self::STRUCT_UNARY_BOOL_BOOL => {
+            Self::STRUCT_UNARY_BOOL_BOOL_STR => {
                 "struct BrickComponentData_GateUnary_BoolBool { bInput: bool, bOutput: bool }"
             }
-            Self::STRUCT_UNARY_FLOAT_FLOAT => {
+            Self::STRUCT_UNARY_FLOAT_FLOAT_STR => {
                 "struct BrickComponentData_GateUnary_FloatFloat { Input: f64, Output: f64 }"
             }
-            Self::STRUCT_UNARY_INT_INT => {
+            Self::STRUCT_UNARY_INT_INT_STR => {
                 "struct BrickComponentData_GateUnary_IntInt { Input: i64, Output: i64 }"
             }
-            Self::STRUCT_CONSTANT_BOOL => "struct BrickComponentData_ConstantBool { bValue: bool }",
-            Self::STRUCT_CONSTANT_FLOAT => "struct BrickComponentData_ConstantFloat { Value: f64 }",
-            Self::STRUCT_CONSTANT_INT => "struct BrickComponentData_ConstantInt { Value: i64 }",
-            Self::STRUCT_CONSTANT_STRING => {
+            Self::STRUCT_CONSTANT_BOOL_STR => {
+                "struct BrickComponentData_ConstantBool { bValue: bool }"
+            }
+            Self::STRUCT_CONSTANT_FLOAT_STR => {
+                "struct BrickComponentData_ConstantFloat { Value: f64 }"
+            }
+            Self::STRUCT_CONSTANT_INT_STR => "struct BrickComponentData_ConstantInt { Value: i64 }",
+            Self::STRUCT_CONSTANT_STRING_STR => {
                 "struct BrickComponentData_ConstantString { Value: str }"
             }
             _ => unreachable!(),
