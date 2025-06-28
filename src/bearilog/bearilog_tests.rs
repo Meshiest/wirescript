@@ -1,10 +1,11 @@
-use crate::{ast::*, bearilog};
+use super::ast::*;
+use crate::bearilog::grammar;
 use AstExpr::*;
 use Literal::*;
 
 #[test]
 fn test_exprs() {
-    let pe = bearilog::ExprParser::new();
+    let pe = grammar::ExprParser::new();
     assert!(pe.parse("true").is_ok());
     macro_rules! eq {
         ($p:pat => $s:expr) => {
@@ -47,7 +48,7 @@ fn test_exprs() {
 
 #[test]
 fn test_stmts() {
-    let ps = bearilog::StmtParser::new();
+    let ps = grammar::StmtParser::new();
 
     macro_rules! seq {
         ($a:expr => $b:expr) => {
@@ -65,7 +66,7 @@ fn test_stmts() {
 
 #[test]
 fn test_mod() {
-    let pm = bearilog::ModuleParser::new();
+    let pm = grammar::ModuleParser::new();
 
     macro_rules! seq {
         ($a:expr => $b:expr) => {

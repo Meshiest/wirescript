@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, atomic},
 };
 
-use crate::{
+use crate::bearilog::{
     ast::{BinaryOpCode, UnaryOpCode},
     compiler::{CompiledModule, WireConnection},
 };

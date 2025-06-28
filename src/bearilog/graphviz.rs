@@ -1,6 +1,6 @@
 use std::{error::Error, io::Write, sync::atomic};
 
-use crate::compiler::{CompiledModule, CompiledOutput, Gate, Wire};
+use super::compiler::{CompiledModule, CompiledOutput, Gate, Wire};
 
 pub fn render(module: &CompiledModule) -> Result<String, Box<dyn Error>> {
     let mut f = vec![];

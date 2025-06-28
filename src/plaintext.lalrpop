@@ -1,5 +1,5 @@
 use crate::brdb::schema::{BrdbStructPropRaw, PlaintextEnumBody as EnumBody, PlaintextStructBody as StructBody};
-use crate::helpers::*;
+use crate::bearilog::helpers::*;
 
 grammar;
 

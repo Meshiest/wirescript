@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
-use crate::compiler::Gate;
+use super::Gate;
 
 #[derive(Debug, Clone)]
 pub struct WireConnection {

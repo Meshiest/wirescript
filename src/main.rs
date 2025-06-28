@@ -1,22 +1,9 @@
-use std::error::Error;
-
 use clap::Parser;
 use clap_stdin::FileOrStdin;
+use std::error::Error;
 
-use lalrpop_util::lalrpop_mod;
-
-pub mod ast;
+pub mod bearilog;
 pub mod brdb;
-pub mod compiler;
-pub mod graphviz;
-
-lalrpop_mod!(pub bearilog);
-
-#[cfg(test)]
-mod bearilog_tests;
-#[cfg(test)]
-mod compiler_tests;
-pub mod helpers;
 
 /// Program to parse bearilog to gates
 #[derive(Parser, Debug)]
@@ -40,10 +27,10 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let source = args.file.contents()?;
-    let modules = bearilog::ModulesParser::new()
+    let modules = bearilog::grammar::ModulesParser::new()
         .parse(&source)
         .map_err(|e| e.to_string())?;
-    let mut compiler = compiler::Compiler::new(modules);
+    let mut compiler = bearilog::compiler::Compiler::new(modules);
 
     if args.inline {
         compiler.set_inline();
@@ -58,7 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     if args.graph {
-        println!("{}", graphviz::render(&res)?);
+        println!("{}", bearilog::graphviz::render(&res)?);
     } else {
         println!("{res}");
     }
