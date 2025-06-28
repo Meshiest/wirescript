@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
-use crate::{
+use super::super::{
     ast::Literal,
     compiler::{Gate, Wire, WireConnection},
 };

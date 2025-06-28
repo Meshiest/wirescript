@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::ast::{AstExpr, AstModule, BinaryOpCode, Literal, UnaryOpCode};
-
+use super::ast::{AstExpr, AstModule, BinaryOpCode, Literal, UnaryOpCode};
 mod errors;
 mod gates;
 mod module;
@@ -473,7 +472,7 @@ impl<'a> BuildState<'a> {
     /// Compile the statements in the AST module.
     fn compile_statements(&mut self) -> Result<(), CompileError> {
         for s in &Arc::clone(&self.ast).statements {
-            use crate::ast::AstStmt::*;
+            use super::ast::AstStmt::*;
             // Resolve all the exprs, map them to the names (in order)
             // The number of outputs from the expression must match the number of names
             match s {

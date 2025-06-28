@@ -1,6 +1,5 @@
 use std::str::FromStr;
-use crate::ast::*;
-use crate::helpers::*;
+use crate::bearilog::{ast::*, helpers::*};
 
 grammar;
 
@@ -98,7 +97,7 @@ Comma<T>: Vec<T> = {
 };
 
 Comma1<T>: Vec<T> = {
-    <mut v:(<T> ",")*> <e:T> => {
+    <mut v:(<T> ",")*> <e:T> ","? => {
         v.push(e);
         v
     }

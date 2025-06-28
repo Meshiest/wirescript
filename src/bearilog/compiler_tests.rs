@@ -1,8 +1,8 @@
-use crate::{bearilog, compiler::Compiler, graphviz};
+use super::{compiler::Compiler, grammar, graphviz};
 
 #[test]
 fn compile_and() {
-    let p = bearilog::ModuleParser::new();
+    let p = grammar::ModuleParser::new();
     let source = "
 module example(a, b) -> c {
     c = a && b;
@@ -16,7 +16,7 @@ module example(a, b) -> c {
 
 #[test]
 fn compile_multi_and() {
-    let p = bearilog::ModuleParser::new();
+    let p = grammar::ModuleParser::new();
     let source = "
 module example(a, b, c, d) -> e {
     e = a && b && c && d && false;
@@ -30,7 +30,7 @@ module example(a, b, c, d) -> e {
 
 #[test]
 fn compile_7seg1() {
-    let p = bearilog::ModuleParser::new();
+    let p = grammar::ModuleParser::new();
     // copywrite: smallguy
     let source = "
 module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
@@ -52,7 +52,7 @@ module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
 
 #[test]
 fn compile_7seg2() {
-    let p = bearilog::ModuleParser::new();
+    let p = grammar::ModuleParser::new();
     // copywrite: smallguy
     let source = "
 module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
@@ -95,7 +95,7 @@ module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
 
 #[test]
 fn compile_encoder() {
-    let p = bearilog::ModuleParser::new();
+    let p = grammar::ModuleParser::new();
     let source1 = "
 module decoder8(a) -> a0, a1, a2, a3, a4, a5, a6, a7 {
   a0 = (a & 1) ^^ 0;
