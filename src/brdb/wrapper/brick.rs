@@ -189,6 +189,87 @@ pub struct Color {
     pub g: u8,
     pub b: u8,
 }
+impl Color {
+    pub fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+    pub fn monochrome(value: u8) -> Self {
+        Self {
+            r: value,
+            g: value,
+            b: value,
+        }
+    }
+
+    /// Convert HSV to RGB
+    pub fn hsv(hue: f32, saturation: f32, value: f32) -> Self {
+        let c = value * saturation;
+        let x = c * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+        let m = value - c;
+
+        let (r, g, b) = if hue < 60.0 {
+            (c, x, 0.0)
+        } else if hue < 120.0 {
+            (x, c, 0.0)
+        } else if hue < 180.0 {
+            (0.0, c, x)
+        } else if hue < 240.0 {
+            (0.0, x, c)
+        } else if hue < 300.0 {
+            (x, 0.0, c)
+        } else {
+            (c, 0.0, x)
+        };
+
+        Self {
+            r: ((r + m) * 255.0) as u8,
+            g: ((g + m) * 255.0) as u8,
+            b: ((b + m) * 255.0) as u8,
+        }
+    }
+
+    /// Convert from srgb to linear
+    pub fn to_linear(self) -> Self {
+        // Convert sRGB to linear RGB
+        let r = if self.r <= 0x0F {
+            (self.r as f32 / 15.0).powf(2.2) * 255.0
+        } else {
+            (self.r as f32 / 255.0).powf(2.2) * 255.0
+        } as u8;
+        let g = if self.g <= 0x0F {
+            (self.g as f32 / 15.0).powf(2.2) * 255.0
+        } else {
+            (self.g as f32 / 255.0).powf(2.2) * 255.0
+        } as u8;
+        let b = if self.b <= 0x0F {
+            (self.b as f32 / 15.0).powf(2.2) * 255.0
+        } else {
+            (self.b as f32 / 255.0).powf(2.2) * 255.0
+        } as u8;
+        Self { r, g, b }
+    }
+
+    /// Convert from Linear RGB to sRGB
+    pub fn to_srgb(self) -> Self {
+        // Convert linear RGB to sRGB
+        let r = if self.r <= 0x0F {
+            (self.r as f32 / 255.0).powf(1.0 / 2.2) * 15.0
+        } else {
+            (self.r as f32 / 255.0).powf(1.0 / 2.2) * 255.0
+        } as u8;
+        let g = if self.g <= 0x0F {
+            (self.g as f32 / 255.0).powf(1.0 / 2.2) * 15.0
+        } else {
+            (self.g as f32 / 255.0).powf(1.0 / 2.2) * 255.0
+        } as u8;
+        let b = if self.b <= 0x0F {
+            (self.b as f32 / 255.0).powf(1.0 / 2.2) * 15.0
+        } else {
+            (self.b as f32 / 255.0).powf(1.0 / 2.2) * 255.0
+        } as u8;
+        Self { r, g, b }
+    }
+}
 impl From<(u8, u8, u8)> for Color {
     fn from((r, g, b): (u8, u8, u8)) -> Self {
         Self { r, g, b }
