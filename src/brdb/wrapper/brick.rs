@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     fmt::{Debug, Display},
 };
 
@@ -484,7 +485,7 @@ impl Display for ChunkIndex {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
 pub struct BrickSize {
     pub x: u16,
     pub y: u16,
@@ -650,6 +651,10 @@ pub struct BrickChunkSoA {
     pub material_indices: Vec<u8>,
     // RGB + Material intensity
     pub colors_and_alphas: Vec<(u8, u8, u8, u8)>,
+    // A map of (asset_index, size) to the index in the brick_sizes vector
+    size_index_map: HashMap<(u32, BrickSize), u32>,
+    // The number of procedural brick sizes
+    num_brick_sizes: u32,
 }
 
 impl BrickChunkSoA {
@@ -667,36 +672,50 @@ impl BrickChunkSoA {
                     .unwrap() as u32;
                 self.brick_type_indices.push(ty_index);
             }
-            Procedural { asset: kind, size } => {
+            Procedural { asset, size } => {
                 // Unwrap safety: The brick meta is added to the global data before adding bricks.
                 let ty_index = global_data
                     .procedural_brick_asset_names
-                    .get_index_of(kind.as_ref())
+                    .get_index_of(asset.as_ref())
                     .unwrap() as u32;
 
-                if let (Some(last_sizes), Some(last_size)) =
-                    (self.brick_size_counters.last_mut(), self.brick_sizes.last())
-                {
-                    // Check if the last asset and size match the current one
-                    if last_sizes.asset_index == ty_index && last_size == size {
-                        // Increment the size count for the last asset
-                        last_sizes.num_sizes += 1;
+                let size_index =
+                // Check to see if this size and asset pair already exists
+                    if let Some(size_index) = self.size_index_map.get(&(ty_index, *size)) {
+                        *size_index
                     } else {
-                        // Push a new size counter for the new asset
-                        self.brick_size_counters.push(BrickSizeCounter {
-                            asset_index: ty_index,
-                            num_sizes: 1,
-                        });
+                        // The new size index is based how many size/asset pairs after the number of basic bricks
+                        let size_index =
+                            self.num_brick_sizes + global_data.basic_brick_asset_names.len() as u32;
+
+                        // Add the new size and increment the size index map
                         self.brick_sizes.push(*size);
-                    }
-                } else {
-                    self.brick_sizes.push(*size);
-                    self.brick_type_indices.push(ty_index);
-                    self.brick_size_counters.push(BrickSizeCounter {
-                        asset_index: ty_index,
-                        num_sizes: 1,
-                    });
-                }
+                        self.size_index_map.insert((ty_index, *size), size_index);
+                        self.num_brick_sizes += 1;
+
+                        // If the last entry has the same asset index...
+                        if let (Some(last_sizes), Some(last_size)) = (self.brick_size_counters.last_mut(), self.brick_sizes.last())
+                            // Check if the last asset and size match the current one
+                            && last_sizes.asset_index == ty_index
+                        {
+                            // The last size and current size cannot be the same
+                            // as it's already in the size map
+                            assert_ne!(last_size, size);
+
+                            // Increment the size count for the last asset
+                            last_sizes.num_sizes += 1;
+                        } else {
+                            // Otherwise, add a new size/asset pair counter
+                            self.brick_size_counters.push(BrickSizeCounter {
+                                asset_index: ty_index,
+                                num_sizes: 1,
+                            });
+                        }
+
+                        size_index
+                    };
+
+                self.brick_type_indices.push(size_index);
             }
         }
 

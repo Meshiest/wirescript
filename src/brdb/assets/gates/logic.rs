@@ -122,7 +122,7 @@ impl LogicGate {
     pub const STRUCT_INTINT_INT: BString = BString::str(Self::STRUCT_BINARY_INTINT_INT_STR);
     pub const STRUCT_MATH_COMPARE: BString = BString::str(Self::STRUCT_MATH_COMPARE_STR);
     pub const STRUCT_NUMNUM_NUM: BString = BString::str(Self::STRUCT_NUMNUM_NUM_STR);
-    pub const STURCT_CONST: BString = BString::str(Self::STRUCT_CONSTANT_STR);
+    pub const STRUCT_CONST: BString = BString::str(Self::STRUCT_CONSTANT_STR);
 
     pub const BOOL_INPUT: BString = BString::str("bInput");
     pub const BOOL_INPUT_A: BString = BString::str("bInputA");
@@ -133,7 +133,7 @@ impl LogicGate {
     pub const INPUT_B: BString = BString::str("InputB");
     pub const OUTPUT: BString = BString::str("Output");
 
-    pub fn component_name(&self) -> BString {
+    pub const fn component_name(&self) -> BString {
         match self {
             Self::BoolAnd => Self::COMPONENT_BOOL_AND,
             Self::BoolOr => Self::COMPONENT_BOOL_OR,
@@ -172,7 +172,7 @@ impl LogicGate {
         }
     }
 
-    pub fn is_bool_input(&self) -> bool {
+    pub const fn is_bool_input(&self) -> bool {
         matches!(
             self,
             Self::BoolAnd
@@ -184,7 +184,7 @@ impl LogicGate {
         )
     }
 
-    pub fn is_bool_output(&self) -> bool {
+    pub const fn is_bool_output(&self) -> bool {
         matches!(
             self,
             Self::BoolAnd
@@ -196,7 +196,7 @@ impl LogicGate {
         )
     }
 
-    pub fn struct_name(&self) -> BString {
+    pub const fn struct_name(&self) -> BString {
         match self {
             Self::BoolAnd | Self::BoolOr | Self::BoolXor | Self::BoolNand | Self::BoolNor => {
                 Self::STRUCT_BINARY_BOOLBOOL_BOOL
@@ -217,7 +217,7 @@ impl LogicGate {
             Self::Eq | Self::Neq => Self::STRUCT_COMPARE,
             Self::Lt | Self::Leq | Self::Gt | Self::Geq => Self::STRUCT_MATH_COMPARE,
 
-            Self::Const => Self::STURCT_CONST,
+            Self::Const => Self::STRUCT_CONST,
         }
     }
 
