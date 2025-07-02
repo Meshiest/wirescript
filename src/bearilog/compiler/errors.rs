@@ -20,8 +20,6 @@ pub enum CompileError {
     ModuleInputOutOfRange(usize, usize),
     #[error("buffer already assigned: {0}")]
     BufferAlreadyAssigned(String),
-    #[error("output already assigned: {0}")]
-    OutputAlreadyAssigned(String),
     #[error("variable is read only: {0}")]
     ReadOnlyVariable(String),
     #[error("unassigned output: {0}")]

@@ -24,6 +24,10 @@ pub Stmt: AstStmt = {
         strs_to_strings(names),
         exprs
     ),
+    "let" <names:Comma1<Ident>> "=" <exprs:Comma1<Expr>> => AstStmt::Let(
+        strs_to_strings(names),
+        exprs
+    ),
 };
 
 pub Expr: AstExpr = {
@@ -75,9 +79,9 @@ pub Expr: AstExpr = {
 };
 
 Term: AstExpr = {
-    Bool => AstExpr::Const(<>),
-    Int => AstExpr::Const(<>),
-    Float => AstExpr::Const(<>),
+    Bool => AstExpr::Literal(<>),
+    Int => AstExpr::Literal(<>),
+    Float => AstExpr::Literal(<>),
     "(" <Expr> ")" => <>,
 };
 

@@ -105,7 +105,7 @@ impl Display for UnaryOpCode {
 
 #[derive(Debug)]
 pub enum AstExpr {
-    Const(Literal),
+    Literal(Literal),
     Var(String),
     BinaryOp(BinaryOpCode, Box<AstExpr>, Box<AstExpr>),
     UnaryOp(UnaryOpCode, Box<AstExpr>),
@@ -115,7 +115,7 @@ pub enum AstExpr {
 impl Display for AstExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AstExpr::Const(v) => v.fmt(f),
+            AstExpr::Literal(v) => v.fmt(f),
             AstExpr::Var(v) => f.write_str(v),
             AstExpr::BinaryOp(op, l, r) => write!(f, "({op} {l} {r})"),
             AstExpr::UnaryOp(op, v) => write!(f, "({op} {v})"),
@@ -135,7 +135,7 @@ impl AstExpr {
             AstExpr::BinaryOp(BinaryOpCode::BoolAnd, l, r) => {
                 AstExpr::BinaryOp(BinaryOpCode::BoolNand, l, r)
             }
-            AstExpr::Const(Literal::Bool(b)) => AstExpr::Const(Literal::Bool(!b)),
+            AstExpr::Literal(Literal::Bool(b)) => AstExpr::Literal(Literal::Bool(!b)),
             AstExpr::BinaryOp(BinaryOpCode::BoolOr, l, r) => {
                 AstExpr::BinaryOp(BinaryOpCode::BoolNor, l, r)
             }
@@ -162,6 +162,8 @@ pub enum AstStmt {
     Assign(Vec<String>, Vec<AstExpr>),
     // const a = 1
     Const(Vec<String>, Vec<AstExpr>),
+    // let a = 1
+    Let(Vec<String>, Vec<AstExpr>),
     // buffer a = 1
     // buffer foo // assigned later
     Buffer(Vec<String>, Option<Vec<AstExpr>>),
@@ -178,6 +180,13 @@ impl Display for AstStmt {
             }
             AstStmt::Const(names, exprs) => {
                 f.write_str("const ")?;
+                fmt_iter(f, names.iter(), ", ")?;
+                f.write_str(" = ")?;
+                fmt_iter(f, exprs.iter(), ", ")?;
+                Ok(())
+            }
+            AstStmt::Let(names, exprs) => {
+                f.write_str("let ")?;
                 fmt_iter(f, names.iter(), ", ")?;
                 f.write_str(" = ")?;
                 fmt_iter(f, exprs.iter(), ", ")?;

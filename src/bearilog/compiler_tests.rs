@@ -31,7 +31,7 @@ module example(a, b, c, d) -> e {
 #[test]
 fn compile_7seg1() {
     let p = grammar::ModuleParser::new();
-    // copywrite: smallguy
+    // copyright: smallguy
     let source = "
 module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
     a = a3 || (a2 && a0) || (a1 && !a0) || (!a2 && !a0);
@@ -53,7 +53,7 @@ module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
 #[test]
 fn compile_7seg2() {
     let p = grammar::ModuleParser::new();
-    // copywrite: smallguy
+    // copyright: smallguy
     let source = "
 module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
     const xor1 = a3 ^ a1;

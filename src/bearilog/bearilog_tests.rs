@@ -1,6 +1,5 @@
 use super::ast::*;
 use crate::bearilog::grammar;
-use AstExpr::*;
 use Literal::*;
 
 #[test]
@@ -31,17 +30,17 @@ fn test_exprs() {
         };
     }
 
-    eq!(Const(Bool(true)) => "true");
-    eq!(Const(Bool(false)) => "false");
-    eq!(Const(Float(1.0)) => "1.0");
-    eq!(Const(Int(1)) => "1");
-    eq!(Const(Int(2)) => "(2)");
-    eq!(Const(Int(1)) => "0b1");
-    eq!(Const(Int(1)) => "0x1");
-    eq!(Const(Int(100)) => "1_00");
-    eq!(Const(Int(2)) => "0b1_0");
-    eq!(Const(Int(16)) => "0x1_0");
-    eq!(Var(a) if a == "a" => "a");
+    eq!(AstExpr::Literal(Bool(true)) => "true");
+    eq!(AstExpr::Literal(Bool(false)) => "false");
+    eq!(AstExpr::Literal(Float(1.0)) => "1.0");
+    eq!(AstExpr::Literal(Int(1)) => "1");
+    eq!(AstExpr::Literal(Int(2)) => "(2)");
+    eq!(AstExpr::Literal(Int(1)) => "0b1");
+    eq!(AstExpr::Literal(Int(1)) => "0x1");
+    eq!(AstExpr::Literal(Int(100)) => "1_00");
+    eq!(AstExpr::Literal(Int(2)) => "0b1_0");
+    eq!(AstExpr::Literal(Int(16)) => "0x1_0");
+    eq!(AstExpr::Var(a) if a == "a" => "a");
     seq!("(and (band 1 2) 3)" => "1 & 2 && 3");
     seq!("(nand 1 2)" => "not (1 and 2)");
 }
@@ -58,9 +57,11 @@ fn test_stmts() {
 
     seq!("b = 1" => "b = 1");
     seq!("const b = 1" => "const b = 1");
+    seq!("let b = 1" => "let b = 1");
     seq!("c, d = 1, 2" => "c, d = 1, 2");
     seq!("buffer c, d = 1, 2" => "buffer c, d = 1, 2");
     seq!("buffer a" => "buffer a");
+    seq!("let c, d = 1, 2" => "let c, d = 1, 2");
     seq!("const c, d = 1, 2" => "const c, d = 1, 2");
 }
 

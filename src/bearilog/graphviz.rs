@@ -109,7 +109,7 @@ fn subgraph(
             writeln!(f, "{pad}out{i} [style=filled,color=lightgreen];")?;
             let name = match out {
                 CompiledOutput::Input(n) => format!("in{n}"),
-                CompiledOutput::Immediate(literal) => {
+                CompiledOutput::Literal(literal) => {
                     let lit_idx = CONST_INDEX.fetch_add(1, atomic::Ordering::SeqCst);
                     let lit = format!("lit{lit_idx}");
                     writeln!(

@@ -23,6 +23,7 @@ struct BuildState<'a> {
     ast: Arc<AstModule>,
     scope: HashMap<String, CompiledOutput>,
     outputs: HashMap<String, Option<CompiledOutput>>,
+    variables: HashMap<String, CompiledOutput>,
     gates: Vec<Arc<Gate>>,
     wires: Vec<Wire>,
     /// A map of buffer variable names to the port on the gate that represents them
@@ -115,6 +116,7 @@ impl<'a> BuildState<'a> {
             compiler,
             scope,
             outputs,
+            variables: Default::default(),
             gates: Default::default(),
             wires: Default::default(),
             gate_literals: Default::default(),
@@ -275,8 +277,8 @@ impl<'a> BuildState<'a> {
 
         for expr in exprs {
             match expr {
-                Const(literal) => Self::const_expr(literal, &mut outputs),
-                Var(name) => self.var_expr(name, &mut outputs)?,
+                Literal(literal) => Self::literal_expr(literal, &mut outputs),
+                Var(name) => self.assign_expr(name, &mut outputs)?,
                 BinaryOp(op, a, b) => self.binaryop_expr(*op, a, b, &mut outputs)?,
                 UnaryOp(op, input) => self.unaryop_expr(*op, input, &mut outputs)?,
                 Call(name, params) => {
@@ -290,12 +292,16 @@ impl<'a> BuildState<'a> {
     }
 
     /// A constant expression is a literal value that can be directly inserted
-    fn const_expr(literal: &Literal, outputs: &mut Vec<CompiledOutput>) {
-        outputs.push(CompiledOutput::Immediate(literal.clone()))
+    fn literal_expr(literal: &Literal, outputs: &mut Vec<CompiledOutput>) {
+        outputs.push(CompiledOutput::Literal(literal.clone()))
     }
 
     /// A variable expression is a reference to another gate and is entirely metadata
-    fn var_expr(&self, name: &str, outputs: &mut Vec<CompiledOutput>) -> Result<(), CompileError> {
+    fn assign_expr(
+        &self,
+        name: &str,
+        outputs: &mut Vec<CompiledOutput>,
+    ) -> Result<(), CompileError> {
         let Some(conn) = self.scope.get(name) else {
             return Err(CompileError::UnknownVariable(name.to_owned()));
         };
@@ -417,13 +423,13 @@ impl<'a> BuildState<'a> {
                 // If the source is an input, we need to create a pending wire
                 self.pending_wires.push((name, dst));
             }
-            (CompiledOutput::Immediate(literal), CompiledOutput::Wire(dst)) => {
+            (CompiledOutput::Literal(literal), CompiledOutput::Wire(dst)) => {
                 self.gate_literals.push((dst, literal));
             }
             (_, CompiledOutput::Input(_)) => {
                 unreachable!("Cannot wire to an input connection");
             }
-            (_, CompiledOutput::Immediate(_)) => {
+            (_, CompiledOutput::Literal(_)) => {
                 unreachable!("Cannot wire to an immediate");
             }
         }
@@ -512,19 +518,27 @@ impl<'a> BuildState<'a> {
                             _ => {}
                         }
 
-                        // Try assigning an output
+                        // Overwrite the previous output if it exists
                         match self.outputs.get_mut(name) {
-                            Some(Some(_)) => {
-                                return Err(CompileError::OutputAlreadyAssigned(name.to_owned()));
-                            }
-                            Some(slot @ None) => {
+                            Some(slot) => {
                                 // Assign the connection to the output slot
                                 *slot = Some(conn.clone());
                                 // Now that the variable is assigned, it can be used as a variable
                                 self.scope.insert(name.to_owned(), conn);
                                 continue;
                             }
-                            _ => {}
+                            None => {}
+                        }
+
+                        // Overwrite the previous variable if it exists
+                        match self.variables.get_mut(name) {
+                            Some(prev) => {
+                                // Assign the connection to the variable
+                                *prev = conn.clone();
+                                self.scope.insert(name.to_owned(), conn.clone());
+                                continue;
+                            }
+                            None => {}
                         }
 
                         // If the variable is not a buffer or output, it must be a constant or an input
@@ -546,6 +560,18 @@ impl<'a> BuildState<'a> {
                         // Add the constant to the scope and consts map
                         self.scope.insert(name.to_owned(), conn.clone());
                         self.consts.insert(name.to_owned(), conn.clone());
+                    }
+                }
+                Let(names, exprs) => {
+                    let outputs = self.exprs(exprs.iter())?;
+                    Self::ensure_outputs_len(names, outputs.len())?;
+
+                    for (name, conn) in names.iter().zip(outputs.into_iter()) {
+                        self.ensure_unique_name(name)?;
+
+                        // Add the variable to the scope
+                        self.scope.insert(name.to_owned(), conn.clone());
+                        self.variables.insert(name.to_owned(), conn);
                     }
                 }
                 Buffer(names, exprs) => {

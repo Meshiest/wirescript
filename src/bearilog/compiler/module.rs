@@ -10,7 +10,7 @@ pub enum CompiledOutput {
     /// An input port of a module
     Input(usize),
     /// An immediate value to be inserted into a gate
-    Immediate(Literal),
+    Literal(Literal),
     /// A reference to an existing gate
     Wire(WireConnection),
 }
@@ -19,7 +19,7 @@ impl Display for CompiledOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CompiledOutput::Input(i) => write!(f, "in{i}"),
-            CompiledOutput::Immediate(lit) => lit.fmt(f),
+            CompiledOutput::Literal(lit) => lit.fmt(f),
             CompiledOutput::Wire(wire) => wire.fmt(f),
         }
     }
