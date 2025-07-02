@@ -132,6 +132,11 @@ pub enum WireVariant {
     Object(String),
     Exec,
 }
+impl Default for WireVariant {
+    fn default() -> Self {
+        WireVariant::Number(0.0)
+    }
+}
 impl Display for WireVariant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
