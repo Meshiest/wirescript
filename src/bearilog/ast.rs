@@ -1,5 +1,7 @@
 use std::fmt::{Display, Write};
 
+use crate::brdb::schema::WireVariant;
+
 use super::helpers::fmt_iter;
 
 #[derive(Debug, Copy, Clone)]
@@ -7,6 +9,16 @@ pub enum Literal {
     Float(f64),
     Int(i64),
     Bool(bool),
+}
+
+impl Literal {
+    pub fn variant(self) -> WireVariant {
+        match self {
+            Literal::Float(v) => WireVariant::Number(v),
+            Literal::Int(v) => WireVariant::Int(v),
+            Literal::Bool(v) => WireVariant::Bool(v),
+        }
+    }
 }
 
 impl Display for Literal {

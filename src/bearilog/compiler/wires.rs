@@ -1,18 +1,20 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
+use crate::brdb::BString;
+
 use super::Gate;
 
 #[derive(Debug, Clone)]
 pub struct WireConnection {
     pub gate: Arc<Gate>,
-    pub property: String,
+    pub property: BString,
 }
 
 impl WireConnection {
-    pub fn new(gate: &Arc<Gate>, property: impl Display) -> Self {
+    pub fn new(gate: &Arc<Gate>, property: impl Into<BString>) -> Self {
         Self {
             gate: Arc::clone(gate),
-            property: property.to_string(),
+            property: property.into(),
         }
     }
 

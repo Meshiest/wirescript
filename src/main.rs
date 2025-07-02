@@ -28,16 +28,8 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let source = args.file.contents()?;
-    let modules = bearilog::grammar::ModulesParser::new()
-        .parse(&source)
-        .map_err(|e| e.to_string())?;
-    let mut compiler = bearilog::compiler::Compiler::new(modules);
 
-    if args.inline {
-        compiler.set_inline();
-    }
-
-    let res = match compiler.compile(&args.module) {
+    let res = match bearilog::parse_and_compile(&source, &args.module, args.inline) {
         Ok(res) => res,
         Err(e) => {
             eprintln!("{e}");

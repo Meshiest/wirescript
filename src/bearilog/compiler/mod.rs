@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+use crate::brdb::assets::components::{BufferTicks, Rerouter};
+
 use super::ast::{AstExpr, AstModule, BinaryOpCode, Literal, UnaryOpCode};
 mod errors;
 mod gates;
@@ -168,10 +170,14 @@ impl<'a> BuildState<'a> {
 
         // Create new named rerouters for each input
         for (index, name) in self.ast.clone().inputs.iter().enumerate() {
-            let rerouter = Arc::new(Gate::new(&GateKind::ReRouter).with_label(name).with_input());
+            let rerouter = Arc::new(
+                Gate::new(&GateKind::Reroute)
+                    .with_label(name)
+                    .with_input(index),
+            );
             // Add a pending wire that routes into the new rerouter input
             self.pending_wires
-                .push((index, WireConnection::new(&rerouter, "input"))); // TODO: don't hardcode input name for rerouters
+                .push((index, WireConnection::new(&rerouter, Rerouter::INPUT)));
             new_gates.push(rerouter);
         }
 
@@ -187,10 +193,18 @@ impl<'a> BuildState<'a> {
 
             // Create a wire between the new rerouter and the old input
             self.add_wire(
-                CompiledOutput::Wire(WireConnection::new(gate, "output")), // TODO: don't hardcode output name for rerouters
+                CompiledOutput::Wire(WireConnection::new(gate, Rerouter::OUTPUT)),
                 CompiledOutput::Wire(dst),
             )?;
         }
+
+        let output_indices = self
+            .ast
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name, i))
+            .collect::<HashMap<_, _>>();
 
         // Insert the named rerouters for each output
         for (name, slot) in self.outputs.iter_mut() {
@@ -208,28 +222,30 @@ impl<'a> BuildState<'a> {
                             i,
                         ));
                     };
-                    CompiledOutput::Wire(WireConnection::new(gate, "output")) // TODO: don't hardcode outputname for rerouters
+                    CompiledOutput::Wire(WireConnection::new(gate, Rerouter::OUTPUT))
                 }
                 other => other,
             };
 
             // Create a rerouter for the output
             let rerouter = Arc::new(
-                Gate::new(&GateKind::ReRouter)
-                    .with_label(name)
-                    .with_output(),
+                Gate::new(&GateKind::Reroute).with_label(name).with_output(
+                    *output_indices
+                        .get(name)
+                        .ok_or_else(|| CompileError::UnknownVariable(name.to_owned()))?,
+                ),
             );
 
             // Create a wire between the old slot and the rerouter input
             new_wires.push((
                 src,
-                // TODO: don't hardcode input name for rerouters
-                CompiledOutput::Wire(WireConnection::new(&rerouter, "input")),
+                CompiledOutput::Wire(WireConnection::new(&rerouter, Rerouter::INPUT)),
             ));
 
             // Update the slot to point to the rerouter output
             *slot = Some(CompiledOutput::Wire(WireConnection::new(
-                &rerouter, "output", // TODO: don't hardcode output name for rerouters
+                &rerouter,
+                Rerouter::OUTPUT,
             )));
 
             new_gates.push(rerouter);
@@ -575,7 +591,10 @@ impl<'a> BuildState<'a> {
                             // Redirect the wire write to the buffer's input
                             self.add_wire(
                                 output,
-                                CompiledOutput::Wire(WireConnection::new(&gate, "input")), // TODO: don't hardcore buffer input name
+                                CompiledOutput::Wire(WireConnection::new(
+                                    &gate,
+                                    BufferTicks::INPUT,
+                                )),
                             )?;
                         }
                     }

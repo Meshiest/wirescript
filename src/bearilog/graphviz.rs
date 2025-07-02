@@ -66,10 +66,10 @@ fn subgraph(
     // Write the gates as nodes
     for gate in &module.gates {
         write!(f, "{pad}{}", render_gate(gate))?;
-        if gate.meta.is_input {
+        if gate.meta.input_index.is_some() {
             local_input_ids.push(gate.to_string());
         }
-        if gate.meta.is_output {
+        if gate.meta.output_index.is_some() {
             local_output_ids.push(gate.to_string());
         }
     }
@@ -188,9 +188,9 @@ fn render_gate(gate: &Gate) -> String {
             format!("|{{{output_ports}}}")
         },
         // Use the gate label if it exists, otherwise use the gate's kind
-        io = if gate.meta.is_input {
+        io = if gate.meta.input_index.is_some() {
             ",style=filled,color=lightblue"
-        } else if gate.meta.is_output {
+        } else if gate.meta.output_index.is_some() {
             ",style=filled,color=lightgreen"
         } else {
             ""
