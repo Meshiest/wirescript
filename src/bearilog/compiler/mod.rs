@@ -558,7 +558,7 @@ impl<'a> BuildState<'a> {
                         // Buffers are available in the scope even when they are not assigned
                         self.scope.insert(
                             name.to_owned(),
-                            CompiledOutput::Wire(WireConnection::new(&gate, "output")),
+                            CompiledOutput::Wire(WireConnection::new(&gate, BufferTicks::OUTPUT)),
                         );
 
                         // Add the buffer to the state
