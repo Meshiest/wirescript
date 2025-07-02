@@ -36,7 +36,17 @@ impl AsBrdbValue for Vector3f {
         }
     }
 }
+impl std::ops::Neg for Vector3f {
+    type Output = Self;
 
+    fn neg(self) -> Self::Output {
+        Self {
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
+        }
+    }
+}
 impl std::ops::Add for Vector3f {
     type Output = Self;
 
@@ -46,6 +56,13 @@ impl std::ops::Add for Vector3f {
             y: self.y + other.y,
             z: self.z + other.z,
         }
+    }
+}
+impl std::ops::AddAssign for Vector3f {
+    fn add_assign(&mut self, other: Self) {
+        self.x += other.x;
+        self.y += other.y;
+        self.z += other.z;
     }
 }
 impl std::ops::Sub for Vector3f {
@@ -59,6 +76,13 @@ impl std::ops::Sub for Vector3f {
         }
     }
 }
+impl std::ops::SubAssign for Vector3f {
+    fn sub_assign(&mut self, other: Self) {
+        self.x -= other.x;
+        self.y -= other.y;
+        self.z -= other.z;
+    }
+}
 impl std::ops::Mul<f32> for Vector3f {
     type Output = Self;
     fn mul(self, scalar: f32) -> Self::Output {
@@ -67,6 +91,30 @@ impl std::ops::Mul<f32> for Vector3f {
             y: self.y * scalar,
             z: self.z * scalar,
         }
+    }
+}
+impl std::ops::MulAssign<f32> for Vector3f {
+    fn mul_assign(&mut self, scalar: f32) {
+        self.x *= scalar;
+        self.y *= scalar;
+        self.z *= scalar;
+    }
+}
+impl std::ops::Mul<Vector3f> for f32 {
+    type Output = Vector3f;
+    fn mul(self, vec: Vector3f) -> Self::Output {
+        Vector3f {
+            x: self * vec.x,
+            y: self * vec.y,
+            z: self * vec.z,
+        }
+    }
+}
+impl std::ops::MulAssign<Vector3f> for f32 {
+    fn mul_assign(&mut self, vec: Vector3f) {
+        *self = *self * vec.x;
+        *self = *self * vec.y;
+        *self = *self * vec.z;
     }
 }
 impl std::ops::Div<f32> for Vector3f {
@@ -82,6 +130,16 @@ impl std::ops::Div<f32> for Vector3f {
         }
     }
 }
+impl std::ops::DivAssign<f32> for Vector3f {
+    fn div_assign(&mut self, scalar: f32) {
+        if scalar == 0.0 {
+            panic!("Division by zero in Vector3f");
+        }
+        self.x /= scalar;
+        self.y /= scalar;
+        self.z /= scalar;
+    }
+}
 
 impl From<(f32, f32, f32)> for Vector3f {
     fn from(tuple: (f32, f32, f32)) -> Self {
@@ -94,12 +152,12 @@ impl From<(f32, f32, f32)> for Vector3f {
 }
 
 impl Vector3f {
-    pub const UP: Self = Self::new(0.0, 1.0, 0.0);
-    pub const DOWN: Self = Self::new(0.0, -1.0, 0.0);
+    pub const UP: Self = Self::new(0.0, 0.0, 1.0);
+    pub const DOWN: Self = Self::new(0.0, 0.0, -1.0);
     pub const LEFT: Self = Self::new(-1.0, 0.0, 0.0);
     pub const RIGHT: Self = Self::new(1.0, 0.0, 0.0);
-    pub const FORWARD: Self = Self::new(0.0, 0.0, -1.0);
-    pub const BACKWARD: Self = Self::new(0.0, 0.0, 1.0);
+    pub const FORWARD: Self = Self::new(0.0, -1.0, 0.0);
+    pub const BACKWARD: Self = Self::new(0.0, 1.0, 0.0);
     pub const ZERO: Self = Self::new(0.0, 0.0, 0.0);
     pub const ONE: Self = Self::new(1.0, 1.0, 1.0);
     pub const CHUNK_SIZE: Self = Self::new(CHUNK_SIZE as f32, CHUNK_SIZE as f32, CHUNK_SIZE as f32);
@@ -120,7 +178,6 @@ impl Vector3f {
         }
         self / length
     }
-
     pub fn cross(self, other: Self) -> Self {
         Self {
             x: self.y * other.z - self.z * other.y,

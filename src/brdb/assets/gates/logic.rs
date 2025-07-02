@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::brdb::{
     assets,
-    schema::{BrdbSchema, BrdbSchemaMeta, as_brdb::AsBrdbValue},
+    schema::{BrdbSchema, BrdbSchemaMeta, WireVariant, as_brdb::AsBrdbValue},
     wrapper::{BString, BrdbComponent, BrickType, WirePort},
 };
 
@@ -24,95 +24,105 @@ pub enum LogicGate {
     BitShiftLeft,
     BitShiftRight,
 
-    FloatAdd,
-    FloatSub,
-    FloatMul,
-    FloatModFloored,
-    FloatMod,
-    FloatDiv,
+    Add,
+    Sub,
+    Mul,
+    ModFloored,
+    Mod,
+    Div,
 
-    FloatCeil,
-    FloatFloor,
+    Ceil,
+    Floor,
 
-    FloatEq,
-    FloatNeq,
-    FloatLt,
-    FloatLe,
-    FloatGt,
-    FloatGe,
+    Eq,
+    Neq,
+    Lt,
+    Leq,
+    Gt,
+    Geq,
 
-    ConstBool,
-    ConstInt,
-    ConstFloat,
-    ConstString,
+    Const,
 }
 
 impl LogicGate {
-    pub const COMPONENT_BOOL_AND: BString = BString::str("Component_GateAndBool");
-    pub const COMPONENT_BOOL_OR: BString = BString::str("Component_GateOrBool");
-    pub const COMPONENT_BOOL_XOR: BString = BString::str("Component_GateXorBool");
-    pub const COMPONENT_BOOL_NAND: BString = BString::str("Component_GateNandBool");
-    pub const COMPONENT_BOOL_NOR: BString = BString::str("Component_GateNorBool");
-    pub const COMPONENT_BOOL_NOT: BString = BString::str("Component_GateNotBool");
+    pub const COMPONENT_BOOL_AND: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_LogicalAND");
+    pub const COMPONENT_BOOL_OR: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_LogicalOR");
+    pub const COMPONENT_BOOL_XOR: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_LogicalXOR");
+    pub const COMPONENT_BOOL_NAND: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_LogicalNAND");
+    pub const COMPONENT_BOOL_NOR: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_LogicalNOR");
+    pub const COMPONENT_BOOL_NOT: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_LogicalNOT");
 
-    pub const COMPONENT_BIT_AND: BString = BString::str("Component_GateAndInt");
-    pub const COMPONENT_BIT_OR: BString = BString::str("Component_GateOrInt");
-    pub const COMPONENT_BIT_XOR: BString = BString::str("Component_GateXorInt");
-    pub const COMPONENT_BIT_NAND: BString = BString::str("Component_GateNandInt");
-    pub const COMPONENT_BIT_NOR: BString = BString::str("Component_GateNorInt");
-    pub const COMPONENT_BIT_NOT: BString = BString::str("Component_GateNotInt");
-    pub const COMPONENT_BIT_SHIFT_LEFT: BString = BString::str("Component_GateShiftLeftInt");
-    pub const COMPONENT_BIT_SHIFT_RIGHT: BString = BString::str("Component_GateShiftRightInt");
+    pub const COMPONENT_BIT_AND: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseAND");
+    pub const COMPONENT_BIT_OR: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseOR");
+    pub const COMPONENT_BIT_XOR: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseXOR");
+    pub const COMPONENT_BIT_NAND: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseNAND");
+    pub const COMPONENT_BIT_NOR: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseNOR");
+    pub const COMPONENT_BIT_NOT: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseNOT");
+    pub const COMPONENT_BIT_SHIFT_LEFT: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseShiftLeft");
+    pub const COMPONENT_BIT_SHIFT_RIGHT: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_BitwiseShiftRight");
 
-    pub const COMPONENT_FLOAT_SUB: BString = BString::str("Component_GateSubtractFloat");
-    pub const COMPONENT_FLOAT_MUL: BString = BString::str("Component_GateMultiplyFloat");
-    pub const COMPONENT_FLOAT_MOD_FLOORED: BString = BString::str("Component_GateModFloatFloored");
-    pub const COMPONENT_FLOAT_MOD: BString = BString::str("Component_GateModFloat");
-    pub const COMPONENT_FLOAT_DIV: BString = BString::str("Component_GateDivideFloat");
-    pub const COMPONENT_FLOAT_ADD: BString = BString::str("Component_GateAddFloat");
-    pub const COMPONENT_FLOAT_CEIL: BString = BString::str("Component_GateCeilFloat");
-    pub const COMPONENT_FLOAT_FLOOR: BString = BString::str("Component_GateFloorFloat");
+    pub const COMPONENT_SUB: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_MathSubtract");
+    pub const COMPONENT_MUL: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_MathMultiply");
+    pub const COMPONENT_MOD_FLOORED: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_MathModuloFloored");
+    pub const COMPONENT_MOD: BString = BString::str("BrickComponentType_WireGraph_Expr_MathModulo");
+    pub const COMPONENT_DIV: BString = BString::str("BrickComponentType_WireGraph_Expr_MathDivide");
+    pub const COMPONENT_ADD: BString = BString::str("BrickComponentType_WireGraph_Expr_MathAdd");
+    pub const COMPONENT_CEIL: BString = BString::str("BrickComponentType_WireGraph_Expr_Ceil");
+    pub const COMPONENT_FLOOR: BString = BString::str("BrickComponentType_WireGraph_Expr_Floor");
 
-    pub const COMPONENT_FLOAT_EQ: BString = BString::str("Component_GateEqualsFloat");
-    pub const COMPONENT_FLOAT_NEQ: BString = BString::str("Component_GateNotEqualsFloat");
-    pub const COMPONENT_FLOAT_LT: BString = BString::str("Component_GateLessThanFloat");
-    pub const COMPONENT_FLOAT_LE: BString = BString::str("Component_GateLessThanOrEqualsFloat");
-    pub const COMPONENT_FLOAT_GT: BString = BString::str("Component_GateGreaterThanFloat");
-    pub const COMPONENT_FLOAT_GE: BString = BString::str("Component_GateGreaterThanOrEqualsFloat");
+    pub const COMPONENT_EQ: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_CompareEqual");
+    pub const COMPONENT_NEQ: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_CompareNotEqual");
+    pub const COMPONENT_LT: BString = BString::str("BrickComponentType_WireGraph_Expr_CompareLess");
+    pub const COMPONENT_LEQ: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_CompareLessOrEqual");
+    pub const COMPONENT_GT: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_CompareGreater");
+    pub const COMPONENT_GEQ: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual");
 
-    pub const COMPONENT_CONST_BOOL: BString = BString::str("Component_ConstantBool");
-    pub const COMPONENT_CONST_INT: BString = BString::str("Component_ConstantInt");
-    pub const COMPONENT_CONST_FLOAT: BString = BString::str("Component_ConstantFloat");
-    pub const COMPONENT_CONST_STRING: BString = BString::str("Component_ConstantString");
+    pub const COMPONENT_CONST: BString = BString::str("BrickComponentType_WireGraphPseudo_Const");
 
-    pub const STRUCT_BINARY_BOOL_BOOL_STR: &str = "BrickComponentData_GateBinary_BoolBool";
-    pub const STRUCT_BINARY_FLOAT_BOOL_STR: &str = "BrickComponentData_GateBinary_FloatBool";
-    pub const STRUCT_BINARY_FLOAT_FLOAT_STR: &str = "BrickComponentData_GateBinary_FloatFloat";
-    pub const STRUCT_BINARY_INT_INT_STR: &str = "BrickComponentData_GateBinary_IntInt";
+    pub const STRUCT_BOOL_BOOL_STR: &str = "BrickComponentData_WireGraph_Expr_Bool_Bool";
+    pub const STRUCT_BINARY_BOOLBOOL_BOOL_STR: &str =
+        "BrickComponentData_WireGraph_Expr_BoolBool_Bool";
+    pub const STRUCT_COMPARE_STR: &str = "BrickComponentData_WireGraph_Expr_Compare";
+    pub const STRUCT_FLOAT_FLOAT_STR: &str = "BrickComponentData_WireGraph_Expr_Float_Float";
+    pub const STRUCT_INT_INT_STR: &str = "BrickComponentData_WireGraph_Expr_Int_Int";
+    pub const STRUCT_BINARY_INTINT_INT_STR: &str = "BrickComponentData_WireGraph_Expr_IntInt_Int";
+    pub const STRUCT_MATH_COMPARE_STR: &str = "BrickComponentData_WireGraph_Expr_MathCompare";
+    pub const STRUCT_NUMNUM_NUM_STR: &str =
+        "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant";
+    pub const STRUCT_CONSTANT_STR: &str = "BrickComponentData_WireGraphPseudo_Const";
 
-    pub const STRUCT_UNARY_BOOL_BOOL_STR: &str = "BrickComponentData_GateUnary_BoolBool";
-    pub const STRUCT_UNARY_FLOAT_FLOAT_STR: &str = "BrickComponentData_GateUnary_FloatFloat";
-    pub const STRUCT_UNARY_INT_INT_STR: &str = "BrickComponentData_GateUnary_IntInt";
-
-    pub const STRUCT_CONSTANT_BOOL_STR: &str = "BrickComponentData_ConstantBool";
-    pub const STRUCT_CONSTANT_FLOAT_STR: &str = "BrickComponentData_ConstantFloat";
-    pub const STRUCT_CONSTANT_INT_STR: &str = "BrickComponentData_ConstantInt";
-    pub const STRUCT_CONSTANT_STRING_STR: &str = "BrickComponentData_ConstantString";
-
-    pub const STRUCT_BINARY_BOOL_BOOL: BString = BString::str(Self::STRUCT_BINARY_BOOL_BOOL_STR);
-    pub const STRUCT_BINARY_FLOAT_BOOL: BString = BString::str(Self::STRUCT_BINARY_FLOAT_BOOL_STR);
-    pub const STRUCT_BINARY_FLOAT_FLOAT: BString =
-        BString::str(Self::STRUCT_BINARY_FLOAT_FLOAT_STR);
-    pub const STRUCT_BINARY_INT_INT: BString = BString::str(Self::STRUCT_BINARY_INT_INT_STR);
-
-    pub const STRUCT_UNARY_BOOL_BOOL: BString = BString::str(Self::STRUCT_UNARY_BOOL_BOOL_STR);
-    pub const STRUCT_UNARY_FLOAT_FLOAT: BString = BString::str(Self::STRUCT_UNARY_FLOAT_FLOAT_STR);
-    pub const STRUCT_UNARY_INT_INT: BString = BString::str(Self::STRUCT_UNARY_INT_INT_STR);
-
-    pub const STRUCT_CONSTANT_BOOL: BString = BString::str(Self::STRUCT_CONSTANT_BOOL_STR);
-    pub const STRUCT_CONSTANT_FLOAT: BString = BString::str(Self::STRUCT_CONSTANT_FLOAT_STR);
-    pub const STRUCT_CONSTANT_INT: BString = BString::str(Self::STRUCT_CONSTANT_INT_STR);
-    pub const STRUCT_CONSTANT_STRING: BString = BString::str(Self::STRUCT_CONSTANT_STRING_STR);
+    pub const STRUCT_BOOL_BOOL: BString = BString::str(Self::STRUCT_BOOL_BOOL_STR);
+    pub const STRUCT_BINARY_BOOLBOOL_BOOL: BString =
+        BString::str(Self::STRUCT_BINARY_BOOLBOOL_BOOL_STR);
+    pub const STRUCT_COMPARE: BString = BString::str(Self::STRUCT_COMPARE_STR);
+    pub const STRUCT_FLOAT_FLOAT: BString = BString::str(Self::STRUCT_FLOAT_FLOAT_STR);
+    pub const STRUCT_INT_INT: BString = BString::str(Self::STRUCT_INT_INT_STR);
+    pub const STRUCT_INTINT_INT: BString = BString::str(Self::STRUCT_BINARY_INTINT_INT_STR);
+    pub const STRUCT_MATH_COMPARE: BString = BString::str(Self::STRUCT_MATH_COMPARE_STR);
+    pub const STRUCT_NUMNUM_NUM: BString = BString::str(Self::STRUCT_NUMNUM_NUM_STR);
+    pub const STURCT_CONST: BString = BString::str(Self::STRUCT_CONSTANT_STR);
 
     pub const BOOL_INPUT: BString = BString::str("bInput");
     pub const BOOL_INPUT_A: BString = BString::str("bInputA");
@@ -141,27 +151,24 @@ impl LogicGate {
             Self::BitShiftLeft => Self::COMPONENT_BIT_SHIFT_LEFT,
             Self::BitShiftRight => Self::COMPONENT_BIT_SHIFT_RIGHT,
 
-            Self::FloatSub => Self::COMPONENT_FLOAT_SUB,
-            Self::FloatMul => Self::COMPONENT_FLOAT_MUL,
-            Self::FloatModFloored => Self::COMPONENT_FLOAT_MOD_FLOORED,
-            Self::FloatMod => Self::COMPONENT_FLOAT_MOD,
-            Self::FloatDiv => Self::COMPONENT_FLOAT_DIV,
-            Self::FloatAdd => Self::COMPONENT_FLOAT_ADD,
+            Self::Sub => Self::COMPONENT_SUB,
+            Self::Mul => Self::COMPONENT_MUL,
+            Self::ModFloored => Self::COMPONENT_MOD_FLOORED,
+            Self::Mod => Self::COMPONENT_MOD,
+            Self::Div => Self::COMPONENT_DIV,
+            Self::Add => Self::COMPONENT_ADD,
 
-            Self::FloatCeil => Self::COMPONENT_FLOAT_CEIL,
-            Self::FloatFloor => Self::COMPONENT_FLOAT_FLOOR,
+            Self::Ceil => Self::COMPONENT_CEIL,
+            Self::Floor => Self::COMPONENT_FLOOR,
 
-            Self::FloatEq => Self::COMPONENT_FLOAT_EQ,
-            Self::FloatNeq => Self::COMPONENT_FLOAT_NEQ,
-            Self::FloatLt => Self::COMPONENT_FLOAT_LT,
-            Self::FloatLe => Self::COMPONENT_FLOAT_LE,
-            Self::FloatGt => Self::COMPONENT_FLOAT_GT,
-            Self::FloatGe => Self::COMPONENT_FLOAT_GE,
+            Self::Eq => Self::COMPONENT_EQ,
+            Self::Neq => Self::COMPONENT_NEQ,
+            Self::Lt => Self::COMPONENT_LT,
+            Self::Leq => Self::COMPONENT_LEQ,
+            Self::Gt => Self::COMPONENT_GT,
+            Self::Geq => Self::COMPONENT_GEQ,
 
-            Self::ConstBool => Self::COMPONENT_CONST_BOOL,
-            Self::ConstInt => Self::COMPONENT_CONST_INT,
-            Self::ConstFloat => Self::COMPONENT_CONST_FLOAT,
-            Self::ConstString => Self::COMPONENT_CONST_STRING,
+            Self::Const => Self::COMPONENT_CONST,
         }
     }
 
@@ -192,71 +199,44 @@ impl LogicGate {
     pub fn struct_name(&self) -> BString {
         match self {
             Self::BoolAnd | Self::BoolOr | Self::BoolXor | Self::BoolNand | Self::BoolNor => {
-                Self::STRUCT_BINARY_BOOL_BOOL
+                Self::STRUCT_BINARY_BOOLBOOL_BOOL
             }
-            Self::BoolNot => Self::STRUCT_UNARY_BOOL_BOOL,
+            Self::BoolNot => Self::STRUCT_BOOL_BOOL,
 
             Self::BitAnd | Self::BitOr | Self::BitXor | Self::BitNand | Self::BitNor => {
-                Self::STRUCT_BINARY_INT_INT
+                Self::STRUCT_INTINT_INT
             }
-            Self::BitNot => Self::STRUCT_UNARY_INT_INT,
-            Self::BitShiftLeft | Self::BitShiftRight => Self::STRUCT_BINARY_INT_INT,
+            Self::BitNot => Self::STRUCT_INT_INT,
+            Self::BitShiftLeft | Self::BitShiftRight => Self::STRUCT_INTINT_INT,
 
-            Self::FloatSub
-            | Self::FloatMul
-            | Self::FloatModFloored
-            | Self::FloatMod
-            | Self::FloatDiv
-            | Self::FloatAdd => Self::STRUCT_BINARY_FLOAT_FLOAT,
-            Self::FloatCeil | Self::FloatFloor => Self::STRUCT_UNARY_FLOAT_FLOAT,
+            Self::Sub | Self::Mul | Self::ModFloored | Self::Mod | Self::Div | Self::Add => {
+                Self::STRUCT_NUMNUM_NUM
+            }
+            Self::Ceil | Self::Floor => Self::STRUCT_FLOAT_FLOAT,
 
-            Self::FloatEq
-            | Self::FloatNeq
-            | Self::FloatLt
-            | Self::FloatLe
-            | Self::FloatGt
-            | Self::FloatGe => Self::STRUCT_BINARY_FLOAT_BOOL,
+            Self::Eq | Self::Neq => Self::STRUCT_COMPARE,
+            Self::Lt | Self::Leq | Self::Gt | Self::Geq => Self::STRUCT_MATH_COMPARE,
 
-            Self::ConstBool => Self::STRUCT_CONSTANT_BOOL,
-            Self::ConstInt => Self::STRUCT_CONSTANT_INT,
-            Self::ConstFloat => Self::STRUCT_CONSTANT_FLOAT,
-            Self::ConstString => Self::STRUCT_CONSTANT_STRING,
+            Self::Const => Self::STURCT_CONST,
         }
     }
 
     pub fn schema(&self) -> BrdbSchemaMeta {
         let schema_str = match self.struct_name().as_ref() {
-            Self::STRUCT_BINARY_BOOL_BOOL_STR => {
-                "struct BrickComponentData_GateBinary_BoolBool { bInputA: bool, bInputB: bool, bOutput: bool }"
+            Self::STRUCT_BOOL_BOOL_STR => "struct BrickComponentData_WireGraph_Expr_Bool_Bool { bInput: bool }",
+            Self::STRUCT_BINARY_BOOLBOOL_BOOL_STR => "struct BrickComponentData_WireGraph_Expr_BoolBool_Bool { bInputA: bool, bInputB: bool }",
+            Self::STRUCT_COMPARE_STR => "struct BrickComponentData_WireGraph_Expr_Compare { InputA: wire_graph_variant, InputB: wire_graph_variant }",
+            Self::STRUCT_FLOAT_FLOAT_STR => "struct BrickComponentData_WireGraph_Expr_Float_Float { Input: f64 }",
+            Self::STRUCT_INT_INT_STR => "struct BrickComponentData_WireGraph_Expr_Int_Int { Input: i64 }",
+            Self::STRUCT_BINARY_INTINT_INT_STR => "struct BrickComponentData_WireGraph_Expr_IntInt_Int { InputA: i64, InputB: i64 }",
+            Self::STRUCT_MATH_COMPARE_STR => "struct BrickComponentData_WireGraph_Expr_MathCompare { InputA: wire_graph_prim_math_variant, InputB: wire_graph_prim_math_variant }",
+            Self::STRUCT_NUMNUM_NUM_STR => {
+                "struct BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant {
+                    InputA: wire_graph_prim_math_variant,
+                    InputB: wire_graph_prim_math_variant
+                }"
             }
-            Self::STRUCT_BINARY_FLOAT_BOOL_STR => {
-                "struct BrickComponentData_GateBinary_FloatBool { InputA: f64, InputB: f64, bOutput: bool }"
-            }
-            Self::STRUCT_BINARY_FLOAT_FLOAT_STR => {
-                "struct BrickComponentData_GateBinary_FloatFloat { InputA: f64, InputB: f64, Output: f64 }"
-            }
-            Self::STRUCT_BINARY_INT_INT_STR => {
-                "struct BrickComponentData_GateBinary_IntInt { InputA: i64, InputB: i64, Output: i64 }"
-            }
-            Self::STRUCT_UNARY_BOOL_BOOL_STR => {
-                "struct BrickComponentData_GateUnary_BoolBool { bInput: bool, bOutput: bool }"
-            }
-            Self::STRUCT_UNARY_FLOAT_FLOAT_STR => {
-                "struct BrickComponentData_GateUnary_FloatFloat { Input: f64, Output: f64 }"
-            }
-            Self::STRUCT_UNARY_INT_INT_STR => {
-                "struct BrickComponentData_GateUnary_IntInt { Input: i64, Output: i64 }"
-            }
-            Self::STRUCT_CONSTANT_BOOL_STR => {
-                "struct BrickComponentData_ConstantBool { bValue: bool }"
-            }
-            Self::STRUCT_CONSTANT_FLOAT_STR => {
-                "struct BrickComponentData_ConstantFloat { Value: f64 }"
-            }
-            Self::STRUCT_CONSTANT_INT_STR => "struct BrickComponentData_ConstantInt { Value: i64 }",
-            Self::STRUCT_CONSTANT_STRING_STR => {
-                "struct BrickComponentData_ConstantString { Value: str }"
-            }
+            Self::STRUCT_CONSTANT_STR => "struct BrickComponentData_WireGraphPseudo_Const { Value: wire_graph_variant }",
             _ => unreachable!(),
         };
         BrdbSchema::parse_to_meta(schema_str).unwrap()
@@ -277,25 +257,16 @@ impl LogicGate {
                 vec![Self::INPUT_A, Self::INPUT_B, Self::OUTPUT]
             }
 
-            Self::FloatSub
-            | Self::FloatMul
-            | Self::FloatModFloored
-            | Self::FloatMod
-            | Self::FloatDiv
-            | Self::FloatAdd => vec![Self::INPUT_A, Self::INPUT_B, Self::OUTPUT],
-            Self::FloatCeil | Self::FloatFloor => vec![Self::INPUT, Self::OUTPUT],
+            Self::Sub | Self::Mul | Self::ModFloored | Self::Mod | Self::Div | Self::Add => {
+                vec![Self::INPUT_A, Self::INPUT_B, Self::OUTPUT]
+            }
+            Self::Ceil | Self::Floor => vec![Self::INPUT, Self::OUTPUT],
 
-            Self::FloatEq
-            | Self::FloatNeq
-            | Self::FloatLt
-            | Self::FloatLe
-            | Self::FloatGt
-            | Self::FloatGe => vec![Self::INPUT_A, Self::INPUT_B, Self::BOOL_OUTPUT],
+            Self::Eq | Self::Neq | Self::Lt | Self::Leq | Self::Gt | Self::Geq => {
+                vec![Self::INPUT_A, Self::INPUT_B, Self::BOOL_OUTPUT]
+            }
 
-            Self::ConstBool => vec![Self::BOOL_OUTPUT],
-            Self::ConstInt => vec![Self::OUTPUT],
-            Self::ConstFloat => vec![Self::OUTPUT],
-            Self::ConstString => vec![Self::OUTPUT],
+            Self::Const => vec![Self::OUTPUT],
         }
     }
 
@@ -312,8 +283,8 @@ impl LogicGate {
 
     pub fn num_inputs(&self) -> usize {
         match self {
-            Self::BoolNot | Self::BitNot | Self::FloatCeil | Self::FloatFloor => 1,
-            Self::ConstBool | Self::ConstInt | Self::ConstFloat | Self::ConstString => 0,
+            Self::BoolNot | Self::BitNot | Self::Ceil | Self::Floor => 1,
+            Self::Const => 0,
             _ => 2,
         }
     }
@@ -331,27 +302,14 @@ impl LogicGate {
             Self::BitShiftLeft | Self::BitShiftRight => {
                 vec![Box::new(0i64), Box::new(0i64)]
             }
-            Self::FloatSub
-            | Self::FloatMul
-            | Self::FloatModFloored
-            | Self::FloatMod
-            | Self::FloatDiv
-            | Self::FloatAdd => {
+            Self::Sub | Self::Mul | Self::ModFloored | Self::Mod | Self::Div | Self::Add => {
                 vec![Box::new(0.0f64), Box::new(0.0f64)]
             }
-            Self::FloatCeil | Self::FloatFloor => vec![Box::new(0.0f64)],
-            Self::FloatEq
-            | Self::FloatNeq
-            | Self::FloatLt
-            | Self::FloatLe
-            | Self::FloatGt
-            | Self::FloatGe => {
+            Self::Ceil | Self::Floor => vec![Box::new(0.0f64)],
+            Self::Eq | Self::Neq | Self::Lt | Self::Leq | Self::Gt | Self::Geq => {
                 vec![Box::new(0.0f64), Box::new(0.0f64)]
             }
-            Self::ConstBool => vec![Box::new(false)],
-            Self::ConstInt => vec![Box::new(0i64)],
-            Self::ConstFloat => vec![Box::new(0.0f64)],
-            Self::ConstString => vec![Box::<String>::default()],
+            Self::Const => vec![Box::new(WireVariant::Number(0.0))],
         }
     }
     pub fn default_output(&self) -> Box<dyn AsBrdbValue> {
@@ -365,19 +323,13 @@ impl LogicGate {
             }
             Self::BitNot => Box::new(-1),
             Self::BitShiftLeft | Self::BitShiftRight => Box::new(0i64),
-            Self::FloatSub
-            | Self::FloatMul
-            | Self::FloatModFloored
-            | Self::FloatMod
-            | Self::FloatDiv
-            | Self::FloatAdd => Box::new(0.0f64),
-            Self::FloatCeil | Self::FloatFloor => Box::new(0.0f64),
-            Self::FloatEq | Self::FloatLe | Self::FloatGe => Box::new(true),
-            Self::FloatNeq | Self::FloatLt | Self::FloatGt => Box::new(false),
-            Self::ConstBool => Box::<bool>::default(),
-            Self::ConstInt => Box::<i64>::default(),
-            Self::ConstFloat => Box::<f64>::default(),
-            Self::ConstString => Box::<String>::default(),
+            Self::Sub | Self::Mul | Self::ModFloored | Self::Mod | Self::Div | Self::Add => {
+                Box::new(0.0f64)
+            }
+            Self::Ceil | Self::Floor => Box::new(0.0f64),
+            Self::Eq | Self::Leq | Self::Geq => Box::new(true),
+            Self::Neq | Self::Lt | Self::Gt => Box::new(false),
+            Self::Const => Box::new(WireVariant::Number(0.0)),
         }
     }
 
@@ -452,26 +404,23 @@ impl LogicGate {
             Self::BitShiftLeft => assets::bricks::B_GATE_BIT_SHIFT_LEFT,
             Self::BitShiftRight => assets::bricks::B_GATE_BIT_SHIFT_RIGHT,
 
-            Self::FloatAdd => assets::bricks::B_GATE_ADD,
-            Self::FloatSub => assets::bricks::B_GATE_SUBTRACT,
-            Self::FloatMul => assets::bricks::B_GATE_MULTIPLY,
-            Self::FloatModFloored => assets::bricks::B_GATE_MOD_FLOORED,
-            Self::FloatMod => assets::bricks::B_GATE_MOD,
-            Self::FloatDiv => assets::bricks::B_GATE_DIVIDE,
-            Self::FloatCeil => assets::bricks::B_GATE_CEILING,
-            Self::FloatFloor => assets::bricks::B_GATE_FLOOR,
+            Self::Add => assets::bricks::B_GATE_ADD,
+            Self::Sub => assets::bricks::B_GATE_SUBTRACT,
+            Self::Mul => assets::bricks::B_GATE_MULTIPLY,
+            Self::ModFloored => assets::bricks::B_GATE_MOD_FLOORED,
+            Self::Mod => assets::bricks::B_GATE_MOD,
+            Self::Div => assets::bricks::B_GATE_DIVIDE,
+            Self::Ceil => assets::bricks::B_GATE_CEILING,
+            Self::Floor => assets::bricks::B_GATE_FLOOR,
 
-            Self::FloatEq => assets::bricks::B_GATE_EQUAL,
-            Self::FloatNeq => assets::bricks::B_GATE_NOT_EQUAL,
-            Self::FloatLt => assets::bricks::B_GATE_LESS_THAN,
-            Self::FloatLe => assets::bricks::B_GATE_LESS_THAN_EQUAL,
-            Self::FloatGt => assets::bricks::B_GATE_GREATER_THAN,
-            Self::FloatGe => assets::bricks::B_GATE_GREATER_THAN_EQUAL,
+            Self::Eq => assets::bricks::B_GATE_EQUAL,
+            Self::Neq => assets::bricks::B_GATE_NOT_EQUAL,
+            Self::Lt => assets::bricks::B_GATE_LESS_THAN,
+            Self::Leq => assets::bricks::B_GATE_LESS_THAN_EQUAL,
+            Self::Gt => assets::bricks::B_GATE_GREATER_THAN,
+            Self::Geq => assets::bricks::B_GATE_GREATER_THAN_EQUAL,
 
-            Self::ConstBool => assets::bricks::B_GATE_CONSTANT_BOOL,
-            Self::ConstInt => assets::bricks::B_GATE_CONSTANT_INT,
-            Self::ConstFloat => assets::bricks::B_GATE_CONSTANT_FLOAT,
-            Self::ConstString => assets::bricks::B_GATE_CONSTANT_STRING,
+            Self::Const => assets::bricks::B_GATE_CONSTANT,
         }
     }
 }

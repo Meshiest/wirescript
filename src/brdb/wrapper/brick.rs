@@ -72,6 +72,10 @@ impl Brick {
     pub fn add_component(&mut self, component: impl BrdbComponent + 'static) {
         self.components.push(Box::new(component));
     }
+    /// Adds a component to the brick. The component must implement the `BrdbComponent` trait.
+    pub fn add_component_box(&mut self, component: Box<dyn BrdbComponent>) {
+        self.components.push(component);
+    }
     /// Adds multiple components to the brick. The components must implement the `BrdbComponent` trait.
     pub fn add_components(&mut self, components: impl IntoIterator<Item = Box<dyn BrdbComponent>>) {
         self.components.extend(components);
@@ -79,6 +83,11 @@ impl Brick {
     /// Adds a component to the brick. The component must implement the `BrdbComponent` trait.
     pub fn with_component(mut self, component: impl BrdbComponent + 'static) -> Self {
         self.add_component(component);
+        self
+    }
+    /// Adds a component to the brick. The component must implement the `BrdbComponent` trait.
+    pub fn with_component_box(mut self, component: Box<dyn BrdbComponent>) -> Self {
+        self.add_component_box(component);
         self
     }
     /// Adds multiple components to the brick. The components must implement the `BrdbComponent` trait.
@@ -247,19 +256,12 @@ impl<T: Into<BString>> From<T> for BrickType {
         BrickType::Basic(asset.into())
     }
 }
-impl<T: Into<BString>> From<(T, BrickSize)> for BrickType {
-    fn from((asset, size): (T, BrickSize)) -> Self {
+
+impl<T: Into<BString>, B: Into<BrickSize>> From<(T, B)> for BrickType {
+    fn from((asset, size): (T, B)) -> Self {
         BrickType::Procedural {
             asset: asset.into(),
-            size,
-        }
-    }
-}
-impl<T: Into<BString>> From<(BrickSize, T)> for BrickType {
-    fn from((size, asset): (BrickSize, T)) -> Self {
-        BrickType::Procedural {
-            asset: asset.into(),
-            size,
+            size: size.into(),
         }
     }
 }
@@ -298,8 +300,18 @@ pub struct Position {
 
 impl Position {
     pub const ZERO: Self = Self::new(0, 0, 0);
+    pub const ONE: Self = Self::new(1, 1, 1);
     pub const CHUNK_SIZE: Self = Self::new(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
     pub const CHUNK_HALF: Self = Self::new(CHUNK_HALF, CHUNK_HALF, CHUNK_HALF);
+    pub const X: Self = Self::new(1, 0, 0);
+    pub const Y: Self = Self::new(0, 1, 0);
+    pub const Z: Self = Self::new(0, 0, 1);
+    pub const NORTH: Self = Self::new(0, -1, 0);
+    pub const SOUTH: Self = Self::new(0, 1, 0);
+    pub const EAST: Self = Self::new(1, 0, 0);
+    pub const WEST: Self = Self::new(-1, 0, 0);
+    pub const UP: Self = Self::new(0, 0, 1);
+    pub const DOWN: Self = Self::new(0, 0, -1);
     pub const fn new(x: i32, y: i32, z: i32) -> Self {
         Self { x, y, z }
     }
@@ -328,7 +340,17 @@ impl Position {
         }
     }
 }
+impl std::ops::Neg for Position {
+    type Output = Self;
 
+    fn neg(self) -> Self::Output {
+        Self {
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
+        }
+    }
+}
 impl std::ops::Add for Position {
     type Output = Self;
 
@@ -338,6 +360,13 @@ impl std::ops::Add for Position {
             y: self.y + other.y,
             z: self.z + other.z,
         }
+    }
+}
+impl std::ops::AddAssign for Position {
+    fn add_assign(&mut self, other: Self) {
+        self.x += other.x;
+        self.y += other.y;
+        self.z += other.z;
     }
 }
 impl std::ops::Sub for Position {
@@ -351,6 +380,13 @@ impl std::ops::Sub for Position {
         }
     }
 }
+impl std::ops::SubAssign for Position {
+    fn sub_assign(&mut self, other: Self) {
+        self.x -= other.x;
+        self.y -= other.y;
+        self.z -= other.z;
+    }
+}
 impl std::ops::Mul<i32> for Position {
     type Output = Self;
 
@@ -362,6 +398,13 @@ impl std::ops::Mul<i32> for Position {
         }
     }
 }
+impl std::ops::MulAssign<i32> for Position {
+    fn mul_assign(&mut self, scalar: i32) {
+        self.x *= scalar;
+        self.y *= scalar;
+        self.z *= scalar;
+    }
+}
 impl std::ops::Div<i32> for Position {
     type Output = Self;
 
@@ -371,6 +414,13 @@ impl std::ops::Div<i32> for Position {
             y: self.y / scalar,
             z: self.z / scalar,
         }
+    }
+}
+impl std::ops::DivAssign<i32> for Position {
+    fn div_assign(&mut self, scalar: i32) {
+        self.x /= scalar;
+        self.y /= scalar;
+        self.z /= scalar;
     }
 }
 
@@ -439,6 +489,16 @@ pub struct BrickSize {
     pub x: u16,
     pub y: u16,
     pub z: u16,
+}
+impl BrickSize {
+    pub const fn new(x: u16, y: u16, z: u16) -> Self {
+        Self { x, y, z }
+    }
+}
+impl From<(u16, u16, u16)> for BrickSize {
+    fn from((x, y, z): (u16, u16, u16)) -> Self {
+        Self { x, y, z }
+    }
 }
 
 impl Ord for BrickSize {

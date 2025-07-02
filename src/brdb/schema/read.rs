@@ -7,7 +7,7 @@ use crate::brdb::{
     errors::BrdbSchemaError,
     schema::{
         BrdbEnum, BrdbInterned, BrdbSchema, BrdbSchemaEnum, BrdbSchemaStruct,
-        BrdbSchemaStructProperty, BrdbStruct, BrdbValue,
+        BrdbSchemaStructProperty, BrdbStruct, BrdbValue, WireVariant,
     },
 };
 
@@ -45,6 +45,19 @@ pub fn read_type(
         "f32" => BrdbValue::F32(read_float32(buf)?),
         "f64" => BrdbValue::F64(read_float64(buf)?),
         "str" => BrdbValue::String(read_str(buf)?),
+        "wire_graph_variant" => BrdbValue::WireVar(match read_uint(buf)? {
+            0 => WireVariant::Number(read_float64(buf)?),
+            1 => WireVariant::Int(read_int(buf)?),
+            2 => WireVariant::Bool(read_bool(buf)?),
+            3 => WireVariant::Object("unknown".to_string()),
+            4 => WireVariant::Exec,
+            other => return Err(BrdbSchemaError::UnknownWireVariant(other as usize)),
+        }),
+        "wire_graph_prim_math_variant" => BrdbValue::WireVar(match read_uint(buf)? {
+            0 => WireVariant::Number(read_float64(buf)?),
+            1 => WireVariant::Int(read_int(buf)?),
+            other => return Err(BrdbSchemaError::UnknownWireVariant(other as usize)),
+        }),
         "class" | "object" => {
             // Assets are stored as u64 indices
             let id = read_int(buf)?;

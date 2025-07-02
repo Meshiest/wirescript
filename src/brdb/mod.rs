@@ -18,13 +18,11 @@ use crate::brdb::{
         BrdbSchema, BrdbSchemaGlobalData, BrdbStruct, BrdbValue, ReadBrdbSchema,
         as_brdb::AsBrdbValue,
     },
+    schemas::BRICK_COMPONENT_SOA,
     tables::{BrdbBlob, BrdbFile, BrdbFolder},
-    wrapper::{
-        BString, BitFlags, BrdbComponent, ChunkIndex, Entity, lookup_entity_struct_name,
-        schemas::{
-            BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, ENTITY_CHUNK_INDEX_SOA, GLOBAL_DATA_SOA,
-            OWNER_TABLE_SOA,
-        },
+    wrapper::schemas::{
+        BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, ENTITY_CHUNK_INDEX_SOA, GLOBAL_DATA_SOA,
+        OWNER_TABLE_SOA,
     },
 };
 
@@ -593,12 +591,13 @@ impl BrdbReader {
     ) -> Result<(BrdbStruct, Vec<BrdbStruct>), BrdbError> {
         let global_data = self.global_data()?;
         let schema = self.components_schema()?;
+        println!("[debug] component schema: {schema}");
 
         let path = format!("World/0/Bricks/Grids/{grid_id}/Components/{chunk}.mps");
         let buf = self.read_file(path)?;
         let buf = &mut buf.as_slice();
 
-        let mps = buf.read_brdb(&schema, BRICK_CHUNK_SOA)?;
+        let mps = buf.read_brdb(&schema, BRICK_COMPONENT_SOA)?;
         let soa = match mps {
             BrdbValue::Struct(s) => *s,
             ty => {
@@ -1084,6 +1083,36 @@ mod test {
 
         let data = db.brick_chunk_soa(1, (0, 0, 0).into())?;
         println!("data: {data}");
+
+        Ok(())
+    }
+
+    /// Read all the components and brick assets
+    #[test]
+    fn test_read_all_components() -> Result<(), BrdbError> {
+        let path = PathBuf::from("./wires2components.brdb");
+        if !path.exists() {
+            return Ok(());
+        }
+        let db = Brdb::open(path)?.into_reader();
+
+        println!("{}", db.get_fs()?.render());
+
+        let data = db.global_data()?;
+        println!("Basic Brick assets: {:?}", data.basic_brick_asset_names);
+        println!("wire ports: {:?}", data.component_wire_port_names);
+        println!("component types: {:?}", data.component_type_names);
+        println!("component structs: {:?}", data.component_data_struct_names);
+
+        let chunks = db.brick_chunk_index(1)?;
+        println!("chunks: {chunks:?}");
+        for chunk in chunks {
+            let (soa, components) = db.component_chunk_soa(1, chunk)?;
+            println!("components soa: {soa}");
+            for c in components {
+                println!("component: {c}");
+            }
+        }
 
         Ok(())
     }

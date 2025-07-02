@@ -132,6 +132,8 @@ pub enum BrdbSchemaError {
     UnimplementedCast(String, &'static str),
     #[error("failed to parse schema: {0}")]
     ParseError(String),
+    #[error("unknown wire variant: {0}")]
+    UnknownWireVariant(usize),
 }
 
 impl BrdbSchemaError {
