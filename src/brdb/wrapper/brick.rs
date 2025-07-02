@@ -688,29 +688,32 @@ impl BrickChunkSoA {
                         let size_index =
                             self.num_brick_sizes + global_data.basic_brick_asset_names.len() as u32;
 
-                        // Add the new size and increment the size index map
-                        self.brick_sizes.push(*size);
-                        self.size_index_map.insert((ty_index, *size), size_index);
-                        self.num_brick_sizes += 1;
+                        'size: {
+                            // If the last entry has the same asset index...
+                            if let (Some(last_sizes), Some(last_size)) = (self.brick_size_counters.last_mut(), self.brick_sizes.last())
+                                // Check if the last asset and size match the current one
+                                && last_sizes.asset_index == ty_index
+                            {
+                                if last_size != size {
+                                    // Increment the size count for the last asset
+                                    last_sizes.num_sizes += 1;
+                                } else {
+                                    break 'size;
+                                }
+                            } else {
+                                // Otherwise, add a new size/asset pair counter
+                                self.brick_size_counters.push(BrickSizeCounter {
+                                    asset_index: ty_index,
+                                    num_sizes: 1,
+                                });
+                            }
 
-                        // If the last entry has the same asset index...
-                        if let (Some(last_sizes), Some(last_size)) = (self.brick_size_counters.last_mut(), self.brick_sizes.last())
-                            // Check if the last asset and size match the current one
-                            && last_sizes.asset_index == ty_index
-                        {
-                            // The last size and current size cannot be the same
-                            // as it's already in the size map
-                            assert_ne!(last_size, size);
-
-                            // Increment the size count for the last asset
-                            last_sizes.num_sizes += 1;
-                        } else {
-                            // Otherwise, add a new size/asset pair counter
-                            self.brick_size_counters.push(BrickSizeCounter {
-                                asset_index: ty_index,
-                                num_sizes: 1,
-                            });
+                            // Add the new size and increment the size index map
+                            self.brick_sizes.push(*size);
+                            self.size_index_map.insert((ty_index, *size), size_index);
+                            self.num_brick_sizes += 1;
                         }
+
 
                         size_index
                     };
