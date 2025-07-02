@@ -1,0 +1,14 @@
+[package]
+name = "builder"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+lalrpop.workspace = true
+
+[dependencies]
+lalrpop-util.workspace = true
+brdb.workspace = true
+thiserror.workspace = true
+bearilog.workspace = true
+clap.workspace = true

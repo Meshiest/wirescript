@@ -1,12 +1,8 @@
-[package]
-name = "bearilog"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["crates/bearilog", "crates/brdb", "crates/builder", "crates/cli"]
+resolver = "3"
 
-[build-dependencies]
-lalrpop = "0.22.2"
-
-[dependencies]
+[workspace.dependencies]
 # Brdb blobs hashes
 blake3 = "1.8.2"
 # Bearilog CLI
@@ -17,6 +13,7 @@ clap-stdin = "0.6.0"
 indexmap = { version = "2.9.0", features = ["serde"] }
 # Only used to sort brick iters... can probably replace this
 itertools = "0.14.0"
+lalrpop = "0.22.2"
 lalrpop-util = { version = "0.21.0", features = ["lexer", "unicode"] }
 # Brdb msgpack-schema parsing
 rmp = "0.8.14"
@@ -29,3 +26,7 @@ serde_json = "1.0.140"
 thiserror = "2.0.12"
 # Brdb blob compression
 zstd = "0.13.3"
+
+bearilog = { path = "crates/bearilog" }
+brdb = { path = "crates/brdb" }
+builder = { path = "crates/builder" }

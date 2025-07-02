@@ -1,0 +1,12 @@
+[package]
+name = "bearilog-cli"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+clap.workspace = true
+clap-stdin.workspace = true
+brdb.workspace = true
+builder.workspace = true
+bearilog.workspace = true

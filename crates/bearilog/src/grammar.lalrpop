@@ -1,0 +1,139 @@
+use std::str::FromStr;
+use crate::{ast::*, helpers::*};
+
+grammar;
+
+match {
+    r"\s*" => { }, // The default whitespace skipping is disabled if an `ignore pattern` is specified
+    r"//[^\n\r]*[\n\r]*" => { }, // Skip `// comments`
+    r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/" => { },  // Skip `/* comments */`
+} else {
+    _
+}
+
+pub Modules: Vec<AstModule> = Module+;
+
+pub Module: AstModule = {
+    <inline:"inline"?> "module" <name:Ident> "(" <inputs:Comma<Ident>> ")" "->" <outputs:Comma1<Ident>> "{" <stmts:Stmts> "}" => AstModule::new(name, inline.is_some(), strs_to_strings(inputs), strs_to_strings(outputs), stmts)
+}
+
+pub Stmt: AstStmt = {
+    "buffer" <names:Comma1<Ident>> <exprs:( "=" <Comma1<Expr>> )?> => AstStmt::Buffer(strs_to_strings(names), exprs),
+    <names:Comma1<Ident>> "=" <exprs:Comma1<Expr>> => AstStmt::Assign(strs_to_strings(names), exprs),
+    "const" <names:Comma1<Ident>> "=" <exprs:Comma1<Expr>> => AstStmt::Const(
+        strs_to_strings(names),
+        exprs
+    ),
+    "let" <names:Comma1<Ident>> "=" <exprs:Comma1<Expr>> => AstStmt::Let(
+        strs_to_strings(names),
+        exprs
+    ),
+};
+
+pub Expr: AstExpr = {
+    #[precedence(level="0")]
+    Term,
+    #[precedence(level="1")] #[assoc(side="left")]
+    Ident => AstExpr::Var(<>.to_string()),
+    #[precedence(level="2")] #[assoc(side="left")]
+    // function calls
+    <name:Ident> "(" <params:Exprs> ")" => AstExpr::Call(name.to_string(), params),
+    #[precedence(level="3")] #[assoc(side="left")]
+    "!" <Expr> => <>.bool_not(),
+    "not" <Expr> => <>.bool_not(),
+    "~" <Expr> => <>.bit_not(),
+    // exponent?
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l:Expr> "*" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Mul, Box::new(l), Box::new(r)),
+    <l:Expr> "/" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Div, Box::new(l), Box::new(r)),
+    <l:Expr> "%" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Mod, Box::new(l), Box::new(r)),
+    #[precedence(level="5")] #[assoc(side="left")]
+    <l:Expr> "+" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Add, Box::new(l), Box::new(r)),
+    <l:Expr> "-" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Sub, Box::new(l), Box::new(r)),
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l:Expr> "<<" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitShiftLeft, Box::new(l), Box::new(r)),
+    <l:Expr> ">>" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitShiftRight, Box::new(l), Box::new(r)),
+    #[precedence(level="7")] #[assoc(side="left")]
+    <l:Expr> "<" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Lt, Box::new(l), Box::new(r)),
+    <l:Expr> "<=" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Leq, Box::new(l), Box::new(r)),
+    <l:Expr> ">" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Gt, Box::new(l), Box::new(r)),
+    <l:Expr> ">=" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Geq, Box::new(l), Box::new(r)),
+    #[precedence(level="8")] #[assoc(side="left")]
+    <l:Expr> "==" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Eq, Box::new(l), Box::new(r)),
+    <l:Expr> "!=" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::Neq, Box::new(l), Box::new(r)),
+    #[precedence(level="9")] #[assoc(side="left")]
+    <l:Expr> "&" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitAnd, Box::new(l), Box::new(r)),
+    #[precedence(level="10")] #[assoc(side="left")]
+    <l:Expr> "^" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitXor, Box::new(l), Box::new(r)),
+    #[precedence(level="11")] #[assoc(side="left")]
+    <l:Expr> "|" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BitOr, Box::new(l), Box::new(r)),
+    #[precedence(level="12")] #[assoc(side="left")]
+    <l:Expr> "and" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BoolAnd, Box::new(l), Box::new(r)),
+    <l:Expr> "&&" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BoolAnd, Box::new(l), Box::new(r)),
+    #[precedence(level="13")] #[assoc(side="left")]
+    <l:Expr> "xor" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BoolXor, Box::new(l), Box::new(r)),
+    <l:Expr> "^^" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BoolXor, Box::new(l), Box::new(r)),
+    #[precedence(level="14")] #[assoc(side="left")]
+    <l:Expr> "or" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BoolOr, Box::new(l), Box::new(r)),
+    <l:Expr> "||" <r:Expr> => AstExpr::BinaryOp(BinaryOpCode::BoolOr, Box::new(l), Box::new(r)),
+};
+
+Term: AstExpr = {
+    Bool => AstExpr::Literal(<>),
+    Int => AstExpr::Literal(<>),
+    Float => AstExpr::Literal(<>),
+    "(" <Expr> ")" => <>,
+};
+
+Exprs = Comma<Expr>;
+Stmts = Semicolon<Stmt>;
+
+Ident = r"[a-zA-Z_]\w*";
+
+Comma<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+Comma1<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T> ","? => {
+        v.push(e);
+        v
+    }
+};
+
+Semicolon<T>: Vec<T> = {
+    <mut v:(<T> ";")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+Bool: Literal = {
+    "false" => Literal::Bool(false),
+    "true" => Literal::Bool(true),
+};
+Int: Literal = IntegerValue => Literal::Int(<>);
+Float: Literal = FloatValue => Literal::Float(<>);
+
+FloatValue: f64 =
+    r"-?\d+(_\d+)*\.\d+(_\d+)*" => f64::from_str(&remove_underscores(<>)).unwrap();
+
+IntegerValue: i64 = { I64, Binary, Hex };
+
+I64: i64 =
+    r"-?\d+(_\d+)*" => i64::from_str(&remove_underscores(<>)).unwrap();
+
+Binary: i64 =
+    r"0b[01]+(_[01]+)*" => i64::from_str_radix(&(&remove_underscores(&<>[2..])), 2).unwrap();
+
+Hex: i64 =
+    r"0x[0-9a-fA-F]+(_[0-9a-fA-F]+)*" => i64::from_str_radix(&remove_underscores(&<>[2..]), 16).unwrap();

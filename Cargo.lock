@@ -92,19 +92,21 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 name = "bearilog"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "clap",
- "clap-stdin",
- "indexmap",
- "itertools",
+ "brdb",
  "lalrpop",
  "lalrpop-util 0.21.0",
- "rmp",
- "rusqlite",
- "serde",
- "serde_json",
  "thiserror",
- "zstd",
+]
+
+[[package]]
+name = "bearilog-cli"
+version = "0.1.0"
+dependencies = [
+ "bearilog",
+ "brdb",
+ "builder",
+ "clap",
+ "clap-stdin",
 ]
 
 [[package]]
@@ -148,6 +150,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "brdb"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "indexmap",
+ "itertools",
+ "lalrpop",
+ "lalrpop-util 0.21.0",
+ "rmp",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "zstd",
+]
+
+[[package]]
+name = "builder"
+version = "0.1.0"
+dependencies = [
+ "bearilog",
+ "brdb",
+ "clap",
+ "lalrpop",
+ "lalrpop-util 0.21.0",
+ "thiserror",
 ]
 
 [[package]]

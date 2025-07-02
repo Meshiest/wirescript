@@ -1,0 +1,12 @@
+[package]
+name = "bearilog"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+lalrpop.workspace = true
+
+[dependencies]
+lalrpop-util.workspace = true
+brdb.workspace = true
+thiserror.workspace = true

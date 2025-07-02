@@ -1,0 +1,19 @@
+[package]
+name = "brdb"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+lalrpop.workspace = true
+
+[dependencies]
+lalrpop-util.workspace = true
+indexmap.workspace = true
+rusqlite.workspace = true
+blake3.workspace = true
+zstd.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+itertools.workspace = true
+rmp.workspace = true
