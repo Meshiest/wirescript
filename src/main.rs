@@ -1,6 +1,8 @@
 use clap::Parser;
 use clap_stdin::FileOrStdin;
-use std::error::Error;
+use std::{error::Error, path::PathBuf};
+
+use crate::brdb::Brdb;
 
 pub mod bearilog;
 pub mod brdb;
@@ -21,8 +23,12 @@ struct Args {
     inline: bool,
 
     /// Generate a graphviz visual
-    #[arg(short, long)]
+    #[arg(short, long, group = "output")]
     graph: bool,
+
+    /// Output file for the result
+    #[arg(short, long, value_name = "FILE", group = "output")]
+    output: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -39,6 +45,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if args.graph {
         println!("{}", bearilog::graphviz::render(&res)?);
+    } else if let Some(path) = args.output {
+        let world = builder::module_to_world(res)?;
+        Brdb::new(path)?.save(format!("create module {}", &args.module), &world)?;
     } else {
         println!("{res}");
     }
