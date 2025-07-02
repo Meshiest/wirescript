@@ -155,13 +155,8 @@ impl<'a> BuilderContext<'a> {
         while let Some(gate) = queue.pop_front() {
             match gate {
                 QueueItem::Module(sub_module) => {
-                    println!("[debug] vis check for submodule...");
-                    let all_inputs_seen = sub_module.inputs.iter().all(|(i, w)| {
-                        println!("[debug] input {i}: {}/{}", w.gate, self.conn_seen(w));
-                        self.conn_seen(w)
-                    });
+                    let all_inputs_seen = sub_module.inputs.iter().all(|(_, w)| self.conn_seen(w));
                     if !all_inputs_seen {
-                        println!("[debug] Skipping submodule because not all inputs are seen",);
                         // If not all inputs are seen, requeue the submodule
                         queue.push_back(QueueItem::Module(sub_module));
                         continue;
@@ -182,10 +177,7 @@ impl<'a> BuilderContext<'a> {
                     height += height % 2; // Ensure height is even
 
                     // Create a baseplate brick for the submodule
-                    println!(
-                        "[debug] Adding submodule baseplate at position: {:?}: {width}x{height}",
-                        pos
-                    );
+
                     self.bricks.push(Brick {
                         asset: brdb::BrickType::Procedural {
                             asset: brdb::assets::bricks::PB_DEFAULT_MICRO_BRICK,
@@ -208,10 +200,6 @@ impl<'a> BuilderContext<'a> {
                         .map(|srcs| srcs.iter().all(|s| self.seen.contains(s))) // Ensure all sources have been seen
                         .unwrap_or(true);
                     if !all_inputs_seen {
-                        println!(
-                            "[debug] Skipping gate {} because not all inputs are seen",
-                            gate.kind
-                        );
                         // If not all inputs are seen, requeue the gate
                         queue.push_back(QueueItem::Gate(gate));
                         continue;
@@ -243,14 +231,16 @@ impl<'a> BuilderContext<'a> {
                     pos.y = next_row_y; // TODO: constant for gate spacing
                     next_row_y = pos.y;
 
+                    if n > 10000 {
+                        panic!("Too many rows, something is wrong with the module or the code...");
+                    }
+
                     // If there are no more gates to place, break out of the loop
-                    if queue.is_empty() || n > 10 {
-                        println!("[debug] No more gates to place, breaking out of the loop {n}.");
+                    if queue.is_empty() {
                         break;
                     }
                     // If there are still gates to place, add a new row
                     queue.push_back(QueueItem::NextRow(n + 1));
-                    println!("[debug] Adding a new row {n} at position: {:?}", pos);
                 }
             }
         }

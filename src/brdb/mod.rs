@@ -607,7 +607,6 @@ impl BrdbReader {
     ) -> Result<(BrdbStruct, Vec<BrdbStruct>), BrdbError> {
         let global_data = self.global_data()?;
         let schema = self.components_schema()?;
-        println!("[debug] component schema: {schema}");
 
         let path = format!("World/0/Bricks/Grids/{grid_id}/Components/{chunk}.mps");
         let buf = self.read_file(path)?;
@@ -719,10 +718,6 @@ impl BrdbReader {
             .read_file(format!("World/0/Bricks/Grids/{grid_id}/ChunkIndex.mps"))?
             .as_slice()
             .read_brdb(&self.brick_chunk_index_schema()?, BRICK_CHUNK_INDEX_SOA)?;
-        println!(
-            "[debug] {}",
-            brick_index.display(self.brick_chunk_index_schema()?.as_ref())
-        );
         let chunk_indices = brick_index
             .prop("Chunk3DIndices")?
             .as_array()?
