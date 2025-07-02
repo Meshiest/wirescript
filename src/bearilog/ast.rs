@@ -10,13 +10,19 @@ pub enum Literal {
     Int(i64),
     Bool(bool),
 }
-
 impl Literal {
     pub fn variant(self) -> WireVariant {
         match self {
             Literal::Float(v) => WireVariant::Number(v),
             Literal::Int(v) => WireVariant::Int(v),
             Literal::Bool(v) => WireVariant::Bool(v),
+        }
+    }
+    pub fn as_bytes(self) -> Vec<u8> {
+        match self {
+            Literal::Float(v) => v.to_le_bytes().to_vec(),
+            Literal::Int(v) => v.to_le_bytes().to_vec(),
+            Literal::Bool(v) => vec![v as u8],
         }
     }
 }

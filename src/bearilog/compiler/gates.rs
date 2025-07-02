@@ -187,6 +187,13 @@ impl GateKind {
         }
     }
 
+    pub fn cyclic(&self) -> bool {
+        match self {
+            GateKind::Buffer => true,
+            _ => false,
+        }
+    }
+
     pub fn brick(&self) -> BrickType {
         match self {
             GateKind::Buffer => brdb::assets::bricks::B_GATE_BUFFER_TICK,

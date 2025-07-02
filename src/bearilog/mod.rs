@@ -26,9 +26,5 @@ pub fn parse_and_compile(
         .map_err(|e| e.to_string())?;
     let mut compiler = compiler::Compiler::new(modules);
 
-    if inline {
-        compiler.set_inline();
-    }
-
-    Ok(compiler.compile(module)?)
+    Ok(compiler.compile_opts(module, false, inline)?)
 }

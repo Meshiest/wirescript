@@ -15,10 +15,10 @@ pub use wires::*;
 pub struct Compiler {
     ast_modules: HashMap<String, Arc<AstModule>>,
     compiled_modules: HashMap<String, CompiledModule>,
-    force_inline: bool,
 }
 
 struct BuildState<'a> {
+    inline_children: bool,
     compiler: &'a mut Compiler,
     ast: Arc<AstModule>,
     scope: HashMap<String, CompiledOutput>,
@@ -46,38 +46,50 @@ impl Compiler {
         Self {
             ast_modules,
             compiled_modules: Default::default(),
-            force_inline: false,
         }
     }
 
-    pub fn set_inline(&mut self) {
-        self.force_inline = true;
-    }
-
-    pub fn get_or_compile(&mut self, target: &str) -> Result<CompiledModule, CompileError> {
+    pub fn get_or_compile(
+        &mut self,
+        target: &str,
+        force_inline: bool,
+    ) -> Result<CompiledModule, CompileError> {
         if let Some(module) = self.compiled_modules.get(target) {
             return Ok(module.cloned().0);
         }
 
-        let compiled = self.compile(target)?;
+        let compiled = self.compile_opts(target, force_inline, force_inline)?;
         let clone = compiled.cloned().0;
         self.compiled_modules.insert(target.to_owned(), clone);
         Ok(compiled)
     }
 
     pub fn compile(&mut self, target: &str) -> Result<CompiledModule, CompileError> {
+        self.compile_opts(target, false, false)
+    }
+
+    pub fn compile_opts(
+        &mut self,
+        target: &str,
+        inline_self: bool,
+        inline_children: bool,
+    ) -> Result<CompiledModule, CompileError> {
         let Some(ast) = self.ast_modules.get(target).map(Arc::clone) else {
             return Err(CompileError::UnknownModule(target.to_owned()));
         };
 
-        let mut state = BuildState::new(self, ast)?;
+        let mut state = BuildState::new(self, ast, inline_children)?;
         state.compile_statements()?;
-        state.build()
+        state.build(inline_self)
     }
 }
 
 impl<'a> BuildState<'a> {
-    fn new(compiler: &'a mut Compiler, ast: Arc<AstModule>) -> Result<Self, CompileError> {
+    fn new(
+        compiler: &'a mut Compiler,
+        ast: Arc<AstModule>,
+        inline_children: bool,
+    ) -> Result<Self, CompileError> {
         // The scope will be used to lookup existing wire output connections
         // Adding new consts or buffers will introduce new variables into the scope
         let mut scope: HashMap<String, CompiledOutput> = Default::default();
@@ -112,6 +124,7 @@ impl<'a> BuildState<'a> {
         }
 
         Ok(Self {
+            inline_children,
             ast,
             compiler,
             scope,
@@ -127,10 +140,10 @@ impl<'a> BuildState<'a> {
         })
     }
 
-    fn build(mut self) -> Result<CompiledModule, CompileError> {
+    fn build(mut self, force_inline: bool) -> Result<CompiledModule, CompileError> {
         let ast = self.ast.clone();
 
-        let is_inline = self.compiler.force_inline || ast.inline;
+        let is_inline = force_inline || ast.inline;
 
         if !is_inline {
             // If this is not an inline module, add rerouters for the inputs and outputs
@@ -388,7 +401,7 @@ impl<'a> BuildState<'a> {
         // Build or lookup a module with the given name
         let module = self
             .compiler
-            .get_or_compile(name)
+            .get_or_compile(name, self.inline_children)
             .map_err(|e| e.wrap(format!("call {name}")))?;
 
         // Resolve the input expressions

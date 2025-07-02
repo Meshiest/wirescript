@@ -6,7 +6,7 @@ use std::{
 use crate::{
     bearilog::compiler::{self, CompiledModule, CompiledOutput, Gate, GateKind},
     brdb::{
-        self, Brick, Position, WireConnection, WirePort, World,
+        self, Brick, Color, Position, WireConnection, WirePort, World,
         assets::{
             bricks::B_GATE_CONSTANT,
             components::{LogicGate, LogicGateComponent},
@@ -24,6 +24,7 @@ struct BuilderContext<'a> {
     /// A map of gate index to brick ID
     seen: HashSet<usize>,
     wire_map: &'a WireMap,
+    options: BuilderOptions,
 }
 
 type WireMap = HashMap<usize, HashSet<usize>>;
@@ -34,13 +35,33 @@ enum QueueItem {
     NextRow(usize),
 }
 
+#[derive(Debug, Clone, Default, Copy, clap::Args)]
+pub struct BuilderOptions {
+    /// Space between gates vertically
+    #[arg(long, default_value = "0")]
+    pub gap_v: u8,
+    /// Space between gates horizontally
+    #[arg(long, default_value = "0")]
+    pub gap_h: u8,
+    /// Space around the edge of the baseplate
+    #[arg(long, default_value = "0")]
+    pub margin: u8,
+    /// Space between the edge of the baseplate and the gates
+    #[arg(long, default_value = "0")]
+    pub padding: u8,
+    /// Space between the left edge of the baseplate and the first gates in each row
+    #[arg(long, default_value = "0")]
+    pub indent: u8,
+}
+
 impl<'a> BuilderContext<'a> {
-    fn new(map: &'a WireMap) -> Self {
+    fn new(map: &'a WireMap, options: BuilderOptions) -> Self {
         Self {
             wires: Vec::new(),
             bricks: Vec::new(),
             seen: HashSet::new(),
             wire_map: map,
+            options,
         }
     }
 
@@ -76,30 +97,58 @@ impl<'a> BuilderContext<'a> {
             pos.y += 2; // TODO: rerouter height
         }
 
+        pos.x += self.options.padding as i32 + self.options.indent as i32; // Add padding and indent to the left
+        pos.y += self.options.padding as i32; // Add padding to the top
+
         let mut pending_output_rerouters = vec![];
 
         let mut max_x = 2;
         let mut next_row_y = pos.y;
+        let mut first_in_row = true;
+        let mut first_row = true;
+
         // Gates the have been output but their row is not complete
         let mut current_row = HashSet::new();
         let mut queue = VecDeque::new();
 
+        let mut constants = HashMap::new();
+
         for (conn, lit) in module.gate_literals {
-            // Create a constant gate for the literal value
-            let id = Gate::next_index();
-            self.bricks.push(
-                Brick {
-                    id: Some(id),
-                    position: pos + Position::new(5, 5, 2),
-                    asset: B_GATE_CONSTANT,
-                    ..Default::default()
+            let bytes = lit.as_bytes();
+            let id = if let Some(id) = constants.get(&bytes) {
+                *id
+            } else {
+                // Create a constant gate for the literal value
+                let id = Gate::next_index();
+                self.bricks.push(
+                    Brick {
+                        id: Some(id),
+                        position: pos + Position::new(5, 5, 2),
+                        asset: B_GATE_CONSTANT,
+                        ..Default::default()
+                    }
+                    .with_component(LogicGateComponent::new(
+                        LogicGate::Const,
+                        [],
+                        Some(Box::new(lit.variant()) as Box<dyn AsBrdbValue>),
+                    )),
+                );
+                constants.insert(bytes, id);
+
+                // Add spacing for this new gate
+                if !first_in_row {
+                    pos.x += self.options.gap_v as i32; // Add gap between gates
                 }
-                .with_component(LogicGateComponent::new(
-                    LogicGate::Const,
-                    [],
-                    Some(Box::new(lit.variant()) as Box<dyn AsBrdbValue>),
-                )),
-            );
+                first_in_row = false;
+
+                pos.x += 10; // gate width
+
+                max_x = max_x.max(pos.x);
+                next_row_y = next_row_y.max(pos.y + 10); // gate height
+
+                id
+            };
+
             // Add the wire connection for the constant value
             self.wires.push(WireConnection::new(
                 WirePort {
@@ -113,11 +162,6 @@ impl<'a> BuilderContext<'a> {
                     port_name: conn.property,
                 },
             ));
-
-            pos.x += 10; // gate width
-
-            max_x = max_x.max(pos.x);
-            next_row_y = next_row_y.max(pos.y + 10); // gate height
         }
 
         // Add all gates to the queue
@@ -162,10 +206,20 @@ impl<'a> BuilderContext<'a> {
                         continue;
                     }
 
-                    let mut ctx = BuilderContext::new(self.wire_map);
+                    let mut ctx = BuilderContext::new(self.wire_map, self.options);
+
+                    if !first_in_row {
+                        pos.x += self.options.gap_v as i32; // Add gap between gates
+                    } else if !first_row {
+                        pos.y += self.options.gap_h as i32; // Add gap between rows
+                    }
+                    first_in_row = false;
+
+                    pos.x += self.options.margin as i32;
+                    pos.y += self.options.margin as i32;
 
                     // Recurse into the submodule and build its bounds
-                    let sub_pos = ctx.build(sub_module, pos + Position::UP * 2);
+                    let mut sub_pos = ctx.build(sub_module, pos + Position::UP * 2);
                     // Add the submodule's seen gates/wires to the current row
                     self.wires.extend(ctx.wires);
                     self.bricks.extend(ctx.bricks);
@@ -184,10 +238,15 @@ impl<'a> BuilderContext<'a> {
                             size: (width as u16 / 2, height as u16 / 2, 1u16).into(),
                         },
                         position: pos + (width / 2, height / 2, 1).into(),
+                        // Darken the color with depth
+                        color: Color::monochrome(255u8.saturating_sub(pos.z as u8 * 20))
+                            .to_linear(),
                         ..Default::default()
                     });
 
                     // TODO: theoretical gate stacking per row with a max_z
+
+                    sub_pos.x += self.options.margin as i32;
 
                     max_x = max_x.max(sub_pos.x);
                     pos.x += sub_pos.x;
@@ -205,6 +264,13 @@ impl<'a> BuilderContext<'a> {
                         continue;
                     }
 
+                    if !first_in_row {
+                        pos.x += self.options.gap_v as i32; // Add gap between gates
+                    } else if !first_row {
+                        pos.y += self.options.gap_h as i32; // Add gap between rows
+                    }
+                    first_in_row = false;
+
                     self.bricks.push(
                         Brick {
                             id: Some(gate.index),
@@ -220,16 +286,24 @@ impl<'a> BuilderContext<'a> {
                     max_x = max_x.max(pos.x);
                     next_row_y = next_row_y.max(pos.y + 10); // gate height
 
-                    current_row.insert(gate.index);
+                    // Gates that enable cycles can be
+                    if gate.kind.cyclic() {
+                        self.seen.insert(gate.index);
+                    } else {
+                        current_row.insert(gate.index);
+                    }
                 }
                 QueueItem::NextRow(n) => {
                     // Finalize current row gates
                     self.seen.extend(current_row.drain());
                     // Reset the position to the left side
-                    pos.x = top_left.x; // TODO: constant for gate spacing
+                    pos.x = top_left.x + self.options.padding as i32 + self.options.indent as i32; // Add padding and indent to the left
+
                     // Move down for the next row
-                    pos.y = next_row_y; // TODO: constant for gate spacing
+                    pos.y = next_row_y;
                     next_row_y = pos.y;
+                    first_in_row = true;
+                    first_row = false;
 
                     if n > 10000 {
                         panic!("Too many rows, something is wrong with the module or the code...");
@@ -245,13 +319,17 @@ impl<'a> BuilderContext<'a> {
             }
         }
 
+        max_x += self.options.padding as i32; // Add padding to the max width
+        pos.y += self.options.padding as i32; // Add padding to the top
+
         if output_rerouters {
             for (index, gate) in pending_output_rerouters {
                 // Add the rerouter for the output
                 self.bricks.push(
                     Brick {
                         id: Some(gate.index),
-                        position: pos + (index as i32 * 2, 0, 0).into() + Position::ONE, // Offset by 1 to center the rerouter
+                        position: Position::new(top_left.x + index as i32 * 2, pos.y, top_left.z)
+                            + Position::ONE, // Offset by 1 to center the rerouter
                         asset: gate.kind.brick(),
                         ..Default::default()
                     }
@@ -303,14 +381,15 @@ fn build_dst_to_src(module: &CompiledModule) -> WireMap {
     map
 }
 
-pub fn module_to_world(module: CompiledModule) -> Result<World, BuilderError> {
+pub fn module_to_world(
+    module: CompiledModule,
+    options: BuilderOptions,
+) -> Result<World, BuilderError> {
     let mut world = World::new();
 
     let map = build_dst_to_src(&module);
-    let mut ctx = BuilderContext::new(&map);
+    let mut ctx = BuilderContext::new(&map, options);
     ctx.build(module, Position::ZERO);
-
-    // TODO: add baseplate
 
     world.add_bricks(ctx.bricks);
     world.add_wires(ctx.wires);
@@ -322,7 +401,11 @@ pub fn module_to_world(module: CompiledModule) -> Result<World, BuilderError> {
 mod tests {
     use std::error::Error;
 
-    use crate::{bearilog::parse_and_compile, brdb::Brdb, builder::module_to_world};
+    use crate::{
+        bearilog::parse_and_compile,
+        brdb::Brdb,
+        builder::{BuilderOptions, module_to_world},
+    };
 
     #[test]
     fn test() -> Result<(), Box<dyn Error>> {
@@ -335,7 +418,8 @@ mod tests {
         }
         ";
 
-        let world = module_to_world(parse_and_compile(source, "foo", false)?)?;
+        let options = BuilderOptions::default();
+        let world = module_to_world(parse_and_compile(source, "foo", false)?, options)?;
         Brdb::new_memory()?.save("create", &world)?;
 
         Ok(())

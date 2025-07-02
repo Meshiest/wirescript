@@ -29,6 +29,10 @@ struct Args {
     /// Output file for the result
     #[arg(short, long, value_name = "FILE", group = "display")]
     output: Option<PathBuf>,
+
+    /// Options for the builder
+    #[clap(flatten)]
+    options: builder::BuilderOptions,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -46,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.graph {
         println!("{}", bearilog::graphviz::render(&res)?);
     } else if let Some(path) = args.output {
-        let world = builder::module_to_world(res)?;
+        let world = builder::module_to_world(res, args.options)?;
         Brdb::new(path)?.save(format!("create module {}", &args.module), &world)?;
     } else {
         println!("{res}");
