@@ -132,6 +132,7 @@ impl LogicGate {
     pub const INPUT_A: BString = BString::str("InputA");
     pub const INPUT_B: BString = BString::str("InputB");
     pub const OUTPUT: BString = BString::str("Output");
+    pub const VALUE: BString = BString::str("Value");
 
     pub const fn component_name(&self) -> BString {
         match self {
@@ -266,7 +267,7 @@ impl LogicGate {
                 vec![Self::INPUT_A, Self::INPUT_B, Self::BOOL_OUTPUT]
             }
 
-            Self::Const => vec![Self::OUTPUT],
+            Self::Const => vec![Self::VALUE],
         }
     }
 
@@ -276,7 +277,7 @@ impl LogicGate {
             "Input" | "bInput" => (Some(0), false),
             "InputA" | "bInputA" => (Some(0), false),
             "InputB" | "bInputB" => (Some(1), false),
-            "Output" | "bOutput" => (None, true),
+            "Value" => (None, true),
             _ => (None, false),
         }
     }
@@ -312,24 +313,10 @@ impl LogicGate {
             Self::Const => vec![Box::new(WireVariant::Number(0.0))],
         }
     }
-    pub fn default_output(&self) -> Box<dyn AsBrdbValue> {
+    pub fn default_value(&self) -> Option<Box<dyn AsBrdbValue>> {
         match self {
-            Self::BoolAnd | Self::BoolOr | Self::BoolXor | Self::BoolNand | Self::BoolNor => {
-                Box::new(false)
-            }
-            Self::BoolNot => Box::new(true),
-            Self::BitAnd | Self::BitOr | Self::BitXor | Self::BitNand | Self::BitNor => {
-                Box::new(0i64)
-            }
-            Self::BitNot => Box::new(-1),
-            Self::BitShiftLeft | Self::BitShiftRight => Box::new(0i64),
-            Self::Sub | Self::Mul | Self::ModFloored | Self::Mod | Self::Div | Self::Add => {
-                Box::new(0.0f64)
-            }
-            Self::Ceil | Self::Floor => Box::new(0.0f64),
-            Self::Eq | Self::Leq | Self::Geq => Box::new(true),
-            Self::Neq | Self::Lt | Self::Gt => Box::new(false),
-            Self::Const => Box::new(WireVariant::Number(0.0)),
+            Self::Const => Some(Box::new(WireVariant::Number(0.0))),
+            _ => None,
         }
     }
 
@@ -381,7 +368,7 @@ impl LogicGate {
         LogicGateComponent {
             gate: self,
             inputs: Arc::new(self.default_inputs()),
-            output: Arc::new(self.default_output()),
+            value: self.default_value().map(Arc::new),
         }
     }
 
@@ -429,7 +416,7 @@ impl LogicGate {
 pub struct LogicGateComponent {
     pub gate: LogicGate,
     pub inputs: Arc<Vec<Box<dyn AsBrdbValue>>>,
-    pub output: Arc<Box<dyn AsBrdbValue>>,
+    pub value: Option<Arc<Box<dyn AsBrdbValue>>>,
 }
 
 impl From<LogicGate> for LogicGateComponent {
@@ -438,26 +425,24 @@ impl From<LogicGate> for LogicGateComponent {
     }
 }
 
-impl<I: AsBrdbValue + 'static, O: AsBrdbValue + 'static> From<(LogicGate, I, O)>
-    for LogicGateComponent
-{
-    fn from((gate, input, output): (LogicGate, I, O)) -> Self {
+impl<I: AsBrdbValue + 'static> From<(LogicGate, I)> for LogicGateComponent {
+    fn from((gate, input): (LogicGate, I)) -> Self {
         LogicGateComponent {
             gate,
             inputs: Arc::new(vec![Box::new(input)]),
-            output: Arc::new(Box::new(output)),
+            value: None,
         }
     }
 }
 
-impl<IA: AsBrdbValue + 'static, IB: AsBrdbValue + 'static, O: AsBrdbValue + 'static>
-    From<(LogicGate, IA, IB, O)> for LogicGateComponent
+impl<IA: AsBrdbValue + 'static, IB: AsBrdbValue + 'static> From<(LogicGate, IA, IB)>
+    for LogicGateComponent
 {
-    fn from((gate, input_a, input_b, output): (LogicGate, IA, IB, O)) -> Self {
+    fn from((gate, input_a, input_b): (LogicGate, IA, IB)) -> Self {
         LogicGateComponent {
             gate,
             inputs: Arc::new(vec![Box::new(input_a), Box::new(input_b)]),
-            output: Arc::new(Box::new(output)),
+            value: None,
         }
     }
 }
@@ -465,13 +450,13 @@ impl<IA: AsBrdbValue + 'static, IB: AsBrdbValue + 'static, O: AsBrdbValue + 'sta
 impl LogicGateComponent {
     pub fn new(
         gate: LogicGate,
-        inputs: Vec<Box<dyn AsBrdbValue>>,
-        output: Box<dyn AsBrdbValue>,
+        inputs: impl IntoIterator<Item = Box<dyn AsBrdbValue>>,
+        output: Option<Box<dyn AsBrdbValue>>,
     ) -> Self {
         Self {
             gate,
-            inputs: Arc::new(inputs),
-            output: Arc::new(output),
+            inputs: Arc::new(inputs.into_iter().collect()),
+            value: output.map(Arc::new),
         }
     }
 }
@@ -484,8 +469,11 @@ impl AsBrdbValue for LogicGateComponent {
         prop_name: crate::brdb::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::brdb::errors::BrdbSchemaError> {
         let prop_name = prop_name.get(schema).unwrap();
-        match self.gate.data_index(prop_name) {
-            (Some(0), false) => Ok(self
+        match (
+            self.gate.data_index(prop_name),
+            self.value.as_ref().map(|v| v.as_ref()),
+        ) {
+            ((Some(0), false), _) => Ok(self
                 .inputs
                 .get(0)
                 .ok_or(crate::brdb::errors::BrdbSchemaError::MissingStructField(
@@ -493,7 +481,7 @@ impl AsBrdbValue for LogicGateComponent {
                     prop_name.to_string(),
                 ))?
                 .as_ref()),
-            (Some(1), false) => Ok(self
+            ((Some(1), false), _) => Ok(self
                 .inputs
                 .get(1)
                 .ok_or(crate::brdb::errors::BrdbSchemaError::MissingStructField(
@@ -501,7 +489,7 @@ impl AsBrdbValue for LogicGateComponent {
                     prop_name.to_string(),
                 ))?
                 .as_ref()),
-            (None, true) => Ok(&**self.output.as_ref()),
+            ((None, true), Some(value)) => Ok(&**value),
             _ => Err(crate::brdb::errors::BrdbSchemaError::MissingStructField(
                 struct_name.get_or_else(schema, || "Unknown struct".to_owned()),
                 prop_name.to_string(),

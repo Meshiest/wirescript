@@ -76,6 +76,16 @@ impl Brdb {
         Ok(db)
     }
 
+    /// Create or open a BRDB database at the specified path.
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, BrdbError> {
+        let path = path.as_ref();
+        if path.exists() {
+            Self::open(path)
+        } else {
+            Self::create(path)
+        }
+    }
+
     /// Write a pending operation to the BRDB filesystem.
     pub fn write_pending(
         &self,
@@ -84,6 +94,12 @@ impl Brdb {
     ) -> Result<(), BrdbError> {
         let fs = self.get_fs()?;
         fs.write_pending(description.as_ref(), self, pending, Some(14))?;
+        Ok(())
+    }
+
+    /// Save a world to the BRDB database.
+    pub fn save(&self, description: impl AsRef<str>, world: &World) -> Result<(), BrdbError> {
+        self.write_pending(description.as_ref(), world.to_unsaved()?.to_pending()?)?;
         Ok(())
     }
 
@@ -948,7 +964,7 @@ mod test {
             color: (255, 0, 0).into(),
             ..Default::default()
         });
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         let mps = db.brick_chunk_soa(1, (0, 0, 0).into())?;
         let color = mps.prop("ColorsAndAlphas")?.index(0)?.unwrap();
@@ -966,12 +982,7 @@ mod test {
         let path = PathBuf::from("./test.brdb");
 
         // Ensures the memory db can be created without errors
-        let db = if path.exists() {
-            Brdb::open(path)?
-        } else {
-            Brdb::create(path)?
-        }
-        .into_reader();
+        let db = Brdb::new(&path)?.into_reader();
         let mut world = World::new();
         world.meta.bundle.description = "Test World".to_string();
         world.bricks.push(Brick {
@@ -979,7 +990,7 @@ mod test {
             color: (255, 0, 0).into(),
             ..Default::default()
         });
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         println!("{}", db.get_fs()?.render());
 
@@ -1026,11 +1037,11 @@ mod test {
 
         world.add_bricks([a, b]);
         world.add_wire_connection(
-            assets::components::Rerouter::output_of(a_id),
-            assets::components::LogicGate::BoolNot.input_of(b_id),
+            assets::components::LogicGate::BoolNot.output_of(b_id),
+            assets::components::Rerouter::input_of(a_id),
         );
 
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         println!("{}", db.get_fs()?.render());
 
@@ -1063,7 +1074,7 @@ mod test {
             }],
         );
 
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         println!("{}", db.get_fs()?.render());
 
