@@ -1,9 +1,12 @@
 use clap::Parser;
 use clap_stdin::FileOrStdin;
-use std::error::Error;
+use std::{error::Error, path::PathBuf};
+
+use crate::brdb::Brdb;
 
 pub mod bearilog;
 pub mod brdb;
+pub mod builder;
 
 /// Program to parse bearilog to gates
 #[derive(Parser, Debug)]
@@ -20,23 +23,19 @@ struct Args {
     inline: bool,
 
     /// Generate a graphviz visual
-    #[arg(short, long)]
+    #[arg(short, long, group = "display")]
     graph: bool,
+
+    /// Output file for the result
+    #[arg(short, long, value_name = "FILE", group = "display")]
+    output: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let source = args.file.contents()?;
-    let modules = bearilog::grammar::ModulesParser::new()
-        .parse(&source)
-        .map_err(|e| e.to_string())?;
-    let mut compiler = bearilog::compiler::Compiler::new(modules);
 
-    if args.inline {
-        compiler.set_inline();
-    }
-
-    let res = match compiler.compile(&args.module) {
+    let res = match bearilog::parse_and_compile(&source, &args.module, args.inline) {
         Ok(res) => res,
         Err(e) => {
             eprintln!("{e}");
@@ -46,6 +45,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if args.graph {
         println!("{}", bearilog::graphviz::render(&res)?);
+    } else if let Some(path) = args.output {
+        let world = builder::module_to_world(res)?;
+        Brdb::new(path)?.save(format!("create module {}", &args.module), &world)?;
     } else {
         println!("{res}");
     }

@@ -1,6 +1,5 @@
 use crate::brdb::wrapper::{BString, BrickType};
 
-pub const PB_DEFAULT_BRICK: BString = BString::str("PB_DefaultBrick");
 pub const B_REROUTE: BrickType = BrickType::str("B_1x1_Reroute_Node");
 
 pub const B_GATE_BOOL_AND: BrickType = BrickType::str("B_1x1_Gate_AND");
@@ -36,10 +35,12 @@ pub const B_GATE_GREATER_THAN_EQUAL: BrickType = BrickType::str("B_1x1_Gate_Grea
 pub const B_GATE_CEILING: BrickType = BrickType::str("B_1x1_Gate_Ceiling");
 pub const B_GATE_FLOOR: BrickType = BrickType::str("B_1x1_Gate_Floor");
 
-pub const B_GATE_CONSTANT_BOOL: BrickType = BrickType::str("B_1x1_Gate_Constant_Bool");
-pub const B_GATE_CONSTANT_INT: BrickType = BrickType::str("B_1x1_Gate_Constant_Integer");
-pub const B_GATE_CONSTANT_FLOAT: BrickType = BrickType::str("B_1x1_Gate_Constant_Float");
-pub const B_GATE_CONSTANT_STRING: BrickType = BrickType::str("B_1x1_Gate_Constant_String");
+pub const B_GATE_CONSTANT: BrickType = BrickType::str("B_1x1_Gate_Constant");
+
+pub const B_GATE_BLEND: BrickType = BrickType::str("B_1x1_Gate_Blend");
+pub const B_GATE_EDGE_DETECTOR: BrickType = BrickType::str("B_1x1_Gate_EdgeDetector");
+pub const B_GATE_BUFFER: BrickType = BrickType::str("B_1x1_Gate_Timer");
+pub const B_GATE_BUFFER_TICK: BrickType = BrickType::str("B_1x1_Gate_Timer_Tick");
 
 pub const B_2X2_OVERHANG: BrickType = BrickType::str("B_2x2_Overhang");
 pub const B_1X4_BRICK_SIDE: BrickType = BrickType::str("B_1x4_Brick_Side");
@@ -163,52 +164,49 @@ pub const B_2X2F_TARGET: BrickType = BrickType::str("B_2x2F_Target");
 pub const B_2X2F_SPEAKER: BrickType = BrickType::str("B_2x2F_Speaker");
 pub const B_1X1_GATE_WHEEL_ENGINE_SLIM: BrickType = BrickType::str("B_1x1_Gate_WheelEngineSlim");
 pub const B_1X1F_SPEAKER: BrickType = BrickType::str("B_1x1F_Speaker");
-pub const B_1X1_GATE_TIMER_TICK: BrickType = BrickType::str("B_1x1_Gate_Timer_Tick");
-pub const B_1X1_GATE_TIMER: BrickType = BrickType::str("B_1x1_Gate_Timer");
-pub const B_1X1_GATE_EDGE_DETECTOR: BrickType = BrickType::str("B_1x1_Gate_EdgeDetector");
-pub const B_1X1_GATE_BLEND: BrickType = BrickType::str("B_1x1_Gate_Blend");
-pub const PB_DEFAULT_STUDDED: BrickType = BrickType::str("PB_DefaultStudded");
-pub const PB_DEFAULT_RAMP_INNER_CORNER_INVERTED: BrickType =
-    BrickType::str("PB_DefaultRampInnerCornerInverted");
-pub const PB_DEFAULT_RAMP_CREST_END: BrickType = BrickType::str("PB_DefaultRampCrestEnd");
-pub const PB_DEFAULT_RAMP_CREST_CORNER: BrickType = BrickType::str("PB_DefaultRampCrestCorner");
-pub const PB_DEFAULT_RAMP_CREST: BrickType = BrickType::str("PB_DefaultRampCrest");
-pub const PB_DEFAULT_RAMP: BrickType = BrickType::str("PB_DefaultRamp");
-pub const PB_PICKET_FENCE: BrickType = BrickType::str("PB_PicketFence");
-pub const BP_LATTICE_THIN: BrickType = BrickType::str("BP_LatticeThin");
-pub const PB_DEFAULT_WEDGE: BrickType = BrickType::str("PB_DefaultWedge");
-pub const PB_DEFAULT_TILE: BrickType = BrickType::str("PB_DefaultTile");
-pub const PB_DEFAULT_SMOOTH_TILE: BrickType = BrickType::str("PB_DefaultSmoothTile");
-pub const PB_DEFAULT_SIDE_WEDGE: BrickType = BrickType::str("PB_DefaultSideWedge");
-pub const PB_DEFAULT_RAMP_INVERTED: BrickType = BrickType::str("PB_DefaultRampInverted");
-pub const PB_DEFAULT_RAMP_INNER_CORNER: BrickType = BrickType::str("PB_DefaultRampInnerCorner");
-pub const PB_DEFAULT_RAMP_CORNER_INVERTED: BrickType =
-    BrickType::str("PB_DefaultRampCornerInverted");
-pub const PB_DEFAULT_RAMP_CORNER: BrickType = BrickType::str("PB_DefaultRampCorner");
-pub const PB_DEFAULT_POLE: BrickType = BrickType::str("PB_DefaultPole");
-pub const PB_DEFAULT_MICRO_WEDGE_TRIANGLE_CORNER: BrickType =
-    BrickType::str("PB_DefaultMicroWedgeTriangleCorner");
-pub const PB_DEFAULT_MICRO_WEDGE_OUTER_CORNER: BrickType =
-    BrickType::str("PB_DefaultMicroWedgeOuterCorner");
-pub const PB_DEFAULT_MICRO_WEDGE_INNER_CORNER: BrickType =
-    BrickType::str("PB_DefaultMicroWedgeInnerCorner");
-pub const PB_DEFAULT_MICRO_WEDGE_HALF_OUTER_CORNER: BrickType =
-    BrickType::str("PB_DefaultMicroWedgeHalfOuterCorner");
-pub const PB_DEFAULT_MICRO_WEDGE_HALF_INNER_CORNER_INVERTED: BrickType =
-    BrickType::str("PB_DefaultMicroWedgeHalfInnerCornerInverted");
-pub const PB_DEFAULT_MICRO_WEDGE_HALF_INNER_CORNER: BrickType =
-    BrickType::str("PB_DefaultMicroWedgeHalfInnerCorner");
-pub const PB_DEFAULT_MICRO_WEDGE_CORNER: BrickType = BrickType::str("PB_DefaultMicroWedgeCorner");
-pub const PB_DEFAULT_MICRO_WEDGE: BrickType = BrickType::str("PB_DefaultMicroWedge");
-pub const PB_DEFAULT_MICRO_RAMP: BrickType = BrickType::str("PB_DefaultMicroRamp");
-pub const PB_DEFAULT_MICRO_BRICK: BrickType = BrickType::str("PB_DefaultMicroBrick");
-pub const PB_DEFAULT_ARCH: BrickType = BrickType::str("PB_DefaultArch");
-pub const BP_SQUARE_PLATE: BrickType = BrickType::str("BP_SquarePlate");
-pub const BP_SPIKE_PLATE: BrickType = BrickType::str("BP_SpikePlate");
-pub const PB_SPIKE: BrickType = BrickType::str("PB_Spike");
-pub const PB_SLIDER_JOINT: BrickType = BrickType::str("PB_SliderJoint");
-pub const PB_SERVO_SLIDER_JOINT: BrickType = BrickType::str("PB_ServoSliderJoint");
-pub const PB_MOTOR_SLIDER_JOINT: BrickType = BrickType::str("PB_MotorSliderJoint");
-pub const BP_ROUND_PLATE: BrickType = BrickType::str("BP_RoundPlate");
-pub const PB_ROUNDED_CAP: BrickType = BrickType::str("PB_RoundedCap");
-pub const PB_BAGUETTE: BrickType = BrickType::str("PB_Baguette");
+
+pub const PB_DEFAULT_BRICK: BString = BString::str("PB_DefaultBrick");
+pub const PB_DEFAULT_STUDDED: BString = BString::str("PB_DefaultStudded");
+pub const PB_DEFAULT_RAMP_INNER_CORNER_INVERTED: BString =
+    BString::str("PB_DefaultRampInnerCornerInverted");
+pub const PB_DEFAULT_RAMP_CREST_END: BString = BString::str("PB_DefaultRampCrestEnd");
+pub const PB_DEFAULT_RAMP_CREST_CORNER: BString = BString::str("PB_DefaultRampCrestCorner");
+pub const PB_DEFAULT_RAMP_CREST: BString = BString::str("PB_DefaultRampCrest");
+pub const PB_DEFAULT_RAMP: BString = BString::str("PB_DefaultRamp");
+pub const PB_PICKET_FENCE: BString = BString::str("PB_PicketFence");
+pub const BP_LATTICE_THIN: BString = BString::str("BP_LatticeThin");
+pub const PB_DEFAULT_WEDGE: BString = BString::str("PB_DefaultWedge");
+pub const PB_DEFAULT_TILE: BString = BString::str("PB_DefaultTile");
+pub const PB_DEFAULT_SMOOTH_TILE: BString = BString::str("PB_DefaultSmoothTile");
+pub const PB_DEFAULT_SIDE_WEDGE: BString = BString::str("PB_DefaultSideWedge");
+pub const PB_DEFAULT_RAMP_INVERTED: BString = BString::str("PB_DefaultRampInverted");
+pub const PB_DEFAULT_RAMP_INNER_CORNER: BString = BString::str("PB_DefaultRampInnerCorner");
+pub const PB_DEFAULT_RAMP_CORNER_INVERTED: BString = BString::str("PB_DefaultRampCornerInverted");
+pub const PB_DEFAULT_RAMP_CORNER: BString = BString::str("PB_DefaultRampCorner");
+pub const PB_DEFAULT_POLE: BString = BString::str("PB_DefaultPole");
+pub const PB_DEFAULT_MICRO_WEDGE_TRIANGLE_CORNER: BString =
+    BString::str("PB_DefaultMicroWedgeTriangleCorner");
+pub const PB_DEFAULT_MICRO_WEDGE_OUTER_CORNER: BString =
+    BString::str("PB_DefaultMicroWedgeOuterCorner");
+pub const PB_DEFAULT_MICRO_WEDGE_INNER_CORNER: BString =
+    BString::str("PB_DefaultMicroWedgeInnerCorner");
+pub const PB_DEFAULT_MICRO_WEDGE_HALF_OUTER_CORNER: BString =
+    BString::str("PB_DefaultMicroWedgeHalfOuterCorner");
+pub const PB_DEFAULT_MICRO_WEDGE_HALF_INNER_CORNER_INVERTED: BString =
+    BString::str("PB_DefaultMicroWedgeHalfInnerCornerInverted");
+pub const PB_DEFAULT_MICRO_WEDGE_HALF_INNER_CORNER: BString =
+    BString::str("PB_DefaultMicroWedgeHalfInnerCorner");
+pub const PB_DEFAULT_MICRO_WEDGE_CORNER: BString = BString::str("PB_DefaultMicroWedgeCorner");
+pub const PB_DEFAULT_MICRO_WEDGE: BString = BString::str("PB_DefaultMicroWedge");
+pub const PB_DEFAULT_MICRO_RAMP: BString = BString::str("PB_DefaultMicroRamp");
+pub const PB_DEFAULT_MICRO_BRICK: BString = BString::str("PB_DefaultMicroBrick");
+pub const PB_DEFAULT_ARCH: BString = BString::str("PB_DefaultArch");
+pub const BP_SQUARE_PLATE: BString = BString::str("BP_SquarePlate");
+pub const BP_SPIKE_PLATE: BString = BString::str("BP_SpikePlate");
+pub const PB_SPIKE: BString = BString::str("PB_Spike");
+pub const PB_SLIDER_JOINT: BString = BString::str("PB_SliderJoint");
+pub const PB_SERVO_SLIDER_JOINT: BString = BString::str("PB_ServoSliderJoint");
+pub const PB_MOTOR_SLIDER_JOINT: BString = BString::str("PB_MotorSliderJoint");
+pub const BP_ROUND_PLATE: BString = BString::str("BP_RoundPlate");
+pub const PB_ROUNDED_CAP: BString = BString::str("PB_RoundedCap");
+pub const PB_BAGUETTE: BString = BString::str("PB_Baguette");

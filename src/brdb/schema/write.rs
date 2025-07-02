@@ -4,7 +4,7 @@ use crate::brdb::{
     errors::BrdbSchemaError,
     schema::{
         BrdbEnum, BrdbInterned, BrdbSchema, BrdbSchemaEnum, BrdbSchemaStruct,
-        BrdbSchemaStructProperty, BrdbStruct, BrdbValue, as_brdb::AsBrdbValue,
+        BrdbSchemaStructProperty, BrdbStruct, BrdbValue, WireVariant, as_brdb::AsBrdbValue,
         read::flat_type_size,
     },
 };
@@ -38,6 +38,24 @@ pub fn write_type(
         ("f32", BrdbValue::F32(v)) => write_float32(buf, *v)?,
         ("f64", BrdbValue::F64(v)) => write_float64(buf, *v)?,
         ("str", BrdbValue::String(v)) => write_str(buf, &v)?,
+        ("wire_graph_variant", BrdbValue::WireVar(v)) => write_wire_var(buf, v)?,
+        ("wire_graph_prim_math_variant", BrdbValue::WireVar(v)) => match v {
+            WireVariant::Number(v) => {
+                write_uint(buf, 0)?;
+                write_float64(buf, *v)?;
+            }
+            WireVariant::Int(v) => {
+                write_uint(buf, 1)?;
+                write_int(buf, *v)?;
+            }
+            other => {
+                return Err(BrdbSchemaError::ExpectedType(
+                    "wire_graph_prim_math_variant".to_owned(),
+                    other.to_string(),
+                ));
+            }
+        },
+
         ("class" | "object" | _, BrdbValue::Asset(None)) => {
             // None is -1
             write_int(buf, -1)?;
@@ -64,6 +82,31 @@ pub fn write_type(
             ));
         }
     })
+}
+
+fn write_wire_var(buf: &mut impl Write, v: &WireVariant) -> Result<(), BrdbSchemaError> {
+    match v {
+        WireVariant::Number(v) => {
+            write_uint(buf, 0)?;
+            write_float64(buf, *v)?;
+        }
+        WireVariant::Int(v) => {
+            write_uint(buf, 1)?;
+            write_int(buf, *v)?;
+        }
+        WireVariant::Bool(v) => {
+            write_uint(buf, 2)?;
+            write_bool(buf, *v)?;
+        }
+        WireVariant::Object(_) => {
+            write_uint(buf, 3)?;
+            // nothing to write atm?
+        }
+        WireVariant::Exec => {
+            write_uint(buf, 4)?;
+        }
+    }
+    Ok(())
 }
 
 fn write_named_type(
@@ -404,6 +447,23 @@ pub fn write_brdb(
         "f32" => write_float32(buf, value.as_brdb_f32()?)?,
         "f64" => write_float64(buf, value.as_brdb_f64()?)?,
         "str" => write_str(buf, value.as_brdb_str()?)?,
+        "wire_graph_variant" => write_wire_var(buf, &value.as_brdb_wire_variant()?)?,
+        "wire_graph_prim_math_variant" => match value.as_brdb_wire_variant()? {
+            WireVariant::Number(v) => {
+                write_uint(buf, 0)?;
+                write_float64(buf, v)?;
+            }
+            WireVariant::Int(v) => {
+                write_uint(buf, 1)?;
+                write_int(buf, v)?;
+            }
+            other => {
+                return Err(BrdbSchemaError::ExpectedType(
+                    "wire_graph_prim_math_variant".to_owned(),
+                    other.to_string(),
+                ));
+            }
+        },
         "class" | "object" => {
             let asset_index = value.as_brdb_asset(schema, ty)?;
             if let Some(asset_index) = asset_index {

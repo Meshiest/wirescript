@@ -121,6 +121,73 @@ pub enum BrdbValue {
     Array(Vec<BrdbValue>),
     FlatArray(Vec<BrdbValue>),
     Map(IndexMap<BrdbValue, BrdbValue>),
+    WireVar(WireVariant),
+}
+
+#[derive(Clone, Debug)]
+pub enum WireVariant {
+    Number(f64),
+    Int(i64),
+    Bool(bool),
+    Object(String),
+    Exec,
+}
+impl Default for WireVariant {
+    fn default() -> Self {
+        WireVariant::Number(0.0)
+    }
+}
+impl Display for WireVariant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WireVariant::Number(n) => write!(f, "{n}"),
+            WireVariant::Int(i) => write!(f, "{i}"),
+            WireVariant::Bool(b) => write!(f, "{b}"),
+            WireVariant::Object(o) => write!(f, "{o}"),
+            WireVariant::Exec => write!(f, "exec"),
+        }
+    }
+}
+impl From<f64> for WireVariant {
+    fn from(value: f64) -> Self {
+        WireVariant::Number(value)
+    }
+}
+impl From<f32> for WireVariant {
+    fn from(value: f32) -> Self {
+        WireVariant::Number(value as f64)
+    }
+}
+
+macro_rules! wire_var_int {
+    ($ty:ty) => {
+        impl From<$ty> for WireVariant {
+            fn from(value: $ty) -> Self {
+                WireVariant::Int(value as i64)
+            }
+        }
+    };
+    ($ty:ty, $($rest:ty),*) => {
+        wire_var_int!($ty);
+        wire_var_int!($($rest),*);
+    };
+}
+wire_var_int!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+impl From<bool> for WireVariant {
+    fn from(value: bool) -> Self {
+        WireVariant::Bool(value)
+    }
+}
+impl From<String> for WireVariant {
+    fn from(value: String) -> Self {
+        WireVariant::Object(value)
+    }
+}
+impl From<&str> for WireVariant {
+    fn from(value: &str) -> Self {
+        WireVariant::Object(value.to_string())
+    }
 }
 
 impl BrdbValue {
@@ -145,6 +212,7 @@ impl BrdbValue {
             BrdbValue::Array(_) => "array",
             BrdbValue::FlatArray(_) => "flatarray",
             BrdbValue::Map(_) => "map",
+            BrdbValue::WireVar(_) => "wire_variant",
         }
     }
     pub fn as_struct(&self) -> Result<&BrdbStruct, BrdbSchemaError> {
@@ -225,6 +293,13 @@ impl BrdbValue {
             BrdbValue::I64(v) => format!("{v}i64"),
             BrdbValue::F32(v) => format!("{v}f32"),
             BrdbValue::F64(v) => format!("{v}f64"),
+            BrdbValue::WireVar(v) => match v {
+                WireVariant::Number(n) => format!("wire {n}f64"),
+                WireVariant::Int(i) => format!("wire {i}i64"),
+                WireVariant::Bool(b) => format!("wire {b}"),
+                WireVariant::Object(o) => format!("wire {o}"),
+                WireVariant::Exec => "w exec".to_string(),
+            },
             BrdbValue::String(v) => format!("\"{v}\""),
             BrdbValue::Asset(None) => "none".to_string(),
             BrdbValue::Asset(Some(v)) => {
@@ -327,6 +402,13 @@ impl Hash for BrdbValue {
                 k.hash(state);
                 v.hash(state);
             }),
+            BrdbValue::WireVar(w) => match w {
+                WireVariant::Number(n) => n.to_bits().hash(state),
+                WireVariant::Int(i) => i.hash(state),
+                WireVariant::Bool(b) => b.hash(state),
+                WireVariant::Object(o) => o.hash(state),
+                WireVariant::Exec => ().hash(state),
+            },
         }
     }
 }
@@ -368,6 +450,14 @@ impl PartialEq for BrdbValue {
             (Self::Array(l0), Self::Array(r0)) => l0 == r0,
             (Self::FlatArray(l0), Self::FlatArray(r0)) => l0 == r0,
             (Self::Map(l0), Self::Map(r0)) => l0 == r0,
+            (Self::WireVar(l0), Self::WireVar(r0)) => match (l0, r0) {
+                (WireVariant::Number(l), WireVariant::Number(r)) => l == r,
+                (WireVariant::Int(l), WireVariant::Int(r)) => l == r,
+                (WireVariant::Bool(l), WireVariant::Bool(r)) => l == r,
+                (WireVariant::Object(l), WireVariant::Object(r)) => l == r,
+                (WireVariant::Exec, WireVariant::Exec) => false,
+                _ => false,
+            },
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
     }

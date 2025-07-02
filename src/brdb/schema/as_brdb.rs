@@ -2,7 +2,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::brdb::{
     errors::BrdbSchemaError,
-    schema::{BrdbInterned, BrdbSchema, BrdbSchemaEnum, BrdbValue},
+    schema::{BrdbInterned, BrdbSchema, BrdbSchemaEnum, BrdbValue, WireVariant},
 };
 
 pub type BrdbArrayIter<'a> = Box<dyn ExactSizeIterator<Item = &'a dyn AsBrdbValue> + 'a>;
@@ -100,6 +100,15 @@ pub trait AsBrdbValue {
     ) -> Result<i32, BrdbSchemaError> {
         Err(BrdbSchemaError::UnimplementedCast(
             "enum".to_owned(),
+            std::any::type_name::<Self>(),
+        ))
+    }
+
+    fn as_brdb_wire_variant(
+        &self,
+    ) -> Result<crate::brdb::schema::value::WireVariant, BrdbSchemaError> {
+        Err(BrdbSchemaError::UnimplementedCast(
+            "wire variant".to_owned(),
             std::any::type_name::<Self>(),
         ))
     }
@@ -212,6 +221,16 @@ impl AsBrdbValue for BrdbValue {
             ))
         }
     }
+    fn as_brdb_wire_variant(&self) -> Result<WireVariant, BrdbSchemaError> {
+        if let BrdbValue::WireVar(wire) = self {
+            Ok(wire.to_owned())
+        } else {
+            Err(BrdbSchemaError::ExpectedType(
+                "wire variant".to_owned(),
+                self.get_type().to_string(),
+            ))
+        }
+    }
     fn as_brdb_struct_prop_value(
         &self,
         schema: &BrdbSchema,
@@ -296,6 +315,11 @@ impl AsBrdbValue for BrdbValue {
         }
     }
 }
+impl AsBrdbValue for WireVariant {
+    fn as_brdb_wire_variant(&self) -> Result<WireVariant, BrdbSchemaError> {
+        Ok(self.clone())
+    }
+}
 
 macro_rules! as_brdb_int(
     ($ty:ty, $($rest:ty),*) => {
@@ -337,6 +361,11 @@ macro_rules! as_brdb_int(
             fn as_brdb_f64(&self) -> Result<f64, BrdbSchemaError> {
                 Ok(*self as f64)
             }
+            fn as_brdb_wire_variant(
+                &self,
+            ) -> Result<WireVariant, BrdbSchemaError> {
+                Ok((*self).into())
+            }
         }
     }
 );
@@ -355,6 +384,11 @@ macro_rules! as_brdb_float {
             fn as_brdb_f64(&self) -> Result<f64, BrdbSchemaError> {
                 Ok(*self as f64)
             }
+            fn as_brdb_wire_variant(
+                &self,
+            ) -> Result<WireVariant, BrdbSchemaError> {
+                Ok(WireVariant::Number(*self as f64))
+            }
         }
     };
 }
@@ -363,6 +397,11 @@ as_brdb_float!(f32, f64);
 impl AsBrdbValue for bool {
     fn as_brdb_bool(&self) -> Result<bool, BrdbSchemaError> {
         Ok(*self)
+    }
+    fn as_brdb_wire_variant(
+        &self,
+    ) -> Result<crate::brdb::schema::value::WireVariant, BrdbSchemaError> {
+        Ok(WireVariant::Bool(*self))
     }
 }
 impl AsBrdbValue for String {

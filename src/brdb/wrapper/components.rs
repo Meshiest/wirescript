@@ -59,16 +59,10 @@ impl ComponentChunkSoA {
             .unwrap() as u32;
 
         // Check if the last counter matches the type index
-        if let Some(counter) = self.component_type_counters.last_mut() {
-            if counter.type_index == type_index {
-                counter.num_instances += 1;
-            } else {
-                // Add a new counter for this component type
-                self.component_type_counters.push(ComponentTypeCounter {
-                    type_index,
-                    num_instances: 1,
-                });
-            }
+        if let Some(counter) = self.component_type_counters.last_mut()
+            && counter.type_index == type_index
+        {
+            counter.num_instances += 1;
         } else {
             // No counters yet, add the first one
             self.component_type_counters.push(ComponentTypeCounter {

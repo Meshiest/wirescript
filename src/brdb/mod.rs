@@ -18,13 +18,11 @@ use crate::brdb::{
         BrdbSchema, BrdbSchemaGlobalData, BrdbStruct, BrdbValue, ReadBrdbSchema,
         as_brdb::AsBrdbValue,
     },
+    schemas::BRICK_COMPONENT_SOA,
     tables::{BrdbBlob, BrdbFile, BrdbFolder},
-    wrapper::{
-        BString, BitFlags, BrdbComponent, ChunkIndex, Entity, lookup_entity_struct_name,
-        schemas::{
-            BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, ENTITY_CHUNK_INDEX_SOA, GLOBAL_DATA_SOA,
-            OWNER_TABLE_SOA,
-        },
+    wrapper::schemas::{
+        BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, ENTITY_CHUNK_INDEX_SOA, GLOBAL_DATA_SOA,
+        OWNER_TABLE_SOA,
     },
 };
 
@@ -34,7 +32,8 @@ pub mod fs;
 pub mod pending;
 pub mod schema;
 pub mod tables;
-pub mod wrapper;
+mod wrapper;
+pub use wrapper::*;
 
 pub struct Brdb {
     conn: Connection,
@@ -77,6 +76,16 @@ impl Brdb {
         Ok(db)
     }
 
+    /// Create or open a BRDB database at the specified path.
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, BrdbError> {
+        let path = path.as_ref();
+        if path.exists() {
+            Self::open(path)
+        } else {
+            Self::create(path)
+        }
+    }
+
     /// Write a pending operation to the BRDB filesystem.
     pub fn write_pending(
         &self,
@@ -85,6 +94,12 @@ impl Brdb {
     ) -> Result<(), BrdbError> {
         let fs = self.get_fs()?;
         fs.write_pending(description.as_ref(), self, pending, Some(14))?;
+        Ok(())
+    }
+
+    /// Save a world to the BRDB database.
+    pub fn save(&self, description: impl AsRef<str>, world: &World) -> Result<(), BrdbError> {
+        self.write_pending(description.as_ref(), world.to_unsaved()?.to_pending()?)?;
         Ok(())
     }
 
@@ -597,7 +612,7 @@ impl BrdbReader {
         let buf = self.read_file(path)?;
         let buf = &mut buf.as_slice();
 
-        let mps = buf.read_brdb(&schema, BRICK_CHUNK_SOA)?;
+        let mps = buf.read_brdb(&schema, BRICK_COMPONENT_SOA)?;
         let soa = match mps {
             BrdbValue::Struct(s) => *s,
             ty => {
@@ -703,10 +718,6 @@ impl BrdbReader {
             .read_file(format!("World/0/Bricks/Grids/{grid_id}/ChunkIndex.mps"))?
             .as_slice()
             .read_brdb(&self.brick_chunk_index_schema()?, BRICK_CHUNK_INDEX_SOA)?;
-        println!(
-            "[debug] {}",
-            brick_index.display(self.brick_chunk_index_schema()?.as_ref())
-        );
         let chunk_indices = brick_index
             .prop("Chunk3DIndices")?
             .as_array()?
@@ -948,7 +959,7 @@ mod test {
             color: (255, 0, 0).into(),
             ..Default::default()
         });
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         let mps = db.brick_chunk_soa(1, (0, 0, 0).into())?;
         let color = mps.prop("ColorsAndAlphas")?.index(0)?.unwrap();
@@ -966,12 +977,7 @@ mod test {
         let path = PathBuf::from("./test.brdb");
 
         // Ensures the memory db can be created without errors
-        let db = if path.exists() {
-            Brdb::open(path)?
-        } else {
-            Brdb::create(path)?
-        }
-        .into_reader();
+        let db = Brdb::new(&path)?.into_reader();
         let mut world = World::new();
         world.meta.bundle.description = "Test World".to_string();
         world.bricks.push(Brick {
@@ -979,7 +985,7 @@ mod test {
             color: (255, 0, 0).into(),
             ..Default::default()
         });
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         println!("{}", db.get_fs()?.render());
 
@@ -1026,11 +1032,11 @@ mod test {
 
         world.add_bricks([a, b]);
         world.add_wire_connection(
-            assets::components::Rerouter::output_of(a_id),
-            assets::components::LogicGate::BoolNot.input_of(b_id),
+            assets::components::LogicGate::BoolNot.output_of(b_id),
+            assets::components::Rerouter::input_of(a_id),
         );
 
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         println!("{}", db.get_fs()?.render());
 
@@ -1063,7 +1069,7 @@ mod test {
             }],
         );
 
-        db.write_pending("test world", world.to_unsaved()?.to_pending()?)?;
+        db.save("test world", &world)?;
 
         println!("{}", db.get_fs()?.render());
 
@@ -1083,6 +1089,36 @@ mod test {
 
         let data = db.brick_chunk_soa(1, (0, 0, 0).into())?;
         println!("data: {data}");
+
+        Ok(())
+    }
+
+    /// Read all the components and brick assets
+    #[test]
+    fn test_read_all_components() -> Result<(), BrdbError> {
+        let path = PathBuf::from("./wires2components.brdb");
+        if !path.exists() {
+            return Ok(());
+        }
+        let db = Brdb::open(path)?.into_reader();
+
+        println!("{}", db.get_fs()?.render());
+
+        let data = db.global_data()?;
+        println!("Basic Brick assets: {:?}", data.basic_brick_asset_names);
+        println!("wire ports: {:?}", data.component_wire_port_names);
+        println!("component types: {:?}", data.component_type_names);
+        println!("component structs: {:?}", data.component_data_struct_names);
+
+        let chunks = db.brick_chunk_index(1)?;
+        println!("chunks: {chunks:?}");
+        for chunk in chunks {
+            let (soa, components) = db.component_chunk_soa(1, chunk)?;
+            println!("components soa: {soa}");
+            for c in components {
+                println!("component: {c}");
+            }
+        }
 
         Ok(())
     }

@@ -3,15 +3,21 @@ use std::{
     sync::{Arc, atomic},
 };
 
-use crate::bearilog::{
-    ast::{BinaryOpCode, UnaryOpCode},
-    compiler::{CompiledModule, WireConnection},
+use crate::{
+    bearilog::{
+        ast::{BinaryOpCode, UnaryOpCode},
+        compiler::{CompiledModule, WireConnection},
+    },
+    brdb::{
+        self, BString, BrickType,
+        assets::components::{BufferTicks, LogicGate, Rerouter},
+    },
 };
 
 #[derive(Clone, Debug)]
 pub enum GateKind {
     Buffer,
-    ReRouter,
+    Reroute,
     BinaryOp(BinaryOpCode),
     UnaryOp(UnaryOpCode),
 }
@@ -20,7 +26,7 @@ impl Display for GateKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GateKind::Buffer => f.write_str("buffer"),
-            GateKind::ReRouter => f.write_str("rerouter"),
+            GateKind::Reroute => f.write_str("rerouter"),
             GateKind::BinaryOp(op) => op.fmt(f),
             GateKind::UnaryOp(op) => op.fmt(f),
         }
@@ -29,8 +35,8 @@ impl Display for GateKind {
 
 #[derive(Clone, Debug, Default)]
 pub struct GateMeta {
-    pub is_input: bool,
-    pub is_output: bool,
+    pub input_index: Option<usize>,
+    pub output_index: Option<usize>,
     pub label: Option<String>,
 }
 
@@ -48,7 +54,7 @@ impl Display for Gate {
 }
 
 impl Gate {
-    fn next_index() -> usize {
+    pub(crate) fn next_index() -> usize {
         static NEXT_INDEX: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
         NEXT_INDEX.fetch_add(1, atomic::Ordering::SeqCst)
     }
@@ -66,13 +72,13 @@ impl Gate {
         self
     }
 
-    pub fn with_input(mut self) -> Self {
-        self.meta.is_input = true;
+    pub fn with_input(mut self, i: usize) -> Self {
+        self.meta.input_index = Some(i);
         self
     }
 
-    pub fn with_output(mut self) -> Self {
-        self.meta.is_output = true;
+    pub fn with_output(mut self, i: usize) -> Self {
+        self.meta.output_index = Some(i);
         self
     }
 
@@ -87,18 +93,35 @@ impl Gate {
 
 impl GateKind {
     /// Get the input and output properties of this gate kind.
-    pub fn properties(&self) -> (Vec<String>, Vec<String>) {
+    pub fn properties(&self) -> (Vec<BString>, Vec<BString>) {
         match self {
-            GateKind::BinaryOp(_op) => {
-                let inputs = vec!["a".to_string(), "b".to_string()];
-                let outputs = vec!["output".to_string()];
-                (inputs, outputs)
+            GateKind::BinaryOp(BinaryOpCode::BoolAnd)
+            | GateKind::BinaryOp(BinaryOpCode::BoolOr)
+            | GateKind::BinaryOp(BinaryOpCode::BoolXor)
+            | GateKind::BinaryOp(BinaryOpCode::BoolNand)
+            | GateKind::BinaryOp(BinaryOpCode::BoolNor) => (
+                vec![LogicGate::BOOL_INPUT_A, LogicGate::BOOL_INPUT_B],
+                vec![LogicGate::BOOL_OUTPUT],
+            ),
+            GateKind::BinaryOp(BinaryOpCode::Eq)
+            | GateKind::BinaryOp(BinaryOpCode::Neq)
+            | GateKind::BinaryOp(BinaryOpCode::Lt)
+            | GateKind::BinaryOp(BinaryOpCode::Leq)
+            | GateKind::BinaryOp(BinaryOpCode::Gt)
+            | GateKind::BinaryOp(BinaryOpCode::Geq) => (
+                vec![LogicGate::INPUT_A, LogicGate::INPUT_B],
+                vec![LogicGate::BOOL_OUTPUT],
+            ),
+            GateKind::BinaryOp(_) => (
+                vec![LogicGate::INPUT_A, LogicGate::INPUT_B],
+                vec![LogicGate::OUTPUT],
+            ),
+            GateKind::UnaryOp(UnaryOpCode::BoolNot) => {
+                (vec![LogicGate::BOOL_INPUT], vec![LogicGate::BOOL_OUTPUT])
             }
-            GateKind::UnaryOp(_) | GateKind::Buffer | GateKind::ReRouter => {
-                let inputs = vec!["input".to_string()];
-                let outputs = vec!["output".to_string()];
-                (inputs, outputs)
-            }
+            GateKind::Reroute => (vec![Rerouter::INPUT], vec![Rerouter::OUTPUT]),
+            GateKind::Buffer => (vec![BufferTicks::INPUT], vec![BufferTicks::OUTPUT]),
+            GateKind::UnaryOp(_) => (vec![LogicGate::INPUT], vec![LogicGate::OUTPUT]),
         }
     }
 
@@ -125,6 +148,66 @@ impl GateKind {
             force_inline: true,
             // No submodules in a single gate module
             sub_modules: Default::default(),
+        }
+    }
+
+    pub fn gate(&self) -> Option<LogicGate> {
+        match self {
+            GateKind::Buffer => None,
+            GateKind::Reroute => None,
+            GateKind::BinaryOp(op) => match op {
+                BinaryOpCode::BoolAnd => Some(LogicGate::BoolAnd),
+                BinaryOpCode::BoolOr => Some(LogicGate::BoolOr),
+                BinaryOpCode::BoolXor => Some(LogicGate::BoolXor),
+                BinaryOpCode::BoolNand => Some(LogicGate::BoolNand),
+                BinaryOpCode::BoolNor => Some(LogicGate::BoolNor),
+                BinaryOpCode::BitAnd => Some(LogicGate::BitAnd),
+                BinaryOpCode::BitOr => Some(LogicGate::BitOr),
+                BinaryOpCode::BitXor => Some(LogicGate::BitXor),
+                BinaryOpCode::BitNand => Some(LogicGate::BitNand),
+                BinaryOpCode::BitNor => Some(LogicGate::BitNor),
+                BinaryOpCode::BitShiftLeft => Some(LogicGate::BitShiftLeft),
+                BinaryOpCode::BitShiftRight => Some(LogicGate::BitShiftRight),
+                BinaryOpCode::Add => Some(LogicGate::Add),
+                BinaryOpCode::Sub => Some(LogicGate::Sub),
+                BinaryOpCode::Mul => Some(LogicGate::Mul),
+                BinaryOpCode::Div => Some(LogicGate::Div),
+                BinaryOpCode::Mod => Some(LogicGate::Mod),
+                BinaryOpCode::Eq => Some(LogicGate::Eq),
+                BinaryOpCode::Neq => Some(LogicGate::Neq),
+                BinaryOpCode::Lt => Some(LogicGate::Lt),
+                BinaryOpCode::Leq => Some(LogicGate::Leq),
+                BinaryOpCode::Gt => Some(LogicGate::Gt),
+                BinaryOpCode::Geq => Some(LogicGate::Geq),
+            },
+            GateKind::UnaryOp(op) => match op {
+                UnaryOpCode::BoolNot => Some(LogicGate::BoolNot),
+                UnaryOpCode::BitNot => Some(LogicGate::BitNot),
+            },
+        }
+    }
+
+    pub fn brick(&self) -> BrickType {
+        match self {
+            GateKind::Buffer => brdb::assets::bricks::B_GATE_BUFFER_TICK,
+            GateKind::Reroute => brdb::assets::bricks::B_REROUTE,
+            _ => self.gate().unwrap().brick(), // unwrap safety: only reroute and buffer don't have gates
+        }
+    }
+
+    pub fn component(&self) -> Box<dyn brdb::BrdbComponent> {
+        match self {
+            GateKind::Buffer => Box::new(brdb::assets::components::BufferTicks::new(0, 0)),
+            GateKind::Reroute => Box::new(brdb::assets::components::Rerouter),
+            _ => Box::new(self.gate().unwrap().component()), // unwrap safety: only reroute and buffer don't have gates
+        }
+    }
+
+    pub fn component_name(&self) -> BString {
+        match self {
+            GateKind::Buffer => brdb::assets::components::BufferTicks::COMPONENT,
+            GateKind::Reroute => brdb::assets::components::Rerouter::COMPONENT,
+            _ => self.gate().unwrap().component_name(), // unwrap safety: only reroute and buffer don't have gates
         }
     }
 }
