@@ -2,7 +2,7 @@ use clap::Parser;
 use clap_stdin::FileOrStdin;
 use std::{error::Error, path::PathBuf};
 
-use crate::brdb::Brdb;
+use crate::{brdb::Brdb, builder::options::LayoutMode};
 
 pub mod bearilog;
 pub mod brdb;
@@ -30,9 +30,15 @@ struct Args {
     #[arg(short, long, value_name = "FILE", group = "display")]
     output: Option<PathBuf>,
 
-    /// Options for the builder
+    /// The layout mode to use
+    #[arg(short, long, default_value = "layout")]
+    layout: LayoutMode,
+
+    /// Options for the layout builder
     #[clap(flatten)]
-    options: builder::BuilderOptions,
+    layout_options: builder::options::LayoutOptions,
+    #[clap(flatten)]
+    grid_options: builder::options::GridOptions,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -50,7 +56,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.graph {
         println!("{}", bearilog::graphviz::render(&res)?);
     } else if let Some(path) = args.output {
-        let world = builder::module_to_world(res, args.options)?;
+        let world = match args.layout {
+            LayoutMode::Layout => builder::layout_module_to_world(res, args.layout_options)?,
+            LayoutMode::Grid => builder::build_grid(res, args.grid_options),
+        };
         Brdb::new(path)?.save(format!("create module {}", &args.module), &world)?;
     } else {
         println!("{res}");
