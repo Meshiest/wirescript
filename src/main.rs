@@ -23,11 +23,11 @@ struct Args {
     inline: bool,
 
     /// Generate a graphviz visual
-    #[arg(short, long, group = "output")]
+    #[arg(short, long, group = "display")]
     graph: bool,
 
     /// Output file for the result
-    #[arg(short, long, value_name = "FILE", group = "output")]
+    #[arg(short, long, value_name = "FILE", group = "display")]
     output: Option<PathBuf>,
 }
 
