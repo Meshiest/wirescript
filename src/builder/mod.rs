@@ -52,6 +52,9 @@ pub struct BuilderOptions {
     /// Space between the left edge of the baseplate and the first gates in each row
     #[arg(long, default_value = "0")]
     pub indent: u8,
+    /// When true, all gates will be placed without baseplates
+    #[arg(long, default_value = "false")]
+    pub flat: bool,
 }
 
 impl<'a> BuilderContext<'a> {
@@ -219,30 +222,35 @@ impl<'a> BuilderContext<'a> {
                     pos.y += self.options.margin as i32;
 
                     // Recurse into the submodule and build its bounds
-                    let mut sub_pos = ctx.build(sub_module, pos + Position::UP * 2);
+                    let mut sub_pos = ctx.build(
+                        sub_module,
+                        pos + Position::UP * 2 * i32::from(!self.options.flat), // When flat, don't increase the z position
+                    );
                     // Add the submodule's seen gates/wires to the current row
                     self.wires.extend(ctx.wires);
                     self.bricks.extend(ctx.bricks);
                     current_row.extend(ctx.seen);
 
-                    let mut width = sub_pos.x - pos.x;
-                    width += width % 2; // Ensure width is even
-                    let mut height = sub_pos.y - pos.y;
-                    height += height % 2; // Ensure height is even
+                    if !self.options.flat {
+                        let mut width = sub_pos.x - pos.x;
+                        width += width % 2; // Ensure width is even
+                        let mut height = sub_pos.y - pos.y;
+                        height += height % 2; // Ensure height is even
 
-                    // Create a baseplate brick for the submodule
+                        // Create a baseplate brick for the submodule
 
-                    self.bricks.push(Brick {
-                        asset: brdb::BrickType::Procedural {
-                            asset: brdb::assets::bricks::PB_DEFAULT_MICRO_BRICK,
-                            size: (width as u16 / 2, height as u16 / 2, 1u16).into(),
-                        },
-                        position: pos + (width / 2, height / 2, 1).into(),
-                        // Darken the color with depth
-                        color: Color::monochrome(255u8.saturating_sub(pos.z as u8 * 20))
-                            .to_linear(),
-                        ..Default::default()
-                    });
+                        self.bricks.push(Brick {
+                            asset: brdb::BrickType::Procedural {
+                                asset: brdb::assets::bricks::PB_DEFAULT_MICRO_BRICK,
+                                size: (width as u16 / 2, height as u16 / 2, 1u16).into(),
+                            },
+                            position: pos + (width / 2, height / 2, 1).into(),
+                            // Darken the color with depth
+                            color: Color::monochrome(255u8.saturating_sub(pos.z as u8 * 20))
+                                .to_linear(),
+                            ..Default::default()
+                        });
+                    }
 
                     // TODO: theoretical gate stacking per row with a max_z
 
