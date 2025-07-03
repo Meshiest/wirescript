@@ -295,8 +295,12 @@ impl<'a> BuildState<'a> {
                 BinaryOp(op, a, b) => self.binaryop_expr(*op, a, b, &mut outputs)?,
                 UnaryOp(op, input) => self.unaryop_expr(*op, input, &mut outputs)?,
                 Call(name, params) => {
-                    // TODO: discern if "name" is for a module or a builtin
-                    self.module_expr(name, params, &mut outputs)?;
+                    // Handle builtins
+                    if matches!(name.as_str(), "blend" | "ceil" | "floor" | "edge") {
+                        self.builtin_expr(name, params, &mut outputs)?;
+                    } else {
+                        self.module_expr(name, params, &mut outputs)?;
+                    }
                 }
             };
         }
@@ -387,6 +391,45 @@ impl<'a> BuildState<'a> {
                 outputs_expr.into_iter().next().unwrap(),
             ],
         )?;
+        outputs.extend(module_outs);
+        Ok(())
+    }
+
+    fn builtin_expr(
+        &mut self,
+        name: &str,
+        params: &[AstExpr],
+        outputs: &mut Vec<CompiledOutput>,
+    ) -> Result<(), CompileError> {
+        let gate = match name {
+            "blend" => GateKind::Blend,
+            "ceil" => GateKind::Ceil,
+            "floor" => GateKind::Floor,
+            "edge" => GateKind::EdgeDetector,
+            _ => unreachable!(),
+        };
+        let (expected_inputs, _) = gate.properties();
+        // check inputs len with params len
+        if expected_inputs.len() != params.len() {
+            return Err(CompileError::MismatchedInputs(
+                name.to_owned(),
+                expected_inputs.len(),
+                params.len(),
+            ));
+        }
+        // Resolve the input expressions
+        let call_outputs = self.exprs(params.iter())?;
+        // Ensure the outputs match the module's inputs
+        let module = gate.module();
+        if call_outputs.len() != module.num_inputs {
+            return Err(CompileError::MismatchedInputs(
+                name.to_owned(),
+                module.num_inputs,
+                call_outputs.len(),
+            ));
+        }
+        // Wire the module inputs to the call outputs
+        let module_outs = self.add_module(name, module, call_outputs)?;
         outputs.extend(module_outs);
         Ok(())
     }
@@ -554,6 +597,12 @@ impl<'a> BuildState<'a> {
                             None => {}
                         }
 
+                        if name == "_" {
+                            // The underscore variable is a special case that is used to discard outputs
+                            // It should not be added to the scope or variables
+                            continue;
+                        }
+
                         // If the variable is not a buffer or output, it must be a constant or an input
                         if self.scope.contains_key(name) {
                             return Err(CompileError::ReadOnlyVariable(name.to_owned()));
@@ -568,6 +617,11 @@ impl<'a> BuildState<'a> {
                     Self::ensure_outputs_len(names, outputs.len())?;
 
                     for (name, conn) in names.iter().zip(outputs.into_iter()) {
+                        // Discard variables named _
+                        if name == "_" {
+                            continue;
+                        }
+
                         self.ensure_unique_name(name)?;
 
                         // Add the constant to the scope and consts map
@@ -580,6 +634,11 @@ impl<'a> BuildState<'a> {
                     Self::ensure_outputs_len(names, outputs.len())?;
 
                     for (name, conn) in names.iter().zip(outputs.into_iter()) {
+                        // Discard variables named _
+                        if name == "_" {
+                            continue;
+                        }
+
                         self.ensure_unique_name(name)?;
 
                         // Add the variable to the scope

@@ -18,6 +18,10 @@ pub enum GateKind {
     Reroute,
     BinaryOp(BinaryOpCode),
     UnaryOp(UnaryOpCode),
+    Blend,
+    Ceil,
+    Floor,
+    EdgeDetector,
 }
 
 impl Display for GateKind {
@@ -27,6 +31,10 @@ impl Display for GateKind {
             GateKind::Reroute => f.write_str("rerouter"),
             GateKind::BinaryOp(op) => op.fmt(f),
             GateKind::UnaryOp(op) => op.fmt(f),
+            GateKind::Blend => f.write_str("blend"),
+            GateKind::Ceil => f.write_str("ceil"),
+            GateKind::Floor => f.write_str("floor"),
+            GateKind::EdgeDetector => f.write_str("edge_detector"),
         }
     }
 }
@@ -120,6 +128,16 @@ impl GateKind {
             GateKind::Reroute => (vec![Rerouter::INPUT], vec![Rerouter::OUTPUT]),
             GateKind::Buffer => (vec![BufferTicks::INPUT], vec![BufferTicks::OUTPUT]),
             GateKind::UnaryOp(_) => (vec![LogicGate::INPUT], vec![LogicGate::OUTPUT]),
+            GateKind::Blend => (
+                vec![LogicGate::INPUT_A, LogicGate::INPUT_B, LogicGate::BLEND],
+                vec![LogicGate::OUTPUT],
+            ),
+            GateKind::Ceil => (vec![LogicGate::INPUT], vec![LogicGate::OUTPUT]),
+            GateKind::Floor => (vec![LogicGate::INPUT], vec![LogicGate::OUTPUT]),
+            GateKind::EdgeDetector => (
+                vec![LogicGate::INPUT],
+                vec![LogicGate::RISING_EDGE, LogicGate::FALLING_EDGE],
+            ),
         }
     }
 
@@ -182,6 +200,10 @@ impl GateKind {
                 UnaryOpCode::BoolNot => Some(LogicGate::BoolNot),
                 UnaryOpCode::BitNot => Some(LogicGate::BitNot),
             },
+            GateKind::Blend => Some(LogicGate::Blend),
+            GateKind::Ceil => Some(LogicGate::Ceil),
+            GateKind::Floor => Some(LogicGate::Floor),
+            GateKind::EdgeDetector => Some(LogicGate::EdgeDetector),
         }
     }
 

@@ -33,6 +33,7 @@ pub enum LogicGate {
 
     Ceil,
     Floor,
+    Blend,
 
     Eq,
     Neq,
@@ -42,6 +43,7 @@ pub enum LogicGate {
     Geq,
 
     Const,
+    EdgeDetector,
 }
 
 impl LogicGate {
@@ -100,6 +102,10 @@ impl LogicGate {
         BString::str("BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual");
 
     pub const COMPONENT_CONST: BString = BString::str("BrickComponentType_WireGraphPseudo_Const");
+    pub const COMPONENT_BLEND: BString =
+        BString::str("BrickComponentType_WireGraph_Expr_MathBlend");
+    pub const COMPONENT_EDGE_DETECTOR: BString =
+        BString::str("BrickComponentData_WireGraph_Expr_EdgeDetector");
 
     pub const STRUCT_BOOL_BOOL_STR: &str = "BrickComponentData_WireGraph_Expr_Bool_Bool";
     pub const STRUCT_BINARY_BOOLBOOL_BOOL_STR: &str =
@@ -112,6 +118,8 @@ impl LogicGate {
     pub const STRUCT_NUMNUM_NUM_STR: &str =
         "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant";
     pub const STRUCT_CONSTANT_STR: &str = "BrickComponentData_WireGraphPseudo_Const";
+    pub const STRUCT_BLEND_STR: &str = "BrickComponentData_WireGraph_Expr_MathBlend";
+    pub const STRUCT_EDGE_DETECTOR_STR: &str = "BrickComponentData_WireGraph_Expr_EdgeDetector";
 
     pub const STRUCT_BOOL_BOOL: BString = BString::str(Self::STRUCT_BOOL_BOOL_STR);
     pub const STRUCT_BINARY_BOOLBOOL_BOOL: BString =
@@ -123,16 +131,21 @@ impl LogicGate {
     pub const STRUCT_MATH_COMPARE: BString = BString::str(Self::STRUCT_MATH_COMPARE_STR);
     pub const STRUCT_NUMNUM_NUM: BString = BString::str(Self::STRUCT_NUMNUM_NUM_STR);
     pub const STRUCT_CONST: BString = BString::str(Self::STRUCT_CONSTANT_STR);
+    pub const STRUCT_BLEND: BString = BString::str(Self::STRUCT_BLEND_STR);
+    pub const STRUCT_EDGE_DETECTOR: BString = BString::str(Self::STRUCT_EDGE_DETECTOR_STR);
 
     pub const BOOL_INPUT: BString = BString::str("bInput");
     pub const BOOL_INPUT_A: BString = BString::str("bInputA");
     pub const BOOL_INPUT_B: BString = BString::str("bInputB");
     pub const BOOL_OUTPUT: BString = BString::str("bOutput");
     pub const INPUT: BString = BString::str("Input");
+    pub const BLEND: BString = BString::str("Blend");
     pub const INPUT_A: BString = BString::str("InputA");
     pub const INPUT_B: BString = BString::str("InputB");
     pub const OUTPUT: BString = BString::str("Output");
     pub const VALUE: BString = BString::str("Value");
+    pub const RISING_EDGE: BString = BString::str("bPulseOnRisingEdge");
+    pub const FALLING_EDGE: BString = BString::str("bPulseOnFallingEdge");
 
     pub const fn component_name(&self) -> BString {
         match self {
@@ -142,6 +155,7 @@ impl LogicGate {
             Self::BoolNand => Self::COMPONENT_BOOL_NAND,
             Self::BoolNor => Self::COMPONENT_BOOL_NOR,
             Self::BoolNot => Self::COMPONENT_BOOL_NOT,
+            Self::EdgeDetector => Self::COMPONENT_EDGE_DETECTOR,
 
             Self::BitAnd => Self::COMPONENT_BIT_AND,
             Self::BitOr => Self::COMPONENT_BIT_OR,
@@ -161,6 +175,7 @@ impl LogicGate {
 
             Self::Ceil => Self::COMPONENT_CEIL,
             Self::Floor => Self::COMPONENT_FLOOR,
+            Self::Blend => Self::COMPONENT_BLEND,
 
             Self::Eq => Self::COMPONENT_EQ,
             Self::Neq => Self::COMPONENT_NEQ,
@@ -203,6 +218,7 @@ impl LogicGate {
                 Self::STRUCT_BINARY_BOOLBOOL_BOOL
             }
             Self::BoolNot => Self::STRUCT_BOOL_BOOL,
+            Self::EdgeDetector => Self::STRUCT_EDGE_DETECTOR,
 
             Self::BitAnd | Self::BitOr | Self::BitXor | Self::BitNand | Self::BitNor => {
                 Self::STRUCT_INTINT_INT
@@ -217,6 +233,7 @@ impl LogicGate {
 
             Self::Eq | Self::Neq => Self::STRUCT_COMPARE,
             Self::Lt | Self::Leq | Self::Gt | Self::Geq => Self::STRUCT_MATH_COMPARE,
+            Self::Blend => Self::STRUCT_BLEND,
 
             Self::Const => Self::STRUCT_CONST,
         }
@@ -238,6 +255,8 @@ impl LogicGate {
                 }"
             }
             Self::STRUCT_CONSTANT_STR => "struct BrickComponentData_WireGraphPseudo_Const { Value: wire_graph_variant }",
+            Self::STRUCT_BLEND_STR => "struct BrickComponentData_WireGraph_Expr_MathBlend { Blend: f64, InputA: wire_graph_variant, InputB: wire_graph_variant }",
+            Self::STRUCT_EDGE_DETECTOR_STR => "struct BrickComponentData_WireGraph_Expr_EdgeDetector { Input: f64, bPulseOnRisingEdge: bool, bPulseOnFallingEdge: bool }",
             _ => unreachable!(),
         };
         BrdbSchema::parse_to_meta(schema_str).unwrap()
@@ -268,6 +287,10 @@ impl LogicGate {
             }
 
             Self::Const => vec![Self::VALUE],
+            Self::Blend => vec![Self::BLEND, Self::INPUT_A, Self::INPUT_B, Self::OUTPUT],
+            Self::EdgeDetector => {
+                vec![Self::INPUT, Self::RISING_EDGE, Self::FALLING_EDGE]
+            }
         }
     }
 
@@ -311,6 +334,14 @@ impl LogicGate {
                 vec![Box::new(0.0f64), Box::new(0.0f64)]
             }
             Self::Const => vec![Box::new(WireVariant::Number(0.0))],
+            Self::Blend => vec![
+                Box::new(0.5f64), // Default blend value
+                Box::new(WireVariant::Number(0.0)),
+                Box::new(WireVariant::Number(0.0)),
+            ],
+            Self::EdgeDetector => vec![
+                Box::new(0.0f64), // Default input value
+            ],
         }
     }
     pub fn default_value(&self) -> Option<Box<dyn AsBrdbValue>> {
@@ -353,6 +384,13 @@ impl LogicGate {
             },
         }
     }
+    pub fn input_blend_of(&self, brick_id: usize) -> WirePort {
+        WirePort {
+            brick_id,
+            component_type: self.component_name(),
+            port_name: Self::BLEND.clone(),
+        }
+    }
     pub fn output_of(&self, brick_id: usize) -> WirePort {
         WirePort {
             brick_id,
@@ -362,6 +400,20 @@ impl LogicGate {
             } else {
                 Self::OUTPUT.clone()
             },
+        }
+    }
+    pub fn rising_edge_of(&self, brick_id: usize) -> WirePort {
+        WirePort {
+            brick_id,
+            component_type: self.component_name(),
+            port_name: Self::RISING_EDGE.clone(),
+        }
+    }
+    pub fn falling_edge_of(&self, brick_id: usize) -> WirePort {
+        WirePort {
+            brick_id,
+            component_type: self.component_name(),
+            port_name: Self::FALLING_EDGE.clone(),
         }
     }
     pub fn component(self) -> LogicGateComponent {
@@ -408,6 +460,8 @@ impl LogicGate {
             Self::Geq => assets::bricks::B_GATE_GREATER_THAN_EQUAL,
 
             Self::Const => assets::bricks::B_GATE_CONSTANT,
+            Self::Blend => assets::bricks::B_GATE_BLEND,
+            Self::EdgeDetector => assets::bricks::B_GATE_EDGE_DETECTOR,
         }
     }
 }

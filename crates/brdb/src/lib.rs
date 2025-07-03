@@ -1097,7 +1097,7 @@ mod test {
     /// Read all the components and brick assets
     #[test]
     fn test_read_all_components() -> Result<(), BrdbError> {
-        let path = PathBuf::from("./wires2components.brdb");
+        let path = PathBuf::from("../../edge.brdb");
         if !path.exists() {
             return Ok(());
         }
@@ -1110,6 +1110,7 @@ mod test {
         println!("wire ports: {:?}", data.component_wire_port_names);
         println!("component types: {:?}", data.component_type_names);
         println!("component structs: {:?}", data.component_data_struct_names);
+        println!("component schemas: {}", db.components_schema()?);
 
         let chunks = db.brick_chunk_index(1)?;
         println!("chunks: {chunks:?}");

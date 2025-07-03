@@ -15,6 +15,22 @@ module example(a, b) -> c {
 }
 
 #[test]
+fn compile_builtins() {
+    let p = grammar::ModuleParser::new();
+    let source = "
+module example(a, b) -> c {
+    let rising, _ = edge(a);
+    // Also tests reusing variables named '_'
+    _, _ = edge(b);
+    c = ceil(a) + floor(b) + blend(a, b, 0.5) + rising;
+}"
+    .trim();
+    let module = p.parse(source).expect("Failed to parse module");
+    let mut c = Compiler::new([module]);
+    let _out = c.compile("example").expect("Failed to compile module");
+}
+
+#[test]
 fn compile_multi_and() {
     let p = grammar::ModuleParser::new();
     let source = "

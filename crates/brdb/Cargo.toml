@@ -7,13 +7,13 @@ edition = "2024"
 lalrpop.workspace = true
 
 [dependencies]
-lalrpop-util.workspace = true
-indexmap.workspace = true
-rusqlite.workspace = true
 blake3.workspace = true
-zstd.workspace = true
-thiserror.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+indexmap.workspace = true
 itertools.workspace = true
+lalrpop-util.workspace = true
 rmp.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zstd.workspace = true
