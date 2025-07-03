@@ -198,13 +198,10 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
                 0,
             )
         } else {
+            let last_y = (num_gates.saturating_sub(1) / grid_height / grid_width) as i32 * 10;
             // In stacks mode, the output rerouters are placed on the beginning of the next row, which could
             // be any number of stacks/rows
-            Position::new(
-                0,
-                (num_gates.saturating_sub(1) / grid_height / grid_width) as i32 * 10 + 10,
-                0,
-            )
+            Position::new(0, last_y + 10, 0)
         };
         for (index, gate) in pending_output_rerouters {
             // Add the rerouter for the output

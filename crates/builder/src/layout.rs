@@ -6,7 +6,7 @@ use std::{
 use crate::{helpers::WireMap, options::LayoutOptions};
 use bearilog::compiler::{self, CompiledModule, CompiledOutput, Gate, GateKind};
 use brdb::{
-    self, Brick, Color, Position, WireConnection, WirePort,
+    self, Brick, BrickSize, Color, Position, WireConnection, WirePort,
     assets::{
         bricks::B_GATE_CONSTANT,
         components::{LogicGate, LogicGateComponent},
@@ -210,24 +210,29 @@ impl<'a> LayoutBuilderContext<'a> {
                         height += height % 2; // Ensure height is even
 
                         // Create a baseplate brick for the submodule
-
-                        self.bricks.push(Brick {
-                            asset: brdb::BrickType::Procedural {
-                                asset: brdb::assets::bricks::PB_DEFAULT_MICRO_BRICK,
-                                size: (width as u16 / 2, height as u16 / 2, 1u16).into(),
-                            },
-                            position: pos + (width / 2, height / 2, 1).into(),
-                            // Darken the color with depth
-                            color: Color::monochrome(255u8.saturating_sub(pos.z as u8 * 20))
-                                .to_linear(),
-                            ..Default::default()
-                        });
+                        let color =
+                            Color::monochrome(255u8.saturating_sub(pos.z as u8 * 20)).to_linear();
+                        for (size, position) in
+                            partition_brick((width as u16 / 2, height as u16 / 2, 1).into(), pos)
+                        {
+                            self.bricks.push(Brick {
+                                asset: brdb::BrickType::Procedural {
+                                    asset: brdb::assets::bricks::PB_DEFAULT_MICRO_BRICK,
+                                    size,
+                                },
+                                position,
+                                // Darken the color with depth
+                                color,
+                                ..Default::default()
+                            });
+                        }
                     }
 
                     sub_pos.x += self.options.margin as i32;
 
                     max_x = max_x.max(sub_pos.x);
-                    pos.x += sub_pos.x;
+                    // Overwrite the x position with the submodule's end position
+                    pos.x = sub_pos.x;
                     next_row_y = next_row_y.max(sub_pos.y);
                 }
                 QueueItem::Gate(gate) => {
@@ -332,5 +337,75 @@ impl<'a> LayoutBuilderContext<'a> {
         }
 
         Position::new(max_x, pos.y, pos.z)
+    }
+}
+
+// If a brick's size is larger than 100 in any axis, subtract 100 and repeat
+// Recursively partition the brick until all dimensions are less than or equal to 100
+// Returns vector of (brick size, brick center)
+pub fn partition_brick(brick_size: BrickSize, top_left: Position) -> Vec<(BrickSize, Position)> {
+    const SIZE_LIMIT: u16 = 128;
+    if brick_size.x > SIZE_LIMIT {
+        [
+            partition_brick(
+                BrickSize {
+                    x: SIZE_LIMIT,
+                    y: brick_size.y,
+                    z: brick_size.z,
+                },
+                top_left,
+            ),
+            partition_brick(
+                BrickSize {
+                    x: brick_size.x - SIZE_LIMIT,
+                    y: brick_size.y,
+                    z: brick_size.z,
+                },
+                top_left + Position::new(SIZE_LIMIT as i32, 0, 0),
+            ),
+        ]
+        .concat()
+    } else if brick_size.y > SIZE_LIMIT {
+        [
+            partition_brick(
+                BrickSize {
+                    x: brick_size.x,
+                    y: SIZE_LIMIT,
+                    z: brick_size.z,
+                },
+                top_left,
+            ),
+            partition_brick(
+                BrickSize {
+                    x: brick_size.x,
+                    y: brick_size.y - SIZE_LIMIT,
+                    z: brick_size.z,
+                },
+                top_left + Position::new(0, SIZE_LIMIT as i32, 0),
+            ),
+        ]
+        .concat()
+    } else if brick_size.z > SIZE_LIMIT {
+        [
+            partition_brick(
+                BrickSize {
+                    x: brick_size.x,
+                    y: brick_size.y,
+                    z: SIZE_LIMIT,
+                },
+                top_left,
+            ),
+            partition_brick(
+                BrickSize {
+                    x: brick_size.x,
+                    y: brick_size.y,
+                    z: brick_size.z - SIZE_LIMIT,
+                },
+                top_left + Position::new(0, 0, SIZE_LIMIT as i32),
+            ),
+        ]
+        .concat()
+    } else {
+        vec![(brick_size, top_left + Position::from(brick_size))]
     }
 }

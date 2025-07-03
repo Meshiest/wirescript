@@ -255,7 +255,7 @@ impl LogicGate {
                 }"
             }
             Self::STRUCT_CONSTANT_STR => "struct BrickComponentData_WireGraphPseudo_Const { Value: wire_graph_variant }",
-            Self::STRUCT_BLEND_STR => "struct BrickComponentData_WireGraph_Expr_MathBlend { Blend: f64, InputA: wire_graph_variant, InputB: wire_graph_variant }",
+            Self::STRUCT_BLEND_STR => "struct BrickComponentData_WireGraph_Expr_MathBlend { InputA: wire_graph_variant, InputB: wire_graph_variant, Blend: f64 }",
             Self::STRUCT_EDGE_DETECTOR_STR => "struct BrickComponentData_WireGraph_Expr_EdgeDetector { Input: f64, bPulseOnRisingEdge: bool, bPulseOnFallingEdge: bool }",
             _ => unreachable!(),
         };
@@ -300,6 +300,7 @@ impl LogicGate {
             "Input" | "bInput" => (Some(0), false),
             "InputA" | "bInputA" => (Some(0), false),
             "InputB" | "bInputB" => (Some(1), false),
+            "Blend" => (Some(2), false),
             "Value" => (None, true),
             _ => (None, false),
         }
@@ -335,9 +336,9 @@ impl LogicGate {
             }
             Self::Const => vec![Box::new(WireVariant::Number(0.0))],
             Self::Blend => vec![
+                Box::new(WireVariant::Number(0.0)),
+                Box::new(WireVariant::Number(0.0)),
                 Box::new(0.5f64), // Default blend value
-                Box::new(WireVariant::Number(0.0)),
-                Box::new(WireVariant::Number(0.0)),
             ],
             Self::EdgeDetector => vec![
                 Box::new(0.0f64), // Default input value
@@ -527,17 +528,9 @@ impl AsBrdbValue for LogicGateComponent {
             self.gate.data_index(prop_name),
             self.value.as_ref().map(|v| v.as_ref()),
         ) {
-            ((Some(0), false), _) => Ok(self
+            ((Some(n), false), _) => Ok(self
                 .inputs
-                .get(0)
-                .ok_or(crate::errors::BrdbSchemaError::MissingStructField(
-                    struct_name.get_or_else(schema, || "Unknown struct".to_owned()),
-                    prop_name.to_string(),
-                ))?
-                .as_ref()),
-            ((Some(1), false), _) => Ok(self
-                .inputs
-                .get(1)
+                .get(n)
                 .ok_or(crate::errors::BrdbSchemaError::MissingStructField(
                     struct_name.get_or_else(schema, || "Unknown struct".to_owned()),
                     prop_name.to_string(),

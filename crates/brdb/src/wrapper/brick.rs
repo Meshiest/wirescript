@@ -582,6 +582,15 @@ impl From<(u16, u16, u16)> for BrickSize {
         Self { x, y, z }
     }
 }
+impl From<BrickSize> for Position {
+    fn from(size: BrickSize) -> Self {
+        Position {
+            x: size.x as i32,
+            y: size.y as i32,
+            z: size.z as i32,
+        }
+    }
+}
 
 impl Ord for BrickSize {
     fn cmp(&self, other: &Self) -> Ordering {
