@@ -1,6 +1,6 @@
 use std::fmt::{Display, Write};
 
-use brdb::schema::WireVariant;
+use brdb::schema::{WireVariant, as_brdb::AsBrdbValue};
 
 use super::helpers::fmt_iter;
 
@@ -16,6 +16,13 @@ impl Literal {
             Literal::Float(v) => WireVariant::Number(v),
             Literal::Int(v) => WireVariant::Int(v),
             Literal::Bool(v) => WireVariant::Bool(v),
+        }
+    }
+    pub fn boxed_value(self) -> Box<dyn AsBrdbValue> {
+        match self {
+            Literal::Float(v) => Box::new(v),
+            Literal::Int(v) => Box::new(v),
+            Literal::Bool(v) => Box::new(v),
         }
     }
     pub fn as_bytes(self) -> Vec<u8> {

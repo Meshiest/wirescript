@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
     sync::{Arc, atomic},
 };
@@ -10,6 +11,7 @@ use crate::{
 use brdb::{
     self, BString, BrickType,
     assets::components::{BufferTicks, LogicGate, Rerouter},
+    schema::as_brdb::AsBrdbValue,
 };
 
 #[derive(Clone, Debug)]
@@ -227,6 +229,17 @@ impl GateKind {
             GateKind::Buffer => Box::new(brdb::assets::components::BufferTicks::new(0, 0)),
             GateKind::Reroute => Box::new(brdb::assets::components::Rerouter),
             _ => Box::new(self.gate().unwrap().component()), // unwrap safety: only reroute and buffer don't have gates
+        }
+    }
+
+    pub fn component_with_inputs(
+        &self,
+        inputs: HashMap<BString, Box<dyn AsBrdbValue>>,
+    ) -> Box<dyn brdb::BrdbComponent> {
+        match self {
+            GateKind::Buffer => Box::new(brdb::assets::components::BufferTicks::new(0, 0)),
+            GateKind::Reroute => Box::new(brdb::assets::components::Rerouter),
+            _ => Box::new(self.gate().unwrap().component_with_overrides(inputs)), // unwrap safety: only reroute and buffer don't have gates
         }
     }
 

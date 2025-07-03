@@ -6,7 +6,7 @@ use bearilog::{
     compiler::{CompiledModule, CompiledOutput, Gate, GateKind, WireConnection},
 };
 use brdb::{
-    Brick, Position, WirePort, World,
+    BString, Brick, Position, WirePort, World,
     assets::{
         bricks::B_GATE_CONSTANT,
         components::{LogicGate, LogicGateComponent},
@@ -111,8 +111,19 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
         pos
     };
 
+    let mut constant_data_map: HashMap<usize, HashMap<BString, Box<dyn AsBrdbValue>>> =
+        HashMap::new();
+
     for (conn, lit) in module.gate_literals {
-        get_or_add_constant(&mut constants, &mut world, &mut next_gate_pos, conn, lit);
+        constant_data_map
+            .entry(conn.gate.index)
+            .or_default()
+            .insert(conn.property.clone(), lit.boxed_value());
+        // Unfortunately buffers and rerouters need constant gates to exist
+        if matches!(conn.gate.kind, GateKind::Reroute | GateKind::Buffer) {
+            get_or_add_constant(&mut constants, &mut world, &mut next_gate_pos, conn, lit);
+            continue;
+        }
     }
     let mut queue = VecDeque::new();
 
@@ -138,8 +149,9 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
         }
     }
 
+    // handle submodules first
     for module in module.sub_modules {
-        queue.push_back(QueueItem::Module(module.1));
+        queue.push_front(QueueItem::Module(module.1));
     }
 
     while let Some(gate) = queue.pop_front() {
@@ -151,7 +163,7 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
                 }
                 // Add all submodules to the queue
                 for sub in sub_module.sub_modules {
-                    queue.push_back(QueueItem::Module(sub.1));
+                    queue.push_front(QueueItem::Module(sub.1));
                 }
                 // Add all wires to the world
                 for w in sub_module.wires {
@@ -169,10 +181,24 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
                 }
                 // Add all constants
                 for (conn, lit) in sub_module.gate_literals {
-                    get_or_add_constant(&mut constants, &mut world, &mut next_gate_pos, conn, lit);
+                    constant_data_map
+                        .entry(conn.gate.index)
+                        .or_default()
+                        .insert(conn.property.clone(), lit.boxed_value());
+                    // Unfortunately buffers and rerouters need constant gates to exist
+                    if matches!(conn.gate.kind, GateKind::Reroute | GateKind::Buffer) {
+                        get_or_add_constant(
+                            &mut constants,
+                            &mut world,
+                            &mut next_gate_pos,
+                            conn,
+                            lit,
+                        );
+                    }
                 }
             }
             QueueItem::Gate(gate) => {
+                let overrides = constant_data_map.remove(&gate.index).unwrap_or_default();
                 world.add_brick(
                     Brick {
                         id: Some(gate.index),
@@ -180,7 +206,7 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
                         asset: gate.kind.brick(),
                         ..Default::default()
                     }
-                    .with_component_box(gate.kind.component()),
+                    .with_component_box(gate.kind.component_with_inputs(overrides)),
                 );
             }
             // No-op for this algorithm

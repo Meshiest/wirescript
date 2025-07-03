@@ -39,13 +39,13 @@ e   c      c  e          c      c     c  e   c     c  e   c      c
 */
 module bitwise7seg(num) -> a, b, c, d, e, f, g {
     const n = 1 << num;
-    const as = 0b1011011111;
-    const bs = 0b1111100111;
-    const cs = 0b1101111111;
-    const ds = 0b1011011011;
-    const es = 0b1010001010;
-    const fs = 0b1000111011;
-    const gs = 0b0011111011;
+    const as = 0b1111101101;
+    const bs = 0b1110011111;
+    const cs = 0b1111111011;
+    const ds = 0b1101101101;
+    const es = 0b0101000101;
+    const fs = 0b1101110001;
+    const gs = 0b1101111100;
     a = (n & as) != 0;
     b = (n & bs) != 0;
     c = (n & cs) != 0;

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     assets,
@@ -421,6 +421,26 @@ impl LogicGate {
         LogicGateComponent {
             gate: self,
             inputs: Arc::new(self.default_inputs()),
+            value: self.default_value().map(Arc::new),
+        }
+    }
+    pub fn component_with_overrides(
+        self,
+        overrides: HashMap<BString, Box<dyn AsBrdbValue>>,
+    ) -> LogicGateComponent {
+        // Overwrite the default values in the inputs with the provided overrides.
+        let mut inputs = self.default_inputs();
+        for (name, value) in overrides {
+            if let Some(index) = self.data_index(name.as_ref()).0 {
+                if index < inputs.len() {
+                    inputs[index] = value;
+                }
+            }
+        }
+
+        LogicGateComponent {
+            gate: self,
+            inputs: Arc::new(inputs),
             value: self.default_value().map(Arc::new),
         }
     }
