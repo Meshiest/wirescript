@@ -25,3 +25,31 @@ module decoder7seg(a0, a1, a2, a3) -> a, b, c, d, e, f, g {
     f = !(nor2 || xor6);
     g = nor1;
 }
+
+/*
+ aaa           aaa    aaa          aaa    aaa   aaa    aaa    aaa
+f   b      b      b      b  f   b f      f         b  f   b  f   b
+f   b      b      b      b  f   b f      f         b  f   b  f   b
+f   b      b      b      b  f   b f      f         b  f   b  f   b
+               ggg    ggg    ggg   ggg    ggg          ggg    ggg
+e   c      c  e          c      c     c  e   c     c  e   c      c
+e   c      c  e          c      c     c  e   c     c  e   c      c
+e   c      c  e          c      c     c  e   c     c  e   c      c
+ ddd           ddd    ddd          ddd    ddd          ddd    ddd
+*/
+module bitwise7seg(num) -> a, b, c, d, e, f, g {
+    const as = 0b1011011111;
+    const bs = 0b1111100111;
+    const cs = 0b1101111111;
+    const ds = 0b1011011011;
+    const es = 0b1010001010;
+    const fs = 0b1000111011;
+    const gs = 0b0011111011;
+    a = (num & as) != 0;
+    b = (num & bs) != 0;
+    c = (num & cs) != 0;
+    d = (num & ds) != 0;
+    e = (num & es) != 0;
+    f = (num & fs) != 0;
+    g = (num & gs) != 0;
+}
