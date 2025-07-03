@@ -83,6 +83,7 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
 
     let grid_width = opts.width.get() as usize;
     let grid_height = opts.height.get() as usize;
+    let base_z = i32::from(opts.iobelow) * 2;
 
     let mut next_gate_pos = || {
         // In layers mode, place bricks on an XY grid, then stack them vertically
@@ -94,7 +95,7 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
                 // Each W gates moves down 1 in the Y direction, wrapping every H
                 (num_gates / grid_width % grid_height) as i32 * 10 + 5,
                 // Each WxH gates moves up 1 in the Z direction
-                (num_gates / grid_width / grid_height) as i32 * 4 + 2,
+                (num_gates / grid_width / grid_height) as i32 * 4 + 2 + base_z,
             )
         } else {
             Position::new(
@@ -103,7 +104,7 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
                 // Each WxH gates moves down 1 in the Y direction
                 (num_gates / grid_height / grid_width) as i32 * 10 + 5,
                 // Each gate moves up 1 in the Z direction, wrapping every H
-                (num_gates % grid_height) as i32 * 4 + 2,
+                (num_gates % grid_height) as i32 * 4 + 2 + base_z,
             )
         };
         num_gates += 1;
@@ -122,7 +123,7 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
             world.add_brick(
                 Brick {
                     id: Some(gate.index),
-                    position: (i as i32 * 2 + 1, -1, 1).into(), // Offset by 1 to center the rerouter
+                    position: (i as i32 * 2 + 1, if opts.iobelow { 1 } else { -1 }, 1).into(), // Offset by 1 to center the rerouter
                     asset: gate.kind.brick(),
                     // TODO: support coloring from the module
                     ..Default::default()
@@ -188,20 +189,25 @@ pub fn build_grid(module: CompiledModule, opts: GridOptions) -> World {
     }
 
     if output_rerouters {
+        let y_offset = if opts.iobelow {
+            8 // Place the rerouters under the gates
+        } else {
+            10 // Place the rerouters after the gates
+        };
         // Determine the next Y position using num_gates
         let output_row = if opts.layers {
             // In layers mode, the output rerouters are placed at the bottom of the grid
             // But if there are not enough gates to fill the grid, they are placed after the last row
             Position::new(
                 0,
-                (num_gates / grid_width).min(grid_height - 1) as i32 * 10 + 10,
+                (num_gates / grid_width).min(grid_height - 1) as i32 * 10 + y_offset,
                 0,
             )
         } else {
             let last_y = (num_gates.saturating_sub(1) / grid_height / grid_width) as i32 * 10;
             // In stacks mode, the output rerouters are placed on the beginning of the next row, which could
             // be any number of stacks/rows
-            Position::new(0, last_y + 10, 0)
+            Position::new(0, last_y + y_offset, 0)
         };
         for (index, gate) in pending_output_rerouters {
             // Add the rerouter for the output

@@ -33,6 +33,9 @@ pub struct GridOptions {
     /// When true, layout the gates in layers rather than stacks
     #[arg(long, default_value = "false")]
     pub layers: bool,
+    /// When true, the input/output rerouters will be placed below the gates
+    #[arg(long, default_value = "false")]
+    pub iobelow: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
