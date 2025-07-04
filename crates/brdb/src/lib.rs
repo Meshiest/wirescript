@@ -18,7 +18,7 @@ use crate::{
         BrdbSchema, BrdbSchemaGlobalData, BrdbStruct, BrdbValue, ReadBrdbSchema,
         as_brdb::AsBrdbValue,
     },
-    schemas::BRICK_COMPONENT_SOA,
+    schemas::{BRICK_COMPONENT_SOA, BRICK_WIRE_SOA},
     tables::{BrdbBlob, BrdbFile, BrdbFolder},
     wrapper::schemas::{
         BRICK_CHUNK_INDEX_SOA, BRICK_CHUNK_SOA, ENTITY_CHUNK_INDEX_SOA, GLOBAL_DATA_SOA,
@@ -677,7 +677,7 @@ impl BrdbReader {
         let mps = self
             .read_file(path)?
             .as_slice()
-            .read_brdb(&self.wires_schema()?, BRICK_CHUNK_SOA)?;
+            .read_brdb(&self.wires_schema()?, BRICK_WIRE_SOA)?;
         match mps {
             BrdbValue::Struct(s) => Ok(*s),
             ty => Err(BrdbError::Schema(BrdbSchemaError::ExpectedType(
@@ -1097,7 +1097,7 @@ mod test {
     /// Read all the components and brick assets
     #[test]
     fn test_read_all_components() -> Result<(), BrdbError> {
-        let path = PathBuf::from("../../edge.brdb");
+        let path = PathBuf::from("../../edgea.brdb");
         if !path.exists() {
             return Ok(());
         }
@@ -1115,11 +1115,15 @@ mod test {
         let chunks = db.brick_chunk_index(1)?;
         println!("chunks: {chunks:?}");
         for chunk in chunks {
+            let soa = db.brick_chunk_soa(1, chunk)?;
+            println!("brick soa: {soa}");
             let (soa, components) = db.component_chunk_soa(1, chunk)?;
             println!("components soa: {soa}");
             for c in components {
                 println!("component: {c}");
             }
+            let soa = db.wire_chunk_soa(1, chunk)?;
+            println!("wires soa: {soa}");
         }
 
         Ok(())
