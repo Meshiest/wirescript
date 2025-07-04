@@ -17,7 +17,7 @@ use brdb::{
 pub struct LayoutBuilderContext<'a> {
     pub wires: Vec<WireConnection>,
     pub bricks: Vec<Brick>,
-    /// A map of gate index to brick ID
+    /// A set of gates that have been processed/rendered
     seen: HashSet<usize>,
     wire_map: &'a WireMap,
     options: LayoutOptions,
@@ -87,6 +87,7 @@ impl<'a> LayoutBuilderContext<'a> {
         let mut queue = VecDeque::new();
 
         let mut constants = HashMap::new();
+        let mut constant_targets = HashSet::new();
 
         for (conn, lit) in module.gate_literals {
             let bytes = lit.as_bytes();
@@ -123,6 +124,7 @@ impl<'a> LayoutBuilderContext<'a> {
 
                 id
             };
+            constant_targets.insert(conn.gate.index);
 
             // Add the wire connection for the constant value
             self.wires.push(WireConnection::new(
@@ -174,7 +176,9 @@ impl<'a> LayoutBuilderContext<'a> {
         while let Some(gate) = queue.pop_front() {
             match gate {
                 QueueItem::Module(sub_module) => {
-                    let all_inputs_seen = sub_module.inputs.iter().all(|(_, w)| self.conn_seen(w));
+                    let all_inputs_seen = sub_module.inputs.iter().all(|(_, w)| {
+                        constant_targets.contains(&w.gate.index) || self.conn_seen(w)
+                    });
                     if !all_inputs_seen {
                         // If not all inputs are seen, requeue the submodule
                         queue.push_back(QueueItem::Module(sub_module));
@@ -191,12 +195,12 @@ impl<'a> LayoutBuilderContext<'a> {
                     first_in_row = false;
 
                     pos.x += self.options.margin as i32;
-                    pos.y += self.options.margin as i32;
 
                     // Recurse into the submodule and build its bounds
-                    let mut sub_pos = ctx.build(
+                    let sub_pos = ctx.build(
                         sub_module,
-                        pos + Position::UP * 2 * i32::from(!self.options.flat), // When flat, don't increase the z position
+                        pos + (Position::SOUTH * self.options.margin as i32) // Shift down for margins
+                            + Position::UP * 2 * i32::from(!self.options.flat), // When flat, don't increase the z position
                     );
                     // Add the submodule's seen gates/wires to the current row
                     self.wires.extend(ctx.wires);
@@ -228,9 +232,7 @@ impl<'a> LayoutBuilderContext<'a> {
                         }
                     }
 
-                    sub_pos.x += self.options.margin as i32;
-
-                    max_x = max_x.max(sub_pos.x);
+                    max_x = max_x.max(sub_pos.x + self.options.margin as i32);
                     // Overwrite the x position with the submodule's end position
                     pos.x = sub_pos.x;
                     next_row_y = next_row_y.max(sub_pos.y);
