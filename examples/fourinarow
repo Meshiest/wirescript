@@ -1,0 +1,90 @@
+inline module datacell(write, data) -> res {
+  buffer r = blend(r, data, write);
+  res = r;
+}
+
+inline module if(cond, a, b) -> res {
+  res = blend(b, a, cond);
+}
+
+module cell(
+  # Chear the data
+  reset,
+  # Set color data from top
+  setRed,
+  setYel,
+
+  # Receive win data from the bottom
+  isRedWin,
+  isYelWin,
+
+  # From right side
+  fromERed,
+  fromEYel,
+  # From bottom right side
+  fromSERed,
+  fromSEYel,
+  # From bottom side
+  fromSRed,
+  fromSYel,
+  # From bottom left side
+  fromSWRed,
+  fromSWYel,
+
+  # If there is a cell below that is set
+  hasBelow,
+) ->
+  # Current color data
+  isRed,
+  isYel,
+
+  # Move data down
+  setRedBelow,
+  setYelBelow,
+
+  # Move win data up
+  setRedWin,
+  setYelWin,
+
+  # To left side
+  toWRed,
+  toWYel,
+  # To top left side
+  toNWRed,
+  toNWYel,
+  # To top side
+  toNRed,
+  toNYel,
+  # To top right side
+  toNERed,
+  toNEYel,
+
+  isSet,
+{
+  const incoming = setRed || setYel;
+  # Reset will clear the cell, otherwise set the color if there is a cell below and there is an incoming value
+  const write = incoming && hasBelow || reset;
+  isSet = datacell(write, incoming);
+  isRed = datacell(write, setRed);
+  isYel = isSet && !isRed;
+
+  # Forward the cell data down if it can't be set
+  const canSetBelow = !hasBelow;
+  setRedBelow = canSetBelow && setRed;
+  setYelBelow = canSetBelow && setYel;
+
+  # Forward the counts to the next cells
+  toWRed = if(isRed, fromERed + 1, 0);
+  toWYel = if(isYel, fromEYel + 1, 0);
+  toNWRed = if(isRed, fromSERed + 1, 0);
+  toNWYel = if(isYel, fromSEYel + 1, 0);
+  toNRed = if(isRed, fromSRed + 1, 0);
+  toNYel = if(isYel, fromSYel + 1, 0);
+  toNERed = if(isRed, fromSWRed + 1, 0);
+  toNEYel = if(isYel, fromSWYel + 1, 0);
+
+  # # If any of the counts are 4 or more, the cell is a win
+  setRedWin = isRedWin || toWRed >= 4 || toNWRed >= 4 || toNRed >= 4 || toNERed >= 4;
+  setYelWin = isYelWin || toWYel >= 4 || toNWYel >= 4 || toNYel >= 4 || toNEYel >= 4;
+}
+
