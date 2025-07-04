@@ -170,6 +170,13 @@ impl<'a> LayoutBuilderContext<'a> {
             queue.push_back(QueueItem::Module(module.1));
         }
 
+        // An empty queue means we should just leave a little gap
+        if queue.is_empty() {
+            pos.y += 10 as i32;
+            next_row_y = pos.y;
+            max_x = 10.max(max_x);
+        }
+
         // When the next row is reached, add a new row to the queue
         queue.push_back(QueueItem::NextRow(0));
 
