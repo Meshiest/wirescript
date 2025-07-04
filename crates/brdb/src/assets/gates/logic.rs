@@ -105,7 +105,7 @@ impl LogicGate {
     pub const COMPONENT_BLEND: BString =
         BString::str("BrickComponentType_WireGraph_Expr_MathBlend");
     pub const COMPONENT_EDGE_DETECTOR: BString =
-        BString::str("BrickComponentData_WireGraph_Expr_EdgeDetector");
+        BString::str("BrickComponent_WireGraph_Expr_EdgeDetector");
 
     pub const STRUCT_BOOL_BOOL_STR: &str = "BrickComponentData_WireGraph_Expr_Bool_Bool";
     pub const STRUCT_BINARY_BOOLBOOL_BOOL_STR: &str =
@@ -295,14 +295,16 @@ impl LogicGate {
     }
 
     // Returns the index of the input field or true if it's the name of the output field is present.
-    pub fn data_index(&self, name: &str) -> (Option<usize>, bool) {
+    pub fn data_index(&self, name: &str) -> (Option<usize>, Option<usize>) {
         match name {
-            "Input" | "bInput" => (Some(0), false),
-            "InputA" | "bInputA" => (Some(0), false),
-            "InputB" | "bInputB" => (Some(1), false),
-            "Blend" => (Some(2), false),
-            "Value" => (None, true),
-            _ => (None, false),
+            "Input" | "bInput" => (Some(0), None),
+            "InputA" | "bInputA" => (Some(0), None),
+            "InputB" | "bInputB" => (Some(1), None),
+            "Blend" => (Some(2), None),
+            "Value" => (None, Some(0)),
+            "bPulseOnRisingEdge" => (None, Some(0)),
+            "bPulseOnFallingEdge" => (None, Some(1)),
+            _ => (None, None),
         }
     }
 
@@ -345,10 +347,14 @@ impl LogicGate {
             ],
         }
     }
-    pub fn default_value(&self) -> Option<Box<dyn AsBrdbValue>> {
+    pub fn default_outputs(&self) -> Vec<Box<dyn AsBrdbValue>> {
         match self {
-            Self::Const => Some(Box::new(WireVariant::Number(0.0))),
-            _ => None,
+            Self::Const => vec![Box::new(WireVariant::Number(0.0))],
+            Self::EdgeDetector => vec![
+                Box::new(false), // Default rising edge pulse
+                Box::new(false), // Default falling edge pulse
+            ],
+            _ => vec![],
         }
     }
 
@@ -421,7 +427,7 @@ impl LogicGate {
         LogicGateComponent {
             gate: self,
             inputs: Arc::new(self.default_inputs()),
-            value: self.default_value().map(Arc::new),
+            outputs: Arc::new(self.default_outputs()),
         }
     }
     pub fn component_with_overrides(
@@ -430,18 +436,27 @@ impl LogicGate {
     ) -> LogicGateComponent {
         // Overwrite the default values in the inputs with the provided overrides.
         let mut inputs = self.default_inputs();
+        let mut outputs = self.default_outputs();
         for (name, value) in overrides {
-            if let Some(index) = self.data_index(name.as_ref()).0 {
-                if index < inputs.len() {
-                    inputs[index] = value;
+            match self.data_index(name.as_ref()) {
+                (Some(index), None) => {
+                    if index < inputs.len() {
+                        inputs[index] = value;
+                    }
                 }
+                (None, Some(index)) => {
+                    if index < outputs.len() {
+                        outputs[index] = value;
+                    }
+                }
+                _ => {}
             }
         }
 
         LogicGateComponent {
             gate: self,
             inputs: Arc::new(inputs),
-            value: self.default_value().map(Arc::new),
+            outputs: Arc::new(outputs),
         }
     }
 
@@ -491,7 +506,7 @@ impl LogicGate {
 pub struct LogicGateComponent {
     pub gate: LogicGate,
     pub inputs: Arc<Vec<Box<dyn AsBrdbValue>>>,
-    pub value: Option<Arc<Box<dyn AsBrdbValue>>>,
+    pub outputs: Arc<Vec<Box<dyn AsBrdbValue>>>,
 }
 
 impl From<LogicGate> for LogicGateComponent {
@@ -505,7 +520,7 @@ impl<I: AsBrdbValue + 'static> From<(LogicGate, I)> for LogicGateComponent {
         LogicGateComponent {
             gate,
             inputs: Arc::new(vec![Box::new(input)]),
-            value: None,
+            outputs: Arc::new(vec![]),
         }
     }
 }
@@ -517,7 +532,7 @@ impl<IA: AsBrdbValue + 'static, IB: AsBrdbValue + 'static> From<(LogicGate, IA, 
         LogicGateComponent {
             gate,
             inputs: Arc::new(vec![Box::new(input_a), Box::new(input_b)]),
-            value: None,
+            outputs: Arc::new(vec![]),
         }
     }
 }
@@ -526,12 +541,12 @@ impl LogicGateComponent {
     pub fn new(
         gate: LogicGate,
         inputs: impl IntoIterator<Item = Box<dyn AsBrdbValue>>,
-        output: Option<Box<dyn AsBrdbValue>>,
+        output: impl IntoIterator<Item = Box<dyn AsBrdbValue>>,
     ) -> Self {
         Self {
             gate,
             inputs: Arc::new(inputs.into_iter().collect()),
-            value: output.map(Arc::new),
+            outputs: Arc::new(output.into_iter().collect()),
         }
     }
 }
@@ -544,11 +559,8 @@ impl AsBrdbValue for LogicGateComponent {
         prop_name: crate::schema::BrdbInterned,
     ) -> Result<&dyn AsBrdbValue, crate::errors::BrdbSchemaError> {
         let prop_name = prop_name.get(schema).unwrap();
-        match (
-            self.gate.data_index(prop_name),
-            self.value.as_ref().map(|v| v.as_ref()),
-        ) {
-            ((Some(n), false), _) => Ok(self
+        match self.gate.data_index(prop_name) {
+            (Some(n), None) => Ok(self
                 .inputs
                 .get(n)
                 .ok_or(crate::errors::BrdbSchemaError::MissingStructField(
@@ -556,7 +568,14 @@ impl AsBrdbValue for LogicGateComponent {
                     prop_name.to_string(),
                 ))?
                 .as_ref()),
-            ((None, true), Some(value)) => Ok(&**value),
+            (None, Some(n)) => Ok(self
+                .outputs
+                .get(n)
+                .ok_or(crate::errors::BrdbSchemaError::MissingStructField(
+                    struct_name.get_or_else(schema, || "Unknown struct".to_owned()),
+                    prop_name.to_string(),
+                ))?
+                .as_ref()),
             _ => Err(crate::errors::BrdbSchemaError::MissingStructField(
                 struct_name.get_or_else(schema, || "Unknown struct".to_owned()),
                 prop_name.to_string(),
