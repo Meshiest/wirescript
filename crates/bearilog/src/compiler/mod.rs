@@ -560,15 +560,31 @@ impl<'a> BuildState<'a> {
 
                     for (name, conn) in names.iter().zip(outputs.into_iter()) {
                         // Try assigning a buffer
-                        match self.buffers.get_mut(name) {
+                        match self.buffers.get(name) {
                             Some((_slot, Some(_))) => {
                                 return Err(CompileError::BufferAlreadyAssigned(name.to_owned()));
                             }
-                            Some((_, opt @ None)) => {
+                            Some((buf, None)) => {
+                                let dst = Arc::clone(buf);
+
                                 // Assign the connection to the slot
-                                *opt = Some(conn.clone());
-                                // Now that the variable is assigned, it can be used as a variable
-                                self.scope.insert(name.to_owned(), conn);
+                                self.buffers
+                                    .get_mut(name)
+                                    .ok_or_else(|| CompileError::UnknownVariable(name.to_owned()))?
+                                    .1 = Some(conn.clone());
+
+                                // Create the wire to the buffer
+                                self.add_wire(
+                                    conn,
+                                    CompiledOutput::Wire(WireConnection::new(
+                                        &dst,
+                                        BufferTicks::INPUT,
+                                    )),
+                                )?;
+
+                                // A buffer is added to scope when it's defined
+                                // so it doesn't need to be added again when it's assigned
+
                                 continue;
                             }
                             _ => {}
