@@ -1,0 +1,248 @@
+inline module if(cond, a, b) -> res {
+  res = blend(b, a, cond);
+}
+
+# Any time a token is played, a message is sent out in all directions for that color
+# If a matching color is found, the message is bounced back and all opposite colors are flipped
+# If an opposite color is found, nothing happens
+# Message structure: <outbound> <isHigh> <isLow>
+module messageCell(
+  msgIn,
+
+  # Same color as starting cell, with outbound flag
+  bounceMessage, # 0b100 | (cell data)
+  currData, # cell data
+  flipData, # cell data ^ 0b011
+) ->
+  msgForward,
+  msgBounce,
+  setData,
+{
+  # If we receive a forward message or flip message, we forward it
+  msgForward = if(msgIn & flipData, msgIn, 0);
+  # If we receive a bounce message, we send it backwards without the bounce bit
+  msgBounce = if(msgIn == bounceMessage, msgIn & 0b11, 0);
+  # If the message is the opposite of the current data, we flip the data
+  setData = if(msgIn == flipData, msgIn, 0);
+}
+
+module cell(
+  # Clear the state
+  reset,
+
+  # Set this cell to high (and send a message)
+  setHigh,
+  # Set this cell to low (and send a message)
+  setLow,
+
+  # Messages from the neighbors
+  inN,
+  inNE,
+  inE,
+  inSE,
+  inS,
+  inSW,
+  inW,
+  inNW,
+) ->
+  # Current state for coloring
+  isHigh,
+  isLow,
+  # Outbound messages from neighbors
+  outN,
+  outNE,
+  outE,
+  outSE,
+  outS,
+  outSW,
+  outW,
+  outNW,
+{
+  const isSet = setHigh || setLow;
+  # When high or low, the cell is set to 0b10 or 0b01 respectively
+  let setData = isSet << setHigh;
+
+  buffer data;
+
+  # The flip message is the opposite of the current data (A mask to flip the last two bits/the data that will be written)
+  const flipData = if(data, data ^ 0b011, 0);
+  # The bounce message is the current data + a bounce bit
+  const bounceMessage = if(data, data | 0b100, 0);
+
+  # Receive messages from neighbors and process them
+  const fromNtoS,   nextN,  flipN  = messageCell(inN,  bounceMessage, data, flipData);
+  const fromNEtoSW, nextNE, flipNE = messageCell(inNE, bounceMessage, data, flipData);
+  const fromEtoW,   nextE,  flipE  = messageCell(inE,  bounceMessage, data, flipData);
+  const fromSEtoNW, nextSE, flipSE = messageCell(inSE, bounceMessage, data, flipData);
+  const fromStoN,   nextS,  flipS  = messageCell(inS,  bounceMessage, data, flipData);
+  const fromSWtoNE, nextSW, flipSW = messageCell(inSW, bounceMessage, data, flipData);
+  const fromWtoE,   nextW,  flipW  = messageCell(inW,  bounceMessage, data, flipData);
+  const fromNWtoSE, nextNW, flipNW = messageCell(inNW, bounceMessage, data, flipData);
+
+  # If the cell is newly set, emit a bounce message
+  const firstMsg = if(isSet, setData | 0b100, 0b000);
+
+  # Aggregate messages from neighbors
+  buffer boutN  = nextN  | fromStoN   | firstMsg;
+  buffer boutNE = nextNE | fromSWtoNE | firstMsg;
+  buffer boutE  = nextE  | fromWtoE   | firstMsg;
+  buffer boutSE = nextSE | fromNWtoSE | firstMsg;
+  buffer boutS  = nextS  | fromNtoS   | firstMsg;
+  buffer boutSW = nextSW | fromNEtoSW | firstMsg;
+  buffer boutW  = nextW  | fromEtoW   | firstMsg;
+  buffer boutNW = nextNW | fromSEtoNW | firstMsg;
+  # Output from buffers
+  outN = boutN;
+  outNE = boutNE;
+  outE = boutE;
+  outSE = boutSE;
+  outS = boutS;
+  outSW = boutSW;
+  outW = boutW;
+  outNW = boutNW;
+
+
+
+
+  # Data changes from messages from the neighbors
+  const neighborFlips = flipN | flipNE | flipE | flipSE | flipS | flipSW | flipW | flipNW;
+
+  # If any neighbor has flipped, we set the data to the flipped state
+  setData = setData | neighborFlips;
+  # If a neighbor changes, the cell is set, or if we are resetting, we write to the cell
+  const isWrite = neighborFlips || isSet || reset;
+
+  # Write the new data to the cell, otherwise keep the current data
+  data = if(isWrite, setData, data);
+
+  # Set the current state based on the data
+  isHigh = data == 0b10;
+  isLow = data == 0b01;
+}
+
+# A helper function to run the messageCell module and assert the expected results
+module assertMessage(
+  id, inMsg, data, expectedNext, expectedBack, expectedData
+) -> ok {
+  const _ = blend(id, id, id);
+  const actualNext, actualBack, actualData = messageCell(inMsg, if(data, data | 0b100, 0), data, if(data, data ^ 0b011, 0));
+  ok = actualNext == expectedNext && actualBack == expectedBack && actualData == expectedData;
+}
+
+# Test the messageCell module with all possible scenarios
+module messageTest() -> ok {
+  # Empty message, empty data
+  const t0 = assertMessage(0, 0b000, 0b000, 0b000, 0b000, 0b000);
+
+  # Any message on empty data
+  const t1 = assertMessage(1, 0b001, 0b000, 0b000, 0b000, 0b000);
+  const t2 = assertMessage(2, 0b010, 0b000, 0b000, 0b000, 0b000);
+  const t3 = assertMessage(3, 0b101, 0b000, 0b000, 0b000, 0b000);
+  const t4 = assertMessage(4, 0b110, 0b000, 0b000, 0b000, 0b000);
+
+  # Empty message on either data
+  const t5 = assertMessage(5, 0b000, 0b001, 0b000, 0b000, 0b000);
+  const t6 = assertMessage(6, 0b000, 0b010, 0b000, 0b000, 0b000);
+
+  # Bounce message on either data
+  const t7 = assertMessage(7, 0b101, 0b001, 0b000, 0b001, 0b000); # message is bounced, data is not flipped
+  const t8 = assertMessage(8, 0b101, 0b010, 0b101, 0b000, 0b000); # message is forwarded, data is not flipped
+
+  const t9 = assertMessage(9, 0b110, 0b001, 0b110, 0b000, 0b000); # message is forwarded, data is not flipped
+  const t10 = assertMessage(10, 0b110, 0b010, 0b000, 0b010, 0b000); # message is bounced, data is not flipped
+
+  # Flip message on either data
+  const t11 = assertMessage(11, 0b001, 0b001, 0b000, 0b000, 0b000); # noop because data is the same as the flip message, no new messages
+  const t12 = assertMessage(12, 0b001, 0b010, 0b001, 0b000, 0b001); # receive data from the message and forward
+  const t13 = assertMessage(13, 0b010, 0b001, 0b010, 0b000, 0b010); # receive data from the message and forward
+  const t14 = assertMessage(14, 0b010, 0b010, 0b000, 0b000, 0b000); # noop because data is the same as the flip message, no new messages
+
+  ok = t0 || t1 || t2 || t3 || t4 || t5 || t6 || t7 || t8 || t9 || t10 || t11 || t12 || t13 || t14;
+}
+
+# A helper module to receive a value one time and hold it
+module once(input) -> output {
+  buffer state = input | state;
+  output = state;
+}
+
+# A helper module that can detects if an input has been received at least once
+module never(input) -> output {
+  buffer state = input || state;
+  output = !state;
+}
+
+# A module that counts how many times an input has been received, and returns the aggregated state and the count
+module onceCount(input) -> output, times {
+  buffer state = input | state;
+  buffer count = count + (input > 0);
+  output = state;
+  times = count;
+}
+
+
+# Test the cell module with various inputs and outputs
+module testCellResting() -> ok {
+  const isHigh, isLow, outN, outNE, outE, outSE, outS, outSW, outW, outNW = cell(false, false, false, 0, 0, 0, 0, 0, 0, 0, 0);
+  ok = never(isHigh) && never(isLow) &&
+       never(outN) && never(outNE) && never(outE) &&
+       never(outSE) && never(outS) && never(outSW) &&
+       never(outW) && never(outNW);
+}
+
+# Test setting the cell to high
+module testCellSetHigh() -> ok {
+  const setHigh, _ = edge(true);
+  const isHigh, isLow, outN, outNE, outE, outSE, outS, outSW, outW, outNW = cell(false, setHigh, false, 0, 0, 0, 0, 0, 0, 0, 0);
+  # Track how many times each output has been set
+  const n, nTimes = onceCount(outN);
+  const ne, neTimes = onceCount(outNE);
+  const e, eTimes = onceCount(outE);
+  const se, seTimes = onceCount(outSE);
+  const s, sTimes = onceCount(outS);
+  const sw, swTimes = onceCount(outSW);
+  const w, wTimes = onceCount(outW);
+  const nw, nwTimes = onceCount(outNW);
+
+  # High message + bounce is 0b110, so we expect all outputs to be set to 0b110
+  ok = isHigh && !isLow &&
+        n  == 0b110 && nTimes  == 1 &&
+        ne == 0b110 && neTimes == 1 &&
+        e  == 0b110 && eTimes  == 1 &&
+        se == 0b110 && seTimes == 1 &&
+        s  == 0b110 && sTimes  == 1 &&
+        sw == 0b110 && swTimes == 1 &&
+        w  == 0b110 && wTimes  == 1 &&
+        nw == 0b110 && nwTimes == 1;
+}
+
+module testCellSetLow() -> ok {
+  const setLow, _ = edge(true);
+  const isHigh, isLow, outN, outNE, outE, outSE, outS, outSW, outW, outNW = cell(false, false, setLow, 0, 0, 0, 0, 0, 0, 0, 0);
+  # Track how many times each output has been set
+  const n, nTimes = onceCount(outN);
+  const ne, neTimes = onceCount(outNE);
+  const e, eTimes = onceCount(outE);
+  const se, seTimes = onceCount(outSE);
+  const s, sTimes = onceCount(outS);
+  const sw, swTimes = onceCount(outSW);
+  const w, wTimes = onceCount(outW);
+  const nw, nwTimes = onceCount(outNW);
+
+  # Low message + bounce is 0b101, so we expect all outputs to be set to 0b101
+  ok = !isHigh && isLow &&
+        n  == 0b101 && nTimes  == 1 &&
+        ne == 0b101 && neTimes == 1 &&
+        e  == 0b101 && eTimes  == 1 &&
+        se == 0b101 && seTimes == 1 &&
+        s  == 0b101 && sTimes  == 1 &&
+        sw == 0b101 && swTimes == 1 &&
+        w  == 0b101 && wTimes  == 1 &&
+        nw == 0b101 && nwTimes == 1;
+}
+
+module testCell() -> ok {
+  ok = testCellResting() &&
+       testCellSetHigh() &&
+        testCellSetLow();
+}
