@@ -11,7 +11,6 @@ module messageCell(
 
   # Same color as starting cell, with outbound flag
   bounceMessage, # 0b100 | (cell data)
-  currData, # cell data
   flipData, # cell data ^ 0b011
 ) ->
   msgForward,
@@ -70,14 +69,14 @@ module cell(
   const bounceMessage = if(data, data | 0b100, 0);
 
   # Receive messages from neighbors and process them
-  const fromNtoS,   nextN,  flipN  = messageCell(inN,  bounceMessage, data, flipData);
-  const fromNEtoSW, nextNE, flipNE = messageCell(inNE, bounceMessage, data, flipData);
-  const fromEtoW,   nextE,  flipE  = messageCell(inE,  bounceMessage, data, flipData);
-  const fromSEtoNW, nextSE, flipSE = messageCell(inSE, bounceMessage, data, flipData);
-  const fromStoN,   nextS,  flipS  = messageCell(inS,  bounceMessage, data, flipData);
-  const fromSWtoNE, nextSW, flipSW = messageCell(inSW, bounceMessage, data, flipData);
-  const fromWtoE,   nextW,  flipW  = messageCell(inW,  bounceMessage, data, flipData);
-  const fromNWtoSE, nextNW, flipNW = messageCell(inNW, bounceMessage, data, flipData);
+  const fromNtoS,   nextN,  flipN  = messageCell(inN,  bounceMessage, flipData);
+  const fromNEtoSW, nextNE, flipNE = messageCell(inNE, bounceMessage, flipData);
+  const fromEtoW,   nextE,  flipE  = messageCell(inE,  bounceMessage, flipData);
+  const fromSEtoNW, nextSE, flipSE = messageCell(inSE, bounceMessage, flipData);
+  const fromStoN,   nextS,  flipS  = messageCell(inS,  bounceMessage, flipData);
+  const fromSWtoNE, nextSW, flipSW = messageCell(inSW, bounceMessage, flipData);
+  const fromWtoE,   nextW,  flipW  = messageCell(inW,  bounceMessage, flipData);
+  const fromNWtoSE, nextNW, flipNW = messageCell(inNW, bounceMessage, flipData);
 
   # If the cell is newly set, emit a bounce message
   const firstMsg = if(isSet, setData | 0b100, 0b000);
@@ -101,9 +100,6 @@ module cell(
   outW = boutW;
   outNW = boutNW;
 
-
-
-
   # Data changes from messages from the neighbors
   const neighborFlips = flipN | flipNE | flipE | flipSE | flipS | flipSW | flipW | flipNW;
 
@@ -125,7 +121,7 @@ module assertMessage(
   id, inMsg, data, expectedNext, expectedBack, expectedData
 ) -> ok {
   const _ = blend(id, id, id);
-  const actualNext, actualBack, actualData = messageCell(inMsg, if(data, data | 0b100, 0), data, if(data, data ^ 0b011, 0));
+  const actualNext, actualBack, actualData = messageCell(inMsg, if(data, data | 0b100, 0), if(data, data ^ 0b011, 0));
   ok = actualNext == expectedNext && actualBack == expectedBack && actualData == expectedData;
 }
 
