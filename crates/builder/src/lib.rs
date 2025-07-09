@@ -35,7 +35,6 @@ mod tests {
 
     use crate::{LayoutOptions, layout_module_to_world};
     use bearilog::parse_and_compile;
-    use brdb::Brdb;
 
     #[test]
     fn test() -> Result<(), Box<dyn Error>> {
@@ -50,7 +49,7 @@ mod tests {
 
         let options = LayoutOptions::default();
         let world = layout_module_to_world(parse_and_compile(source, "foo", false)?, options)?;
-        Brdb::new_memory()?.save("create", &world)?;
+        let _ = world.to_unsaved()?.to_pending()?.to_brz_data(None)?;
 
         Ok(())
     }

@@ -2,7 +2,6 @@ use clap::Parser;
 use clap_stdin::FileOrStdin;
 use std::{error::Error, path::PathBuf};
 
-use brdb::Brdb;
 use builder::options::LayoutMode;
 
 /// Program to parse bearilog to gates
@@ -57,7 +56,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             LayoutMode::Layout => builder::layout_module_to_world(res, args.layout_options)?,
             LayoutMode::Grid => builder::build_grid(res, args.grid_options),
         };
-        Brdb::new(path)?.save(format!("create module {}", &args.module), &world)?;
+        if path.exists() {
+            eprintln!("File {path:?} already exists, overwriting...");
+            std::fs::remove_file(&path)?;
+        }
+        world.write_brz(path)?;
     } else {
         println!("{res}");
     }
