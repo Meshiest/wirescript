@@ -1,0 +1,22 @@
+[package]
+name = "wasm"
+version = "0.1.0"
+authors = ["Isaac <gpg@reheatedcake.io>"]
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2.84"
+serde_json.workspace = true
+serde.workspace = true
+serde-wasm-bindgen = "0.6.5"
+
+brdb.workspace = true
+builder.workspace = true
+bearilog.workspace = true
+
+[profile.release]
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"

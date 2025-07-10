@@ -1,32 +1,21 @@
 [workspace]
-members = ["crates/bearilog", "crates/brdb", "crates/builder", "crates/cli"]
+members = ["crates/bearilog", "crates/builder", "crates/cli", "crates/wasm"]
 resolver = "3"
 
 [workspace.dependencies]
-# Brdb blobs hashes
-blake3 = "1.8.2"
 # Bearilog CLI
 clap = { version = "4.5.40", features = ["derive"] }
 # Bearilog CLI
 clap-stdin = "0.6.0"
-# Ordering Brdb structs
-indexmap = { version = "2.9.0", features = ["serde"] }
-# Only used to sort brick iters... can probably replace this
-itertools = "0.14.0"
 lalrpop = "0.22.2"
 lalrpop-util = { version = "0.21.0", features = ["lexer", "unicode"] }
-# Brdb msgpack-schema parsing
-rmp = "0.8.14"
-# Brdb read/write
-rusqlite = { version = "0.36.0", features = ["blob", "bundled"] }
-# Brdb meta json file serialization
-serde = { version = "1.0.219", features = ["derive"] }
-# Brdb meta json file serialization
 serde_json = "1.0.140"
+serde = { version = "1.0.219", features = ["derive"] }
 thiserror = "2.0.12"
-# Brdb blob compression
-zstd = "0.13.3"
 
 bearilog = { path = "crates/bearilog" }
-brdb = { path = "crates/brdb" }
+brdb = { version = "0.2.0", default-features = false, features = ["brz"] }
+# brdb = { path = "../brdb/crates/brdb", default-features = false, features = [
+#   "brz",
+# ] }
 builder = { path = "crates/builder" }

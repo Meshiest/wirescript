@@ -7,8 +7,10 @@ edition = "2024"
 lalrpop.workspace = true
 
 [dependencies]
-lalrpop-util.workspace = true
-brdb.workspace = true
-thiserror.workspace = true
 bearilog.workspace = true
+brdb.workspace = true
 clap.workspace = true
+lalrpop-util.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+thiserror.workspace = true
