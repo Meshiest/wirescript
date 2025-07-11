@@ -8,10 +8,8 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-wasm-bindgen = "0.2.84"
-serde_json.workspace = true
-serde.workspace = true
-serde-wasm-bindgen = "0.6.5"
+wasm-bindgen = "0.2.100"
+js-sys = "0.3.77"
 
 brdb.workspace = true
 builder.workspace = true
