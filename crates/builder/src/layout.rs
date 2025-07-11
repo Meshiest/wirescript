@@ -23,6 +23,7 @@ pub struct LayoutBuilderContext<'a> {
     options: LayoutOptions,
 }
 
+#[derive(Debug)]
 pub enum QueueItem {
     Module(CompiledModule),
     Gate(Arc<Gate>),
@@ -186,8 +187,9 @@ impl<'a> LayoutBuilderContext<'a> {
                     let all_inputs_seen = sub_module.inputs.iter().all(|(_, w)| {
                         constant_targets.contains(&w.gate.index) || self.conn_seen(w)
                     });
-                    if !all_inputs_seen {
+                    if !all_inputs_seen && queue.len() > 1 {
                         // If not all inputs are seen, requeue the submodule
+                        // only if it isn't the only thing left
                         queue.push_back(QueueItem::Module(sub_module));
                         continue;
                     }
@@ -298,6 +300,8 @@ impl<'a> LayoutBuilderContext<'a> {
                     first_row = false;
 
                     if n > 10000 {
+                        println!("I still have {} items in the queue..", queue.len());
+                        println!("Current row: {:?}", queue.pop_front());
                         panic!("Too many rows, something is wrong with the module or the code...");
                     }
 

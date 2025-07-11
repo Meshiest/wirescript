@@ -14,7 +14,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 thiserror = "2.0.12"
 
 bearilog = { path = "crates/bearilog" }
-brdb = { version = "0.2.0", default-features = false, features = ["brz"] }
+brdb = { version = "0.2.1", default-features = false, features = ["brz"] }
 # brdb = { path = "../brdb/crates/brdb", default-features = false, features = [
 #   "brz",
 # ] }

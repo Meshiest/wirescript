@@ -106,7 +106,7 @@ fn subgraph(
 
         // Connect outputs for the root module
         for (i, out) in module.outputs.iter().enumerate() {
-            writeln!(f, "{pad}out{i} [style=filled,color=lightgreen];")?;
+            writeln!(f, "{pad}out{i} [style=filled,color=pink];")?;
             let name = match out {
                 CompiledOutput::Input(n) => format!("in{n}"),
                 CompiledOutput::Literal(literal) => {
@@ -191,7 +191,7 @@ fn render_gate(gate: &Gate) -> String {
         io = if gate.meta.input_index.is_some() {
             ",style=filled,color=lightblue"
         } else if gate.meta.output_index.is_some() {
-            ",style=filled,color=lightgreen"
+            ",style=filled,color=pink"
         } else {
             ""
         },

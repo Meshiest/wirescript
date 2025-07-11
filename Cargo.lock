@@ -154,9 +154,9 @@ dependencies = [
 
 [[package]]
 name = "brdb"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3983aa4125044b03e97c02a0bcfcf9fbbda3481d7cf72f5d6c950d1a9428425a"
+checksum = "0c9c7d6ea7ff0e1e15632b1362b26b43c112e730c32c6a6247e5f214a7cdceff"
 dependencies = [
  "blake3",
  "indexmap",
@@ -180,8 +180,6 @@ dependencies = [
  "clap",
  "lalrpop",
  "lalrpop-util 0.21.0",
- "serde",
- "serde_json",
  "thiserror",
 ]
 
@@ -856,9 +854,6 @@ name = "uuid"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3cf4199d1e5d15ddd86a694e4d0dffa9c323ce759fea589f00fef9d81cc1931d"
-dependencies = [
- "getrandom",
-]
 
 [[package]]
 name = "version_check"
@@ -892,6 +887,7 @@ dependencies = [
  "bearilog",
  "brdb",
  "builder",
+ "js-sys",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
