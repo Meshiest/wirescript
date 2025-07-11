@@ -38,6 +38,17 @@ pub struct GridOptions {
     pub iobelow: bool,
 }
 
+impl Default for GridOptions {
+    fn default() -> Self {
+        Self {
+            height: NonZeroU8::new(8).unwrap(),
+            width: NonZeroU8::new(8).unwrap(),
+            layers: false,
+            iobelow: false,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum LayoutMode {
     #[default]

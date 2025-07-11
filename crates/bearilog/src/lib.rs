@@ -2,7 +2,10 @@ use std::error::Error;
 
 use lalrpop_util::lalrpop_mod;
 
-use crate::compiler::{CompiledModule, Compiler};
+use crate::{
+    ast::AstModule,
+    compiler::{CompiledModule, Compiler},
+};
 
 #[cfg(test)]
 mod bearilog_tests;
@@ -16,14 +19,17 @@ pub(crate) mod helpers;
 
 lalrpop_mod!(pub grammar);
 
+pub fn parse_modules(source: &str) -> Result<Vec<AstModule>, String> {
+    let parser = grammar::ModulesParser::new();
+    parser.parse(&source).map_err(|e| e.to_string())
+}
+
 pub fn parse_and_compile(
     source: &str,
     module: &str,
     inline: bool,
 ) -> Result<CompiledModule, Box<dyn Error>> {
-    let modules = grammar::ModulesParser::new()
-        .parse(&source)
-        .map_err(|e| e.to_string())?;
+    let modules = parse_modules(source)?;
     let mut compiler = Compiler::new(modules);
 
     Ok(compiler.compile_opts(module, false, inline)?)

@@ -83,7 +83,7 @@ module cell(
   toNERed = if(isRed, fromSWRed + 1, 0);
   toNEYel = if(isYel, fromSWYel + 1, 0);
 
-  # # If any of the counts are 4 or more, the cell is a win
+  # If any of the counts are 4 or more, the cell is a win
   setRedWin = isRedWin || toWRed >= 4 || toNWRed >= 4 || toNRed >= 4 || toNERed >= 4;
   setYelWin = isYelWin || toWYel >= 4 || toNWYel >= 4 || toNYel >= 4 || toNEYel >= 4;
 }
