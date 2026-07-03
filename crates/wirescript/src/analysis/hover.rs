@@ -1,0 +1,597 @@
+use std::collections::HashMap;
+use crate::catalog::calls::calls;
+use crate::catalog::events::find_event;
+use crate::ir::Type;
+use super::{TypeMap, IfContextMap, VarReadContextMap};
+use super::types::type_str;
+use super::text::{word_at, find_enclosing_call};
+use super::symbols::SymbolDef;
+use super::gate_docs::gate_docs;
+use super::resource_estimate::{ResourceEstimate, lookup_estimate};
+
+enum EstimateKind { Chip, Mod, Scope }
+
+/// Byte offset of the start of `line` within `source`.
+/// Each prior line contributes `len + 1` bytes (content + newline).
+fn line_offset_at(source: &str, line: usize) -> usize {
+    source.lines().take(line).map(|ln| ln.len() + 1).sum()
+}
+
+/// Given a line string and a column, find the byte offset of the start of the
+/// word containing that column (word chars: alphanumeric or `_`).
+fn word_start_in_line(line_str: &str, col: usize) -> usize {
+    let c = col.min(line_str.len());
+    line_str[..c]
+        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
+    let chips = match kind {
+        EstimateKind::Chip => est.total_microchips + 1,
+        _ => est.total_microchips,
+    };
+    let mut parts = vec![
+        format!("~{} gates", est.gates),
+        format!("{} chips", chips),
+    ];
+    if matches!(kind, EstimateKind::Mod) {
+        parts.push("inlined per call".into());
+    }
+    format!("*{}*", parts.join(", "))
+}
+
+pub fn hover_at(
+    source: &str,
+    file: &str,
+    symbols: &[SymbolDef],
+    type_map: &TypeMap,
+    doc_comments: &HashMap<usize, String>,
+    if_contexts: &IfContextMap,
+    var_read_contexts: &VarReadContextMap,
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    let word = word_at(source, line, col)?;
+
+    None
+        .or_else(|| hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col))
+        .or_else(|| hover_named_param(source, &word, line, col))
+        .or_else(|| hover_array_method(&word))
+        .or_else(|| hover_builtin_event(&word))
+        .or_else(|| hover_builtin_call(&word))
+        .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
+        .or_else(|| hover_on_keyword(source, &word, resource_estimates, line))
+        .or_else(|| hover_record_or_type_field(source, symbols, &word, line))
+        .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
+        .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
+}
+
+/// `if` keyword: show exec (Branch gate) vs pure (Select gate) context.
+fn hover_if_keyword(
+    source: &str,
+    file: &str,
+    word: &str,
+    if_contexts: &IfContextMap,
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    if word != "if" { return None; }
+
+    let offset = line_offset_at(source, line) + word_start_in_line(source.lines().nth(line)?, col);
+    let f: std::sync::Arc<str> = file.into();
+    let &is_exec = if_contexts.get(&(f, offset))?;
+
+    let mut hover = if is_exec {
+        "```wirescript\nif (exec) → Branch gate\n```\nExec-context conditional. Produces an **Exec_Branch** gate that routes the exec chain to the true or false arm.".to_string()
+    } else {
+        "```wirescript\nif (pure) → Select gate\n```\nPure-context conditional. Produces a **Select** gate that picks one of two values based on the condition.".to_string()
+    };
+    if let Some(est) = resource_estimates.get(&format!("@{offset}")) {
+        hover += &format!("\n\n{}", format_estimate(est, EstimateKind::Scope));
+    }
+    Some(hover)
+}
+
+/// Named parameter inside a builtin call (e.g. `delay` in `Sleep(_, delay = 1.0)`).
+fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    let call_name = find_enclosing_call(source, line, col)?;
+    let spec = calls().get(call_name.as_str())?;
+    let p = spec.params.iter().find(|p| p.name == word)?;
+
+    let gdocs = gate_docs();
+    let gate_doc = gdocs.get(spec.gate_class);
+    let port_doc = gate_doc.and_then(|g| g.inputs.get(p.port.as_str()));
+    let display = port_doc.map(|pd| pd.display_name.as_str()).unwrap_or(p.name);
+    let tooltip = port_doc.map(|pd| pd.tooltip.as_str()).unwrap_or("");
+
+    let mut v = format!("**{}** `{}: {}`", display, p.name, type_str(&p.ty));
+    if p.optional { v += " *(optional)*"; }
+    if !tooltip.is_empty() { v += &format!("\n\n{}", tooltip); }
+    Some(v)
+}
+
+/// Array methods like `push`, `pop`, `length`, etc.
+fn hover_array_method(word: &str) -> Option<String> {
+    let m = crate::catalog::arrays::ARRAY_METHODS
+        .iter()
+        .find(|m| m.name == word)?;
+    Some(format!("**array.{}**\n\n{}{} - {}", m.name, m.name, m.signature, m.doc))
+}
+
+/// Built-in event names like `RoundStart`, `CharacterSpawned`, etc.
+fn hover_builtin_event(word: &str) -> Option<String> {
+    let evt = find_event(word)?;
+    let params: Vec<String> = evt.data.iter().map(|d| format!("{}: {}", d.name, type_str(&d.ty))).collect();
+    let sig = if params.is_empty() { String::new() } else { format!("({})", params.join(", ")) };
+    Some(format!("```wirescript\non {}{}\n```", evt.surface_name, sig))
+}
+
+/// Built-in function/gate calls like `Sleep`, `SetLocation`, etc.
+fn hover_builtin_call(word: &str) -> Option<String> {
+    let spec = calls().get(word)?;
+    let gdocs = gate_docs();
+    let gate_doc = gdocs.get(spec.gate_class);
+    let title = gate_doc.map(|g| g.display_name.as_str()).unwrap_or(spec.name);
+
+    let mut params: Vec<String> = Vec::new();
+    if spec.exec { params.push("exec".into()); }
+    params.extend(spec.params.iter().map(|p| {
+        if p.optional { format!("{}?: {}", p.name, type_str(&p.ty)) } else { format!("{}: {}", p.name, type_str(&p.ty)) }
+    }));
+
+    let out = match spec.outputs.len() {
+        0 => String::new(),
+        1 => format!(" -> {}", type_str(&spec.outputs[0].ty)),
+        _ => format!(" -> ({})", spec.outputs.iter().map(|o| format!("{}: {}", o.port.as_str(), type_str(&o.ty))).collect::<Vec<_>>().join(", ")),
+    };
+
+    let mut parts = vec![format!("### {}\n```wirescript\n{}({}){}\n```", title, spec.name, params.join(", "), out)];
+    if let Some(g) = gate_doc {
+        if !g.description.is_empty() { parts.push(g.description.clone()); }
+        let param_docs: Vec<String> = spec.params.iter().filter_map(|p| {
+            g.inputs.get(p.port.as_str()).filter(|pd| !pd.tooltip.is_empty()).map(|pd| format!("- **{}** - {}", pd.display_name, pd.tooltip))
+        }).collect();
+        if !param_docs.is_empty() { parts.push(format!("**Parameters:**\n{}", param_docs.join("\n"))); }
+    }
+    Some(parts.join("\n\n"))
+}
+
+/// `chip` or `mod` keyword: show exec/pure context and resource estimate.
+fn hover_chip_or_mod_keyword(
+    source: &str,
+    word: &str,
+    symbols: &[SymbolDef],
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+    line: usize,
+) -> Option<String> {
+    if word != "chip" && word != "mod" { return None; }
+
+    let lo = line_offset_at(source, line);
+    let line_end = lo + source.lines().nth(line).map_or(0, |l| l.len() + 1);
+
+    // Find the nearest symbol at this line that's a chip/mod
+    for sym in symbols {
+        if (sym.kind == "chip" || sym.kind == "mod")
+            && sym.range.start.offset >= lo
+            && sym.range.start.offset < line_end
+        {
+            let context = if sym.exec { "exec" } else { "pure" };
+            let name = if sym.name.is_empty() || sym.name.starts_with('_') { "(anonymous)" } else { &sym.name };
+            let mut hover = format!(
+                "```wirescript\n{} {} ({})\n```\n\n{} context - {}",
+                sym.kind, name, context,
+                if sym.exec { "Exec" } else { "Pure" },
+                if sym.exec { "body runs as sequential exec chain" } else { "body is evaluated as signal-flow (combinational)" },
+            );
+            if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
+                let ek = if sym.kind == "mod" { EstimateKind::Mod } else { EstimateKind::Chip };
+                hover += &format!("\n\n{}", format_estimate(est, ek));
+            }
+            return Some(hover);
+        }
+    }
+    None
+}
+
+/// `on` keyword: show handler resource estimate.
+fn hover_on_keyword(
+    source: &str,
+    word: &str,
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+    line: usize,
+) -> Option<String> {
+    if word != "on" { return None; }
+
+    let l = source.lines().nth(line)?;
+    let offset = line_offset_at(source, line) + l.find("on").unwrap_or(0);
+    let est = resource_estimates.get(&format!("@{offset}"))?;
+
+    let mut hover = "```wirescript\non handler (exec)\n```".to_string();
+    hover += &format!("\n\n{}", format_estimate(est, EstimateKind::Scope));
+    Some(hover)
+}
+
+/// Record literal field or type declaration field.
+/// Checked before general symbol lookup so `counter` in `{ counter: score }`
+/// shows as a field, not as a param.
+fn hover_record_or_type_field(
+    source: &str,
+    symbols: &[SymbolDef],
+    word: &str,
+    line: usize,
+) -> Option<String> {
+    // Record literal field (e.g. `{ counter: score }`)
+    if let Some(v) = resolve_record_lit_field(source, symbols, word, line) {
+        return Some(v);
+    }
+
+    // Type declaration field: check if cursor is inside a type definition's range
+    for sym in symbols {
+        if sym.kind == "type"
+            && sym.range.start.line.saturating_sub(1) as usize <= line
+            && sym.range.end.line.saturating_sub(1) as usize >= line
+        {
+            if let Some(ref ty_str) = sym.ty {
+                if let Some(field_type) = extract_record_field_type(ty_str, word) {
+                    return Some(format!("```wirescript\n{}.{}: {}\n```", sym.name, word, field_type));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// User-defined symbol: var, let, buffer, in, out, mod, chip, fn, type, etc.
+fn hover_user_symbol(
+    source: &str,
+    file: &str,
+    symbols: &[SymbolDef],
+    doc_comments: &HashMap<usize, String>,
+    var_read_contexts: &VarReadContextMap,
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    let sym = symbols.iter().find(|s| s.name == word)?;
+
+    let ty_str = sym.ty.as_deref().unwrap_or("unknown");
+    let mut v = match sym.kind {
+        "mod" | "chip" | "fn" => {
+            let sig = if sym.exec {
+                if ty_str.starts_with('(') && ty_str.len() > 2 { format!("(exec, {}", &ty_str[1..]) } else { "(exec)".into() }
+            } else { ty_str.to_string() };
+            format!("```wirescript\n{} {}{}\n```", sym.kind, sym.name, sig)
+        }
+        _ => format!("```wirescript\n{} {}: {}\n```", sym.kind, sym.name, ty_str),
+    };
+
+    if let Some(doc) = doc_comments.get(&sym.range.start.offset) {
+        v += &format!("\n\n{}", doc);
+    }
+    if matches!(sym.kind, "mod" | "chip" | "fn") {
+        if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
+            let ek = if sym.kind == "mod" { EstimateKind::Mod } else { EstimateKind::Chip };
+            v += &format!("\n\n{}", format_estimate(est, ek));
+        }
+    }
+
+    // For var reads: show exec/pure context at the hovered location
+    if sym.kind == "var" {
+        let l = source.lines().nth(line)?;
+        let offset = line_offset_at(source, line) + word_start_in_line(l, col);
+        let f: std::sync::Arc<str> = file.into();
+        if let Some(&is_exec) = var_read_contexts.get(&(f, offset)) {
+            if is_exec {
+                v += "\n\n*(exec) reads current value via Var\\_Get*";
+            } else {
+                v += "\n\n*(pure) reads previous tick's value via Value field*";
+            }
+        }
+    }
+
+    Some(v)
+}
+
+fn resolve_record_lit_field(source: &str, symbols: &[SymbolDef], field: &str, line: usize) -> Option<String> {
+    // Walk backwards from the current line to find a `let name: TypeName = {` pattern
+    for scan_line in (0..=line).rev() {
+        let l = source.lines().nth(scan_line)?;
+        let trimmed = l.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("let ")
+            && let Some(colon_pos) = rest.find(':')
+        {
+            let after_colon = rest[colon_pos + 1..].trim();
+            let type_name = after_colon.split(|c: char| c == '=' || c.is_whitespace()).next()?;
+            let type_name = type_name.trim();
+            if type_name.is_empty() { continue; }
+
+            // Find this type in symbols and parse its field list
+            for sym in symbols {
+                if sym.kind == "type" && sym.name == type_name
+                    && let Some(ref ty_str) = sym.ty
+                {
+                    // Parse "{name: type, name: type}" into field pairs
+                    if let Some(field_type) = extract_record_field_type(ty_str, field) {
+                        return Some(format!("```wirescript\n{}.{}: {}\n```", type_name, field, field_type));
+                    }
+                }
+            }
+        }
+
+        // Stop scanning if this line can't be part of a record literal.
+        // Lines that ARE part of a record literal are: empty, comments, spreads,
+        // key-value pairs (contain `:`), trailing commas, or brace delimiters.
+        let is_record_interior = trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("...")
+            || trimmed.contains(':')
+            || trimmed.contains(',')
+            || trimmed.ends_with('{')
+            || trimmed.ends_with('}');
+        if !is_record_interior {
+            break;
+        }
+    }
+    None
+}
+
+/// Extract a field's type from a record type string like `{counter: *int, step: int}`.
+///
+/// This operates on stringified type representations rather than the `Type` enum because
+/// cross-file imported symbols only carry their serialized type string (`SymbolDef.ty`),
+/// not a resolved `Type`. When hovering a field on an imported record, the actual `Type`
+/// may not be available in the current file's type_map, so we fall back to parsing the
+/// string form that the symbol exporter produced.
+fn extract_record_field_type(ty_str: &str, field: &str) -> Option<String> {
+    let inner = ty_str.strip_prefix('{')?.strip_suffix('}')?;
+    for part in split_record_fields(inner) {
+        let part = part.trim();
+        if let Some(colon) = part.find(':') {
+            let name = part[..colon].trim();
+            let typ = part[colon + 1..].trim();
+            if name == field {
+                return Some(typ.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Split record fields respecting nested braces/brackets (e.g. `{a: {x: int}, b: int}`).
+fn split_record_fields(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < s.len() {
+        parts.push(&s[start..]);
+    }
+    parts
+}
+
+pub(super) fn resolve_record_param_field_type(script: &crate::ast::Script, param_type: &crate::ast::TypeExpr, field: &str) -> Option<String> {
+    let record_fields = match param_type {
+        crate::ast::TypeExpr::Record { fields, .. } => fields,
+        crate::ast::TypeExpr::Name { name, .. } => {
+            for d in &script.decls {
+                if let crate::ast::TopDecl::TypeAlias(ta) = d
+                    && ta.name == *name
+                        && let crate::ast::TypeExpr::Record { fields, .. } = &ta.typ {
+                            return fields.iter()
+                                .find(|f| f.name == field)
+                                .map(|f| super::types::type_expr_str(&f.typ));
+                        }
+            }
+            return None;
+        }
+        _ => return None,
+    };
+    record_fields.iter()
+        .find(|f| f.name == field)
+        .map(|f| super::types::type_expr_str(&f.typ))
+}
+
+fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[SymbolDef], line: usize, col: usize, field: &str) -> Option<String> {
+    let l = source.lines().nth(line)?;
+    let c = col.min(l.len());
+    let start = l[..c].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| i + 1).unwrap_or(0);
+    if start == 0 || l.as_bytes()[start - 1] != b'.' {
+        return None;
+    }
+    let obj_end = start - 1;
+    let obj_start = l[..obj_end].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| i + 1).unwrap_or(0);
+    let obj_name = &l[obj_start..obj_end];
+    let lo = line_offset_at(source, line);
+    let field_end_col = l[c..].find(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| c + i).unwrap_or(l.len());
+
+    let f: std::sync::Arc<str> = file.into();
+    let fmt_field = |ty_display: String| format!("```wirescript\nfield {}: {}\n```", field, ty_display);
+
+    // Layer 1: Full expression span (obj.field) in type_map - best case, typechecker
+    // recorded the type of the entire dotted expression.
+    if let Some(ty) = type_map.get(&(f.clone(), lo + obj_start, lo + field_end_col)) {
+        return Some(fmt_field(type_str(ty)));
+    }
+
+    // Layer 2: Object type from type_map - look up the object's type and resolve
+    // the field structurally (records, vectors, colors, rotators, refs).
+    if let Some(ft) = find_obj_type(type_map, &f, lo + obj_start, lo + obj_end)
+        .and_then(|obj_ty| resolve_field_in_type(&obj_ty, field))
+    {
+        return Some(fmt_field(type_str(&ft)));
+    }
+
+    // Layer 3: Symbol-based fallback - look up the object name in symbols, find
+    // its type declaration, and resolve the field from the type's string form.
+    // This handles imported files where type_map offsets don't match the current source.
+    if !obj_name.is_empty() {
+        return resolve_field_via_symbols(symbols, obj_name, field).map(fmt_field);
+    }
+
+    None
+}
+
+/// Look up `obj_name` in symbols, find its type declaration, and resolve `field`
+/// from the type's string representation.
+fn resolve_field_via_symbols(symbols: &[SymbolDef], obj_name: &str, field: &str) -> Option<String> {
+    let sym = symbols.iter().find(|s| s.name == obj_name)?;
+    let ty_name = sym.ty.as_deref()?;
+
+    // Try named type: find the type declaration and extract the field
+    symbols.iter()
+        .find(|ts| ts.kind == "type" && ts.name == ty_name)
+        .and_then(|ts| ts.ty.as_deref())
+        .and_then(|ty_str| extract_record_field_type(ty_str, field))
+        // If the symbol's type is an inline record literal (starts with `{`),
+        // parse it directly
+        .or_else(|| {
+            if ty_name.starts_with('{') {
+                extract_record_field_type(ty_name, field)
+            } else {
+                None
+            }
+        })
+}
+
+/// Find the type of an object expression at the given span in the type_map.
+///
+/// The typechecker records expression spans that may not exactly match the byte
+/// offsets computed from source text (off-by-one in end position is common due to
+/// how the parser vs. hover module count trailing characters). We handle this with
+/// a 3-tier lookup:
+///
+/// 1. **Exact span** - `(file, obj_start, obj_end)` matches directly.
+/// 2. **Fuzzy end** - same start, but end offset is +/-1 from what we computed.
+///    This catches the most common parser/hover offset mismatch.
+/// 3. **Start-only scan** - any entry with a matching `(file, obj_start, _)`.
+///    Last resort when the end offset is completely different.
+fn find_obj_type(type_map: &TypeMap, file: &std::sync::Arc<str>, obj_start: usize, obj_end: usize) -> Option<Type> {
+    // Tier 1: exact span
+    if let Some(ty) = type_map.get(&(file.clone(), obj_start, obj_end)) {
+        return Some(ty.clone());
+    }
+
+    // Tier 2: fuzzy end offset (+/-1)
+    for end in [obj_end.wrapping_sub(1), obj_end + 1] {
+        if let Some(ty) = type_map.get(&(file.clone(), obj_start, end)) {
+            return Some(ty.clone());
+        }
+    }
+
+    // Tier 3: scan for any entry starting at obj_start in this file
+    for ((f, s, _e), ty) in type_map.iter() {
+        if **f == **file && *s == obj_start {
+            return Some(ty.clone());
+        }
+    }
+
+    None
+}
+
+fn resolve_field_in_type(ty: &Type, field: &str) -> Option<Type> {
+    match ty {
+        Type::Record(fields) => {
+            fields.iter().find(|(k, _)| k == field).map(|(_, t)| t.clone())
+        }
+        Type::Ref(inner) => {
+            if field == "Value" || field == "prev" || field == "VarRef" {
+                return Some(inner.as_ref().clone());
+            }
+            resolve_field_in_type(inner, field)
+        }
+        Type::Vector => match field {
+            "x" | "X" | "y" | "Y" | "z" | "Z" => Some(Type::Float),
+            _ => None,
+        },
+        Type::Color => match field {
+            "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A" => Some(Type::Float),
+            _ => None,
+        },
+        Type::Rotator => match field {
+            "pitch" | "yaw" | "roll" => Some(Type::Float),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::collect_symbols_for_file;
+    use crate::resolve::{resolve, FsLoader};
+    use crate::typecheck::typecheck;
+    fn hover_for(source: &str, line: usize, col: usize) -> Option<String> {
+        let resolved = resolve(source, "test", &FsLoader);
+        let tc = typecheck(&resolved.ast, "test");
+        let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
+        let estimates = crate::analysis::resource_estimate::collect_estimates(&resolved.ast, &tc, "test");
+        hover_at(
+            source,
+            "test",
+            &symbols,
+            &tc.type_of_expr,
+            &resolved.doc_comments,
+            &tc.if_contexts,
+            &tc.var_read_contexts,
+            &estimates,
+            line,
+            col,
+        )
+    }
+
+    #[test]
+    fn destructured_mod_param_shows_type() {
+        let src = "\
+type State = { counter: *int, step: int }
+mod bump({ counter, step }: State) { counter = counter + step }";
+        // "counter" starts at col 11, "step" at col 20 on line 1
+        let h = hover_for(src, 1, 11);
+        assert!(h.is_some(), "hover on destructured param 'counter' should return something");
+        let text = h.unwrap();
+        assert!(
+            text.contains("*int"),
+            "hover should show *int for counter, got: {text}"
+        );
+
+        let h2 = hover_for(src, 1, 20);
+        assert!(h2.is_some(), "hover on destructured param 'step' should return something");
+        let text2 = h2.unwrap();
+        assert!(
+            text2.contains("int") && !text2.contains("*int"),
+            "hover should show int for step, got: {text2}"
+        );
+    }
+
+    #[test]
+    fn record_field_hover() {
+        let src = "\
+type Point = { x: int, y: int }
+let p: Point = { x: 1, y: 2 }
+let v = p.x";
+        // hover on "x" in "p.x" (line 2, col 10)
+        let h = hover_for(src, 2, 10);
+        assert!(h.is_some(), "hover on record field 'x' should return something");
+        let text = h.unwrap();
+        assert!(
+            text.contains("int"),
+            "hover on p.x should show int, got: {text}"
+        );
+    }
+}

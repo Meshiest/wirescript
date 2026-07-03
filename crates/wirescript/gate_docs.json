@@ -1,0 +1,4773 @@
+{
+  "Component_Internal_InputSplitter": {
+    "displayName": "Seat Control Splitter",
+    "description": "A brick that can split a Player Input wire from a seat into individual inputs, allowing custom control setups.",
+    "category": "Control Units",
+    "inputs": {
+      "Character": {
+        "displayName": "Player",
+        "tooltip": "Connect a Player reference to allow people to send inputs to this component."
+      }
+    },
+    "outputs": {
+      "InputForward": {
+        "displayName": "Input Forward",
+        "tooltip": "The player's movement input on the X axis."
+      },
+      "bPressedJump": {
+        "displayName": "Pressed Jump",
+        "tooltip": "Set to true if the player is pressing their jump key."
+      },
+      "InputRight": {
+        "displayName": "Input Right",
+        "tooltip": "The player's movement input on the Y axis."
+      }
+    }
+  },
+  "Component_Internal_WeightBrick": {
+    "displayName": "Weight Brick",
+    "description": "A brick that can be set to a customized weight",
+    "category": "Control Units",
+    "inputs": {
+      "MassSize.X": {
+        "displayName": "Mass Size.X",
+        "tooltip": "The X axis position."
+      },
+      "MassSize": {
+        "displayName": "Mass Size",
+        "tooltip": ""
+      },
+      "MassOffset.X": {
+        "displayName": "Mass Offset.X",
+        "tooltip": "The X axis position."
+      },
+      "MassOffset.Z": {
+        "displayName": "Mass Offset.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Mass": {
+        "displayName": "Mass",
+        "tooltip": ""
+      },
+      "MassOffset.Y": {
+        "displayName": "Mass Offset.Y",
+        "tooltip": "The Y axis position."
+      },
+      "MassSize.Y": {
+        "displayName": "Mass Size.Y",
+        "tooltip": "The Y axis position."
+      },
+      "MassSize.Z": {
+        "displayName": "Mass Size.Z",
+        "tooltip": "The Z axis position."
+      },
+      "MassOffset": {
+        "displayName": "Mass Offset",
+        "tooltip": ""
+      }
+    },
+    "outputs": {}
+  },
+  "Component_Internal_WheelEngine": {
+    "displayName": "Wheel Engine",
+    "description": "Takes control inputs and uses them to drive & steer vehicle wheels. Great for cars, trucks, tanks, and anything else that drives around on the ground.",
+    "category": "Control Units",
+    "inputs": {
+      "ManualInput_Drive": {
+        "displayName": "Manual Drive",
+        "tooltip": "Manual amount for the engine to drive. -1 = full reverse, 1 = full accelerate."
+      },
+      "CustomMass": {
+        "displayName": "Custom Mass",
+        "tooltip": ""
+      },
+      "CenterOfSteering": {
+        "displayName": "Center Of Steering",
+        "tooltip": "How far along the vehicle's steering box (box containing all wheels) the center of steering is.\r\nBy default, we put it at the very back of the vehicle (0). Wheels at the front will full-steer, wheels at the back won't steer at all.\r\nIf you'd like, you can bring it to the very front of the vehicle (1). Wheels at the back will full-steer, wheels at the front won't steer at all."
+      },
+      "bEnabled": {
+        "displayName": "Enabled",
+        "tooltip": "Whether the engine can ever be on."
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": "Connect a Player reference here to allow a player to drive the engine. Seats also provide a Player wire which can be used here."
+      },
+      "DriveAcceleratingPowerMultiplier": {
+        "displayName": "Accel. Torque Multiplier",
+        "tooltip": "Multiplier applied to drive joint torque when accelerating.\r\nIf above 1.0, the engine will torque your joint harder than the torque you set."
+      },
+      "AudioDescriptor": {
+        "displayName": "Audio Descriptor",
+        "tooltip": "The set of sounds the engine uses."
+      },
+      "ManualInput_Steer": {
+        "displayName": "Manual Steer",
+        "tooltip": "Manual amount for the engine to steer. -1 = full left, 1 = full right."
+      },
+      "bTankSteering": {
+        "displayName": "Tank Steering",
+        "tooltip": "If true, the engine attempts to steer by driving the wheels on either side of the vehicle at different speeds (i.e. tank controls)\r\nThis means the engine won't ever turn the wheels except to correct heading if they are misaligned."
+      },
+      "bManualInput_Brake": {
+        "displayName": "Manual Brake",
+        "tooltip": "Manual braking mode. True means the engine will brake. \r\nWhen a vehicle brakes, the speed of all joints is hard-set to 0 and the torque is set to the braking torque."
+      },
+      "DriveSpeed": {
+        "displayName": "Top Speed",
+        "tooltip": "Determines the max speed at which the engine attempts to drive wheels.\r\nIgnored while braking, obviously."
+      },
+      "WaterSteeringForce": {
+        "displayName": "Water Steering Force",
+        "tooltip": ""
+      },
+      "CustomMassVerticalOffset": {
+        "displayName": "Mass Vertical Offset",
+        "tooltip": ""
+      },
+      "bEnableManualControl": {
+        "displayName": "Enable Manual Input",
+        "tooltip": "If true, the engine always stays on as long as Enabled is true. When not driven by a player, it will be controlled by the manual input values."
+      },
+      "DriveInterpSpeed": {
+        "displayName": "Acceleration",
+        "tooltip": "Determines how fast the wheel target speed goes from 0 to the top speed. Useful to avoid your car tipping backwards when you accelerate from stopped.\r\nSet 1, and your wheels will not be trying to reach the max speed for a full second.\r\nSet 10, and it will take a tenth of a second.\r\n0 makes it instant, if you enjoy having your car fly upwards when accelerating from stopped."
+      },
+      "DriveBrakingPowerMultiplier": {
+        "displayName": "Braking Torque Multiplier",
+        "tooltip": "Multiplier applied to drive joint torque when braking.\r\nIf above 1.0 (which it probably should be), the engine will torque your joint harder than the torque you set."
+      },
+      "SteerInterpSpeed": {
+        "displayName": "Steer Target Interp",
+        "tooltip": "Determines how fast your wheels steer to their current target.\r\nSet 1, and your wheels will take a full second to steer to the target.\r\nSet 10, and your wheels will take a tenth of a second.\r\n0 makes it instant."
+      },
+      "DriveDampingMultiplier": {
+        "displayName": "Damping Multiplier",
+        "tooltip": "Multiplier applied to drive joint damping, which is used when neither accelerating nor braking (models the vehicle \"rolling\" to a stop).\r\nIf above 1.0, the engine will dampen your joint harder than the damping you set."
+      },
+      "SteerLimitDegree": {
+        "displayName": "Steer Limit Angle",
+        "tooltip": "The maximum in both directions that the engine can steer wheels - i.e. the value in degrees of Steer 1.0 (and if negated, the value of steer -1.0)"
+      },
+      "WaterDriveForce": {
+        "displayName": "Water Drive Force",
+        "tooltip": ""
+      },
+      "SteerPowerMultiplier": {
+        "displayName": "Steer Power Multiplier",
+        "tooltip": "Multipler applied to steering power."
+      },
+      "TankSteerSpeedMultiplier": {
+        "displayName": "Tank Steer Speed Multiplier",
+        "tooltip": "Multiplier applied to the drive speed when tank steering."
+      }
+    },
+    "outputs": {
+      "Control_DriveAndSteer": {
+        "displayName": "Control - Drive & Steer",
+        "tooltip": "Connected to wheel joints to allow this engine to drive and steer them."
+      }
+    }
+  },
+  "Component_OneShotAudioEmitter": {
+    "displayName": "One Shot Audio",
+    "description": "Plays a sound when activated by a wire signal.",
+    "category": "Audio",
+    "inputs": {
+      "RepeatVariance": {
+        "displayName": "Repeat Variance",
+        "tooltip": "An applied value of randomness to the base repeat time."
+      },
+      "RepeatTime": {
+        "displayName": "Repeat Time",
+        "tooltip": "The amount of base time until the sound will repeat again."
+      },
+      "bEnableRepeat": {
+        "displayName": "Enable Repeat",
+        "tooltip": "Toggles whether or not the sound will automatically repeat when the play signal is kept on."
+      },
+      "PitchMultiplier": {
+        "displayName": "Pitch Multiplier",
+        "tooltip": "How much to multiply the default pitch of the audio being played."
+      },
+      "VolumeMultiplier": {
+        "displayName": "Volume Multiplier",
+        "tooltip": "How much to multiply the default volume of the audio being played."
+      },
+      "MaxDistance": {
+        "displayName": "Max Distance",
+        "tooltip": "The distance the audio can no longer be heard."
+      },
+      "bSpatialization": {
+        "displayName": "Directional",
+        "tooltip": "Whether or not to spatialize the audio in the game world, panning accordingly as the player moves around. When disabled, it will play as a 2D sound."
+      },
+      "InnerRadius": {
+        "displayName": "Inner Radius",
+        "tooltip": "The distance before the audio will begin to fade out."
+      },
+      "bPlay": {
+        "displayName": "Play",
+        "tooltip": "Plays audio when it first receives an on signal."
+      },
+      "AudioDescriptor": {
+        "displayName": "Audio Track",
+        "tooltip": "The audio track to play on this brick."
+      }
+    },
+    "outputs": {}
+  },
+  "Component_AudioEmitter": {
+    "displayName": "2x2f Speaker",
+    "description": "Plays audio from a wide selection of music tracks and sound effects.",
+    "category": "Audio",
+    "inputs": {
+      "NonFocusAzimuth": {
+        "displayName": "Maximum Focus Angle",
+        "tooltip": "Sounds above this angle on the player's screen will be considered out of focus, and will have the Unfocused Volume Multiplier applied to it. You can set this value lower than the Focus Angle to flip the effect."
+      },
+      "bEnabled": {
+        "displayName": "Enabled",
+        "tooltip": "Whether the sound is enabled."
+      },
+      "VolumeMultiplier": {
+        "displayName": "Volume Multiplier",
+        "tooltip": "How much to multiply the default volume of the audio being played."
+      },
+      "InnerRadius": {
+        "displayName": "Inner Radius",
+        "tooltip": "The distance before the audio will begin to fade out."
+      },
+      "AudioDescriptor": {
+        "displayName": "Audio Track",
+        "tooltip": "The audio track to play on this brick."
+      },
+      "FocusAzimuth": {
+        "displayName": "Focus Angle",
+        "tooltip": "Sounds played from within this angle on the player's screen will be considered in focus, and played normally."
+      },
+      "PitchMultiplier": {
+        "displayName": "Pitch Multiplier",
+        "tooltip": "How much to multiply the default pitch of the audio being played."
+      },
+      "MaxDistance": {
+        "displayName": "Max Distance",
+        "tooltip": "The distance the audio can no longer be heard."
+      },
+      "bSpatialization": {
+        "displayName": "Directional",
+        "tooltip": "Whether or not to spatialize the audio in the game world, panning accordingly as the player moves around. When disabled, it will play as a 2D sound."
+      },
+      "NonFocusVolumeAttenuation": {
+        "displayName": "Unfocused Volume Multiplier",
+        "tooltip": "When a sound is out of focus, it will have its volume multiplied by this value."
+      }
+    },
+    "outputs": {}
+  },
+  "Component_Target": {
+    "displayName": "Target",
+    "description": "Outputs a wire signal when hit with a projectile.",
+    "category": "Interactive",
+    "inputs": {
+      "OnTime": {
+        "displayName": "On Time",
+        "tooltip": "The amount of time that the target turns \"On\" when shot. Set to 0 for one tick. The target cannot report new information while it is on."
+      }
+    },
+    "outputs": {
+      "Damage": {
+        "displayName": "Damage",
+        "tooltip": "How much damage came from the hit."
+      },
+      "bJustHit": {
+        "displayName": "Just Hit",
+        "tooltip": "Whether the target was just hit and is waiting out its hit timeout."
+      },
+      "CharacterThatJustHit": {
+        "displayName": "Character That Just Hit",
+        "tooltip": "Character that just hit the target."
+      }
+    }
+  },
+  "Component_BotSpawn": {
+    "displayName": "Bot Spawnpoint",
+    "description": "Spawns a bot.",
+    "category": "Gameplay",
+    "inputs": {
+      "RunSpeed": {
+        "displayName": "Run Speed",
+        "tooltip": "Multiplier for the walking speed of the bot"
+      },
+      "bTeamCollision": {
+        "displayName": "Collide with Channel 1",
+        "tooltip": "Whether a bot  should collide with characters using channel 1."
+      },
+      "MoveTarget.Y": {
+        "displayName": "Movement Goal Position.Y",
+        "tooltip": "The Y axis position."
+      },
+      "bTeamCollision1": {
+        "displayName": "Collide with Channel 2",
+        "tooltip": "Whether a bot  should collide with characters using channel 2."
+      },
+      "BotName": {
+        "displayName": "Bot Name",
+        "tooltip": ""
+      },
+      "Jumpyness": {
+        "displayName": "Jumpyness",
+        "tooltip": "How often does the bot jump"
+      },
+      "bVisionRaycasting": {
+        "displayName": "Vision Raycasting",
+        "tooltip": "Require line of sight to attack someone."
+      },
+      "bTeamCollision3": {
+        "displayName": "Collide with Channel 4",
+        "tooltip": "Whether a bot  should collide with characters using channel 4."
+      },
+      "bDeleteBot": {
+        "displayName": "Delete Bot",
+        "tooltip": ""
+      },
+      "MoveTarget": {
+        "displayName": "Movement Goal Position",
+        "tooltip": ""
+      },
+      "BotWeapon": {
+        "displayName": "Weapon",
+        "tooltip": ""
+      },
+      "MovementGoalDummy": {
+        "displayName": "MovementGoal",
+        "tooltip": ""
+      },
+      "RespawnTime": {
+        "displayName": "Respawn Time",
+        "tooltip": "How long we should wait before spawning a new bot after the current one dies."
+      },
+      "bCanTargetPlayers": {
+        "displayName": "Can Target Players",
+        "tooltip": ""
+      },
+      "AttackDamageMultiplier": {
+        "displayName": "Attack Damage Multiplier",
+        "tooltip": ""
+      },
+      "bTeamCollision2": {
+        "displayName": "Collide with Channel 3",
+        "tooltip": "Whether a bot  should collide with characters using channel 3."
+      },
+      "MoveTarget.Z": {
+        "displayName": "Movement Goal Position.Z",
+        "tooltip": "The Z axis position."
+      },
+      "AttackMovementAmount": {
+        "displayName": "Attack Movement Amount",
+        "tooltip": "How much does the bot move around while in combat."
+      },
+      "ReactionTime": {
+        "displayName": "Reaction Time",
+        "tooltip": "How often does the bot recalculate targets."
+      },
+      "Agression": {
+        "displayName": "Agression",
+        "tooltip": "How much does the bot keep shooting."
+      },
+      "HealthMultiplier": {
+        "displayName": "Health Multiplier",
+        "tooltip": "Multiplies the amount of health of the bot"
+      },
+      "TeamCollisionChannel": {
+        "displayName": "Collision Channel",
+        "tooltip": "Which collision channel the bot should use."
+      },
+      "CorpseTimeout": {
+        "displayName": "Corpse Timeout",
+        "tooltip": "How long we should wait before deleting corpses."
+      },
+      "bSpawnEnable": {
+        "displayName": "Enable Spawning",
+        "tooltip": ""
+      },
+      "MoveTarget.X": {
+        "displayName": "Movement Goal Position.X",
+        "tooltip": "The X axis position."
+      },
+      "AggroRange": {
+        "displayName": "Aggro Range",
+        "tooltip": "Minimum distance the bot requires to attack a target."
+      },
+      "bActiveBot": {
+        "displayName": "Activate Bot",
+        "tooltip": ""
+      },
+      "bCanJump": {
+        "displayName": "Allow Jumping",
+        "tooltip": ""
+      },
+      "bCanTargetBots": {
+        "displayName": "Can Target Bots",
+        "tooltip": ""
+      },
+      "GunSkill": {
+        "displayName": "Gun Skill",
+        "tooltip": "Accuracy of the bot when using guns"
+      },
+      "MovementRandomness": {
+        "displayName": "Movement Randomness",
+        "tooltip": "Random offset applied to movement logic"
+      },
+      "bBackVision": {
+        "displayName": "Back Vision",
+        "tooltip": "Enables 360 degree vision cone"
+      },
+      "SkinDummy": {
+        "displayName": "Skin",
+        "tooltip": ""
+      },
+      "MovementAmount": {
+        "displayName": "Movement Amount",
+        "tooltip": "How often the bot refreshes movement."
+      }
+    },
+    "outputs": {
+      "SpawnedCharacter": {
+        "displayName": "Spawned Character",
+        "tooltip": "Reference to the spawned bot"
+      },
+      "FocusCharacter": {
+        "displayName": "Focus Character",
+        "tooltip": "Character this bot is trying to attack"
+      },
+      "DistanceToTarget": {
+        "displayName": "Distance To Goal",
+        "tooltip": "Distance to the current movement goal"
+      }
+    }
+  },
+  "Component_Internal_AnimatedButton": {
+    "displayName": "Square Button",
+    "description": "Outputs a wire signal when clicked. Remains active so long as the interact button is held down.",
+    "category": "Interactive",
+    "inputs": {
+      "ReleaseSound": {
+        "displayName": "Release Sound",
+        "tooltip": "Sound played when you release the button."
+      },
+      "PressSound": {
+        "displayName": "Press Sound",
+        "tooltip": "Sound played when you press the button down."
+      },
+      "bAllowNearbyInteraction": {
+        "displayName": "Allow Nearby Interaction",
+        "tooltip": "Allows players near the button in third person to interact with this brick without aiming at it."
+      },
+      "bHiddenInteraction": {
+        "displayName": "Hidden Interaction",
+        "tooltip": "This interactable will not change the player's crosshair or pop up any labels."
+      },
+      "PromptCustomLabel": {
+        "displayName": "Prompt Custom Label",
+        "tooltip": "Text label to use when the prompt widget appears."
+      }
+    },
+    "outputs": {
+      "PressCount": {
+        "displayName": "Holder Count",
+        "tooltip": "Number of people currently holding this button."
+      },
+      "Character": {
+        "displayName": "Character",
+        "tooltip": "Character that just interacted with this brick."
+      },
+      "bHeld": {
+        "displayName": "Held",
+        "tooltip": "Whether the button is held."
+      }
+    }
+  },
+  "Component_CheckPoint": {
+    "displayName": "Checkpoint",
+    "description": "When clicked, a player will respawn here if they die.",
+    "category": "Gameplay",
+    "inputs": {
+      "bRotatePlayerGravityOnSpawn": {
+        "displayName": "Rotate Player Gravity On Spawn",
+        "tooltip": ""
+      }
+    },
+    "outputs": {}
+  },
+  "Component_GoalPoint": {
+    "displayName": "Goalpoint",
+    "description": "A brick which can be used as a goal to reach in minigames.",
+    "category": "Gameplay",
+    "inputs": {},
+    "outputs": {}
+  },
+  "Component_Internal_Seat": {
+    "displayName": "Seat",
+    "description": "Take a seat. Used to control vehicles and other things.",
+    "category": "Seats",
+    "inputs": {
+      "ExitOffset.Y": {
+        "displayName": "Exit Offset.Y",
+        "tooltip": "The Y axis position."
+      },
+      "ExitOffset": {
+        "displayName": "Exit Offset",
+        "tooltip": ""
+      },
+      "ExitOffset.X": {
+        "displayName": "Exit Offset.X",
+        "tooltip": "The X axis position."
+      },
+      "ExitOffset.Z": {
+        "displayName": "Exit Offset.Z",
+        "tooltip": "The Z axis position."
+      }
+    },
+    "outputs": {
+      "bIsOccupied": {
+        "displayName": "Is Occupied",
+        "tooltip": "Whether a character is sitting in this seat or not."
+      },
+      "SittingCharacter": {
+        "displayName": "Character",
+        "tooltip": "Character that just interacted with this brick."
+      }
+    }
+  },
+  "Component_SpawnPoint": {
+    "displayName": "Spawnpoint",
+    "description": "A spawnpoint for players.",
+    "category": "Gameplay",
+    "inputs": {
+      "bRotatePlayerGravityOnSpawn": {
+        "displayName": "Rotate Player Gravity On Spawn",
+        "tooltip": ""
+      },
+      "bEnable": {
+        "displayName": "Enable Spawning",
+        "tooltip": ""
+      }
+    },
+    "outputs": {}
+  },
+  "Component_Internal_AnimatedSwitch": {
+    "displayName": "Toggle Switch",
+    "description": "A switch that flips when interacted with. Outputs True when turned on, and outputs False when turned off.",
+    "category": "Interactive",
+    "inputs": {
+      "InteractSound": {
+        "displayName": "Interact Sound",
+        "tooltip": "Sound that plays when interacting with this switch."
+      },
+      "bAllowNearbyInteraction": {
+        "displayName": "Allow Nearby Interaction",
+        "tooltip": "Allows players near the button in third person to interact with this brick without aiming at it."
+      },
+      "bHiddenInteraction": {
+        "displayName": "Hidden Interaction",
+        "tooltip": "This interactable will not change the player's crosshair or pop up any labels."
+      },
+      "PromptCustomLabel": {
+        "displayName": "Prompt Custom Label",
+        "tooltip": "Text label to use when the prompt widget appears."
+      }
+    },
+    "outputs": {
+      "bEnabled": {
+        "displayName": "Enabled",
+        "tooltip": "Whether the switch is switched on."
+      },
+      "Character": {
+        "displayName": "Character",
+        "tooltip": "Character that just interacted with this brick."
+      }
+    }
+  },
+  "BrickComponentType_Internal_MicrochipInput": {
+    "displayName": "Microchip Input",
+    "description": "",
+    "category": "Organization",
+    "inputs": {
+      "RER_Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "RER_Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_Internal_MicrochipOutput": {
+    "displayName": "Microchip Output",
+    "description": "",
+    "category": "Organization",
+    "inputs": {
+      "RER_Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "RER_Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "Component_Internal_Microchip": {
+    "displayName": "Microchip",
+    "description": "Allows you to place other logic gates on the microchip's circuitboard to save space. The entire circuitboard collapses down into the microchip when not in use.",
+    "category": "Organization",
+    "inputs": {},
+    "outputs": {}
+  },
+  "Component_Internal_Rerouter": {
+    "displayName": "Rerouter",
+    "description": "A node which wires can be routed through for more direct control over their shape. Useful for organizing cluttered logic circuits.",
+    "category": "Organization",
+    "inputs": {
+      "RER_Input": {
+        "displayName": "Input",
+        "tooltip": "The input value."
+      }
+    },
+    "outputs": {
+      "RER_Output": {
+        "displayName": "Output",
+        "tooltip": "The output value."
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_Var": {
+    "displayName": "Variable",
+    "description": "Allows defining a variable, which can be modified and read via other Variable gates.",
+    "category": "Variables",
+    "inputs": {},
+    "outputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "VarRef": {
+        "displayName": "Var Ref",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_ArrayVar": {
+    "displayName": "Array Variable",
+    "description": "Allows defining an array variable, which can be modified and read via other Array Variable gates.",
+    "category": "Variables - Array",
+    "inputs": {},
+    "outputs": {
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_Clear": {
+    "displayName": "Clear Array",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_Get": {
+    "displayName": "Get Array Element",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      },
+      "Index": {
+        "displayName": "Index",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "bOutOfBounds": {
+        "displayName": "Out Of Bounds",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength": {
+    "displayName": "Get Array Length",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "Length": {
+        "displayName": "Length",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_Pop": {
+    "displayName": "Pop From Array",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bIsEmpty": {
+        "displayName": "Is Empty",
+        "tooltip": ""
+      },
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_Push": {
+    "displayName": "Push To Array",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_RemoveAtIndex": {
+    "displayName": "Remove Array Element",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      },
+      "Index": {
+        "displayName": "Index",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutOfBounds": {
+        "displayName": "Out Of Bounds",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex": {
+    "displayName": "Set Array Element",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      },
+      "Index": {
+        "displayName": "Index",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ArrayVar_Shuffle": {
+    "displayName": "Shuffle Array",
+    "description": "",
+    "category": "Variables - Array",
+    "inputs": {
+      "ArrayVarRef": {
+        "displayName": "Array Var Ref",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Branch": {
+    "displayName": "Branch",
+    "description": "",
+    "category": "Control Flow",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "bCond": {
+        "displayName": "Condition",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOutB": {
+        "displayName": "Exec Out B",
+        "tooltip": ""
+      },
+      "ExecOutA": {
+        "displayName": "Exec Out A",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Character_GetAim": {
+    "displayName": "Get Aim",
+    "description": "",
+    "category": "Characters",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Direction": {
+        "displayName": "Direction",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "Origin": {
+        "displayName": "Origin",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Character_GetFromController": {
+    "displayName": "Get Player (Temporary)",
+    "description": "",
+    "category": "Characters",
+    "inputs": {
+      "Controller": {
+        "displayName": "Player (Persistent)",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      }
+    }
+  },
+  "Component_WireGraph_SetInventoryEntry": {
+    "displayName": "Set Character Inventory Entry",
+    "description": "",
+    "category": "Characters",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Character",
+        "tooltip": ""
+      },
+      "Slot": {
+        "displayName": "Slot",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Character_SetTempPermission": {
+    "displayName": "Set Character Temp Permission",
+    "description": "",
+    "category": "Characters",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      },
+      "bPermissionEnable": {
+        "displayName": "New Permission State",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Character_ShowHint": {
+    "displayName": "Show Hint",
+    "description": "",
+    "category": "Characters",
+    "inputs": {
+      "HintText": {
+        "displayName": "Hint Text",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      },
+      "HintTitle": {
+        "displayName": "Hint Title",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_ChatCommand": {
+    "displayName": "Chat Command Event",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {},
+    "outputs": {
+      "Controller": {
+        "displayName": "Caller",
+        "tooltip": ""
+      },
+      "Arguments": {
+        "displayName": "Arguments",
+        "tooltip": "The raw argument string passed after the command name."
+      },
+      "ExecOut": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Controller_DisplayText": {
+    "displayName": "Display Text",
+    "description": "",
+    "category": "Messages",
+    "inputs": {
+      "ScaleY": {
+        "displayName": "Scale Y",
+        "tooltip": "Vertical scale factor."
+      },
+      "FontSize": {
+        "displayName": "Font Size",
+        "tooltip": "Base font size in points."
+      },
+      "FontColor": {
+        "displayName": "Font Color",
+        "tooltip": "Text color."
+      },
+      "OutlineSize": {
+        "displayName": "Outline Size",
+        "tooltip": "Font outline thickness in pixels. 0 disables the outline."
+      },
+      "OutlineColor.B": {
+        "displayName": "Outline Color.B",
+        "tooltip": "The blue component of the color."
+      },
+      "FontColor.G": {
+        "displayName": "Font Color.G",
+        "tooltip": "The green component of the color."
+      },
+      "Transition": {
+        "displayName": "Transition",
+        "tooltip": "Duration in seconds to interpolate from the previous state to the new state. 0 for instant."
+      },
+      "OutlineColor.G": {
+        "displayName": "Outline Color.G",
+        "tooltip": "The green component of the color."
+      },
+      "Lifetime": {
+        "displayName": "Lifetime",
+        "tooltip": "How long the text remains visible in seconds. 0 for infinite."
+      },
+      "OutlineColor.A": {
+        "displayName": "Outline Color.A",
+        "tooltip": "The alpha component of the color."
+      },
+      "TextId": {
+        "displayName": "Text ID",
+        "tooltip": "Override the display text identity. When non-zero, multiple gates sharing the same ID control one piece of text. 0 uses the brick's persistent handle. Connect the Text ID output of another Display Text gate to chain updates to the same text."
+      },
+      "Angle": {
+        "displayName": "Angle",
+        "tooltip": "Rotation angle in degrees."
+      },
+      "ScaleX": {
+        "displayName": "Scale X",
+        "tooltip": "Horizontal scale factor."
+      },
+      "Controller": {
+        "displayName": "Player (Persistent)",
+        "tooltip": ""
+      },
+      "Text": {
+        "displayName": "Text",
+        "tooltip": "Rich text content to display. Supports markup like <b>, <i>, <size=\"24\">, <color=\"FF0000\">, <emoji>, and <icon>."
+      },
+      "AnchorX": {
+        "displayName": "Anchor X",
+        "tooltip": "Horizontal screen anchor as a percentage (0 = left, 0.5 = center, 1 = right)."
+      },
+      "OutlineColor.R": {
+        "displayName": "Outline Color.R",
+        "tooltip": "The red component of the color."
+      },
+      "FontColor.R": {
+        "displayName": "Font Color.R",
+        "tooltip": "The red component of the color."
+      },
+      "FontColor.B": {
+        "displayName": "Font Color.B",
+        "tooltip": "The blue component of the color."
+      },
+      "FontColor.A": {
+        "displayName": "Font Color.A",
+        "tooltip": "The alpha component of the color."
+      },
+      "PositionX": {
+        "displayName": "Position X",
+        "tooltip": "Horizontal offset from the anchor in slate units."
+      },
+      "OutlineColor": {
+        "displayName": "Outline Color",
+        "tooltip": "Font outline color."
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "PositionY": {
+        "displayName": "Position Y",
+        "tooltip": "Vertical offset from the anchor in slate units."
+      },
+      "AnchorY": {
+        "displayName": "Anchor Y",
+        "tooltip": "Vertical screen anchor as a percentage (0 = top, 0.5 = center, 1 = bottom)."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "TextIdOut": {
+        "displayName": "Output Text ID",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Controller_GetFromEntity": {
+    "displayName": "Get Player (Persistent)",
+    "description": "",
+    "category": "Controllers",
+    "inputs": {
+      "Entity": {
+        "displayName": "Player",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Controller": {
+        "displayName": "Player (Persistent)",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage": {
+    "displayName": "Show Status Message",
+    "description": "",
+    "category": "Messages",
+    "inputs": {
+      "Controller": {
+        "displayName": "Player (Persistent)",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Message": {
+        "displayName": "Message",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_AddLocationRotation": {
+    "displayName": "Add Location and Rotation to Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Rotation.Yaw": {
+        "displayName": "Rotation.Yaw",
+        "tooltip": "The Yaw. If you were rotating a plane on the yaw axis, changing the yaw would spin the plane around!"
+      },
+      "Rotation.Roll": {
+        "displayName": "Rotation.Roll",
+        "tooltip": "The Roll. If you were rotating a plane on the roll axis, changing the roll would roll it around like a barrel!"
+      },
+      "Rotation.Pitch": {
+        "displayName": "Rotation.Pitch",
+        "tooltip": "The Pitch. If you were rotating a plane on the pitch axis, changing the pitch would point its nose up and down!"
+      },
+      "Vector.X": {
+        "displayName": "Location.X",
+        "tooltip": "The X axis position."
+      },
+      "Rotation": {
+        "displayName": "Rotation",
+        "tooltip": ""
+      },
+      "Vector": {
+        "displayName": "Location",
+        "tooltip": ""
+      },
+      "Vector.Z": {
+        "displayName": "Location.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Vector.Y": {
+        "displayName": "Location.Y",
+        "tooltip": "The Y axis position."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_AddVelocity": {
+    "displayName": "Add Velocity to Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Rotation.Z": {
+        "displayName": "Angular Velocity.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Vector.X": {
+        "displayName": "Velocity.X",
+        "tooltip": "The X axis position."
+      },
+      "Rotation": {
+        "displayName": "Angular Velocity",
+        "tooltip": ""
+      },
+      "Rotation.X": {
+        "displayName": "Angular Velocity.X",
+        "tooltip": "The X axis position."
+      },
+      "Vector": {
+        "displayName": "Velocity",
+        "tooltip": ""
+      },
+      "Vector.Z": {
+        "displayName": "Velocity.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Vector.Y": {
+        "displayName": "Velocity.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Rotation.Y": {
+        "displayName": "Angular Velocity.Y",
+        "tooltip": "The Y axis position."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_GetAngularVelocity": {
+    "displayName": "Get Angular Velocity of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "AngularVelocity": {
+        "displayName": "Angular Velocity",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_GetLinearVelocity": {
+    "displayName": "Get Linear Velocity of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "LinearVelocity": {
+        "displayName": "Linear Velocity",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_GetLocation": {
+    "displayName": "Get Location of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Vector": {
+        "displayName": "Location",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_GetLocationRotation": {
+    "displayName": "Get Location and Rotation of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Rotation": {
+        "displayName": "Rotation",
+        "tooltip": ""
+      },
+      "Vector": {
+        "displayName": "Location",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_GetRotation": {
+    "displayName": "Get Rotation of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Rotation": {
+        "displayName": "Rotation",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_GetVelocity": {
+    "displayName": "Get Velocity of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Rotation": {
+        "displayName": "Angular Velocity",
+        "tooltip": ""
+      },
+      "Vector": {
+        "displayName": "Linear Velocity",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "Component_WireGraph_PlayAudioAt": {
+    "displayName": "Play Audio at Entity",
+    "description": "",
+    "category": "Effects",
+    "inputs": {
+      "MaxDistance": {
+        "displayName": "Max Distance",
+        "tooltip": ""
+      },
+      "VolumeMultiplier": {
+        "displayName": "Volume Multiplier",
+        "tooltip": ""
+      },
+      "InnerRadius": {
+        "displayName": "Inner Radius",
+        "tooltip": ""
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "PitchMultiplier": {
+        "displayName": "Pitch Multiplier",
+        "tooltip": ""
+      },
+      "bSpatialization": {
+        "displayName": "Spatialization",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport": {
+    "displayName": "Relative Teleport Entity",
+    "description": "",
+    "category": "Teleportation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Source": {
+        "displayName": "Source",
+        "tooltip": ""
+      },
+      "Destination": {
+        "displayName": "Destination",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_SetAngularVelocity": {
+    "displayName": "Set Angular Velocity of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "AngularVelocity.Z": {
+        "displayName": "Angular Velocity.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "AngularVelocity.Y": {
+        "displayName": "Angular Velocity.Y",
+        "tooltip": "The Y axis position."
+      },
+      "AngularVelocity": {
+        "displayName": "Angular Velocity",
+        "tooltip": ""
+      },
+      "AngularVelocity.X": {
+        "displayName": "Angular Velocity.X",
+        "tooltip": "The X axis position."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_SetGravityDirection": {
+    "displayName": "Set Gravity Direction of Entity",
+    "description": "",
+    "category": "Gravity",
+    "inputs": {
+      "Rotation": {
+        "displayName": "Direction",
+        "tooltip": ""
+      },
+      "Rotation.Roll": {
+        "displayName": "Direction.Roll",
+        "tooltip": "The Roll. If you were rotating a plane on the roll axis, changing the roll would roll it around like a barrel!"
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Rotation.Pitch": {
+        "displayName": "Direction.Pitch",
+        "tooltip": "The Pitch. If you were rotating a plane on the pitch axis, changing the pitch would point its nose up and down!"
+      },
+      "Rotation.Yaw": {
+        "displayName": "Direction.Yaw",
+        "tooltip": "The Yaw. If you were rotating a plane on the yaw axis, changing the yaw would spin the plane around!"
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_SetLinearVelocity": {
+    "displayName": "Set Linear Velocity of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "LinearVelocity.X": {
+        "displayName": "Linear Velocity.X",
+        "tooltip": "The X axis position."
+      },
+      "LinearVelocity": {
+        "displayName": "Linear Velocity",
+        "tooltip": ""
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "LinearVelocity.Y": {
+        "displayName": "Linear Velocity.Y",
+        "tooltip": "The Y axis position."
+      },
+      "LinearVelocity.Z": {
+        "displayName": "Linear Velocity.Z",
+        "tooltip": "The Z axis position."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_SetLocation": {
+    "displayName": "Set Location of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Vector": {
+        "displayName": "Location",
+        "tooltip": ""
+      },
+      "Vector.Z": {
+        "displayName": "Location.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Vector.Y": {
+        "displayName": "Location.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Vector.X": {
+        "displayName": "Location.X",
+        "tooltip": "The X axis position."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_SetLocationRotation": {
+    "displayName": "Set Location and Rotation of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Rotation.Yaw": {
+        "displayName": "Rotation.Yaw",
+        "tooltip": "The Yaw. If you were rotating a plane on the yaw axis, changing the yaw would spin the plane around!"
+      },
+      "Rotation.Roll": {
+        "displayName": "Rotation.Roll",
+        "tooltip": "The Roll. If you were rotating a plane on the roll axis, changing the roll would roll it around like a barrel!"
+      },
+      "Rotation.Pitch": {
+        "displayName": "Rotation.Pitch",
+        "tooltip": "The Pitch. If you were rotating a plane on the pitch axis, changing the pitch would point its nose up and down!"
+      },
+      "Vector.X": {
+        "displayName": "Location.X",
+        "tooltip": "The X axis position."
+      },
+      "Rotation": {
+        "displayName": "Rotation",
+        "tooltip": ""
+      },
+      "Vector": {
+        "displayName": "Location",
+        "tooltip": ""
+      },
+      "Vector.Z": {
+        "displayName": "Location.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Vector.Y": {
+        "displayName": "Location.Y",
+        "tooltip": "The Y axis position."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_SetRotation": {
+    "displayName": "Set Rotation of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Rotation": {
+        "displayName": "Rotation",
+        "tooltip": ""
+      },
+      "Rotation.Roll": {
+        "displayName": "Rotation.Roll",
+        "tooltip": "The Roll. If you were rotating a plane on the roll axis, changing the roll would roll it around like a barrel!"
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Rotation.Pitch": {
+        "displayName": "Rotation.Pitch",
+        "tooltip": "The Pitch. If you were rotating a plane on the pitch axis, changing the pitch would point its nose up and down!"
+      },
+      "Rotation.Yaw": {
+        "displayName": "Rotation.Yaw",
+        "tooltip": "The Yaw. If you were rotating a plane on the yaw axis, changing the yaw would spin the plane around!"
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_SetVelocity": {
+    "displayName": "Set Velocity of Entity",
+    "description": "",
+    "category": "Transformation",
+    "inputs": {
+      "Rotation.Z": {
+        "displayName": "Angular Velocity.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Vector.X": {
+        "displayName": "Linear Velocity.X",
+        "tooltip": "The X axis position."
+      },
+      "Rotation": {
+        "displayName": "Angular Velocity",
+        "tooltip": ""
+      },
+      "Rotation.X": {
+        "displayName": "Angular Velocity.X",
+        "tooltip": "The X axis position."
+      },
+      "Vector": {
+        "displayName": "Linear Velocity",
+        "tooltip": ""
+      },
+      "Vector.Z": {
+        "displayName": "Linear Velocity.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Vector.Y": {
+        "displayName": "Linear Velocity.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Rotation.Y": {
+        "displayName": "Angular Velocity.Y",
+        "tooltip": "The Y axis position."
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_Teleport": {
+    "displayName": "Teleport Entity",
+    "description": "",
+    "category": "Teleportation",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Destination": {
+        "displayName": "Destination",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Gamemode_EndRound": {
+    "displayName": "End Round",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Winner": {
+        "displayName": "Winner",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Gamemode_GetLeaderboardValue": {
+    "displayName": "Get Leaderboard Value",
+    "description": "",
+    "category": "Default Minigame",
+    "inputs": {
+      "Controller": {
+        "displayName": "Player",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Key": {
+        "displayName": "Key",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Gamemode_GetTeam": {
+    "displayName": "Get Player Team",
+    "description": "",
+    "category": "Default Minigame",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Team": {
+        "displayName": "Team",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamByName": {
+    "displayName": "Get Team By Name",
+    "description": "",
+    "category": "Default Minigame",
+    "inputs": {
+      "TeamName": {
+        "displayName": "Team Name",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Team": {
+        "displayName": "Team",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Gamemode_IncrementLeaderboardValue": {
+    "displayName": "Increment Leaderboard Value",
+    "description": "",
+    "category": "Default Minigame",
+    "inputs": {
+      "Controller": {
+        "displayName": "Player",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Key": {
+        "displayName": "Key",
+        "tooltip": ""
+      },
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Gamemode_SetLeaderboardValue": {
+    "displayName": "Set Leaderboard Value",
+    "description": "",
+    "category": "Default Minigame",
+    "inputs": {
+      "Controller": {
+        "displayName": "Player",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Key": {
+        "displayName": "Key",
+        "tooltip": ""
+      },
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_PrefabSpawner": {
+    "displayName": "Spawn Prefab",
+    "description": "",
+    "category": "Gameplay",
+    "inputs": {
+      "SpawnOffsetRotation": {
+        "displayName": "Spawn Offset Rotation",
+        "tooltip": ""
+      },
+      "SpawnOffset": {
+        "displayName": "Spawn Offset",
+        "tooltip": ""
+      },
+      "SpawnOffset.Y": {
+        "displayName": "Spawn Offset.Y",
+        "tooltip": "The Y axis position."
+      },
+      "SpawnOffsetRotation.Pitch": {
+        "displayName": "Spawn Offset Rotation.Pitch",
+        "tooltip": "The Pitch. If you were rotating a plane on the pitch axis, changing the pitch would point its nose up and down!"
+      },
+      "SpawnOffsetRotation.Roll": {
+        "displayName": "Spawn Offset Rotation.Roll",
+        "tooltip": "The Roll. If you were rotating a plane on the roll axis, changing the roll would roll it around like a barrel!"
+      },
+      "Limit": {
+        "displayName": "Limit",
+        "tooltip": ""
+      },
+      "Lifetime": {
+        "displayName": "Lifetime",
+        "tooltip": ""
+      },
+      "SpawnOffset.X": {
+        "displayName": "Spawn Offset.X",
+        "tooltip": "The X axis position."
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "SpawnOffset.Z": {
+        "displayName": "Spawn Offset.Z",
+        "tooltip": "The Z axis position."
+      },
+      "SpawnOffsetRotation.Yaw": {
+        "displayName": "Spawn Offset Rotation.Yaw",
+        "tooltip": "The Yaw. If you were rotating a plane on the yaw axis, changing the yaw would spin the plane around!"
+      }
+    },
+    "outputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Random": {
+    "displayName": "Random",
+    "description": "",
+    "category": "Control Flow",
+    "inputs": {
+      "Min": {
+        "displayName": "Min",
+        "tooltip": ""
+      },
+      "Seed": {
+        "displayName": "Seed",
+        "tooltip": ""
+      },
+      "Max": {
+        "displayName": "Max",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Reset": {
+        "displayName": "Reset",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Sweep": {
+    "displayName": "Sweep",
+    "description": "",
+    "category": "Gameplay",
+    "inputs": {
+      "Origin.Y": {
+        "displayName": "Origin.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Radius": {
+        "displayName": "Radius",
+        "tooltip": ""
+      },
+      "Origin": {
+        "displayName": "Origin",
+        "tooltip": ""
+      },
+      "Direction.X": {
+        "displayName": "Direction.X",
+        "tooltip": "The X axis position."
+      },
+      "bRelative": {
+        "displayName": "Relative",
+        "tooltip": ""
+      },
+      "Origin.X": {
+        "displayName": "Origin.X",
+        "tooltip": "The X axis position."
+      },
+      "Direction": {
+        "displayName": "Direction",
+        "tooltip": ""
+      },
+      "Distance": {
+        "displayName": "Distance",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Direction.Z": {
+        "displayName": "Direction.Z",
+        "tooltip": "The Z axis position."
+      },
+      "IgnoreEntity": {
+        "displayName": "Ignore Entity",
+        "tooltip": ""
+      },
+      "Direction.Y": {
+        "displayName": "Direction.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Origin.Z": {
+        "displayName": "Origin.Z",
+        "tooltip": "The Z axis position."
+      }
+    },
+    "outputs": {
+      "HitDistance": {
+        "displayName": "Hit Distance",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "HitEntity": {
+        "displayName": "Hit Entity",
+        "tooltip": ""
+      },
+      "Miss": {
+        "displayName": "Miss",
+        "tooltip": ""
+      },
+      "Hit": {
+        "displayName": "Hit",
+        "tooltip": ""
+      },
+      "HitLocation": {
+        "displayName": "Hit Location",
+        "tooltip": ""
+      },
+      "HitNormal": {
+        "displayName": "Hit Normal",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Union": {
+    "displayName": "Union",
+    "description": "",
+    "category": "Control Flow",
+    "inputs": {
+      "ExecA": {
+        "displayName": "Exec A",
+        "tooltip": ""
+      },
+      "ExecB": {
+        "displayName": "Exec B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Var_Get": {
+    "displayName": "Get Variable",
+    "description": "",
+    "category": "Variables",
+    "inputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "VarRef": {
+        "displayName": "Var Ref",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Var_Increment": {
+    "displayName": "Increment Variable",
+    "description": "",
+    "category": "Variables",
+    "inputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "VarRef": {
+        "displayName": "Var Ref",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Var_Set": {
+    "displayName": "Set Variable",
+    "description": "",
+    "category": "Variables",
+    "inputs": {
+      "Value": {
+        "displayName": "Value",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "VarRef": {
+        "displayName": "Var Ref",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseAND": {
+    "displayName": "AND (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseBitCount": {
+    "displayName": "Bit Count",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseNAND": {
+    "displayName": "NAND (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseNOR": {
+    "displayName": "NOR (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseNOT": {
+    "displayName": "NOT (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseOR": {
+    "displayName": "OR (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft": {
+    "displayName": "Shift Left (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseShiftRight": {
+    "displayName": "Shift Right (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_BitwiseXOR": {
+    "displayName": "XOR (Bitwise)",
+    "description": "",
+    "category": "Bitwise",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_Ceil": {
+    "displayName": "Ceil",
+    "description": "",
+    "category": "Floor/Ceil",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_CompareEqual": {
+    "displayName": "Equal",
+    "description": "",
+    "category": "Comparison",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_CompareGreater": {
+    "displayName": "Greater",
+    "description": "",
+    "category": "Comparison",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual": {
+    "displayName": "Greater/Equal",
+    "description": "",
+    "category": "Comparison",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_CompareLess": {
+    "displayName": "Less",
+    "description": "",
+    "category": "Comparison",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_CompareLessOrEqual": {
+    "displayName": "Less/Equal",
+    "description": "",
+    "category": "Comparison",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_CompareNotEqual": {
+    "displayName": "Not Equal",
+    "description": "",
+    "category": "Comparison",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_EdgeDetector": {
+    "displayName": "Edge Detector",
+    "description": "",
+    "category": "Logic",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bPulseOnRisingEdge": {
+        "displayName": "Pulse on Rising Edge",
+        "tooltip": ""
+      },
+      "bPulseOnFallingEdge": {
+        "displayName": "Pulse on Falling Edge",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_Floor": {
+    "displayName": "Floor",
+    "description": "",
+    "category": "Floor/Ceil",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_LogicalAND": {
+    "displayName": "AND",
+    "description": "",
+    "category": "Logic",
+    "inputs": {
+      "bInputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "bInputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_LogicalNAND": {
+    "displayName": "NAND",
+    "description": "",
+    "category": "Logic",
+    "inputs": {
+      "bInputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "bInputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_LogicalNOR": {
+    "displayName": "NOR",
+    "description": "",
+    "category": "Logic",
+    "inputs": {
+      "bInputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "bInputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_LogicalNOT": {
+    "displayName": "NOT",
+    "description": "",
+    "category": "Logic",
+    "inputs": {
+      "bInput": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_LogicalOR": {
+    "displayName": "OR",
+    "description": "",
+    "category": "Logic",
+    "inputs": {
+      "bInputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "bInputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_LogicalXOR": {
+    "displayName": "XOR",
+    "description": "",
+    "category": "Logic",
+    "inputs": {
+      "bInputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "bInputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bOutput": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MakeColor": {
+    "displayName": "Make Color",
+    "description": "",
+    "category": "Math - Colors",
+    "inputs": {
+      "A": {
+        "displayName": "A",
+        "tooltip": ""
+      },
+      "R": {
+        "displayName": "R",
+        "tooltip": ""
+      },
+      "G": {
+        "displayName": "G",
+        "tooltip": ""
+      },
+      "B": {
+        "displayName": "B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MakeVector": {
+    "displayName": "Make Vector",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "Y": {
+        "displayName": "Y",
+        "tooltip": ""
+      },
+      "X": {
+        "displayName": "X",
+        "tooltip": ""
+      },
+      "Z": {
+        "displayName": "Z",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAbs": {
+    "displayName": "Abs",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAcos": {
+    "displayName": "Acos",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAcosh": {
+    "displayName": "Acosh",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAdd": {
+    "displayName": "Add",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAsin": {
+    "displayName": "Asin",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAsinh": {
+    "displayName": "Asinh",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAtan": {
+    "displayName": "Atan",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAtan2": {
+    "displayName": "Atan2",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Y": {
+        "displayName": "Y",
+        "tooltip": ""
+      },
+      "X": {
+        "displayName": "X",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathAtanh": {
+    "displayName": "Atanh",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathBlend": {
+    "displayName": "Blend",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "Blend": {
+        "displayName": "Blend Alpha",
+        "tooltip": "The alpha value for blending between Input A and Input B. 0 means only Input A, 1 means only Input B. Anything between is a mixture of the two - for example, 0.5 would give you a value half way between A and B."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathClamp": {
+    "displayName": "Clamp",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Max": {
+        "displayName": "Max",
+        "tooltip": ""
+      },
+      "Min": {
+        "displayName": "Min",
+        "tooltip": ""
+      },
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathCos": {
+    "displayName": "Cos",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathCosh": {
+    "displayName": "Cosh",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathDegreesToRadians": {
+    "displayName": "Degrees To Radians",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathDivide": {
+    "displayName": "Divide",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathExp": {
+    "displayName": "e^x",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathLn": {
+    "displayName": "Ln",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathLogBase": {
+    "displayName": "Log",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Base": {
+        "displayName": "Base",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathMax": {
+    "displayName": "Max",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathMin": {
+    "displayName": "Min",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathModulo": {
+    "displayName": "Modulo",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathModuloFloored": {
+    "displayName": "Modulo Floored",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathMultiply": {
+    "displayName": "Multiply",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathNegate": {
+    "displayName": "Negate",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathPow": {
+    "displayName": "Pow",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Exponent": {
+        "displayName": "Exponent",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathRadiansToDegrees": {
+    "displayName": "Radians To Degrees",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathSign": {
+    "displayName": "Sign",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathSin": {
+    "displayName": "Sin",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathSinh": {
+    "displayName": "Sinh",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathSqrt": {
+    "displayName": "Sqrt",
+    "description": "",
+    "category": "Math - Advanced",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathSubtract": {
+    "displayName": "Subtract",
+    "description": "",
+    "category": "Math",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathTan": {
+    "displayName": "Tan",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_MathTanh": {
+    "displayName": "Tanh",
+    "description": "",
+    "category": "Math - Trigonometry",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_Round": {
+    "displayName": "Round",
+    "description": "",
+    "category": "Floor/Ceil",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_Select": {
+    "displayName": "Select",
+    "description": "",
+    "category": "Control Flow",
+    "inputs": {
+      "InputA": {
+        "displayName": "InputA",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "InputB",
+        "tooltip": ""
+      },
+      "bSelectB": {
+        "displayName": "Select B",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_SplitColor": {
+    "displayName": "Split Color",
+    "description": "",
+    "category": "Math - Colors",
+    "inputs": {
+      "Input.R": {
+        "displayName": "Input.R",
+        "tooltip": "The red component of the color."
+      },
+      "Input.B": {
+        "displayName": "Input.B",
+        "tooltip": "The blue component of the color."
+      },
+      "Input.A": {
+        "displayName": "Input.A",
+        "tooltip": "The alpha component of the color."
+      },
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Input.G": {
+        "displayName": "Input.G",
+        "tooltip": "The green component of the color."
+      }
+    },
+    "outputs": {
+      "A": {
+        "displayName": "A",
+        "tooltip": ""
+      },
+      "R": {
+        "displayName": "R",
+        "tooltip": ""
+      },
+      "G": {
+        "displayName": "G",
+        "tooltip": ""
+      },
+      "B": {
+        "displayName": "B",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_SplitVector": {
+    "displayName": "Split Vector",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Input.Y": {
+        "displayName": "Input.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Input.Z": {
+        "displayName": "Input.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Input.X": {
+        "displayName": "Input.X",
+        "tooltip": "The X axis position."
+      }
+    },
+    "outputs": {
+      "Y": {
+        "displayName": "Y",
+        "tooltip": ""
+      },
+      "X": {
+        "displayName": "X",
+        "tooltip": ""
+      },
+      "Z": {
+        "displayName": "Z",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Concatenate": {
+    "displayName": "Concatenate",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "Separator": {
+        "displayName": "Separator",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Contains": {
+    "displayName": "Contains",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Search": {
+        "displayName": "Search",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_EndsWith": {
+    "displayName": "Ends With",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Suffix": {
+        "displayName": "Suffix",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Find": {
+    "displayName": "Find",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "bCaseSensitive": {
+        "displayName": "Case Sensitive",
+        "tooltip": ""
+      },
+      "Search": {
+        "displayName": "Search",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Index",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_FormatText": {
+    "displayName": "Format Text",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "InputG": {
+        "displayName": "Input G",
+        "tooltip": ""
+      },
+      "InputD": {
+        "displayName": "Input D",
+        "tooltip": ""
+      },
+      "InputE": {
+        "displayName": "Input E",
+        "tooltip": ""
+      },
+      "InputC": {
+        "displayName": "Input C",
+        "tooltip": ""
+      },
+      "InputF": {
+        "displayName": "Input F",
+        "tooltip": ""
+      },
+      "FormatString": {
+        "displayName": "Format String",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Length": {
+    "displayName": "Length",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Replace": {
+    "displayName": "Replace",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Search": {
+        "displayName": "Search",
+        "tooltip": ""
+      },
+      "Replacement": {
+        "displayName": "Replacement",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Split": {
+    "displayName": "Split",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Delimiter": {
+        "displayName": "Delimiter",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Left": {
+        "displayName": "Left",
+        "tooltip": ""
+      },
+      "Right": {
+        "displayName": "Right",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_StartsWith": {
+    "displayName": "Starts With",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Prefix": {
+        "displayName": "Prefix",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Substring": {
+    "displayName": "Substring",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Length": {
+        "displayName": "Length",
+        "tooltip": ""
+      },
+      "Start": {
+        "displayName": "Start",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_ToLower": {
+    "displayName": "To Lower",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_ToUpper": {
+    "displayName": "To Upper",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_String_Trim": {
+    "displayName": "Trim",
+    "description": "",
+    "category": "Variables - String",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_Swap": {
+    "displayName": "Swap",
+    "description": "",
+    "category": "Control Flow",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "bSwap": {
+        "displayName": "Swap",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "OutputB": {
+        "displayName": "Output B",
+        "tooltip": ""
+      },
+      "Output": {
+        "displayName": "Output A",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecCrossProduct": {
+    "displayName": "Cross Product",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "InputA.X": {
+        "displayName": "Input A.X",
+        "tooltip": "The X axis position."
+      },
+      "InputA.Z": {
+        "displayName": "Input A.Z",
+        "tooltip": "The Z axis position."
+      },
+      "InputB.X": {
+        "displayName": "Input B.X",
+        "tooltip": "The X axis position."
+      },
+      "InputB.Y": {
+        "displayName": "Input B.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputA.Y": {
+        "displayName": "Input A.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputB.Z": {
+        "displayName": "Input B.Z",
+        "tooltip": "The Z axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecDistance": {
+    "displayName": "Distance",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "InputA.X": {
+        "displayName": "Input A.X",
+        "tooltip": "The X axis position."
+      },
+      "InputA.Z": {
+        "displayName": "Input A.Z",
+        "tooltip": "The Z axis position."
+      },
+      "InputB.X": {
+        "displayName": "Input B.X",
+        "tooltip": "The X axis position."
+      },
+      "InputB.Y": {
+        "displayName": "Input B.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputA.Y": {
+        "displayName": "Input A.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputB.Z": {
+        "displayName": "Input B.Z",
+        "tooltip": "The Z axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecDistanceSquared": {
+    "displayName": "Distance Squared",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "InputA.X": {
+        "displayName": "Input A.X",
+        "tooltip": "The X axis position."
+      },
+      "InputA.Z": {
+        "displayName": "Input A.Z",
+        "tooltip": "The Z axis position."
+      },
+      "InputB.X": {
+        "displayName": "Input B.X",
+        "tooltip": "The X axis position."
+      },
+      "InputB.Y": {
+        "displayName": "Input B.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputA.Y": {
+        "displayName": "Input A.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputB.Z": {
+        "displayName": "Input B.Z",
+        "tooltip": "The Z axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecDotProduct": {
+    "displayName": "Dot Product",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "InputA": {
+        "displayName": "Input A",
+        "tooltip": ""
+      },
+      "InputB": {
+        "displayName": "Input B",
+        "tooltip": ""
+      },
+      "InputA.X": {
+        "displayName": "Input A.X",
+        "tooltip": "The X axis position."
+      },
+      "InputA.Z": {
+        "displayName": "Input A.Z",
+        "tooltip": "The Z axis position."
+      },
+      "InputB.X": {
+        "displayName": "Input B.X",
+        "tooltip": "The X axis position."
+      },
+      "InputB.Y": {
+        "displayName": "Input B.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputA.Y": {
+        "displayName": "Input A.Y",
+        "tooltip": "The Y axis position."
+      },
+      "InputB.Z": {
+        "displayName": "Input B.Z",
+        "tooltip": "The Z axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecMagnitude": {
+    "displayName": "Magnitude",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Input.Y": {
+        "displayName": "Input.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Input.Z": {
+        "displayName": "Input.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Input.X": {
+        "displayName": "Input.X",
+        "tooltip": "The X axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecMagnitudeSquared": {
+    "displayName": "Magnitude Squared",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Input.Y": {
+        "displayName": "Input.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Input.Z": {
+        "displayName": "Input.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Input.X": {
+        "displayName": "Input.X",
+        "tooltip": "The X axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecNormalize": {
+    "displayName": "Normalize",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Input.Y": {
+        "displayName": "Input.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Input.Z": {
+        "displayName": "Input.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Input.X": {
+        "displayName": "Input.X",
+        "tooltip": "The X axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecRotationToDirection": {
+    "displayName": "Rotation to Direction",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Input.Y": {
+        "displayName": "Input.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Input.Z": {
+        "displayName": "Input.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Input.X": {
+        "displayName": "Input.X",
+        "tooltip": "The X axis position."
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Expr_VecScale": {
+    "displayName": "Scale",
+    "description": "",
+    "category": "Math - Vectors",
+    "inputs": {
+      "Input.Z": {
+        "displayName": "Input.Z",
+        "tooltip": "The Z axis position."
+      },
+      "Input.X": {
+        "displayName": "Input.X",
+        "tooltip": "The X axis position."
+      },
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "Input.Y": {
+        "displayName": "Input.Y",
+        "tooltip": "The Y axis position."
+      },
+      "Scalar": {
+        "displayName": "Scalar",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDiedEvent": {
+    "displayName": "Player Died Event",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {},
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Fake_Gamemode_CharacterSpawnedEvent": {
+    "displayName": "Player Spawned Event",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {},
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent": {
+    "displayName": "Player Joined Event",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {},
+    "outputs": {
+      "Controller": {
+        "displayName": "Player (Persistent)",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent": {
+    "displayName": "Player Left Event",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {},
+    "outputs": {
+      "Controller": {
+        "displayName": "Player (Persistent)",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Fake_Gamemode_RoundEndEvent": {
+    "displayName": "Round End Event",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {},
+    "outputs": {
+      "RoundNumber": {
+        "displayName": "Round Number",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent": {
+    "displayName": "Round Start Event",
+    "description": "",
+    "category": "Default Minigame Events",
+    "inputs": {},
+    "outputs": {
+      "RoundNumber": {
+        "displayName": "Round Number",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_Internal_CharacterZoneEvent_Entered": {
+    "displayName": "Player Entered Zone",
+    "description": "",
+    "category": "Zone Events",
+    "inputs": {
+      "bCollisionEnabled_Player": {
+        "displayName": "Player 1 Detection",
+        "tooltip": "Enable detection of players in channel 1."
+      },
+      "Zone": {
+        "displayName": "Zone Ref",
+        "tooltip": ""
+      },
+      "bCollisionEnabled_Player1": {
+        "displayName": "Player 2 Detection",
+        "tooltip": "Enable detection of players in channel 2."
+      },
+      "bCollisionEnabled_Player2": {
+        "displayName": "Player 3 Detection",
+        "tooltip": "Enable detection of players in channel 3."
+      },
+      "bCollisionEnabled_Player3": {
+        "displayName": "Player 4 Detection",
+        "tooltip": "Enable detection of players in channel 4."
+      }
+    },
+    "outputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_Internal_CharacterZoneEvent_Left": {
+    "displayName": "Player Left Zone",
+    "description": "",
+    "category": "Zone Events",
+    "inputs": {
+      "bCollisionEnabled_Player": {
+        "displayName": "Player 1 Detection",
+        "tooltip": "Enable detection of players in channel 1."
+      },
+      "Zone": {
+        "displayName": "Zone Ref",
+        "tooltip": ""
+      },
+      "bCollisionEnabled_Player1": {
+        "displayName": "Player 2 Detection",
+        "tooltip": "Enable detection of players in channel 2."
+      },
+      "bCollisionEnabled_Player2": {
+        "displayName": "Player 3 Detection",
+        "tooltip": "Enable detection of players in channel 3."
+      },
+      "bCollisionEnabled_Player3": {
+        "displayName": "Player 4 Detection",
+        "tooltip": "Enable detection of players in channel 4."
+      }
+    },
+    "outputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Character": {
+        "displayName": "Player",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_Internal_ReadBrickGrid": {
+    "displayName": "Read Brick Grid",
+    "description": "",
+    "category": "Gameplay Gates - Entity",
+    "inputs": {},
+    "outputs": {
+      "BrickGrid": {
+        "displayName": "Brick Grid",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_Internal_ZoneEvent_BrickChanged": {
+    "displayName": "Brick Changed In Zone",
+    "description": "",
+    "category": "Zone Events",
+    "inputs": {
+      "Zone": {
+        "displayName": "Zone Ref",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_Internal_ZoneEvent_BrickRemoved": {
+    "displayName": "Brick Removed From Zone",
+    "description": "",
+    "category": "Zone Events",
+    "inputs": {
+      "Zone": {
+        "displayName": "Zone Ref",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_BufferSeconds": {
+    "displayName": "Buffer (Seconds)",
+    "description": "",
+    "category": "Buffers",
+    "inputs": {
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      },
+      "ZeroSecondsToWait": {
+        "displayName": "Seconds to Hold",
+        "tooltip": "How long to hold the output after the input goes to zero. Set to -1 to use Seconds to Delay instead."
+      },
+      "SecondsToWait": {
+        "displayName": "Seconds to Delay",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_BufferTicks": {
+    "displayName": "Buffer (Ticks)",
+    "description": "",
+    "category": "Buffers",
+    "inputs": {
+      "ZeroTicksToWait": {
+        "displayName": "Ticks to Hold",
+        "tooltip": "How long to hold the output after the input goes to zero. Set to -1 to use Ticks to Delay instead."
+      },
+      "TicksToWait": {
+        "displayName": "Ticks to Delay",
+        "tooltip": ""
+      },
+      "Input": {
+        "displayName": "Input",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Output": {
+        "displayName": "Output",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_QueueSeconds": {
+    "displayName": "Queue (Seconds)",
+    "description": "",
+    "category": "Buffers",
+    "inputs": {
+      "DataIn7": {
+        "displayName": "Data In 7",
+        "tooltip": ""
+      },
+      "DataIn6": {
+        "displayName": "Data In 6",
+        "tooltip": ""
+      },
+      "DataIn1": {
+        "displayName": "Data In 1",
+        "tooltip": ""
+      },
+      "DataIn3": {
+        "displayName": "Data In 3",
+        "tooltip": ""
+      },
+      "ExecIn": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "DataIn2": {
+        "displayName": "Data In 2",
+        "tooltip": ""
+      },
+      "DataIn5": {
+        "displayName": "Data In 5",
+        "tooltip": ""
+      },
+      "DataIn8": {
+        "displayName": "Data In 8",
+        "tooltip": ""
+      },
+      "DataIn4": {
+        "displayName": "Data In 4",
+        "tooltip": ""
+      },
+      "SecondsToWait": {
+        "displayName": "Seconds to Delay",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "DataOut1": {
+        "displayName": "Data Out 1",
+        "tooltip": ""
+      },
+      "DataOut2": {
+        "displayName": "Data Out 2",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "DataOut3": {
+        "displayName": "Data Out 3",
+        "tooltip": ""
+      },
+      "DataOut6": {
+        "displayName": "Data Out 6",
+        "tooltip": ""
+      },
+      "DataOut7": {
+        "displayName": "Data Out 7",
+        "tooltip": ""
+      },
+      "DataOut4": {
+        "displayName": "Data Out 4",
+        "tooltip": ""
+      },
+      "DataOut5": {
+        "displayName": "Data Out 5",
+        "tooltip": ""
+      },
+      "DataOut8": {
+        "displayName": "Data Out 8",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_QueueTicks": {
+    "displayName": "Queue (Ticks)",
+    "description": "",
+    "category": "Buffers",
+    "inputs": {
+      "DataIn7": {
+        "displayName": "Data In 7",
+        "tooltip": ""
+      },
+      "DataIn6": {
+        "displayName": "Data In 6",
+        "tooltip": ""
+      },
+      "DataIn1": {
+        "displayName": "Data In 1",
+        "tooltip": ""
+      },
+      "DataIn3": {
+        "displayName": "Data In 3",
+        "tooltip": ""
+      },
+      "ExecIn": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "DataIn2": {
+        "displayName": "Data In 2",
+        "tooltip": ""
+      },
+      "DataIn5": {
+        "displayName": "Data In 5",
+        "tooltip": ""
+      },
+      "DataIn8": {
+        "displayName": "Data In 8",
+        "tooltip": ""
+      },
+      "DataIn4": {
+        "displayName": "Data In 4",
+        "tooltip": ""
+      },
+      "TicksToWait": {
+        "displayName": "Ticks to Delay",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "DataOut1": {
+        "displayName": "Data Out 1",
+        "tooltip": ""
+      },
+      "DataOut2": {
+        "displayName": "Data Out 2",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "DataOut3": {
+        "displayName": "Data Out 3",
+        "tooltip": ""
+      },
+      "DataOut6": {
+        "displayName": "Data Out 6",
+        "tooltip": ""
+      },
+      "DataOut7": {
+        "displayName": "Data Out 7",
+        "tooltip": ""
+      },
+      "DataOut4": {
+        "displayName": "Data Out 4",
+        "tooltip": ""
+      },
+      "DataOut5": {
+        "displayName": "Data Out 5",
+        "tooltip": ""
+      },
+      "DataOut8": {
+        "displayName": "Data Out 8",
+        "tooltip": ""
+      }
+    }
+  },
+  "Component_Internal_AttachedZone": {
+    "displayName": "2x2f Zone Projector",
+    "description": "",
+    "category": "2xf Zone Projector",
+    "inputs": {
+      "ZoneStartDistance": {
+        "displayName": "Zone Start Distance",
+        "tooltip": ""
+      },
+      "bIsLooseZone": {
+        "displayName": "Is Loose Zone",
+        "tooltip": "Whether this zone is a loose zone, meaning objects don't have to be fully inside it to be considered to be inside."
+      },
+      "bIsBuildingZone": {
+        "displayName": "Is Building Zone",
+        "tooltip": "Whether this zone is a place that people without permission to build outside of build zones can build."
+      },
+      "bIsShareZone": {
+        "displayName": "Is Share Zone",
+        "tooltip": "Whether this zone is a share zone, meaning bricks placed inside that are on the same grid and owned by the same owner are publicly editable by anyone on the server without them needing trust from the owner."
+      },
+      "ZoneEndDistance": {
+        "displayName": "Zone Height",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ZoneRef": {
+        "displayName": "Zone Ref",
+        "tooltip": ""
+      },
+      "OccupantCount": {
+        "displayName": "Occupant Count",
+        "tooltip": ""
+      },
+      "bOccupied": {
+        "displayName": "Occupied",
+        "tooltip": ""
+      }
+    }
+  },
+  "Component_Damage": {
+    "displayName": "Spike",
+    "description": "A deadly spike which can damage or kill players on contact. Appears as an array of multiple spikes when stretched on a horizontal axis.",
+    "category": "Hazards",
+    "inputs": {
+      "Message": {
+        "displayName": "Message",
+        "tooltip": "If this is set to anything, a player will see that message upon touching the brick."
+      },
+      "ConsoleTag": {
+        "displayName": "Print To Console",
+        "tooltip": "If this is set to anything, the string it is set to will be printed to the console."
+      }
+    },
+    "outputs": {}
+  },
+  "BrickComponentType_Internal_TeleportDestination": {
+    "displayName": "Entity Teleport Point",
+    "description": "Serves as a target location for gameplay effects that launch and teleport players/entities.",
+    "category": "Teleportation",
+    "inputs": {},
+    "outputs": {
+      "ThisDestination": {
+        "displayName": "Teleport Destination",
+        "tooltip": ""
+      }
+    }
+  }
+}

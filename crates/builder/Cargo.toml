@@ -8,7 +8,7 @@ lalrpop.workspace = true
 
 [dependencies]
 bearilog.workspace = true
-brdb.workspace = true
+brdb = { workspace = true, features = ["brz", "brdb"] }
 clap.workspace = true
 lalrpop-util.workspace = true
 thiserror.workspace = true

@@ -1,0 +1,221 @@
+# Wirescript Changelog
+
+## June 30, 2026
+
+- Gate inventory (285 -> 288: new `Convert` / `FindPlayer` gates), the brdb component `_max` schema (258 structs), and `component_db.rs`. Clean forward superset of cl14428 (nothing removed).
+- **Sweep upgrade** — the raycast `Sweep(...)` gate gained per-channel detection flags: optional `detectBricks`, `detectPlayers1`–`detectPlayers4`, `detectPhysics`, `detectMap`, and `ignoreOwningGrid`.
+
+## June 29, 2026
+
+### Language Features
+
+- **`quat` type + rotation/quaternion builtins** — a new `quat` primitive (quaternion, distinct from the euler `rotator`) plus concise receiver methods: `dir.ToRotation()`, `q.ToDirection()`, `v.Rotate(q)`, `q.Invert()`, `from.RotationTo(to)`, `a.AngleTo(b)`, `a.Slerp(b, alpha)`, `axis.RotationByAngle(angle)`, `q.ToAxisAngle()`, plus `Rotation(p, y, r)` / `r.ToEuler()` for the euler rotator.
+- **sRGB / hex color builtins** — `ColorSRGB(r, g, b, a)` and `ColorHex("#rrggbb")` constructors, and `c.ToSRGB()` / `c.ToHex()` / `a.Blend(b, alpha)` receivers.
+- **`Cycle(count)` / `Toggle()`** — stateful exec value gates (advance a counter / flip a bool each exec pulse).
+- **User definitions shadow builtins** — a `chip`/`mod`/`fn` named like a builtin (e.g. `chip Toggle`) now takes precedence at the call site instead of resolving to the builtin.
+- **Asset references** — `$AssetType/AssetName` (e.g. `$BRItemBase/Weapon_Pistol`) references an external asset the world embeds by name. Lexer/parser/typecheck support plus editor completion: typing `$` offers the asset types, `$Type/` offers that type's asset names (sourced from the brdb external-asset catalog). Assets register into the world's external-asset table and encode as an index on emit.
+- **`HasRole` / `GiveWeapon`** — `ctrl.HasRole("Admin") -> bool` (role is a config string); `char.GiveWeapon($BRItemBase/Weapon_Pistol, slot)` sets an inventory slot to an item asset (the first asset-consuming gate — it registers the weapon and builds the nested `EntryPlan`). _The give-weapon binary encoding needs in-game verification._
+
+### Gate Catalog / Output
+
+- Refreshed the gate inventory (cl14428) added 26 new gate classes; the rotation/quaternion, sRGB-color, and cycle/toggle ones above are now wired into the language. Component data structs for all of them are registered for `.brdb` output.
+
+## June 28, 2026 (`7ecc40b..ad68ef3`)
+
+### Language Features
+
+- **Pre-initialized arrays** — `array foo: int[] = [1, 2, -3]` declares an array with constant initial contents. At the top level every element must be a literal (numbers incl. negatives, strings, bools); the values are written straight into the array gate, so it loads pre-populated with no runtime setup. A non-literal element at the top level is now a clear error instead of being silently dropped.
+- **Inferred array-typed vars** — `var foo = [1, 2, 3]` (no annotation) infers `int[]` from the literal and lowers to the same array gate as an `array` declaration; the var indexes and iterates as a real array.
+- **Runtime array assignment + spread** — inside an exec handler, `foo = [a, 1, ...other, 5]` rebuilds an array variable's contents: it desugars to clear → push each item → append each `...spread`, so elements can be any runtime value and a spread splices another array in place. Spreads (`...`) are now parseable inside `[ ... ]` (`ArrayElem::Item` / `ArrayElem::Spread`).
+- **Array methods, one source of truth** — every array method now derives from a single `catalog::arrays` table: completion offers the full set on any array-typed value (incl. `var ids: string[]`), and return types are derived from each method's gate output ports. `find` returns `{ Index, Found, Value }` that auto-unwraps to the int Index; `pop`/`min`/`max` expose `.IsEmpty`, and `insert`/`swap`/`slice` expose `.OutOfBounds`.
+- **`GetAim` replaces `AimOrigin`/`AimDirection`** — a character's camera/aim is now one gate returning a record: `char.GetAim().Origin` / `.Direction`. Reading both fields shares a single GetAim gate instead of emitting two. The separate `AimOrigin`/`AimDirection` calls are removed.
+- **Chat command config** — `on ChatCommand(...)` now accepts config args that set the gate's command name and help text. String literals fill `CommandName` then `HelpText` in order (`on ChatCommand("greet", "Greets the player")`), and the description can be named (`Description = "..."`). Bare identifiers still bind the event's data outputs (`controller`, `arguments`), so config and bindings can be mixed: `on ChatCommand("greet", "Greets the player", player, args) { ... }`.
+
+### Bug Fixes
+
+- **Vector components on stored values** — `.x`/`.y`/`.z` (and color `.r`/`.g`/`.b`/`.a`) now work on a vector held in a variable or `let` binding, not just an inline `Vec(...)`. Previously `let s = a + b; s.x` returned the whole vector instead of the component; the field-access lowering now falls through to the SplitVector/SplitColor gate for component names on a local.
+- **`Vec(...)` literal arguments** — constant `Vec(1.0, 2.0, 3.0)` components are no longer dropped at emit (the `MakeVector` gate was missing its component-data struct mapping, so literal X/Y/Z defaulted to `0`). Vectors built from literals now hold their real values.
+
+### Compiler / Output
+
+- **Gate defaults resolve from component_db** — unspecified data-struct fields are no longer force-written with a schema type-zero; they're omitted so the brdb writer fills them from component_db's `STRUCT_DEFAULTS`. Fixes DisplayText emitting `FontSize = 0` / `Lifetime = 0`; they now resolve to the game defaults (`16` / `5`).
+
+## June 26–27, 2026 (`a0f3baa..d338c01`)
+
+### Language Features
+
+- **String variables** — `var`/`static var` of type `string` are now stored in a Variable gate (the WireGraphVariant gained a `str` member). The `WS018` "strings can't be stored in vars" diagnostic is gone.
+- **Native string equality** — `==` / `!=` on strings lower directly to the `CompareEqual` / `CompareNotEqual` gates, which now accept string-typed variant wires. Removed the old `contains(a,b) && length(a) == length(b)` workaround.
+- **Vector arithmetic** — `+ - * / %` operate component-wise on two `vector` operands, and mixing a vector with a scalar (`v * 2.0`, `10.0 * v`, `v / 4`) broadcasts the scalar across the components — all on the same `MathAdd`/`Subtract`/`Multiply`/`Divide`/`Modulo` gates (their inputs accept the vector, `f64` and `i64` wire variants). The dedicated `Scale` helper still works too.
+- **Any-variant variables** — a `var` can hold any WireGraphVariant member (`int`, `float`, `bool`, `string`, `vector`, and object types). Typed vars are emitted with a type-matched initial value instead of always defaulting to a number.
+- **Typed arrays** — an array's declared element type now selects the backing `WireGraphArrayVariant` member (`int` → Int64, `float` → Double, plus Bool/String/Vector/Object arrays), so elements keep their declared type instead of all being stored as doubles.
+
+### Gate Catalog
+
+- **Regenerated inventory** — `data/logic_gate_inventory.simple.json` rebuilt from the latest in-game dump via a new checked-in generator (`scripts/gen_inventory.mjs`). Adds 76 gate classes (ArrayVar exec gates, new Gamemode/Controller/Character gates, string `ParseInt`/`ParseNumber`, reference gates) and gives 86 previously-`any` physical-brick ports concrete types. 175 → 260 entries.
+- **Refreshed brdb component tables** - `brdb` `component_db.rs` regenerated from the same dump so the new gates can be written (emit registers their component types). The removed `Gamemode_EndRound` gate is gone.
+
+### New Builtins and Methods
+
+- **Array methods** - `insert`, `find`, `sort(desc?)`, `reverse`, `sum`, `min`, `max`, `average`, `swap`, `fill`, `resize`, `append`, `copyFrom`, `slice`, `fillFromPlayers`, `fillFromTeam` joined the existing `push`/`pop`/`length`/`remove`/`clear`/`shuffle`. Every ArrayVar gate is now reachable.
+- **Easing** - `Easing(a, b, blend, fn?, dir?)` and `Tween(target, duration, fn?, dir?)`, with easing function/direction passed as an int or an enum-name literal (`"Quad"`, `"InOut"`, ...) resolved against the engine's `EBREasingFunction`/`EBREasingDirection` enums.
+- **Timer** - `Timer(limit, restart?, pause?, resume?)` function-call instance returning `{ Time: float, Expired: exec }`; the controls are optional exec inputs and `Expired` works with `on`/`await`.
+- **String parsing** - `ParseInt(s) -> int` and `ParseNumber(s) -> float` (also `s.ParseInt()` / `s.ParseNumber()`).
+- **Controller** - `GetUserName`, `GetUserId`, `GetDisplayName`, `IsTrusted`, `HasPermission`, `SetCanRespawn`, `SetTeamPinned`.
+- **Character** - `GetDamage`, `SetDamage`, `IncDamage`, `SetTempPermission`.
+- **Entity** - `SetFrozen`.
+- **Gamemode** - `PlayerWins` / `TeamWins` (the new way to end a round; the imperative `EndRound` gate and builtin were removed), `GetCurrentRound`, `SetTeam`, `GetTeamName`, `GetTeamLeaderboardValue` / `SetTeamLeaderboardValue` / `IncrementTeamLeaderboardValue`.
+- **Misc** - `PrintToConsole`, `DeltaTime`, `ServerUptime`, `NearlyEqual`, `Dampen`.
+
+### Compiler / Output
+
+- **Prefab output** — Compiled programs now emit a Brickadia **prefab** (`type: "Prefab"` with a `Meta/Prefab.json` carrying brick bounds computed from the microchip shell) instead of a world, so the `.brz` pastes like a native copied selection (Ctrl+V) with a correct preview.
+- **Loads on current builds** — A compiled bundle now embeds only the component data structs the program actually uses, plus their transitive schema dependencies, and writes them dependency-first (a referenced struct is always defined before the struct using it) — matching how the game writes its own bundles. This replaces embedding the full gate catalog, which recent builds reject (`While building schema: While reading struct count` → "failed to capture thumbnail / cache prefab"). Real programs stay well within the game's per-schema struct limit and load again.
+
+## May 15, 2026 (`03f63e7..e5233f3`)
+
+### Language Features
+
+- **`emit target = expr`** — Set output value and fire exec in one statement. Works in both pure and exec contexts.
+- **`await expr`** — Suspend exec chain and resume when expression fires. Armed-flag guard ensures one-shot execution (~7 gates per await).
+- **`let name: exec`** — Local exec signals. `emit name` fires them from any handler; `await name` or `on name` listens.
+- **`let x = await val on trigger`** — Capture a value when a trigger fires.
+- **`await a || b`** — Race semantics via normal binary expressions.
+- **`_` placeholder in await** — Resolves to the armed flag (`bool`). Enables `await Sleep(_, delay = 1.0)`.
+- **Logical/comparison operator coercion** — `&&`, `||`, `^^`, `!`, `==`, `!=`, `<`, `>`, `<=`, `>=` now accept all wire variant types (bool, int, float, exec, string, entity, controller, character, brick, prefab).
+
+### Builtin Functions
+
+- **`Sleep(input, delay?, hold?)`** — BufferSeconds gate. Delays a value by seconds.
+- **`SleepTicks(input, delay?, hold?)`** — BufferTicks gate. Delays a value by ticks.
+
+### Compiler
+
+- **`compile_to_world`** — New compile path returning `brdb::World` for `.brdb` output.
+- **CLI `.brdb` support** — `just compile file.ws -o file.brdb` emits SQLite saves.
+- **Compile progress** — LSP sends `wirescript/compileProgress` notifications; VS Code extension shows step counter in status bar.
+- **`**` (pow) fix** — Now wires to `Input`/`Exponent` ports instead of `InputA`/`InputB`.
+- **BRZ double-write fix** — Fixed `to_brz_vec` writing the archive twice (exact 2x file size).
+
+### Editor / IDE
+
+- **Inlay type hints** — Ctrl+Alt shows inferred types for `let`/`buffer` bindings. Works in VS Code and the web playground.
+- **Hover gate estimates** — Hovering chips/mods/handlers/if-blocks shows estimated gate and microchip counts. Call-graph expansion sums callee costs recursively.
+- **Record field hover fix** — `cpu.regs`, `cpu.cpsr` and nested field access now show types correctly.
+- **`on` handler hover** — Shows gate estimate for the handler scope.
+- **`if` hover estimates** — Shows gate cost for the if/else scope.
+- **Tuple display** — Records with numeric keys show as `(bool, int)` instead of `{0: bool, 1: int}`.
+- **`await` keyword highlighting** — Added to VS Code tmLanguage and Monaco monarch tokenizer.
+
+### Playground
+
+- **Inlay hints provider** — `wirescript_inlay_hints` WASM binding + Monaco `InlayHintsProvider`. Hidden by default, shown on Ctrl+Alt.
+- **New `async_signals.ws` example** — Demonstrates emit-value, await, local exec signals, Sleep.
+
+### Documentation
+
+- Updated `statements.md` with emit-value, local exec signals, await, Sleep/SleepTicks.
+- Updated `exec-context.md` with await section, `_` placeholder, Sleep examples.
+- Updated `builtins.md` with Sleep/Delay section.
+- Updated `expressions.md` with operator coercion for all wire variant types.
+- Updated `types.md` with exec→bool coercion.
+- Removed `fn` keyword references from docs.
+- `just compile-brdb` recipe added.
+
+### Test Files
+
+- `projects/tests/src/` — New in-game test suite: `test_await_emit.ws`, `test_variables.ws`, `test_operators.ws`, `test_control_flow.ws`, `test_chips_mods.ws`, `test_strings.ws`.
+- `crates/wirescript/tests/` — Integration tests: `await_test.rs`, `emit_value.rs`, `local_exec.rs`.
+
+## May 7, 2026 (`8e954de..412cd72`)
+
+### Language Features
+
+- **Records & tuples** — User-defined record types (`type Point = { x: int, y: int }`), record literals, destructuring (`let { x, y } = p`), spread operator (`{ ...p, y: 99 }`), tuple types and literals
+- **Spread in call args** — Pass record fields as named parameters: `foo({ ...defaults, x: 1 })`
+- **Destructured params** — `mod dist({ x, y }: Point) -> int { ... }` in mods and chips
+- **`on expr` syntax** — Trigger handlers on arbitrary exec expressions, not just named events
+- **Exportable vars/buffers/arrays** — `var`, `buffer`, and `array` declarations are now importable across files
+- **String `var` error (WS018)** — `var s: string` now errors at typecheck time (Brickadia runtime doesn't support string variables)
+- **Ref/deref improvements** — LSP completions on arrays and refs, output ref/deref fixes
+
+### Editor / IDE
+
+- **Record field hovers** — Hover shows `State.counter: *int` for record fields and type declaration fields
+- **Spread type validation** — Extra fields from spread are caught with errors pointing at the `...expr` span
+- **Chip/mod context hover** — Hovering `chip`/`mod` keywords shows whether the block is pure or exec
+- **Event parameter hovers** — Hover on event handlers shows parameter types
+- **Mod/chip return type hovers** — Hover shows `-> (result: int)` return types
+- **Formatter fixes** — Multi-line function call args indented correctly; operator continuation lines indented
+- **`type` keyword highlighting** — VS Code extension highlights user-defined type names
+
+### Playground
+
+- **Docs panel refactor** — Docs fetched from `docs/*.md` instead of inline JS (~1900 lines removed from `docs.js`)
+- **Examples loaded from files** — Playground examples loaded from `sdk/examples/*.ws` via fetch instead of hardcoded JS
+- **New `records.ws` example** — Demonstrates records, destructuring, spread, and tuples
+
+### Bug Fixes
+
+- Fix branch scoping — variables declared in `if`/`else` branches no longer leak across branches
+- Fix string comparison gate using wrong variant
+- Fix inline modules adding extra microchip outputs
+- Fix `return expr` in pure mods
+- Fix `on var.value` not lowering handler body
+- Fix emit not chaining union gates for multiple `emit` paths
+- Fix import not pulling in same-file dependencies of imported declarations
+- Fix array index access requiring exec context
+- Fix array `.length()` / `.pop()` returning `Any` type
+- Fix string wire port emits with literal variant values
+
+## April 30, 2026 (`02f2024..8e954de`)
+
+### Language Features
+
+- **Standalone chip instantiation** — Named chips with `-> (outputs)` now compile to real child microchips, one per call site. Cross-chip wires resolve automatically.
+- **`static var`** — Variables that persist across rounds: `static var highScore: int = 0`
+- **`return expr`** — Return values from chips and mods
+- **Single-output auto-unwrap** — `chip Foo() -> (result: int)` returns `int` directly instead of `{result: int}`
+- **Block expressions** — `{ stmts; expr }` as expressions
+- **Compound assignment** — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+- **`^^` logical XOR operator** — `a ^^ b` is true when exactly one operand is true
+- **`let` type annotations** — `let x: int = expr`
+- **Array params are always pass-by-reference** — `mod init(arr: int[])` passes the array by reference without needing `*`
+- **`fn` deprecation** — `fn` declarations emit a warning (WS015) suggesting `let` instead
+
+### Builtin Functions (30 new)
+
+- **Select/Swap** — `Select(cond, a, b)`, `Swap(cond, a, b) -> {a, b}`
+- **String ops** (all receiver on `string`) — `s.Length()`, `s.Contains(search)`, `s.StartsWith(prefix)`, `s.EndsWith(suffix)`, `s.Find(search)`, `s.Substring(start, len)`, `s.Replace(search, repl)`, `s.Split(delim) -> {Left, Right}`, `s.ToLower()`, `s.ToUpper()`, `s.Trim()`
+- **Math** — `tan`, `log(x, base)`, `lerp(a, b, t)`, `fmod(a, b)`
+- **Vector/Color** — `v.SplitVec() -> {x, y, z}`, `c.SplitColor() -> {r, g, b, a}`
+- **Edge detector** — `Edge(input) -> {rising, falling}`
+- **Gamemode** — `EndRound(winner?)`, `GetTeamByName(name)`
+- **Character** — `ShowHint(char, title, text)`
+- **Controller** — `ShowStatusMessage(ctrl, message)`
+- **Bitwise** — `BitNand(a, b)`, `BitNor(a, b)`
+- **Renamed** `MakeColor` → `Color`
+- **93% gate coverage** — 163 of 175 Brickadia gates supported
+
+### Events
+
+- **ChatCommand** — `on ChatCommand(controller, arguments) { ... }`
+
+### Compiler Optimizations
+
+- **NAND/NOR gate fusion** — `!(a && b)` compiles to a single NAND gate instead of NOT + AND. Same for `!(a || b)` → NOR, `~(a & b)` → BitwiseNAND, `~(a | b)` → BitwiseNOR.
+- **7.2x faster chip compile** — Schema parse caching + lower zstd level cuts chip program compile from 334ms to 46ms
+- **Receiver syntax on all vector ops** — `v.Normalize()`, `a.Distance(b)`, `v.Magnitude()`, etc. now work as chained calls with correct type inference
+
+### Editor / IDE
+
+- **Cross-file go-to-definition** — Clicking an imported symbol jumps to its declaration in the source file. Clicking an import path opens that file.
+- **Hover on `if` keywords** — Shows whether the block is in exec or pure context
+- **Unused import/output warnings** — Warnings for imported symbols and outputs that aren't used
+- **`wirescript-check` CLI** — Standalone type checker binary
+- **VS Code extension auto-reload** — Extension reloads when the LSP binary changes
+
+### Removals
+
+- `ArrayRef` type removed — arrays are always references, use `int[]` everywhere
+- `event` keyword removed (was already deprecated)

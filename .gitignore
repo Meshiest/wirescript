@@ -2,3 +2,11 @@
 *.svg
 *.brdb
 *.brz
+_site/
+*.zip
+deploy-playground.sh
+docs/superpowers/
+crates/wasm/playground/docs/
+# Local raw inventory dump (source for gen_inventory.mjs); the generated
+# logic_gate_inventory.simple.json is the committed artifact.
+crates/wirescript/data/inventory_dump.ndjson

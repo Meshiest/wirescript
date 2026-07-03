@@ -7,6 +7,8 @@ edition = "2024"
 [dependencies]
 clap.workspace = true
 clap-stdin.workspace = true
-brdb.workspace = true
+brdb = { workspace = true, features = ["brz", "brdb"] }
+wirescript.workspace = true
+# Legacy bearilog deps kept until we delete the old crates.
 builder.workspace = true
 bearilog.workspace = true
