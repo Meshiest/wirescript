@@ -197,19 +197,40 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
         register_decl(&mut ctx, d);
     }
     let mut saw_handler = false;
+    // Named chip/mod bodies are checked AFTER everything else: top-level
+    // `let` types are only inferred (and thus declared) during this pass, so
+    // an eagerly-checked body could not see lets declared later — which is
+    // exactly where imported mods land relative to the constants their
+    // bodies reference. Signatures were already registered in pass 1, so
+    // nothing else depends on a body being checked early.
+    let mut deferred_chips: Vec<(bool, &TopDecl)> = Vec::new();
     for d in &script.decls {
         // Statements after `on` handlers run in the combined exec context
         // of all preceding handler exits (exec union).
         let is_handler = matches!(d, TopDecl::Handler(_))
             || matches!(d, TopDecl::AnonChip(ac) if ac.body.stmts.iter().any(|s| matches!(s, Stmt::Handler(_))));
-        if saw_handler && !is_handler {
+        let exec_wrap = saw_handler && !is_handler;
+        if is_handler {
+            saw_handler = true;
+        }
+        if matches!(d, TopDecl::Chip(_)) {
+            deferred_chips.push((exec_wrap, d));
+            continue;
+        }
+        if exec_wrap {
             ctx.exec_stack.push(ExecMode::Exec);
             check_decl(&mut ctx, d, &mut tmap, &mut omap);
             ctx.exec_stack.pop();
         } else {
-            if is_handler {
-                saw_handler = true;
-            }
+            check_decl(&mut ctx, d, &mut tmap, &mut omap);
+        }
+    }
+    for (exec_wrap, d) in deferred_chips {
+        if exec_wrap {
+            ctx.exec_stack.push(ExecMode::Exec);
+            check_decl(&mut ctx, d, &mut tmap, &mut omap);
+            ctx.exec_stack.pop();
+        } else {
             check_decl(&mut ctx, d, &mut tmap, &mut omap);
         }
     }

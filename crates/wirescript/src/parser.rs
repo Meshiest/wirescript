@@ -877,7 +877,9 @@ impl<'a> Parser<'a> {
         if self.check(TokenKind::LBrace, None) {
             self.advance();
             let mut bindings = Vec::new();
+            self.eat_newlines();
             while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+                let before = self.pos;
                 let name_tok = self.expect(TokenKind::Ident, None);
                 let name = name_tok.text;
                 let (alias, binding_range) = if self.match_tok(TokenKind::Kw, Some("as")).is_some()
@@ -894,8 +896,15 @@ impl<'a> Parser<'a> {
                     alias,
                     range: binding_range,
                 });
+                self.eat_newlines();
                 if !self.check(TokenKind::RBrace, None) {
                     self.expect(TokenKind::Comma, None);
+                    self.eat_newlines();
+                }
+                // A token that is neither a binding nor a comma (both expects
+                // fail without consuming) must not stall the loop.
+                if self.pos == before {
+                    self.advance();
                 }
             }
             self.expect(TokenKind::RBrace, None);
@@ -1062,6 +1071,9 @@ impl<'a> Parser<'a> {
             self.eat_stmt_end();
         }
         self.expect(TokenKind::RParen, None);
+        // Tolerate a line break between the parameter list and what follows
+        // (`-> (outputs)` or the body brace on the next line).
+        self.eat_newlines();
         params
     }
 
@@ -1070,6 +1082,7 @@ impl<'a> Parser<'a> {
             // Multiple named outputs: -> (name: type, ...)
             self.advance();
             let mut outs = Vec::new();
+            self.eat_newlines();
             while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
                 let ostart = self.peek().start;
                 let oname = self.expect(TokenKind::Ident, None).text;
@@ -1081,9 +1094,11 @@ impl<'a> Parser<'a> {
                     typ,
                     range: self.make_range(ostart, oend),
                 });
+                self.eat_newlines();
                 if self.match_tok(TokenKind::Comma, None).is_none() {
                     break;
                 }
+                self.eat_newlines();
             }
             self.expect(TokenKind::RParen, None);
             outs

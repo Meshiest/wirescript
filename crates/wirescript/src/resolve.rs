@@ -361,11 +361,14 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
         }
     }
 
-    // Check for unused named imports
+    // Check for unused named imports. An import counts as used when the main
+    // file OR another imported declaration references it — imported mods
+    // reference their defining module's constants inside their bodies.
+    let mut used_idents = collect_idents_in_decls(&main_decls);
+    used_idents.extend(collect_idents_in_decls(&decls));
     for d in &parsed.ast.decls {
         if let TopDecl::Import(imp) = d
             && let ImportKind::Named(bindings) = &imp.kind {
-                let used_idents = collect_idents_in_decls(&main_decls);
                 for b in bindings {
                     let check_name = b.alias.as_deref().unwrap_or(&b.name);
                     if !used_idents.contains(check_name) {
