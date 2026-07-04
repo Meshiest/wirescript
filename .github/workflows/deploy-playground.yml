@@ -2,7 +2,7 @@ name: Deploy Playground
 
 on:
   push:
-    branches: [wirescript]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
