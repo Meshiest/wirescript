@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/bearilog", "crates/builder", "crates/cli", "crates/lsp", "crates/wasm", "crates/wirescript"]
+members = [
+  "crates/bearilog",
+  "crates/builder",
+  "crates/cli",
+  "crates/lsp",
+  "crates/wasm",
+  "crates/wirescript",
+]
 resolver = "3"
 
 [workspace.dependencies]
@@ -14,7 +21,7 @@ thiserror = "2.0.12"
 bearilog = { path = "crates/bearilog" }
 # Pull brdb from the sibling checkout so the microchip + schema work in brdb
 # flows straight through without a crates.io publish cycle.
-brdb = { path = "../brdb/crates/brdb", default-features = false }
+# brdb = { path = "../brdb/crates/brdb", default-features = false }
+brdb = { version = "0.6.0", default-features = false }
 builder = { path = "crates/builder" }
 wirescript = { path = "crates/wirescript" }
-
