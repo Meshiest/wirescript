@@ -1,104 +1,97 @@
-use std::num::NonZeroU8;
-
-use builder::options::{GridOptions, LayoutOptions};
-use js_sys::Reflect;
+use std::collections::HashMap;
+use std::sync::Arc;
 use wasm_bindgen::prelude::*;
+use wirescript::{
+    lower::{lower, LowerInput},
+    resolve::{resolve, MemLoader},
+    template_cache::TemplateCache,
+    typecheck::typecheck,
+    emit::{emit_brz, EmitOptions},
+};
+
+mod analysis;
+
+fn make_loader(files_json: &str) -> MemLoader {
+    let files: HashMap<String, String> =
+        serde_json::from_str(files_json).unwrap_or_default();
+    MemLoader { files }
+}
+
+// ---------- wirescript analysis (LSP-like, for browser IDE) ----------
 
 #[wasm_bindgen]
-pub fn get_modules(source: String) -> Result<Vec<String>, String> {
-    Ok(bearilog::parse_modules(&source)?
-        .into_iter()
-        .map(|m| m.name)
-        .collect())
+pub fn wirescript_diagnostics(source: String, files_json: Option<String>) -> String {
+    analysis::diagnostics(&source, files_json.as_deref().unwrap_or("{}"))
 }
 
 #[wasm_bindgen]
-pub fn graphviz(source: String, module: String, inline: bool) -> Result<String, String> {
-    let res = match bearilog::parse_and_compile(&source, &module, inline) {
-        Ok(res) => res,
-        Err(e) => return Err(e.to_string()),
-    };
-
-    bearilog::graphviz::render(&res).map_err(|e| e.to_string())
+pub fn wirescript_completions(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
+    analysis::completions(&source, line, col, files_json.as_deref().unwrap_or("{}"))
 }
 
 #[wasm_bindgen]
-pub fn layout(source: String, module: String, options: JsValue) -> Result<Vec<u8>, JsValue> {
-    if !options.is_object() {
-        return Err(JsError::new("Options must be an object").into());
+pub fn wirescript_hover(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
+    analysis::hover(&source, line, col, files_json.as_deref().unwrap_or("{}")).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn wirescript_definition(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
+    analysis::definition_with_files(&source, line, col, files_json.as_deref().unwrap_or("{}")).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn wirescript_references(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
+    analysis::references_with_files(&source, line, col, files_json.as_deref().unwrap_or("{}")).unwrap_or_else(|| "[]".into())
+}
+
+#[wasm_bindgen]
+pub fn wirescript_format(source: String, tab_size: u32, use_tabs: bool) -> String {
+    analysis::format(&source, tab_size, use_tabs)
+}
+
+#[wasm_bindgen]
+pub fn wirescript_workspace_symbols(files_json: String) -> String {
+    analysis::workspace_symbols(&files_json)
+}
+
+#[wasm_bindgen]
+pub fn wirescript_inlay_hints(source: String, files_json: Option<String>) -> String {
+    analysis::inlay_hints(&source, files_json.as_deref().unwrap_or("{}"))
+}
+
+// ---------- wirescript compile ----------
+
+#[wasm_bindgen]
+pub fn wirescript_compile(source: String, module_name: Option<String>, files_json: Option<String>) -> Result<Vec<u8>, JsValue> {
+    let file = module_name.as_deref().unwrap_or("inline");
+    let loader = make_loader(files_json.as_deref().unwrap_or("{}"));
+    let resolved = resolve(&source, file, &loader);
+    let tc = typecheck(&resolved.ast, file);
+    let template_cache = Arc::new(TemplateCache::new());
+    let lowered = lower(LowerInput {
+        ast: &resolved.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file,
+        module_name: module_name.as_deref(),
+        template_cache: template_cache.clone(),
+    });
+
+    let errors: Vec<String> = resolved
+        .diagnostics
+        .iter()
+        .chain(tc.diagnostics.iter())
+        .chain(lowered.diagnostics.iter())
+        .filter(|d| matches!(d.severity, wirescript::diagnostic::Severity::Error))
+        .map(|d| format!("[{}] {} ({}:{}:{})", d.code, d.message, d.range.file, d.range.start.line, d.range.start.col))
+        .collect();
+
+    if !errors.is_empty() {
+        return Err(JsValue::from_str(&errors.join("\n")));
     }
 
-    let get_u8 = |key: &str| -> u8 {
-        Reflect::get(&options, &key.into())
-            .ok()
-            .and_then(|v| v.as_f64().map(|f| f as u8))
-            .unwrap_or(0)
-    };
-
-    let inline = Reflect::get(&options, &"inline".into())
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let layout_options = LayoutOptions {
-        gap_v: get_u8("gapV"),
-        gap_h: get_u8("gapH"),
-        margin: get_u8("margin"),
-        padding: get_u8("padding"),
-        indent: get_u8("indent"),
-        flat: Reflect::get(&options, &"flat".into())
-            .ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    };
-
-    let res = match bearilog::parse_and_compile(&source, &module, inline) {
-        Ok(res) => res,
-        Err(e) => return Err(e.to_string().into()),
-    };
-
-    let world = builder::layout_module_to_world(res, layout_options).map_err(|e| e.to_string())?;
-
-    Ok(world.to_brz_vec().map_err(|e| e.to_string())?)
-}
-
-#[wasm_bindgen]
-pub fn grid(source: String, module: String, options: JsValue) -> Result<Vec<u8>, JsValue> {
-    if !options.is_object() {
-        return Err(JsError::new("Options must be an object").into());
-    }
-
-    let get_u8 = |key: &str| -> u8 {
-        Reflect::get(&options, &key.into())
-            .ok()
-            .and_then(|v| v.as_f64().map(|f| f as u8))
-            .unwrap_or(0)
-    };
-
-    let inline = Reflect::get(&options, &"inline".into())
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let grid_options = GridOptions {
-        height: NonZeroU8::new(get_u8("height")).unwrap_or(NonZeroU8::new(8).unwrap()),
-        width: NonZeroU8::new(get_u8("width")).unwrap_or(NonZeroU8::new(8).unwrap()),
-        layers: Reflect::get(&options, &"layers".into())
-            .ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        iobelow: Reflect::get(&options, &"iobelow".into())
-            .ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    };
-
-    let res = match bearilog::parse_and_compile(&source, &module, inline) {
-        Ok(res) => res,
-        Err(e) => return Err(e.to_string().into()),
-    };
-
-    let world = builder::build_grid(res, grid_options);
-
-    Ok(world.to_brz_vec().map_err(|e| e.to_string())?)
+    let placements = wirescript::layout::layout(&lowered.module).placements;
+    let opts = EmitOptions::default();
+    emit_brz(&lowered.module, &placements, &opts, &template_cache)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
 }

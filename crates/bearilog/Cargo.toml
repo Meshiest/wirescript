@@ -8,5 +8,5 @@ lalrpop.workspace = true
 
 [dependencies]
 lalrpop-util.workspace = true
-brdb.workspace = true
+brdb = { workspace = true, features = ["brz", "brdb"] }
 thiserror.workspace = true

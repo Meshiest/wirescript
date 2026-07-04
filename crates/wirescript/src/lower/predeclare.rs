@@ -1,0 +1,344 @@
+use super::*;
+
+// ---------- pre-declaration pass ----------
+
+pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
+    match d {
+        TopDecl::Var(v) => pre_declare_var(ctx, v),
+        TopDecl::Array(a) => pre_declare_array(ctx, a),
+        TopDecl::Buffer(b) => pre_declare_buffer(ctx, b),
+        TopDecl::In(i) => pre_declare_input(ctx, i),
+        TopDecl::Out(o) => {
+            pre_declare_output(ctx, &o.name, o.value.as_ref(), o.typ.as_ref(), &o.range)
+        }
+        TopDecl::AnonChip(ac) => {
+            let chip_node_id = ctx.add_gate(AddNodeOpts {
+                gate_class: gc::MICROCHIP_ALT,
+                source_range: ac.range.clone(),
+                ports: GateIO::default(),
+                ..Default::default()
+            });
+            if let Some(node) = ctx.builder.module.nodes.get_mut(&chip_node_id) {
+                node.kind = NodeKind::Chip;
+                if ac.open {
+                    std::sync::Arc::make_mut(&mut node.properties)
+                        .insert(intern_static("_open"), Literal::Bool(true));
+                }
+            }
+            // Tag pre-declared nodes with chip_id.
+            let saved = ctx.current_anon_chip.take();
+            ctx.current_anon_chip = Some(chip_node_id);
+            for s in &ac.body.stmts {
+                match s {
+                    Stmt::Var(v) => pre_declare_var(ctx, v),
+                    Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
+                    Stmt::Array(a) => pre_declare_array(ctx, a),
+                    Stmt::In(i) => pre_declare_input(ctx, i),
+                    _ => {}
+                }
+            }
+            ctx.current_anon_chip = saved;
+        }
+        _ => {}
+    }
+}
+
+pub(super) fn type_of_type_expr(t: &TypeExpr) -> Type {
+    match t {
+        TypeExpr::Name { name, .. } => match name.as_str() {
+            "bool" => Type::Bool,
+            "int" => Type::Int,
+            "float" => Type::Float,
+            "string" => Type::String,
+            "vector" => Type::Vector,
+            "rotator" => Type::Rotator,
+            "quat" => Type::Quat,
+            "color" => Type::Color,
+            "entity" => Type::Entity,
+            "character" => Type::Character,
+            "controller" => Type::Controller,
+            "brick" => Type::Brick,
+            "prefab" => Type::Prefab,
+            "exec" => Type::Exec,
+            "any" => Type::Any,
+            _ => Type::Any,
+        },
+        TypeExpr::Ref { inner, .. } => Type::Ref(Box::new(type_of_type_expr(inner))),
+        TypeExpr::Array { inner, .. } => Type::Array(Box::new(type_of_type_expr(inner))),
+        TypeExpr::Tuple { fields, .. } => {
+            Type::Tuple(fields.iter().map(type_of_type_expr).collect())
+        }
+        TypeExpr::Union { options, .. } => {
+            Type::Union(options.iter().map(type_of_type_expr).collect())
+        }
+        TypeExpr::Record { fields, .. } => Type::Record(
+            fields
+                .iter()
+                .map(|f| (f.name.clone(), type_of_type_expr(&f.typ)))
+                .collect(),
+        ),
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn is_entity_family(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab
+    )
+}
+
+pub(super) fn unwrap_ref(t: &Type) -> Type {
+    match t {
+        Type::Ref(inner) => inner.as_ref().clone(),
+        other => other.clone(),
+    }
+}
+
+/// Default initial literal for Pseudo_Var data structs. Only covers
+/// primitive types that have a clean wire_graph_variant mapping.
+/// Object/entity types are omitted — the game defaults them correctly.
+/// Default initial literal for Pseudo_Var data structs so the game knows
+/// the variable's wire_graph_variant type. Every Var must have one.
+pub(super) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
+    match t {
+        Type::Bool => Some(Literal::Bool(false)),
+        Type::Int => Some(Literal::Int(0)),
+        Type::String => Some(Literal::String(String::new())),
+        Type::Vector => Some(Literal::Vector { x: 0.0, y: 0.0, z: 0.0 }),
+        Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab => {
+            Some(Literal::Object)
+        }
+        _ => Some(Literal::Float(0.0)),
+    }
+}
+
+/// Fold a constant-literal expression to a [`Literal`] (used for var/array
+/// initial values). Returns `None` for anything that isn't a compile-time
+/// constant. Shared with the type checker so both agree on what's a literal.
+pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
+    match e {
+        Expr::IntLit { value, .. } => Some(Literal::Int(*value)),
+        Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
+        Expr::BoolLit { value, .. } => Some(Literal::Bool(*value)),
+        Expr::StringLit { value, .. } => Some(Literal::String(value.clone())),
+        // Negative numeric literals: `-5`, `-1.0`.
+        Expr::UnOp { op, operand, .. } if op == "-" => match expr_to_literal(operand)? {
+            Literal::Int(n) => Some(Literal::Int(-n)),
+            Literal::Float(f) => Some(Literal::Float(-f)),
+            _ => None,
+        },
+        // Asset reference `$Type/Name` — inlined into the gate's component data.
+        Expr::AssetRef { asset_type, asset_name, .. } => Some(Literal::Asset {
+            asset_type: asset_type.clone(),
+            asset_name: asset_name.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// Fold a single array-literal element to a constant [`Literal`]. Spreads have
+/// no constant form (they're only valid in exec-context assignments), so they
+/// fold to `None` — which makes the all-literal length check fail and the
+/// initializer is left empty (the type checker has already reported the error).
+fn array_elem_literal(el: &ArrayElem) -> Option<Literal> {
+    match el {
+        ArrayElem::Item(e) => expr_to_literal(e),
+        ArrayElem::Spread(_) => None,
+    }
+}
+
+pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
+    let inner_type = d
+        .typ
+        .as_ref()
+        .map(type_of_type_expr)
+        .or_else(|| d.init.as_ref().map(|e| ctx.type_of(e)))
+        .unwrap_or(Type::Any);
+
+    // `var foo: T[]` is an array — desugar to an ArrayVar gate (same as an
+    // `array foo: T[]` declaration) so the array methods actually work. A
+    // `= [..]` initializer carries its constant literals like `array` does.
+    if let Type::Array(elem) = &inner_type {
+        let elem_type = elem.as_ref().clone();
+        let mut properties = HashMap::new();
+        if let Some(Expr::Array { elements, .. }) = &d.init {
+            let lits: Vec<Literal> = elements.iter().filter_map(array_elem_literal).collect();
+            if lits.len() == elements.len() {
+                properties.insert(intern_static("InitialValue"), Literal::Array(lits));
+            }
+        }
+        let node_id = ctx.add_gate(AddNodeOpts {
+            gate_class: gc::PSEUDO_ARRAY_VAR,
+            source_range: d.range.clone(),
+            ports: GateIO {
+                inputs: vec![],
+                outputs: vec![PortSpec {
+                    name: *sym::ARRAY_VAR_REF,
+                    ty: Type::Ref(Box::new(Type::Array(Box::new(elem_type.clone())))),
+                }],
+            },
+            properties,
+            note: None,
+            ..Default::default()
+        });
+        ctx.scope.insert(
+            d.name.clone(),
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: elem_type,
+                get_node_for_handler: None,
+                storage: VarStorage::Array,
+            }),
+        );
+        return;
+    }
+
+    let init_lit = d
+        .init
+        .as_ref()
+        .and_then(expr_to_literal)
+        .or_else(|| default_literal_for_var_type(&inner_type));
+    let mut properties = HashMap::new();
+    if let Some(lit) = init_lit {
+        properties.insert(*sym::INITIAL_VALUE, lit);
+    }
+
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::PSEUDO_VAR,
+        source_range: d.range.clone(),
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: inner_type.clone(),
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(inner_type.clone())),
+                },
+            ],
+        },
+        properties,
+        note: None,
+        ..Default::default()
+    });
+    ctx.scope.insert(
+        d.name.clone(),
+        Binding::Var(VarRecord {
+            node_id,
+            inner_type,
+            get_node_for_handler: None,
+            storage: VarStorage::Var,
+        }),
+    );
+}
+
+pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
+    let annotated = d.typ.as_ref().map(type_of_type_expr);
+    let rhs_type = ctx.type_of(&d.init);
+    let inner_type = annotated.unwrap_or_else(|| unwrap_ref(&rhs_type));
+
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::BUFFER_TICKS,
+        source_range: d.range.clone(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::INPUT,
+                    ty: inner_type.clone(),
+                },
+                PortSpec {
+                    name: *sym::TICKS_TO_WAIT,
+                    ty: Type::Int,
+                },
+            ],
+            outputs: vec![PortSpec {
+                name: *sym::OUTPUT,
+                ty: inner_type.clone(),
+            }],
+        },
+        properties: [(*sym::TICKS_TO_WAIT, Literal::Int(1))].into(),
+        note: None,
+        ..Default::default()
+    });
+    ctx.scope.insert(
+        d.name.clone(),
+        Binding::Buffer(NodeRecord {
+            node_id,
+            ty: inner_type,
+        }),
+    );
+}
+
+pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
+    let elem_type = type_of_type_expr(&d.element_type);
+    // Constant initializer (`array foo: int[] = [1, 2, 3]`): every element must
+    // be a literal. Carry the values as an `InitialValue` property the emitter
+    // writes straight into the ArrayVar's array variant (no runtime gates).
+    let mut properties = HashMap::new();
+    if !d.init.is_empty() {
+        let lits: Vec<Literal> = d.init.iter().filter_map(array_elem_literal).collect();
+        if lits.len() == d.init.len() {
+            properties.insert(intern_static("InitialValue"), Literal::Array(lits));
+        }
+    }
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::PSEUDO_ARRAY_VAR,
+        source_range: d.range.clone(),
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec {
+                name: *sym::ARRAY_VAR_REF,
+                ty: Type::Ref(Box::new(Type::Array(Box::new(elem_type.clone())))),
+            }],
+        },
+        properties,
+        note: None,
+        ..Default::default()
+    });
+    ctx.scope.insert(
+        d.name.clone(),
+        Binding::Var(VarRecord {
+            node_id,
+            inner_type: elem_type,
+            get_node_for_handler: None,
+            storage: VarStorage::Array,
+        }),
+    );
+}
+
+pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
+    let t = type_of_type_expr(&d.typ);
+    let node_id = ctx
+        .builder
+        .add_input(&mut ctx.ids, &d.name, t.clone(), d.range.clone());
+    ctx.scope.insert(
+        d.name.clone(),
+        Binding::Input(NodeRecord { node_id, ty: t }),
+    );
+}
+
+pub(super) fn pre_declare_output(
+    ctx: &mut LowerCtx,
+    name: &str,
+    value: Option<&Expr>,
+    typ: Option<&TypeExpr>,
+    range: &SourceRange,
+) {
+    let t = if let Some(v) = value {
+        unwrap_ref(&ctx.type_of(v))
+    } else if let Some(te) = typ {
+        type_of_type_expr(te)
+    } else {
+        Type::Any
+    };
+    let node_id = ctx
+        .builder
+        .add_output(&mut ctx.ids, name, t.clone(), range.clone());
+    ctx.scope.insert(
+        name.to_string(),
+        Binding::Output(NodeRecord { node_id, ty: t }),
+    );
+}

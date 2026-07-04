@@ -1,0 +1,5968 @@
+{
+  "allBrickAssets": [
+    "B_1x1_Gate_WheelEngineAudioReference",
+    "B_Joint_Wheel_Micro",
+    "B_Joint_Wheel",
+    "B_Joint_Socket_Micro",
+    "B_Joint_Socket",
+    "B_Joint_Servo_Micro",
+    "B_Joint_Servo",
+    "B_Joint_Motor_Micro",
+    "B_Joint_Motor",
+    "B_1x1_Gate_Pseudo_QueueTicks",
+    "B_1x1_Gate_ServerUptime",
+    "B_1x1_Gate_Pseudo_QueueSeconds",
+    "B_1x1_Gate_Pseudo_Dampen",
+    "B_1x1_Gate_Pseudo_Tween",
+    "B_1x1_Gate_Pseudo_BufferTicks",
+    "B_1x1_Gate_Pseudo_Timer",
+    "B_1x1_Gate_Pseudo_BufferSeconds",
+    "B_1x1_Gate_OneShotAudioReference",
+    "B_1x1_Gate_ProjectileReference",
+    "B_1x1_Gate_PickupReference",
+    "B_1x1_Gate_ParticleReference",
+    "B_1x1F_Round",
+    "B_GoalPoint",
+    "B_CheckPoint",
+    "B_Button_Square_Pressed",
+    "B_Button_Square",
+    "B_Button_Pressed",
+    "B_Button",
+    "B_1x1_Gate_Fake_Gamemode_RoundStartEvent",
+    "B_1x1_Gate_Fake_Gamemode_RoundEndEvent",
+    "B_1x1_Gate_Fake_Gamemode_ControllerLeftEvent",
+    "B_1x1_Gate_Fake_Gamemode_ControllerJoinedEvent",
+    "B_1x1_Gate_Fake_Gamemode_CharacterSpawnedEvent",
+    "B_Bot_Spawn_Point",
+    "B_2x2_Thruster",
+    "B_1x1_Gate_Fake_Gamemode_CharacterDiedEvent",
+    "B_1x1_Gate_Exec_Var_Set",
+    "B_1x1_Gate_Exec_Var_Increment",
+    "B_1x1_Gate_Expr_VecScale",
+    "B_1x1_Gate_Expr_VecRotationToDirection",
+    "B_1x1_Gate_Exec_Var_Get",
+    "B_1x1_Gate_Expr_String_Trim",
+    "B_1x1_Gate_Expr_String_ToUpper",
+    "B_1x1_Gate_Exec_Union",
+    "B_1x1_Gate_Exec_Sweep",
+    "B_1x1_Gate_Exec_Random",
+    "B_1x1_Gate_Exec_PrintToConsole",
+    "B_1x1_Gate_Exec_PrefabSpawner",
+    "B_1x1_Gate_Exec_Gamemode_IncrementLeaderboardValue",
+    "B_1x1_Gate_Exec_Gamemode_GetTeamName",
+    "B_1x1_Gate_Exec_Gamemode_GetTeamLeaderboardValue",
+    "B_1x1_Gate_Exec_Gamemode_GetTeamByName",
+    "B_1x1_Gate_Exec_Gamemode_GetTeam",
+    "B_1x1_Gate_Exec_Gamemode_GetLeaderboardValue",
+    "B_1x1_Gate_Exec_Gamemode_GetCurrentRound",
+    "B_1x1_Gate_Exec_Gamemode_FillArrayFromTeamMembers",
+    "B_1x1_Gate_Exec_Entity_SetFrozen",
+    "B_1x1_Gate_Exec_Entity_SetAngularVelocity",
+    "B_1x1_Gate_Exec_Entity_RelativeTeleport",
+    "B_1x1_Gate_Exec_Entity_PlayAudioAt",
+    "B_1x1_Gate_Exec_Entity_GetVelocity",
+    "B_1x1_Gate_Exec_Entity_GetRotation",
+    "B_1x1_Gate_Exec_Entity_GetLocationRotation",
+    "B_1x1_Gate_Exec_Entity_GetLocation",
+    "B_1x1_Gate_Exec_Controller_GetUserName",
+    "B_1x1_Gate_Exec_Controller_GetUserId",
+    "B_1x1_Gate_Exec_Controller_GetFromEntity",
+    "B_1x1_Gate_Exec_Controller_GetDisplayName",
+    "B_1x1_Gate_Exec_Controller_DisplayText",
+    "B_1x1_Gate_Exec_ChatCommand",
+    "B_1x1_Gate_Exec_Character_ShowHint",
+    "B_1x1_Gate_Exec_Character_SetTempPermission",
+    "B_1x1_Gate_Exec_ArrayVar_Sum",
+    "B_1x1_Gate_Exec_ArrayVar_Sort",
+    "B_1x1_Gate_Exec_ArrayVar_Slice",
+    "B_1x1_Gate_Exec_ArrayVar_Shuffle",
+    "B_1x1_Gate_Exec_ArrayVar_SetAtIndex",
+    "B_1x1_Gate_Exec_ArrayVar_Reverse",
+    "B_1x1_Gate_Exec_ArrayVar_Resize",
+    "B_1x1_Gate_Exec_ArrayVar_RemoveAtIndex",
+    "B_1x1_Gate_Exec_ArrayVar_Fill",
+    "B_1x1_Gate_Exec_ArrayVar_CopyFrom",
+    "B_1x1_Gate_Exec_ArrayVar_Clear",
+    "B_1x1_Gate_Exec_ArrayVar_Average",
+    "B_1x1_Gate_Exec_ArrayVar_Append",
+    "B_Joint_Wheel_Suspension",
+    "B_Joint_Wheel_Micro_Suspension",
+    "B_Joint_Fixed",
+    "B_Joint_Bearing_Micro",
+    "B_Joint_Bearing",
+    "B_1x1_Gate_DeltaTime",
+    "B_Vehicle_Engine",
+    "B_Switch_Test",
+    "B_Switch_Flipped",
+    "B_SpawnPoint",
+    "B_1x1_Gate_AudioReference",
+    "B_Seat",
+    "B_1x1_Gate_Variable_Array",
+    "B_1x1_Reroute_Node",
+    "B_1x1_Gate_Expr_String_ToLower",
+    "B_2x2F_Target",
+    "B_1x1_Gate_ItemReference",
+    "B_2x2F_Speaker",
+    "B_1x1_SoundEmitter",
+    "B_1x1_Gate_WheelEngineSlim",
+    "B_1x1_Gate_Internal_ZoneEvent_BrickRemoved",
+    "B_1x1_Gate_WeightBrick",
+    "B_1x1_Gate_SeatControlSplitter",
+    "B_1x1F_Speaker",
+    "B_1x1_Gate_Clock",
+    "B_1x1_Gate_Expr_String_Substring",
+    "B_1x1_Gate_Exec_PlayGlobalAudio",
+    "B_1x1_Gate_Exec_Gamemode_TeamWins",
+    "B_1x1_Gate_Expr_String_StartsWith",
+    "B_1x1_Gate_Exec_Gamemode_SetTeamPinned",
+    "B_1x1_Gate_Exec_Gamemode_SetTeamLeaderboardValue",
+    "B_1x1_Gate_Exec_Gamemode_SetTeam",
+    "B_1x1_Gate_Exec_Gamemode_SetLeaderboardValue",
+    "B_1x1_Gate_Expr_String_Split",
+    "B_1x1_Gate_Expr_String_Replace",
+    "B_1x1_Gate_Expr_String_ParseNumber",
+    "B_1x1_Gate_Exec_Gamemode_PlayerWins",
+    "B_1x1_Gate_Expr_SplitColor",
+    "B_1x1_Gate_Expr_Select",
+    "B_1x1_Gate_Expr_Round",
+    "B_1x1_Gate_Expr_NearlyEqual",
+    "B_1x1_Gate_Expr_MathTanh",
+    "B_1x1_Gate_Expr_MathTan",
+    "B_1x1_Gate_Internal_ZoneEvent_BrickChanged",
+    "B_1x1_Gate_Expr_MathSubtract",
+    "B_1x1_Gate_Internal_ReadBrickGrid",
+    "B_1x1_Gate_Expr_MathSqrt",
+    "B_1x1_Gate_Expr_MathModulo",
+    "B_1x1_Gate_Exec_Gamemode_IncrementTeamLeaderboardValue",
+    "B_1x1_Gate_Internal_CharacterZoneEvent_Left",
+    "B_1x1_Gate_Internal_CharacterZoneEvent_Entered",
+    "B_1x1_Gate_Exec_Gamemode_FillArrayFromPlayers",
+    "B_1x1_Gate_Expr_MathMin",
+    "B_1x1_Gate_FontReference",
+    "B_1x1_Gate_Expr_VecNormalize",
+    "B_1x1_Gate_Exec_Entity_Teleport",
+    "B_1x1_Gate_Exec_Entity_SetVelocity",
+    "B_1x1_Gate_Exec_Entity_SetRotation",
+    "B_1x1_Gate_Exec_Entity_SetLocationRotation",
+    "B_1x1_Gate_Exec_Entity_SetLocation",
+    "B_1x1_Gate_Exec_Entity_SetLinearVelocity",
+    "B_1x1_Gate_Exec_Entity_SetGravityDirection",
+    "B_1x1_Gate_Exec_Entity_GetLinearVelocity",
+    "B_1x1_Gate_Exec_Entity_GetAngularVelocity",
+    "B_1x1_Gate_Expr_VecMagnitudeSquared",
+    "B_1x1_Gate_Expr_VecMagnitude",
+    "B_1x1_Gate_Expr_VecDotProduct",
+    "B_1x1_Gate_Expr_VecDistanceSquared",
+    "B_1x1_Gate_Exec_Entity_AddVelocity",
+    "B_1x1_Gate_Expr_VecDistance",
+    "B_1x1_Gate_Exec_Entity_AddLocationRotation",
+    "B_1x1_Gate_Exec_Controller_ShowStatusMessage",
+    "B_1x1_Gate_Exec_Controller_SetCanRespawn",
+    "B_1x1_Gate_Exec_Controller_IsTrustedByBrickOwner",
+    "B_1x1_Gate_Exec_Controller_HasPermission",
+    "B_1x1_Gate_Exec_Character_SetInventoryEntry",
+    "B_1x1_Gate_Exec_Character_SetDamage",
+    "B_1x1_Gate_Expr_MathMax",
+    "B_1x1_Gate_Exec_Character_IncDamage",
+    "B_1x1_Gate_Expr_VecCrossProduct",
+    "B_1x1_Gate_Expr_Swap",
+    "B_1x1_Gate_Expr_String_ParseInt",
+    "B_1x1_Gate_Expr_String_Length",
+    "B_1x1_Gate_Expr_MathLogBase",
+    "B_1x1_Gate_Expr_String_FormatText",
+    "B_1x1_Gate_Expr_String_Find",
+    "B_1x1_Gate_Expr_MathLn",
+    "B_1x1_Gate_Expr_String_EndsWith",
+    "B_1x1_Gate_Expr_String_Contains",
+    "B_1x1_Gate_Exec_Character_GetFromController",
+    "B_1x1_Gate_Exec_Character_GetDamage",
+    "B_1x1_Gate_Exec_Character_GetAim",
+    "B_1x1_Gate_Expr_String_Concatenate",
+    "B_1x1_Gate_Exec_Branch",
+    "B_1x1_Gate_Exec_ArrayVar_Swap",
+    "B_1x1_Gate_Expr_SplitVector",
+    "B_1x1_Gate_Expr_MathSinh",
+    "B_1x1_Gate_Exec_ArrayVar_Push",
+    "B_1x1_Gate_Expr_MathSin",
+    "B_1x1_Gate_Exec_ArrayVar_Pop",
+    "B_1x1_Gate_Exec_ArrayVar_Min",
+    "B_1x1_Gate_Exec_ArrayVar_Max",
+    "B_1x1_Gate_Expr_MathSign",
+    "B_1x1_Gate_Exec_ArrayVar_Insert",
+    "B_1x1_Gate_Exec_ArrayVar_GetLength",
+    "B_1x1_Gate_Exec_ArrayVar_Get",
+    "B_1x1_Gate_Exec_ArrayVar_Find",
+    "B_1x1_Gate_Variable",
+    "B_DestinationPoint",
+    "B_1x1_Gate_Expr_MathRadiansToDegrees",
+    "B_1x1_Gate_Expr_MathPow",
+    "B_1x1_Gate_Expr_MathNegate",
+    "B_1x1_Gate_Expr_MathMultiply",
+    "B_1x1_Gate_Expr_MathModuloFloored",
+    "B_1x1_Gate_Expr_MathDegreesToRadians",
+    "B_1x1_Gate_Expr_MathCosh",
+    "B_1x1_Gate_Expr_MathCos",
+    "B_1x1_Gate_Expr_MathClamp",
+    "B_1x1_Gate_Expr_MathBlend",
+    "B_1x1_Gate_Expr_MathAtanh",
+    "B_1x1_Gate_Expr_MathAtan2",
+    "B_1x1_Microchip",
+    "B_1x1_Gate_Expr_MathAtan",
+    "B_1x1_Gate_MicrochipOutput",
+    "B_1x1_Gate_Expr_LogicalXOR",
+    "B_1x1_Gate_Expr_LogicalOR",
+    "B_1x1_Gate_MicrochipInput",
+    "B_1x1_Gate_Expr_LogicalNOT",
+    "B_1x1_Gate_Expr_LogicalNOR",
+    "B_1x1_Gate_Expr_LogicalNAND",
+    "B_1x1_Gate_Expr_LogicalAND",
+    "B_1x1_Gate_Expr_Floor",
+    "B_1x1_Gate_Expr_EdgeDetector",
+    "B_1x1_Gate_Expr_BitwiseShiftRight",
+    "B_1x1_Gate_Expr_BitwiseShiftLeft",
+    "B_1x1_Gate_Expr_BitwiseOR",
+    "B_1x1_Gate_Expr_BitwiseNOT",
+    "B_1x1_Gate_Expr_BitwiseNOR",
+    "B_1x1_Gate_Expr_BitwiseNAND",
+    "B_1x1_Gate_Expr_BitwiseBitCount",
+    "B_1x1_Gate_Expr_BitwiseAND",
+    "B_1x1_Gate_Expr_MathExp",
+    "B_1x1_Gate_Expr_MathEasing",
+    "B_1x1_Gate_Expr_MathDivide",
+    "B_1x1_Gate_Expr_MathAsinh",
+    "B_1x1_Gate_Expr_MathAsin",
+    "B_1x1_Gate_Expr_MathAdd",
+    "B_1x1_Gate_Expr_MathAcosh",
+    "B_1x1_Gate_Expr_MathAcos",
+    "B_1x1_Gate_Expr_MathAbs",
+    "B_1x1_Gate_Expr_MakeVector",
+    "B_1x1_Gate_Expr_MakeColor",
+    "B_1x1_Gate_Expr_CompareNotEqual",
+    "B_1x1_Gate_Expr_CompareLessOrEqual",
+    "B_1x1_Gate_Expr_CompareLess",
+    "B_1x1_Gate_Expr_CompareGreaterOrEqual",
+    "B_1x1_Gate_Expr_CompareGreater",
+    "B_1x1_Gate_Expr_CompareEqual",
+    "B_1x1_Gate_Expr_Ceil",
+    "B_1x1_Gate_Expr_BitwiseXOR"
+  ],
+  "allComponentTypes": [
+    "BrickComponentType_WireGraph_WheelEngineAudioReference",
+    "Component_Internal_Joint_Wheel",
+    "Component_Internal_Socket",
+    "Component_Internal_Servo",
+    "Component_Internal_Motor",
+    "BrickComponentType_WireGraphPseudo_QueueTicks",
+    "BrickComponentType_WireGraph_ServerUptime",
+    "BrickComponentType_WireGraphPseudo_QueueSeconds",
+    "BrickComponentType_WireGraphPseudo_Dampen",
+    "BrickComponentType_WireGraphPseudo_Tween",
+    "BrickComponentType_WireGraphPseudo_BufferTicks",
+    "BrickComponentType_WireGraphPseudo_Timer",
+    "BrickComponentType_WireGraphPseudo_BufferSeconds",
+    "BrickComponentType_WireGraph_OneShotAudioReference",
+    "BrickComponentType_WireGraph_ProjectileReference",
+    "BrickComponentType_WireGraph_PickupReference",
+    "BrickComponentType_WireGraph_ParticleReference",
+    "Component_Internal_ServoSlider",
+    "Component_Internal_Slider",
+    "Component_GoalPoint",
+    "Component_ItemSpawn",
+    "Component_PointLight",
+    "Component_CheckPoint",
+    "Component_SpotLight",
+    "Component_Internal_AnimatedButton",
+    "Component_Switch",
+    "Component_TextDisplay",
+    "Component_Touch",
+    "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent",
+    "BrickComponentType_WireGraph_Fake_Gamemode_RoundEndEvent",
+    "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent",
+    "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent",
+    "BrickComponentType_WireGraph_Fake_Gamemode_CharacterSpawnedEvent",
+    "Component_BotSpawn",
+    "Component_Internal_Thruster",
+    "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDiedEvent",
+    "BrickComponentType_WireGraph_Exec_Var_Set",
+    "BrickComponentType_WireGraph_Exec_Var_Increment",
+    "BrickComponentType_WireGraph_Expr_VecScale",
+    "BrickComponentType_WireGraph_Expr_VecRotationToDirection",
+    "BrickComponentType_WireGraph_Exec_Var_Get",
+    "BrickComponentType_WireGraph_Expr_String_Trim",
+    "BrickComponentType_WireGraph_Expr_String_ToUpper",
+    "BrickComponentType_WireGraph_Exec_Union",
+    "BrickComponentType_WireGraph_Exec_Sweep",
+    "BrickComponentType_WireGraph_Exec_Random",
+    "BrickComponentType_WireGraph_Exec_PrintToConsole",
+    "BrickComponentType_WireGraph_Exec_PrefabSpawner",
+    "BrickComponentType_WireGraph_Exec_Gamemode_IncrementLeaderboardValue",
+    "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamName",
+    "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue",
+    "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamByName",
+    "BrickComponentType_WireGraph_Exec_Gamemode_GetTeam",
+    "BrickComponentType_WireGraph_Exec_Gamemode_GetLeaderboardValue",
+    "BrickComponentType_WireGraph_Exec_Gamemode_GetCurrentRound",
+    "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers",
+    "BrickComponentType_WireGraph_Exec_Entity_SetFrozen",
+    "BrickComponentType_WireGraph_Exec_Entity_SetAngularVelocity",
+    "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport",
+    "Component_WireGraph_PlayAudioAt",
+    "BrickComponentType_WireGraph_Exec_Entity_GetVelocity",
+    "BrickComponentType_WireGraph_Exec_Entity_GetRotation",
+    "BrickComponentType_WireGraph_Exec_Entity_GetLocationRotation",
+    "BrickComponentType_WireGraph_Exec_Entity_GetLocation",
+    "BrickComponentType_WireGraph_Exec_Controller_GetUserName",
+    "BrickComponentType_WireGraph_Exec_Controller_GetUserId",
+    "BrickComponentType_WireGraph_Exec_Controller_GetFromEntity",
+    "BrickComponentType_WireGraph_Exec_Controller_GetDisplayName",
+    "BrickComponentType_WireGraph_Exec_Controller_DisplayText",
+    "BrickComponentType_WireGraph_Exec_ChatCommand",
+    "BrickComponentType_WireGraph_Exec_Character_ShowHint",
+    "BrickComponentType_WireGraph_Exec_Character_SetTempPermission",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Sum",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Sort",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Slice",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Shuffle",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Reverse",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Resize",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_RemoveAtIndex",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Fill",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_CopyFrom",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Clear",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Average",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Append",
+    "Component_Internal_Joint_Wheel_Suspension",
+    "Component_Internal_Joint_Fixed",
+    "Component_Internal_Bearing",
+    "BrickComponentType_WireGraph_DeltaTime",
+    "Component_Internal_WheelEngine",
+    "Component_Internal_AnimatedSwitch",
+    "Component_SpawnPoint",
+    "BrickComponentType_WireGraph_AudioReference",
+    "Component_Internal_Seat",
+    "BrickComponentType_WireGraphPseudo_ArrayVar",
+    "Component_Internal_Rerouter",
+    "BrickComponentType_WireGraph_Expr_String_ToLower",
+    "Component_Target",
+    "BrickComponentType_WireGraph_ItemReference",
+    "Component_AudioEmitter",
+    "Component_OneShotAudioEmitter",
+    "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
+    "Component_Internal_WeightBrick",
+    "Component_Internal_InputSplitter",
+    "BrickComponentType_WireGraph_Expr_String_Substring",
+    "BrickComponentType_WireGraph_Exec_PlayGlobalAudio",
+    "BrickComponentType_WireGraph_Exec_Gamemode_TeamWins",
+    "BrickComponentType_WireGraph_Expr_String_StartsWith",
+    "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamPinned",
+    "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamLeaderboardValue",
+    "BrickComponentType_WireGraph_Exec_Gamemode_SetTeam",
+    "BrickComponentType_WireGraph_Exec_Gamemode_SetLeaderboardValue",
+    "BrickComponentType_WireGraph_Expr_String_Split",
+    "BrickComponentType_WireGraph_Expr_String_Replace",
+    "BrickComponentType_WireGraph_Expr_String_ParseNumber",
+    "BrickComponentType_WireGraph_Exec_Gamemode_PlayerWins",
+    "BrickComponentType_WireGraph_Expr_SplitColor",
+    "BrickComponentType_WireGraph_Expr_Select",
+    "BrickComponentType_WireGraph_Expr_Round",
+    "BrickComponentType_WireGraph_Expr_NearlyEqual",
+    "BrickComponentType_WireGraph_Expr_MathTanh",
+    "BrickComponentType_WireGraph_Expr_MathTan",
+    "BrickComponentType_Internal_ZoneEvent_BrickChanged",
+    "BrickComponentType_WireGraph_Expr_MathSubtract",
+    "BrickComponentType_Internal_ReadBrickGrid",
+    "BrickComponentType_WireGraph_Expr_MathSqrt",
+    "BrickComponentType_PrefabSpawn",
+    "Component_BrickPropertyChanger",
+    "Component_Button",
+    "Component_Damage",
+    "Component_Interact",
+    "Component_Internal_AnimatedPressurePlate",
+    "BrickComponentType_WireGraph_Expr_MathModulo",
+    "BrickComponentType_WireGraph_Exec_Gamemode_IncrementTeamLeaderboardValue",
+    "Component_Internal_AttachedZone",
+    "Component_Internal_MotorSlider",
+    "BrickComponentType_Internal_CharacterZoneEvent_Left",
+    "BrickComponentType_Internal_CharacterZoneEvent_Entered",
+    "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromPlayers",
+    "BrickComponentType_WireGraph_Expr_MathMin",
+    "BrickComponentType_WireGraph_FontReference",
+    "BrickComponentType_WireGraph_Expr_VecNormalize",
+    "BrickComponentType_WireGraph_Exec_Entity_Teleport",
+    "BrickComponentType_WireGraph_Exec_Entity_SetVelocity",
+    "BrickComponentType_WireGraph_Exec_Entity_SetRotation",
+    "BrickComponentType_WireGraph_Exec_Entity_SetLocationRotation",
+    "BrickComponentType_WireGraph_Exec_Entity_SetLocation",
+    "BrickComponentType_WireGraph_Exec_Entity_SetLinearVelocity",
+    "BrickComponentType_WireGraph_Exec_Entity_SetGravityDirection",
+    "BrickComponentType_WireGraph_Exec_Entity_GetLinearVelocity",
+    "BrickComponentType_WireGraph_Exec_Entity_GetAngularVelocity",
+    "BrickComponentType_WireGraph_Expr_VecMagnitudeSquared",
+    "BrickComponentType_WireGraph_Expr_VecMagnitude",
+    "BrickComponentType_WireGraph_Expr_VecDotProduct",
+    "BrickComponentType_WireGraph_Expr_VecDistanceSquared",
+    "BrickComponentType_WireGraph_Exec_Entity_AddVelocity",
+    "BrickComponentType_WireGraph_Expr_VecDistance",
+    "BrickComponentType_WireGraph_Exec_Entity_AddLocationRotation",
+    "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage",
+    "BrickComponentType_WireGraph_Exec_Controller_SetCanRespawn",
+    "BrickComponentType_WireGraph_Exec_Controller_IsTrustedByBrickOwner",
+    "BrickComponentType_WireGraph_Exec_Controller_HasPermission",
+    "Component_WireGraph_SetInventoryEntry",
+    "BrickComponentType_WireGraph_Exec_Character_SetDamage",
+    "BrickComponentType_WireGraph_Expr_MathMax",
+    "BrickComponentType_WireGraph_Exec_Character_IncDamage",
+    "BrickComponentType_WireGraph_Expr_VecCrossProduct",
+    "BrickComponentType_WireGraph_Expr_Swap",
+    "BrickComponentType_WireGraph_Expr_String_ParseInt",
+    "BrickComponentType_WireGraph_Expr_String_Length",
+    "BrickComponentType_WireGraph_Expr_MathLogBase",
+    "BrickComponentType_WireGraph_Expr_String_FormatText",
+    "BrickComponentType_WireGraph_Expr_String_Find",
+    "BrickComponentType_WireGraph_Expr_MathLn",
+    "BrickComponentType_WireGraph_Expr_String_EndsWith",
+    "BrickComponentType_WireGraph_Expr_String_Contains",
+    "BrickComponentType_WireGraph_Exec_Character_GetFromController",
+    "BrickComponentType_WireGraph_Exec_Character_GetDamage",
+    "BrickComponentType_WireGraph_Exec_Character_GetAim",
+    "BrickComponentType_WireGraph_Expr_String_Concatenate",
+    "BrickComponentType_WireGraph_Exec_Branch",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Swap",
+    "BrickComponentType_WireGraph_Expr_SplitVector",
+    "BrickComponentType_WireGraph_Expr_MathSinh",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Push",
+    "BrickComponentType_WireGraph_Expr_MathSin",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Pop",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Min",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Max",
+    "BrickComponentType_WireGraph_Expr_MathSign",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Insert",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Get",
+    "BrickComponentType_WireGraph_Exec_ArrayVar_Find",
+    "BrickComponentType_WireGraphPseudo_Var",
+    "BrickComponentType_Internal_TeleportDestination",
+    "BrickComponentType_WireGraph_Expr_MathRadiansToDegrees",
+    "BrickComponentType_WireGraph_Expr_MathPow",
+    "BrickComponentType_WireGraph_Expr_MathNegate",
+    "BrickComponentType_WireGraph_Expr_MathMultiply",
+    "BrickComponentType_WireGraph_Expr_MathModuloFloored",
+    "BrickComponentType_WireGraph_Expr_MathDegreesToRadians",
+    "BrickComponentType_WireGraph_Expr_MathCosh",
+    "BrickComponentType_WireGraph_Expr_MathCos",
+    "BrickComponentType_WireGraph_Expr_MathClamp",
+    "BrickComponentType_WireGraph_Expr_MathBlend",
+    "BrickComponentType_WireGraph_Expr_MathAtanh",
+    "BrickComponentType_WireGraph_Expr_MathAtan2",
+    "Component_Internal_Microchip",
+    "BrickComponentType_WireGraph_Expr_MathAtan",
+    "BrickComponentType_Internal_MicrochipOutput",
+    "BrickComponentType_WireGraph_Expr_LogicalXOR",
+    "BrickComponentType_WireGraph_Expr_LogicalOR",
+    "BrickComponentType_Internal_MicrochipInput",
+    "BrickComponentType_WireGraph_Expr_LogicalNOT",
+    "BrickComponentType_WireGraph_Expr_LogicalNOR",
+    "BrickComponentType_WireGraph_Expr_LogicalNAND",
+    "BrickComponentType_WireGraph_Expr_LogicalAND",
+    "BrickComponentType_WireGraph_Expr_Floor",
+    "BrickComponentType_WireGraph_Expr_EdgeDetector",
+    "BrickComponentType_WireGraph_Expr_BitwiseShiftRight",
+    "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft",
+    "BrickComponentType_WireGraph_Expr_BitwiseOR",
+    "BrickComponentType_WireGraph_Expr_BitwiseNOT",
+    "BrickComponentType_WireGraph_Expr_BitwiseNOR",
+    "BrickComponentType_WireGraph_Expr_BitwiseNAND",
+    "BrickComponentType_WireGraph_Expr_BitwiseBitCount",
+    "BrickComponentType_WireGraph_Expr_BitwiseAND",
+    "BrickComponentType_WireGraph_Expr_MathExp",
+    "BrickComponentType_WireGraph_Expr_MathEasing",
+    "BrickComponentType_WireGraph_Expr_MathDivide",
+    "BrickComponentType_WireGraph_Expr_MathAsinh",
+    "BrickComponentType_WireGraph_Expr_MathAsin",
+    "BrickComponentType_WireGraph_Expr_MathAdd",
+    "BrickComponentType_WireGraph_Expr_MathAcosh",
+    "BrickComponentType_WireGraph_Expr_MathAcos",
+    "BrickComponentType_WireGraph_Expr_MathAbs",
+    "BrickComponentType_WireGraph_Expr_MakeVector",
+    "BrickComponentType_WireGraph_Expr_MakeColor",
+    "BrickComponentType_WireGraph_Expr_CompareNotEqual",
+    "BrickComponentType_WireGraph_Expr_CompareLessOrEqual",
+    "BrickComponentType_WireGraph_Expr_CompareLess",
+    "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual",
+    "BrickComponentType_WireGraph_Expr_CompareGreater",
+    "BrickComponentType_WireGraph_Expr_CompareEqual",
+    "BrickComponentType_WireGraph_Expr_Ceil",
+    "BrickComponentType_WireGraph_Expr_BitwiseXOR"
+  ],
+  "allWirePortNames": [
+    "Control_DriveAndSteer",
+    "RER_Output",
+    "bEnabled",
+    "DriveSpeed",
+    "DrivePower",
+    "bSteerEnabled",
+    "Steer",
+    "SteerLimitDegree",
+    "SteerPower",
+    "bSuspensionEnabled",
+    "SuspensionStiffness",
+    "TicksToWait",
+    "SuspensionDamping",
+    "SuspensionTopOffset",
+    "SuspensionBottomOffset",
+    "JointDistance",
+    "bDriveWhenNotAttachedToEngine",
+    "bCanBrake",
+    "bAllowEngineSteerCorrect",
+    "ExecIn",
+    "DataIn1",
+    "DataIn2",
+    "Target",
+    "bReversed",
+    "Damping",
+    "DataIn3",
+    "Duration",
+    "DataIn4",
+    "DataIn5",
+    "DataIn6",
+    "DataIn7",
+    "DataIn8",
+    "OffsetLocation",
+    "OffsetLocation.X",
+    "OffsetLocation.Y",
+    "OffsetLocation.Z",
+    "OffsetRotation",
+    "OffsetRotation.Pitch",
+    "OffsetRotation.Yaw",
+    "OffsetRotation.Roll",
+    "LocationInterpMode",
+    "LocationSmoothTime",
+    "LocationMaxSpeed",
+    "SecondsToWait",
+    "RotationInterpMode",
+    "RotationSmoothTime",
+    "RotationMaxSpeed",
+    "TargetAngle",
+    "Power",
+    "SmoothTime",
+    "ActiveDamping",
+    "ForceLimit",
+    "bLimitAngle",
+    "LimitAngle",
+    "ZeroTicksToWait",
+    "Input",
+    "bAnglesArePercentages",
+    "Speed",
+    "bRotatePlayerGravityOnSpawn",
+    "PressSound",
+    "ReleaseSound",
+    "bAllowNearbyInteraction",
+    "bHiddenInteraction",
+    "PromptCustomLabel",
+    "ZeroSecondsToWait",
+    "RespawnTime",
+    "CorpseTimeout",
+    "GunSkill",
+    "Agression",
+    "ReactionTime",
+    "MovementRandomness",
+    "RunSpeed",
+    "HealthMultiplier",
+    "Jumpyness",
+    "bEnableManualControl",
+    "MovementAmount",
+    "AttackMovementAmount",
+    "AggroRange",
+    "AttackDamageMultiplier",
+    "bCanJump",
+    "bBackVision",
+    "bVisionRaycasting",
+    "bCanTargetPlayers",
+    "TargetPosition",
+    "TopSpeed",
+    "Exponent",
+    "bPositionsArePercentages",
+    "bCanTargetBots",
+    "ManualInput_Drive",
+    "ManualInput_Steer",
+    "bManualInput_Brake",
+    "bActiveBot",
+    "bSpawnEnable",
+    "bDeleteBot",
+    "MoveTarget",
+    "MoveTarget.X",
+    "MoveTarget.Y",
+    "MoveTarget.Z",
+    "MovementGoalDummy",
+    "BotName",
+    "SkinDummy",
+    "TeamCollisionChannel",
+    "bTeamCollision",
+    "bTeamCollision1",
+    "bTeamCollision2",
+    "bTeamCollision3",
+    "BotWeapon",
+    "Character",
+    "CustomMass",
+    "CustomMassVerticalOffset",
+    "DriveInterpSpeed",
+    "DriveAcceleratingPowerMultiplier",
+    "DriveBrakingPowerMultiplier",
+    "DriveDampingMultiplier",
+    "SteerPowerMultiplier",
+    "SteerInterpSpeed",
+    "CenterOfSteering",
+    "bTankSteering",
+    "TankSteerSpeedMultiplier",
+    "WaterDriveForce",
+    "WaterSteeringForce",
+    "AudioDescriptor",
+    "Force",
+    "Throttle",
+    "Pitch",
+    "Yaw",
+    "bSpawnLight",
+    "PickupClass",
+    "VarRef",
+    "Value",
+    "Exec",
+    "bPickupEnabled",
+    "bPickupRespawnOnMinigameReset",
+    "PickupMinigameResetRespawnDelay",
+    "bPickupAutoDisableOnPickup",
+    "PickupRespawnTime",
+    "bRenderTranslucentWhenDisabled",
+    "DamageMultiplier",
+    "WeaponSpeedMultiplier",
+    "ItemNameOverride",
+    "ProjectileOverride",
+    "PickupOffsetDirection",
+    "PickupOffsetDistance",
+    "PickupRotation",
+    "PickupRotation.Pitch",
+    "PickupRotation.Yaw",
+    "PickupRotation.Roll",
+    "ExecA",
+    "ExecB",
+    "PickupScale",
+    "bOverridePickupColors",
+    "PickupMeshColors",
+    "InteractSound",
+    "Origin",
+    "Origin.X",
+    "Origin.Y",
+    "Origin.Z",
+    "bPickupAnimationEnabled",
+    "PickupAnimationAxis",
+    "bPickupAnimationAxisLocal",
+    "PickupSpinSpeed",
+    "Function",
+    "Direction",
+    "PickupBobSpeed",
+    "PickupBobHeight",
+    "bEnable",
+    "PickupAnimationPhase",
+    "Direction.X",
+    "Direction.Y",
+    "Direction.Z",
+    "Distance",
+    "ExitOffset",
+    "Restart",
+    "Radius",
+    "bRelative",
+    "IgnoreEntity",
+    "Pause",
+    "Resume",
+    "Limit",
+    "Min",
+    "ExitOffset.X",
+    "ExitOffset.Y",
+    "bMatchBrickShape",
+    "Max",
+    "ExitOffset.Z",
+    "bRollCameraInThirdPerson",
+    "Brightness",
+    "Color",
+    "Color.B",
+    "Color.G",
+    "Text",
+    "OnTime",
+    "Zone",
+    "Color.R",
+    "Color.A",
+    "bUseBrickColor",
+    "bCastShadows",
+    "VolumeMultiplier",
+    "PitchMultiplier",
+    "InnerRadius",
+    "MaxDistance",
+    "Rotation",
+    "Rotation.Pitch",
+    "Rotation.Yaw",
+    "Rotation.Roll",
+    "InnerConeAngle",
+    "OuterConeAngle",
+    "bSpatialization",
+    "FocusAzimuth",
+    "NonFocusAzimuth",
+    "NonFocusVolumeAttenuation",
+    "bPlay",
+    "SpawnOffset",
+    "bEnableRepeat",
+    "RepeatTime",
+    "RepeatVariance",
+    "SpawnOffset.X",
+    "SpawnOffset.Y",
+    "SpawnOffset.Z",
+    "Font",
+    "Mass",
+    "SpawnOffsetRotation",
+    "SpawnOffsetRotation.Pitch",
+    "Skew",
+    "Prefab",
+    "Prefab.Path",
+    "Kerning",
+    "MassSize",
+    "MassSize.X",
+    "SpawnOffsetRotation.Yaw",
+    "SpawnOffsetRotation.Roll",
+    "Lifetime",
+    "MassSize.Y",
+    "MassSize.Z",
+    "MassOffset",
+    "MassOffset.X",
+    "MassOffset.Y",
+    "MassOffset.Z",
+    "Controller",
+    "Key",
+    "Team",
+    "LineHeight",
+    "LineOffset",
+    "Anchor",
+    "Anchor.X",
+    "Anchor.Y",
+    "Offset",
+    "TeamName",
+    "Offset.X",
+    "Offset.Y",
+    "Offset.Z",
+    "MaterialSlider",
+    "ShadingWidth",
+    "OutlineColor",
+    "bVisibility",
+    "bCollisionEnabled",
+    "bPinned",
+    "bCollisionEnabled_Player",
+    "ArrayVarRef",
+    "OutlineColor.B",
+    "bCollisionEnabled_Player1",
+    "bCollisionEnabled_Player2",
+    "bCollisionEnabled_Player3",
+    "OutlineColor.G",
+    "bCollisionEnabled_Weapon",
+    "bCollisionEnabled_Interaction",
+    "bPinPlayerToTeam",
+    "bFrozen",
+    "bCollisionEnabled_Physics",
+    "Entity",
+    "OutlineColor.R",
+    "OutlineColor.A",
+    "OutlineWidth",
+    "ScuffWidth",
+    "GraffitiDepthLimit",
+    "Player",
+    "bTeamWinsInstead",
+    "MaterialAlpha",
+    "AngularVelocity",
+    "AngularVelocity.X",
+    "GraffitiAngleLimit",
+    "GraffitiLayer",
+    "Face",
+    "bAlignToWedge",
+    "bOverrideColor",
+    "Typeface",
+    "AngularVelocity.Y",
+    "AngularVelocity.Z",
+    "Billboard",
+    "Material",
+    "Shading",
+    "bFlipShading",
+    "Destination",
+    "Outline",
+    "bSharpCorners",
+    "Source",
+    "Message",
+    "bSharpOutlines",
+    "bOverrideOutlineColor",
+    "bForeground",
+    "ConsoleTag",
+    "BeginTouchSound",
+    "EndTouchSound",
+    "Vector",
+    "Vector.X",
+    "Vector.Y",
+    "Vector.Z",
+    "Rotation.X",
+    "Rotation.Y",
+    "Rotation.Z",
+    "ZoneStartDistance",
+    "ZoneEndDistance",
+    "bIsBuildingZone",
+    "bIsLooseZone",
+    "bIsShareZone",
+    "Input.X",
+    "Input.Y",
+    "Input.Z",
+    "Scalar",
+    "LinearVelocity",
+    "LinearVelocity.X",
+    "AnchorX",
+    "AnchorY",
+    "PositionX",
+    "PositionY",
+    "Angle",
+    "ScaleX",
+    "ScaleY",
+    "FontSize",
+    "FontColor",
+    "FontColor.B",
+    "FontColor.G",
+    "FontColor.R",
+    "FontColor.A",
+    "Start",
+    "Length",
+    "OutlineSize",
+    "Transition",
+    "TextId",
+    "Prefix",
+    "bCaseSensitive",
+    "LinearVelocity.Y",
+    "LinearVelocity.Z",
+    "Delimiter",
+    "HintTitle",
+    "HintText",
+    "Search",
+    "Replacement",
+    "InputA",
+    "InputA.X",
+    "InputA.Y",
+    "InputA.Z",
+    "InputB",
+    "InputB.X",
+    "InputB.Y",
+    "InputB.Z",
+    "bPermissionEnable",
+    "Input.B",
+    "Input.G",
+    "Input.R",
+    "Input.A",
+    "bSelectB",
+    "bDescending",
+    "Tolerance",
+    "Count",
+    "SourceRef",
+    "bSwap",
+    "bCanRespawn",
+    "Index",
+    "Size",
+    "FormatString",
+    "InputC",
+    "InputD",
+    "InputE",
+    "InputF",
+    "InputG",
+    "Base",
+    "Slot",
+    "Suffix",
+    "Damage",
+    "Blend",
+    "Amount",
+    "Separator",
+    "bCond",
+    "IndexA",
+    "IndexB",
+    "X",
+    "Y",
+    "Z",
+    "RER_Input",
+    "DistanceToTarget",
+    "R",
+    "G",
+    "B",
+    "A",
+    "bHeld",
+    "CurrentAngle",
+    "bStopped",
+    "DeltaTime",
+    "Output",
+    "ExecOut",
+    "bOutput",
+    "bInputA",
+    "bInputB",
+    "bOutOfBounds",
+    "bInput",
+    "InputForward",
+    "TextIdOut",
+    "DisplayName",
+    "bJustHit",
+    "UserId",
+    "UserName",
+    "Left",
+    "bWelded",
+    "RoundNumber",
+    "Name",
+    "CurrentPosition",
+    "bShowPickupEnabled",
+    "ThisDestination",
+    "bTouching",
+    "FocusCharacter",
+    "bSuccess",
+    "PressCount",
+    "Right",
+    "bPulseOnRisingEdge",
+    "bIsEmpty",
+    "DataOut1",
+    "ExecOutA",
+    "TouchCount",
+    "bFound",
+    "DataOut2",
+    "Arguments",
+    "bHasPermission",
+    "bIsTrusted",
+    "DataOut3",
+    "DataOut4",
+    "OutputB",
+    "DataOut5",
+    "DataOut6",
+    "BrickGrid",
+    "DataOut7",
+    "DataOut8",
+    "Time",
+    "Hit",
+    "InputRight",
+    "SpawnedCharacter",
+    "Uptime",
+    "SittingCharacter",
+    "SpawnedEntity",
+    "bSettled",
+    "ZoneRef",
+    "bPulseOnFallingEdge",
+    "ExecOutB",
+    "Miss",
+    "Expired",
+    "Arrived",
+    "bOccupied",
+    "DamageLimit",
+    "HitLocation",
+    "HitNormal",
+    "OccupantCount",
+    "HitDistance",
+    "bPressedJump",
+    "HitEntity",
+    "CharacterThatJustHit",
+    "bIsOccupied",
+    "WeaponThatJustHit",
+    "WeaponNameThatJustHit"
+  ],
+  "componentCount": 247,
+  "components": [
+    {
+      "bricks": [
+        "B_1x1_Gate_Internal_CharacterZoneEvent_Entered"
+      ],
+      "class": "BrickComponentType_Internal_CharacterZoneEvent_Entered",
+      "inputs": [
+        "Zone",
+        "bCollisionEnabled_Player",
+        "bCollisionEnabled_Player1",
+        "bCollisionEnabled_Player2",
+        "bCollisionEnabled_Player3"
+      ],
+      "outputs": [
+        "Character",
+        "Exec"
+      ],
+      "structName": "BrickComponentData_Internal_CharacterZoneEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Internal_CharacterZoneEvent_Left"
+      ],
+      "class": "BrickComponentType_Internal_CharacterZoneEvent_Left",
+      "inputs": [
+        "Zone",
+        "bCollisionEnabled_Player",
+        "bCollisionEnabled_Player1",
+        "bCollisionEnabled_Player2",
+        "bCollisionEnabled_Player3"
+      ],
+      "outputs": [
+        "Character",
+        "Exec"
+      ],
+      "structName": "BrickComponentData_Internal_CharacterZoneEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_MicrochipInput"
+      ],
+      "class": "BrickComponentType_Internal_MicrochipInput",
+      "inputs": [
+        "RER_Input"
+      ],
+      "outputs": [
+        "RER_Output"
+      ],
+      "structName": "BrickComponentData_Internal_MicrochipInput"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_MicrochipOutput"
+      ],
+      "class": "BrickComponentType_Internal_MicrochipOutput",
+      "inputs": [
+        "RER_Input"
+      ],
+      "outputs": [
+        "RER_Output"
+      ],
+      "structName": "BrickComponentData_Internal_MicrochipOutput"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Internal_ReadBrickGrid"
+      ],
+      "class": "BrickComponentType_Internal_ReadBrickGrid",
+      "inputs": [],
+      "outputs": [
+        "BrickGrid"
+      ],
+      "structName": "BrickComponentData_Internal_ReadBrickGrid"
+    },
+    {
+      "bricks": [
+        "B_DestinationPoint"
+      ],
+      "class": "BrickComponentType_Internal_TeleportDestination",
+      "inputs": [],
+      "outputs": [
+        "ThisDestination"
+      ],
+      "structName": "BrickComponentData_TeleportDestination"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Internal_ZoneEvent_BrickChanged"
+      ],
+      "class": "BrickComponentType_Internal_ZoneEvent_BrickChanged",
+      "inputs": [
+        "Zone"
+      ],
+      "outputs": [
+        "Exec"
+      ],
+      "structName": "BrickComponentData_Internal_ZoneEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Internal_ZoneEvent_BrickRemoved"
+      ],
+      "class": "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
+      "inputs": [
+        "Zone"
+      ],
+      "outputs": [
+        "Exec"
+      ],
+      "structName": "BrickComponentData_Internal_ZoneEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "BrickComponentType_PrefabSpawn",
+      "inputs": [
+        "RespawnTime",
+        "bSpawnEnable",
+        "SpawnOffset",
+        "SpawnOffset.X",
+        "SpawnOffset.Y",
+        "SpawnOffset.Z",
+        "SpawnOffsetRotation",
+        "SpawnOffsetRotation.Pitch",
+        "Prefab",
+        "Prefab.Path",
+        "SpawnOffsetRotation.Yaw",
+        "SpawnOffsetRotation.Roll"
+      ],
+      "outputs": [
+        "SpawnedEntity"
+      ],
+      "structName": "BrickComponentData_PrefabSpawn"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Variable_Array"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_ArrayVar",
+      "inputs": [],
+      "outputs": [
+        "ArrayVarRef"
+      ],
+      "structName": "BrickComponentData_Rerouter"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Pseudo_BufferSeconds"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_BufferSeconds",
+      "inputs": [
+        "SecondsToWait",
+        "Input",
+        "ZeroSecondsToWait"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_BufferSeconds"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Pseudo_BufferTicks"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_BufferTicks",
+      "inputs": [
+        "TicksToWait",
+        "ZeroTicksToWait",
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_BufferTicks"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Pseudo_Dampen"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_Dampen",
+      "inputs": [
+        "Target",
+        "SmoothTime"
+      ],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_Dampen"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Pseudo_QueueSeconds"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_QueueSeconds",
+      "inputs": [
+        "ExecIn",
+        "DataIn1",
+        "DataIn2",
+        "DataIn3",
+        "DataIn4",
+        "DataIn5",
+        "DataIn6",
+        "DataIn7",
+        "DataIn8",
+        "SecondsToWait"
+      ],
+      "outputs": [
+        "ExecOut",
+        "DataOut1",
+        "DataOut2",
+        "DataOut3",
+        "DataOut4",
+        "DataOut5",
+        "DataOut6",
+        "DataOut7",
+        "DataOut8"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_QueueSeconds"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Pseudo_QueueTicks"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_QueueTicks",
+      "inputs": [
+        "TicksToWait",
+        "ExecIn",
+        "DataIn1",
+        "DataIn2",
+        "DataIn3",
+        "DataIn4",
+        "DataIn5",
+        "DataIn6",
+        "DataIn7",
+        "DataIn8"
+      ],
+      "outputs": [
+        "ExecOut",
+        "DataOut1",
+        "DataOut2",
+        "DataOut3",
+        "DataOut4",
+        "DataOut5",
+        "DataOut6",
+        "DataOut7",
+        "DataOut8"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_QueueTicks"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Pseudo_Timer"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_Timer",
+      "inputs": [
+        "Restart",
+        "Pause",
+        "Resume",
+        "Limit"
+      ],
+      "outputs": [
+        "Time",
+        "Expired"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_Timer"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Pseudo_Tween"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_Tween",
+      "inputs": [
+        "Target",
+        "Duration",
+        "Function",
+        "Direction"
+      ],
+      "outputs": [
+        "Value",
+        "Arrived"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_Tween"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Variable"
+      ],
+      "class": "BrickComponentType_WireGraphPseudo_Var",
+      "inputs": [],
+      "outputs": [
+        "VarRef",
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_Var"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_AudioReference"
+      ],
+      "class": "BrickComponentType_WireGraph_AudioReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_Rerouter"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_DeltaTime"
+      ],
+      "class": "BrickComponentType_WireGraph_DeltaTime",
+      "inputs": [],
+      "outputs": [
+        "DeltaTime"
+      ],
+      "structName": "BrickComponentData_Rerouter"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Append"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Append",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef",
+        "SourceRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraphPseudo_ArrayVar"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Average"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Average",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut",
+        "bIsEmpty"
+      ],
+      "structName": "BrickComponentData_WireGraph_AudioReference"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Clear"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Clear",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_DeltaTime"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_CopyFrom"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_CopyFrom",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef",
+        "SourceRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_DualRef"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Fill"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Fill",
+      "inputs": [
+        "Value",
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Average"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Find"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Find",
+      "inputs": [
+        "Value",
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "Index",
+        "ExecOut",
+        "bFound"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Find"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Get"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Get",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef",
+        "Index"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut",
+        "bOutOfBounds"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Get"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_GetLength"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "Length",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_GetLength"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Insert"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Insert",
+      "inputs": [
+        "Value",
+        "Exec",
+        "ArrayVarRef",
+        "Index"
+      ],
+      "outputs": [
+        "ExecOut",
+        "bOutOfBounds"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Insert"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Max"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Max",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut",
+        "bIsEmpty"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_MinMax"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Min"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Min",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut",
+        "bIsEmpty"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_MinMax"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Pop"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Pop",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut",
+        "bIsEmpty"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Pop"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Push"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Push",
+      "inputs": [
+        "Value",
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Push"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_RemoveAtIndex"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_RemoveAtIndex",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef",
+        "Index"
+      ],
+      "outputs": [
+        "ExecOut",
+        "bOutOfBounds"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Base"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Resize"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Resize",
+      "inputs": [
+        "Value",
+        "Exec",
+        "ArrayVarRef",
+        "Size"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_DualRef"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Reverse"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Reverse",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Push"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_SetAtIndex"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex",
+      "inputs": [
+        "Value",
+        "Exec",
+        "ArrayVarRef",
+        "Index"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_RemoveAtIndex"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Shuffle"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Shuffle",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Resize"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Slice"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Slice",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef",
+        "Start",
+        "Count",
+        "SourceRef"
+      ],
+      "outputs": [
+        "ExecOut",
+        "bOutOfBounds"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Base"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Sort"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Sort",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef",
+        "bDescending"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_ElementOp"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Sum"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Sum",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Base"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ArrayVar_Swap"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Swap",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef",
+        "IndexA",
+        "IndexB"
+      ],
+      "outputs": [
+        "ExecOut",
+        "bOutOfBounds"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Swap"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Branch"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Branch",
+      "inputs": [
+        "Exec",
+        "bCond"
+      ],
+      "outputs": [
+        "ExecOutA",
+        "ExecOutB"
+      ],
+      "structName": "BrickComponentData_WireGraph_ExecBranch"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_GetAim"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Character_GetAim",
+      "inputs": [
+        "Character",
+        "Exec"
+      ],
+      "outputs": [
+        "Origin",
+        "Direction",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_GetAim"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_GetDamage"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Character_GetDamage",
+      "inputs": [
+        "Character",
+        "Exec"
+      ],
+      "outputs": [
+        "Damage",
+        "ExecOut",
+        "DamageLimit"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_GetDamage"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_GetFromController"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Character_GetFromController",
+      "inputs": [
+        "Exec",
+        "Controller"
+      ],
+      "outputs": [
+        "Character",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_GetFromController"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_IncDamage"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Character_IncDamage",
+      "inputs": [
+        "Character",
+        "Exec",
+        "Amount"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_IncDamage"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_SetDamage"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Character_SetDamage",
+      "inputs": [
+        "Character",
+        "Exec",
+        "Damage"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_SetDamage"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_SetTempPermission"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Character_SetTempPermission",
+      "inputs": [
+        "Character",
+        "Exec",
+        "bPermissionEnable"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Slice"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_ShowHint"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Character_ShowHint",
+      "inputs": [
+        "Character",
+        "Exec",
+        "HintTitle",
+        "HintText"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Sort"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_ChatCommand"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_ChatCommand",
+      "inputs": [],
+      "outputs": [
+        "Controller",
+        "ExecOut",
+        "Arguments"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Sum"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_DisplayText"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_DisplayText",
+      "inputs": [
+        "Exec",
+        "Text",
+        "Lifetime",
+        "Controller",
+        "OutlineColor",
+        "OutlineColor.B",
+        "OutlineColor.G",
+        "OutlineColor.R",
+        "OutlineColor.A",
+        "AnchorX",
+        "AnchorY",
+        "PositionX",
+        "PositionY",
+        "Angle",
+        "ScaleX",
+        "ScaleY",
+        "FontSize",
+        "FontColor",
+        "FontColor.B",
+        "FontColor.G",
+        "FontColor.R",
+        "FontColor.A",
+        "OutlineSize",
+        "Transition",
+        "TextId"
+      ],
+      "outputs": [
+        "ExecOut",
+        "TextIdOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_SetTempPermission"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_GetDisplayName"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_GetDisplayName",
+      "inputs": [
+        "Exec",
+        "Controller"
+      ],
+      "outputs": [
+        "ExecOut",
+        "DisplayName"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_ShowHint"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_GetFromEntity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_GetFromEntity",
+      "inputs": [
+        "Exec",
+        "Entity"
+      ],
+      "outputs": [
+        "Controller",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ChatCommand"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_GetUserId"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_GetUserId",
+      "inputs": [
+        "Exec",
+        "Controller"
+      ],
+      "outputs": [
+        "ExecOut",
+        "UserId"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_DisplayText"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_GetUserName"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_GetUserName",
+      "inputs": [
+        "Exec",
+        "Controller"
+      ],
+      "outputs": [
+        "ExecOut",
+        "UserName"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_GetDisplayName"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_HasPermission"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_HasPermission",
+      "inputs": [
+        "Exec",
+        "Controller"
+      ],
+      "outputs": [
+        "ExecOut",
+        "bHasPermission"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_HasPermission"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_IsTrustedByBrickOwner"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_IsTrustedByBrickOwner",
+      "inputs": [
+        "Exec",
+        "Controller"
+      ],
+      "outputs": [
+        "ExecOut",
+        "bIsTrusted"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_IsTrustedByBrickOwner"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_SetCanRespawn"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_SetCanRespawn",
+      "inputs": [
+        "Exec",
+        "Controller",
+        "bCanRespawn"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_SetCanRespawn"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Controller_ShowStatusMessage"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage",
+      "inputs": [
+        "Exec",
+        "Controller",
+        "Message"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_ShowStatusMessage"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_AddLocationRotation"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_AddLocationRotation",
+      "inputs": [
+        "Exec",
+        "Rotation",
+        "Rotation.Pitch",
+        "Rotation.Yaw",
+        "Rotation.Roll",
+        "Entity",
+        "Vector",
+        "Vector.X",
+        "Vector.Y",
+        "Vector.Z"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_AddLocationRotation"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_AddVelocity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_AddVelocity",
+      "inputs": [
+        "Exec",
+        "Rotation",
+        "Entity",
+        "Vector",
+        "Vector.X",
+        "Vector.Y",
+        "Vector.Z",
+        "Rotation.X",
+        "Rotation.Y",
+        "Rotation.Z"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_AddVelocity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_GetAngularVelocity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_GetAngularVelocity",
+      "inputs": [
+        "Exec",
+        "Entity"
+      ],
+      "outputs": [
+        "AngularVelocity",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_GetAngularVelocity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_GetLinearVelocity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_GetLinearVelocity",
+      "inputs": [
+        "Exec",
+        "Entity"
+      ],
+      "outputs": [
+        "LinearVelocity",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_GetLinearVelocity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_GetLocation"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_GetLocation",
+      "inputs": [
+        "Exec",
+        "Entity"
+      ],
+      "outputs": [
+        "Vector",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_GetFromEntity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_GetLocationRotation"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_GetLocationRotation",
+      "inputs": [
+        "Exec",
+        "Entity"
+      ],
+      "outputs": [
+        "Rotation",
+        "Vector",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_GetUserId"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_GetRotation"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_GetRotation",
+      "inputs": [
+        "Exec",
+        "Entity"
+      ],
+      "outputs": [
+        "Rotation",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Controller_GetUserName"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_GetVelocity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_GetVelocity",
+      "inputs": [
+        "Exec",
+        "Entity"
+      ],
+      "outputs": [
+        "Rotation",
+        "Vector",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_GetLocation"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_RelativeTeleport"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport",
+      "inputs": [
+        "Exec",
+        "Entity",
+        "Destination",
+        "Source"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_GetRotation"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetAngularVelocity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetAngularVelocity",
+      "inputs": [
+        "Exec",
+        "Entity",
+        "AngularVelocity",
+        "AngularVelocity.X",
+        "AngularVelocity.Y",
+        "AngularVelocity.Z"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_GetVelocity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetFrozen"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetFrozen",
+      "inputs": [
+        "Exec",
+        "bFrozen",
+        "Entity"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_PlayAudioAt"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetGravityDirection"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetGravityDirection",
+      "inputs": [
+        "Exec",
+        "Rotation",
+        "Rotation.Pitch",
+        "Rotation.Yaw",
+        "Rotation.Roll",
+        "Entity"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetGravityDirection"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetLinearVelocity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetLinearVelocity",
+      "inputs": [
+        "Exec",
+        "Entity",
+        "LinearVelocity",
+        "LinearVelocity.X",
+        "LinearVelocity.Y",
+        "LinearVelocity.Z"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetLinearVelocity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetLocation"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetLocation",
+      "inputs": [
+        "Exec",
+        "Entity",
+        "Vector",
+        "Vector.X",
+        "Vector.Y",
+        "Vector.Z"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetLocation"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetLocationRotation"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetLocationRotation",
+      "inputs": [
+        "Exec",
+        "Rotation",
+        "Rotation.Pitch",
+        "Rotation.Yaw",
+        "Rotation.Roll",
+        "Entity",
+        "Vector",
+        "Vector.X",
+        "Vector.Y",
+        "Vector.Z"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetLocationRotation"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetRotation"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetRotation",
+      "inputs": [
+        "Exec",
+        "Rotation",
+        "Rotation.Pitch",
+        "Rotation.Yaw",
+        "Rotation.Roll",
+        "Entity"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetRotation"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_SetVelocity"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_SetVelocity",
+      "inputs": [
+        "Exec",
+        "Rotation",
+        "Entity",
+        "Vector",
+        "Vector.X",
+        "Vector.Y",
+        "Vector.Z",
+        "Rotation.X",
+        "Rotation.Y",
+        "Rotation.Z"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetVelocity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_Teleport"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Entity_Teleport",
+      "inputs": [
+        "Exec",
+        "Entity",
+        "Destination"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_Teleport"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_FillArrayFromPlayers"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromPlayers",
+      "inputs": [
+        "Exec",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_ArrayVar_Base"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_FillArrayFromTeamMembers"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers",
+      "inputs": [
+        "Exec",
+        "Team",
+        "ArrayVarRef"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_RelativeTeleport"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_GetCurrentRound"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_GetCurrentRound",
+      "inputs": [
+        "Exec"
+      ],
+      "outputs": [
+        "ExecOut",
+        "RoundNumber"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetAngularVelocity"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_GetLeaderboardValue"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_GetLeaderboardValue",
+      "inputs": [
+        "Exec",
+        "Controller",
+        "Key"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_SetFrozen"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_GetTeam"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_GetTeam",
+      "inputs": [
+        "Character",
+        "Exec"
+      ],
+      "outputs": [
+        "Team",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_GetTeamByName"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamByName",
+      "inputs": [
+        "Exec",
+        "TeamName"
+      ],
+      "outputs": [
+        "Team",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_GetCurrentRound"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_GetTeamLeaderboardValue"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue",
+      "inputs": [
+        "Exec",
+        "Key",
+        "Team"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_GetLeaderboardValue"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_GetTeamName"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamName",
+      "inputs": [
+        "Exec",
+        "Team"
+      ],
+      "outputs": [
+        "ExecOut",
+        "Name"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_GetTeam"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_IncrementLeaderboardValue"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_IncrementLeaderboardValue",
+      "inputs": [
+        "Value",
+        "Exec",
+        "Controller",
+        "Key"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamByName"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_IncrementTeamLeaderboardValue"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_IncrementTeamLeaderboardValue",
+      "inputs": [
+        "Value",
+        "Exec",
+        "Key",
+        "Team"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_TeamLeaderboardValue"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_PlayerWins"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_PlayerWins",
+      "inputs": [
+        "Exec",
+        "Player",
+        "bTeamWinsInstead"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_PlayerWins"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_SetLeaderboardValue"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_SetLeaderboardValue",
+      "inputs": [
+        "Value",
+        "Exec",
+        "Controller",
+        "Key"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_LeaderboardValue"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_SetTeam"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_SetTeam",
+      "inputs": [
+        "Exec",
+        "Controller",
+        "Team",
+        "bPinPlayerToTeam"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_SetTeam"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_SetTeamLeaderboardValue"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamLeaderboardValue",
+      "inputs": [
+        "Value",
+        "Exec",
+        "Key",
+        "Team"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_TeamLeaderboardValue"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_SetTeamPinned"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamPinned",
+      "inputs": [
+        "Exec",
+        "Controller",
+        "bPinned"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_SetTeamPinned"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Gamemode_TeamWins"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Gamemode_TeamWins",
+      "inputs": [
+        "Exec",
+        "Team"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_TeamWins"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_PlayGlobalAudio"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_PlayGlobalAudio",
+      "inputs": [
+        "Exec",
+        "VolumeMultiplier",
+        "PitchMultiplier"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_PlayGlobalAudio"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_PrefabSpawner"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_PrefabSpawner",
+      "inputs": [
+        "Exec",
+        "Limit",
+        "SpawnOffset",
+        "SpawnOffset.X",
+        "SpawnOffset.Y",
+        "SpawnOffset.Z",
+        "SpawnOffsetRotation",
+        "SpawnOffsetRotation.Pitch",
+        "SpawnOffsetRotation.Yaw",
+        "SpawnOffsetRotation.Roll",
+        "Lifetime"
+      ],
+      "outputs": [
+        "Entity",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_PrintToConsole"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_PrintToConsole",
+      "inputs": [
+        "Exec",
+        "Text"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamName"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Random"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Random",
+      "inputs": [
+        "Exec",
+        "Min",
+        "Max"
+      ],
+      "outputs": [
+        "Output",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Gamemode_LeaderboardValue"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Sweep"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Sweep",
+      "inputs": [
+        "Exec",
+        "Origin",
+        "Origin.X",
+        "Origin.Y",
+        "Origin.Z",
+        "Direction",
+        "Direction.X",
+        "Direction.Y",
+        "Direction.Z",
+        "Distance",
+        "Radius",
+        "bRelative",
+        "IgnoreEntity"
+      ],
+      "outputs": [
+        "ExecOut",
+        "Hit",
+        "Miss",
+        "HitLocation",
+        "HitNormal",
+        "HitDistance",
+        "HitEntity"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_PrefabSpawner"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Union"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Union",
+      "inputs": [
+        "ExecA",
+        "ExecB"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_PrintToConsole"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Var_Get"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Var_Get",
+      "inputs": [
+        "VarRef",
+        "Exec"
+      ],
+      "outputs": [
+        "Value",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Random"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Var_Increment"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Var_Increment",
+      "inputs": [
+        "VarRef",
+        "Value",
+        "Exec"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Sweep"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Var_Set"
+      ],
+      "class": "BrickComponentType_WireGraph_Exec_Var_Set",
+      "inputs": [
+        "VarRef",
+        "Value",
+        "Exec"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_ExecUnion"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseAND"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseAND",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_IntInt_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseBitCount"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseBitCount",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Int_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseNAND"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseNAND",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_IntInt_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseNOR"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseNOR",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_IntInt_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseNOT"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseNOT",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Int_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseOR"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseOR",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_IntInt_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseShiftLeft"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_IntInt_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseShiftRight"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseShiftRight",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_IntInt_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_BitwiseXOR"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_BitwiseXOR",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_IntInt_Int"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_Ceil"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_Ceil",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_CompareEqual"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_CompareEqual",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Compare"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_CompareGreater"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_CompareGreater",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathCompare"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_CompareGreaterOrEqual"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathCompare"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_CompareLess"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_CompareLess",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathCompare"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_CompareLessOrEqual"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_CompareLessOrEqual",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathCompare"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_CompareNotEqual"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_CompareNotEqual",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Compare"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_EdgeDetector"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_EdgeDetector",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "bPulseOnRisingEdge",
+        "bPulseOnFallingEdge"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_EdgeDetector"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_Floor"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_Floor",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_LogicalAND"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_LogicalAND",
+      "inputs": [
+        "bInputA",
+        "bInputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_BoolBool_Bool"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_LogicalNAND"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_LogicalNAND",
+      "inputs": [
+        "bInputA",
+        "bInputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_BoolBool_Bool"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_LogicalNOR"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_LogicalNOR",
+      "inputs": [
+        "bInputA",
+        "bInputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_BoolBool_Bool"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_LogicalNOT"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_LogicalNOT",
+      "inputs": [
+        "bInput"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Bool_Bool"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_LogicalOR"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_LogicalOR",
+      "inputs": [
+        "bInputA",
+        "bInputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_BoolBool_Bool"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_LogicalXOR"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_LogicalXOR",
+      "inputs": [
+        "bInputA",
+        "bInputB"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_BoolBool_Bool"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MakeColor"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MakeColor",
+      "inputs": [
+        "R",
+        "G",
+        "B",
+        "A"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MakeColor"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MakeVector"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MakeVector",
+      "inputs": [
+        "X",
+        "Y",
+        "Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MakeVector"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAbs"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAbs",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAcos"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAcos",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAcosh"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAcosh",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAdd"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAdd",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAsin"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAsin",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAsinh"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAsinh",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAtan"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAtan",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAtan2"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAtan2",
+      "inputs": [
+        "X",
+        "Y"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathAtan2"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathAtanh"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathAtanh",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathBlend"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathBlend",
+      "inputs": [
+        "InputA",
+        "InputB",
+        "Blend"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathBlend"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathClamp"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathClamp",
+      "inputs": [
+        "Input",
+        "Min",
+        "Max"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathClamp"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathCos"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathCos",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathCosh"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathCosh",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathDegreesToRadians"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathDegreesToRadians",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathDivide"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathDivide",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathEasing"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathEasing",
+      "inputs": [
+        "Function",
+        "Direction",
+        "InputA",
+        "InputB",
+        "Blend"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathEasing"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathExp"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathExp",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathLn"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathLn",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathLogBase"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathLogBase",
+      "inputs": [
+        "Input",
+        "Base"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathLogBase"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathMax"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathMax",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathMin"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathMin",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathModulo"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathModulo",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathModuloFloored"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathModuloFloored",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathMultiply"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathMultiply",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathNegate"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathNegate",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Variant_Variant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathPow"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathPow",
+      "inputs": [
+        "Input",
+        "Exponent"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_MathPow"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathRadiansToDegrees"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathRadiansToDegrees",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathSign"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathSign",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathSin"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathSin",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathSinh"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathSinh",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathSqrt"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathSqrt",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathSubtract"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathSubtract",
+      "inputs": [
+        "InputA",
+        "InputB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathTan"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathTan",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_MathTanh"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_MathTanh",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_NearlyEqual"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_NearlyEqual",
+      "inputs": [
+        "InputA",
+        "InputB",
+        "Tolerance"
+      ],
+      "outputs": [
+        "bOutput"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_NearlyEqual"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_Round"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_Round",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Float_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_Select"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_Select",
+      "inputs": [
+        "InputA",
+        "InputB",
+        "bSelectB"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Select"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_SplitColor"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_SplitColor",
+      "inputs": [
+        "Input",
+        "Input.B",
+        "Input.G",
+        "Input.R",
+        "Input.A"
+      ],
+      "outputs": [
+        "R",
+        "G",
+        "B",
+        "A"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_SplitColor"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_SplitVector"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_SplitVector",
+      "inputs": [
+        "Input",
+        "Input.X",
+        "Input.Y",
+        "Input.Z"
+      ],
+      "outputs": [
+        "X",
+        "Y",
+        "Z"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_SplitVector"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Concatenate"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Concatenate",
+      "inputs": [
+        "InputA",
+        "InputB",
+        "Separator"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Concatenate"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Contains"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Contains",
+      "inputs": [
+        "Input",
+        "bCaseSensitive",
+        "Search"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Contains"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_EndsWith"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_EndsWith",
+      "inputs": [
+        "Input",
+        "bCaseSensitive",
+        "Suffix"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_EndsWith"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Find"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Find",
+      "inputs": [
+        "Input",
+        "bCaseSensitive",
+        "Search"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Find"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_FormatText"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_FormatText",
+      "inputs": [
+        "InputA",
+        "InputB",
+        "FormatString",
+        "InputC",
+        "InputD",
+        "InputE",
+        "InputF",
+        "InputG"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_FormatText"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Length"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Length",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Length"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_ParseInt"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_ParseInt",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Value",
+        "bSuccess"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_ParseInt"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_ParseNumber"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_ParseNumber",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Value",
+        "bSuccess"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_ParseNumber"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Replace"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Replace",
+      "inputs": [
+        "Input",
+        "bCaseSensitive",
+        "Search",
+        "Replacement"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Replace"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Split"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Split",
+      "inputs": [
+        "Input",
+        "bCaseSensitive",
+        "Delimiter"
+      ],
+      "outputs": [
+        "Left",
+        "Right",
+        "bFound"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Split"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_StartsWith"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_StartsWith",
+      "inputs": [
+        "Input",
+        "Prefix",
+        "bCaseSensitive"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_StartsWith"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Substring"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Substring",
+      "inputs": [
+        "Input",
+        "Start",
+        "Length"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Substring"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_ToLower"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_ToLower",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_ToLower"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_ToUpper"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_ToUpper",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_ToUpper"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_String_Trim"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_String_Trim",
+      "inputs": [
+        "Input"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_String_Trim"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_Swap"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_Swap",
+      "inputs": [
+        "InputA",
+        "InputB",
+        "bSwap"
+      ],
+      "outputs": [
+        "Output",
+        "OutputB"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Swap"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecCrossProduct"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecCrossProduct",
+      "inputs": [
+        "InputA",
+        "InputA.X",
+        "InputA.Y",
+        "InputA.Z",
+        "InputB",
+        "InputB.X",
+        "InputB.Y",
+        "InputB.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_VecVec_Vec"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecDistance"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecDistance",
+      "inputs": [
+        "InputA",
+        "InputA.X",
+        "InputA.Y",
+        "InputA.Z",
+        "InputB",
+        "InputB.X",
+        "InputB.Y",
+        "InputB.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_VecVec_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecDistanceSquared"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecDistanceSquared",
+      "inputs": [
+        "InputA",
+        "InputA.X",
+        "InputA.Y",
+        "InputA.Z",
+        "InputB",
+        "InputB.X",
+        "InputB.Y",
+        "InputB.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_VecVec_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecDotProduct"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecDotProduct",
+      "inputs": [
+        "InputA",
+        "InputA.X",
+        "InputA.Y",
+        "InputA.Z",
+        "InputB",
+        "InputB.X",
+        "InputB.Y",
+        "InputB.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_VecVec_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecMagnitude"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecMagnitude",
+      "inputs": [
+        "Input",
+        "Input.X",
+        "Input.Y",
+        "Input.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Vec_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecMagnitudeSquared"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecMagnitudeSquared",
+      "inputs": [
+        "Input",
+        "Input.X",
+        "Input.Y",
+        "Input.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Vec_Float"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecNormalize"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecNormalize",
+      "inputs": [
+        "Input",
+        "Input.X",
+        "Input.Y",
+        "Input.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Vec_Vec"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecRotationToDirection"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecRotationToDirection",
+      "inputs": [
+        "Input",
+        "Input.X",
+        "Input.Y",
+        "Input.Z"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_Vec_Vec"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Expr_VecScale"
+      ],
+      "class": "BrickComponentType_WireGraph_Expr_VecScale",
+      "inputs": [
+        "Input",
+        "Input.X",
+        "Input.Y",
+        "Input.Z",
+        "Scalar"
+      ],
+      "outputs": [
+        "Output"
+      ],
+      "structName": "BrickComponentData_WireGraph_Expr_VecFloat_Vec"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Fake_Gamemode_CharacterDiedEvent"
+      ],
+      "class": "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDiedEvent",
+      "inputs": [],
+      "outputs": [
+        "Character",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Fake_CharacterEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Fake_Gamemode_CharacterSpawnedEvent"
+      ],
+      "class": "BrickComponentType_WireGraph_Fake_Gamemode_CharacterSpawnedEvent",
+      "inputs": [],
+      "outputs": [
+        "Character",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Fake_CharacterEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Fake_Gamemode_ControllerJoinedEvent"
+      ],
+      "class": "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent",
+      "inputs": [],
+      "outputs": [
+        "Controller",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Fake_ControllerEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Fake_Gamemode_ControllerLeftEvent"
+      ],
+      "class": "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent",
+      "inputs": [],
+      "outputs": [
+        "Controller",
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Fake_ControllerEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Fake_Gamemode_RoundEndEvent"
+      ],
+      "class": "BrickComponentType_WireGraph_Fake_Gamemode_RoundEndEvent",
+      "inputs": [
+        "Exec"
+      ],
+      "outputs": [
+        "ExecOut",
+        "RoundNumber"
+      ],
+      "structName": "BrickComponentData_WireGraph_Fake_RoundEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Fake_Gamemode_RoundStartEvent"
+      ],
+      "class": "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent",
+      "inputs": [
+        "Exec"
+      ],
+      "outputs": [
+        "ExecOut",
+        "RoundNumber"
+      ],
+      "structName": "BrickComponentData_WireGraph_Fake_RoundEvent"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_FontReference"
+      ],
+      "class": "BrickComponentType_WireGraph_FontReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraph_FontReference"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_ItemReference"
+      ],
+      "class": "BrickComponentType_WireGraph_ItemReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraph_ItemReference"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_OneShotAudioReference"
+      ],
+      "class": "BrickComponentType_WireGraph_OneShotAudioReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraph_OneShotAudioReference"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_ParticleReference"
+      ],
+      "class": "BrickComponentType_WireGraph_ParticleReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraph_ParticleReference"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_PickupReference"
+      ],
+      "class": "BrickComponentType_WireGraph_PickupReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraph_PickupReference"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_ProjectileReference"
+      ],
+      "class": "BrickComponentType_WireGraph_ProjectileReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraph_ProjectileReference"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_ServerUptime"
+      ],
+      "class": "BrickComponentType_WireGraph_ServerUptime",
+      "inputs": [],
+      "outputs": [
+        "Uptime"
+      ],
+      "structName": "BrickComponentData_WireGraph_ServerUptime"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_WheelEngineAudioReference"
+      ],
+      "class": "BrickComponentType_WireGraph_WheelEngineAudioReference",
+      "inputs": [],
+      "outputs": [
+        "Value"
+      ],
+      "structName": "BrickComponentData_WireGraph_WheelEngineAudioReference"
+    },
+    {
+      "bricks": [
+        "B_2x2F_Speaker",
+        "B_1x1F_Speaker"
+      ],
+      "class": "Component_AudioEmitter",
+      "inputs": [
+        "bEnabled",
+        "AudioDescriptor",
+        "VolumeMultiplier",
+        "PitchMultiplier",
+        "InnerRadius",
+        "MaxDistance",
+        "bSpatialization",
+        "FocusAzimuth",
+        "NonFocusAzimuth",
+        "NonFocusVolumeAttenuation"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_AudioEmitter"
+    },
+    {
+      "bricks": [
+        "B_Bot_Spawn_Point"
+      ],
+      "class": "Component_BotSpawn",
+      "inputs": [
+        "RespawnTime",
+        "CorpseTimeout",
+        "GunSkill",
+        "Agression",
+        "ReactionTime",
+        "MovementRandomness",
+        "RunSpeed",
+        "HealthMultiplier",
+        "Jumpyness",
+        "MovementAmount",
+        "AttackMovementAmount",
+        "AggroRange",
+        "AttackDamageMultiplier",
+        "bCanJump",
+        "bBackVision",
+        "bVisionRaycasting",
+        "bCanTargetPlayers",
+        "bCanTargetBots",
+        "bActiveBot",
+        "bSpawnEnable",
+        "bDeleteBot",
+        "MoveTarget",
+        "MoveTarget.X",
+        "MoveTarget.Y",
+        "MoveTarget.Z",
+        "MovementGoalDummy",
+        "BotName",
+        "SkinDummy",
+        "TeamCollisionChannel",
+        "bTeamCollision",
+        "bTeamCollision1",
+        "bTeamCollision2",
+        "bTeamCollision3",
+        "BotWeapon"
+      ],
+      "outputs": [
+        "DistanceToTarget",
+        "FocusCharacter",
+        "SpawnedCharacter"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Var_EditOrGet"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_BrickPropertyChanger",
+      "inputs": [
+        "Color",
+        "Color.B",
+        "Color.G",
+        "Color.R",
+        "Color.A",
+        "bVisibility",
+        "bCollisionEnabled",
+        "bCollisionEnabled_Player",
+        "bCollisionEnabled_Player1",
+        "bCollisionEnabled_Player2",
+        "bCollisionEnabled_Player3",
+        "bCollisionEnabled_Weapon",
+        "bCollisionEnabled_Interaction",
+        "bCollisionEnabled_Physics",
+        "MaterialAlpha"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_BrickPropertyChanger"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Button",
+      "inputs": [
+        "PressSound",
+        "ReleaseSound",
+        "bAllowNearbyInteraction",
+        "bHiddenInteraction",
+        "PromptCustomLabel"
+      ],
+      "outputs": [
+        "Character",
+        "bHeld",
+        "PressCount"
+      ],
+      "structName": "BrickComponentData_Button"
+    },
+    {
+      "bricks": [
+        "B_CheckPoint"
+      ],
+      "class": "Component_CheckPoint",
+      "inputs": [
+        "bRotatePlayerGravityOnSpawn"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_Button"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Damage",
+      "inputs": [
+        "Message",
+        "ConsoleTag"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_Damage"
+    },
+    {
+      "bricks": [
+        "B_GoalPoint"
+      ],
+      "class": "Component_GoalPoint",
+      "inputs": [],
+      "outputs": [],
+      "structName": "BrickComponentData_Button"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Interact",
+      "inputs": [
+        "bAllowNearbyInteraction",
+        "bHiddenInteraction",
+        "PromptCustomLabel",
+        "InteractSound",
+        "Message",
+        "ConsoleTag"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_Interact"
+    },
+    {
+      "bricks": [
+        "B_Button_Square_Pressed",
+        "B_Button_Square",
+        "B_Button_Pressed",
+        "B_Button"
+      ],
+      "class": "Component_Internal_AnimatedButton",
+      "inputs": [
+        "PressSound",
+        "ReleaseSound",
+        "bAllowNearbyInteraction",
+        "bHiddenInteraction",
+        "PromptCustomLabel"
+      ],
+      "outputs": [
+        "Character",
+        "bHeld",
+        "PressCount"
+      ],
+      "structName": "BrickComponentData_Button"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Internal_AnimatedPressurePlate",
+      "inputs": [
+        "bCollisionEnabled_Player",
+        "bCollisionEnabled_Player1",
+        "bCollisionEnabled_Player2",
+        "bCollisionEnabled_Player3",
+        "BeginTouchSound",
+        "EndTouchSound"
+      ],
+      "outputs": [
+        "Character",
+        "bTouching",
+        "TouchCount"
+      ],
+      "structName": "BrickComponentData_Touch"
+    },
+    {
+      "bricks": [
+        "B_Switch_Test",
+        "B_Switch_Flipped"
+      ],
+      "class": "Component_Internal_AnimatedSwitch",
+      "inputs": [
+        "bAllowNearbyInteraction",
+        "bHiddenInteraction",
+        "PromptCustomLabel",
+        "InteractSound"
+      ],
+      "outputs": [
+        "bEnabled",
+        "Character"
+      ],
+      "structName": "BrickComponentData_Switch"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Internal_AttachedZone",
+      "inputs": [
+        "ZoneStartDistance",
+        "ZoneEndDistance",
+        "bIsBuildingZone",
+        "bIsLooseZone",
+        "bIsShareZone"
+      ],
+      "outputs": [
+        "ZoneRef",
+        "bOccupied",
+        "OccupantCount"
+      ],
+      "structName": "BrickComponentData_Internal_AttachedZone"
+    },
+    {
+      "bricks": [
+        "B_Joint_Bearing_Micro",
+        "B_Joint_Bearing"
+      ],
+      "class": "Component_Internal_Bearing",
+      "inputs": [
+        "Damping",
+        "bLimitAngle",
+        "LimitAngle",
+        "bAnglesArePercentages"
+      ],
+      "outputs": [
+        "CurrentAngle"
+      ],
+      "structName": "BrickComponentData_Bearing"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_SeatControlSplitter"
+      ],
+      "class": "Component_Internal_InputSplitter",
+      "inputs": [
+        "Character"
+      ],
+      "outputs": [
+        "InputForward",
+        "InputRight",
+        "bPressedJump"
+      ],
+      "structName": "BrickComponentData_Internal_InputSplitter_V2"
+    },
+    {
+      "bricks": [
+        "B_Joint_Fixed"
+      ],
+      "class": "Component_Internal_Joint_Fixed",
+      "inputs": [
+        "OffsetLocation",
+        "OffsetLocation.X",
+        "OffsetLocation.Y",
+        "OffsetLocation.Z",
+        "OffsetRotation",
+        "OffsetRotation.Pitch",
+        "OffsetRotation.Yaw",
+        "OffsetRotation.Roll",
+        "LocationInterpMode",
+        "LocationSmoothTime",
+        "LocationMaxSpeed",
+        "RotationInterpMode",
+        "RotationSmoothTime",
+        "RotationMaxSpeed"
+      ],
+      "outputs": [
+        "bWelded",
+        "bSettled"
+      ],
+      "structName": "BrickComponentData_Fixed"
+    },
+    {
+      "bricks": [
+        "B_Joint_Wheel_Micro",
+        "B_Joint_Wheel"
+      ],
+      "class": "Component_Internal_Joint_Wheel",
+      "inputs": [
+        "Control_DriveAndSteer",
+        "bEnabled",
+        "DriveSpeed",
+        "DrivePower",
+        "bSteerEnabled",
+        "Steer",
+        "SteerLimitDegree",
+        "SteerPower",
+        "bSuspensionEnabled",
+        "SuspensionStiffness",
+        "SuspensionDamping",
+        "JointDistance",
+        "bDriveWhenNotAttachedToEngine",
+        "bCanBrake",
+        "bAllowEngineSteerCorrect",
+        "bReversed",
+        "Damping"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_Joint_Wheel"
+    },
+    {
+      "bricks": [
+        "B_Joint_Wheel_Suspension",
+        "B_Joint_Wheel_Micro_Suspension"
+      ],
+      "class": "Component_Internal_Joint_Wheel_Suspension",
+      "inputs": [
+        "Control_DriveAndSteer",
+        "bEnabled",
+        "DriveSpeed",
+        "DrivePower",
+        "bSteerEnabled",
+        "Steer",
+        "SteerLimitDegree",
+        "SteerPower",
+        "bSuspensionEnabled",
+        "SuspensionStiffness",
+        "SuspensionDamping",
+        "SuspensionTopOffset",
+        "SuspensionBottomOffset",
+        "JointDistance",
+        "bDriveWhenNotAttachedToEngine",
+        "bCanBrake",
+        "bAllowEngineSteerCorrect",
+        "bReversed",
+        "Damping"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_Joint_Wheel_Suspension"
+    },
+    {
+      "bricks": [
+        "B_1x1_Microchip"
+      ],
+      "class": "Component_Internal_Microchip",
+      "inputs": [],
+      "outputs": [],
+      "structName": "BrickComponentData_Internal_Microchip"
+    },
+    {
+      "bricks": [
+        "B_Joint_Motor_Micro",
+        "B_Joint_Motor"
+      ],
+      "class": "Component_Internal_Motor",
+      "inputs": [
+        "bEnabled",
+        "Damping",
+        "Power",
+        "bLimitAngle",
+        "LimitAngle",
+        "bAnglesArePercentages",
+        "Speed"
+      ],
+      "outputs": [
+        "CurrentAngle"
+      ],
+      "structName": "BrickComponentData_CheckPoint"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Internal_MotorSlider",
+      "inputs": [
+        "bEnabled",
+        "Damping",
+        "Power",
+        "Speed",
+        "bPositionsArePercentages"
+      ],
+      "outputs": [
+        "CurrentPosition"
+      ],
+      "structName": "BrickComponentData_MotorSlider"
+    },
+    {
+      "bricks": [
+        "B_1x1_Reroute_Node"
+      ],
+      "class": "Component_Internal_Rerouter",
+      "inputs": [
+        "RER_Input"
+      ],
+      "outputs": [
+        "RER_Output"
+      ],
+      "structName": "BrickComponentData_Rerouter"
+    },
+    {
+      "bricks": [
+        "B_Seat"
+      ],
+      "class": "Component_Internal_Seat",
+      "inputs": [
+        "bAllowNearbyInteraction",
+        "bHiddenInteraction",
+        "PromptCustomLabel",
+        "ExitOffset",
+        "ExitOffset.X",
+        "ExitOffset.Y",
+        "ExitOffset.Z",
+        "bRollCameraInThirdPerson"
+      ],
+      "outputs": [
+        "SittingCharacter",
+        "bIsOccupied"
+      ],
+      "structName": "BrickComponentData_Seat_V2"
+    },
+    {
+      "bricks": [
+        "B_Joint_Servo_Micro",
+        "B_Joint_Servo"
+      ],
+      "class": "Component_Internal_Servo",
+      "inputs": [
+        "bEnabled",
+        "Damping",
+        "TargetAngle",
+        "Power",
+        "ActiveDamping",
+        "ForceLimit",
+        "bLimitAngle",
+        "LimitAngle",
+        "bAnglesArePercentages"
+      ],
+      "outputs": [
+        "CurrentAngle",
+        "bStopped"
+      ],
+      "structName": "BrickComponentData_Motor"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Internal_ServoSlider",
+      "inputs": [
+        "bEnabled",
+        "Damping",
+        "Power",
+        "TargetPosition",
+        "TopSpeed",
+        "Exponent",
+        "bPositionsArePercentages"
+      ],
+      "outputs": [
+        "bStopped",
+        "CurrentPosition"
+      ],
+      "structName": "BrickComponentData_ServoSlider"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Internal_Slider",
+      "inputs": [
+        "Damping",
+        "bPositionsArePercentages"
+      ],
+      "outputs": [
+        "CurrentPosition"
+      ],
+      "structName": "BrickComponentData_Slider"
+    },
+    {
+      "bricks": [
+        "B_Joint_Socket_Micro",
+        "B_Joint_Socket"
+      ],
+      "class": "Component_Internal_Socket",
+      "inputs": [],
+      "outputs": [],
+      "structName": "BrickComponentData_Servo"
+    },
+    {
+      "bricks": [
+        "B_2x2_Thruster"
+      ],
+      "class": "Component_Internal_Thruster",
+      "inputs": [
+        "bEnabled",
+        "Force",
+        "Throttle",
+        "Pitch",
+        "Yaw",
+        "bSpawnLight"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_WireGraph_Exec_Var_Get"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_WeightBrick"
+      ],
+      "class": "Component_Internal_WeightBrick",
+      "inputs": [
+        "Mass",
+        "MassSize",
+        "MassSize.X",
+        "MassSize.Y",
+        "MassSize.Z",
+        "MassOffset",
+        "MassOffset.X",
+        "MassOffset.Y",
+        "MassOffset.Z"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_WeightBrick"
+    },
+    {
+      "bricks": [
+        "B_Vehicle_Engine",
+        "B_1x1_Gate_WheelEngineSlim"
+      ],
+      "class": "Component_Internal_WheelEngine",
+      "inputs": [
+        "bEnabled",
+        "DriveSpeed",
+        "SteerLimitDegree",
+        "bEnableManualControl",
+        "ManualInput_Drive",
+        "ManualInput_Steer",
+        "bManualInput_Brake",
+        "Character",
+        "CustomMass",
+        "CustomMassVerticalOffset",
+        "DriveInterpSpeed",
+        "DriveAcceleratingPowerMultiplier",
+        "DriveBrakingPowerMultiplier",
+        "DriveDampingMultiplier",
+        "SteerPowerMultiplier",
+        "SteerInterpSpeed",
+        "CenterOfSteering",
+        "bTankSteering",
+        "TankSteerSpeedMultiplier",
+        "WaterDriveForce",
+        "WaterSteeringForce",
+        "AudioDescriptor"
+      ],
+      "outputs": [
+        "Control_DriveAndSteer"
+      ],
+      "structName": "BrickComponentData_WheelEngine_V2"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_ItemSpawn",
+      "inputs": [
+        "PickupClass",
+        "bPickupEnabled",
+        "bPickupRespawnOnMinigameReset",
+        "PickupMinigameResetRespawnDelay",
+        "bPickupAutoDisableOnPickup",
+        "PickupRespawnTime",
+        "bRenderTranslucentWhenDisabled",
+        "DamageMultiplier",
+        "WeaponSpeedMultiplier",
+        "ItemNameOverride",
+        "ProjectileOverride",
+        "PickupOffsetDirection",
+        "PickupOffsetDistance",
+        "PickupRotation",
+        "PickupRotation.Pitch",
+        "PickupRotation.Yaw",
+        "PickupRotation.Roll",
+        "PickupScale",
+        "bOverridePickupColors",
+        "PickupMeshColors",
+        "bPickupAnimationEnabled",
+        "PickupAnimationAxis",
+        "bPickupAnimationAxisLocal",
+        "PickupSpinSpeed",
+        "PickupBobSpeed",
+        "PickupBobHeight",
+        "PickupAnimationPhase"
+      ],
+      "outputs": [
+        "bShowPickupEnabled"
+      ],
+      "structName": "BrickComponentData_ItemSpawn"
+    },
+    {
+      "bricks": [
+        "B_1x1_SoundEmitter"
+      ],
+      "class": "Component_OneShotAudioEmitter",
+      "inputs": [
+        "AudioDescriptor",
+        "VolumeMultiplier",
+        "PitchMultiplier",
+        "InnerRadius",
+        "MaxDistance",
+        "bSpatialization",
+        "bPlay",
+        "bEnableRepeat",
+        "RepeatTime",
+        "RepeatVariance"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_OneShotAudioEmitter"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_PointLight",
+      "inputs": [
+        "bEnabled",
+        "Radius",
+        "bMatchBrickShape",
+        "Brightness",
+        "Color",
+        "Color.B",
+        "Color.G",
+        "Color.R",
+        "Color.A",
+        "bUseBrickColor",
+        "bCastShadows"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_PointLight"
+    },
+    {
+      "bricks": [
+        "B_SpawnPoint"
+      ],
+      "class": "Component_SpawnPoint",
+      "inputs": [
+        "bRotatePlayerGravityOnSpawn",
+        "bEnable"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_SpawnPoint"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_SpotLight",
+      "inputs": [
+        "bEnabled",
+        "Radius",
+        "Brightness",
+        "Color",
+        "Color.B",
+        "Color.G",
+        "Color.R",
+        "Color.A",
+        "bUseBrickColor",
+        "bCastShadows",
+        "Rotation",
+        "Rotation.Pitch",
+        "Rotation.Yaw",
+        "Rotation.Roll",
+        "InnerConeAngle",
+        "OuterConeAngle"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_SpotLight"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Switch",
+      "inputs": [
+        "bAllowNearbyInteraction",
+        "bHiddenInteraction",
+        "PromptCustomLabel",
+        "InteractSound"
+      ],
+      "outputs": [
+        "bEnabled",
+        "Character"
+      ],
+      "structName": "BrickComponentData_Switch"
+    },
+    {
+      "bricks": [
+        "B_2x2F_Target"
+      ],
+      "class": "Component_Target",
+      "inputs": [
+        "OnTime"
+      ],
+      "outputs": [
+        "Damage",
+        "bJustHit",
+        "CharacterThatJustHit",
+        "WeaponThatJustHit",
+        "WeaponNameThatJustHit"
+      ],
+      "structName": "BrickComponentData_Target"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_TextDisplay",
+      "inputs": [
+        "bEnabled",
+        "Color",
+        "Color.B",
+        "Color.G",
+        "Text",
+        "Color.R",
+        "Color.A",
+        "Rotation",
+        "Font",
+        "Skew",
+        "Kerning",
+        "LineHeight",
+        "LineOffset",
+        "Anchor",
+        "Anchor.X",
+        "Anchor.Y",
+        "Offset",
+        "Offset.X",
+        "Offset.Y",
+        "Offset.Z",
+        "MaterialSlider",
+        "ShadingWidth",
+        "OutlineColor",
+        "OutlineColor.B",
+        "OutlineColor.G",
+        "OutlineColor.R",
+        "OutlineColor.A",
+        "OutlineWidth",
+        "ScuffWidth",
+        "GraffitiDepthLimit",
+        "GraffitiAngleLimit",
+        "GraffitiLayer",
+        "Face",
+        "bAlignToWedge",
+        "bOverrideColor",
+        "Typeface",
+        "Billboard",
+        "Material",
+        "Shading",
+        "bFlipShading",
+        "Outline",
+        "bSharpCorners",
+        "bSharpOutlines",
+        "bOverrideOutlineColor",
+        "bForeground"
+      ],
+      "outputs": [],
+      "structName": "BrickComponentData_TextDisplay"
+    },
+    {
+      "bricks": [
+        "B_1x1F_Round"
+      ],
+      "class": "Component_Touch",
+      "inputs": [
+        "bCollisionEnabled_Player",
+        "bCollisionEnabled_Player1",
+        "bCollisionEnabled_Player2",
+        "bCollisionEnabled_Player3",
+        "BeginTouchSound",
+        "EndTouchSound"
+      ],
+      "outputs": [
+        "Character",
+        "bTouching",
+        "TouchCount"
+      ],
+      "structName": "BrickComponentData_Touch"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Entity_PlayAudioAt"
+      ],
+      "class": "Component_WireGraph_PlayAudioAt",
+      "inputs": [
+        "Exec",
+        "VolumeMultiplier",
+        "PitchMultiplier",
+        "InnerRadius",
+        "MaxDistance",
+        "bSpatialization",
+        "Entity"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Entity_GetLocationRotation"
+    },
+    {
+      "bricks": [
+        "B_1x1_Gate_Exec_Character_SetInventoryEntry"
+      ],
+      "class": "Component_WireGraph_SetInventoryEntry",
+      "inputs": [
+        "Character",
+        "Exec",
+        "Slot"
+      ],
+      "outputs": [
+        "ExecOut"
+      ],
+      "structName": "BrickComponentData_WireGraph_Exec_Character_SetInventoryEntry"
+    }
+  ],
+  "grids": [
+    {
+      "chunks": 4,
+      "grid": 1
+    }
+  ],
+  "schemaStructs": {
+    "BRInventoryEntryPlan": {
+      "BrickTypeIfBrick": "BrickTypeNetWrapper",
+      "EntityTypeIfEntity": "class",
+      "ItemTypeIfItem": "class",
+      "Type": "EBRInventoryEntryPlanType"
+    },
+    "BRPlayerAvatarCustomizationV3": {
+      "Parts": "BRPlayerPartCustomizationV3[]"
+    },
+    "BRPlayerPartCustomizationV3": {
+      "Colors": "Color[]",
+      "DecalDescriptor": "object",
+      "PartDescriptor": "object",
+      "SocketName": "str"
+    },
+    "BRQueueSecondsEntry": {
+      "Data": "WireGraphVariant[]",
+      "RemainingTime": "f32"
+    },
+    "BRQueueTicksEntry": {
+      "Data": "WireGraphVariant[]",
+      "RemainingTicks": "i32"
+    },
+    "BRSavedBrickComponentTypeCounter": {
+      "NumInstances": "u32",
+      "TypeIndex": "u32"
+    },
+    "BRSavedComponentChunkSoA": {
+      "ComponentBrickIndices": "u32[]",
+      "ComponentTypeCounters": "BRSavedBrickComponentTypeCounter[]",
+      "JointBrickIndices": "u32[]",
+      "JointEntityReferences": "u32[]",
+      "JointInitialRelativeOffsets": "Vector3f[flat]",
+      "JointInitialRelativeRotations": "Quat4f[flat]",
+      "MicrochipBrickGridReferences": "u32[]",
+      "MicrochipBrickIndices": "u32[]"
+    },
+    "BrickComponentData_AudioEmitter": {
+      "AudioDescriptor": "object",
+      "FocusAzimuth": "f32",
+      "InnerRadius": "f32",
+      "MaxDistance": "f32",
+      "NonFocusAzimuth": "f32",
+      "NonFocusVolumeAttenuation": "f32",
+      "PitchMultiplier": "f32",
+      "VolumeMultiplier": "f32",
+      "bEnabled": "bool",
+      "bSpatialization": "bool"
+    },
+    "BrickComponentData_Bearing": {
+      "Damping": "f32",
+      "LimitAngle": "f32",
+      "bAnglesArePercentages": "bool",
+      "bLimitAngle": "bool",
+      "bReversed": "bool"
+    },
+    "BrickComponentData_BotSpawn": {
+      "AggroRange": "f32",
+      "Agression": "f32",
+      "AttackDamageMultiplier": "f32",
+      "AttackMovementAmount": "f32",
+      "BotName": "str",
+      "BotWeapon": "class",
+      "CorpseTimeout": "f32",
+      "GunSkill": "f32",
+      "HealthMultiplier": "f32",
+      "Jumpyness": "f32",
+      "MoveTarget": "Vector",
+      "MovementAmount": "f32",
+      "MovementGoalDummy": "BrickComponentWirePortControl_TeleportDestination",
+      "MovementRandomness": "f32",
+      "ReactionTime": "f32",
+      "RespawnTime": "f32",
+      "RunSpeed": "f32",
+      "Skin": "BRPlayerAvatarCustomizationV3",
+      "TeamCollisionChannel": "EBRPawnCollisionChannel",
+      "bActiveBot": "bool",
+      "bBackVision": "bool",
+      "bCanJump": "bool",
+      "bCanTargetBots": "bool",
+      "bCanTargetPlayers": "bool",
+      "bColorsAreLinear": "bool",
+      "bDeleteBot": "bool",
+      "bSpawnEnable": "bool",
+      "bTeamCollision": "bool",
+      "bTeamCollision1": "bool",
+      "bTeamCollision2": "bool",
+      "bTeamCollision3": "bool",
+      "bVisionRaycasting": "bool"
+    },
+    "BrickComponentData_BrickPropertyChanger": {
+      "Color": "Color",
+      "MaterialAlpha": "u8",
+      "bCollisionEnabled": "bool",
+      "bCollisionEnabled_Interaction": "bool",
+      "bCollisionEnabled_Physics": "bool",
+      "bCollisionEnabled_Player": "bool",
+      "bCollisionEnabled_Player1": "bool",
+      "bCollisionEnabled_Player2": "bool",
+      "bCollisionEnabled_Player3": "bool",
+      "bCollisionEnabled_Weapon": "bool",
+      "bVisibility": "bool"
+    },
+    "BrickComponentData_Button": {
+      "PressSound": "object",
+      "PromptCustomLabel": "str",
+      "ReleaseSound": "object",
+      "bAllowNearbyInteraction": "bool",
+      "bHiddenInteraction": "bool"
+    },
+    "BrickComponentData_CheckPoint": {
+      "bRotatePlayerGravityOnSpawn": "bool"
+    },
+    "BrickComponentData_Damage": {
+      "ConsoleTag": "str",
+      "Message": "str"
+    },
+    "BrickComponentData_Fixed": {
+      "LocationInterpMode": "EBrickFixedJointInterpMode",
+      "LocationMaxSpeed": "f32",
+      "LocationSmoothTime": "f32",
+      "OffsetLocation": "Vector",
+      "OffsetRotation": "Rotator",
+      "RotationInterpMode": "EBrickFixedJointInterpMode",
+      "RotationMaxSpeed": "f32",
+      "RotationSmoothTime": "f32"
+    },
+    "BrickComponentData_Interact": {
+      "ConsoleTag": "str",
+      "InteractSound": "object",
+      "Message": "str",
+      "PromptCustomLabel": "str",
+      "bAllowNearbyInteraction": "bool",
+      "bHiddenInteraction": "bool"
+    },
+    "BrickComponentData_Internal_AttachedZone": {
+      "ZoneEndDistance": "i32",
+      "ZoneStartDistance": "i32",
+      "bIsBuildingZone": "bool",
+      "bIsLooseZone": "bool",
+      "bIsShareZone": "bool"
+    },
+    "BrickComponentData_Internal_CharacterZoneEvent": {
+      "bCollisionEnabled_Player": "bool",
+      "bCollisionEnabled_Player1": "bool",
+      "bCollisionEnabled_Player2": "bool",
+      "bCollisionEnabled_Player3": "bool"
+    },
+    "BrickComponentData_Internal_InputSplitter_V2": {},
+    "BrickComponentData_Internal_Microchip": {},
+    "BrickComponentData_Internal_MicrochipInput": {
+      "PortLabel": "str"
+    },
+    "BrickComponentData_Internal_MicrochipOutput": {
+      "PortLabel": "str"
+    },
+    "BrickComponentData_Internal_ReadBrickGrid": {},
+    "BrickComponentData_Internal_ZoneEvent": {},
+    "BrickComponentData_ItemSpawn": {
+      "DamageMultiplier": "f32",
+      "ItemNameOverride": "str",
+      "PickupAnimationAxis": "EBrickAxis",
+      "PickupAnimationPhase": "f32",
+      "PickupBobHeight": "f32",
+      "PickupBobSpeed": "f32",
+      "PickupClass": "class",
+      "PickupMeshColors": "Color[]",
+      "PickupMinigameResetRespawnDelay": "f32",
+      "PickupOffsetDirection": "EBrickDirection",
+      "PickupOffsetDistance": "f32",
+      "PickupRespawnTime": "f32",
+      "PickupRotation": "Rotator3f",
+      "PickupScale": "f32",
+      "PickupSpinSpeed": "f32",
+      "ProjectileOverride": "class",
+      "WeaponSpeedMultiplier": "f32",
+      "bOverridePickupColors": "bool",
+      "bPickupAnimationAxisLocal": "bool",
+      "bPickupAnimationEnabled": "bool",
+      "bPickupAutoDisableOnPickup": "bool",
+      "bPickupEnabled": "bool",
+      "bPickupRespawnOnMinigameReset": "bool",
+      "bRenderTranslucentWhenDisabled": "bool"
+    },
+    "BrickComponentData_Joint_Wheel": {
+      "Control_DriveAndSteer": "BrickComponentWireControl_DriveAndSteer",
+      "Damping": "f32",
+      "DrivePower": "f32",
+      "DriveSpeed": "f32",
+      "JointDistance": "i32",
+      "Steer": "f32",
+      "SteerLimitDegree": "f32",
+      "SteerPower": "f32",
+      "SuspensionDamping": "f32",
+      "SuspensionStiffness": "f32",
+      "bAllowEngineSteerCorrect": "bool",
+      "bCanBrake": "bool",
+      "bDriveWhenNotAttachedToEngine": "bool",
+      "bEnabled": "bool",
+      "bReversed": "bool",
+      "bSteerEnabled": "bool",
+      "bSuspensionEnabled": "bool"
+    },
+    "BrickComponentData_Joint_Wheel_Suspension": {
+      "Control_DriveAndSteer": "BrickComponentWireControl_DriveAndSteer",
+      "Damping": "f32",
+      "DrivePower": "f32",
+      "DriveSpeed": "f32",
+      "JointDistance": "i32",
+      "Steer": "f32",
+      "SteerLimitDegree": "f32",
+      "SteerPower": "f32",
+      "SuspensionBottomOffset": "f32",
+      "SuspensionDamping": "f32",
+      "SuspensionStiffness": "f32",
+      "SuspensionTopOffset": "f32",
+      "bAllowEngineSteerCorrect": "bool",
+      "bCanBrake": "bool",
+      "bDriveWhenNotAttachedToEngine": "bool",
+      "bEnabled": "bool",
+      "bReversed": "bool",
+      "bSteerEnabled": "bool",
+      "bSuspensionEnabled": "bool"
+    },
+    "BrickComponentData_Motor": {
+      "Damping": "f32",
+      "LimitAngle": "f32",
+      "Power": "f32",
+      "Speed": "f32",
+      "bAnglesArePercentages": "bool",
+      "bEnabled": "bool",
+      "bLimitAngle": "bool",
+      "bReversed": "bool"
+    },
+    "BrickComponentData_MotorSlider": {
+      "Damping": "f32",
+      "Power": "f32",
+      "Speed": "f32",
+      "bEnabled": "bool",
+      "bPositionsArePercentages": "bool"
+    },
+    "BrickComponentData_OneShotAudioEmitter": {
+      "AudioDescriptor": "object",
+      "InnerRadius": "f32",
+      "MaxDistance": "f32",
+      "PitchMultiplier": "f32",
+      "RepeatTime": "f32",
+      "RepeatVariance": "f32",
+      "SavedRepeatTimeRemaining": "f32",
+      "VolumeMultiplier": "f32",
+      "bEnableRepeat": "bool",
+      "bPlay": "bool",
+      "bSpatialization": "bool"
+    },
+    "BrickComponentData_PointLight": {
+      "Brightness": "f32",
+      "Color": "Color",
+      "Radius": "f32",
+      "bCastShadows": "bool",
+      "bEnabled": "bool",
+      "bMatchBrickShape": "bool",
+      "bUseBrickColor": "bool"
+    },
+    "BrickComponentData_PrefabSpawn": {
+      "Prefab": "bundle_path_ref",
+      "RespawnTime": "f64",
+      "SpawnOffset": "Vector",
+      "SpawnOffsetRotation": "Rotator",
+      "SpawnedEntityIds": "u32[]",
+      "bSpawnEnable": "bool"
+    },
+    "BrickComponentData_Rerouter": {},
+    "BrickComponentData_Seat_V2": {
+      "ExitOffset": "IntVector",
+      "PromptCustomLabel": "str",
+      "bAllowNearbyInteraction": "bool",
+      "bHiddenInteraction": "bool",
+      "bIsOccupied": "bool",
+      "bRollCameraInThirdPerson": "bool"
+    },
+    "BrickComponentData_Servo": {
+      "ActiveDamping": "f32",
+      "Damping": "f32",
+      "ForceLimit": "f32",
+      "LimitAngle": "f32",
+      "Power": "f32",
+      "TargetAngle": "f32",
+      "bAnglesArePercentages": "bool",
+      "bEnabled": "bool",
+      "bLimitAngle": "bool",
+      "bReversed": "bool"
+    },
+    "BrickComponentData_ServoSlider": {
+      "Damping": "f32",
+      "Exponent": "f32",
+      "Power": "f32",
+      "TargetPosition": "f32",
+      "TopSpeed": "f32",
+      "bEnabled": "bool",
+      "bPositionsArePercentages": "bool"
+    },
+    "BrickComponentData_Slider": {
+      "Damping": "f32",
+      "bPositionsArePercentages": "bool"
+    },
+    "BrickComponentData_SpawnPoint": {
+      "bEnable": "bool",
+      "bRotatePlayerGravityOnSpawn": "bool"
+    },
+    "BrickComponentData_SpotLight": {
+      "Brightness": "f32",
+      "Color": "Color",
+      "InnerConeAngle": "f32",
+      "OuterConeAngle": "f32",
+      "Radius": "f32",
+      "Rotation": "Rotator3f",
+      "bCastShadows": "bool",
+      "bEnabled": "bool",
+      "bUseBrickColor": "bool"
+    },
+    "BrickComponentData_Switch": {
+      "InteractSound": "object",
+      "PromptCustomLabel": "str",
+      "bAllowNearbyInteraction": "bool",
+      "bEnabled": "bool",
+      "bHiddenInteraction": "bool"
+    },
+    "BrickComponentData_Target": {
+      "OnTime": "f32"
+    },
+    "BrickComponentData_TeleportDestination": {},
+    "BrickComponentData_TextDisplay": {
+      "Anchor": "Vector2f",
+      "Billboard": "EBRTextBillboard",
+      "Color": "Color",
+      "Face": "EBrickDirection",
+      "Font": "object",
+      "GraffitiAngleLimit": "f32",
+      "GraffitiDepthLimit": "f32",
+      "GraffitiLayer": "i32",
+      "Kerning": "f32",
+      "LineHeight": "f32",
+      "LineOffset": "f32",
+      "Material": "EBRTextMaterial",
+      "MaterialSlider": "i32",
+      "Offset": "Vector3f",
+      "Outline": "EBRTextOutline",
+      "OutlineColor": "Color",
+      "OutlineWidth": "f32",
+      "Rotation": "f32",
+      "ScuffWidth": "f32",
+      "Shading": "EBRTextShading",
+      "ShadingWidth": "f32",
+      "Skew": "f32",
+      "Text": "str",
+      "Typeface": "EBRTextTypeface",
+      "bAlignToWedge": "bool",
+      "bEnabled": "bool",
+      "bFlipShading": "bool",
+      "bForeground": "bool",
+      "bOverrideColor": "bool",
+      "bOverrideOutlineColor": "bool",
+      "bSharpCorners": "bool",
+      "bSharpOutlines": "bool"
+    },
+    "BrickComponentData_Thruster": {
+      "Force": "f32",
+      "Pitch": "f32",
+      "Throttle": "f32",
+      "Yaw": "f32",
+      "bEnabled": "bool",
+      "bSpawnLight": "bool"
+    },
+    "BrickComponentData_Touch": {
+      "BeginTouchSound": "object",
+      "EndTouchSound": "object",
+      "bCollisionEnabled_Player": "bool",
+      "bCollisionEnabled_Player1": "bool",
+      "bCollisionEnabled_Player2": "bool",
+      "bCollisionEnabled_Player3": "bool"
+    },
+    "BrickComponentData_WeightBrick": {
+      "Mass": "f32",
+      "MassOffset": "IntVector",
+      "MassSize": "IntVector"
+    },
+    "BrickComponentData_WheelEngine_V2": {
+      "AudioDescriptor": "object",
+      "CenterOfSteering": "f32",
+      "Control_DriveAndSteer": "BrickComponentWireControl_DriveAndSteer",
+      "CustomMass": "f32",
+      "CustomMassVerticalOffset": "f32",
+      "DriveAcceleratingPowerMultiplier": "f32",
+      "DriveBrakingPowerMultiplier": "f32",
+      "DriveDampingMultiplier": "f32",
+      "DriveInterpSpeed": "f32",
+      "DriveSpeed": "f32",
+      "ManualInput_Drive": "f32",
+      "ManualInput_Steer": "f32",
+      "SteerInterpSpeed": "f32",
+      "SteerLimitDegree": "f32",
+      "SteerPowerMultiplier": "f32",
+      "TankSteerSpeedMultiplier": "f32",
+      "WaterDriveForce": "f32",
+      "WaterSteeringForce": "f32",
+      "bEnableManualControl": "bool",
+      "bEnabled": "bool",
+      "bManualInput_Brake": "bool",
+      "bTankSteering": "bool"
+    },
+    "BrickComponentData_WireGraphPseudo_ArrayVar": {
+      "Value": "WireGraphArrayVariant"
+    },
+    "BrickComponentData_WireGraphPseudo_BufferSeconds": {
+      "Buffered": "WireGraphVariant",
+      "CurrentTime": "f32",
+      "Input": "WireGraphVariant",
+      "Output": "WireGraphVariant",
+      "SecondsToWait": "f32",
+      "ZeroSecondsToWait": "f32",
+      "bHasQueued": "bool",
+      "bIsOffTimer": "bool"
+    },
+    "BrickComponentData_WireGraphPseudo_BufferTicks": {
+      "Buffered": "WireGraphVariant",
+      "CurrentTicks": "i32",
+      "Input": "WireGraphVariant",
+      "Output": "WireGraphVariant",
+      "TicksToWait": "i32",
+      "ZeroTicksToWait": "i32",
+      "bHasQueued": "bool",
+      "bIsOffTimer": "bool"
+    },
+    "BrickComponentData_WireGraphPseudo_Dampen": {
+      "SmoothTime": "f64",
+      "Target": "WireGraphVariant",
+      "Value": "WireGraphVariant",
+      "Velocity": "Vector"
+    },
+    "BrickComponentData_WireGraphPseudo_QueueSeconds": {
+      "DataIn1": "WireGraphVariant",
+      "DataIn2": "WireGraphVariant",
+      "DataIn3": "WireGraphVariant",
+      "DataIn4": "WireGraphVariant",
+      "DataIn5": "WireGraphVariant",
+      "DataIn6": "WireGraphVariant",
+      "DataIn7": "WireGraphVariant",
+      "DataIn8": "WireGraphVariant",
+      "DataOut1": "WireGraphVariant",
+      "DataOut2": "WireGraphVariant",
+      "DataOut3": "WireGraphVariant",
+      "DataOut4": "WireGraphVariant",
+      "DataOut5": "WireGraphVariant",
+      "DataOut6": "WireGraphVariant",
+      "DataOut7": "WireGraphVariant",
+      "DataOut8": "WireGraphVariant",
+      "Entries": "BRQueueSecondsEntry[]",
+      "SecondsToWait": "f32"
+    },
+    "BrickComponentData_WireGraphPseudo_QueueTicks": {
+      "DataIn1": "WireGraphVariant",
+      "DataIn2": "WireGraphVariant",
+      "DataIn3": "WireGraphVariant",
+      "DataIn4": "WireGraphVariant",
+      "DataIn5": "WireGraphVariant",
+      "DataIn6": "WireGraphVariant",
+      "DataIn7": "WireGraphVariant",
+      "DataIn8": "WireGraphVariant",
+      "DataOut1": "WireGraphVariant",
+      "DataOut2": "WireGraphVariant",
+      "DataOut3": "WireGraphVariant",
+      "DataOut4": "WireGraphVariant",
+      "DataOut5": "WireGraphVariant",
+      "DataOut6": "WireGraphVariant",
+      "DataOut7": "WireGraphVariant",
+      "DataOut8": "WireGraphVariant",
+      "Entries": "BRQueueTicksEntry[]",
+      "TicksToWait": "i32"
+    },
+    "BrickComponentData_WireGraphPseudo_Timer": {
+      "Limit": "f64",
+      "Time": "f64",
+      "bRunning": "bool"
+    },
+    "BrickComponentData_WireGraphPseudo_Tween": {
+      "Direction": "EBREasingDirection",
+      "Duration": "f64",
+      "Elapsed": "f64",
+      "Function": "EBREasingFunction",
+      "StartValue": "WireGraphVariant",
+      "Target": "WireGraphVariant",
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraphPseudo_Var": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_AudioReference": {
+      "Asset": "object"
+    },
+    "BrickComponentData_WireGraph_DeltaTime": {},
+    "BrickComponentData_WireGraph_ExecBranch": {
+      "bCond": "bool"
+    },
+    "BrickComponentData_WireGraph_ExecUnion": {},
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Average": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Base": {},
+    "BrickComponentData_WireGraph_Exec_ArrayVar_DualRef": {},
+    "BrickComponentData_WireGraph_Exec_ArrayVar_ElementOp": {
+      "Index": "i64",
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Find": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Get": {
+      "Index": "i64",
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_GetLength": {},
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Insert": {
+      "Index": "i64",
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_MinMax": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Pop": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Push": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_RemoveAtIndex": {
+      "Index": "i64"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Resize": {
+      "Size": "i64",
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Slice": {
+      "Count": "i64",
+      "Start": "i64"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Sort": {
+      "bDescending": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Sum": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_ArrayVar_Swap": {
+      "IndexA": "i64",
+      "IndexB": "i64"
+    },
+    "BrickComponentData_WireGraph_Exec_Character_GetAim": {},
+    "BrickComponentData_WireGraph_Exec_Character_GetDamage": {},
+    "BrickComponentData_WireGraph_Exec_Character_GetFromController": {},
+    "BrickComponentData_WireGraph_Exec_Character_IncDamage": {
+      "Amount": "f64"
+    },
+    "BrickComponentData_WireGraph_Exec_Character_SetDamage": {
+      "Damage": "f64"
+    },
+    "BrickComponentData_WireGraph_Exec_Character_SetInventoryEntry": {
+      "EntryPlan": "BRInventoryEntryPlan",
+      "Slot": "i64"
+    },
+    "BrickComponentData_WireGraph_Exec_Character_SetTempPermission": {
+      "PermissionTagStr": "str",
+      "bPermissionEnable": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Character_ShowHint": {
+      "HintText": "str",
+      "HintTitle": "str"
+    },
+    "BrickComponentData_WireGraph_Exec_ChatCommand": {
+      "CommandName": "str",
+      "HelpText": "str"
+    },
+    "BrickComponentData_WireGraph_Exec_Controller_DisplayText": {
+      "AnchorX": "f64",
+      "AnchorY": "f64",
+      "Angle": "f64",
+      "Easing": "EBRDisplayTextEasing",
+      "FontColor": "Color",
+      "FontSize": "i32",
+      "Justification": "EBRDisplayTextJustification",
+      "Lifetime": "f64",
+      "OutlineColor": "Color",
+      "OutlineSize": "i64",
+      "PositionX": "f64",
+      "PositionY": "f64",
+      "ScaleX": "f64",
+      "ScaleY": "f64",
+      "Text": "str",
+      "TextId": "i64",
+      "Transition": "f64"
+    },
+    "BrickComponentData_WireGraph_Exec_Controller_GetDisplayName": {},
+    "BrickComponentData_WireGraph_Exec_Controller_GetFromEntity": {},
+    "BrickComponentData_WireGraph_Exec_Controller_GetUserId": {},
+    "BrickComponentData_WireGraph_Exec_Controller_GetUserName": {},
+    "BrickComponentData_WireGraph_Exec_Controller_HasPermission": {
+      "PermissionName": "str"
+    },
+    "BrickComponentData_WireGraph_Exec_Controller_IsTrustedByBrickOwner": {},
+    "BrickComponentData_WireGraph_Exec_Controller_SetCanRespawn": {
+      "bCanRespawn": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Controller_ShowStatusMessage": {},
+    "BrickComponentData_WireGraph_Exec_Entity_AddLocationRotation": {
+      "Rotation": "Rotator",
+      "Vector": "Vector"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_AddVelocity": {
+      "Rotation": "Vector",
+      "Vector": "Vector"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_GetAngularVelocity": {},
+    "BrickComponentData_WireGraph_Exec_Entity_GetLinearVelocity": {},
+    "BrickComponentData_WireGraph_Exec_Entity_GetLocation": {},
+    "BrickComponentData_WireGraph_Exec_Entity_GetLocationRotation": {},
+    "BrickComponentData_WireGraph_Exec_Entity_GetRotation": {},
+    "BrickComponentData_WireGraph_Exec_Entity_GetVelocity": {},
+    "BrickComponentData_WireGraph_Exec_Entity_PlayAudioAt": {
+      "AudioDescriptor": "object",
+      "InnerRadius": "f32",
+      "MaxDistance": "f32",
+      "PitchMultiplier": "f32",
+      "VolumeMultiplier": "f32",
+      "bSpatialization": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_RelativeTeleport": {
+      "Destination": "BrickComponentWirePortControl_TeleportDestination",
+      "Source": "BrickComponentWirePortControl_TeleportDestination"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetAngularVelocity": {
+      "AngularVelocity": "Vector"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetFrozen": {
+      "bFrozen": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetGravityDirection": {
+      "Rotation": "Rotator"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetLinearVelocity": {
+      "LinearVelocity": "Vector"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetLocation": {
+      "Vector": "Vector"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetLocationRotation": {
+      "Rotation": "Rotator",
+      "Vector": "Vector"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetRotation": {
+      "Rotation": "Rotator"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_SetVelocity": {
+      "Rotation": "Vector",
+      "Vector": "Vector"
+    },
+    "BrickComponentData_WireGraph_Exec_Entity_Teleport": {
+      "Destination": "BrickComponentWirePortControl_TeleportDestination"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers": {},
+    "BrickComponentData_WireGraph_Exec_Gamemode_GetCurrentRound": {},
+    "BrickComponentData_WireGraph_Exec_Gamemode_GetLeaderboardValue": {
+      "Key": "str"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_GetTeam": {},
+    "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamByName": {
+      "TeamName": "str"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue": {
+      "Key": "str"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamName": {},
+    "BrickComponentData_WireGraph_Exec_Gamemode_LeaderboardValue": {
+      "Key": "str",
+      "Value": "i64"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_PlayerWins": {
+      "bTeamWinsInstead": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_SetTeam": {
+      "bPinPlayerToTeam": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_SetTeamPinned": {
+      "bPinned": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_TeamLeaderboardValue": {
+      "Key": "str",
+      "Value": "i64"
+    },
+    "BrickComponentData_WireGraph_Exec_Gamemode_TeamWins": {},
+    "BrickComponentData_WireGraph_Exec_PlayGlobalAudio": {
+      "AudioDescriptor": "object",
+      "PitchMultiplier": "f32",
+      "VolumeMultiplier": "f32"
+    },
+    "BrickComponentData_WireGraph_Exec_PrefabSpawner": {
+      "Lifetime": "f64",
+      "Limit": "i64",
+      "Prefab": "bundle_path_ref",
+      "SpawnOffset": "Vector",
+      "SpawnOffsetRotation": "Rotator",
+      "SpawnedEntityIds": "u32[]"
+    },
+    "BrickComponentData_WireGraph_Exec_PrintToConsole": {
+      "Text": "str"
+    },
+    "BrickComponentData_WireGraph_Exec_Random": {
+      "Max": "WireGraphPrimMathVariant",
+      "Min": "WireGraphPrimMathVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_Sweep": {
+      "Direction": "Vector",
+      "Distance": "f64",
+      "Origin": "Vector",
+      "Radius": "f64",
+      "bRelative": "bool"
+    },
+    "BrickComponentData_WireGraph_Exec_Var_EditOrGet": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Exec_Var_Get": {
+      "Value": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_BoolBool_Bool": {
+      "bInputA": "bool",
+      "bInputB": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_Bool_Bool": {
+      "bInput": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_Compare": {
+      "InputA": "WireGraphVariant",
+      "InputB": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_EdgeDetector": {
+      "Input": "f64",
+      "bPulseOnFallingEdge": "bool",
+      "bPulseOnRisingEdge": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_Float_Float": {
+      "Input": "f64"
+    },
+    "BrickComponentData_WireGraph_Expr_IntInt_Int": {
+      "InputA": "i64",
+      "InputB": "i64"
+    },
+    "BrickComponentData_WireGraph_Expr_Int_Int": {
+      "Input": "i64"
+    },
+    "BrickComponentData_WireGraph_Expr_MakeColor": {
+      "A": "i64",
+      "B": "i64",
+      "G": "i64",
+      "R": "i64"
+    },
+    "BrickComponentData_WireGraph_Expr_MakeVector": {
+      "X": "f64",
+      "Y": "f64",
+      "Z": "f64"
+    },
+    "BrickComponentData_WireGraph_Expr_MathAtan2": {
+      "X": "f64",
+      "Y": "f64"
+    },
+    "BrickComponentData_WireGraph_Expr_MathBlend": {
+      "Blend": "f64",
+      "InputA": "WireGraphPrimMathVariant",
+      "InputB": "WireGraphPrimMathVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_MathClamp": {
+      "Input": "WireGraphPrimMathVariant",
+      "Max": "WireGraphPrimMathVariant",
+      "Min": "WireGraphPrimMathVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_MathCompare": {
+      "InputA": "WireGraphPrimMathVariant",
+      "InputB": "WireGraphPrimMathVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_MathEasing": {
+      "Blend": "f64",
+      "Direction": "EBREasingDirection",
+      "Function": "EBREasingFunction",
+      "InputA": "WireGraphPrimMathVariant",
+      "InputB": "WireGraphPrimMathVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_MathLogBase": {
+      "Base": "f64",
+      "Input": "f64"
+    },
+    "BrickComponentData_WireGraph_Expr_MathPow": {
+      "Exponent": "f64",
+      "Input": "f64"
+    },
+    "BrickComponentData_WireGraph_Expr_NearlyEqual": {
+      "InputA": "f64",
+      "InputB": "f64",
+      "Tolerance": "f64"
+    },
+    "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant": {
+      "InputA": "WireGraphPrimMathVariant",
+      "InputB": "WireGraphPrimMathVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_PrimMathVariant_PrimMathVariant": {
+      "Input": "WireGraphPrimMathVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_Select": {
+      "InputA": "WireGraphVariant",
+      "InputB": "WireGraphVariant",
+      "bSelectB": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_SplitColor": {
+      "Input": "Color"
+    },
+    "BrickComponentData_WireGraph_Expr_SplitVector": {
+      "Input": "Vector"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Concatenate": {
+      "InputA": "str",
+      "InputB": "str",
+      "Separator": "str"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Contains": {
+      "Input": "str",
+      "Search": "str",
+      "bCaseSensitive": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_String_EndsWith": {
+      "Input": "str",
+      "Suffix": "str",
+      "bCaseSensitive": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Find": {
+      "Input": "str",
+      "Search": "str",
+      "bCaseSensitive": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_String_FormatText": {
+      "FormatString": "str",
+      "InputA": "WireGraphVariant",
+      "InputB": "WireGraphVariant",
+      "InputC": "WireGraphVariant",
+      "InputD": "WireGraphVariant",
+      "InputE": "WireGraphVariant",
+      "InputF": "WireGraphVariant",
+      "InputG": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Length": {
+      "Input": "str"
+    },
+    "BrickComponentData_WireGraph_Expr_String_ParseInt": {
+      "Input": "str"
+    },
+    "BrickComponentData_WireGraph_Expr_String_ParseNumber": {
+      "Input": "str"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Replace": {
+      "Input": "str",
+      "Replacement": "str",
+      "Search": "str",
+      "bCaseSensitive": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Split": {
+      "Delimiter": "str",
+      "Input": "str",
+      "bCaseSensitive": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_String_StartsWith": {
+      "Input": "str",
+      "Prefix": "str",
+      "bCaseSensitive": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Substring": {
+      "Input": "str",
+      "Length": "i64",
+      "Start": "i64"
+    },
+    "BrickComponentData_WireGraph_Expr_String_ToLower": {
+      "Input": "str"
+    },
+    "BrickComponentData_WireGraph_Expr_String_ToUpper": {
+      "Input": "str"
+    },
+    "BrickComponentData_WireGraph_Expr_String_Trim": {
+      "Input": "str"
+    },
+    "BrickComponentData_WireGraph_Expr_Swap": {
+      "InputA": "WireGraphVariant",
+      "InputB": "WireGraphVariant",
+      "bSwap": "bool"
+    },
+    "BrickComponentData_WireGraph_Expr_Variant_Variant": {
+      "Input": "WireGraphVariant"
+    },
+    "BrickComponentData_WireGraph_Expr_VecFloat_Vec": {
+      "Input": "Vector",
+      "Scalar": "f64"
+    },
+    "BrickComponentData_WireGraph_Expr_VecVec_Float": {
+      "InputA": "Vector",
+      "InputB": "Vector"
+    },
+    "BrickComponentData_WireGraph_Expr_VecVec_Vec": {
+      "InputA": "Vector",
+      "InputB": "Vector"
+    },
+    "BrickComponentData_WireGraph_Expr_Vec_Float": {
+      "Input": "Vector"
+    },
+    "BrickComponentData_WireGraph_Expr_Vec_Vec": {
+      "Input": "Vector"
+    },
+    "BrickComponentData_WireGraph_Fake_CharacterEvent": {},
+    "BrickComponentData_WireGraph_Fake_ControllerEvent": {},
+    "BrickComponentData_WireGraph_Fake_RoundEvent": {
+      "RoundNumber": "i32"
+    },
+    "BrickComponentData_WireGraph_FontReference": {
+      "Asset": "object"
+    },
+    "BrickComponentData_WireGraph_ItemReference": {
+      "Asset": "class"
+    },
+    "BrickComponentData_WireGraph_OneShotAudioReference": {
+      "Asset": "object"
+    },
+    "BrickComponentData_WireGraph_ParticleReference": {
+      "Asset": "object"
+    },
+    "BrickComponentData_WireGraph_PickupReference": {
+      "Asset": "class"
+    },
+    "BrickComponentData_WireGraph_ProjectileReference": {
+      "Asset": "class"
+    },
+    "BrickComponentData_WireGraph_ServerUptime": {},
+    "BrickComponentData_WireGraph_WheelEngineAudioReference": {
+      "Asset": "object"
+    },
+    "BrickComponentWireControl_DriveAndSteer": {},
+    "BrickComponentWirePortControl_TeleportDestination": {},
+    "BrickTypeNetWrapper": {
+      "BrickAsset": "object",
+      "ProceduralSize": "IntVector"
+    },
+    "Color": {
+      "A": "u8",
+      "B": "u8",
+      "G": "u8",
+      "R": "u8"
+    },
+    "IntVector": {
+      "X": "i32",
+      "Y": "i32",
+      "Z": "i32"
+    },
+    "Quat4f": {
+      "W": "f32",
+      "X": "f32",
+      "Y": "f32",
+      "Z": "f32"
+    },
+    "Rotator": {
+      "Pitch": "f64",
+      "Roll": "f64",
+      "Yaw": "f64"
+    },
+    "Rotator3f": {
+      "Pitch": "f32",
+      "Roll": "f32",
+      "Yaw": "f32"
+    },
+    "Vector": {
+      "X": "f64",
+      "Y": "f64",
+      "Z": "f64"
+    },
+    "Vector2f": {
+      "X": "f32",
+      "Y": "f32"
+    },
+    "Vector3f": {
+      "X": "f32",
+      "Y": "f32",
+      "Z": "f32"
+    },
+    "WireGraphBoolArray": {
+      "Values": "bool[]"
+    },
+    "WireGraphDoubleArray": {
+      "Values": "f64[]"
+    },
+    "WireGraphExec": {},
+    "WireGraphInt64Array": {
+      "Values": "i64[]"
+    },
+    "WireGraphObjectArray": {
+      "Values": "weak_object[]"
+    },
+    "WireGraphStringArray": {
+      "Values": "str[]"
+    },
+    "WireGraphVectorArray": {
+      "Values": "Vector[]"
+    }
+  }
+}

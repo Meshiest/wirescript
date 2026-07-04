@@ -1,0 +1,5 @@
+bounds: min=(-10,-10,2) max=(10,10,2)
+  BrickComponentType_WireGraphPseudo_BufferTicks (  -10,    0,  2) Gate       s0
+  BrickComponentType_WireGraphPseudo_Var   (  -10,  -10,  2) Gate       s0
+  BrickComponentType_WireGraph_Expr_MathAdd (    0,  -10,  2) Gate       s0
+  if-expr select                           (    0,    0,  2) Gate       s0

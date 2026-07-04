@@ -1,0 +1,11 @@
+bounds: min=(-15,-30,2) max=(15,30,2)
+  BrickComponentType_WireGraphPseudo_Var   (  -15,  -30,  2) Gate       s0
+  BrickComponentType_WireGraph_Exec_Branch (   -5,    0,  2) Gate       s3
+  BrickComponentType_WireGraph_Exec_Branch (   -5,   10,  2) Gate       s6
+  BrickComponentType_WireGraph_Exec_Var_Get (   -5,  -20,  2) Gate       s3
+  BrickComponentType_WireGraph_Exec_Var_Set (   -5,   20,  2) Gate       s7
+  BrickComponentType_WireGraph_Exec_Var_Set (    5,   10,  2) Gate       s9
+  BrickComponentType_WireGraph_Exec_Var_Set (    5,   20,  2) Gate       s8
+  BrickComponentType_WireGraph_Expr_CompareGreater (   -5,  -10,  2) Gate       s3
+  BrickComponentType_WireGraph_Expr_CompareGreater (    5,  -10,  2) Gate       s6
+  BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent (   -5,  -30,  2) Event      s0

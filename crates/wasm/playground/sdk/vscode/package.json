@@ -1,0 +1,42 @@
+{
+  "name": "wirescript-wasm",
+  "displayName": "Wirescript (WASM)",
+  "description": "Wirescript language support powered by WASM — no Rust toolchain needed",
+  "version": "0.1.0",
+  "publisher": "brickadia-community",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:wirescript"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "wirescript",
+        "aliases": ["Wirescript", "ws"],
+        "extensions": [".ws"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wirescript",
+        "scopeName": "source.wirescript",
+        "path": "./syntaxes/wirescript.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "wirescript.compileAndCopy",
+        "title": "Wirescript: Compile and Copy Path"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "wirescript.compileAndCopy",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == wirescript"
+      }
+    ]
+  }
+}
