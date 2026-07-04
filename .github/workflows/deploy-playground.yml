@@ -1,0 +1,57 @@
+name: Deploy Playground
+
+on:
+  push:
+    branches: [wirescript]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cache-v1
+          cache-on-failure: true
+
+      - name: Build playground
+        working-directory: crates/wasm
+        run: ./build-playground.sh
+
+      - name: Fix permissions
+        run: |
+          chmod -c -R +rX crates/wasm/_site/ | while read line; do
+            echo "::warning title=Invalid file permissions automatically fixed::$line"
+          done
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: crates/wasm/_site
+
+  deploy:
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

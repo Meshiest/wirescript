@@ -19,6 +19,12 @@ cp playground/files.js _site/
 cp playground/share.js _site/
 cp playground/docs.js _site/
 
+echo "Copying docs + examples..."
+mkdir -p _site/docs _site/sdk/examples
+cp ../../docs/wirescript/*.md _site/docs/
+node playground/build-search-index.mjs _site/docs _site/docs/search-index.json
+cp playground/sdk/examples/*.ws _site/sdk/examples/
+
 echo "Building SDK zip..."
 rm -rf _sdk
 mkdir -p _sdk/wirescript-sdk/pkg _sdk/wirescript-sdk/playground/pkg _sdk/wirescript-sdk/examples
@@ -31,7 +37,6 @@ cp playground/sdk/format.mjs _sdk/wirescript-sdk/
 cp playground/sdk/hover.mjs _sdk/wirescript-sdk/
 cp playground/sdk/CLAUDE.md _sdk/wirescript-sdk/
 cp playground/sdk/README.md _sdk/wirescript-sdk/
-cp playground/sdk/docs.mjs _sdk/wirescript-sdk/
 cp playground/docs.js _sdk/wirescript-sdk/
 cp playground/sdk/examples/*.ws _sdk/wirescript-sdk/examples/
 
