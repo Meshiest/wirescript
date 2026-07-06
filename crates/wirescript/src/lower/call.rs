@@ -1121,8 +1121,21 @@ pub(super) fn lower_builtin_call(
         // go into the data struct. With negative literal folding in the
         // parser, all constant args (positive and negative) are consistent.
         if let Some(lit) = literal_for_property_port(arg_expr, &p.ty) {
-            properties.insert(intern(p.port.as_str()), lit);
-            continue;
+            // Struct-valued constants (folded Vec/Rotation/Color) only
+            // inline when the gate's data field is a wire variant; other
+            // gates (entity Set*, Split*) need a wired Make* gate, which
+            // the fallthrough + materialize pass provides.
+            let inlinable = !matches!(
+                lit,
+                Literal::Vector { .. }
+                    | Literal::Rotator { .. }
+                    | Literal::Quat { .. }
+                    | Literal::LinearColor { .. }
+            ) || crate::emit::port_accepts_inline_variant(spec.gate_class, p.port);
+            if inlinable {
+                properties.insert(intern(p.port.as_str()), lit);
+                continue;
+            }
         }
         let mut val_port = lower_expr(ctx, arg_expr);
         let arg_ty = unwrap_ref(&ctx.type_of(arg_expr));

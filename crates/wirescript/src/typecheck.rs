@@ -331,8 +331,8 @@ fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
 // ---------- decl registration (1st pass) ----------
 
 /// The type of a constant-literal expression, used to infer an unannotated
-/// array var's element type at registration (before the full type map exists).
-/// Returns `None` for anything that isn't a compile-time literal.
+/// var's (or array var's element) type at registration, before the full type
+/// map exists. Returns `None` for anything that isn't a compile-time literal.
 fn literal_expr_type(e: &Expr) -> Option<Type> {
     match e {
         Expr::IntLit { .. } => Some(Type::Int),
@@ -340,8 +340,40 @@ fn literal_expr_type(e: &Expr) -> Option<Type> {
         Expr::BoolLit { .. } => Some(Type::Bool),
         Expr::StringLit { .. } | Expr::InterpLit { .. } => Some(Type::String),
         Expr::UnOp { op, operand, .. } if op == "-" => literal_expr_type(operand),
+        // Constructor calls type by name alone — the value folds to a constant
+        // later only if the args are constant, but the type holds regardless.
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Ident { name, .. } => match name.as_str() {
+                "Vec" => Some(Type::Vector),
+                "Rotation" => Some(Type::Rotator),
+                "Color" | "ColorSRGB" | "ColorHex" => Some(Type::Color),
+                _ => None,
+            },
+            _ => None,
+        },
         _ => None,
     }
+}
+
+/// Types a Variable gate can hold as a wire variant — the safe targets when
+/// refining an unannotated `var`'s placeholder `any` from its initializer.
+fn var_storable(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::String
+            | Type::Vector
+            | Type::Rotator
+            | Type::Quat
+            | Type::Color
+            | Type::Entity
+            | Type::Character
+            | Type::Controller
+            | Type::Brick
+            | Type::Prefab
+    )
 }
 
 fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
@@ -352,17 +384,19 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 .as_ref()
                 .map(|t| resolve_type_expr(ctx, t))
                 // No annotation: infer an array type from a `[..]` initializer so
-                // `var foo = [1, 2]` indexes/iterates as an array, not `Any`.
-                .or_else(|| {
-                    if let Some(Expr::Array { elements, .. }) = &v.init {
+                // `var foo = [1, 2]` indexes/iterates as an array, not `Any`, and
+                // a scalar type from a literal initializer so `var foo = ""` is a
+                // string var (`var n = 0` an int var, …).
+                .or_else(|| match &v.init {
+                    Some(Expr::Array { elements, .. }) => {
                         let elem = elements
                             .iter()
                             .find_map(|el| literal_expr_type(el.expr()))
                             .unwrap_or(Type::Any);
                         Some(Type::Array(Box::new(elem)))
-                    } else {
-                        None
                     }
+                    Some(init) => literal_expr_type(init),
+                    None => None,
                 })
                 .unwrap_or(Type::Any);
             declare_or_dup(
@@ -668,6 +702,15 @@ fn check_decl(
                     ctx.in_pure(|ctx| {
                         let t = infer_expr(ctx, init, tmap, omap);
                         expect_coerce(ctx, &t, &inner, init.range());
+                        // Unannotated var with a non-literal init (`var v =
+                        // Vec(…)`): refine the placeholder `any` from the RHS,
+                        // like buffers do.
+                        if v.typ.is_none() && matches!(inner, Type::Any) {
+                            let u = unwrap_ref(&t);
+                            if var_storable(&u) {
+                                ctx.scope.set_type(&v.name, Type::Ref(Box::new(u)));
+                            }
+                        }
                     });
                 }
             }
@@ -1110,6 +1153,14 @@ fn check_stmt(
                 };
                 let t = infer_expr(ctx, init, tmap, omap);
                 expect_coerce(ctx, &t, &inner, init.range());
+                // Refine an unannotated var's placeholder `any` from a
+                // non-literal init, same as the top-level decl path.
+                if v.typ.is_none() && matches!(inner, Type::Any) {
+                    let u = unwrap_ref(&t);
+                    if var_storable(&u) {
+                        ctx.scope.set_type(&v.name, Type::Ref(Box::new(u)));
+                    }
+                }
             }
         }
         Stmt::Buffer(b) => {
@@ -2034,7 +2085,9 @@ fn check_let_type_annotation(
         }
         let expected = resolve_type_expr(ctx, te);
         let rule = coerce(inferred, &expected);
-        if rule != CoerceRule::Same && rule != CoerceRule::Coerce {
+        // `ViaString` is fine: anything primitive casts to string, so
+        // `let s: string = 5` is an intentional format, not a type lie.
+        if rule == CoerceRule::Mismatch {
             let name = match &l.binding {
                 crate::ast::LetBinding::Ident { name, .. } => name.clone(),
                 _ => "<binding>".into(),
@@ -2103,6 +2156,113 @@ mod tests {
     #[test]
     fn var_string_inferred_ok() {
         assert_no_diags(&tc("var x = \"hello\""));
+    }
+
+    #[test]
+    fn var_string_inferred_usable_as_string() {
+        // The inferred type must actually be `string`, not `any` — an `any`
+        // operand has no `==` overload and would emit WS004.
+        assert_no_diags(&tc("var s = \"\"\nout r = s == \"ready\""));
+    }
+
+    #[test]
+    fn var_int_inferred_usable_in_math() {
+        assert_no_diags(&tc("var n = 0\nout d = n + 1"));
+    }
+
+    #[test]
+    fn var_float_inferred_usable_in_math() {
+        assert_no_diags(&tc("var f = 1.5\nout d = f * 2.0"));
+    }
+
+    #[test]
+    fn var_bool_inferred_usable_in_logic() {
+        assert_no_diags(&tc("var b = true\nout d = b && false"));
+    }
+
+    #[test]
+    fn var_negative_literal_inferred() {
+        assert_no_diags(&tc("var n = -5\nout d = n + 1"));
+    }
+
+    #[test]
+    fn var_nonliteral_init_refines_type() {
+        // `var v = Vec(…)` has no literal init; the type refines from the
+        // RHS in pass 2 (buffer-style), so vector math resolves.
+        assert_no_diags(&tc(
+            "var v = Vec(1.0, 2.0, 3.0)\nout d = v + Vec(0.0, 0.0, 1.0)",
+        ));
+    }
+
+    #[test]
+    fn handler_local_var_inferred() {
+        assert_no_diags(&tc(
+            "on RoundStart { var v = Vec(1.0, 2.0, 3.0)\n let w = v + v }",
+        ));
+    }
+
+    #[test]
+    fn var_inferred_type_catches_mismatch() {
+        // Inference makes the var `int`, so assigning a vector is a real
+        // WS003 — under the old `any` placeholder this passed silently.
+        let r = tc("var n = 0\non RoundStart { n = Vec(1.0, 1.0, 1.0) }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "vector into inferred int var should be WS003, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn let_string_annotation_accepts_numeric() {
+        // Everything primitive casts to string, so a string annotation on a
+        // numeric expression is a format, not a WS016 type lie.
+        assert_no_diags(&tc("let s: string = 5"));
+    }
+
+    #[test]
+    fn let_string_annotation_accepts_entity_family() {
+        assert_no_diags(&tc("in c: controller\nlet msg: string = c"));
+    }
+
+    #[test]
+    fn concat_casts_character_to_string() {
+        assert_no_diags(&tc("in p: character\nout s = \"hi \" .. p"));
+    }
+
+    #[test]
+    fn vector_array_init_elements_are_constants() {
+        // Constant Vec(…) folds to a literal, so it's a legal top-level
+        // array initializer element (previously WS003).
+        assert_no_diags(&tc(
+            "array pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]",
+        ));
+    }
+
+    #[test]
+    fn var_array_of_vectors_infers_element_type() {
+        // literal_expr_type knows constructor calls, so an unannotated
+        // `var foo = [Vec(…)]` infers vector[] instead of any[].
+        assert_no_diags(&tc("var pts = [Vec(1.0, 1.0, 1.0)]"));
+    }
+
+    #[test]
+    fn color_var_inferred_and_reassignable() {
+        // Color() now returns `color` (was `any`), so the var refines and a
+        // later color assignment typechecks.
+        assert_no_diags(&tc(
+            "var tint = Color(1.0, 0.0, 0.0)\non RoundStart { tint = Color(0.0, 1.0, 0.0) }",
+        ));
+    }
+
+    #[test]
+    fn color_var_rejects_vector_assignment() {
+        let r = tc("var tint = Color(1.0, 0.0, 0.0)\non RoundStart { tint = Vec(1.0, 1.0, 1.0) }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "vector into color var should be WS003, got {:?}",
+            r.diagnostics
+        );
     }
 
     #[test]

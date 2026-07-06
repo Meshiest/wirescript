@@ -244,6 +244,26 @@ mod tests {
         assert_eq!(coerce(&Type::Vector, &Type::String), CoerceRule::ViaString);
     }
     #[test]
+    fn everything_primitive_casts_to_string() {
+        for t in [
+            Type::Bool,
+            Type::Float,
+            Type::Entity,
+            Type::Character,
+            Type::Controller,
+            Type::Brick,
+            Type::Prefab,
+            Type::Rotator,
+            Type::Color,
+        ] {
+            assert_eq!(
+                coerce(&t, &Type::String),
+                CoerceRule::ViaString,
+                "{t:?} should cast to string"
+            );
+        }
+    }
+    #[test]
     fn ref_invariance() {
         let r_int = Type::Ref(Box::new(Type::Int));
         let r_float = Type::Ref(Box::new(Type::Float));

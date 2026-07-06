@@ -128,11 +128,117 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let _ = ids_unused;
     let mut module = ctx.builder.module;
     prune_dead_exec_unions(&mut module);
+    materialize_unfoldable_constants(&mut module);
     inline_orphan_literals(&mut module);
     crate::emit::partition_anon_chips(&mut module);
     LowerResult {
         module,
         diagnostics: ctx.diagnostics,
+    }
+}
+
+/// Constant `Vec/Rotation/Color` calls lower to `_Literal` nodes so consumers
+/// inline them as component data. That only works for sinks that store the
+/// value as a wire-variant data field; for every other consumer — entity
+/// gates whose struct-typed inputs must be wired, `Split*` inputs, chip IO,
+/// unmapped gates — this pass materializes the real `Make*` gate (component
+/// values baked into its data struct) and re-points those wires at it, so a
+/// folded constant is never silently dropped. Recurses into chip sub-modules.
+fn materialize_unfoldable_constants(module: &mut Module) {
+    use crate::ir::{Node, NodeId, NodeKind, PortRef, PortSpec};
+    let value_sym = *sym::VALUE;
+    let mut make_nodes: Vec<Node> = Vec::new();
+    let mut make_for: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut rewires: Vec<(usize, NodeId)> = Vec::new();
+
+    for (i, w) in module.wires.iter().enumerate() {
+        let Some(src) = module.nodes.get(&w.source.node_id) else {
+            continue;
+        };
+        if src.gate_class != gc::LITERAL {
+            continue;
+        }
+        let recipe = match src.properties.get(&value_sym) {
+            Some(Literal::Vector { x, y, z }) => Some((
+                gc::MAKE_VECTOR,
+                Type::Vector,
+                vec![
+                    (WirePort::X, Literal::Float(*x)),
+                    (WirePort::Y, Literal::Float(*y)),
+                    (WirePort::Z, Literal::Float(*z)),
+                ],
+            )),
+            Some(Literal::Rotator { pitch, yaw, roll }) => Some((
+                gc::MAKE_ROTATION,
+                Type::Rotator,
+                vec![
+                    (WirePort::Pitch, Literal::Float(*pitch)),
+                    (WirePort::Yaw, Literal::Float(*yaw)),
+                    (WirePort::Roll, Literal::Float(*roll)),
+                ],
+            )),
+            Some(Literal::LinearColor { r, g, b, a }) => Some((
+                gc::MAKE_COLOR,
+                Type::Color,
+                vec![
+                    (WirePort::R, Literal::Float(*r)),
+                    (WirePort::G, Literal::Float(*g)),
+                    (WirePort::B, Literal::Float(*b)),
+                    (WirePort::A, Literal::Float(*a)),
+                ],
+            )),
+            _ => None,
+        };
+        let Some((gate_class, out_ty, fields)) = recipe else {
+            continue;
+        };
+        let target_ok = module
+            .nodes
+            .get(&w.target.node_id)
+            .is_some_and(|t| crate::emit::port_accepts_inline_variant(t.gate_class, w.target.port));
+        if target_ok {
+            continue;
+        }
+        let make_id = *make_for.entry(w.source.node_id).or_insert_with(|| {
+            let id = NodeId::fresh();
+            let properties: HashMap<crate::intern::Sym, Literal> = fields
+                .iter()
+                .map(|(port, lit)| (intern(port.as_str()), lit.clone()))
+                .collect();
+            make_nodes.push(Node {
+                id,
+                kind: NodeKind::Gate,
+                gate_class,
+                properties: std::sync::Arc::new(properties),
+                ports: std::sync::Arc::new(GateIO {
+                    inputs: vec![],
+                    outputs: vec![PortSpec {
+                        name: *sym::OUTPUT,
+                        ty: out_ty.clone(),
+                    }],
+                }),
+                source_range: src.source_range.clone(),
+                chip_id: src.chip_id,
+                chain_id: src.chain_id,
+                scope_id: src.scope_id,
+                note: Some("materialized constant"),
+            });
+            id
+        });
+        rewires.push((i, make_id));
+    }
+
+    for n in make_nodes {
+        module.nodes.insert(n.id, n);
+    }
+    for (i, make_id) in rewires {
+        module.wires[i].source = PortRef {
+            node_id: make_id,
+            port: WirePort::Output,
+        };
+    }
+    for child_module in module.chips.values_mut() {
+        materialize_unfoldable_constants(child_module);
     }
 }
 

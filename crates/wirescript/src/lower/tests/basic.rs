@@ -145,6 +145,188 @@ fn array_var_type_inferred_without_annotation() {
 }
 
 #[test]
+fn scalar_var_type_inferred_without_annotation() {
+    // `var s = ""` (no `: string`) infers a string var: the Var gate carries
+    // a string InitialValue and its uses type as string (`==` resolves).
+    let r = compile("var s = \"\"\nout ready = s == \"go\"\n");
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("inferred string var should be a Var gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::String(s)) => assert_eq!(s, ""),
+        other => panic!("expected string InitialValue, got {other:?}"),
+    }
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        "string == on an inferred var should lower to CompareEqual"
+    );
+}
+
+#[test]
+fn vector_var_init_folds_to_constant() {
+    // `var v = Vec(1.0, 2.0, 3.0)` folds the constructor into the Var gate's
+    // InitialValue — no MakeVector gate, no dropped initializer.
+    let r = compile("var v = Vec(1.0, 2.0, 3.0)\nout o = v\n");
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("vector var should be a Var gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::Vector { x, y, z }) => {
+            assert_eq!((*x, *y, *z), (1.0, 2.0, 3.0));
+        }
+        other => panic!("expected vector InitialValue, got {other:?}"),
+    }
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        "constant Vec initializer should not spawn a MakeVector gate"
+    );
+}
+
+#[test]
+fn rotator_var_init_folds_to_constant() {
+    let r = compile("var rot = Rotation(0.0, 90.0, 0.0)\nout o = rot\n");
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("rotator var should be a Var gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::Rotator { pitch, yaw, roll }) => {
+            assert_eq!((*pitch, *yaw, *roll), (0.0, 90.0, 0.0));
+        }
+        other => panic!("expected rotator InitialValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn color_var_init_folds_to_constant() {
+    // Color(r, g, b) is linear 0–1 with alpha defaulting to opaque.
+    let r = compile("var tint = Color(1.0, 0.5, 0.0)\nout o = tint\n");
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("color var should be a Var gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::LinearColor { r, g, b, a }) => {
+            assert_eq!((*r, *g, *b, *a), (1.0, 0.5, 0.0, 1.0));
+        }
+        other => panic!("expected linear color InitialValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn quat_var_defaults_to_identity() {
+    let r = compile("var q: quat\nout o = q\n");
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("quat var should be a Var gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::Quat { x, y, z, w }) => {
+            assert_eq!((*x, *y, *z, *w), (0.0, 0.0, 0.0, 1.0));
+        }
+        other => panic!("expected identity quat InitialValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn vector_array_init_folds_elements() {
+    // Constant Vec(…) elements are valid array initializers and bake into
+    // the ArrayVar's InitialValue list.
+    let r = compile(
+        "array pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]\n",
+    );
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .expect("vector array should be an ArrayVar gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::Array(lits)) => {
+            assert_eq!(lits.len(), 2);
+            assert!(matches!(lits[1], crate::ir::Literal::Vector { .. }));
+        }
+        other => panic!("expected InitialValue array literal, got {other:?}"),
+    }
+}
+
+#[test]
+fn constant_vec_inlines_into_var_set() {
+    // `v = Vec(…)` in a handler folds to component data on the Var_Set gate —
+    // no MakeVector gate needed.
+    let r = compile("var v: vector\nin t: exec\non t { v = Vec(1.0, 2.0, 3.0) }");
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        "constant Vec assigned to a var should inline, not spawn MakeVector"
+    );
+}
+
+#[test]
+fn constant_vec_inlines_into_math() {
+    // Math gates take prim-math variant data, which carries Vector members.
+    let r = compile("in v: vector\nout o = v + Vec(0.0, 0.0, 1.0)");
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"));
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        "constant Vec math operand should inline, not spawn MakeVector"
+    );
+}
+
+#[test]
+fn constant_vec_materializes_for_entity_gates() {
+    // Entity gates take their Vector inputs from wires (no data struct), so
+    // the folded constant re-materializes as a real MakeVector gate.
+    let r = compile(
+        "in e: entity\nin t: exec\non t { e.SetLocation(Vec(0.0, 0.0, 100.0)) }",
+    );
+    assert_no_errors(&r);
+    let make = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MakeVector")
+        .expect("SetLocation arg should materialize a MakeVector gate");
+    assert_eq!(
+        make.properties.get(&crate::intern::intern("Z")),
+        Some(&crate::ir::Literal::Float(100.0)),
+        "materialized MakeVector should carry the folded components"
+    );
+}
+
+#[test]
+fn constant_vec_materializes_for_split_vector() {
+    // `.x` lowers to SplitVector, whose Input is a plain struct field — the
+    // constant must stay a wired MakeVector, not silently zero out.
+    let r = compile("let p = Vec(1.0, 2.0, 3.0)\nout x = p.x");
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_SplitVector"));
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        "component access on a folded constant needs a materialized MakeVector"
+    );
+}
+
+#[test]
 fn array_literal_assignment_desugars_to_clear_push_append() {
     // `foo = [item, 1, ...base, 5]` in an exec handler rebuilds the array:
     // clear, then a push per item and an append per spread.

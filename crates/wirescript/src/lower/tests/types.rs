@@ -79,12 +79,24 @@ fn let_type_annotation_matching() {
 
 #[test]
 fn let_type_annotation_mismatch_warns() {
-    let r = compile("let x: string = 42\nout result = x");
+    // A vector can't become an int — genuine mismatch still warns.
+    let r = compile("let x: int = Vec(1.0, 2.0, 3.0)\nout result = x");
     let warns: Vec<_> = r.diagnostics.iter()
         .filter(|d| d.severity == crate::diagnostic::Severity::Warning && d.code == "WS016")
         .collect();
     assert_eq!(warns.len(), 1, "should warn on type mismatch: {:?}", r.diagnostics);
-    assert!(warns[0].message.contains("string"));
+    assert!(warns[0].message.contains("int"));
+}
+
+#[test]
+fn let_string_annotation_casts_instead_of_warning() {
+    // Everything primitive casts to string, so `let x: string = 42` is an
+    // intentional format, not a WS016 type lie.
+    let r = compile("let x: string = 42\nout result = x");
+    let warns: Vec<_> = r.diagnostics.iter()
+        .filter(|d| d.code == "WS016")
+        .collect();
+    assert!(warns.is_empty(), "string cast should not warn: {:?}", warns);
 }
 
 #[test]

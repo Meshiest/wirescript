@@ -106,6 +106,9 @@ pub(super) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
         Type::Int => Some(Literal::Int(0)),
         Type::String => Some(Literal::String(String::new())),
         Type::Vector => Some(Literal::Vector { x: 0.0, y: 0.0, z: 0.0 }),
+        Type::Rotator => Some(Literal::Rotator { pitch: 0.0, yaw: 0.0, roll: 0.0 }),
+        Type::Quat => Some(Literal::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }),
+        Type::Color => Some(Literal::LinearColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
         Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab => {
             Some(Literal::Object)
         }
@@ -128,6 +131,35 @@ pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
             Literal::Float(f) => Some(Literal::Float(-f)),
             _ => None,
         },
+        // Constructor calls on constant numeric args fold to literals, so
+        // `var v = Vec(1.0, 2.0, 3.0)` (and Rotation/Color) bakes into the
+        // gate's initial value instead of being dropped.
+        Expr::Call { callee, args, .. } => {
+            let Expr::Ident { name, .. } = callee.as_ref() else {
+                return None;
+            };
+            let mut nums = Vec::with_capacity(args.len());
+            for a in args {
+                let CallArg::Positional(arg) = a else {
+                    return None;
+                };
+                match expr_to_literal(arg) {
+                    Some(Literal::Int(n)) => nums.push(n as f64),
+                    Some(Literal::Float(f)) => nums.push(f),
+                    _ => return None,
+                }
+            }
+            match (name.as_str(), nums.as_slice()) {
+                ("Vec", &[x, y, z]) => Some(Literal::Vector { x, y, z }),
+                ("Rotation", &[pitch, yaw, roll]) => {
+                    Some(Literal::Rotator { pitch, yaw, roll })
+                }
+                // Color is linear RGBA 0–1; alpha defaults to opaque.
+                ("Color", &[r, g, b]) => Some(Literal::LinearColor { r, g, b, a: 1.0 }),
+                ("Color", &[r, g, b, a]) => Some(Literal::LinearColor { r, g, b, a }),
+                _ => None,
+            }
+        }
         // Asset reference `$Type/Name` — inlined into the gate's component data.
         Expr::AssetRef { asset_type, asset_name, .. } => Some(Literal::Asset {
             asset_type: asset_type.clone(),

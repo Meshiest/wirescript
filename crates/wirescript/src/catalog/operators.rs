@@ -435,49 +435,32 @@ fn build_operators() -> Vec<OpSpec> {
             ">=",
             "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual",
         ),
-        // String concat. Game's String_Concatenate gate auto-converts
-        // int/float/bool inputs to strings.
-        OpSpec {
-            op: "..",
-            arity: 2,
-            rules: vec![
-                OpRule {
-                    operands: &[Type::String, Type::String],
-                    result: Type::String,
-                    gate_class: gc::STRING_CONCATENATE,
-                    ports: BINARY_PORTS,
-                },
-                OpRule {
-                    operands: &[Type::String, Type::Int],
-                    result: Type::String,
-                    gate_class: gc::STRING_CONCATENATE,
-                    ports: BINARY_PORTS,
-                },
-                OpRule {
-                    operands: &[Type::Int, Type::String],
-                    result: Type::String,
-                    gate_class: gc::STRING_CONCATENATE,
-                    ports: BINARY_PORTS,
-                },
-                OpRule {
-                    operands: &[Type::String, Type::Float],
-                    result: Type::String,
-                    gate_class: gc::STRING_CONCATENATE,
-                    ports: BINARY_PORTS,
-                },
-                OpRule {
-                    operands: &[Type::Float, Type::String],
-                    result: Type::String,
-                    gate_class: gc::STRING_CONCATENATE,
-                    ports: BINARY_PORTS,
-                },
-                OpRule {
-                    operands: &[Type::Int, Type::Int],
-                    result: Type::String,
-                    gate_class: gc::STRING_CONCATENATE,
-                    ports: BINARY_PORTS,
-                },
-            ],
+        // String concat. The game's String_Concatenate gate auto-converts any
+        // wire-variant input (numbers, bools, vectors, entities, characters,
+        // controllers, …) to a string, so accept every variant-able primitive
+        // on either side.
+        {
+            use Type::*;
+            const CONCAT_TYPES: &[Type] = &[
+                String, Int, Float, Bool, Vector, Rotator, Quat, Color, Entity,
+                Controller, Character, Brick, Prefab,
+            ];
+            let mut rules = Vec::new();
+            for a in CONCAT_TYPES {
+                for b in CONCAT_TYPES {
+                    rules.push(OpRule {
+                        operands: Box::leak(Box::new([a.clone(), b.clone()])),
+                        result: String,
+                        gate_class: gc::STRING_CONCATENATE,
+                        ports: BINARY_PORTS,
+                    });
+                }
+            }
+            OpSpec {
+                op: "..",
+                arity: 2,
+                rules,
+            }
         },
     ]
 }
@@ -530,6 +513,27 @@ mod tests {
     fn add_mixed_promotes_to_float() {
         let r = resolve_op("+", &[Type::Int, Type::Float]).unwrap();
         assert!(matches!(r.result, Type::Float));
+    }
+
+    #[test]
+    fn concat_accepts_all_variant_primitives() {
+        for t in [
+            Type::Bool,
+            Type::Float,
+            Type::Vector,
+            Type::Entity,
+            Type::Controller,
+            Type::Character,
+        ] {
+            for operands in [
+                [Type::String, t.clone()],
+                [t.clone(), Type::String],
+            ] {
+                let r = resolve_op("..", &operands)
+                    .unwrap_or_else(|| panic!(".. on {operands:?} should resolve"));
+                assert!(matches!(r.result, Type::String));
+            }
+        }
     }
 
     #[test]

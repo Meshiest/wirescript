@@ -1502,6 +1502,9 @@ fn var_type_to_wire_variant(ty: Option<&crate::ir::Type>) -> WireVariant {
         }
         Some(Type::String) => WireVariant::Str(String::new()),
         Some(Type::Vector) => WireVariant::Vector(Vector3f { x: 0.0, y: 0.0, z: 0.0 }),
+        Some(Type::Rotator) => WireVariant::Rotator { pitch: 0.0, yaw: 0.0, roll: 0.0 },
+        Some(Type::Quat) => WireVariant::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
+        Some(Type::Color) => WireVariant::LinearColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
         _ => WireVariant::Number(0.0),
     }
 }
@@ -1529,6 +1532,9 @@ fn empty_wire_array_variant(elem: Option<&crate::ir::Type>) -> WireArrayVariant 
         Some(Type::Bool) => WireArrayVariant::BoolArray(Vec::new()),
         Some(Type::String) => WireArrayVariant::StringArray(Vec::new()),
         Some(Type::Vector) => WireArrayVariant::VectorArray(Vec::new()),
+        Some(Type::Rotator) => WireArrayVariant::RotatorArray(Vec::new()),
+        Some(Type::Quat) => WireArrayVariant::QuatArray(Vec::new()),
+        Some(Type::Color) => WireArrayVariant::LinearColorArray(Vec::new()),
         Some(Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab) => {
             WireArrayVariant::ObjectArray(Vec::new())
         }
@@ -1580,6 +1586,38 @@ fn wire_array_variant_from_literals(
                         z: *z as f32,
                     },
                     _ => Vector3f { x: 0.0, y: 0.0, z: 0.0 },
+                })
+                .collect(),
+        ),
+        Some(Type::Rotator) => WireArrayVariant::RotatorArray(
+            lits.iter()
+                .map(|l| match l {
+                    Literal::Rotator { pitch, yaw, roll } => (*pitch, *yaw, *roll),
+                    _ => (0.0, 0.0, 0.0),
+                })
+                .collect(),
+        ),
+        Some(Type::Quat) => WireArrayVariant::QuatArray(
+            lits.iter()
+                .map(|l| match l {
+                    Literal::Quat { x, y, z, w } => (*x, *y, *z, *w),
+                    _ => (0.0, 0.0, 0.0, 1.0),
+                })
+                .collect(),
+        ),
+        Some(Type::Color) => WireArrayVariant::LinearColorArray(
+            lits.iter()
+                .map(|l| match l {
+                    Literal::LinearColor { r, g, b, a } => {
+                        (*r as f32, *g as f32, *b as f32, *a as f32)
+                    }
+                    Literal::Color { r, g, b, a } => (
+                        *r as f32 / 255.0,
+                        *g as f32 / 255.0,
+                        *b as f32 / 255.0,
+                        *a as f32 / 255.0,
+                    ),
+                    _ => (1.0, 1.0, 1.0, 1.0),
                 })
                 .collect(),
         ),
@@ -1645,7 +1683,32 @@ fn literal_to_wire_variant(lit: &Literal) -> Option<WireVariant> {
             y: *y as f32,
             z: *z as f32,
         })),
-        _ => None, // Color/Rotator have no wire_graph_variant member
+        Literal::Rotator { pitch, yaw, roll } => Some(WireVariant::Rotator {
+            pitch: *pitch,
+            yaw: *yaw,
+            roll: *roll,
+        }),
+        Literal::Quat { x, y, z, w } => Some(WireVariant::Quat {
+            x: *x,
+            y: *y,
+            z: *z,
+            w: *w,
+        }),
+        Literal::LinearColor { r, g, b, a } => Some(WireVariant::LinearColor {
+            r: *r as f32,
+            g: *g as f32,
+            b: *b as f32,
+            a: *a as f32,
+        }),
+        // sRGB byte color (brick paint) → linear-ish 0–1. Only reached if a
+        // paint literal ends up on a wire-variant port.
+        Literal::Color { r, g, b, a } => Some(WireVariant::LinearColor {
+            r: *r as f32 / 255.0,
+            g: *g as f32 / 255.0,
+            b: *b as f32 / 255.0,
+            a: *a as f32 / 255.0,
+        }),
+        Literal::Array(_) | Literal::Asset { .. } => None,
     }
 }
 
@@ -1905,6 +1968,32 @@ fn schema_field_is(struct_name: &str, field: &str, type_name: &str) -> bool {
     schema_field_type_str(struct_name, field).as_deref() == Some(type_name)
 }
 
+/// Can a folded constant (`Vec/Rotation/Color` on literal args, lowered to a
+/// `_Literal` node) be delivered to this (gate, port) sink as inlined
+/// component data? True only for fields `build_gate_component` writes as wire
+/// variants. Everything else — entity gates with plain struct fields,
+/// `Split*` inputs, chip IO, unmapped gates — must keep a real `Make*` gate,
+/// which the lowering pass materializes on demand.
+pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> bool {
+    let Some((struct_name, fields, use_wire_variant)) = data_struct_for_gate(gate_class) else {
+        return false;
+    };
+    let field = port.as_str();
+    if !fields.contains(&field) {
+        return false;
+    }
+    use_wire_variant
+        || matches!(
+            schema_field_type_str(struct_name, field).as_deref(),
+            Some(
+                "wire_graph_variant"
+                    | "wire_graph_prim_math_variant"
+                    | "WireGraphVariant"
+                    | "WireGraphPrimMathVariant"
+            )
+        )
+}
+
 /// If the field's schema type is an enum, resolve `lit` to its integer
 /// discriminant. Accepts both `Literal::Int` (passthrough) and
 /// `Literal::String` (looked up by variant name, with or without the
@@ -1947,6 +2036,18 @@ mod tests {
         assert!(matches!(var_type_to_wire_variant(Some(&Type::Float)), WireVariant::Number(_)));
         assert!(matches!(var_type_to_wire_variant(Some(&Type::String)), WireVariant::Str(_)));
         assert!(matches!(var_type_to_wire_variant(Some(&Type::Vector)), WireVariant::Vector(_)));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::Rotator)),
+            WireVariant::Rotator { .. }
+        ));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::Quat)),
+            WireVariant::Quat { w, .. } if w == 1.0
+        ));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::Color)),
+            WireVariant::LinearColor { .. }
+        ));
         assert!(matches!(var_type_to_wire_variant(Some(&Type::Entity)), WireVariant::Object(None)));
         // Literal initializers convert to the matching variant member.
         assert!(matches!(literal_to_wire_variant(&Literal::String("x".into())), Some(WireVariant::Str(_))));

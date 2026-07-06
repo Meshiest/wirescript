@@ -99,7 +99,24 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             ctx.scope.pop();
             result
         }
-        Expr::Call { .. } => lower_call(ctx, e),
+        Expr::Call { .. } => {
+            // Constant constructor calls (`Vec/Rotation/Color` on literal
+            // args) lower to a _Literal so consumers inline them as component
+            // data; `materialize_unfoldable_constants` re-creates the Make*
+            // gate for any consumer that can't absorb an inlined value.
+            if let Some(lit) = expr_to_literal(e) {
+                let ty = match &lit {
+                    Literal::Vector { .. } => Some(Type::Vector),
+                    Literal::Rotator { .. } => Some(Type::Rotator),
+                    Literal::LinearColor { .. } => Some(Type::Color),
+                    _ => None,
+                };
+                if let Some(ty) = ty {
+                    return literal_node(ctx, e, ty, lit);
+                }
+            }
+            lower_call(ctx, e)
+        }
         Expr::RecordLit { range, .. } => {
             // Record literals are handled in lower_let_decl, not as standalone expressions.
             synthesise_unsupported_range(ctx, range)

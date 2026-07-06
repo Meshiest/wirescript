@@ -982,7 +982,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::opt("a", WirePort::A, Type::Float),
             ],
             WirePort::Output,
-            Type::Any,
+            Type::Color,
         ),
     );
 

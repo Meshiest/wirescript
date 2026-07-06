@@ -136,11 +136,25 @@ pub enum Literal {
         yaw: f64,
         roll: f64,
     },
+    Quat {
+        x: f64,
+        y: f64,
+        z: f64,
+        w: f64,
+    },
     Color {
         r: u8,
         g: u8,
         b: u8,
         a: u8,
+    },
+    /// Linear RGBA color (0–1 components) — the wire `LinearColor` variant
+    /// member, produced by folding a constant `Color(r, g, b, a?)` call.
+    LinearColor {
+        r: f64,
+        g: f64,
+        b: f64,
+        a: f64,
     },
     /// Null object reference — used for entity/controller/character var defaults.
     Object,
