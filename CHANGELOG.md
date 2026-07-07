@@ -1,5 +1,36 @@
 # Wirescript Changelog
 
+## 0.9.0 - 2026-07-07
+
+### New Builtins
+
+- **Split edge/change detectors** - the game split the detector gates into pure bool-pulse and exec-pulse variants; the language now exposes all four: `Edge(bool) -> {Rising, Falling: bool}`, `EdgeExec(float) -> {Rising, Falling: exec}` (new gate - exec pulses for `on`/`await`), `Changed(any) -> bool` (the plain Change Detector's new bool pulse), and `Change(any) -> any` (repointed to the Exec gate, which now owns the `OnChanged` value-pulse output - same documented semantics as 0.8.0).
+- **Spec-derived record fields** - builtins returning records can now declare a field name per output (`vec_expr_record`); the call result binds as a field->port record (the same mechanism as multi-output inline mods), so field access resolves through the spec instead of port-name string matching. `Edge`'s pulse fields resolve for the first time (the documented lowercase `rising`/`falling` never matched a port) and are renamed `Rising`/`Falling` to match the `EdgeExec`/`Timer`/`GetAim` field convention.
+
+### Bug Fixes
+
+- **`SpawnPrefab()` compiles again** - every use failed to emit with "unsupported conversion from struct property array to LiteralComponent": the PrefabSpawner data struct has an array field (`SpawnedEntityIds`) that inlined gate data never populates, and `LiteralComponent` didn't implement array struct-property access, so the brdb writer's missing-field-to-empty-array path never triggered. Fixed in brdb (0.6.6): an unset array field now reports missing and serializes as an empty array, mirroring the scalar missing-field behavior. (Thanks to the detailed external bug report.)
+
+### Gate Catalog / Data
+
+- Gate inventory regenerated (314 -> 316 entries: the two exec detectors). brdb `_max` schema refreshed from the latest dump (286 -> 288 structs; the plain detectors also gained latched pulse output fields: `bPulseOnChange`, `bPulseOnRisingEdge`/`bPulseOnFallingEdge`).
+- Fixed the plain Edge Detector's emit data mapping key (was missing `Type` in the class name, so its component data was never written). _The new exec-detector gates' binary encoding needs in-game verification._
+
+### Language / Compiler
+
+- **Chip bodies are exec-driven by their exec param** - a chip declaring an exec input (e.g. `chip InitRoles(init: exec, ...)`) now runs its statement-level exec calls chained from that input directly - no `on init { }` wrapper needed. Previously such statements compiled but were silently dead wires (no exec source). `on <param>` handlers still work and attach to the same input.
+- **WS013 understands `emit`** - the unassigned-chip-output check now counts `out x = expr`, `emit x (= expr)`, and plain `x = expr` assignments anywhere in the body (including nested if blocks and `on` handlers), and warns per-output instead of all-or-nothing. Init-style chips that mint values and `emit` them into outputs no longer false-positive.
+- Known limitation surfaced by tests: free references to top-level arrays inside a **named** chip body are not captured - pass state in through params (a record of arrays works; the capture machinery resolves record fields). Anonymous `chip { }` blocks share the parent scope and are unaffected.
+
+### Parser
+
+- **Multi-line array literals** - newlines are now allowed after `[`, around commas, and before `]` in array literals, with an optional trailing comma - mirroring the multi-line call-arg rules. Applies to both top-level pre-initialized `array` declarations and runtime `foo = [...]` rebuilds (they share the literal parse). Previously any newline inside `[ ... ]` was a parse error ("unexpected token '\n' in expression").
+
+### Editor / IDE
+
+- **Formatter indents multi-line array literals** - both formatters (native `format_wirescript` used by the LSP and playground, and the VS Code extension's prettier plugin) now track `[`/`]` depth like they already did `(`/`)`: elements of a multi-line array literal indent one level and the closing `]` returns to the opening line's level. `string[] = [` nets +1 (the type's `[]` self-cancels). Their delimiter scanners also stop at `//`, so bracket-looking text in comments no longer skews indentation.
+- **One "Wirescript" entry in the formatter picker** - the VS Code extension and the LSP server both provided formatting, so the picker listed two identical entries. The server now honors a `provideFormatting: false` initialization option (sent by the extension, which keeps its prettier formatter); other clients get LSP formatting as before.
+
 ## 0.8.0 - 2026-07-06
 
 ### New Builtins and Methods
@@ -23,7 +54,7 @@
 
 ### Gate Catalog / Data
 
-- Gate inventory regenerated (288 → 314 entries, 26 new classes; the messaging/tag/zone-event/quaternion/inventory gates above are wired into the language).
+- Gate inventory regenerated (288 -> 314 entries, 26 new classes; the messaging/tag/zone-event/quaternion/inventory gates above are wired into the language).
 - brdb component `_max` schema (286 structs) and `component_db.rs` (296 type mappings) regenerated from the same build's dump. The dump world only referenced 14 external assets, so `assets/external.rs` was left at the previous full catalog.
 - Deliberately not exposed as builtins: the `*Reference` gates (`$Type/Name` syntax covers them), `Convert`/`ColorConvert` (implicit coercions cover the use cases), and `AddInventoryEntry` (opaque nested entry struct; `GiveWeapon` covers it).
 
@@ -71,7 +102,7 @@
 
 - **Pre-initialized arrays** - `array foo: int[] = [1, 2, -3]` declares an array with constant initial contents. At the top level every element must be a literal (numbers incl. negatives, strings, bools); the values are written straight into the array gate, so it loads pre-populated with no runtime setup. A non-literal element at the top level is now a clear error instead of being silently dropped.
 - **Inferred array-typed vars** - `var foo = [1, 2, 3]` (no annotation) infers `int[]` from the literal and lowers to the same array gate as an `array` declaration; the var indexes and iterates as a real array.
-- **Runtime array assignment + spread** - inside an exec handler, `foo = [a, 1, ...other, 5]` rebuilds an array variable's contents: it desugars to clear → push each item → append each `...spread`, so elements can be any runtime value and a spread splices another array in place. Spreads (`...`) are now parseable inside `[ ... ]` (`ArrayElem::Item` / `ArrayElem::Spread`).
+- **Runtime array assignment + spread** - inside an exec handler, `foo = [a, 1, ...other, 5]` rebuilds an array variable's contents: it desugars to clear -> push each item -> append each `...spread`, so elements can be any runtime value and a spread splices another array in place. Spreads (`...`) are now parseable inside `[ ... ]` (`ArrayElem::Item` / `ArrayElem::Spread`).
 - **Array methods, one source of truth** - every array method now derives from a single `catalog::arrays` table: completion offers the full set on any array-typed value (incl. `var ids: string[]`), and return types are derived from each method's gate output ports. `find` returns `{ Index, Found, Value }` that auto-unwraps to the int Index; `pop`/`min`/`max` expose `.IsEmpty`, and `insert`/`swap`/`slice` expose `.OutOfBounds`.
 - **`GetAim` replaces `AimOrigin`/`AimDirection`** - a character's camera/aim is now one gate returning a record: `char.GetAim().Origin` / `.Direction`. Reading both fields shares a single GetAim gate instead of emitting two. The separate `AimOrigin`/`AimDirection` calls are removed.
 - **Chat command config** - `on ChatCommand(...)` now accepts config args that set the gate's command name and help text. String literals fill `CommandName` then `HelpText` in order (`on ChatCommand("greet", "Greets the player")`), and the description can be named (`Description = "..."`). Bare identifiers still bind the event's data outputs (`controller`, `arguments`), so config and bindings can be mixed: `on ChatCommand("greet", "Greets the player", player, args) { ... }`.
@@ -93,11 +124,11 @@
 - **Native string equality** - `==` / `!=` on strings lower directly to the `CompareEqual` / `CompareNotEqual` gates, which now accept string-typed variant wires. Removed the old `contains(a,b) && length(a) == length(b)` workaround.
 - **Vector arithmetic** - `+ - * / %` operate component-wise on two `vector` operands, and mixing a vector with a scalar (`v * 2.0`, `10.0 * v`, `v / 4`) broadcasts the scalar across the components - all on the same `MathAdd`/`Subtract`/`Multiply`/`Divide`/`Modulo` gates (their inputs accept the vector, `f64` and `i64` wire variants). The dedicated `Scale` helper still works too.
 - **Any-variant variables** - a `var` can hold any WireGraphVariant member (`int`, `float`, `bool`, `string`, `vector`, and object types). Typed vars are emitted with a type-matched initial value instead of always defaulting to a number.
-- **Typed arrays** - an array's declared element type now selects the backing `WireGraphArrayVariant` member (`int` → Int64, `float` → Double, plus Bool/String/Vector/Object arrays), so elements keep their declared type instead of all being stored as doubles.
+- **Typed arrays** - an array's declared element type now selects the backing `WireGraphArrayVariant` member (`int` -> Int64, `float` -> Double, plus Bool/String/Vector/Object arrays), so elements keep their declared type instead of all being stored as doubles.
 
 ### Gate Catalog
 
-- **Regenerated inventory** - `data/logic_gate_inventory.simple.json` rebuilt from the latest in-game dump via a new checked-in generator (`scripts/gen_inventory.mjs`). Adds 76 gate classes (ArrayVar exec gates, new Gamemode/Controller/Character gates, string `ParseInt`/`ParseNumber`, reference gates) and gives 86 previously-`any` physical-brick ports concrete types. 175 → 260 entries.
+- **Regenerated inventory** - `data/logic_gate_inventory.simple.json` rebuilt from the latest in-game dump via a new checked-in generator (`scripts/gen_inventory.mjs`). Adds 76 gate classes (ArrayVar exec gates, new Gamemode/Controller/Character gates, string `ParseInt`/`ParseNumber`, reference gates) and gives 86 previously-`any` physical-brick ports concrete types. 175 -> 260 entries.
 - **Refreshed brdb component tables** - `brdb` `component_db.rs` regenerated from the same dump so the new gates can be written (emit registers their component types). The removed `Gamemode_EndRound` gate is gone.
 
 ### New Builtins and Methods
@@ -115,7 +146,7 @@
 ### Compiler / Output
 
 - **Prefab output** - Compiled programs now emit a Brickadia **prefab** (`type: "Prefab"` with a `Meta/Prefab.json` carrying brick bounds computed from the microchip shell) instead of a world, so the `.brz` pastes like a native copied selection (Ctrl+V) with a correct preview.
-- **Loads on current builds** - A compiled bundle now embeds only the component data structs the program actually uses, plus their transitive schema dependencies, and writes them dependency-first (a referenced struct is always defined before the struct using it) - matching how the game writes its own bundles. This replaces embedding the full gate catalog, which recent builds reject (`While building schema: While reading struct count` → "failed to capture thumbnail / cache prefab"). Real programs stay well within the game's per-schema struct limit and load again.
+- **Loads on current builds** - A compiled bundle now embeds only the component data structs the program actually uses, plus their transitive schema dependencies, and writes them dependency-first (a referenced struct is always defined before the struct using it) - matching how the game writes its own bundles. This replaces embedding the full gate catalog, which recent builds reject (`While building schema: While reading struct count` -> "failed to capture thumbnail / cache prefab"). Real programs stay well within the game's per-schema struct limit and load again.
 
 ## 0.2.0 - 2026-05-15
 
@@ -163,7 +194,7 @@
 - Updated `exec-context.md` with await section, `_` placeholder, Sleep examples.
 - Updated `builtins.md` with Sleep/Delay section.
 - Updated `expressions.md` with operator coercion for all wire variant types.
-- Updated `types.md` with exec→bool coercion.
+- Updated `types.md` with exec->bool coercion.
 - Removed `fn` keyword references from docs.
 - `just compile-brdb` recipe added.
 
@@ -239,7 +270,7 @@
 - **Character** - `ShowHint(char, title, text)`
 - **Controller** - `ShowStatusMessage(ctrl, message)`
 - **Bitwise** - `BitNand(a, b)`, `BitNor(a, b)`
-- **Renamed** `MakeColor` → `Color`
+- **Renamed** `MakeColor` -> `Color`
 - **93% gate coverage** - 163 of 175 Brickadia gates supported
 
 ### Events
@@ -248,7 +279,7 @@
 
 ### Compiler Optimizations
 
-- **NAND/NOR gate fusion** - `!(a && b)` compiles to a single NAND gate instead of NOT + AND. Same for `!(a || b)` → NOR, `~(a & b)` → BitwiseNAND, `~(a | b)` → BitwiseNOR.
+- **NAND/NOR gate fusion** - `!(a && b)` compiles to a single NAND gate instead of NOT + AND. Same for `!(a || b)` -> NOR, `~(a & b)` -> BitwiseNAND, `~(a | b)` -> BitwiseNOR.
 - **7.2x faster chip compile** - Schema parse caching + lower zstd level cuts chip program compile from 334ms to 46ms
 - **Receiver syntax on all vector ops** - `v.Normalize()`, `a.Distance(b)`, `v.Magnitude()`, etc. now work as chained calls with correct type inference
 

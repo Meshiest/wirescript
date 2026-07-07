@@ -194,18 +194,27 @@ let result = Swap(shouldSwap, left, right)
 // result.a and result.b are swapped if shouldSwap is true
 ```
 
-## Edge / Change Detectors (Pure)
+## Edge / Change Detectors
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `Edge(input)` | `(input: bool) -> {rising, falling: bool}` | Detect boolean transitions |
+| `Edge(input)` | `(input: bool) -> {Rising, Falling: bool}` | Bool pulses on boolean transitions |
+| `EdgeExec(input)` | `(input: float) -> {Rising, Falling: exec}` | Exec pulses when a value rises/falls |
+| `Changed(input)` | `(input: any) -> bool` | Bool pulse when the input changes |
 | `Change(input)` | `(input: any) -> any` | Pulse the input value through when it changes |
 
-`Edge` produces a one-tick pulse on `rising` when the input goes from false to true, and on `falling` when it goes from true to false. `Change` is its any-typed companion: the output pulses with the new value whenever the input changes.
+`Edge` and `Changed` are pure: they produce a one-tick bool pulse (`Rising` on
+false→true, `Falling` on true→false; `Changed` on any change). `EdgeExec` and
+`Change` are their exec-flavored siblings — `EdgeExec`'s outputs fire exec
+chains directly (use with `on`/`await`, like `Timer(...).Expired`), and
+`Change` pulses the new value through whenever the input changes.
 
 ```wirescript
 let edges = Edge(button)
-on edges.rising { count = count + 1 }
+on edges.Rising { count = count + 1 }
+
+let health = EdgeExec(hp)
+on health.Falling { ctrl.ShowStatusMessage("taking damage!") }
 ```
 
 ## Logical XOR (`^^`)

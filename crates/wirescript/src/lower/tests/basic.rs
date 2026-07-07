@@ -657,12 +657,14 @@ fn entity_tags_lower_to_tag_gates() {
 
 #[test]
 fn find_player_and_change_detector_are_pure() {
+    // `Change` targets the Exec change detector since cl14860 split the
+    // gates (OnChanged lives there); the plain gate is `Changed`.
     let r = compile(
         "in name: string\nlet p = FindPlayer(name)\nout changed = Change(name)",
     );
     assert_no_errors(&r);
     assert!(has_gate(&r, "BrickComponentType_WireGraph_FindPlayer"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetector"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"));
 }
 
 #[test]
@@ -885,4 +887,22 @@ out result = dir");
         "nested let inside on var.value + if should produce CompareLess");
     assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalAND"),
         "nested let inside on var.value + if should produce LogicalAND");
+}
+
+#[test]
+fn detector_builtins_map_to_split_gate_classes() {
+    // cl14860 split the detectors: `Change` (value pulse-through, OnChanged)
+    // lives on the Exec gate now, `Changed` (bool pulse) on the plain gate;
+    // `EdgeExec` fires exec pulses for `on`/`await`, and `Edge`'s
+    // rising/falling record fields resolve via the port aliases.
+    let src = "in v: float\nin b: bool\nin x: int\nin t: exec\n\
+        let c = Change(x)\nlet cd = Changed(x)\nlet e = Edge(b)\nlet ee = EdgeExec(v)\n\
+        out cv = c\nout cdv = cd\nout rising = e.Rising\nout falling = e.Falling\n\
+        var n: int = 0\non ee.Rising { n = n + 1 }\non ee.Falling { n = n - 1 }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetector"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_EdgeDetector"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_EdgeDetectorExec"));
 }

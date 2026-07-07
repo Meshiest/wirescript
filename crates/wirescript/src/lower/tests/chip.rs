@@ -610,3 +610,17 @@ fn explicit_exec_param_drives_chip_body() {
         "push gate should be driven by the chip's exec param"
     );
 }
+
+#[test]
+fn spawn_prefab_compiles_to_brz() {
+    // The PrefabSpawner data struct has an array field (SpawnedEntityIds)
+    // wirescript never populates — LiteralComponent must report it as
+    // missing (serialized as an empty array), not fail the whole emit.
+    let src = "in trigger: exec\non trigger {\n  let car = SpawnPrefab()\n}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let placements = crate::layout::layout(&r.module).placements;
+    let opts = crate::emit::EmitOptions::default();
+    let brz = crate::emit::emit_brz(&r.module, &placements, &opts, &std::sync::Arc::new(crate::template_cache::TemplateCache::new()));
+    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+}

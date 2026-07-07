@@ -51,6 +51,11 @@ impl CallParam {
 pub struct CallOutput {
     pub port: WirePort,
     pub ty: Type,
+    /// Record field this output binds to when the call returns a record
+    /// (e.g. `Edge`'s `rising`). Named outputs make the call result bind as
+    /// a field→port record, so field access resolves through the spec
+    /// instead of port-name matching. None for single-value outputs.
+    pub field: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +81,7 @@ fn math_unary(name: &'static str, gate_class: &'static str) -> CallSpec {
         params: vec![CallParam::req("x", WirePort::Input, Type::Float)],
         exec: false,
         outputs: vec![CallOutput {
+            field: None,
             port: WirePort::Output,
             ty: Type::Float,
         }],
@@ -96,9 +102,48 @@ fn vec_expr(
         params,
         exec: false,
         outputs: vec![CallOutput {
+            field: None,
             port: out_port,
             ty: out_ty,
         }],
+        receiver: None,
+    }
+}
+
+/// A pure gate returning a record: one named output per field. The spec's
+/// return type is the record derived from `fields`, and lowering binds the
+/// result as a field→port record (no port-name matching).
+fn vec_expr_record(
+    name: &'static str,
+    gate_class: &'static str,
+    params: Vec<CallParam>,
+    fields: Vec<(&'static str, WirePort, Type)>,
+) -> CallSpec {
+    let record_ty = Type::Record(
+        fields
+            .iter()
+            .map(|(f, _, ty)| (f.to_string(), ty.clone()))
+            .collect(),
+    );
+    let mut outputs: Vec<CallOutput> = fields
+        .into_iter()
+        .map(|(f, port, ty)| CallOutput {
+            field: Some(f),
+            port,
+            ty,
+        })
+        .collect();
+    // The first output doubles as the call's primary value; it carries the
+    // record type so a bare (non-field) use typechecks as the record.
+    if let Some(first) = outputs.first_mut() {
+        first.ty = record_ty;
+    }
+    CallSpec {
+        name,
+        gate_class,
+        params,
+        exec: false,
+        outputs,
         receiver: None,
     }
 }
@@ -116,6 +161,7 @@ fn vec_recv(
         params,
         exec: false,
         outputs: vec![CallOutput {
+            field: None,
             port: out_port,
             ty: out_ty,
         }],
@@ -138,6 +184,7 @@ fn expr_recv(
         params,
         exec: false,
         outputs: vec![CallOutput {
+            field: None,
             port: out_port,
             ty: out_ty,
         }],
@@ -233,6 +280,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CONTROLLER_GET_FROM_ENTITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Controller,
                 ty: Type::Controller,
             }],
@@ -245,6 +293,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_GET_FROM_CONTROLLER,
             vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Character,
                 ty: Type::Character,
             }],
@@ -261,6 +310,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_GET_AIM,
             vec![CallParam::req("character", WirePort::Character, Type::Character)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Origin,
                 ty: Type::Record(vec![
                     ("Origin".into(), Type::Vector),
@@ -277,6 +327,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("character", WirePort::Character, Type::Character)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::InputForward,
                 ty: Type::Record(vec![
                     ("Forward".into(), Type::Float),
@@ -296,6 +347,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_GET_LOCATION,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Vector,
                 ty: Type::Vector,
             }],
@@ -308,6 +360,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_GET_ROTATION,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Rotation,
                 ty: Type::Rotator,
             }],
@@ -320,6 +373,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_GET_LOCATION_ROTATION,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Vector,
                 ty: Type::Record(vec![
                     ("Vector".into(), Type::Vector),
@@ -335,6 +389,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_GET_LINEAR_VELOCITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::LinearVelocity,
                 ty: Type::Vector,
             }],
@@ -347,6 +402,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_GET_ANGULAR_VELOCITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::AngularVelocity,
                 ty: Type::Vector,
             }],
@@ -359,6 +415,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_GET_VELOCITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Vector,
                 ty: Type::Record(vec![
                     ("Vector".into(), Type::Vector),
@@ -381,6 +438,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Any,
             }],
@@ -399,6 +457,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Any,
             }],
@@ -733,6 +792,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("role", WirePort::RoleName, Type::String),
             ],
             vec![CallOutput {
+            field: None,
                 port: WirePort::BHasRole,
                 ty: Type::Bool,
             }],
@@ -767,6 +827,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("count", WirePort::Count, Type::Int)],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Int,
             }],
@@ -781,6 +842,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Bool,
             }],
@@ -801,6 +863,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Int,
             }],
@@ -828,6 +891,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::String,
             }],
@@ -944,6 +1008,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Any,
             }],
@@ -962,6 +1027,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Record(vec![("a".into(), Type::Any), ("b".into(), Type::Any)]),
             }],
@@ -1213,6 +1279,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("key", WirePort::Key, Type::String),
             ],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Value,
                 ty: Type::Any,
             }],
@@ -1225,6 +1292,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::GAMEMODE_GET_TEAM,
             vec![CallParam::req("character", WirePort::Character, Type::Character)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Team,
                 ty: Type::Any,
             }],
@@ -1240,6 +1308,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Int,
             }],
@@ -1257,6 +1326,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Bool,
             }],
@@ -1274,6 +1344,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Bool,
             }],
@@ -1291,6 +1362,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Bool,
             }],
@@ -1309,6 +1381,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::String,
             }],
@@ -1327,6 +1400,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::String,
             }],
@@ -1345,6 +1419,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Int,
             }],
@@ -1362,6 +1437,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Left,
                 ty: Type::Record(vec![
                     ("Left".into(), Type::String),
@@ -1379,6 +1455,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::String,
             }],
@@ -1393,6 +1470,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::String,
             }],
@@ -1407,6 +1485,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::String,
             }],
@@ -1466,6 +1545,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("v", WirePort::Input, Type::Vector)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::X,
                 ty: Type::Record(vec![
                     ("x".into(), Type::Float),
@@ -1484,6 +1564,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("c", WirePort::Input, Type::Color)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::R,
                 ty: Type::Record(vec![
                     ("r".into(), Type::Float),
@@ -1499,15 +1580,28 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
     // ---- Edge detector ---------------------------------------------------
     m.insert(
         "Edge",
-        vec_expr(
+        vec_expr_record(
             "Edge",
             gc::EDGE_DETECTOR,
             vec![CallParam::req("input", WirePort::Input, Type::Bool)],
-            WirePort::BPulseOnRisingEdge,
-            Type::Record(vec![
-                ("rising".into(), Type::Bool),
-                ("falling".into(), Type::Bool),
-            ]),
+            vec![
+                ("Rising", WirePort::BPulseOnRisingEdge, Type::Bool),
+                ("Falling", WirePort::BPulseOnFallingEdge, Type::Bool),
+            ],
+        ),
+    );
+    // "Edge Detector (Exec)": exec pulses when a float input rises/falls,
+    // for `on e.Rising { }` / `await e.Falling` (Timer.Expired-style).
+    m.insert(
+        "EdgeExec",
+        vec_expr_record(
+            "EdgeExec",
+            gc::EDGE_DETECTOR_EXEC,
+            vec![CallParam::req("input", WirePort::Input, Type::Float)],
+            vec![
+                ("Rising", WirePort::OnRisingEdge, Type::Exec),
+                ("Falling", WirePort::OnFallingEdge, Type::Exec),
+            ],
         ),
     );
 
@@ -1547,6 +1641,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::RoundNumber,
                 ty: Type::Int,
             }],
@@ -1561,6 +1656,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("name", WirePort::TeamName, Type::String)],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Team,
                 ty: Type::Any,
             }],
@@ -1590,6 +1686,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_GET_DAMAGE,
             vec![CallParam::req("character", WirePort::Character, Type::Character)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Damage,
                 ty: Type::Float,
             }],
@@ -1640,6 +1737,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CONTROLLER_GET_USER_NAME,
             vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::UserName,
                 ty: Type::String,
             }],
@@ -1652,6 +1750,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CONTROLLER_GET_USER_ID,
             vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::UserId,
                 ty: Type::String,
             }],
@@ -1664,6 +1763,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CONTROLLER_GET_DISPLAY_NAME,
             vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::DisplayName,
                 ty: Type::String,
             }],
@@ -1676,6 +1776,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CONTROLLER_IS_TRUSTED,
             vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::BIsTrusted,
                 ty: Type::Bool,
             }],
@@ -1703,6 +1804,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("permission", WirePort::PermissionName, Type::String),
             ],
             vec![CallOutput {
+            field: None,
                 port: WirePort::BHasPermission,
                 ty: Type::Bool,
             }],
@@ -1757,6 +1859,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Value,
                 ty: Type::Int,
             }],
@@ -1771,6 +1874,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Value,
                 ty: Type::Float,
             }],
@@ -1800,6 +1904,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("team", WirePort::Team, Type::Entity)],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Name,
                 ty: Type::String,
             }],
@@ -1817,6 +1922,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Value,
                 ty: Type::Int,
             }],
@@ -1874,6 +1980,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::DeltaTime,
                 ty: Type::Float,
             }],
@@ -1888,6 +1995,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Uptime,
                 ty: Type::Float,
             }],
@@ -1906,6 +2014,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::BOutput,
                 ty: Type::Bool,
             }],
@@ -1923,6 +2032,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Value,
                 ty: Type::Float,
             }],
@@ -1946,6 +2056,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Output,
                 ty: Type::Float,
             }],
@@ -1966,6 +2077,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Value,
                 ty: Type::Float,
             }],
@@ -1988,10 +2100,12 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             exec: false,
             outputs: vec![
                 CallOutput {
+            field: None,
                     port: WirePort::Time,
                     ty: Type::Float,
                 },
                 CallOutput {
+            field: None,
                     port: WirePort::Expired,
                     ty: Type::Exec,
                 },
@@ -2042,6 +2156,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Entity,
                 ty: Type::Entity,
             }],
@@ -2074,6 +2189,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: true,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::HitDistance,
                 ty: Type::Record(vec![
                     ("HitDistance".into(), Type::Float),
@@ -2184,6 +2300,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_GET_TAG,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
+            field: None,
                 port: WirePort::Tag,
                 ty: Type::String,
             }],
@@ -2211,6 +2328,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("query", WirePort::Query, Type::Any)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::Player,
                 ty: Type::Entity,
             }],
@@ -2218,16 +2336,29 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         },
     );
 
-    // ---- Change detector -----------------------------------------
-    // Pulses its input value through when it changes (companion to Edge).
+    // ---- Change detectors ----------------------------------------
+    // `Change` pulses its input value through when it changes — that's the
+    // "Change Detector (Exec)" gate (its OnChanged output moved there when
+    // the game split the detectors in cl14860). The plain "Change Detector"
+    // emits a bool pulse instead, exposed as `Changed`.
     m.insert(
         "Change",
         vec_expr(
             "Change",
-            gc::CHANGE_DETECTOR,
+            gc::CHANGE_DETECTOR_EXEC,
             vec![CallParam::req("input", WirePort::Input, Type::Any)],
             WirePort::OnChanged,
             Type::Any,
+        ),
+    );
+    m.insert(
+        "Changed",
+        vec_expr(
+            "Changed",
+            gc::CHANGE_DETECTOR,
+            vec![CallParam::req("input", WirePort::Input, Type::Any)],
+            WirePort::BPulseOnChange,
+            Type::Bool,
         ),
     );
 
@@ -2255,6 +2386,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("q", WirePort::Input, Type::Quat)],
             exec: false,
             outputs: vec![CallOutput {
+            field: None,
                 port: WirePort::X,
                 ty: Type::Record(vec![
                     ("X".into(), Type::Float),

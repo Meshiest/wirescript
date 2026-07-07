@@ -1432,9 +1432,14 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
             false,
         )),
 
-        // ── Change detector ─────────────────────────────────────
+        // ── Change detectors ────────────────────────────────────
         "BrickComponentType_WireGraph_Expr_ChangeDetector" => Some((
             "BrickComponentData_WireGraph_Expr_ChangeDetector",
+            &["Input"],
+            true,
+        )),
+        "BrickComponentType_WireGraph_Expr_ChangeDetectorExec" => Some((
+            "BrickComponentData_WireGraph_Expr_ChangeDetectorExec",
             &["Input"],
             true,
         )),
@@ -1624,10 +1629,16 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
             false,
         )),
 
-        // ── Edge detector ──────────────────────────────────────────────────
-        "BrickComponent_WireGraph_Expr_EdgeDetector" => Some((
+        // ── Edge detectors ─────────────────────────────────────────────────
+        // (the plain detector's key was missing "Type" and never matched)
+        "BrickComponentType_WireGraph_Expr_EdgeDetector" => Some((
             "BrickComponentData_WireGraph_Expr_EdgeDetector",
             &["Input", "bPulseOnRisingEdge", "bPulseOnFallingEdge"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Expr_EdgeDetectorExec" => Some((
+            "BrickComponentData_WireGraph_Expr_EdgeDetectorExec",
+            &["Input"],
             false,
         )),
 

@@ -100,6 +100,7 @@ pub const MATH_LOG_BASE: &str = "BrickComponentType_WireGraph_Expr_MathLogBase";
 pub const MATH_BLEND: &str = "BrickComponentType_WireGraph_Expr_MathBlend";
 pub const MATH_MOD_FLOORED: &str = "BrickComponentType_WireGraph_Expr_MathModuloFloored";
 pub const EDGE_DETECTOR: &str = "BrickComponentType_WireGraph_Expr_EdgeDetector";
+pub const EDGE_DETECTOR_EXEC: &str = "BrickComponentType_WireGraph_Expr_EdgeDetectorExec";
 
 // String ops
 pub const STRING_LENGTH: &str = "BrickComponentType_WireGraph_Expr_String_Length";
@@ -255,6 +256,7 @@ pub const FIND_PLAYER: &str = "BrickComponentType_WireGraph_FindPlayer";
 
 // Change detector
 pub const CHANGE_DETECTOR: &str = "BrickComponentType_WireGraph_Expr_ChangeDetector";
+pub const CHANGE_DETECTOR_EXEC: &str = "BrickComponentType_WireGraph_Expr_ChangeDetectorExec";
 
 // Quaternion make/split/dot
 pub const MAKE_QUATERNION: &str = "BrickComponentType_WireGraph_Expr_MakeQuaternion";

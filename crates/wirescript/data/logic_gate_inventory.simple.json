@@ -6365,6 +6365,41 @@
         ],
         "outputs": [
           {
+            "name": "bPulseOnChange",
+            "displayName": "Pulse On Change",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Expr_ChangeDetectorExec",
+      "brickDisplayName": "Change Detector (Exec)",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_ChangeDetectorExec",
+        "displayName": "Change Detector (Exec)",
+        "description": "",
+        "kind": "expr",
+        "family": "ChangeDetectorExec",
+        "inputs": [
+          {
+            "name": "Input",
+            "displayName": "Input",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
             "name": "OnChanged",
             "displayName": "On Changed",
             "tooltip": "",
@@ -6875,6 +6910,48 @@
             "displayName": "Input",
             "tooltip": "",
             "type": "bool",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bPulseOnFallingEdge",
+            "displayName": "Pulse On Falling Edge",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bPulseOnRisingEdge",
+            "displayName": "Pulse On Rising Edge",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Expr_EdgeDetectorExec",
+      "brickDisplayName": "Edge Detector (Exec)",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_EdgeDetectorExec",
+        "displayName": "Edge Detector (Exec)",
+        "description": "",
+        "kind": "expr",
+        "family": "EdgeDetectorExec",
+        "inputs": [
+          {
+            "name": "Input",
+            "displayName": "Input",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ],
@@ -11238,6 +11315,13 @@
         "family": "",
         "inputs": [
           {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
             "name": "Query",
             "displayName": "Query",
             "tooltip": "",
@@ -11246,6 +11330,13 @@
           }
         ],
         "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
           {
             "name": "Player",
             "displayName": "Player",

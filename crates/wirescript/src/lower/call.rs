@@ -1269,6 +1269,27 @@ pub(super) fn lower_builtin_call(
         ctx.connect(w.val_port, node_id.port(w.port));
     }
 
+    // Named record outputs (e.g. Edge's rising/falling): stash a field→port
+    // record so a `let` binding resolves fields through the spec instead of
+    // port-name matching. Set definitively for THIS call — `None` otherwise —
+    // so a nested record-returning arg call doesn't leak into the outer let.
+    ctx.pending_inline_record = if spec.outputs.iter().any(|o| o.field.is_some()) {
+        let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::new();
+        for out in &spec.outputs {
+            if let Some(field) = out.field {
+                record.insert(
+                    crate::intern::intern(field),
+                    Binding::Local(LocalRecord {
+                        port: node_id.port(out.port),
+                    }),
+                );
+            }
+        }
+        Some(record)
+    } else {
+        None
+    };
+
     if spec.outputs.len() == 1 {
         return node_id.port(spec.outputs[0].port);
     }
