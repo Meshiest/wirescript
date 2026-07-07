@@ -557,3 +557,56 @@ on player {
     let brz = crate::emit::emit_brz(&r.module, &lr.placements, &Default::default(), &tc);
     assert!(brz.is_ok(), "string interpolation should emit valid brz: {:?}", brz.err());
 }
+
+#[test]
+fn emit_value_inside_chip_handler_assigns_outputs() {
+    // Init-style chips mint values in an `on` handler and emit them into
+    // their outputs. The WS013 unassigned-output check must count `emit`
+    // (including nested in handlers), and lowering must accept the shape.
+    let src = "chip Init(t: exec) -> (code: int, done: exec) {\n  on t {\n    emit code = 7\n    emit done\n  }\n}\nin s: exec\nlet r = Init(s)\nout v = r.code";
+    let parsed = crate::parser::parse(src, "test");
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    assert!(
+        tc.diagnostics
+            .iter()
+            .all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "unexpected typecheck errors: {:?}",
+        tc.diagnostics
+    );
+    let r = compile(src);
+    assert_no_errors(&r);
+}
+
+#[test]
+fn explicit_exec_param_drives_chip_body() {
+    // A chip taking `init: exec` runs statement-level exec calls in its body
+    // on that exec — no `on init { }` wrapper needed. The push gate inside
+    // the child module must have its exec input wired (previously it was
+    // silently dead).
+    // NOTE: free references to top-level arrays inside a named chip body are
+    // NOT captured — state must come in through params (here: a record of
+    // arrays), which the capture machinery resolves.
+    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(init: exec, tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let child = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("chip instance should produce a child module");
+    let push = child
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .expect("child module should contain the push gate");
+    let push_exec_wired = child
+        .wires
+        .iter()
+        .any(|w| w.target.node_id == push.id);
+    assert!(
+        push_exec_wired,
+        "push gate should be driven by the chip's exec param"
+    );
+}

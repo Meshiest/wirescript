@@ -352,6 +352,26 @@ fn array_literal_assignment_desugars_to_clear_push_append() {
 }
 
 #[test]
+fn multi_line_array_literals_parse() {
+    // Newlines are allowed after '[', around commas, and before ']' — with an
+    // optional trailing comma — mirroring the multi-line call-arg rules. Both
+    // the top-level baked initializer and the exec-context rebuild use the
+    // same literal parse.
+    let src = "array names: string[] = [\n  \"a\",\n  \"b\",\n  \"c\",\n]\n\
+        array base: int[] = [1, 2]\nvar foo: int[]\nin t: exec\n\
+        on t {\n  foo = [\n    3,\n    ...base,\n    4\n  ]\n}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let pushes = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .count();
+    assert_eq!(pushes, 2, "multi-line rebuild should still lower each item");
+}
+
+#[test]
 fn top_level_array_with_non_literal_or_spread_errors() {
     // Outside an exec handler an array initializer is baked, so non-literal
     // elements and spreads must be rejected (not silently dropped). The lower

@@ -898,19 +898,18 @@ fn check_decl(
                 }
             }
             ctx.in_exec(|ctx| check_block(ctx, &c.body, tmap, omap));
-            // Warn if outputs are declared but never assigned
-            if !c.outputs.is_empty() {
-                let has_out_binding = c
-                    .body
-                    .stmts
-                    .iter()
-                    .any(|s| matches!(s, Stmt::OutBinding(_)));
-                let has_return_value = block_has_return_value(&c.body);
-                if !has_out_binding && !has_return_value {
-                    for out in &c.outputs {
+            // Warn if outputs are declared but never assigned. Assignments
+            // count anywhere in the body, including nested if blocks and
+            // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
+            // `x = expr` assignment.
+            if !c.outputs.is_empty() && !block_has_return_value(&c.body) {
+                let mut assigned = std::collections::HashSet::new();
+                collect_output_assignments(&c.body, &mut assigned);
+                for out in &c.outputs {
+                    if !assigned.contains(&out.name) {
                         ctx.emit(
                             "WS013",
-                            format!("output '{}' is never assigned — use `out {} = expr` or `return expr`", out.name, out.name),
+                            format!("output '{}' is never assigned — use `out {} = expr`, `emit {}`, or `return expr`", out.name, out.name, out.name),
                             out.range.clone(),
                         );
                     }
@@ -1068,6 +1067,39 @@ fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
                 event_data: None,
             },
         );
+    }
+}
+
+/// Collect names assigned as outputs anywhere in a block: `out name = expr`
+/// bindings, `emit name (= expr)`, and bare `name = expr` assignments (an
+/// over-approximation — variable assigns land here too — but this set only
+/// suppresses the WS013 unassigned-output warning). Recurses into if blocks,
+/// `on` handlers, and anonymous chip blocks; nested named chips own their
+/// outputs and are skipped.
+fn collect_output_assignments(block: &Block, assigned: &mut std::collections::HashSet<String>) {
+    for s in &block.stmts {
+        match s {
+            Stmt::OutBinding(o) => {
+                assigned.insert(o.name.clone());
+            }
+            Stmt::Emit(e) => {
+                assigned.insert(e.name.clone());
+            }
+            Stmt::Assign(a) => {
+                if let Expr::Ident { name, .. } = &a.target {
+                    assigned.insert(name.clone());
+                }
+            }
+            Stmt::If(i) => {
+                collect_output_assignments(&i.then_block, assigned);
+                if let Some(eb) = &i.else_block {
+                    collect_output_assignments(eb, assigned);
+                }
+            }
+            Stmt::Handler(h) => collect_output_assignments(&h.body, assigned),
+            Stmt::AnonChip(ac) => collect_output_assignments(&ac.body, assigned),
+            _ => {}
+        }
     }
 }
 

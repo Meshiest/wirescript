@@ -554,6 +554,9 @@ fn build_chip_module(
         }
     }
 
+    // First exec-typed value input, if any — it drives the chip body (see
+    // below).
+    let mut first_exec_input: Option<NodeId> = None;
     for inp in &chip_decl.inputs {
         let resolved_record = match &inp.typ {
             TypeExpr::Record { fields, .. } => Some(fields.clone()),
@@ -682,6 +685,9 @@ fn build_chip_module(
                 t.clone(),
                 chip_decl.range.clone(),
             );
+            if matches!(t, Type::Exec) && first_exec_input.is_none() {
+                first_exec_input = Some(node_id);
+            }
             child_ctx.scope.insert(
                 inp.name.clone(),
                 Binding::Input(NodeRecord { node_id, ty: t }),
@@ -718,6 +724,11 @@ fn build_chip_module(
             Type::Exec,
             chip_decl.range.clone(),
         );
+        child_ctx.current_exec = Some(exec_in.port(WirePort::RerOutput));
+    } else if let Some(exec_in) = first_exec_input {
+        // An explicit exec param drives the chip body: statement-level exec
+        // calls chain from it directly — no `on <param> { }` wrapper needed.
+        // (`on <param>` handlers still work; they attach to the same input.)
         child_ctx.current_exec = Some(exec_in.port(WirePort::RerOutput));
     }
 
