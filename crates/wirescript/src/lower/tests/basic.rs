@@ -582,6 +582,126 @@ fn give_weapon_lowers_to_set_inventory_entry_with_asset() {
 }
 
 #[test]
+fn messaging_builtins_lower_to_their_gates() {
+    // Per-controller chat/message-box plus global chat/status broadcasts.
+    let r = compile(
+        "in p: character\non p {\n  let c = p.ControllerOf()\n  c.ShowChatMessage(\"psst\")\n  c.ShowMessageBox(\"body\", title = \"note\")\n  BroadcastChatMessage(\"hello everyone\")\n  BroadcastStatusMessage(\"round over\", flash = true)\n}",
+    );
+    assert_no_errors(&r);
+    for class in [
+        "BrickComponentType_WireGraph_Exec_Controller_ShowChatMessage",
+        "BrickComponentType_WireGraph_Exec_Controller_ShowMessageBox",
+        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
+        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage",
+    ] {
+        assert!(has_gate(&r, class), "expected a {class} gate");
+    }
+}
+
+#[test]
+fn play_audio_builtins_carry_audio_asset() {
+    // The `$BrickOneShotAudioDescriptor/…` ref inlines into the gate's
+    // AudioDescriptor data field (registered as an external asset at emit).
+    let r = compile(
+        "in p: character\non p {\n  p.PlayAudioAt($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press, volume = 0.5)\n  PlayGlobalAudio($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press)\n}",
+    );
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "Component_WireGraph_PlayAudioAt")
+        .expect("expected a PlayAudioAt gate");
+    match node.properties.get(&crate::intern::intern("AudioDescriptor")) {
+        Some(crate::ir::Literal::Asset { asset_type, asset_name }) => {
+            assert_eq!(asset_type, "BrickOneShotAudioDescriptor");
+            assert_eq!(asset_name, "BOSA_Buttons_Button_1_Press");
+        }
+        other => panic!("expected an asset property, got {other:?}"),
+    }
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_PlayGlobalAudio"),
+        "expected a PlayGlobalAudio gate"
+    );
+}
+
+#[test]
+fn entity_tags_lower_to_tag_gates() {
+    let r = compile(
+        "in p: character\non p {\n  p.SetTag(\"slot3\")\n  let t = p.GetTag()\n  p.DisplayText(\"tag ${t}\")\n}",
+    );
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Entity_SetTag"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Entity_GetTag"));
+}
+
+#[test]
+fn find_player_and_change_detector_are_pure() {
+    let r = compile(
+        "in name: string\nlet p = FindPlayer(name)\nout changed = Change(name)",
+    );
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_FindPlayer"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetector"));
+}
+
+#[test]
+fn quat_make_split_dot_lower_to_their_gates() {
+    let r = compile(
+        "let q = Quat(0.0, 0.0, 0.0, 1.0)\nlet s = q.SplitQuat()\nout w = s.W\nout d = q.QuatDot(q)",
+    );
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeQuaternion"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_SplitQuaternion"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_QuatDotProduct"));
+}
+
+#[test]
+fn inventory_family_carries_asset_properties() {
+    let r = compile(
+        "in p: character\non p {\n  p.AddInventoryItem($BRItemBase/Weapon_Pistol)\n  p.SetInventoryItem($BRItemBase/Weapon_Bow, slot = 2)\n  p.AddInventoryItemAdv($BRItemBase/Weapon_Pistol, damage = 2.0, itemName = \"Big Iron\")\n}",
+    );
+    assert_no_errors(&r);
+    let item = r
+        .module
+        .nodes
+        .values()
+        .find(|n| {
+            n.gate_class == "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem"
+        })
+        .expect("expected an AddInventoryItem gate");
+    match item.properties.get(&crate::intern::intern("Item")) {
+        Some(crate::ir::Literal::Asset { asset_name, .. }) => {
+            assert_eq!(asset_name, "Weapon_Pistol");
+        }
+        other => panic!("expected an asset property, got {other:?}"),
+    }
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Exec_Character_SetInventoryItem"
+    ));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv"
+    ));
+}
+
+#[test]
+fn damage_and_zone_events_lower_to_event_gates() {
+    let r = compile(
+        "on CharacterDamaged(char, dmg) {\n  char.DisplayText(\"ouch ${dmg}\")\n}\non EntityZoneEntered(e) {\n  e.SetTag(\"inside\")\n}\non ProjectileZoneEntered(shooter) {\n  shooter.DisplayText(\"hit!\")\n}",
+    );
+    assert_no_errors(&r);
+    for class in [
+        "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDamagedEvent",
+        "BrickComponentType_Internal_EntityZoneEvent_Entered",
+        "BrickComponentType_Internal_ProjectileZoneEvent_Entered",
+    ] {
+        assert!(has_gate(&r, class), "expected a {class} event gate");
+    }
+}
+
+#[test]
 fn has_role_lowers_with_config_role_name() {
     // `ctrl.HasRole("Admin")` lowers to the HasRole gate (RoleName is a config
     // string) and returns a bool.

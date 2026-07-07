@@ -28,6 +28,33 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_BrickAssetReference",
+      "brickDisplayName": "Brick Asset Reference",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_BrickAssetReference",
+        "displayName": "Brick Asset Reference",
+        "description": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Value",
+            "displayName": "Value",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_DeltaTime",
       "brickDisplayName": "Delta Time",
       "brickSummary": "",
@@ -49,6 +76,33 @@
             "displayName": "Delta Time",
             "tooltip": "",
             "type": "float",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_EntityTypeReference",
+      "brickDisplayName": "Entity Type Reference",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_EntityTypeReference",
+        "displayName": "Entity Type Reference",
+        "description": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Value",
+            "displayName": "Value",
+            "tooltip": "",
+            "type": "entity",
             "composite": null
           }
         ]
@@ -1287,6 +1341,118 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_Character_AddInventoryBrick",
+      "brickDisplayName": "Add Character Inventory Brick",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_AddInventoryBrick",
+        "displayName": "Add Character Inventory Brick",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "BrickAsset",
+            "displayName": "Brick Asset",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "ProceduralSize",
+            "displayName": "Procedural Size",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Character_AddInventoryEntity",
+      "brickDisplayName": "Add Character Inventory Entity",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_AddInventoryEntity",
+        "displayName": "Add Character Inventory Entity",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "EntityType",
+            "displayName": "Entity Type",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_Character_AddInventoryEntry",
       "brickDisplayName": "Add Character Inventory Entry",
       "brickSummary": "",
@@ -1314,6 +1480,139 @@
             "displayName": "Exec",
             "tooltip": "",
             "type": "exec",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Character_AddInventoryItem",
+      "brickDisplayName": "Add Character Inventory Item",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem",
+        "displayName": "Add Character Inventory Item",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Item",
+            "displayName": "Item",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Character_AddInventoryItemAdv",
+      "brickDisplayName": "Add Character Inventory Item (Advanced)",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 9,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv",
+        "displayName": "Add Character Inventory Item (Advanced)",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "DamageMultiplier",
+            "displayName": "Damage Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "ItemNameOverride",
+            "displayName": "Item Name Override",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "ItemScale",
+            "displayName": "Item Scale",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "ItemType",
+            "displayName": "Item Type",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "ProjectileOverride",
+            "displayName": "Projectile Override",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "WeaponSpeedMultiplier",
+            "displayName": "Weapon Speed Multiplier",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ],
@@ -1588,6 +1887,132 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_Character_SetInventoryBrick",
+      "brickDisplayName": "Set Character Inventory Brick",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 6,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_SetInventoryBrick",
+        "displayName": "Set Character Inventory Brick",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "BrickAsset",
+            "displayName": "Brick Asset",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "ProceduralSize",
+            "displayName": "Procedural Size",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          },
+          {
+            "name": "Slot",
+            "displayName": "Slot",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Character_SetInventoryEntity",
+      "brickDisplayName": "Set Character Inventory Entity",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntity",
+        "displayName": "Set Character Inventory Entity",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "EntityType",
+            "displayName": "Entity Type",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Slot",
+            "displayName": "Slot",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_Character_SetInventoryEntry",
       "brickDisplayName": "Set Character Inventory Entry",
       "brickSummary": "",
@@ -1671,6 +2096,153 @@
             "displayName": "Slot",
             "tooltip": "",
             "type": "int",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Character_SetInventoryItem",
+      "brickDisplayName": "Set Character Inventory Item",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_SetInventoryItem",
+        "displayName": "Set Character Inventory Item",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Item",
+            "displayName": "Item",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Slot",
+            "displayName": "Slot",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Character_SetInventoryItemAdv",
+      "brickDisplayName": "Set Character Inventory Item (Advanced)",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Character_SetInventoryItemAdv",
+        "displayName": "Set Character Inventory Item (Advanced)",
+        "description": "",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "DamageMultiplier",
+            "displayName": "Damage Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "ItemNameOverride",
+            "displayName": "Item Name Override",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "ItemScale",
+            "displayName": "Item Scale",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "ItemType",
+            "displayName": "Item Type",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "ProjectileOverride",
+            "displayName": "Projectile Override",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Slot",
+            "displayName": "Slot",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "WeaponSpeedMultiplier",
+            "displayName": "Weapon Speed Multiplier",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ],
@@ -2373,6 +2945,111 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_Controller_ShowChatMessage",
+      "brickDisplayName": "Show Chat Message",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Controller_ShowChatMessage",
+        "displayName": "Show Chat Message",
+        "description": "",
+        "kind": "exec",
+        "family": "Controller",
+        "inputs": [
+          {
+            "name": "Controller",
+            "displayName": "Controller",
+            "tooltip": "",
+            "type": "controller",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Message",
+            "displayName": "Message",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Controller_ShowMessageBox",
+      "brickDisplayName": "Show Message Box",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Controller_ShowMessageBox",
+        "displayName": "Show Message Box",
+        "description": "",
+        "kind": "exec",
+        "family": "Controller",
+        "inputs": [
+          {
+            "name": "Controller",
+            "displayName": "Controller",
+            "tooltip": "",
+            "type": "controller",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Message",
+            "displayName": "Message",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Title",
+            "displayName": "Title",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_Controller_ShowStatusMessage",
       "brickDisplayName": "Show Status Message",
       "brickSummary": "",
@@ -2871,6 +3548,55 @@
             "displayName": "Rotation",
             "tooltip": "",
             "type": "rotator",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Entity_GetTag",
+      "brickDisplayName": "Get Entity Tag",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Entity_GetTag",
+        "displayName": "Get Entity Tag",
+        "description": "",
+        "kind": "exec",
+        "family": "Entity",
+        "inputs": [
+          {
+            "name": "Entity",
+            "displayName": "Entity",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Tag",
+            "displayName": "Tag",
+            "tooltip": "",
+            "type": "any",
             "composite": null
           }
         ]
@@ -3465,6 +4191,55 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_Entity_SetTag",
+      "brickDisplayName": "Set Entity Tag",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Entity_SetTag",
+        "displayName": "Set Entity Tag",
+        "description": "",
+        "kind": "exec",
+        "family": "Entity",
+        "inputs": [
+          {
+            "name": "Entity",
+            "displayName": "Entity",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Tag",
+            "displayName": "Tag",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_Entity_SetVelocity",
       "brickDisplayName": "Set Velocity of Entity",
       "brickSummary": "",
@@ -3569,6 +4344,97 @@
             "displayName": "Exec",
             "tooltip": "",
             "type": "exec",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Gamemode_BroadcastChatMessage",
+      "brickDisplayName": "Broadcast Chat Message",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
+        "displayName": "Broadcast Chat Message",
+        "description": "",
+        "kind": "exec",
+        "family": "Gamemode",
+        "inputs": [
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Message",
+            "displayName": "Message",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Gamemode_BroadcastStatusMessage",
+      "brickDisplayName": "Broadcast Status Message",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage",
+        "displayName": "Broadcast Status Message",
+        "description": "",
+        "kind": "exec",
+        "family": "Gamemode",
+        "inputs": [
+          {
+            "name": "bFlashIfUnchanged",
+            "displayName": "Flash If Unchanged",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Message",
+            "displayName": "Message",
+            "tooltip": "",
+            "type": "any",
             "composite": null
           }
         ],
@@ -5474,6 +6340,41 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Expr_ChangeDetector",
+      "brickDisplayName": "Change Detector",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_ChangeDetector",
+        "displayName": "Change Detector",
+        "description": "",
+        "kind": "expr",
+        "family": "ChangeDetector",
+        "inputs": [
+          {
+            "name": "Input",
+            "displayName": "Input",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "OnChanged",
+            "displayName": "On Changed",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Expr_ColorBlend",
       "brickDisplayName": "Blend Colors",
       "brickSummary": "",
@@ -5979,17 +6880,17 @@
         ],
         "outputs": [
           {
-            "name": "bPulseOnFallingEdge",
-            "displayName": "Pulse On Falling Edge",
+            "name": "OnFallingEdge",
+            "displayName": "On Falling Edge",
             "tooltip": "",
-            "type": "bool",
+            "type": "any",
             "composite": null
           },
           {
-            "name": "bPulseOnRisingEdge",
-            "displayName": "Pulse On Rising Edge",
+            "name": "OnRisingEdge",
+            "displayName": "On Rising Edge",
             "tooltip": "",
-            "type": "bool",
+            "type": "any",
             "composite": null
           }
         ]
@@ -6451,6 +7352,62 @@
             "displayName": "R",
             "tooltip": "",
             "type": "int",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "Output",
+            "displayName": "Output",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Expr_MakeQuaternion",
+      "brickDisplayName": "Make Quaternion",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_MakeQuaternion",
+        "displayName": "Make Quaternion",
+        "description": "",
+        "kind": "expr",
+        "family": "MakeQuaternion",
+        "inputs": [
+          {
+            "name": "W",
+            "displayName": "W",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "X",
+            "displayName": "X",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Y",
+            "displayName": "Y",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Z",
+            "displayName": "Z",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ],
@@ -8036,6 +8993,64 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Expr_QuatDotProduct",
+      "brickDisplayName": "Quaternion Dot Product",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_QuatDotProduct",
+        "displayName": "Quaternion Dot Product",
+        "description": "",
+        "kind": "expr",
+        "family": "QuatDotProduct",
+        "inputs": [
+          {
+            "name": "InputA",
+            "displayName": "Input A",
+            "tooltip": "",
+            "type": "any",
+            "composite": {
+              "kind": "struct",
+              "subPorts": [
+                "W",
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          },
+          {
+            "name": "InputB",
+            "displayName": "Input B",
+            "tooltip": "",
+            "type": "any",
+            "composite": {
+              "kind": "struct",
+              "subPorts": [
+                "W",
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "name": "Output",
+            "displayName": "Output",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Expr_QuatFromAxisAngle",
       "brickDisplayName": "Quaternion from Axis and Angle",
       "brickSummary": "",
@@ -8506,6 +9521,70 @@
             "displayName": "R",
             "tooltip": "",
             "type": "int",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Expr_SplitQuaternion",
+      "brickDisplayName": "Split Quaternion",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_SplitQuaternion",
+        "displayName": "Split Quaternion",
+        "description": "",
+        "kind": "expr",
+        "family": "SplitQuaternion",
+        "inputs": [
+          {
+            "name": "Input",
+            "displayName": "Input",
+            "tooltip": "",
+            "type": "any",
+            "composite": {
+              "kind": "struct",
+              "subPorts": [
+                "W",
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "name": "W",
+            "displayName": "W",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "X",
+            "displayName": "X",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Y",
+            "displayName": "Y",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Z",
+            "displayName": "Z",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ]
@@ -9842,11 +10921,73 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Fake_Gamemode_CharacterDamagedEvent",
+      "brickDisplayName": "Player Damaged Event",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 7,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDamagedEvent",
+        "displayName": "Player Damaged Event",
+        "description": "",
+        "kind": "fake",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "Attacker",
+            "displayName": "Attacker",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "AttackerWeapon",
+            "displayName": "Attacker Weapon",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "AttackerWeaponName",
+            "displayName": "Attacker Weapon Name",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Damage",
+            "displayName": "Damage",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Fake_Gamemode_CharacterDiedEvent",
       "brickDisplayName": "Player Died Event",
       "brickSummary": "",
       "halfSize": {
-        "X": 5,
+        "X": 6,
         "Y": 5,
         "Z": 2
       },
@@ -9870,6 +11011,27 @@
             "displayName": "Exec Out",
             "tooltip": "",
             "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Killer",
+            "displayName": "Killer",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "KillerWeapon",
+            "displayName": "Killer Weapon",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "KillerWeaponName",
+            "displayName": "Killer Weapon Name",
+            "tooltip": "",
+            "type": "any",
             "composite": null
           }
         ]
@@ -9939,6 +11101,13 @@
             "tooltip": "",
             "type": "exec",
             "composite": null
+          },
+          {
+            "name": "UserId",
+            "displayName": "User Id",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
           }
         ]
       }
@@ -9972,6 +11141,13 @@
             "displayName": "Exec Out",
             "tooltip": "",
             "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "UserId",
+            "displayName": "User Id",
+            "tooltip": "",
+            "type": "any",
             "composite": null
           }
         ]
@@ -10047,7 +11223,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_FindPlayer",
-      "brickDisplayName": "Find Player",
+      "brickDisplayName": "Find Player by Name",
       "brickSummary": "",
       "halfSize": {
         "X": 5,
@@ -10109,7 +11285,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Internal_CharacterZoneEvent_Entered",
-      "brickDisplayName": "Player Entered Zone",
+      "brickDisplayName": "Player Entered Zone Event",
       "brickSummary": "",
       "halfSize": {
         "X": 5,
@@ -10118,7 +11294,7 @@
       },
       "component": {
         "class": "BrickComponentType_Internal_CharacterZoneEvent_Entered",
-        "displayName": "Player Entered Zone",
+        "displayName": "Player Entered Zone Event",
         "description": "",
         "kind": "internal",
         "family": "CharacterZoneEvent",
@@ -10179,7 +11355,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Internal_CharacterZoneEvent_Left",
-      "brickDisplayName": "Player Left Zone",
+      "brickDisplayName": "Player Left Zone Event",
       "brickSummary": "",
       "halfSize": {
         "X": 5,
@@ -10188,7 +11364,7 @@
       },
       "component": {
         "class": "BrickComponentType_Internal_CharacterZoneEvent_Left",
-        "displayName": "Player Left Zone",
+        "displayName": "Player Left Zone Event",
         "description": "",
         "kind": "internal",
         "family": "CharacterZoneEvent",
@@ -10248,6 +11424,216 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Internal_EntityZoneEvent_Entered",
+      "brickDisplayName": "Entity Entered Zone Event",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Internal_EntityZoneEvent_Entered",
+        "displayName": "Entity Entered Zone Event",
+        "description": "",
+        "kind": "internal",
+        "family": "EntityZoneEvent",
+        "inputs": [
+          {
+            "name": "Zone",
+            "displayName": "Zone",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "Entity",
+            "displayName": "Entity",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Internal_EntityZoneEvent_Left",
+      "brickDisplayName": "Entity Left Zone Event",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Internal_EntityZoneEvent_Left",
+        "displayName": "Entity Left Zone Event",
+        "description": "",
+        "kind": "internal",
+        "family": "EntityZoneEvent",
+        "inputs": [
+          {
+            "name": "Zone",
+            "displayName": "Zone",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "Entity",
+            "displayName": "Entity",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Internal_ProjectileZoneEvent_Entered",
+      "brickDisplayName": "Projectile Entered Zone Event",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 6,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Internal_ProjectileZoneEvent_Entered",
+        "displayName": "Projectile Entered Zone Event",
+        "description": "",
+        "kind": "internal",
+        "family": "ProjectileZoneEvent",
+        "inputs": [
+          {
+            "name": "Zone",
+            "displayName": "Zone",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Projectile",
+            "displayName": "Projectile",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Weapon",
+            "displayName": "Weapon",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "WeaponName",
+            "displayName": "Weapon Name",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Internal_ProjectileZoneEvent_Left",
+      "brickDisplayName": "Projectile Left Zone Event",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 6,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Internal_ProjectileZoneEvent_Left",
+        "displayName": "Projectile Left Zone Event",
+        "description": "",
+        "kind": "internal",
+        "family": "ProjectileZoneEvent",
+        "inputs": [
+          {
+            "name": "Zone",
+            "displayName": "Zone",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Projectile",
+            "displayName": "Projectile",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Weapon",
+            "displayName": "Weapon",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "WeaponName",
+            "displayName": "Weapon Name",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Internal_ReadBrickGrid",
       "brickDisplayName": "Read Brick Grid",
       "brickSummary": "",
@@ -10276,7 +11662,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Internal_ZoneEvent_BrickChanged",
-      "brickDisplayName": "Brick Changed In Zone",
+      "brickDisplayName": "Brick Changed In Zone Event",
       "brickSummary": "",
       "halfSize": {
         "X": 5,
@@ -10285,7 +11671,7 @@
       },
       "component": {
         "class": "BrickComponentType_Internal_ZoneEvent_BrickChanged",
-        "displayName": "Brick Changed In Zone",
+        "displayName": "Brick Changed In Zone Event",
         "description": "",
         "kind": "internal",
         "family": "ZoneEvent",
@@ -10311,7 +11697,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Internal_ZoneEvent_BrickRemoved",
-      "brickDisplayName": "Brick Removed From Zone",
+      "brickDisplayName": "Brick Removed From Zone Event",
       "brickSummary": "",
       "halfSize": {
         "X": 5,
@@ -10320,7 +11706,7 @@
       },
       "component": {
         "class": "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
-        "displayName": "Brick Removed From Zone",
+        "displayName": "Brick Removed From Zone Event",
         "description": "",
         "kind": "internal",
         "family": "ZoneEvent",
@@ -11498,6 +12884,13 @@
             "tooltip": "",
             "type": "float",
             "composite": null
+          },
+          {
+            "name": "WheelFrictionMultiplier",
+            "displayName": "Wheel Friction Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
           }
         ],
         "outputs": [
@@ -12327,11 +13720,16 @@
             "composite": null
           },
           {
-            "name": "SkinDummy",
-            "displayName": "Skin Dummy",
+            "name": "Skin",
+            "displayName": "Skin",
             "tooltip": "",
-            "type": "string",
-            "composite": null
+            "type": "any",
+            "composite": {
+              "kind": "struct",
+              "subPorts": [
+                "Parts"
+              ]
+            }
           },
           {
             "name": "TeamCollisionChannel",
@@ -12744,6 +14142,68 @@
         "kind": "?",
         "family": "",
         "inputs": [],
+        "outputs": []
+      }
+    },
+    {
+      "brickAsset": "B_Gyroscope",
+      "brickDisplayName": "Gyroscope",
+      "brickSummary": "A brick that can be set to a customized weight",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Internal_Gyroscope",
+        "displayName": "Gyroscope",
+        "description": "",
+        "kind": "internal",
+        "family": "Gyroscope",
+        "inputs": [
+          {
+            "name": "bEnabled",
+            "displayName": "Enabled",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Damping",
+            "displayName": "Damping",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "MaxForce",
+            "displayName": "Max Force",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Strength",
+            "displayName": "Strength",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "TargetAxis",
+            "displayName": "Target Axis",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          }
+        ],
         "outputs": []
       }
     },
@@ -14510,6 +15970,13 @@
             "tooltip": "",
             "type": "float",
             "composite": null
+          },
+          {
+            "name": "WheelFrictionMultiplier",
+            "displayName": "Wheel Friction Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
           }
         ],
         "outputs": [
@@ -14545,18 +16012,6 @@
             "tooltip": "",
             "type": "bool",
             "composite": null
-          },
-          {
-            "name": "Prefab",
-            "displayName": "Prefab",
-            "tooltip": "",
-            "type": "any",
-            "composite": {
-              "kind": "struct",
-              "subPorts": [
-                "Path"
-              ]
-            }
           },
           {
             "name": "RespawnTime",
@@ -14859,10 +16314,24 @@
             "composite": null
           },
           {
+            "name": "Damage",
+            "displayName": "Damage",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
             "name": "Message",
             "displayName": "Message",
             "tooltip": "If this is set to anything, a player will see that message upon touching the brick.",
             "type": "string",
+            "composite": null
+          },
+          {
+            "name": "RepeatDelay",
+            "displayName": "Repeat Delay",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ],
@@ -15032,6 +16501,48 @@
         "family": "",
         "inputs": [
           {
+            "name": "bDetectEntities",
+            "displayName": "Detect Entities",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers",
+            "displayName": "Detect Players",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers1",
+            "displayName": "Detect Players1",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers2",
+            "displayName": "Detect Players2",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers3",
+            "displayName": "Detect Players3",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectProjectiles",
+            "displayName": "Detect Projectiles",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
             "name": "bIsBuildingZone",
             "displayName": "Is Building Zone",
             "tooltip": "Whether this zone is a place that people without permission to build outside of build zones can build.",
@@ -15050,6 +16561,13 @@
             "displayName": "Is Share Zone",
             "tooltip": "Whether this zone is a share zone, meaning bricks placed inside that are on the same grid and owned by the same owner are publicly editable by anyone on the server without them needing trust from the owner.",
             "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "TagFilter",
+            "displayName": "Tag Filter",
+            "tooltip": "",
+            "type": "any",
             "composite": null
           },
           {

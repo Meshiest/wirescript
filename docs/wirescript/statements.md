@@ -686,6 +686,11 @@ These events are available as handler triggers. Parameters listed can be bound u
 | `ControllerLeft` | `controller: controller` | A player left |
 | `ZoneEntered` | `character: character` | A character entered a zone |
 | `ZoneLeft` | `character: character` | A character left a zone |
+| `EntityZoneEntered` | `entity: entity` | An entity entered a zone |
+| `EntityZoneLeft` | `entity: entity` | An entity left a zone |
+| `ProjectileZoneEntered` | `character: character`, `projectile: entity`, `weapon: entity`, `weaponName: string` | A projectile entered a zone (`character` is the shooter) |
+| `ProjectileZoneLeft` | `character: character`, `projectile: entity`, `weapon: entity`, `weaponName: string` | A projectile left a zone |
+| `CharacterDamaged` | `character: character`, `damage: float`, `attacker: entity`, `attackerWeapon: entity`, `attackerWeaponName: string` | A character took damage |
 | `BrickChanged` | `brick: brick` | A brick was changed in a zone |
 | `BrickRemoved` | `brick: brick` | A brick was removed from a zone |
 | `ChatCommand` | `controller: controller`, `arguments: string` | A registered chat command was run. Takes config args for the command name + help text — see [above](#triggering-on-built-in-events) |

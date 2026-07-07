@@ -140,6 +140,9 @@ receiver form.
 | `a.Slerp(b, alpha)` | `(quat, quat, float) -> quat` | Spherical interpolation |
 | `axis.RotationByAngle(angle)` | `(vector, float) -> quat` | Quaternion from axis + angle (radians) |
 | `q.ToAxisAngle()` | `(quat) -> {Axis: vector, Angle: float}` | Decompose into axis + angle |
+| `Quat(x, y, z, w)` | `(float, float, float, float) -> quat` | Construct a quaternion from raw components |
+| `q.SplitQuat()` | `(quat) -> {X, Y, Z, W: float}` | Decompose into raw components |
+| `a.QuatDot(b)` | `(quat, quat) -> float` | Quaternion dot product |
 
 ```wirescript
 let q = forward.ToRotation()
@@ -191,13 +194,14 @@ let result = Swap(shouldSwap, left, right)
 // result.a and result.b are swapped if shouldSwap is true
 ```
 
-## Edge Detector (Pure)
+## Edge / Change Detectors (Pure)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `Edge(input)` | `(input: bool) -> {rising, falling: bool}` | Detect boolean transitions |
+| `Change(input)` | `(input: any) -> any` | Pulse the input value through when it changes |
 
-Produces a one-tick pulse on `rising` when the input goes from false to true, and on `falling` when it goes from true to false.
+`Edge` produces a one-tick pulse on `rising` when the input goes from false to true, and on `falling` when it goes from true to false. `Change` is its any-typed companion: the output pulses with the new value whenever the input changes.
 
 ```wirescript
 let edges = Edge(button)
@@ -716,6 +720,34 @@ character.SetTempPermission(permission: string, enable: bool)
 
 Grant or revoke a temporary permission tag on a character. Receiver on `character`.
 
+### Inventory
+```
+character.GiveWeapon(weapon, slot?)                  // set a slot to an item asset
+character.AddInventoryItem(item)                     // append an item
+character.SetInventoryItem(item, slot?)              // set a slot to an item
+character.AddInventoryBrick(brick, size?)            // append a placeable brick
+character.SetInventoryBrick(brick, slot?, size?)
+character.AddInventoryEntity(entityType)             // append a spawnable entity
+character.SetInventoryEntity(entityType, slot?)
+character.AddInventoryItemAdv(item, damage?, speed?, scale?, itemName?, projectile?)
+character.SetInventoryItemAdv(item, slot?, damage?, speed?, scale?, itemName?, projectile?)
+```
+
+Give items, procedural bricks, or spawnable entities to a character's
+inventory. Asset args are `$Type/Name` references — `$BRItemBase/...` for
+items, a brick asset for bricks, an entity type for entities — inlined into
+the gate's data. The `Adv` variants add per-item overrides: damage/weapon
+speed/scale multipliers, a display-name override, and a projectile override.
+All receive on `character`.
+
+```wirescript
+on CharacterSpawned(character) {
+  character.GiveWeapon($BRItemBase/Weapon_Pistol, 0)
+  character.AddInventoryItemAdv($BRItemBase/Weapon_Bow,
+    damage = 2.0, itemName = "Longbow of Doom")
+}
+```
+
 ## Controller (Exec)
 
 ### ShowStatusMessage
@@ -731,6 +763,22 @@ on RoundStart {
   ctrl.ShowStatusMessage("Round started!")
 }
 ```
+
+### ShowChatMessage
+```
+controller.ShowChatMessage(message: string)
+ShowChatMessage(controller: controller, message: string)
+```
+
+Send a chat message that only this player sees (a whisper). Receiver on
+`controller`.
+
+### ShowMessageBox
+```
+controller.ShowMessageBox(message: string, title?: string)
+```
+
+Pop up a modal message box for this player. Receiver on `controller`.
 
 ### Player info
 ```
@@ -748,10 +796,57 @@ check whether they are trusted by the brick owner or hold a named permission;
 toggle their ability to respawn; or pin them to their team. All receive on
 `controller`.
 
+## Broadcast Messaging (Exec)
+
+```
+BroadcastChatMessage(message: string)
+BroadcastStatusMessage(message: string, flash?: bool)
+```
+
+Send a chat message or status-bar message to **every** player. `flash`
+re-flashes the status message even when its text is unchanged.
+
+```wirescript
+on roundEnd {
+  BroadcastChatMessage("Red team wins!")
+  BroadcastStatusMessage("Round over", flash = true)
+}
+```
+
+## Audio (Exec)
+
+```
+entity.PlayAudioAt(audio, volume?, pitch?, innerRadius?, maxDistance?, spatialized?)
+PlayGlobalAudio(audio, volume?, pitch?)
+```
+
+Play a one-shot sound at an entity's location (spatialized by default) or
+globally for all players. The `audio` arg is a
+`$BrickOneShotAudioDescriptor/...` asset reference. `PlayAudioAt` receives on
+`entity` (characters work too).
+
+```wirescript
+on ZoneEntered(character) {
+  character.PlayAudioAt($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press)
+}
+```
+
+## Entity Tags (Exec)
+
+```
+entity.SetTag(tag: string)
+entity.GetTag() -> string
+```
+
+Attach an arbitrary string tag to any entity and read it back later — handy
+for marking players/entities with game state (team, slot index, role). Zone
+components can also filter on tags. Receiver on `entity`.
+
 ## Misc (Pure / Exec)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
+| `FindPlayer(query)` | `(query: string) -> entity` | Look up a player entity by name (pure) |
 | `PrintToConsole(text)` | `(text: any) -> ()` (exec) | Print a value to the game console (debugging) |
 | `DeltaTime()` | `() -> float` | Seconds elapsed since the previous tick |
 | `ServerUptime()` | `() -> float` | Seconds the server has been running |

@@ -231,3 +231,50 @@ pub const GAMEMODE_SET_TEAM_LEADERBOARD: &str = "BrickComponentType_WireGraph_Ex
 // Prefab / Sweep
 pub const PREFAB_SPAWNER: &str = "BrickComponentType_WireGraph_Exec_PrefabSpawner";
 pub const SWEEP: &str = "BrickComponentType_WireGraph_Exec_Sweep";
+
+// Messaging
+pub const CONTROLLER_SHOW_CHAT: &str =
+    "BrickComponentType_WireGraph_Exec_Controller_ShowChatMessage";
+pub const CONTROLLER_SHOW_MESSAGE_BOX: &str =
+    "BrickComponentType_WireGraph_Exec_Controller_ShowMessageBox";
+pub const GAMEMODE_BROADCAST_CHAT: &str =
+    "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage";
+pub const GAMEMODE_BROADCAST_STATUS: &str =
+    "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage";
+
+// Audio
+pub const PLAY_AUDIO_AT: &str = "Component_WireGraph_PlayAudioAt";
+pub const PLAY_GLOBAL_AUDIO: &str = "BrickComponentType_WireGraph_Exec_PlayGlobalAudio";
+
+// Entity tags
+pub const ENTITY_GET_TAG: &str = "BrickComponentType_WireGraph_Exec_Entity_GetTag";
+pub const ENTITY_SET_TAG: &str = "BrickComponentType_WireGraph_Exec_Entity_SetTag";
+
+// Player lookup (pure value gate)
+pub const FIND_PLAYER: &str = "BrickComponentType_WireGraph_FindPlayer";
+
+// Change detector
+pub const CHANGE_DETECTOR: &str = "BrickComponentType_WireGraph_Expr_ChangeDetector";
+
+// Quaternion make/split/dot
+pub const MAKE_QUATERNION: &str = "BrickComponentType_WireGraph_Expr_MakeQuaternion";
+pub const SPLIT_QUATERNION: &str = "BrickComponentType_WireGraph_Expr_SplitQuaternion";
+pub const QUAT_DOT_PRODUCT: &str = "BrickComponentType_WireGraph_Expr_QuatDotProduct";
+
+// Character inventory family
+pub const CHARACTER_ADD_INVENTORY_ITEM: &str =
+    "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem";
+pub const CHARACTER_SET_INVENTORY_ITEM: &str =
+    "BrickComponentType_WireGraph_Exec_Character_SetInventoryItem";
+pub const CHARACTER_ADD_INVENTORY_BRICK: &str =
+    "BrickComponentType_WireGraph_Exec_Character_AddInventoryBrick";
+pub const CHARACTER_SET_INVENTORY_BRICK: &str =
+    "BrickComponentType_WireGraph_Exec_Character_SetInventoryBrick";
+pub const CHARACTER_ADD_INVENTORY_ENTITY: &str =
+    "BrickComponentType_WireGraph_Exec_Character_AddInventoryEntity";
+pub const CHARACTER_SET_INVENTORY_ENTITY: &str =
+    "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntity";
+pub const CHARACTER_ADD_INVENTORY_ITEM_ADV: &str =
+    "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv";
+pub const CHARACTER_SET_INVENTORY_ITEM_ADV: &str =
+    "BrickComponentType_WireGraph_Exec_Character_SetInventoryItemAdv";

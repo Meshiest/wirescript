@@ -2088,6 +2088,315 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         },
     );
 
+    // ---- Messaging --------------------------------------------
+    m.insert(
+        "ShowChatMessage",
+        controller_exec(
+            "ShowChatMessage",
+            gc::CONTROLLER_SHOW_CHAT,
+            vec![
+                CallParam::req("target", WirePort::Controller, Type::Controller),
+                CallParam::req("message", WirePort::Message, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "ShowMessageBox",
+        controller_exec(
+            "ShowMessageBox",
+            gc::CONTROLLER_SHOW_MESSAGE_BOX,
+            vec![
+                CallParam::req("target", WirePort::Controller, Type::Controller),
+                CallParam::req("message", WirePort::Message, Type::Any),
+                CallParam::opt("title", WirePort::Title, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "BroadcastChatMessage",
+        CallSpec {
+            name: "BroadcastChatMessage",
+            gate_class: gc::GAMEMODE_BROADCAST_CHAT,
+            params: vec![CallParam::req("message", WirePort::Message, Type::Any)],
+            exec: true,
+            outputs: vec![],
+            receiver: None,
+        },
+    );
+    m.insert(
+        "BroadcastStatusMessage",
+        CallSpec {
+            name: "BroadcastStatusMessage",
+            gate_class: gc::GAMEMODE_BROADCAST_STATUS,
+            params: vec![
+                CallParam::req("message", WirePort::Message, Type::Any),
+                CallParam::opt("flash", WirePort::BFlashIfUnchanged, Type::Bool),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: None,
+        },
+    );
+
+    // ---- Audio -------------------------------------------------------------
+    // The audio asset is a `$BrickOneShotAudioDescriptor/...` reference,
+    // inlined into the gate's AudioDescriptor data field (like GiveWeapon).
+    m.insert(
+        "PlayAudioAt",
+        entity_exec(
+            "PlayAudioAt",
+            gc::PLAY_AUDIO_AT,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("audio", WirePort::AudioDescriptor, Type::Any),
+                CallParam::opt("volume", WirePort::VolumeMultiplier, Type::Float),
+                CallParam::opt("pitch", WirePort::PitchMultiplier, Type::Float),
+                CallParam::opt("innerRadius", WirePort::InnerRadius, Type::Float),
+                CallParam::opt("maxDistance", WirePort::MaxDistance, Type::Float),
+                CallParam::opt("spatialized", WirePort::BSpatialization, Type::Bool),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "PlayGlobalAudio",
+        CallSpec {
+            name: "PlayGlobalAudio",
+            gate_class: gc::PLAY_GLOBAL_AUDIO,
+            params: vec![
+                CallParam::req("audio", WirePort::AudioDescriptor, Type::Any),
+                CallParam::opt("volume", WirePort::VolumeMultiplier, Type::Float),
+                CallParam::opt("pitch", WirePort::PitchMultiplier, Type::Float),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: None,
+        },
+    );
+
+    // ---- Entity tags --------------------------------------------
+    m.insert(
+        "GetTag",
+        entity_exec(
+            "GetTag",
+            gc::ENTITY_GET_TAG,
+            vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
+            vec![CallOutput {
+                port: WirePort::Tag,
+                ty: Type::String,
+            }],
+        ),
+    );
+    m.insert(
+        "SetTag",
+        entity_exec(
+            "SetTag",
+            gc::ENTITY_SET_TAG,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("tag", WirePort::Tag, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+
+    // ---- Player lookup (pure value gate) ------------------------------------
+    m.insert(
+        "FindPlayer",
+        CallSpec {
+            name: "FindPlayer",
+            gate_class: gc::FIND_PLAYER,
+            params: vec![CallParam::req("query", WirePort::Query, Type::Any)],
+            exec: false,
+            outputs: vec![CallOutput {
+                port: WirePort::Player,
+                ty: Type::Entity,
+            }],
+            receiver: None,
+        },
+    );
+
+    // ---- Change detector -----------------------------------------
+    // Pulses its input value through when it changes (companion to Edge).
+    m.insert(
+        "Change",
+        vec_expr(
+            "Change",
+            gc::CHANGE_DETECTOR,
+            vec![CallParam::req("input", WirePort::Input, Type::Any)],
+            WirePort::OnChanged,
+            Type::Any,
+        ),
+    );
+
+    // ---- Quaternion make/split/dot -------------------------------
+    m.insert(
+        "Quat",
+        vec_expr(
+            "Quat",
+            gc::MAKE_QUATERNION,
+            vec![
+                CallParam::req("x", WirePort::X, Type::Float),
+                CallParam::req("y", WirePort::Y, Type::Float),
+                CallParam::req("z", WirePort::Z, Type::Float),
+                CallParam::req("w", WirePort::W, Type::Float),
+            ],
+            WirePort::Output,
+            Type::Quat,
+        ),
+    );
+    m.insert(
+        "SplitQuat",
+        CallSpec {
+            name: "SplitQuat",
+            gate_class: gc::SPLIT_QUATERNION,
+            params: vec![CallParam::req("q", WirePort::Input, Type::Quat)],
+            exec: false,
+            outputs: vec![CallOutput {
+                port: WirePort::X,
+                ty: Type::Record(vec![
+                    ("X".into(), Type::Float),
+                    ("Y".into(), Type::Float),
+                    ("Z".into(), Type::Float),
+                    ("W".into(), Type::Float),
+                ]),
+            }],
+            receiver: Some(Type::Quat),
+        },
+    );
+    m.insert(
+        "QuatDot",
+        expr_recv(
+            "QuatDot",
+            gc::QUAT_DOT_PRODUCT,
+            Type::Quat,
+            vec![
+                CallParam::req("a", WirePort::InputA, Type::Quat),
+                CallParam::req("b", WirePort::InputB, Type::Quat),
+            ],
+            WirePort::Output,
+            Type::Float,
+        ),
+    );
+
+    // ---- Character inventory family ------------------------------
+    // Asset args ($BRItemBase/..., $BrickTypeAsset/..., entity types) inline
+    // into the gate's class/object data fields (like GiveWeapon).
+    m.insert(
+        "AddInventoryItem",
+        character_exec(
+            "AddInventoryItem",
+            gc::CHARACTER_ADD_INVENTORY_ITEM,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("item", WirePort::Item, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "SetInventoryItem",
+        character_exec(
+            "SetInventoryItem",
+            gc::CHARACTER_SET_INVENTORY_ITEM,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("item", WirePort::Item, Type::Any),
+                CallParam::opt("slot", WirePort::Slot, Type::Int),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "AddInventoryBrick",
+        character_exec(
+            "AddInventoryBrick",
+            gc::CHARACTER_ADD_INVENTORY_BRICK,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("brick", WirePort::BrickAsset, Type::Any),
+                CallParam::opt("size", WirePort::ProceduralSize, Type::Vector),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "SetInventoryBrick",
+        character_exec(
+            "SetInventoryBrick",
+            gc::CHARACTER_SET_INVENTORY_BRICK,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("brick", WirePort::BrickAsset, Type::Any),
+                CallParam::opt("slot", WirePort::Slot, Type::Int),
+                CallParam::opt("size", WirePort::ProceduralSize, Type::Vector),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "AddInventoryEntity",
+        character_exec(
+            "AddInventoryEntity",
+            gc::CHARACTER_ADD_INVENTORY_ENTITY,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("entityType", WirePort::EntityType, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "SetInventoryEntity",
+        character_exec(
+            "SetInventoryEntity",
+            gc::CHARACTER_SET_INVENTORY_ENTITY,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("entityType", WirePort::EntityType, Type::Any),
+                CallParam::opt("slot", WirePort::Slot, Type::Int),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "AddInventoryItemAdv",
+        character_exec(
+            "AddInventoryItemAdv",
+            gc::CHARACTER_ADD_INVENTORY_ITEM_ADV,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("item", WirePort::ItemType, Type::Any),
+                CallParam::opt("damage", WirePort::DamageMultiplier, Type::Float),
+                CallParam::opt("speed", WirePort::WeaponSpeedMultiplier, Type::Float),
+                CallParam::opt("scale", WirePort::ItemScale, Type::Float),
+                CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
+                CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "SetInventoryItemAdv",
+        character_exec(
+            "SetInventoryItemAdv",
+            gc::CHARACTER_SET_INVENTORY_ITEM_ADV,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("item", WirePort::ItemType, Type::Any),
+                CallParam::opt("slot", WirePort::Slot, Type::Int),
+                CallParam::opt("damage", WirePort::DamageMultiplier, Type::Float),
+                CallParam::opt("speed", WirePort::WeaponSpeedMultiplier, Type::Float),
+                CallParam::opt("scale", WirePort::ItemScale, Type::Float),
+                CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
+                CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Any),
+            ],
+            vec![],
+        ),
+    );
+
     m
 }
 

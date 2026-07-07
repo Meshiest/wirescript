@@ -517,7 +517,7 @@ fn emit_module(
                 data.insert("EntryPlan".into(), Box::new(entry_plan));
                 LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
             }
-            _ => build_gate_component(effective_class_str, &*node.ports, &gate_inlined),
+            _ => build_gate_component(effective_class_str, &*node.ports, &gate_inlined, world),
         };
         // EMIT_COMP_NS.fetch_add(_ct.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
         brick.add_component_box(Box::new(comp));
@@ -701,6 +701,7 @@ fn build_gate_component(
     gate_class: &'static str,
     ports: &crate::ir::GateIO,
     inlined: &StdMap<Sym, &Literal>,
+    world: &mut World,
 ) -> LiteralComponent {
     // For gates whose component data struct carries wire_graph_variant fields,
     // look up the struct schema and build the component with embedded values.
@@ -728,6 +729,27 @@ fn build_gate_component(
                         || schema_field_is(struct_name, field, "wire_graph_prim_math_variant")
                     {
                         literal_to_boxed_wire_variant(lit, ports, field)
+                    } else if schema_field_is(struct_name, field, "class")
+                        || schema_field_is(struct_name, field, "object")
+                    {
+                        // Asset-reference field (AudioDescriptor, Item, …):
+                        // register the `$Type/Name` in the world's external
+                        // asset table and store the index.
+                        use brdb::schema::BrdbValue;
+                        let idx = match lit {
+                            Literal::Asset {
+                                asset_type,
+                                asset_name,
+                            } => Some(
+                                world
+                                    .global_data
+                                    .external_asset_references
+                                    .insert_full((asset_type.clone(), asset_name.clone()))
+                                    .0,
+                            ),
+                            _ => None,
+                        };
+                        Box::new(BrdbValue::Asset(idx))
                     } else if let Some(ev) = try_resolve_enum(struct_name, field, lit) {
                         Box::new(ev)
                     } else if schema_field_is(struct_name, field, "str") {
@@ -1345,6 +1367,151 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
         "BrickComponentType_WireGraph_Exec_ChatCommand" => Some((
             "BrickComponentData_WireGraph_Exec_ChatCommand",
             &["CommandName", "HelpText"],
+            false,
+        )),
+
+        // ── Messaging ───────────────────────────────────────────
+        "BrickComponentType_WireGraph_Exec_Controller_ShowChatMessage" => Some((
+            "BrickComponentData_WireGraph_Exec_Controller_ShowChatMessage",
+            &["Message"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Controller_ShowMessageBox" => Some((
+            "BrickComponentData_WireGraph_Exec_Controller_ShowMessageBox",
+            &["Title", "Message"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage" => Some((
+            "BrickComponentData_WireGraph_Exec_Gamemode_BroadcastChatMessage",
+            &["Message"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage" => Some((
+            "BrickComponentData_WireGraph_Exec_Gamemode_BroadcastStatusMessage",
+            &["Message", "bFlashIfUnchanged"],
+            false,
+        )),
+
+        // ── Audio ──────────────────────────────────────────────────────────
+        // AudioDescriptor is a class/object field: an inlined `$…` asset ref
+        // is registered in the external-asset table by build_gate_component.
+        "Component_WireGraph_PlayAudioAt" => Some((
+            "BrickComponentData_WireGraph_Exec_Entity_PlayAudioAt",
+            &[
+                "AudioDescriptor",
+                "VolumeMultiplier",
+                "PitchMultiplier",
+                "InnerRadius",
+                "MaxDistance",
+                "bSpatialization",
+            ],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_PlayGlobalAudio" => Some((
+            "BrickComponentData_WireGraph_Exec_PlayGlobalAudio",
+            &["AudioDescriptor", "VolumeMultiplier", "PitchMultiplier"],
+            false,
+        )),
+
+        // ── Entity tags ─────────────────────────────────────────
+        "BrickComponentType_WireGraph_Exec_Entity_GetTag" => Some((
+            "BrickComponentData_WireGraph_Exec_Entity_GetTag",
+            &[],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Entity_SetTag" => Some((
+            "BrickComponentData_WireGraph_Exec_Entity_SetTag",
+            &["Tag"],
+            false,
+        )),
+
+        // ── Player lookup ──────────────────────────────────────────────────
+        "BrickComponentType_WireGraph_FindPlayer" => Some((
+            "BrickComponentData_WireGraph_FindPlayer",
+            &["Query"],
+            false,
+        )),
+
+        // ── Change detector ─────────────────────────────────────
+        "BrickComponentType_WireGraph_Expr_ChangeDetector" => Some((
+            "BrickComponentData_WireGraph_Expr_ChangeDetector",
+            &["Input"],
+            true,
+        )),
+
+        // ── Quaternion make/split/dot ───────────────────────────
+        "BrickComponentType_WireGraph_Expr_MakeQuaternion" => Some((
+            "BrickComponentData_WireGraph_Expr_MakeQuaternion",
+            &["X", "Y", "Z", "W"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Expr_SplitQuaternion" => Some((
+            "BrickComponentData_WireGraph_Expr_SplitQuaternion",
+            &["Input"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Expr_QuatDotProduct" => Some((
+            "BrickComponentData_WireGraph_Expr_QuatDotProduct",
+            &["InputA", "InputB"],
+            false,
+        )),
+
+        // ── Character inventory family ──────────────────────────
+        // Item / EntityType / BrickAsset / ItemType / ProjectileOverride are
+        // class/object asset fields (see build_gate_component).
+        "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_AddInventoryItem",
+            &["Item"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_SetInventoryItem" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_SetInventoryItem",
+            &["Slot", "Item"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_AddInventoryBrick" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_AddInventoryBrick",
+            &["BrickAsset", "ProceduralSize"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_SetInventoryBrick" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_SetInventoryBrick",
+            &["Slot", "BrickAsset", "ProceduralSize"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_AddInventoryEntity" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_AddInventoryEntity",
+            &["EntityType"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntity" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_SetInventoryEntity",
+            &["Slot", "EntityType"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_AddInventoryItemAdv",
+            &[
+                "ItemType",
+                "DamageMultiplier",
+                "WeaponSpeedMultiplier",
+                "ItemScale",
+                "ItemNameOverride",
+                "ProjectileOverride",
+            ],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_SetInventoryItemAdv" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_SetInventoryItemAdv",
+            &[
+                "Slot",
+                "ItemType",
+                "DamageMultiplier",
+                "WeaponSpeedMultiplier",
+                "ItemScale",
+                "ItemNameOverride",
+                "ProjectileOverride",
+            ],
             false,
         )),
 

@@ -75,6 +75,11 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         port,
         ty: Type::Brick,
     };
+    let entity = |name, port| EventDataBinding {
+        name,
+        port,
+        ty: Type::Entity,
+    };
 
     let entries = vec![
         mk(
@@ -127,6 +132,63 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
             vec![brick("brick", "Brick")],
         ),
+        mk(
+            "CharacterDamaged",
+            "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDamagedEvent",
+            vec![
+                character("character", "Character"),
+                EventDataBinding {
+                    name: "damage",
+                    port: "Damage",
+                    ty: Type::Float,
+                },
+                entity("attacker", "Attacker"),
+                entity("attackerWeapon", "AttackerWeapon"),
+                EventDataBinding {
+                    name: "attackerWeaponName",
+                    port: "AttackerWeaponName",
+                    ty: Type::String,
+                },
+            ],
+        ),
+        mk(
+            "EntityZoneEntered",
+            "BrickComponentType_Internal_EntityZoneEvent_Entered",
+            vec![entity("entity", "Entity")],
+        ),
+        mk(
+            "EntityZoneLeft",
+            "BrickComponentType_Internal_EntityZoneEvent_Left",
+            vec![entity("entity", "Entity")],
+        ),
+        mk(
+            "ProjectileZoneEntered",
+            "BrickComponentType_Internal_ProjectileZoneEvent_Entered",
+            vec![
+                character("character", "Character"),
+                entity("projectile", "Projectile"),
+                entity("weapon", "Weapon"),
+                EventDataBinding {
+                    name: "weaponName",
+                    port: "WeaponName",
+                    ty: Type::String,
+                },
+            ],
+        ),
+        mk(
+            "ProjectileZoneLeft",
+            "BrickComponentType_Internal_ProjectileZoneEvent_Left",
+            vec![
+                character("character", "Character"),
+                entity("projectile", "Projectile"),
+                entity("weapon", "Weapon"),
+                EventDataBinding {
+                    name: "weaponName",
+                    port: "WeaponName",
+                    ty: Type::String,
+                },
+            ],
+        ),
         mk_cfg(
             "ChatCommand",
             "BrickComponentType_WireGraph_Exec_ChatCommand",
@@ -159,10 +221,13 @@ mod tests {
 
     #[test]
     fn all_events_registered() {
-        assert_eq!(events().len(), 11);
+        assert_eq!(events().len(), 16);
         assert!(find_event("RoundStart").is_some());
         assert!(find_event("CharacterSpawned").is_some());
         assert!(find_event("ChatCommand").is_some());
+        assert!(find_event("CharacterDamaged").is_some());
+        assert!(find_event("EntityZoneEntered").is_some());
+        assert!(find_event("ProjectileZoneLeft").is_some());
         assert!(find_event("Nonexistent").is_none());
     }
 

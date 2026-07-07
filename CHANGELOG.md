@@ -1,5 +1,32 @@
 # Wirescript Changelog
 
+## 0.8.0 - 2026-07-06
+
+### New Builtins and Methods
+
+- **Chat / messaging** - `ctrl.ShowChatMessage(msg)` (a whisper only that player sees), `ctrl.ShowMessageBox(msg, title?)` (modal popup), and global `BroadcastChatMessage(msg)` / `BroadcastStatusMessage(msg, flash?)`. The old plugin-side whisper/broadcast is now fully expressible in wires.
+- **Audio** - `entity.PlayAudioAt($BrickOneShotAudioDescriptor/..., volume?, pitch?, innerRadius?, maxDistance?, spatialized?)` plays a one-shot at an entity (characters work), and `PlayGlobalAudio(audio, volume?, pitch?)` plays for everyone. The audio descriptor is a `$` asset reference inlined into the gate's data.
+- **Entity tags** - `entity.SetTag("...")` / `entity.GetTag() -> string` attach an arbitrary string to any entity and read it back (mark players with team/slot/role state; zones can filter on tags).
+- **`FindPlayer(name)`** - pure value gate: look up a player entity by name.
+- **`Change(input)`** - any-typed companion to `Edge`: pulses the input value through when it changes.
+- **Quaternion raw components** - `Quat(x, y, z, w)`, `q.SplitQuat() -> {X, Y, Z, W}`, `a.QuatDot(b)`.
+- **Inventory family** - `char.AddInventoryItem(item)` / `SetInventoryItem(item, slot?)`, `AddInventoryBrick(brick, size?)` / `SetInventoryBrick(...)`, `AddInventoryEntity(entityType)` / `SetInventoryEntity(...)`, and `AddInventoryItemAdv` / `SetInventoryItemAdv` with per-item overrides (`damage`, `speed`, `scale`, `itemName`, `projectile`). Asset args are `$Type/Name` references, like `GiveWeapon`.
+
+### New Events
+
+- **`CharacterDamaged(character, damage, attacker, attackerWeapon, attackerWeaponName)`** - a character took damage.
+- **`EntityZoneEntered` / `EntityZoneLeft` (`entity`)** and **`ProjectileZoneEntered` / `ProjectileZoneLeft` (`character`, `projectile`, `weapon`, `weaponName`)** - zone events beyond characters; the projectile events' `character` is the shooter.
+
+### Compiler / Output
+
+- **Generic asset-field emission** - gates whose data struct has a `class`/`object` field (PlayAudioAt's `AudioDescriptor`, the inventory gates' `Item`/`EntityType`/`BrickAsset`/`ProjectileOverride`) now register an inlined `$` asset reference in the world's external-asset table automatically; `GiveWeapon`'s hand-built special case is no longer the only path. _Like GiveWeapon, the new gates' binary encoding needs in-game verification._
+
+### Gate Catalog / Data
+
+- Gate inventory regenerated (288 → 314 entries, 26 new classes; the messaging/tag/zone-event/quaternion/inventory gates above are wired into the language).
+- brdb component `_max` schema (286 structs) and `component_db.rs` (296 type mappings) regenerated from the same build's dump. The dump world only referenced 14 external assets, so `assets/external.rs` was left at the previous full catalog.
+- Deliberately not exposed as builtins: the `*Reference` gates (`$Type/Name` syntax covers them), `Convert`/`ColorConvert` (implicit coercions cover the use cases), and `AddInventoryEntry` (opaque nested entry struct; `GiveWeapon` covers it).
+
 ## 0.7.0 - 2026-07-05
 
 ### Language Features
