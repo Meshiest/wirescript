@@ -103,6 +103,9 @@ export function activate(context: ExtensionContext) {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "wirescript" }],
     synchronize: { fileEvents: workspace.createFileSystemWatcher("**/*.ws") },
+    // The extension registers its prettier formatter below; tell the server
+    // not to advertise formatting so the picker shows a single entry.
+    initializationOptions: { provideFormatting: false },
   };
 
   // Track the source binary path (before copy) so we can watch for rebuilds
@@ -128,6 +131,15 @@ export function activate(context: ExtensionContext) {
   }
 
   startClient(serverPath);
+
+  // Prettier-based formatter — the sole formatting provider (see
+  // initializationOptions above).
+  context.subscriptions.push(
+    languages.registerDocumentFormattingEditProvider(
+      { language: "wirescript" },
+      new PrettierFormatter(extDir),
+    ),
+  );
 
   // Watch the source binary for rebuilds and auto-restart the LSP
   if (fs.existsSync(sourceBinaryPath)) {
@@ -155,14 +167,6 @@ export function activate(context: ExtensionContext) {
       }, 500);
     });
   }
-
-  // Prettier-based formatter (takes priority over LSP formatting)
-  context.subscriptions.push(
-    languages.registerDocumentFormattingEditProvider(
-      { language: "wirescript" },
-      new PrettierFormatter(extDir),
-    ),
-  );
 
   // Alt-Shift-O: organize imports — sort alphabetically, remove unused
   context.subscriptions.push(

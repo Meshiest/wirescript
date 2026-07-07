@@ -25,6 +25,7 @@ function formatWirescript(source, tabWidth, useTabs) {
   const result = [];
   let indent = 0;
   let parenDepth = 0;
+  let bracketDepth = 0;
   let prevBlank = false;
   let prevTrimmed = "";
 
@@ -48,7 +49,7 @@ function formatWirescript(source, tabWidth, useTabs) {
     trimmed = formatSpacing(trimmed);
 
     // Remove blank line between consecutive same-kind top-level declarations
-    if (indent === 0 && parenDepth === 0 && result.length > 0) {
+    if (indent === 0 && parenDepth === 0 && bracketDepth === 0 && result.length > 0) {
       const lastNonBlank = prevTrimmed;
       const shouldCollapse =
         // Same declaration kind
@@ -73,23 +74,41 @@ function formatWirescript(source, tabWidth, useTabs) {
       parenDepth = Math.max(0, parenDepth - 1);
     }
 
-    result.push(tab.repeat(indent + parenDepth) + trimmed);
+    // Closing bracket decreases array-literal continuation indent
+    const startsWithCloseBracket = trimmed.startsWith("]");
+    if (startsWithCloseBracket) {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+    }
+
+    result.push(tab.repeat(indent + parenDepth + bracketDepth) + trimmed);
     prevTrimmed = trimmed;
 
-    // Count braces outside strings
-    const delta = countBraceDelta(trimmed);
+    // Count delimiters outside strings. Note `string[] = [` nets +1 bracket:
+    // the `[]` type suffix self-cancels, the literal opener carries over.
+    const counts = countDelims(trimmed);
+
+    // Braces set block indent
     if (startsWithClose) {
-      indent += countOpens(trimmed);
+      indent += counts.openBrace;
     } else {
-      indent = Math.max(0, indent + delta);
+      indent = Math.max(0, indent + counts.openBrace - counts.closeBrace);
     }
 
     // Track paren depth for continuation indent
-    const parenDelta = countParenDelta(trimmed);
     if (startsWithCloseParen) {
-      parenDepth += countOpenParens(trimmed);
+      parenDepth += counts.openParen;
     } else {
-      parenDepth = Math.max(0, parenDepth + parenDelta);
+      parenDepth = Math.max(0, parenDepth + counts.openParen - counts.closeParen);
+    }
+
+    // Track bracket depth for multi-line array literals
+    if (startsWithCloseBracket) {
+      bracketDepth += counts.openBracket;
+    } else {
+      bracketDepth = Math.max(
+        0,
+        bracketDepth + counts.openBracket - counts.closeBracket,
+      );
     }
   }
 
@@ -158,13 +177,22 @@ function startsWithSameKw(a, b, kw) {
   return a.startsWith(kw) && b.startsWith(kw);
 }
 
-function countBraceDelta(trimmed) {
-  let opens = 0,
-    closes = 0;
+// Count `{}`/`()`/`[]` occurrences outside string literals in one pass.
+// A `//` comment ends the scan so bracket-looking text in comments is ignored.
+function countDelims(trimmed) {
+  const counts = {
+    openBrace: 0,
+    closeBrace: 0,
+    openParen: 0,
+    closeParen: 0,
+    openBracket: 0,
+    closeBracket: 0,
+  };
   let inStr = false,
     strChar = "",
     escaped = false;
-  for (const ch of trimmed) {
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
     if (escaped) {
       escaped = false;
       continue;
@@ -183,99 +211,15 @@ function countBraceDelta(trimmed) {
       continue;
     }
     if (inStr) continue;
-    if (ch === "{") opens++;
-    if (ch === "}") closes++;
+    if (ch === "/" && trimmed[i + 1] === "/") break;
+    if (ch === "{") counts.openBrace++;
+    if (ch === "}") counts.closeBrace++;
+    if (ch === "(") counts.openParen++;
+    if (ch === ")") counts.closeParen++;
+    if (ch === "[") counts.openBracket++;
+    if (ch === "]") counts.closeBracket++;
   }
-  return opens - closes;
-}
-
-function countOpens(trimmed) {
-  let opens = 0;
-  let inStr = false,
-    strChar = "",
-    escaped = false;
-  for (const ch of trimmed) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (!inStr && (ch === '"' || ch === "'")) {
-      inStr = true;
-      strChar = ch;
-      continue;
-    }
-    if (inStr && ch === strChar) {
-      inStr = false;
-      continue;
-    }
-    if (inStr) continue;
-    if (ch === "{") opens++;
-  }
-  return opens;
-}
-
-function countParenDelta(trimmed) {
-  let opens = 0,
-    closes = 0;
-  let inStr = false,
-    strChar = "",
-    escaped = false;
-  for (const ch of trimmed) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (!inStr && (ch === '"' || ch === "'")) {
-      inStr = true;
-      strChar = ch;
-      continue;
-    }
-    if (inStr && ch === strChar) {
-      inStr = false;
-      continue;
-    }
-    if (inStr) continue;
-    if (ch === "(") opens++;
-    if (ch === ")") closes++;
-  }
-  return opens - closes;
-}
-
-function countOpenParens(trimmed) {
-  let opens = 0;
-  let inStr = false,
-    strChar = "",
-    escaped = false;
-  for (const ch of trimmed) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (!inStr && (ch === '"' || ch === "'")) {
-      inStr = true;
-      strChar = ch;
-      continue;
-    }
-    if (inStr && ch === strChar) {
-      inStr = false;
-      continue;
-    }
-    if (inStr) continue;
-    if (ch === "(") opens++;
-  }
-  return opens;
+  return counts;
 }
 
 const printers = {

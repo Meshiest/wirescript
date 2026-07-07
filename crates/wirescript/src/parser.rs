@@ -1984,7 +1984,8 @@ impl<'a> Parser<'a> {
                 let start = t.start;
                 self.advance(); // consume '['
                 let mut elements = Vec::new();
-                while !self.check(TokenKind::RBracket, None) {
+                self.eat_newlines();
+                while !self.check(TokenKind::RBracket, None) && self.peek().kind != TokenKind::Eof {
                     // `...expr` spreads another array's elements in place.
                     if self.check(TokenKind::Op, Some("...")) {
                         self.advance();
@@ -1992,9 +1993,12 @@ impl<'a> Parser<'a> {
                     } else {
                         elements.push(ArrayElem::Item(self.parse_expr()));
                     }
+                    self.eat_newlines();
                     if self.match_tok(TokenKind::Comma, None).is_none() {
+                        self.eat_newlines();
                         break;
                     }
+                    self.eat_newlines();
                 }
                 let end = self.expect(TokenKind::RBracket, None).end;
                 Expr::Array {

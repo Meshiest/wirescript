@@ -184,7 +184,16 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // A client that brings its own formatter (the VS Code extension uses
+        // its prettier plugin) can opt out of server-side formatting so the
+        // editor doesn't list two identical providers.
+        let provide_formatting = params
+            .initialization_options
+            .as_ref()
+            .and_then(|o| o.get("provideFormatting"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -208,7 +217,7 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 references_provider: Some(OneOf::Left(true)),
-                document_formatting_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(provide_formatting)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["wirescript.compile".into()],
                     ..Default::default()

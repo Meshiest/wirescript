@@ -64,8 +64,8 @@
     "build": "tsc -p ."
   },
   "dependencies": {
-    "prettier": "^3.8.3",
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^9.0.1",
+    "prettier": "^3.8.3"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
