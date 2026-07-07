@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+- `SpawnPrefab` gained the gate's `velocity` param (the `SpawnVelocity` input) - previously only settable via `SetVelocity` on the returned entity.
 - **`SpawnPrefab()` compiles again** - every use failed to emit with "unsupported conversion from struct property array to LiteralComponent": the PrefabSpawner data struct has an array field (`SpawnedEntityIds`) that inlined gate data never populates, and `LiteralComponent` didn't implement array struct-property access, so the brdb writer's missing-field-to-empty-array path never triggered. Fixed in brdb (0.6.6): an unset array field now reports missing and serializes as an empty array, mirroring the scalar missing-field behavior. (Thanks to the detailed external bug report.)
 
 ### Gate Catalog / Data

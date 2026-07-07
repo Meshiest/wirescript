@@ -616,7 +616,9 @@ fn spawn_prefab_compiles_to_brz() {
     // The PrefabSpawner data struct has an array field (SpawnedEntityIds)
     // wirescript never populates — LiteralComponent must report it as
     // missing (serialized as an empty array), not fail the whole emit.
-    let src = "in trigger: exec\non trigger {\n  let car = SpawnPrefab()\n}";
+    // Covers both the bare call and the full argument set.
+    let src = "in trigger: exec\non trigger {\n  let car = SpawnPrefab()\n  \
+        let boat = SpawnPrefab(offset = Vec(0.0, 0.0, 50.0), rotation = Rotation(0.0, 90.0, 0.0), velocity = Vec(0.0, 0.0, 100.0), lifetime = 10.0, limit = 5)\n}";
     let r = compile(src);
     assert_no_errors(&r);
     let placements = crate::layout::layout(&r.module).placements;

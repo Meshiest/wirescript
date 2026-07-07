@@ -2151,6 +2151,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![
                 CallParam::opt("offset", WirePort::SpawnOffset, Type::Vector),
                 CallParam::opt("rotation", WirePort::SpawnOffsetRotation, Type::Rotator),
+                CallParam::opt("velocity", WirePort::SpawnVelocity, Type::Vector),
                 CallParam::opt("lifetime", WirePort::Lifetime, Type::Float),
                 CallParam::opt("limit", WirePort::Limit, Type::Int),
             ],

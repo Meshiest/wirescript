@@ -287,6 +287,7 @@ wire_ports! {
     Source = "Source",
     SpawnOffset = "SpawnOffset",
     SpawnOffsetRotation = "SpawnOffsetRotation",
+    SpawnVelocity = "SpawnVelocity",
     SpawnedCharacter = "SpawnedCharacter",
     Start = "Start",
     SteerInterpSpeed = "SteerInterpSpeed",

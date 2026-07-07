@@ -917,10 +917,12 @@ on ChatCommand("wave", Description = "Wave at everyone") {
 |-----------|------|----------|-------------|
 | `offset` | `vector` | No | Spawn position offset |
 | `rotation` | `rotator` | No | Spawn rotation offset |
+| `velocity` | `vector` | No | Initial velocity of the spawned entity |
 | `lifetime` | `float` | No | Lifetime in seconds (0 = permanent) |
 | `limit` | `int` | No | Max concurrent instances |
 
-Returns: `entity` -- the spawned entity.
+Returns: `entity` -- the spawned entity. The prefab itself is configured on
+the gate in-game (copy a prefab onto the placed Spawn Prefab brick).
 
 ```wirescript
 on trigger {
