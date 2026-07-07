@@ -41,7 +41,7 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         {
             return lower_array_method(ctx, &var_rec, field, args, range, e);
         }
-        // Receiver method calls: entity.SetLocation(pos) → SetLocation(entity, pos)
+        // Receiver method calls: entity.SetLocation(pos) -> SetLocation(entity, pos)
         if let Some(spec) = find_call(field)
             && spec.receiver.is_some()
         {
@@ -202,6 +202,18 @@ pub(super) fn lower_chip_call_inline(
         }
     }
 
+    // `exec = trigger` named arg: run this mod's body off the given trigger
+    // when the caller is outside an exec context.
+    let exec_arg = args.iter().find_map(|a| match a {
+        CallArg::Named { name, value } if name == "exec" => Some(value),
+        _ => None,
+    });
+    let saved_caller_exec = ctx.current_exec;
+    if let Some(exec_expr) = exec_arg {
+        let src = lower_expr(ctx, exec_expr);
+        ctx.current_exec = Some(src);
+    }
+
     let body_has_return = block_contains_return(&chip_decl.body);
     let saved_return_exec = ctx.mod_return_exec.take();
     let saved_return_var = ctx.mod_return_var.take();
@@ -336,6 +348,11 @@ pub(super) fn lower_chip_call_inline(
 
     ctx.mod_return_exec = saved_return_exec;
     ctx.mod_return_var = saved_return_var;
+
+    // An explicit trigger's chain must not leak into the caller's context.
+    if exec_arg.is_some() {
+        ctx.current_exec = saved_caller_exec;
+    }
 
     let inline_output_ids = &mod_output_ids;
     // For single-output mods, capture the value source before removing
@@ -507,6 +524,7 @@ fn build_chip_module(
     chip_decl: &ChipDecl,
     instance_name: &str,
     caller_captures: &HashMap<String, VarRecord>,
+    force_exec_boundary: bool,
 ) -> Module {
     let mut child_builder = ModuleBuilder::new(instance_name);
     child_builder.module.scopes.insert(
@@ -543,20 +561,25 @@ fn build_chip_module(
         pending_inline_record: None,
     };
 
-    // Inherit chip/mod/namespace declarations from parent scope so the
-    // chip body can call mods and chips defined outside its own body.
+    // Inherit declarations from the parent scope so the chip body can call
+    // mods/chips defined outside its own body, and reference outer vars,
+    // arrays, buffers, and record bindings directly — wire refs cross chip
+    // boundaries, so the body's gates connect to the caller's nodes exactly
+    // like captured ref params do. Chip params declared below shadow
+    // inherited names.
     for (name, binding) in ctx.scope.iter() {
         match binding {
-            Binding::Chip(_) | Binding::Namespace(_) => {
+            Binding::Chip(_)
+            | Binding::Namespace(_)
+            | Binding::Var(_)
+            | Binding::Buffer(_)
+            | Binding::Record(_) => {
                 child_ctx.scope.insert(name.to_string(), binding.clone());
             }
             _ => {}
         }
     }
 
-    // First exec-typed value input, if any — it drives the chip body (see
-    // below).
-    let mut first_exec_input: Option<NodeId> = None;
     for inp in &chip_decl.inputs {
         let resolved_record = match &inp.typ {
             TypeExpr::Record { fields, .. } => Some(fields.clone()),
@@ -685,9 +708,6 @@ fn build_chip_module(
                 t.clone(),
                 chip_decl.range.clone(),
             );
-            if matches!(t, Type::Exec) && first_exec_input.is_none() {
-                first_exec_input = Some(node_id);
-            }
             child_ctx.scope.insert(
                 inp.name.clone(),
                 Binding::Input(NodeRecord { node_id, ty: t }),
@@ -708,15 +728,16 @@ fn build_chip_module(
         );
     }
 
-    // Auto-exec: if the caller has exec context and the chip doesn't
-    // explicitly take exec as its first param, create exec entry/exit
-    // boundary ports so the chip body receives the exec chain.
+    // Auto-exec: if the caller has exec context (or supplies an `exec =`
+    // named arg from a pure context) and the chip doesn't explicitly take
+    // exec as its first param, create exec entry/exit boundary ports so the
+    // chip body receives the exec chain.
     let first_param_is_exec = chip_decl
         .inputs
         .first()
         .map(|p| matches!(&p.typ, TypeExpr::Name { name, .. } if name == "exec"))
         .unwrap_or(false);
-    let auto_exec = ctx.current_exec.is_some() && !first_param_is_exec;
+    let auto_exec = (ctx.current_exec.is_some() || force_exec_boundary) && !first_param_is_exec;
     if auto_exec {
         let exec_in = child_ctx.builder.add_input(
             &mut child_ctx.ids,
@@ -724,11 +745,6 @@ fn build_chip_module(
             Type::Exec,
             chip_decl.range.clone(),
         );
-        child_ctx.current_exec = Some(exec_in.port(WirePort::RerOutput));
-    } else if let Some(exec_in) = first_exec_input {
-        // An explicit exec param drives the chip body: statement-level exec
-        // calls chain from it directly — no `on <param> { }` wrapper needed.
-        // (`on <param>` handlers still work; they attach to the same input.)
         child_ctx.current_exec = Some(exec_in.port(WirePort::RerOutput));
     }
 
@@ -786,9 +802,16 @@ pub(super) fn lower_chip_call_instance(
 
     let caller_captures = resolve_caller_captures(ctx, chip_decl, args);
 
+    // `exec = trigger` named arg: how exec chips get their chain when invoked
+    // outside an exec context (mirrors the builtin exec-call convention).
+    let exec_arg = args.iter().find_map(|a| match a {
+        CallArg::Named { name, value } if name == "exec" => Some(value),
+        _ => None,
+    });
+
     let mut child_module = if let Some(template) = ctx.template_cache.get(&chip_decl.name) {
         // Build remap: for each param name in the template's capture_names,
-        // look up the caller's VarRecord and map old_id → new_id.
+        // look up the caller's VarRecord and map old_id -> new_id.
         let mut captures = std::collections::HashMap::new();
         for (name, old_id) in &template.external_refs {
             if let Some(var_rec) = caller_captures.get(name) {
@@ -797,7 +820,13 @@ pub(super) fn lower_chip_call_instance(
         }
         template.instantiate(&instance_name, &captures)
     } else {
-        let module = build_chip_module(ctx, chip_decl, &instance_name, &caller_captures);
+        let module = build_chip_module(
+            ctx,
+            chip_decl,
+            &instance_name,
+            &caller_captures,
+            exec_arg.is_some(),
+        );
         // Cache the first instance as a template for subsequent calls.
         // Store capture_names so future instantiations can remap by param name.
         let mut template = crate::template::CompiledTemplate::from_module(module.clone());
@@ -818,7 +847,7 @@ pub(super) fn lower_chip_call_instance(
         .first()
         .map(|p| matches!(&p.typ, TypeExpr::Name { name, .. } if name == "exec"))
         .unwrap_or(false);
-    let auto_exec = ctx.current_exec.is_some() && !first_param_is_exec;
+    let auto_exec = (ctx.current_exec.is_some() || exec_arg.is_some()) && !first_param_is_exec;
 
     let chip_node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::MICROCHIP,
@@ -844,10 +873,16 @@ pub(super) fn lower_chip_call_instance(
     );
 
     // Wire auto-exec AFTER args so the exec chain is:
-    //   ... → Var_Get(a) → Var_Get(b) → chip._exec_in → chip._exec_out → ...
-    // Not: ... → chip._exec_in → chip._exec_out → Var_Get(a) → chip.param (cycle!)
+    //   ... -> Var_Get(a) -> Var_Get(b) -> chip._exec_in -> chip._exec_out -> ...
+    // Not: ... -> chip._exec_in -> chip._exec_out -> Var_Get(a) -> chip.param (cycle!)
     if auto_exec {
-        if let Some(caller_exec) = ctx.current_exec {
+        if let Some(exec_expr) = exec_arg {
+            // Explicit trigger from a pure context: wire it to the boundary
+            // and leave the caller's (non-)context untouched.
+            let src = lower_expr(ctx, exec_expr);
+            let exec_in_node = *child_inputs.last().unwrap();
+            ctx.connect(src, exec_in_node.port(WirePort::RerInput));
+        } else if let Some(caller_exec) = ctx.current_exec {
             // Wire exec directly to child's _exec_in/_exec_out MicrochipInput/Output
             let exec_in_node = *child_inputs.last().unwrap();
             let exec_out_node = *child_outputs.last().unwrap();
@@ -1150,7 +1185,7 @@ pub(super) fn lower_builtin_call(
         }
         let mut val_port = lower_expr(ctx, arg_expr);
         let arg_ty = unwrap_ref(&ctx.type_of(arg_expr));
-        // character → controller adaptation
+        // character -> controller adaptation
         if matches!(p.ty, Type::Controller)
             && matches!(arg_ty, Type::Character)
             && let Some(exec) = ctx.current_exec
@@ -1180,7 +1215,7 @@ pub(super) fn lower_builtin_call(
                         },
                     ],
                 },
-                note: Some("char→controller".into()),
+                note: Some("char->controller".into()),
                 ..Default::default()
             });
             ctx.connect(exec, adapter.port(WirePort::Exec));
@@ -1269,7 +1304,7 @@ pub(super) fn lower_builtin_call(
         ctx.connect(w.val_port, node_id.port(w.port));
     }
 
-    // Named record outputs (e.g. Edge's rising/falling): stash a field→port
+    // Named record outputs (e.g. Edge's rising/falling): stash a field->port
     // record so a `let` binding resolves fields through the spec instead of
     // port-name matching. Set definitively for THIS call — `None` otherwise —
     // so a nested record-returning arg call doesn't leak into the outer let.

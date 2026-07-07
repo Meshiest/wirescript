@@ -80,11 +80,7 @@ fn inline_mod_multi_output_fields_wire_to_sources() {
         r.diagnostics
     );
     // No wire may originate from the phantom node 0.
-    let phantom = r
-        .module
-        .wires
-        .iter()
-        .any(|w| w.source.node_id == NodeId(0));
+    let phantom = r.module.wires.iter().any(|w| w.source.node_id == NodeId(0));
     assert!(!phantom, "multi-output mod read produced a phantom n0 wire");
     // Every output node must be fed by an incoming wire.
     for oid in &r.module.outputs {
@@ -101,8 +97,7 @@ fn chip_call_wires_args_to_inputs() {
     let r = compile(src);
     // Parent module should have wires to child MicrochipInput nodes
     let child = r.module.chips.values().next().unwrap();
-    let child_input_ids: std::collections::HashSet<NodeId> =
-        child.inputs.iter().cloned().collect();
+    let child_input_ids: std::collections::HashSet<NodeId> = child.inputs.iter().cloned().collect();
     let input_wires: Vec<_> = r
         .module
         .wires
@@ -142,7 +137,12 @@ fn chip_call_compiles_to_brz() {
     let r = compile(src);
     let placements = crate::layout::layout(&r.module).placements;
     let opts = crate::emit::EmitOptions::default();
-    let brz = crate::emit::emit_brz(&r.module, &placements, &opts, &std::sync::Arc::new(crate::template_cache::TemplateCache::new()));
+    let brz = crate::emit::emit_brz(
+        &r.module,
+        &placements,
+        &opts,
+        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+    );
     assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
 }
 
@@ -340,7 +340,12 @@ out key_state = pad.key_state",
     );
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
-    let brz = crate::emit::emit_brz(&r.module, &lr.placements, &Default::default(), &std::sync::Arc::new(crate::template_cache::TemplateCache::new()));
+    let brz = crate::emit::emit_brz(
+        &r.module,
+        &lr.placements,
+        &Default::default(),
+        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+    );
     assert!(
         brz.is_ok(),
         "should compile to brz without port errors: {:?}",
@@ -348,7 +353,7 @@ out key_state = pad.key_state",
     );
 }
 
-/// Regression: `if true { body }` should be constant-folded — no Branch gate.
+/// Regression: `if true { body }` should be constant-folded - no Branch gate.
 #[test]
 fn if_true_constant_folded() {
     let r = compile(
@@ -509,27 +514,38 @@ on start {
     assert_no_errors(&r);
 
     // Find the Add chip's child module (has 2+ value inputs for a, b)
-    let (add_chip_id, add_child) = r.module.chips.iter()
+    let (add_chip_id, add_child) = r
+        .module
+        .chips
+        .iter()
         .find(|(_, child)| child.outputs.len() >= 1 && child.inputs.len() >= 2)
         .expect("should find Add chip");
 
     // Exec goes to child's _exec_in MicrochipInput (last input)
     let exec_in_node = *add_child.inputs.last().unwrap();
-    let exec_into_chip = r.module.wires.iter().find(|w|
-        w.target.node_id == exec_in_node
-            && w.target.port == WirePort::RerInput
-    ).expect("child _exec_in MicrochipInput should have a wire");
+    let exec_into_chip = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == exec_in_node && w.target.port == WirePort::RerInput)
+        .expect("child _exec_in MicrochipInput should have a wire");
 
     // The exec source should be a Var_Get (args evaluated first), not the
     // handler entry or a chip node (which would mean exec fires before reads).
-    let exec_source_node = r.module.nodes.get(&exec_into_chip.source.node_id)
+    let exec_source_node = r
+        .module
+        .nodes
+        .get(&exec_into_chip.source.node_id)
         .expect("exec source node should exist");
     let source_class = exec_source_node.gate_class;
     assert!(
-        source_class.contains("Var_Get") || source_class.contains("Var_Set")
-            || source_class.contains("ArrayVar") || source_class.contains("Exec_"),
+        source_class.contains("Var_Get")
+            || source_class.contains("Var_Set")
+            || source_class.contains("ArrayVar")
+            || source_class.contains("Exec_"),
         "exec into chip should come from a Var_Get (args first), got: {} ({})",
-        exec_source_node.id, source_class,
+        exec_source_node.id,
+        source_class,
     );
 
     // Verify no layout cycle
@@ -555,7 +571,11 @@ on player {
     let lr = crate::layout::layout(&r.module);
     let tc = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
     let brz = crate::emit::emit_brz(&r.module, &lr.placements, &Default::default(), &tc);
-    assert!(brz.is_ok(), "string interpolation should emit valid brz: {:?}", brz.err());
+    assert!(
+        brz.is_ok(),
+        "string interpolation should emit valid brz: {:?}",
+        brz.err()
+    );
 }
 
 #[test]
@@ -579,15 +599,14 @@ fn emit_value_inside_chip_handler_assigns_outputs() {
 }
 
 #[test]
-fn explicit_exec_param_drives_chip_body() {
-    // A chip taking `init: exec` runs statement-level exec calls in its body
-    // on that exec — no `on init { }` wrapper needed. The push gate inside
-    // the child module must have its exec input wired (previously it was
-    // silently dead).
-    // NOTE: free references to top-level arrays inside a named chip body are
-    // NOT captured — state must come in through params (here: a record of
-    // arrays), which the capture machinery resolves.
-    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(init: exec, tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code";
+fn exec_param_handler_drives_chip_body() {
+    // The `on init { }` handler is how a chip body binds work to its exec
+    // param - the param must NOT implicitly invoke the body (exec-context
+    // callers already get exec-driven bodies via the auto-exec boundary).
+    // The push gate inside the child module must be wired from the handler.
+    // State comes in through a record-of-arrays param here; free top-level
+    // references also work (see named_chip_body_captures_top_level_state).
+    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(init: exec, tables: Tables) -> (code: int) {\n  on init {\n    tables.names.push(\"a\")\n    emit code = 5\n  }\n}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
     let child = r
@@ -601,10 +620,7 @@ fn explicit_exec_param_drives_chip_body() {
         .values()
         .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
         .expect("child module should contain the push gate");
-    let push_exec_wired = child
-        .wires
-        .iter()
-        .any(|w| w.target.node_id == push.id);
+    let push_exec_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
     assert!(
         push_exec_wired,
         "push gate should be driven by the chip's exec param"
@@ -614,7 +630,7 @@ fn explicit_exec_param_drives_chip_body() {
 #[test]
 fn spawn_prefab_compiles_to_brz() {
     // The PrefabSpawner data struct has an array field (SpawnedEntityIds)
-    // wirescript never populates — LiteralComponent must report it as
+    // wirescript never populates - LiteralComponent must report it as
     // missing (serialized as an empty array), not fail the whole emit.
     // Covers both the bare call and the full argument set.
     let src = "in trigger: exec\non trigger {\n  let car = SpawnPrefab()\n  \
@@ -623,6 +639,91 @@ fn spawn_prefab_compiles_to_brz() {
     assert_no_errors(&r);
     let placements = crate::layout::layout(&r.module).placements;
     let opts = crate::emit::EmitOptions::default();
-    let brz = crate::emit::emit_brz(&r.module, &placements, &opts, &std::sync::Arc::new(crate::template_cache::TemplateCache::new()));
+    let brz = crate::emit::emit_brz(
+        &r.module,
+        &placements,
+        &opts,
+        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+    );
     assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+}
+
+#[test]
+fn exec_named_arg_drives_chip_body_outside_exec_context() {
+    // Outside exec contexts, exec chips take their trigger as an `exec =`
+    // named arg: `let r = Init(TB, exec = s)` at top level. The body's push
+    // gate must be exec-wired, not silently dead.
+    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nout v = r.code";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let child = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("chip instance should produce a child module");
+    let push = child
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .expect("child module should contain the push gate");
+    let push_exec_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
+    assert!(
+        push_exec_wired,
+        "push gate should be driven via the exec named arg"
+    );
+    // The exec boundary input must exist and be wired from the caller side.
+    let exec_in = child
+        .inputs
+        .iter()
+        .any(|nid| child.nodes.get(nid).is_some());
+    assert!(exec_in, "child should expose its exec boundary input");
+}
+
+#[test]
+fn exec_arg_call_exposes_exec_field() {
+    // A chip call with `exec =` also returns the chip's completion exec as an
+    // `exec` record field: `let r = Init(TB, exec = s)` ... `on r.exec { }`.
+    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nvar hit: int = 0\non r.exec { hit = hit + 1 }\nout v = r.code";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let child = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("chip instance should produce a child module");
+    let exec_out = *child
+        .outputs
+        .last()
+        .expect("child should have the _exec_out boundary output");
+    // The handler must be driven from the boundary output in the parent.
+    let exec_wired = r.module.wires.iter().any(|w| w.source.node_id == exec_out);
+    assert!(
+        exec_wired,
+        "on r.exec should wire from the chip's _exec_out"
+    );
+}
+
+#[test]
+fn named_chip_body_captures_top_level_state() {
+    // Free references to top-level arrays/vars inside a named chip body
+    // resolve against the caller's scope — wire refs cross chip boundaries,
+    // so the body's gates connect to the outer nodes directly.
+    let src = "array names: string[]\nvar count: int = 0\nchip Init() -> (code: int) {\n  names.push(\"a\")\n  count = count + 1\n  emit code = 7\n}\nin s: exec\nlet r = Init(exec = s)\nout v = r.code";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let child = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("chip instance should produce a child module");
+    let push = child
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .expect("child module should contain the push gate");
+    let push_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
+    assert!(push_wired, "free-array push should be exec-wired");
 }

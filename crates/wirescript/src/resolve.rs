@@ -444,6 +444,14 @@ fn collect_runtime_idents_in_block(block: &Block, idents: &mut HashSet<String>) 
             Stmt::Var(v) => {
                 if let Some(e) = &v.init { collect_idents_in_expr(e, idents); }
             }
+            Stmt::Emit(e) => {
+                if let Some(v) = &e.value { collect_idents_in_expr(v, idents); }
+            }
+            Stmt::Await(a) => {
+                if let Some(v) = &a.value_expr { collect_idents_in_expr(v, idents); }
+                collect_idents_in_expr(&a.exec_expr, idents);
+            }
+            Stmt::Buffer(b) => collect_idents_in_expr(&b.init, idents),
             Stmt::AnonChip(ac) => collect_runtime_idents_in_block(&ac.body, idents),
             Stmt::ChipDecl(c) => collect_runtime_idents_in_block(&c.body, idents),
             _ => {}
@@ -540,6 +548,21 @@ fn expand_type_aliases_in_decl(d: &mut TopDecl, aliases: &HashMap<String, TypeEx
         TopDecl::Fn(f) => {
             for p in &mut f.params { expand_type_aliases_in_type_expr(&mut p.typ, aliases); }
             if let Some(t) = &mut f.return_type { expand_type_aliases_in_type_expr(t, aliases); }
+        }
+        TopDecl::Let(l) => {
+            if let Some(t) = &mut l.typ { expand_type_aliases_in_type_expr(t, aliases); }
+        }
+        TopDecl::Var(v) => {
+            if let Some(t) = &mut v.typ { expand_type_aliases_in_type_expr(t, aliases); }
+        }
+        TopDecl::Out(o) => {
+            if let Some(t) = &mut o.typ { expand_type_aliases_in_type_expr(t, aliases); }
+        }
+        TopDecl::Buffer(b) => {
+            if let Some(t) = &mut b.typ { expand_type_aliases_in_type_expr(t, aliases); }
+        }
+        TopDecl::In(i) => {
+            expand_type_aliases_in_type_expr(&mut i.typ, aliases);
         }
         _ => {}
     }
@@ -654,6 +677,25 @@ fn collect_idents_in_expr(e: &Expr, idents: &mut HashSet<String>) {
             for p in parts {
                 if let InterpPart::Expr(e) = p {
                     collect_idents_in_expr(e, idents);
+                }
+            }
+        }
+        Expr::RecordLit { fields, .. } => {
+            for f in fields {
+                match f {
+                    RecordLitField::Named { value, .. } => collect_idents_in_expr(value, idents),
+                    // Shorthand `{ name }` references an identifier by that name.
+                    RecordLitField::Shorthand { name, .. } => {
+                        idents.insert(name.clone());
+                    }
+                    RecordLitField::Spread { value, .. } => collect_idents_in_expr(value, idents),
+                }
+            }
+        }
+        Expr::Array { elements, .. } => {
+            for el in elements {
+                match el {
+                    ArrayElem::Item(e) | ArrayElem::Spread(e) => collect_idents_in_expr(e, idents),
                 }
             }
         }
@@ -888,5 +930,50 @@ mod tests {
             !has_type_alias,
             "TypeAlias 'Cpu' should NOT be pulled transitively into the importing file's AST"
         );
+    }
+}
+
+#[cfg(test)]
+mod dep_pull_tests {
+    use super::*;
+
+    fn mem(files: &[(&str, &str)]) -> MemLoader {
+        MemLoader {
+            files: files
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn record_let_pulls_array_deps_and_expands_let_annotation() {
+        // Importing a record-of-arrays `let` must pull the arrays its
+        // initializer references (named and shorthand fields) and inline the
+        // alias in the let's annotation; emits inside the chip body must pull
+        // the mods/constants they reference.
+        let loader = mem(&[(
+            "lib.ws",
+            "let X = 7\n\
+             type Tables = { vals: int[] }\n\
+             array vals: int[]\n\
+             let TB: Tables = { vals: vals }\n\
+             mod bump(tables: Tables, v: int) {\n  tables.vals.push(v + X)\n}\n\
+             chip Init(init: exec, tables: Tables) -> (code: int) {\n  on init {\n    bump(tables, X)\n    emit code = X\n  }\n}\n",
+        )]);
+        let src = "import { Init, TB } from \"lib\"\nin reset: exec\nlet R = Init(reset, TB)\nout v = R.code";
+        let r = resolve(src, "main.ws", &loader);
+        assert!(
+            r.diagnostics.is_empty(),
+            "resolve diags: {:?}",
+            r.diagnostics
+        );
+        let tc = crate::typecheck::typecheck(&r.ast, "main.ws");
+        let errors: Vec<_> = tc
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "typecheck errors: {errors:?}");
     }
 }

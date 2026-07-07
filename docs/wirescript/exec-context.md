@@ -124,6 +124,12 @@ let r = Random(0, 10, exec = myTrigger)
 
 This wires `myTrigger` as the exec input of the Random gate.
 
+The same convention applies to user-defined exec chips and mods: outside an
+exec context, pass their trigger as `exec = ...`. The call then also returns
+the completion exec as an `exec` field on the result record, so callers can
+`await r.exec` or `on r.exec { }`. See
+[Exec Chips](chips.md#exec-chips).
+
 ## Reading Variables: Exec vs Pure
 
 The behavior of a bare variable name depends on context:

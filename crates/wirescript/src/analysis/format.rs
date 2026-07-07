@@ -1,9 +1,10 @@
 pub fn format_wirescript(source: &str, tab: &str) -> String {
     let lines = source.split('\n');
     let mut result = Vec::new();
-    let mut indent: i32 = 0;
-    let mut paren_depth: i32 = 0;
-    let mut bracket_depth: i32 = 0;
+    // Stack of open delimiters; the bool records whether that open added an
+    // indent level. A line adds AT MOST one level no matter how many groups
+    // it opens (`addRole(next, {` opens `(` and `{` but indents once).
+    let mut stack: Vec<bool> = Vec::new();
     let mut prev_blank = false;
 
     for line in lines {
@@ -13,14 +14,18 @@ pub fn format_wirescript(source: &str, tab: &str) -> String {
             continue;
         }
         prev_blank = false;
-        let starts_close = trimmed.starts_with('}');
-        if starts_close { indent = (indent - 1).max(0); }
 
-        let starts_close_paren = trimmed.starts_with(')');
-        if starts_close_paren { paren_depth = (paren_depth - 1).max(0); }
-
-        let starts_close_bracket = trimmed.starts_with(']');
-        if starts_close_bracket { bracket_depth = (bracket_depth - 1).max(0); }
+        // A leading run of closers de-indents before printing so the closing
+        // line sits at its opener's level (`}`, `)`, `]`, `})`, ...).
+        let code = strip_line_comment(trimmed);
+        let leading_closers = code
+            .chars()
+            .take_while(|c| matches!(c, '}' | ')' | ']'))
+            .count();
+        for _ in 0..leading_closers {
+            stack.pop();
+        }
+        let starts_close = leading_closers > 0;
 
         // `else` on its own line (not preceded by `}`) is the expression-form
         // `if cond then expr\nelse expr`, and should be indented one extra level.
@@ -42,16 +47,13 @@ pub fn format_wirescript(source: &str, tab: &str) -> String {
             });
 
         let extra = if is_expr_else || is_binop_continuation { 1 } else { 0 };
-        let line_indent = indent + paren_depth + bracket_depth + extra;
+        let line_indent = stack.iter().filter(|adds| **adds).count() as i32 + extra;
 
-        result.push(format!("{}{}", tab.repeat(line_indent as usize), trimmed));
+        result.push(format!("{}{}", tab.repeat(line_indent.max(0) as usize), trimmed));
 
-        // Note `string[] = [` nets +1 bracket: the `[]` type suffix
-        // self-cancels, the multi-line literal opener carries over.
-        let d = count_delimiters(trimmed);
-        if starts_close { indent += d.brace_opens; } else { indent = (indent + d.brace_opens - d.brace_closes).max(0); }
-        if starts_close_paren { paren_depth += d.paren_opens; } else { paren_depth = (paren_depth + d.paren_opens - d.paren_closes).max(0); }
-        if starts_close_bracket { bracket_depth += d.bracket_opens; } else { bracket_depth = (bracket_depth + d.bracket_opens - d.bracket_closes).max(0); }
+        // Scan the rest of the line: opens push (adding an indent level only
+        // while this line has no net open level yet), closes pop.
+        scan_delimiters(code, leading_closers, &mut stack);
     }
     while result.last().map(|l| l.is_empty()).unwrap_or(false) { result.pop(); }
     let mut out = result.join("\n");
@@ -59,40 +61,40 @@ pub fn format_wirescript(source: &str, tab: &str) -> String {
     out
 }
 
-#[derive(Default)]
-struct DelimCounts {
-    brace_opens: i32,
-    brace_closes: i32,
-    paren_opens: i32,
-    paren_closes: i32,
-    bracket_opens: i32,
-    bracket_closes: i32,
-}
-
-fn count_delimiters(s: &str) -> DelimCounts {
-    // Strip line comments before counting — delimiters inside // are not real.
-    let code = strip_line_comment(s);
-    let mut d = DelimCounts::default();
+/// Push/pop `{}`/`()`/`[]` found outside string literals onto the depth
+/// stack, skipping the first `leading` delimiter characters (already popped
+/// by the caller). An open pushes an indent contribution only while the
+/// line's net indenting opens are zero — at most one level per line.
+fn scan_delimiters(code: &str, leading: usize, stack: &mut Vec<bool>) {
     let mut in_str = false;
     let mut str_ch = ' ';
     let mut esc = false;
-    for ch in code.chars() {
+    let mut net_true: i32 = 0;
+    for (i, ch) in code.chars().enumerate() {
+        if i < leading {
+            continue;
+        }
         if esc { esc = false; continue; }
         if ch == '\\' { esc = true; continue; }
         if !in_str && (ch == '"' || ch == '\'') { in_str = true; str_ch = ch; continue; }
         if in_str && ch == str_ch { in_str = false; continue; }
         if in_str { continue; }
         match ch {
-            '{' => d.brace_opens += 1,
-            '}' => d.brace_closes += 1,
-            '(' => d.paren_opens += 1,
-            ')' => d.paren_closes += 1,
-            '[' => d.bracket_opens += 1,
-            ']' => d.bracket_closes += 1,
+            '{' | '(' | '[' => {
+                let adds = net_true <= 0;
+                if adds { net_true += 1; }
+                stack.push(adds);
+            }
+            '}' | ')' | ']' => {
+                if let Some(adds) = stack.pop()
+                    && adds
+                {
+                    net_true -= 1;
+                }
+            }
             _ => {}
         }
     }
-    d
 }
 
 fn strip_line_comment(s: &str) -> &str {
@@ -155,6 +157,30 @@ mod tests {
     fn paren_continuation_still_indents() {
         let src = "on t {\nctrl.DisplayText(\"hi\",\npositionX = 0.0,\n)\n}\n";
         let want = "on t {\n  ctrl.DisplayText(\"hi\",\n    positionX = 0.0,\n  )\n}\n";
+        assert_eq!(fmt(src), want);
+    }
+
+    #[test]
+    fn call_opening_record_literal_indents_once() {
+        // `addRole(next, {` opens a paren AND a brace on one line — the
+        // record fields indent ONE level, and `})` returns to the opener's
+        // level (previously double-indented).
+        let src = "on init {
+emit NONE = addRole(next, {
+name: \"S\",
+cond: 0
+})
+done = true
+}
+";
+        let want = "on init {
+  emit NONE = addRole(next, {
+    name: \"S\",
+    cond: 0
+  })
+  done = true
+}
+";
         assert_eq!(fmt(src), want);
     }
 

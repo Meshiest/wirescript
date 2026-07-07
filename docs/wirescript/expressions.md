@@ -461,6 +461,9 @@ let bad = x >> 31 & 1 != 0      // wrong — compares 1 != 0 first
 
 Chip internal `var`/`array` are not accessible from outside. Only declared `->` outputs are visible. For shared mutable state, use top-level declarations and `mod` macros.
 
+The reverse works, though: a chip body can reference top-level `var`s,
+`array`s, and buffers freely — wire refs cross chip boundaries.
+
 ## Asset References
 
 `$AssetType/AssetName` references an external asset the world embeds by name —

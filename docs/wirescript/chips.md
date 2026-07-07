@@ -235,6 +235,60 @@ let mm2 = MinMax(5, 20)  // independent from mm1
 
 > **Note:** The `-> (...)` outputs declare the chip's public interface. Use `out name = expr` in the body to wire values to those outputs. Do not redeclare the same name in both the signature and the body — this produces a warning.
 
+### Exec Chips
+
+A chip whose body contains statement-level exec calls (array methods,
+`DisplayText`, `emit output = expr`, ...) is an **exec chip** — the body runs
+as one exec chain. How it gets its trigger depends on the call site:
+
+- **Called inside a handler**, the body joins the caller's exec chain
+  automatically and execution continues after it.
+- **Called outside an exec context** (e.g. a top-level `let`), pass the
+  trigger as an `exec = ...` named argument — the same convention as builtin
+  exec calls like `Random(0, 10, exec = trigger)`.
+
+```wirescript
+in reset: exec
+
+array vals: int[]
+
+chip InitTables() -> (count: int) {
+  vals.clear()
+  vals.push(1)
+  emit count = 1
+}
+
+let t = InitTables(exec = reset)  // body runs whenever reset fires
+```
+
+A call with `exec =` also returns the chip's completion exec as an `exec`
+field on the result record (unless the chip declares its own `exec` output),
+so callers can sequence on the body having run:
+
+```wirescript
+on start {
+  emit reset
+  await t.exec       // resumes after InitTables finished
+}
+
+on t.exec { }        // or treat it as an event
+```
+
+To bind body work to a specific exec **parameter** instead, declare the param
+and use an `on` handler — the param does not implicitly invoke the body:
+
+```wirescript
+chip Counter(bump: exec) -> (value: int) {
+  var n: int = 0
+  on bump { n = n + 1 }
+  out value = n.Value
+}
+```
+
+> **Note:** chip bodies reference top-level `var`s, `array`s, buffers, and
+> record bindings freely — wire refs cross chip boundaries, so the body's
+> gates connect to the outer nodes directly (`vals` above).
+
 ### Reference Parameters (`ref T` / `*T`)
 
 When a chip parameter has type `ref T` (or equivalently `*T`), the caller passes a variable by reference. The chip can both read and write the variable.

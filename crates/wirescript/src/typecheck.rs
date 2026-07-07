@@ -1804,16 +1804,25 @@ fn infer_expr_inner(
                     return Type::Any;
                 };
                 if let Some(sig) = sym.signature {
-                    if sig.outputs.len() == 1 {
+                    // A call with an `exec =` trigger also returns the chip's
+                    // completion exec as an `exec` field (unless the chip
+                    // declares its own `exec` output).
+                    let has_exec_arg = args
+                        .iter()
+                        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+                    if sig.outputs.len() == 1 && !has_exec_arg {
                         return sig.outputs[0].ty.clone();
                     }
                     if !sig.outputs.is_empty() {
-                        return Type::Record(
-                            sig.outputs
-                                .iter()
-                                .map(|o| (o.name.clone(), o.ty.clone()))
-                                .collect(),
-                        );
+                        let mut fields: Vec<(String, Type)> = sig
+                            .outputs
+                            .iter()
+                            .map(|o| (o.name.clone(), o.ty.clone()))
+                            .collect();
+                        if has_exec_arg && !fields.iter().any(|(n, _)| n == "exec") {
+                            fields.push(("exec".into(), Type::Exec));
+                        }
+                        return Type::Record(fields);
                     }
                 }
             }

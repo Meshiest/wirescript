@@ -4,33 +4,34 @@
 
 ### New Builtins
 
-- **Split edge/change detectors** - the game split the detector gates into pure bool-pulse and exec-pulse variants; the language now exposes all four: `Edge(bool) -> {Rising, Falling: bool}`, `EdgeExec(float) -> {Rising, Falling: exec}` (new gate - exec pulses for `on`/`await`), `Changed(any) -> bool` (the plain Change Detector's new bool pulse), and `Change(any) -> any` (repointed to the Exec gate, which now owns the `OnChanged` value-pulse output - same documented semantics as 0.8.0).
-- **Spec-derived record fields** - builtins returning records can now declare a field name per output (`vec_expr_record`); the call result binds as a field->port record (the same mechanism as multi-output inline mods), so field access resolves through the spec instead of port-name string matching. `Edge`'s pulse fields resolve for the first time (the documented lowercase `rising`/`falling` never matched a port) and are renamed `Rising`/`Falling` to match the `EdgeExec`/`Timer`/`GetAim` field convention.
+- **Split edge/change detectors** - `Edge(bool) -> {Rising, Falling: bool}`, `EdgeExec(float) -> {Rising, Falling: exec}`, `Changed(any) -> bool`, `Change(any) -> any`
 
 ### Bug Fixes
 
 - `SpawnPrefab` gained the gate's `velocity` param (the `SpawnVelocity` input) - previously only settable via `SetVelocity` on the returned entity.
-- **`SpawnPrefab()` compiles again** - every use failed to emit with "unsupported conversion from struct property array to LiteralComponent": the PrefabSpawner data struct has an array field (`SpawnedEntityIds`) that inlined gate data never populates, and `LiteralComponent` didn't implement array struct-property access, so the brdb writer's missing-field-to-empty-array path never triggered. Fixed in brdb (0.6.6): an unset array field now reports missing and serializes as an empty array, mirroring the scalar missing-field behavior. (Thanks to the detailed external bug report.)
+- `SpawnPrefab()` compiles again
 
 ### Gate Catalog / Data
 
-- Gate inventory regenerated (314 -> 316 entries: the two exec detectors). brdb `_max` schema refreshed from the latest dump (286 -> 288 structs; the plain detectors also gained latched pulse output fields: `bPulseOnChange`, `bPulseOnRisingEdge`/`bPulseOnFallingEdge`).
-- Fixed the plain Edge Detector's emit data mapping key (was missing `Type` in the class name, so its component data was never written). _The new exec-detector gates' binary encoding needs in-game verification._
+- Gate inventory regenerated (314 -> 316 entries: the two exec detectors)
+- Fixed the plain Edge Detector's emit data mapping key (was missing `Type` in the class name, so its component data was never written).
 
 ### Language / Compiler
 
-- **Chip bodies are exec-driven by their exec param** - a chip declaring an exec input (e.g. `chip InitRoles(init: exec, ...)`) now runs its statement-level exec calls chained from that input directly - no `on init { }` wrapper needed. Previously such statements compiled but were silently dead wires (no exec source). `on <param>` handlers still work and attach to the same input.
-- **WS013 understands `emit`** - the unassigned-chip-output check now counts `out x = expr`, `emit x (= expr)`, and plain `x = expr` assignments anywhere in the body (including nested if blocks and `on` handlers), and warns per-output instead of all-or-nothing. Init-style chips that mint values and `emit` them into outputs no longer false-positive.
-- Known limitation surfaced by tests: free references to top-level arrays inside a **named** chip body are not captured - pass state in through params (a record of arrays works; the capture machinery resolves record fields). Anonymous `chip { }` blocks share the parent scope and are unaffected.
+- **`exec =` named arg on chip and mod calls** - pass a trigger when calling exec chips/mods outside an exec context (previously typechecked but lowered as dead gates). The call also returns the completion exec as an `exec` result field: `await r.exec` / `on r.exec { }`.
+- **Import dependency pulling fixed** - imported declarations now pull same-file deps referenced from record/array literals, `emit` values, `await` exprs, and buffer inits; type aliases inline into imported `let`/`var`/`out`/`buffer`/`in` annotations (previously only chip/mod params).
+- **WS013 understands `emit`** - the unassigned-output check counts `emit x (= expr)` and plain assigns anywhere in the body, per-output.
+- **Named chip bodies capture top-level state** - free references to outer vars, arrays, buffers, and record bindings inside a named chip body now resolve against the caller's scope (previously they compiled as dead references).
 
 ### Parser
 
-- **Multi-line array literals** - newlines are now allowed after `[`, around commas, and before `]` in array literals, with an optional trailing comma - mirroring the multi-line call-arg rules. Applies to both top-level pre-initialized `array` declarations and runtime `foo = [...]` rebuilds (they share the literal parse). Previously any newline inside `[ ... ]` was a parse error ("unexpected token '\n' in expression").
+- **Multi-line array literals** - newlines allowed after `[`, around commas, and before `]`, with optional trailing comma - mirroring the call-arg rules. Covers top-level `array` initializers and runtime `foo = [...]` rebuilds.
 
 ### Editor / IDE
 
-- **Formatter indents multi-line array literals** - both formatters (native `format_wirescript` used by the LSP and playground, and the VS Code extension's prettier plugin) now track `[`/`]` depth like they already did `(`/`)`: elements of a multi-line array literal indent one level and the closing `]` returns to the opening line's level. `string[] = [` nets +1 (the type's `[]` self-cancels). Their delimiter scanners also stop at `//`, so bracket-looking text in comments no longer skews indentation.
-- **One "Wirescript" entry in the formatter picker** - the VS Code extension and the LSP server both provided formatting, so the picker listed two identical entries. The server now honors a `provideFormatting: false` initialization option (sent by the extension, which keeps its prettier formatter); other clients get LSP formatting as before.
+- **Formatter indents multi-line array literals** - both formatters (native `format_wirescript`, prettier plugin) track `[`/`]` depth like `(`/`)`; delimiter scanning stops at `//` so comments no longer skew indentation.
+- **Formatter: one indent level per line** - a line opening several groups (`f(x, {`) indents its continuation once, not once per delimiter; the closing `})` returns to the opener's level.
+- **One "Wirescript" entry in the formatter picker** - the extension keeps its prettier formatter and sends `provideFormatting: false` so the LSP doesn't register a duplicate.
 
 ## 0.8.0 - 2026-07-06
 

@@ -100,6 +100,22 @@ let check = condition1 &&
   condition3
 ```
 
+Newlines are also allowed inside delimited groups — call arguments `( ... )`,
+array literals `[ ... ]`, and record literals `{ ... }` — after the opener,
+around commas, and before the closer, with an optional trailing comma:
+
+```wirescript
+array names: string[] = [
+  "alice",
+  "bob",
+]
+
+let point = {
+  x: 1,
+  y: 2,
+}
+```
+
 ## Blocks
 
 Blocks are enclosed in curly braces `{ }` and contain a sequence of statements. They are used for handler bodies, chip bodies, `if`/`else` branches, and named chip declarations.

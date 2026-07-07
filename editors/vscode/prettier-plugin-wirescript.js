@@ -23,9 +23,10 @@ function formatWirescript(source, tabWidth, useTabs) {
   const tab = useTabs ? "\t" : " ".repeat(tabWidth);
   const lines = source.split("\n");
   const result = [];
-  let indent = 0;
-  let parenDepth = 0;
-  let bracketDepth = 0;
+  // Stack of open delimiters; each entry records whether that open added an
+  // indent level. A line adds AT MOST one level no matter how many groups it
+  // opens (`addRole(next, {` opens `(` and `{` but indents once).
+  const stack = [];
   let prevBlank = false;
   let prevTrimmed = "";
 
@@ -49,7 +50,7 @@ function formatWirescript(source, tabWidth, useTabs) {
     trimmed = formatSpacing(trimmed);
 
     // Remove blank line between consecutive same-kind top-level declarations
-    if (indent === 0 && parenDepth === 0 && bracketDepth === 0 && result.length > 0) {
+    if (stack.length === 0 && result.length > 0) {
       const lastNonBlank = prevTrimmed;
       const shouldCollapse =
         // Same declaration kind
@@ -62,54 +63,29 @@ function formatWirescript(source, tabWidth, useTabs) {
       }
     }
 
-    // Closing brace decreases indent
-    const startsWithClose = trimmed.startsWith("}");
-    if (startsWithClose) {
-      indent = Math.max(0, indent - 1);
+    // A leading run of closers de-indents before printing so the closing
+    // line sits at its opener's level (`}`, `)`, `]`, `})`, ...).
+    const code = stripLineComment(trimmed);
+    let leadingClosers = 0;
+    while (
+      leadingClosers < code.length &&
+      (code[leadingClosers] === "}" ||
+        code[leadingClosers] === ")" ||
+        code[leadingClosers] === "]")
+    ) {
+      leadingClosers++;
+    }
+    for (let i = 0; i < leadingClosers; i++) {
+      stack.pop();
     }
 
-    // Closing paren decreases paren continuation indent
-    const startsWithCloseParen = trimmed.startsWith(")");
-    if (startsWithCloseParen) {
-      parenDepth = Math.max(0, parenDepth - 1);
-    }
-
-    // Closing bracket decreases array-literal continuation indent
-    const startsWithCloseBracket = trimmed.startsWith("]");
-    if (startsWithCloseBracket) {
-      bracketDepth = Math.max(0, bracketDepth - 1);
-    }
-
-    result.push(tab.repeat(indent + parenDepth + bracketDepth) + trimmed);
+    const lineIndent = stack.filter(Boolean).length;
+    result.push(tab.repeat(lineIndent) + trimmed);
     prevTrimmed = trimmed;
 
-    // Count delimiters outside strings. Note `string[] = [` nets +1 bracket:
-    // the `[]` type suffix self-cancels, the literal opener carries over.
-    const counts = countDelims(trimmed);
-
-    // Braces set block indent
-    if (startsWithClose) {
-      indent += counts.openBrace;
-    } else {
-      indent = Math.max(0, indent + counts.openBrace - counts.closeBrace);
-    }
-
-    // Track paren depth for continuation indent
-    if (startsWithCloseParen) {
-      parenDepth += counts.openParen;
-    } else {
-      parenDepth = Math.max(0, parenDepth + counts.openParen - counts.closeParen);
-    }
-
-    // Track bracket depth for multi-line array literals
-    if (startsWithCloseBracket) {
-      bracketDepth += counts.openBracket;
-    } else {
-      bracketDepth = Math.max(
-        0,
-        bracketDepth + counts.openBracket - counts.closeBracket,
-      );
-    }
+    // Scan the rest of the line: opens push (adding an indent level only
+    // while this line has no net open level yet), closes pop.
+    scanDelims(code, leadingClosers, stack);
   }
 
   // Remove trailing blank lines
@@ -118,6 +94,76 @@ function formatWirescript(source, tabWidth, useTabs) {
   }
 
   return result.join("\n") + "\n";
+}
+
+// Push/pop `{}`/`()`/`[]` found outside string literals onto the depth
+// stack, skipping the first `leading` characters (already popped by the
+// caller). An open adds an indent contribution only while the line's net
+// indenting opens are zero — at most one level per line.
+function scanDelims(code, leading, stack) {
+  let inStr = false,
+    strChar = "",
+    escaped = false;
+  let netTrue = 0;
+  for (let i = leading; i < code.length; i++) {
+    const ch = code[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (!inStr && (ch === '"' || ch === "'")) {
+      inStr = true;
+      strChar = ch;
+      continue;
+    }
+    if (inStr && ch === strChar) {
+      inStr = false;
+      continue;
+    }
+    if (inStr) continue;
+    if (ch === "{" || ch === "(" || ch === "[") {
+      const adds = netTrue <= 0;
+      if (adds) netTrue++;
+      stack.push(adds);
+    } else if (ch === "}" || ch === ")" || ch === "]") {
+      if (stack.length > 0 && stack.pop()) netTrue--;
+    }
+  }
+}
+
+// Slice off a `//` comment (outside strings) so bracket-looking text in
+// comments doesn't skew indentation.
+function stripLineComment(line) {
+  let inStr = false,
+    strChar = "",
+    escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (!inStr && (ch === '"' || ch === "'")) {
+      inStr = true;
+      strChar = ch;
+      continue;
+    }
+    if (inStr && ch === strChar) {
+      inStr = false;
+      continue;
+    }
+    if (inStr) continue;
+    if (ch === "/" && line[i + 1] === "/") return line.slice(0, i);
+  }
+  return line;
 }
 
 // Normalize spacing around operators, respecting strings
@@ -175,51 +221,6 @@ function formatSpacing(line) {
 
 function startsWithSameKw(a, b, kw) {
   return a.startsWith(kw) && b.startsWith(kw);
-}
-
-// Count `{}`/`()`/`[]` occurrences outside string literals in one pass.
-// A `//` comment ends the scan so bracket-looking text in comments is ignored.
-function countDelims(trimmed) {
-  const counts = {
-    openBrace: 0,
-    closeBrace: 0,
-    openParen: 0,
-    closeParen: 0,
-    openBracket: 0,
-    closeBracket: 0,
-  };
-  let inStr = false,
-    strChar = "",
-    escaped = false;
-  for (let i = 0; i < trimmed.length; i++) {
-    const ch = trimmed[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (!inStr && (ch === '"' || ch === "'")) {
-      inStr = true;
-      strChar = ch;
-      continue;
-    }
-    if (inStr && ch === strChar) {
-      inStr = false;
-      continue;
-    }
-    if (inStr) continue;
-    if (ch === "/" && trimmed[i + 1] === "/") break;
-    if (ch === "{") counts.openBrace++;
-    if (ch === "}") counts.closeBrace++;
-    if (ch === "(") counts.openParen++;
-    if (ch === ")") counts.closeParen++;
-    if (ch === "[") counts.openBracket++;
-    if (ch === "]") counts.closeBracket++;
-  }
-  return counts;
 }
 
 const printers = {

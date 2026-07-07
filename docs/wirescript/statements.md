@@ -183,6 +183,16 @@ array scores: int[] = [100, 50, -10]
 array names: string[] = ["alice", "bob"]
 ```
 
+Initializers may span multiple lines — newlines are allowed after `[`, around
+commas, and before `]`, with an optional trailing comma:
+
+```wirescript
+array names: string[] = [
+  "alice",
+  "bob",
+]
+```
+
 A non-literal element at the top level (an identifier, a call, or a `...spread`)
 is an error — there is no exec context in which to populate it. Build the array
 from runtime values inside a handler instead (see below).
@@ -431,6 +441,20 @@ let signal = someExpression
 
 on signal {
   // Fires when signal changes
+}
+```
+
+### Triggering on Chip Result Execs
+
+A chip call result's exec fields work as triggers — including the `exec`
+completion field returned by a call with an `exec = ...` trigger (see
+[Exec Chips](chips.md#exec-chips)):
+
+```wirescript
+let r = InitTables(exec = reset)
+
+on r.exec {
+  // Fires after the chip body ran
 }
 ```
 

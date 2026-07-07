@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     let body = match &d.captured_body {
         Some(b) => b,
-        None => return, // alias form — deferred
+        None => return, // alias form - deferred
     };
     let source_name = match &d.source {
         Expr::Ident { name, .. } => name.clone(),
@@ -65,6 +65,41 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
 
     // Save handler_end_execs so inner blocks don't flush outer handler ends.
     let saved_handler_ends = std::mem::take(&mut ctx.handler_end_execs);
+
+    // Try: record-binding field trigger - chip-call results (`on r.exec`,
+    // `on r.someExecOutput`) resolve through the result record.
+    if let Some(ref field) = trigger_field {
+        let rec_binding = match ctx.scope.get(&trigger_name) {
+            Some(Binding::Record(fields_map)) => {
+                fields_map.get(&crate::intern::intern(field)).cloned()
+            }
+            _ => None,
+        };
+        if let Some(binding) = rec_binding {
+            if let Some(trig) = crate::lower::access::binding_to_port(ctx, &binding, &h.range) {
+                let saved = (ctx.current_exec, ctx.handler_entry_exec);
+                ctx.current_exec = Some(trig);
+                ctx.handler_entry_exec = Some(trig);
+                reset_var_get_caches(ctx);
+                ctx.with_scope(
+                    ScopeKind::HandlerBody {
+                        trigger_label: format!("{}.{}", trigger_name, field),
+                    },
+                    h.range.clone(),
+                    |ctx| lower_block(ctx, &h.body),
+                );
+                let this_end = ctx.current_exec;
+                ctx.current_exec = saved.0;
+                ctx.handler_entry_exec = saved.1;
+                ctx.builder.current_chain_id = saved_chain;
+                ctx.handler_end_execs = saved_handler_ends;
+                if let Some(e) = this_end {
+                    ctx.handler_end_execs.push(e);
+                }
+                return;
+            }
+        }
+    }
 
     // Try: var.value / var.prev field trigger
     if let Some(ref field) = trigger_field {
@@ -136,18 +171,14 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             let not_id = ctx.add_gate(AddNodeOpts {
                 gate_class: gc::LOGICAL_NOT,
                 ports: GateIO {
-                    inputs: vec![
-                        PortSpec {
-                            name: *sym::B_INPUT,
-                            ty: Type::Bool,
-                        },
-                    ],
-                    outputs: vec![
-                        PortSpec {
-                            name: *sym::B_OUTPUT,
-                            ty: Type::Bool,
-                        },
-                    ],
+                    inputs: vec![PortSpec {
+                        name: *sym::B_INPUT,
+                        ty: Type::Bool,
+                    }],
+                    outputs: vec![PortSpec {
+                        name: *sym::B_OUTPUT,
+                        ty: Type::Bool,
+                    }],
                 },
                 ..Default::default()
             });
@@ -204,7 +235,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         return;
     }
 
-    // Try: local (let binding) as trigger — fires on value change
+    // Try: local (let binding) as trigger - fires on value change
     let local_rec = ctx.lookup_local(&trigger_name).cloned();
     if let Some(rec) = local_rec {
         let trigger_port = if negated {
@@ -212,18 +243,14 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             let not_id = ctx.add_gate(AddNodeOpts {
                 gate_class: gc::LOGICAL_NOT,
                 ports: GateIO {
-                    inputs: vec![
-                        PortSpec {
-                            name: *sym::B_INPUT,
-                            ty: Type::Bool,
-                        },
-                    ],
-                    outputs: vec![
-                        PortSpec {
-                            name: *sym::B_OUTPUT,
-                            ty: Type::Bool,
-                        },
-                    ],
+                    inputs: vec![PortSpec {
+                        name: *sym::B_INPUT,
+                        ty: Type::Bool,
+                    }],
+                    outputs: vec![PortSpec {
+                        name: *sym::B_OUTPUT,
+                        ty: Type::Bool,
+                    }],
                 },
                 ..Default::default()
             });
@@ -292,7 +319,10 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     ctx.scope.push(crate::scope::ScopeTag::BLOCK);
     for (i, pname) in h.params.iter().enumerate() {
         if let Some(data) = evt.data.get(i) {
-            ctx.scope.insert(pname.clone(), Binding::EventParam(port_ref(event_node, data.port)));
+            ctx.scope.insert(
+                pname.clone(),
+                Binding::EventParam(port_ref(event_node, data.port)),
+            );
         }
     }
 
@@ -414,12 +444,10 @@ pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {
                         ty: Type::Exec,
                     },
                 ],
-                outputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_OUT,
-                        ty: Type::Exec,
-                    },
-                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
             },
             ..Default::default()
         });
@@ -441,12 +469,10 @@ pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {
                         ty: Type::Exec,
                     },
                 ],
-                outputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_OUT,
-                        ty: Type::Exec,
-                    },
-                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
             },
             ..Default::default()
         });
