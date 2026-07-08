@@ -2207,6 +2207,24 @@ fn schema_field_is(struct_name: &str, field: &str, type_name: &str) -> bool {
     schema_field_type_str(struct_name, field).as_deref() == Some(type_name)
 }
 
+/// The enum variant names a gate's data `field` accepts, if that field is an
+/// enum — e.g. DisplayText's `Justification` → `["Left", "Center", "Right"]`.
+/// Names are returned bare (the `EnumType::` prefix stripped). Used by the
+/// editor to complete enum-valued named args like `justify = Center`.
+pub fn field_enum_values(gate_class: &str, field: &str) -> Option<Vec<String>> {
+    let (struct_name, _, _) = data_struct_for_gate(gate_class)?;
+    let schema = brdb::schemas::bricks_components_schema_max();
+    let type_name = schema_field_type_str(struct_name, field)?;
+    let enum_def = schema.get_enum(&type_name)?;
+    let mut out: Vec<String> = enum_def
+        .keys()
+        .filter_map(|k| schema.intern.lookup_ref(*k))
+        .map(|name| name.rsplit("::").next().unwrap_or(name).to_string())
+        .collect();
+    out.dedup();
+    if out.is_empty() { None } else { Some(out) }
+}
+
 /// True if the field's schema type is the prim-math wire variant, which the
 /// current brdb schema interns as the named variant `WireGraphPrimMathVariant`
 /// (the legacy `wire_graph_prim_math_variant` primitive spelling is no longer
@@ -2373,6 +2391,20 @@ mod tests {
                 false,
             )),
         );
+    }
+
+    #[test]
+    fn field_enum_values_lists_justification() {
+        let vals = field_enum_values(
+            "BrickComponentType_WireGraph_Exec_Controller_DisplayText",
+            "Justification",
+        )
+        .expect("justify maps to an enum field");
+        for expected in ["Left", "Center", "Right"] {
+            assert!(vals.iter().any(|v| v == expected), "missing {expected}: {vals:?}");
+        }
+        // Names must be bare (no `EnumType::` prefix).
+        assert!(vals.iter().all(|v| !v.contains("::")), "prefixed: {vals:?}");
     }
 
     #[test]

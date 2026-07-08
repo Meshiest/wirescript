@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use serde::Serialize;
 use wirescript::analysis::{
     Location, TextRange, TypeMap, collect_symbols, definition_at, find_all_references,
-    find_enclosing_call, format_wirescript, hover_at, receiver_methods, type_str, word_at,
+    find_enclosing_call, format_wirescript, hover_at, named_arg_value, receiver_methods, type_str,
+    word_at,
 };
 use wirescript::ast::*;
 use wirescript::catalog::calls::calls;
@@ -265,6 +266,32 @@ pub fn completions(
     // Param completions inside a call
     if let Some(call_name) = find_enclosing_call(source, line as usize, col as usize) {
         if let Some(spec) = calls().get(call_name.as_str()) {
+            // Enum-valued named arg (e.g. `justify = "Center"`): if the cursor
+            // is in the value slot of a param whose data field is an enum,
+            // offer the enum's variant names instead of param names.
+            if let Some((param_name, value_so_far)) =
+                named_arg_value(source, line as usize, col as usize)
+            {
+                if let Some(param) = spec.params.iter().find(|p| p.name == param_name) {
+                    if let Some(values) =
+                        wirescript::field_enum_values(spec.gate_class, param.port.as_str())
+                    {
+                        let quoted = !value_so_far.contains('"');
+                        for v in values {
+                            let insert = if quoted { format!("\"{v}\"") } else { v.clone() };
+                            items.push(CompletionOut {
+                                label: v,
+                                kind: "enum",
+                                detail: Some(format!("{param_name} value")),
+                                insert_text: Some(insert),
+                            });
+                        }
+                        if !items.is_empty() {
+                            return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                        }
+                    }
+                }
+            }
             for p in &spec.params {
                 if p.optional {
                     items.push(CompletionOut {

@@ -2325,18 +2325,19 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         ),
     );
 
-    // ---- Player lookup (pure value gate) ------------------------------------
+    // ---- Player lookup (exec gate) ------------------------------------------
+    // Has Exec/ExecOut ports and emits the found player's character.
     m.insert(
         "FindPlayer",
         CallSpec {
             name: "FindPlayer",
             gate_class: gc::FIND_PLAYER,
             params: vec![CallParam::req("query", WirePort::Query, Type::Any)],
-            exec: false,
+            exec: true,
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Player,
-                ty: Type::Entity,
+                ty: Type::Character,
             }],
             receiver: None,
         },

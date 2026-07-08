@@ -690,11 +690,16 @@ fn entity_tags_lower_to_tag_gates() {
 }
 
 #[test]
-fn find_player_and_change_detector_are_pure() {
-    // `Change` targets the Exec change detector since cl14860 split the
-    // gates (OnChanged lives there); the plain gate is `Changed`.
+fn find_player_is_exec_and_change_detector() {
+    // `FindPlayer` is an exec gate (Exec/ExecOut) that emits a character, so it
+    // runs inside an exec handler. `Change` targets the Exec change detector
+    // (which carries the OnChanged output); the plain-bool gate is `Changed`.
     let r = compile(
-        "in name: string\nlet p = FindPlayer(name)\nout changed = Change(name)",
+        "in name: string\n\
+         in go: exec\n\
+         static var p: character\n\
+         on go { p = FindPlayer(name) }\n\
+         out changed = Change(name)",
     );
     assert_no_errors(&r);
     assert!(has_gate(&r, "BrickComponentType_WireGraph_FindPlayer"));

@@ -10,6 +10,7 @@
 - **Long templates no longer drop values** - `FormatText` has only 7 substitution inputs, so a template with `>7` `${...}` values silently dropped the extras; templates now split across chained `FormatText` gates.
 - **`on <local exec signal>` fires across handlers** - `emit sig` in one handler now triggers `on sig` in another, regardless of source order (the signal's binding was created after handlers lowered, so `on sig` was silently dropped).
 - **Lexer no longer panics on stray multi-byte chars** - a non-ASCII char outside a string (e.g. `▲`) hit a mid-codepoint byte-slice and crashed the LSP; now UTF-8-safe.
+- **`FindPlayer` is an exec gate returning `character`** - it has Exec/ExecOut ports and emits the found player's character; it was mis-declared as a pure gate returning `entity`.
 
 ### Editor / IDE
 
@@ -17,6 +18,8 @@
 - **Prefab refs are navigable** - a resolvable `$./file.brz` is a clickable link / go-to-definition target (Ctrl/Cmd-click or F12 opens it).
 - **Missing prefab files warn** - the LSP flags a `$./file.brz` that isn't on disk, or lacks the `.brz` extension.
 - **Playground uploads `.brz` prefabs** - the sandbox has a Prefabs panel (upload button + drag-drop); uploaded files are stored as browser blobs (IndexedDB), offered by `$./` completion, and embedded at compile so `$./file.brz` works in the web playground, not just the CLI.
+- **Named-arg completion + hover work in multi-line calls** - `find_enclosing_call` scanned only the current line, so a call whose args span multiple lines lost param-name completion and param-type hovers on its continuation lines; it now scans the whole call (skipping strings/comments).
+- **Enum-valued args complete their values** - a named arg backed by a schema enum (e.g. DisplayText's `justify`) completes the enum's variant names (`Left` / `Center` / `Right`), auto-quoted when no quote is open yet.
 
 ### Language / Compiler
 

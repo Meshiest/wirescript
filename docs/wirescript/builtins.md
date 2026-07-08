@@ -855,7 +855,7 @@ components can also filter on tags. Receiver on `entity`.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `FindPlayer(query)` | `(query: string) -> entity` | Look up a player entity by name (pure) |
+| `FindPlayer(query)` | `(query: string) -> character` (exec) | Look up a player by name; emits their character |
 | `PrintToConsole(text)` | `(text: any) -> ()` (exec) | Print a value to the game console (debugging) |
 | `DeltaTime()` | `() -> float` | Seconds elapsed since the previous tick |
 | `ServerUptime()` | `() -> float` | Seconds the server has been running |

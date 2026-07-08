@@ -8,8 +8,8 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
     find_all_references, find_asset_refs, find_enclosing_call, find_name_range, format_wirescript,
-    hover_at, receiver_methods, type_str, word_at, AssetRef, InlayHintKind, ResourceEstimate,
-    SymbolDef, TextRange, TypeMap, VarReadContextMap,
+    hover_at, named_arg_value, receiver_methods, type_str, word_at, AssetRef, InlayHintKind,
+    ResourceEstimate, SymbolDef, TextRange, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::Script;
 use wirescript::catalog::arrays::ARRAY_METHODS;
@@ -968,6 +968,30 @@ fn build_completions(
     // Named params inside a function call: `Call(<here>)`.
     if let Some(call_name) = find_enclosing_call(source, line, col) {
         if let Some(spec) = calls().get(call_name.as_str()) {
+            // Enum-valued named arg (e.g. `justify = "Center"`): complete the
+            // enum's variant names when the cursor is in the value slot.
+            if let Some((param_name, value_so_far)) = named_arg_value(source, line, col) {
+                if let Some(param) = spec.params.iter().find(|p| p.name == param_name) {
+                    if let Some(values) =
+                        wirescript::field_enum_values(spec.gate_class, param.port.as_str())
+                    {
+                        let quoted = !value_so_far.contains('"');
+                        for v in values {
+                            let insert = if quoted { format!("\"{v}\"") } else { v.clone() };
+                            items.push(CompletionItem {
+                                label: v,
+                                kind: Some(CompletionItemKind::ENUM_MEMBER),
+                                detail: Some(format!("{param_name} value")),
+                                insert_text: Some(insert),
+                                ..Default::default()
+                            });
+                        }
+                        if !items.is_empty() {
+                            return items;
+                        }
+                    }
+                }
+            }
             for p in &spec.params {
                 if p.optional {
                     items.push(CompletionItem {

@@ -20,7 +20,7 @@ pub type VarReadContextMap = HashMap<(std::sync::Arc<str>, usize), bool>;
 pub use assets::{asset_exists, asset_names, asset_type_exists, asset_types};
 pub use symbols::SymbolDef;
 pub use types::{type_str, type_expr_str, infer_expr_type, type_from_name, receiver_methods};
-pub use text::{word_at, find_enclosing_call, find_asset_refs, asset_ref_at, AssetRef};
+pub use text::{word_at, find_enclosing_call, named_arg_value, find_asset_refs, asset_ref_at, AssetRef};
 pub use hover::hover_at;
 pub use definition::{definition_at, Location};
 pub use references::{find_all_references, find_name_range, TextRange};
