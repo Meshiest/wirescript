@@ -8,6 +8,7 @@
 
 ### Editor / IDE
 
+- **Named-arg hovers only fire on the arg name** - in `delay = delay`, hovering the value showed the param docs instead of the symbol; the param hover now requires arg-name position (followed by a single `=`).
 - **Method/call hovers only fire on the actual access** - hovering a variable/let/param whose name matches an array method (`var sum = 0`) or a builtin receiver-method (`var Teleport = 0`) showed the method/call hover instead of the symbol's own declaration. Array-method hovers now require a `.method` access, and builtin call/method hovers require actual call/method position (`recv.method` or `name(`); a bare identifier hovers as itself.
 
 ## 0.10.1 - 2026-07-07

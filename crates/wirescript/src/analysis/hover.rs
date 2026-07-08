@@ -157,7 +157,13 @@ fn hover_if_keyword(
 }
 
 /// Named parameter inside a builtin call (e.g. `delay` in `Sleep(_, delay = 1.0)`).
+/// Only fires in arg-name position — the word followed by a single `=` — so a
+/// value expression that shares a param's name (`delay = delay`) hovers as the
+/// symbol it is, not as the param docs.
 fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    if !word_is_named_arg_name(source, line, col) {
+        return None;
+    }
     let call_name = find_enclosing_call(source, line, col)?;
     let spec = calls().get(call_name.as_str())?;
     let p = spec.params.iter().find(|p| p.name == word)?;
@@ -172,6 +178,23 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
     if p.optional { v += " *(optional)*"; }
     if !tooltip.is_empty() { v += &format!("\n\n{}", tooltip); }
     Some(v)
+}
+
+/// Is the hovered word in named-argument-name position — followed (modulo
+/// spaces) by a single `=` (not `==`)? Inside call parens `name = value` can
+/// only be a named arg, while a value identifier is never followed by a bare
+/// `=`, so this cleanly separates the two sides of `delay = delay`.
+fn word_is_named_arg_name(source: &str, line: usize, col: usize) -> bool {
+    let Some(l) = source.lines().nth(line) else {
+        return false;
+    };
+    let c = col.min(l.len());
+    let word_end = l[c..]
+        .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| c + i)
+        .unwrap_or(l.len());
+    let rest = l[word_end..].trim_start();
+    rest.starts_with('=') && !rest.starts_with("==")
 }
 
 /// Array methods like `push`, `pop`, `length`, etc. Only fires on a `.method`
@@ -669,6 +692,44 @@ mod bump({ counter, step }: State) { counter = counter + step }";
         assert!(
             text2.contains("int") && !text2.contains("*int"),
             "hover should show int for step, got: {text2}"
+        );
+    }
+
+    #[test]
+    fn named_arg_value_sharing_param_name_hovers_as_symbol() {
+        // `Sleep(_, delay = delay)`: only the LHS is the named arg; the RHS is
+        // a user symbol that merely shares the param's name and must hover as
+        // the symbol, not as the param docs.
+        let src = "let delay = 1.0\non RoundStart { await Sleep(_, delay = delay) }";
+        let line1 = src.lines().nth(1).unwrap();
+        let lhs = line1.find("delay").unwrap();
+        let rhs = line1.rfind("delay").unwrap();
+
+        let hl = hover_for(src, 1, lhs).expect("hover on the arg name should return something");
+        assert!(
+            hl.starts_with("**"),
+            "arg-name hover should be the named-param docs, got: {hl}"
+        );
+        let hr = hover_for(src, 1, rhs).expect("hover on the value should return something");
+        assert!(
+            hr.contains("let delay"),
+            "value hover must be the user symbol, not the named-param docs, got: {hr}"
+        );
+
+        // Same on a continuation line of a multi-line call.
+        let src2 = "let delay = 1.0\non RoundStart {\n  await Sleep(_,\n    delay = delay,\n  )\n}";
+        let line3 = src2.lines().nth(3).unwrap();
+        let hl2 = hover_for(src2, 3, line3.find("delay").unwrap())
+            .expect("hover on the multi-line arg name should return something");
+        assert!(
+            hl2.starts_with("**"),
+            "multi-line arg-name hover should be the named-param docs, got: {hl2}"
+        );
+        let hr2 = hover_for(src2, 3, line3.rfind("delay").unwrap())
+            .expect("hover on the multi-line value should return something");
+        assert!(
+            hr2.contains("let delay"),
+            "multi-line value hover must be the user symbol, got: {hr2}"
         );
     }
 
