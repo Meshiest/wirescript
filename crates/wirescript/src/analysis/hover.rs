@@ -65,9 +65,9 @@ pub fn hover_at(
     None
         .or_else(|| hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col))
         .or_else(|| hover_named_param(source, &word, line, col))
-        .or_else(|| hover_array_method(&word))
+        .or_else(|| hover_array_method(source, &word, line, col))
         .or_else(|| hover_builtin_event(&word))
-        .or_else(|| hover_builtin_call(&word))
+        .or_else(|| hover_builtin_call(source, &word, line, col))
         .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
         .or_else(|| hover_on_keyword(source, &word, resource_estimates, line))
         .or_else(|| hover_record_or_type_field(source, symbols, &word, line))
@@ -174,8 +174,16 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
     Some(v)
 }
 
-/// Array methods like `push`, `pop`, `length`, etc.
-fn hover_array_method(word: &str) -> Option<String> {
+/// Array methods like `push`, `pop`, `length`, etc. Only fires on a `.method`
+/// access (the hovered word is immediately preceded by `.`), so a user symbol
+/// that happens to share a method name — e.g. `var sum = 0` — still hovers as
+/// itself rather than as `array.sum`.
+fn hover_array_method(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    let l = source.lines().nth(line)?;
+    let start = word_start_in_line(l, col);
+    if start == 0 || l.as_bytes()[start - 1] != b'.' {
+        return None;
+    }
     let m = crate::catalog::arrays::ARRAY_METHODS
         .iter()
         .find(|m| m.name == word)?;
@@ -190,8 +198,33 @@ fn hover_builtin_event(word: &str) -> Option<String> {
     Some(format!("```wirescript\non {}{}\n```", evt.surface_name, sig))
 }
 
+/// Is the hovered word actually being used as a call or method access — i.e.
+/// preceded by `.` (`recv.method`) or immediately followed by `(` (`call(...)`)?
+/// Call/method hovers only fire in these positions, so a plain identifier that
+/// merely shares a builtin's name (`var Teleport = 0`) hovers as itself.
+fn word_is_call_or_method(source: &str, line: usize, col: usize) -> bool {
+    let Some(l) = source.lines().nth(line) else {
+        return false;
+    };
+    let start = word_start_in_line(l, col);
+    // Method access: the word is preceded by `.`.
+    if start > 0 && l.as_bytes()[start - 1] == b'.' {
+        return true;
+    }
+    // Call position: the next non-space char after the word is `(`.
+    let c = col.min(l.len());
+    let word_end = l[c..]
+        .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| c + i)
+        .unwrap_or(l.len());
+    l[word_end..].trim_start().starts_with('(')
+}
+
 /// Built-in function/gate calls like `Sleep`, `SetLocation`, etc.
-fn hover_builtin_call(word: &str) -> Option<String> {
+fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    if !word_is_call_or_method(source, line, col) {
+        return None;
+    }
     let spec = calls().get(word)?;
     let gdocs = gate_docs();
     let gate_doc = gdocs.get(spec.gate_class);
@@ -636,6 +669,64 @@ mod bump({ counter, step }: State) { counter = counter + step }";
         assert!(
             text2.contains("int") && !text2.contains("*int"),
             "hover should show int for step, got: {text2}"
+        );
+    }
+
+    #[test]
+    fn user_var_named_like_array_method_hovers_as_var() {
+        // A variable named after an array method (`sum`) must hover as the
+        // variable, not as `array.sum`. The array-method hover only applies to a
+        // `.method` access, not a bare identifier that happens to share the name.
+        let src = "var sum: int = 0";
+        // "sum" occupies cols 4..=6
+        let h = hover_for(src, 0, 5).expect("hover on var 'sum' should return something");
+        assert!(
+            !h.contains("array.sum"),
+            "hover on the variable `sum` must not show the array method, got: {h}"
+        );
+        assert!(
+            h.contains("var sum"),
+            "hover on the variable `sum` should show the variable declaration, got: {h}"
+        );
+    }
+
+    #[test]
+    fn user_var_named_like_builtin_method_hovers_as_var() {
+        // `Teleport` is a builtin receiver-method; a variable sharing that name
+        // must hover as the variable, not the method. Method/call hovers only
+        // fire in actual call/method position.
+        let src = "var Teleport: int = 0";
+        // "Teleport" occupies cols 4..=11
+        let h = hover_for(src, 0, 6).expect("hover on var 'Teleport' should return something");
+        assert!(
+            h.contains("var Teleport"),
+            "hover on the variable `Teleport` should show the variable, got: {h}"
+        );
+    }
+
+    #[test]
+    fn builtin_call_in_call_position_still_hovers() {
+        // A builtin used as an actual call still hovers as the call.
+        let src = "in t: exec\non t { PrintToConsole(\"hi\") }";
+        // "PrintToConsole" starts at col 7 on line 1
+        let h = hover_for(src, 1, 10).expect("hover on PrintToConsole call should return");
+        assert!(
+            h.contains("PrintToConsole"),
+            "call-position builtin should still hover, got: {h}"
+        );
+    }
+
+    #[test]
+    fn array_method_access_still_hovers_as_method() {
+        // The `.sum` access must still show the array method hover.
+        let src = "\
+array fa: int[] = [5, 10, 15]
+on load { let s = fa.sum() }";
+        // "sum" in "fa.sum()" starts at col 20 on line 1
+        let h = hover_for(src, 1, 21).expect("hover on `.sum` should return something");
+        assert!(
+            h.contains("array.sum"),
+            "hover on `fa.sum()` should show the array method, got: {h}"
         );
     }
 

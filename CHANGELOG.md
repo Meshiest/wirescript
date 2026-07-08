@@ -1,5 +1,11 @@
 # Wirescript Changelog
 
+## 0.10.2 - 2026-07-08
+
+### Editor / IDE
+
+- **Method/call hovers only fire on the actual access** - hovering a variable/let/param whose name matches an array method (`var sum = 0`) or a builtin receiver-method (`var Teleport = 0`) showed the method/call hover instead of the symbol's own declaration. Array-method hovers now require a `.method` access, and builtin call/method hovers require actual call/method position (`recv.method` or `name(`); a bare identifier hovers as itself.
+
 ## 0.10.1 - 2026-07-07
 
 ### Language / Compiler
