@@ -555,6 +555,7 @@ fn build_chip_module(
         mod_return_var: None,
         type_aliases: ctx.type_aliases.clone(),
         pending_emits: HashMap::new(),
+        exec_signal_hubs: HashMap::new(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: ctx.template_cache.clone(),
         await_armed_port: None,
@@ -1183,46 +1184,12 @@ pub(super) fn lower_builtin_call(
                 continue;
             }
         }
-        let mut val_port = lower_expr(ctx, arg_expr);
-        let arg_ty = unwrap_ref(&ctx.type_of(arg_expr));
-        // character -> controller adaptation
-        if matches!(p.ty, Type::Controller)
-            && matches!(arg_ty, Type::Character)
-            && let Some(exec) = ctx.current_exec
-        {
-            let adapter = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::CONTROLLER_GET_FROM_ENTITY,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: intern_static("Entity"),
-                            ty: arg_ty.clone(),
-                        },
-                    ],
-                    outputs: vec![
-                        PortSpec {
-                            name: intern_static("Controller"),
-                            ty: Type::Controller,
-                        },
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
-                    ],
-                },
-                note: Some("char->controller".into()),
-                ..Default::default()
-            });
-            ctx.connect(exec, adapter.port(WirePort::Exec));
-            ctx.connect(val_port, adapter.port(WirePort::Entity));
-            ctx.current_exec = Some(adapter.port(WirePort::ExecOut));
-            val_port = adapter.port(WirePort::Controller);
-        }
+        let val_port = lower_expr(ctx, arg_expr);
+        // character and controller wire directly into each other's ports in
+        // Brickadia, so no adapter gate is inserted for a character passed to
+        // a controller param (or vice versa). The old char->controller adapter
+        // used `GetFromEntity` ("Get Player (Persistent)"), an admin-only gate
+        // that gets blocked on paste for non-admins — wire straight through.
         wires.push(WireEntry {
             port: p.port,
             val_port,

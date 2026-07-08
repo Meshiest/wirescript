@@ -72,6 +72,12 @@ pub(super) struct LowerCtx<'a> {
     /// Pending emit exec paths per output name. Accumulated during lowering,
     /// flushed to union chains at the end so each output gets one wire.
     pub(super) pending_emits: HashMap<String, Vec<PortRef>>,
+    /// Local `let x: exec` signals pre-declared with a stable Union "hub" gate
+    /// (name → hub node). `on x` triggers off the hub's `ExecOut`; at flush the
+    /// union of every `emit x` is wired into the hub's `ExecA`. The hub gives a
+    /// forward-referenceable trigger port so `on x` works regardless of whether
+    /// it appears before or after the emits in source.
+    pub(super) exec_signal_hubs: HashMap<String, NodeId>,
     /// Inside `await`, the armed flag's Value port. `_` in the exec expression
     /// resolves to this, allowing `await Sleep(_, 1.0)` to wire the armed flag
     /// as Sleep's input.

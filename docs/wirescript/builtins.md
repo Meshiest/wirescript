@@ -915,18 +915,21 @@ on ChatCommand("wave", Description = "Wave at everyone") {
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `prefab` | prefab ref | No | The prefab to spawn — a `$./file.brz` / `$/abs.brz` [prefab reference](expressions.md#prefab-references). Embedded into the bundle at compile. |
 | `offset` | `vector` | No | Spawn position offset |
 | `rotation` | `rotator` | No | Spawn rotation offset |
 | `velocity` | `vector` | No | Initial velocity of the spawned entity |
 | `lifetime` | `float` | No | Lifetime in seconds (0 = permanent) |
 | `limit` | `int` | No | Max concurrent instances |
 
-Returns: `entity` -- the spawned entity. The prefab itself is configured on
-the gate in-game (copy a prefab onto the placed Spawn Prefab brick).
+Returns: `entity` -- the spawned entity. Give the prefab with a `$…brz`
+reference; omit `prefab` to configure it on the placed gate in-game instead
+(copy a prefab onto the Spawn Prefab brick).
 
 ```wirescript
 on trigger {
   let spawned = SpawnPrefab(
+    prefab = $./turret.brz,
     offset = Vec(0.0, 0.0, 50.0),
     lifetime = 10.0,
     limit = 5
@@ -934,6 +937,11 @@ on trigger {
   spawned.SetVelocity(linear = launchDir)
 }
 ```
+
+A `$./file.brz` reference reads the `.brz` at compile and embeds it into the
+output bundle (content-addressed at `Prefabs/Uploads/<hash>.brz`), so the
+compiled program carries its prefab. See
+[Prefab References](expressions.md#prefab-references).
 
 ## Raycasting (Exec)
 

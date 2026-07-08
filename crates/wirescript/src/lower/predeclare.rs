@@ -11,6 +11,7 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Out(o) => {
             pre_declare_output(ctx, &o.name, o.value.as_ref(), o.typ.as_ref(), &o.range)
         }
+        TopDecl::Let(l) => pre_declare_exec_signal(ctx, l),
         TopDecl::AnonChip(ac) => {
             let chip_node_id = ctx.add_gate(AddNodeOpts {
                 gate_class: gc::MICROCHIP_ALT,
@@ -41,6 +42,41 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         }
         _ => {}
     }
+}
+
+/// Pre-declare a top-level `let x: exec` local signal: create a stable Union
+/// "hub" gate, bind `x` to its `ExecOut` (so `on x` can trigger off it), and
+/// register the emit target. `flush_pending_emits` later wires the union of all
+/// `emit x` paths into the hub's `ExecA`. Non-`exec` lets are ignored here (they
+/// lower normally in pass 2).
+pub(super) fn pre_declare_exec_signal(ctx: &mut LowerCtx, l: &LetDecl) {
+    let Some(TypeExpr::Name { name: type_name, .. }) = &l.typ else {
+        return;
+    };
+    if type_name != "exec" {
+        return;
+    }
+    let LetBinding::Ident { name, .. } = &l.binding else {
+        return;
+    };
+    let hub = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::UNION,
+        source_range: l.range.clone(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec { name: *sym::EXEC_A, ty: Type::Exec },
+                PortSpec { name: *sym::EXEC_B, ty: Type::Exec },
+            ],
+            outputs: vec![PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec }],
+        },
+        ..Default::default()
+    });
+    ctx.scope.insert(
+        name.clone(),
+        Binding::Local(LocalRecord { port: hub.port(WirePort::ExecOut) }),
+    );
+    ctx.exec_signal_hubs.insert(name.clone(), hub);
+    ctx.pending_emits.entry(name.clone()).or_default();
 }
 
 pub(super) fn type_of_type_expr(t: &TypeExpr) -> Type {
@@ -165,6 +201,9 @@ pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
             asset_type: asset_type.clone(),
             asset_name: asset_name.clone(),
         }),
+        // Prefab file reference `$./file.brz` — inlined; resolved + embedded
+        // at emit into the gate's `bundle_path_ref` property.
+        Expr::PrefabRef { path, .. } => Some(Literal::PrefabRef { path: path.clone() }),
         _ => None,
     }
 }

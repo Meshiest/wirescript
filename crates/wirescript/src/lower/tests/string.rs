@@ -181,6 +181,52 @@ fn string_var_stores_and_assigns() {
 }
 
 #[test]
+fn long_interpolation_splits_across_format_text_gates() {
+    // A template with more than 7 `${...}` values must not silently drop the
+    // extras — it splits into several FormatText gates (7 substitution inputs
+    // each) whose outputs are concatenated. `in` ports make each substitution a
+    // real wire (not an inlinable literal), so we can count them.
+    let src = "in a: int\nin b: int\nin c: int\nin d: int\nin e: int\n\
+               in f: int\nin g: int\nin h: int\nin i: int\n\
+               out s = \"${a}${b}${c}${d}${e}${f}${g}${h}${i}\"";
+    let r = compile(src);
+    assert_no_errors(&r);
+
+    const FT: &str = "BrickComponentType_WireGraph_Expr_String_FormatText";
+    let ft_ids: std::collections::HashSet<_> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == FT)
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        ft_ids.len() >= 2,
+        "9 interpolations should split into >=2 FormatText gates, got {}",
+        ft_ids.len()
+    );
+
+    use crate::ir::port_registry::WirePort::*;
+    // Substitution wires: into a FormatText input slot from a NON-FormatText
+    // source (this excludes the concat wires between FormatText gates). All 9
+    // interpolated values must be wired — none dropped.
+    let subst = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| {
+            ft_ids.contains(&w.target.node_id)
+                && matches!(
+                    w.target.port,
+                    InputA | InputB | InputC | InputD | InputE | InputF | InputG
+                )
+                && !ft_ids.contains(&w.source.node_id)
+        })
+        .count();
+    assert_eq!(subst, 9, "all 9 interpolated values must be wired, got {subst}");
+}
+
+#[test]
 fn numeric_literal_still_uses_literal_node() {
     // Non-string literals should still use the _Literal path (inlineable)
     let r = compile("out x = 42");

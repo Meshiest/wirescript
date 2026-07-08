@@ -111,12 +111,49 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
     serde_json::to_string(&diags).unwrap_or_else(|_| "[]".into())
 }
 
-pub fn completions(source: &str, line: u32, col: u32, files_json: &str) -> String {
+pub fn completions(
+    source: &str,
+    line: u32,
+    col: u32,
+    files_json: &str,
+    prefab_paths: &[String],
+) -> String {
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
     let tc = typecheck(&resolved.ast, "editor");
     let symbols = collect_symbols(&resolved.ast, &tc.type_of_expr);
     let mut items: Vec<CompletionOut> = Vec::new();
+
+    // Prefab file reference `$./file.brz` / `$/abs.brz`: complete from the
+    // registered (dragged-in) prefab paths.
+    {
+        let l = source.lines().nth(line as usize).unwrap_or("");
+        let col_idx = (col as usize).min(l.len());
+        let before = &l[..col_idx];
+        if let Some(dollar) = before.rfind('$') {
+            let frag = &before[dollar + 1..];
+            let is_prefab_frag = (frag.starts_with('.') || frag.starts_with('/'))
+                && frag
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '.' | '-'));
+            if is_prefab_frag {
+                for path in prefab_paths {
+                    if path.starts_with(frag) {
+                        items.push(CompletionOut {
+                            label: path.clone(),
+                            kind: "file",
+                            detail: None,
+                            // Replace the `$…` fragment (after `$`) with the path.
+                            insert_text: Some(path.clone()),
+                        });
+                    }
+                }
+                if !items.is_empty() {
+                    return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                }
+            }
+        }
+    }
 
     // Asset reference `$AssetType/AssetName`: types after `$`, names after `$Type/`.
     {
@@ -859,27 +896,27 @@ mod tests {
     // ---- completions ----
     #[test]
     fn completions_includes_keywords() {
-        let items = parse_items(&completions("", 0, 0, "{}"));
+        let items = parse_items(&completions("", 0, 0, "{}", &[]));
         assert!(items.iter().any(|i| i["label"] == "var"));
         assert!(items.iter().any(|i| i["label"] == "import"));
     }
 
     #[test]
     fn completions_includes_builtins() {
-        let items = parse_items(&completions("", 0, 0, "{}"));
+        let items = parse_items(&completions("", 0, 0, "{}", &[]));
         assert!(items.iter().any(|i| i["label"] == "Random"));
         assert!(items.iter().any(|i| i["label"] == "DisplayText"));
     }
 
     #[test]
     fn completions_includes_user_symbols() {
-        let items = parse_items(&completions("var score: int = 0\n", 1, 0, "{}"));
+        let items = parse_items(&completions("var score: int = 0\n", 1, 0, "{}", &[]));
         assert!(items.iter().any(|i| i["label"] == "score"));
     }
 
     #[test]
     fn completions_includes_chat_command_event() {
-        let items = parse_items(&completions("", 0, 0, "{}"));
+        let items = parse_items(&completions("", 0, 0, "{}", &[]));
         assert!(items.iter().any(|i| i["label"] == "ChatCommand"));
     }
 
@@ -888,7 +925,7 @@ mod tests {
         // `var ids: string[]` completes array methods, including the ones the
         // old hardcoded list omitted (find/sort/insert/...).
         let src = "var ids: string[]\nids.";
-        let items = parse_items(&completions(src, 1, 4, "{}"));
+        let items = parse_items(&completions(src, 1, 4, "{}", &[]));
         for m in ["push", "find", "sort", "insert", "slice"] {
             assert!(items.iter().any(|i| i["label"] == m), "array method {m} missing: {items:?}");
         }
@@ -900,11 +937,22 @@ mod tests {
         // `foo.` where foo is a string must show string methods, not the
         // global keyword/function/type list.
         let src = "let foo = \"\"\nfoo.";
-        let items = parse_items(&completions(src, 1, 4, "{}"));
+        let items = parse_items(&completions(src, 1, 4, "{}", &[]));
         assert!(items.iter().any(|i| i["label"] == "Contains"), "Contains missing: {items:?}");
         assert!(!items.iter().any(|i| i["label"] == "if"), "keyword leaked");
         assert!(!items.iter().any(|i| i["label"] == "int"), "type leaked");
         assert!(!items.iter().any(|i| i["label"] == "ChatCommand"), "event leaked");
+    }
+
+    #[test]
+    fn prefab_ref_completes_from_registry() {
+        // `$./t` offers registered prefab paths under `./t…`.
+        let prefabs = vec!["./turret.brz".to_string(), "./enemies/tank.brz".to_string()];
+        let src = "on x { SpawnPrefab(prefab = $./t) }";
+        let col = (src.find("$./t").unwrap() + "$./t".len()) as u32;
+        let items = parse_items(&completions(src, 0, col, "{}", &prefabs));
+        assert!(items.iter().any(|i| i["label"] == "./turret.brz"), "got: {items:?}");
+        assert!(!items.iter().any(|i| i["label"] == "./enemies/tank.brz"));
     }
 
     // ---- workspace symbols ----

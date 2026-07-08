@@ -1549,6 +1549,20 @@ fn infer_expr_inner(
             // asset catalog happens in the analysis/diagnostics layer.
             Type::Any
         }
+        Expr::PrefabRef { path, range } => {
+            // A prefab file reference flows into a `bundle_path_ref` gate
+            // property; typed `any` so it's accepted there. The `.brz`
+            // extension is required (the file resolution + embedding happens at
+            // emit); flag it early so the error points at the reference.
+            if !path.ends_with(".brz") {
+                ctx.emit(
+                    "WS019",
+                    format!("prefab reference `${path}` must end in `.brz`"),
+                    range.clone(),
+                );
+            }
+            Type::Any
+        }
         Expr::InterpLit { parts, .. } => {
             for p in parts {
                 if let InterpPart::Expr(expr) = p {

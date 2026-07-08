@@ -167,6 +167,11 @@ pub enum Literal {
         asset_type: String,
         asset_name: String,
     },
+    /// Prefab file reference `$./file.brz` / `$/abs/file.brz`. The emitter
+    /// resolves `path` to `.brz` bytes, embeds them via `World::add_prefab`,
+    /// and writes the resulting `Prefabs/Uploads/…` path into the gate's
+    /// `bundle_path_ref` property.
+    PrefabRef { path: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -5,6 +5,7 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
+    { "include": "#asset-reference" },
     { "include": "#numbers" },
     { "include": "#keywords" },
     { "include": "#types" },
@@ -62,6 +63,39 @@
               "patterns": [{ "include": "source.wirescript" }]
             }
           ]
+        }
+      ]
+    },
+    "asset-reference": {
+      "patterns": [
+        {
+          "comment": "Prefab file reference: $./rel/path.brz or $/abs/path.brz",
+          "name": "meta.reference.prefab.wirescript",
+          "match": "(\\$)(\\.?/[A-Za-z0-9_./-]+)",
+          "captures": {
+            "1": { "name": "punctuation.definition.asset.wirescript" },
+            "2": { "name": "string.other.path.prefab.wirescript" }
+          }
+        },
+        {
+          "comment": "External asset reference: $AssetType/AssetName",
+          "name": "meta.reference.asset.wirescript",
+          "match": "(\\$)([A-Za-z_][A-Za-z0-9_.-]*)(/)([A-Za-z0-9_./-]+)",
+          "captures": {
+            "1": { "name": "punctuation.definition.asset.wirescript" },
+            "2": { "name": "entity.name.namespace.asset.wirescript" },
+            "3": { "name": "punctuation.separator.asset.wirescript" },
+            "4": { "name": "entity.name.asset.wirescript" }
+          }
+        },
+        {
+          "comment": "Bare asset reference without a slash: $AssetName",
+          "name": "meta.reference.asset.wirescript",
+          "match": "(\\$)([A-Za-z_][A-Za-z0-9_.-]*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.asset.wirescript" },
+            "2": { "name": "entity.name.asset.wirescript" }
+          }
         }
       ]
     },

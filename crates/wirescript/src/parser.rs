@@ -1962,22 +1962,30 @@ impl<'a> Parser<'a> {
                     _ => String::new(),
                 };
                 let range = self.make_range(t.start, t.end);
-                // `$AssetType/AssetName` — split on the first `/`.
-                let (asset_type, asset_name) = match path.split_once('/') {
-                    Some((ty, name)) => (ty.to_string(), name.to_string()),
-                    None => {
-                        self.error(
-                            String::from("asset reference must be `$AssetType/AssetName`"),
-                            t.start,
-                            t.end,
-                        );
-                        (path.clone(), String::new())
+                // A leading `.` or `/` marks a prefab FILE reference
+                // (`$./rel.brz`, `$/abs.brz`); otherwise it's a `$Type/Name`
+                // external asset reference split on the first `/`.
+                if path.starts_with('.') || path.starts_with('/') {
+                    Expr::PrefabRef { path, range }
+                } else {
+                    let (asset_type, asset_name) = match path.split_once('/') {
+                        Some((ty, name)) => (ty.to_string(), name.to_string()),
+                        None => {
+                            self.error(
+                                String::from(
+                                    "asset reference must be `$AssetType/AssetName` or a prefab path `$./file.brz`",
+                                ),
+                                t.start,
+                                t.end,
+                            );
+                            (path.clone(), String::new())
+                        }
+                    };
+                    Expr::AssetRef {
+                        asset_type,
+                        asset_name,
+                        range,
                     }
-                };
-                Expr::AssetRef {
-                    asset_type,
-                    asset_name,
-                    range,
                 }
             }
             TokenKind::LBracket => {

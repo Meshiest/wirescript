@@ -1,5 +1,26 @@
 # Wirescript Changelog
 
+## 0.10.0 - 2026-07-07
+
+### Bug Fixes
+
+- **`character` and `controller` wire directly** - no longer inserts a `GetFromEntity` adapter (an admin-only gate that got blocked on paste for non-admins, breaking every wire through it); the two types connect straight into each other's ports.
+- **Gate brick colours no longer double-darkened** - they were pre-multiplied by γ=2.2 for a linear decode the game doesn't do (it renders colour bytes as sRGB), so every gate rendered too dark. Now the intended sRGB values.
+- **Multi-byte string chars survive emit** - the lexer read each byte as its own `char`, mangling chars like `█`/`é` into garbage bytes; it now reads whole UTF-8 chars.
+- **Long templates no longer drop values** - `FormatText` has only 7 substitution inputs, so a template with `>7` `${...}` values silently dropped the extras; templates now split across chained `FormatText` gates.
+- **`on <local exec signal>` fires across handlers** - `emit sig` in one handler now triggers `on sig` in another, regardless of source order (the signal's binding was created after handlers lowered, so `on sig` was silently dropped).
+- **Lexer no longer panics on stray multi-byte chars** - a non-ASCII char outside a string (e.g. `▲`) hit a mid-codepoint byte-slice and crashed the LSP; now UTF-8-safe.
+
+### Editor / IDE
+
+- **`$` reference highlighting + hovers** - prefab (`$./x.brz`) and asset (`$Type/Name`) refs get TextMate scopes and hovers; prefab hovers show the resolved path and (in the LSP) whether the file exists.
+- **Prefab refs are navigable** - a resolvable `$./file.brz` is a clickable link / go-to-definition target (Ctrl/Cmd-click or F12 opens it).
+- **Missing prefab files warn** - the LSP flags a `$./file.brz` that isn't on disk, or lacks the `.brz` extension.
+
+### Language / Compiler
+
+- **Prefab references embed a `.brz` into `SpawnPrefab`** - `$./file.brz` (relative) / `$/abs.brz` (absolute) read the archive at compile and embed it content-addressed (brdb 0.7 `add_prefab`), setting the gate's `Prefab` path. `.brz` required (`WS019`); resolution is pluggable via `EmitOptions::prefab_resolver`.
+
 ## 0.9.0 - 2026-07-07
 
 ### New Builtins
@@ -32,6 +53,7 @@
 - **Formatter indents multi-line array literals** - both formatters (native `format_wirescript`, prettier plugin) track `[`/`]` depth like `(`/`)`; delimiter scanning stops at `//` so comments no longer skew indentation.
 - **Formatter: one indent level per line** - a line opening several groups (`f(x, {`) indents its continuation once, not once per delimiter; the closing `})` returns to the opener's level.
 - **One "Wirescript" entry in the formatter picker** - the extension keeps its prettier formatter and sends `provideFormatting: false` so the LSP doesn't register a duplicate.
+- **Prefab path completion** - typing `$./` (or `$/`) completes `.brz` prefab references: the native LSP scans the document's directory; the wasm playground offers dragged-in files (new optional `prefabs_json` registry on `wirescript_compile` / `wirescript_completions`).
 
 ## 0.8.0 - 2026-07-06
 

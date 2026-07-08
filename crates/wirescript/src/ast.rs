@@ -499,6 +499,12 @@ pub enum Expr {
         asset_name: String,
         range: SourceRange,
     },
+    /// Prefab file reference `$./rel/path.brz` (relative to the current source
+    /// file) or `$/abs/path.brz` (filesystem-absolute). At emit the `.brz` is
+    /// read, embedded via `World::add_prefab`, and the gate's `Prefab`
+    /// bundle_path_ref property is set to the resulting `Prefabs/Uploads/…`
+    /// path. `path` is the source-level string after `$` (e.g. `./turret.brz`).
+    PrefabRef { path: String, range: SourceRange },
 }
 
 /// An element of an array literal: a single value or a `...spread` of another
@@ -548,7 +554,8 @@ impl Expr {
             | Expr::MatchExpr { range, .. }
             | Expr::RecordLit { range, .. }
             | Expr::Array { range, .. }
-            | Expr::AssetRef { range, .. } => range,
+            | Expr::AssetRef { range, .. }
+            | Expr::PrefabRef { range, .. } => range,
         }
     }
 
@@ -573,7 +580,8 @@ impl Expr {
             | Expr::MatchExpr { range, .. }
             | Expr::RecordLit { range, .. }
             | Expr::Array { range, .. }
-            | Expr::AssetRef { range, .. } => range,
+            | Expr::AssetRef { range, .. }
+            | Expr::PrefabRef { range, .. } => range,
         }
     }
 }

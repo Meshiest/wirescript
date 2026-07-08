@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::emit::Placement;
-use crate::emit::{EmitError, EmitOptions, build_world, emit_brz};
+use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world, emit_brz};
 use crate::ir::NodeId;
 use crate::layout::layout;
 use crate::lower::{LowerInput, lower};
@@ -44,6 +44,27 @@ impl std::fmt::Display for CompileError {
 
 pub fn compile(input: CompileInput<'_>) -> Result<CompileResult, CompileError> {
     compile_with_opts(input, EmitOptions::default())
+}
+
+/// A [`PrefabResolver`] that reads `.brz` files from disk. `$./rel.brz`
+/// resolves relative to `entry_file`'s directory; `$/abs.brz` is a
+/// filesystem-absolute path. (Relative refs in imported files also resolve
+/// against the entry file's directory.)
+pub fn disk_prefab_resolver(entry_file: &str) -> PrefabResolver {
+    let base = std::path::Path::new(entry_file)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    PrefabResolver::new(move |path: &str| {
+        let full = if let Some(rel) = path.strip_prefix("./") {
+            base.join(rel)
+        } else if path.starts_with('/') {
+            std::path::PathBuf::from(path)
+        } else {
+            base.join(path)
+        };
+        std::fs::read(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +113,12 @@ fn compile_with_opts_inner(
     let source = input.source;
     let file = input.file;
     let module_name = input.module_name;
+
+    // Default to disk-backed prefab resolution unless a caller (e.g. the wasm
+    // sandbox) supplied its own resolver.
+    if opts.prefab_resolver.is_none() {
+        opts.prefab_resolver = Some(disk_prefab_resolver(file));
+    }
 
     report(&progress);
     let resolved = resolve(source, file, &FsLoader);
@@ -185,6 +212,9 @@ pub fn compile_to_world(
     let source = input.source;
     let file = input.file;
     let module_name = input.module_name;
+    if opts.prefab_resolver.is_none() {
+        opts.prefab_resolver = Some(disk_prefab_resolver(file));
+    }
     let t0 = std::time::Instant::now();
     let resolved = resolve(source, file, &FsLoader);
     let tc = typecheck(&resolved.ast, file);

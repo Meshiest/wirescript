@@ -21,8 +21,9 @@ pub struct CallParam {
     pub name: &'static str,
     /// Port name on the target gate to wire this argument into.
     pub port: WirePort,
-    /// Accepted type. `Character` is auto-adapted to `Controller` via
-    /// `Exec_Controller_GetFromEntity` when the param asks for Controller.
+    /// Accepted type. `Character` and `Controller` are interchangeable at a
+    /// param port — they wire directly into each other in Brickadia, so no
+    /// adapter gate is inserted.
     pub ty: Type,
     /// When true, callers may omit the argument; the gate's default stays.
     pub optional: bool,
@@ -2149,6 +2150,10 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             name: "SpawnPrefab",
             gate_class: gc::PREFAB_SPAWNER,
             params: vec![
+                // The prefab to spawn: a `$./file.brz` / `$/abs/file.brz`
+                // reference. Embedded into the bundle at emit; the gate's
+                // `Prefab` bundle_path_ref property gets the resulting path.
+                CallParam::opt("prefab", WirePort::Prefab, Type::Any),
                 CallParam::opt("offset", WirePort::SpawnOffset, Type::Vector),
                 CallParam::opt("rotation", WirePort::SpawnOffsetRotation, Type::Rotator),
                 CallParam::opt("velocity", WirePort::SpawnVelocity, Type::Vector),

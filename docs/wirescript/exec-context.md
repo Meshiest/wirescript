@@ -295,13 +295,23 @@ on start {
 
 ### Local Exec Signals
 
-`let name: exec` declares a local synchronization point. `emit name` fires it from any handler. `await name` or `on name` listens for it.
+`let name: exec` declares a local synchronization point. `emit name` fires it from any handler. `await name` or `on name` listens for it — the listener runs whenever the signal fires, regardless of source order or which handler emits it.
 
 ```wirescript
 let done: exec
 
 on compute { emit done }
 on start { await done }
+```
+
+An `on name` handler is the fan-out form — its body runs every time the signal
+fires, from any emitter (handy for menu-style actions):
+
+```wirescript
+let up: exec
+
+on tick { if doubleTapped() { emit up } }
+on up { ctrl.DisplayText("menu up") }   // runs on every `emit up`
 ```
 
 ### Sleep / SleepTicks

@@ -184,9 +184,14 @@ impl<'a> Lexer<'a> {
                 self.read_ident();
                 continue;
             }
-            // Asset reference `$AssetType/AssetName` (only outside strings; the
-            // `${...}` interpolation form is handled inside string reading).
-            if c == '$' && self.peek_char(1).is_some_and(is_ident_start) {
+            // Asset reference `$AssetType/AssetName`, or prefab file reference
+            // `$./file.brz` / `$/abs.brz` (only outside strings; the `${...}`
+            // interpolation form is handled inside string reading).
+            if c == '$'
+                && self
+                    .peek_char(1)
+                    .is_some_and(|n| is_ident_start(n) || n == '.' || n == '/')
+            {
                 self.read_asset_ref();
                 continue;
             }
@@ -268,16 +273,20 @@ impl<'a> Lexer<'a> {
         ));
     }
 
-    /// Read `$AssetType/AssetName` into an [`TokenKind::AssetRef`] token. The
-    /// value is the path after `$` (e.g. `BRItemBase/Weapon_Pistol`); a single
-    /// `/` separates the asset type from the asset name.
+    /// Read an asset reference into a [`TokenKind::AssetRef`] token. Two forms
+    /// share the token; the parser distinguishes them by the leading char:
+    /// - `$AssetType/AssetName` — an embedded external asset (a single `/`
+    ///   separates type from name).
+    /// - `$./rel/path.brz` or `$/abs/path.brz` — a prefab file reference (path
+    ///   begins with `.` or `/`). `.` and `-` are allowed so file names and
+    ///   relative segments lex.
     fn read_asset_ref(&mut self) {
         let start = self.snapshot();
         self.advance(); // '$'
         let path_start = self.pos;
         while self.pos < self.bytes.len() {
             let c = self.bytes[self.pos] as char;
-            if c.is_ascii_alphanumeric() || c == '_' || c == '/' {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '.' || c == '-' {
                 self.advance();
             } else {
                 break;
@@ -428,8 +437,16 @@ impl<'a> Lexer<'a> {
                 self.diag("WSP001", "unterminated string", start, self.snapshot());
                 return;
             }
-            literal.push(c);
-            self.advance();
+            // Literal content char. `c` is only the first byte cast to char, so
+            // read the real UTF-8 char from the source — otherwise a multi-byte
+            // char (e.g. `█` = E2 96 88) would be split into three Latin-1 chars
+            // and re-encoded as garbage on emit. Structural chars above are all
+            // ASCII, so only this branch can see a multi-byte char.
+            let real = self.source[self.pos..].chars().next().unwrap_or(c);
+            literal.push(real);
+            for _ in 0..real.len_utf8() {
+                self.advance();
+            }
         }
         self.diag(
             "WSP001",
@@ -534,8 +551,16 @@ impl<'a> Lexer<'a> {
                 self.diag("WSP001", "unterminated string", start, self.snapshot());
                 return;
             }
-            literal.push(c);
-            self.advance();
+            // Literal content char. `c` is only the first byte cast to char, so
+            // read the real UTF-8 char from the source — otherwise a multi-byte
+            // char (e.g. `█` = E2 96 88) would be split into three Latin-1 chars
+            // and re-encoded as garbage on emit. Structural chars above are all
+            // ASCII, so only this branch can see a multi-byte char.
+            let real = self.source[self.pos..].chars().next().unwrap_or(c);
+            literal.push(real);
+            for _ in 0..real.len_utf8() {
+                self.advance();
+            }
         }
         self.diag("WSP001", "unterminated string at end of file", start, self.snapshot());
     }
@@ -682,8 +707,17 @@ impl<'a> Lexer<'a> {
 
     fn read_punct(&mut self) -> bool {
         let start = self.snapshot();
-        let slice3 = &self.source[self.pos..(self.pos + 3).min(self.source.len())];
-        let slice2 = &self.source[self.pos..(self.pos + 2).min(self.source.len())];
+        // `str::get` returns None when the range end isn't a char boundary, so
+        // a stray multi-byte char ahead yields "" (no punct match) instead of
+        // panicking on a mid-codepoint byte slice.
+        let slice3 = self
+            .source
+            .get(self.pos..(self.pos + 3).min(self.source.len()))
+            .unwrap_or("");
+        let slice2 = self
+            .source
+            .get(self.pos..(self.pos + 2).min(self.source.len()))
+            .unwrap_or("");
         let c = self.bytes[self.pos] as char;
 
         // `->` and `=>` first — they'd otherwise be caught by the two-char-op list as invalid.
@@ -763,6 +797,38 @@ mod tests {
     #[test]
     fn empty_source_is_just_eof() {
         assert_eq!(tok_kinds(""), vec![TokenKind::Eof]);
+    }
+
+    #[test]
+    fn multibyte_chars_do_not_panic() {
+        // A stray multi-byte char (outside a string) must not panic the
+        // byte-slicing punct reader — it errors gracefully. Multi-byte chars
+        // inside strings lex normally.
+        let _ = lex("▲", "test"); // no panic
+        let _ = lex("let x = ▲", "test"); // no panic
+        let r = lex("\"▲ up ▼\"", "test");
+        assert!(r.diagnostics.is_empty(), "string with multibyte: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn multibyte_string_value_roundtrips() {
+        // The lexed literal must equal the source char-for-char; a multi-byte
+        // char (e.g. `█` = E2 96 88) must NOT be split into three Latin-1 chars
+        // (which would re-encode to garbage bytes on emit).
+        for lit in ["█", "a█b", "▲ up ▼", "░▒▓█"] {
+            let src = format!("\"{lit}\"");
+            let r = lex(&src, "t");
+            assert!(r.diagnostics.is_empty(), "{lit}: {:?}", r.diagnostics);
+            match &r.tokens[0].value {
+                Some(TokenValue::Str(s)) => assert_eq!(
+                    s, lit,
+                    "lexed value must match source exactly (bytes: {:?} vs {:?})",
+                    s.as_bytes(),
+                    lit.as_bytes()
+                ),
+                other => panic!("expected Str value, got {other:?}"),
+            }
+        }
     }
 
     #[test]

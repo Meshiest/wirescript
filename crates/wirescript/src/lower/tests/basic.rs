@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn on_local_exec_signal_fires_from_emit_in_another_handler() {
+    // `on sig` must trigger when `emit sig` runs in a *different* handler, even
+    // though `on sig` appears after the emitting handler in source. Previously
+    // the signal's binding was only created after all handlers were lowered, so
+    // `on sig` silently produced nothing. Now a pre-declared Union "hub" carries
+    // the emit to the listener.
+    let src = "in trig: exec\n\
+               let sig: exec\n\
+               static var n: int = 0\n\
+               on trig { emit sig }\n\
+               on sig { n = n + 1 }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    use crate::ir::port_registry::WirePort;
+    const UNION: &str = "BrickComponentType_WireGraph_Exec_Union";
+    let hub_ok = r.module.nodes.iter().any(|(id, node)| {
+        node.gate_class == UNION
+            && r.module
+                .wires
+                .iter()
+                .any(|w| w.target.node_id == *id && w.target.port == WirePort::ExecA)
+            && r.module
+                .wires
+                .iter()
+                .any(|w| w.source.node_id == *id && w.source.port == WirePort::ExecOut)
+    });
+    assert!(
+        hub_ok,
+        "expected a hub Union fed by `emit sig` (ExecA) and driving `on sig` (ExecOut); gate classes: {:?}",
+        r.module.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn empty_program() {
     let r = compile("");
     assert!(r.diagnostics.is_empty());

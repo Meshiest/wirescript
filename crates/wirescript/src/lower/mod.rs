@@ -100,6 +100,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             m
         },
         pending_emits: HashMap::new(),
+        exec_signal_hubs: HashMap::new(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: input.template_cache.clone(),
         await_armed_port: None,
@@ -383,6 +384,7 @@ pub fn compile_chip_template(
         mod_return_var: None,
         type_aliases: HashMap::new(),
         pending_emits: HashMap::new(),
+        exec_signal_hubs: HashMap::new(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: cache.clone(),
         await_armed_port: None,

@@ -47,9 +47,13 @@ function mapSeverity(monaco, severity) {
  * @param {HTMLElement} container - DOM element to host the editor
  * @param {object} wasm - The WASM module exports (wirescript_compile, wirescript_diagnostics, etc.)
  * @param {object} monaco - The Monaco editor module
+ * @param {function} [getFilesJson] - Returns the imports map JSON (`{ "utils.ws": "<source>" }`).
+ * @param {function} [getPrefabsJson] - Returns the dragged-in prefab registry JSON
+ *   (`{ "./turret.brz": [<byte>, ...] }`) — bytes as a number array. Drives
+ *   `$./file.brz` completion and embedding at compile.
  * @returns {monaco.editor.IStandaloneCodeEditor}
  */
-export function createEditor(container, wasm, monaco, getFilesJson) {
+export function createEditor(container, wasm, monaco, getFilesJson, getPrefabsJson) {
   // Register the language
   monaco.languages.register({ id: LANGUAGE_ID });
   monaco.languages.setMonarchTokensProvider(LANGUAGE_ID, monarchLanguage);
@@ -140,14 +144,15 @@ export function createEditor(container, wasm, monaco, getFilesJson) {
 
   // -- Completion Provider --
   monaco.languages.registerCompletionItemProvider(LANGUAGE_ID, {
-    triggerCharacters: ['.', '('],
+    triggerCharacters: ['.', '(', '$', '/'],
     provideCompletionItems(model, position) {
       const source = model.getValue();
       const line = position.lineNumber - 1;
       const col = position.column - 1;
       try {
         const fj = getFilesJson ? getFilesJson() : undefined;
-        const json = wasm.wirescript_completions(source, line, col, fj);
+        const pj = getPrefabsJson ? getPrefabsJson() : undefined;
+        const json = wasm.wirescript_completions(source, line, col, fj, pj);
         if (!json) return { suggestions: [] };
         const items = JSON.parse(json);
         const word = model.getWordUntilPosition(position);

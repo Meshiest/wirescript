@@ -60,6 +60,31 @@ impl From<Placement> for Position {
     }
 }
 
+/// Resolves a prefab file reference (`$./file.brz` / `$/abs/file.brz`) to the
+/// raw `.brz` bytes to embed. The argument is the source-level path (after the
+/// `$`). Frontends supply this: the CLI reads from disk relative to the source
+/// file; the wasm/playground sandbox looks up dragged-in files. `Err` carries a
+/// human-readable reason (missing file, read error) surfaced as an emit error.
+#[derive(Clone)]
+pub struct PrefabResolver(
+    pub std::sync::Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>,
+);
+
+impl PrefabResolver {
+    pub fn new(f: impl Fn(&str) -> Result<Vec<u8>, String> + Send + Sync + 'static) -> Self {
+        PrefabResolver(std::sync::Arc::new(f))
+    }
+    fn resolve(&self, path: &str) -> Result<Vec<u8>, String> {
+        (self.0)(path)
+    }
+}
+
+impl std::fmt::Debug for PrefabResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrefabResolver(..)")
+    }
+}
+
 /// Options for a single emit run.
 #[derive(Clone, Debug)]
 pub struct EmitOptions {
@@ -77,6 +102,9 @@ pub struct EmitOptions {
     pub description: String,
     /// When true, all microchips are emitted uncollapsed (expanded).
     pub open: bool,
+    /// Resolves `$./file.brz` / `$/abs/file.brz` prefab references to bytes.
+    /// `None` makes any prefab reference an emit error.
+    pub prefab_resolver: Option<PrefabResolver>,
 }
 
 impl Default for EmitOptions {
@@ -91,6 +119,7 @@ impl Default for EmitOptions {
             inner_plane_extent: IntVector { x: 14, y: 14, z: 2 },
             description: String::from("wirescript emit"),
             open: false,
+            prefab_resolver: None,
         }
     }
 }
@@ -103,6 +132,8 @@ pub enum EmitError {
     UnknownWireNode(String),
     #[error("brdb error: {0}")]
     Brdb(#[from] brdb::BrError),
+    #[error("prefab reference `${0}`: {1}")]
+    PrefabResolve(String, String),
 }
 
 /// IR + placements → in-memory `brdb::World`. The core build step; the two
@@ -238,6 +269,7 @@ pub fn build_world(
     let mut ctx = EmitContext {
         node_brick_ids: HashMap::new(),
         class_index: HashMap::new(),
+        prefab_resolver: opts.prefab_resolver.clone(),
     };
     emit_module(
         &mut world,
@@ -304,6 +336,8 @@ pub fn print_emit_stats() {
 struct EmitContext {
     node_brick_ids: HashMap<NodeId, usize>,
     class_index: HashMap<NodeId, &'static str>,
+    /// Resolver for `$./file.brz` prefab references, from `EmitOptions`.
+    prefab_resolver: Option<PrefabResolver>,
 }
 
 fn emit_module(
@@ -517,7 +551,13 @@ fn emit_module(
                 data.insert("EntryPlan".into(), Box::new(entry_plan));
                 LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
             }
-            _ => build_gate_component(effective_class_str, &*node.ports, &gate_inlined, world),
+            _ => build_gate_component(
+                effective_class_str,
+                &*node.ports,
+                &gate_inlined,
+                world,
+                ctx.prefab_resolver.as_ref(),
+            )?,
         };
         // EMIT_COMP_NS.fetch_add(_ct.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
         brick.add_component_box(Box::new(comp));
@@ -702,7 +742,8 @@ fn build_gate_component(
     ports: &crate::ir::GateIO,
     inlined: &StdMap<Sym, &Literal>,
     world: &mut World,
-) -> LiteralComponent {
+    prefab_resolver: Option<&PrefabResolver>,
+) -> Result<LiteralComponent, EmitError> {
     // For gates whose component data struct carries wire_graph_variant fields,
     // look up the struct schema and build the component with embedded values.
     // Non-inlined fields get a default (Int(0)) so the struct is always complete.
@@ -714,7 +755,7 @@ fn build_gate_component(
         for field in field_names {
             let val: Box<dyn AsBrdbValue> = match inlined.get(&intern_static(field)) {
                 Some(lit) if use_wire_variant => {
-                    if schema_field_is(struct_name, field, "wire_graph_prim_math_variant") {
+                    if schema_field_is_prim_math_variant(struct_name, field) {
                         if let Literal::Bool(b) = lit {
                             Box::new(WireVariant::Int(if *b { 1 } else { 0 }))
                         } else {
@@ -725,9 +766,7 @@ fn build_gate_component(
                     }
                 }
                 Some(lit) => {
-                    if schema_field_is(struct_name, field, "wire_graph_variant")
-                        || schema_field_is(struct_name, field, "wire_graph_prim_math_variant")
-                    {
+                    if schema_field_is_wire_variant(struct_name, field) {
                         literal_to_boxed_wire_variant(lit, ports, field)
                     } else if schema_field_is(struct_name, field, "class")
                         || schema_field_is(struct_name, field, "object")
@@ -750,6 +789,28 @@ fn build_gate_component(
                             _ => None,
                         };
                         Box::new(BrdbValue::Asset(idx))
+                    } else if schema_field_is(struct_name, field, "bundle_path_ref") {
+                        // Prefab file reference (`$./file.brz`): resolve to raw
+                        // bytes, embed content-addressed via add_prefab, and
+                        // store the resulting `Prefabs/Uploads/…` path.
+                        match lit {
+                            Literal::PrefabRef { path } => {
+                                let resolver = prefab_resolver.ok_or_else(|| {
+                                    EmitError::PrefabResolve(
+                                        path.clone(),
+                                        "no prefab resolver configured for this compile".into(),
+                                    )
+                                })?;
+                                let bytes = resolver
+                                    .resolve(path)
+                                    .map_err(|e| EmitError::PrefabResolve(path.clone(), e))?;
+                                let embedded = world.add_prefab(bytes);
+                                Box::new(embedded)
+                            }
+                            // A non-prefab literal here can't happen via the
+                            // front end (the port only accepts `$…` refs).
+                            _ => Box::new(String::new()),
+                        }
                     } else if let Some(ev) = try_resolve_enum(struct_name, field, lit) {
                         Box::new(ev)
                     } else if schema_field_is(struct_name, field, "str") {
@@ -767,8 +828,7 @@ fn build_gate_component(
                         .map(|p| &p.ty);
                     let wv = var_type_to_wire_variant(port_ty);
                     // prim_math_variant doesn't support Bool — coerce to Int
-                    let wv = if schema_field_is(struct_name, field, "wire_graph_prim_math_variant")
-                    {
+                    let wv = if schema_field_is_prim_math_variant(struct_name, field) {
                         coerce_for_prim_math(wv)
                     } else {
                         wv
@@ -784,9 +844,7 @@ fn build_gate_component(
                 // (e.g. DisplayText FontSize=16, Lifetime=5) — falling back to a
                 // type-zero when no default is registered.
                 None => {
-                    if schema_field_is(struct_name, field, "wire_graph_variant")
-                        || schema_field_is(struct_name, field, "wire_graph_prim_math_variant")
-                    {
+                    if schema_field_is_wire_variant(struct_name, field) {
                         let port_ty = ports
                             .inputs
                             .iter()
@@ -794,12 +852,11 @@ fn build_gate_component(
                             .find(|p| resolve(p.name) == *field)
                             .map(|p| &p.ty);
                         let wv = var_type_to_wire_variant(port_ty);
-                        let wv =
-                            if schema_field_is(struct_name, field, "wire_graph_prim_math_variant") {
-                                coerce_for_prim_math(wv)
-                            } else {
-                                wv
-                            };
+                        let wv = if schema_field_is_prim_math_variant(struct_name, field) {
+                            coerce_for_prim_math(wv)
+                        } else {
+                            wv
+                        };
                         Box::new(wv)
                     } else {
                         continue;
@@ -808,12 +865,15 @@ fn build_gate_component(
             };
             data.insert(BString::from(field.to_string()), val);
         }
-        return LiteralComponent::new_from_data(gate_class, std::sync::Arc::new(data));
+        return Ok(LiteralComponent::new_from_data(
+            gate_class,
+            std::sync::Arc::new(data),
+        ));
     }
 
     // Default: dataless component stub — registers component type only,
     // no struct data (engine uses the default from the brick type).
-    LiteralComponent::new(gate_class.to_string())
+    Ok(LiteralComponent::new(gate_class.to_string()))
 }
 
 /// Returns `(struct_name, field_names, use_wire_variant)` for gates whose
@@ -935,7 +995,7 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
         // ── Prefab spawner ────────────────────────────────────────────────
         "BrickComponentType_WireGraph_Exec_PrefabSpawner" => Some((
             "BrickComponentData_WireGraph_Exec_PrefabSpawner",
-            &["Lifetime", "Limit"],
+            &["Prefab", "Lifetime", "Limit"],
             false,
         )),
 
@@ -1886,7 +1946,7 @@ fn literal_to_wire_variant(lit: &Literal) -> Option<WireVariant> {
             b: *b as f32 / 255.0,
             a: *a as f32 / 255.0,
         }),
-        Literal::Array(_) | Literal::Asset { .. } => None,
+        Literal::Array(_) | Literal::Asset { .. } | Literal::PrefabRef { .. } => None,
     }
 }
 
@@ -1982,42 +2042,43 @@ fn wire_to_connection_indexed(
 
 // ---------- semantic colouring ----------
 
-// Brickadia renders brick colours in linear RGB, so the raw bytes here
-// are perceptually much brighter than the same sRGB values would be
-// elsewhere. These values are sRGB targets passed through γ=2.2 to
-// approximate the intended perceived colour in-game.
+// Brickadia renders stored brick-colour bytes as sRGB directly (a raw
+// paint value like 60,160,240 shows up as that same bright blue in-game),
+// so these are the perceived sRGB colours we want, used verbatim. (They
+// were previously pre-darkened by γ=2.2 on the assumption the game decoded
+// them from linear — that double-darkened every gate brick.)
 const C_YELLOW: Color = Color {
-    r: 124,
-    g: 74,
-    b: 1,
+    r: 184,
+    g: 145,
+    b: 21,
 }; // triggers + chip I/O
 const C_WHITE: Color = Color {
-    r: 124,
-    g: 124,
-    b: 124,
+    r: 184,
+    g: 184,
+    b: 184,
 }; // branch / union / select
 const C_GREY: Color = Color {
-    r: 16,
-    g: 16,
-    b: 16,
+    r: 72,
+    g: 72,
+    b: 72,
 }; // exec-taking statements
 const C_INT: Color = Color {
-    r: 4,
-    g: 124,
-    b: 148,
+    r: 39,
+    g: 184,
+    b: 199,
 }; // int — cyan
-const C_FLOAT: Color = Color { r: 4, g: 74, b: 16 }; // float — green
-const C_BOOL: Color = Color { r: 113, g: 4, b: 4 }; // bool — red
+const C_FLOAT: Color = Color { r: 39, g: 145, b: 72 }; // float — green
+const C_BOOL: Color = Color { r: 176, g: 39, b: 39 }; // bool — red
 const C_STRING: Color = Color {
-    r: 124,
-    g: 93,
-    b: 2,
+    r: 184,
+    g: 161,
+    b: 28,
 }; // string — yellow
-const C_CHARACTER: Color = Color { r: 1, g: 2, b: 66 }; // character — deep blue
+const C_CHARACTER: Color = Color { r: 21, g: 28, b: 138 }; // character — deep blue
 const C_STRUCT: Color = Color {
-    r: 124,
-    g: 39,
-    b: 2,
+    r: 184,
+    g: 109,
+    b: 28,
 }; // vector/struct/entity — orange
 
 /// Choose a brick colour for `node` following the scheme:
@@ -2146,6 +2207,25 @@ fn schema_field_is(struct_name: &str, field: &str, type_name: &str) -> bool {
     schema_field_type_str(struct_name, field).as_deref() == Some(type_name)
 }
 
+/// True if the field's schema type is the prim-math wire variant, which the
+/// current brdb schema interns as the named variant `WireGraphPrimMathVariant`
+/// (the legacy `wire_graph_prim_math_variant` primitive spelling is no longer
+/// used). The emit's Bool→Int coercion hangs off this predicate: the variant
+/// has no `bool` member, so a missed match writes a `WireVariant::Bool` that the
+/// brdb schema writer rejects.
+fn schema_field_is_prim_math_variant(struct_name: &str, field: &str) -> bool {
+    schema_field_is(struct_name, field, "WireGraphPrimMathVariant")
+}
+
+/// True if the field's schema type is any wire-graph variant — plain
+/// (`WireGraphVariant`) or prim-math (`WireGraphPrimMathVariant`).
+fn schema_field_is_wire_variant(struct_name: &str, field: &str) -> bool {
+    matches!(
+        schema_field_type_str(struct_name, field).as_deref(),
+        Some("WireGraphVariant" | "WireGraphPrimMathVariant")
+    )
+}
+
 /// Can a folded constant (`Vec/Rotation/Color` on literal args, lowered to a
 /// `_Literal` node) be delivered to this (gate, port) sink as inlined
 /// component data? True only for fields `build_gate_component` writes as wire
@@ -2160,16 +2240,7 @@ pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> b
     if !fields.contains(&field) {
         return false;
     }
-    use_wire_variant
-        || matches!(
-            schema_field_type_str(struct_name, field).as_deref(),
-            Some(
-                "wire_graph_variant"
-                    | "wire_graph_prim_math_variant"
-                    | "WireGraphVariant"
-                    | "WireGraphPrimMathVariant"
-            )
-        )
+    use_wire_variant || schema_field_is_wire_variant(struct_name, field)
 }
 
 /// If the field's schema type is an enum, resolve `lit` to its integer

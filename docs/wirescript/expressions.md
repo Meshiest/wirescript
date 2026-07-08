@@ -478,3 +478,26 @@ The editor completes asset references: typing `$` offers the asset types, and
 `$Type/` offers that type's asset names (from the embedded asset catalog). An
 asset reference is meant to be passed to a gate that takes an asset (e.g. an
 inventory or audio gate).
+
+## Prefab References
+
+A `$` reference whose path begins with `.` or `/` is a **prefab file
+reference** — it points at a `.brz` prefab archive rather than a named catalog
+asset:
+
+- `$./file.brz` — relative to the current source file's directory.
+- `$/abs/path/file.brz` — a filesystem-absolute path.
+
+The `.brz` extension is required. Pass one to [`SpawnPrefab`](builtins.md#spawnprefab):
+
+```wirescript
+on spawn {
+  SpawnPrefab(prefab = $./turret.brz, offset = Vec(0.0, 0.0, 50.0))
+}
+```
+
+At compile the referenced `.brz` is read and **embedded into the output
+bundle** (content-addressed at `Prefabs/Uploads/<hash>.brz`), and the gate's
+`Prefab` property is set to that embedded path — so the compiled program is
+self-contained. Typing `$./` completes available `.brz` files (the editor scans
+the project directory; the web playground offers files you drag in).

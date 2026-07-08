@@ -54,6 +54,12 @@ pub fn hover_at(
     line: usize,
     col: usize,
 ) -> Option<String> {
+    // `$` references (prefab files / external assets) aren't identifier words,
+    // so detect them from the raw line before the word-based lookups.
+    if let Some(h) = hover_asset_ref(source, file, line, col) {
+        return Some(h);
+    }
+
     let word = word_at(source, line, col)?;
 
     None
@@ -67,6 +73,60 @@ pub fn hover_at(
         .or_else(|| hover_record_or_type_field(source, symbols, &word, line))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
         .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
+}
+
+/// Hover for a `$` reference token under the cursor: a prefab file reference
+/// (`$./rel.brz`, `$/abs.brz`) or an external asset reference (`$Type/Name`).
+/// Scans the raw line for the `$`-prefixed token spanning the cursor, since
+/// the `$`, `/`, and `.` chars aren't part of identifier words.
+fn hover_asset_ref(source: &str, file: &str, line: usize, col: usize) -> Option<String> {
+    let r = super::text::asset_ref_at(source, line, col)?;
+    Some(if r.is_file() {
+        render_prefab_file_hover(&r.path, file)
+    } else {
+        render_asset_hover(&r.path)
+    })
+}
+
+/// Markdown hover for a prefab file reference (`$./x.brz` / `$/abs.brz`),
+/// resolving the path the same way [`crate::compile::disk_prefab_resolver`]
+/// does and (natively) reporting whether the file is present.
+fn render_prefab_file_hover(path: &str, file: &str) -> String {
+    use std::path::{Path, PathBuf};
+    let base = Path::new(file).parent();
+    let resolved: PathBuf = if let Some(rel) = path.strip_prefix("./") {
+        base.map_or_else(|| PathBuf::from(rel), |b| b.join(rel))
+    } else if path.starts_with('/') {
+        PathBuf::from(path)
+    } else {
+        base.map_or_else(|| PathBuf::from(path), |b| b.join(path))
+    };
+
+    let mut out = String::from("**Prefab file reference**\n\nEmbeds a `.brz` archive into `SpawnPrefab`.\n\n");
+    out += &format!("- Reference: `${path}`\n");
+    out += &format!("- Resolves to: `{}`\n", resolved.display());
+    if !path.ends_with(".brz") {
+        out += "\n⚠️ Prefab references must end in `.brz` (WS019).\n";
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    match std::fs::metadata(&resolved) {
+        Ok(m) => out += &format!("- On disk: {} bytes\n", m.len()),
+        Err(_) => out += "- ⚠️ Not found on disk\n",
+    }
+    out
+}
+
+/// Markdown hover for an external asset reference (`$Type/Name`).
+fn render_asset_hover(path: &str) -> String {
+    let mut out = String::from(
+        "**Asset reference**\n\nAn external Brickadia asset, inlined into the gate's data.\n\n",
+    );
+    if let Some((ty, name)) = path.split_once('/') {
+        out += &format!("- Type: `{ty}`\n- Name: `{name}`\n");
+    } else {
+        out += &format!("- Asset: `{path}`\n");
+    }
+    out
 }
 
 /// `if` keyword: show exec (Branch gate) vs pure (Select gate) context.
@@ -592,6 +652,32 @@ let v = p.x";
         assert!(
             text.contains("int"),
             "hover on p.x should show int, got: {text}"
+        );
+    }
+
+    #[test]
+    fn prefab_file_reference_hover() {
+        // `$` at col 8; token spans cols 8..=25.
+        let src = "let p = $./prefab_1x1.brz";
+        for col in [8usize, 12, 24] {
+            let h = hover_for(src, 0, col);
+            assert!(h.is_some(), "hover on prefab ref at col {col} should return");
+            let text = h.unwrap();
+            assert!(
+                text.contains("Prefab file reference") && text.contains("Resolves to"),
+                "col {col} got: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn asset_reference_hover() {
+        // `$Weapon/Sword`: `$` at col 8, "Weapon" 9-15, "Sword" 16-21.
+        let src = "let w = $Weapon/Sword";
+        let h = hover_for(src, 0, 11).expect("hover on asset ref should return");
+        assert!(
+            h.contains("Asset reference") && h.contains("Weapon") && h.contains("Sword"),
+            "got: {h}"
         );
     }
 }

@@ -254,8 +254,8 @@ var y: float = 0.0
 | `float` | `bool` | Coerce |
 | `character` | `entity` | Coerce (subtype) |
 | `controller` | `entity` | Coerce |
-| `character` | `controller` | Coerce (auto ControllerOf) |
-| `controller` | `character` | Coerce (auto CharacterOf) |
+| `character` | `controller` | Coerce (wired directly) |
+| `controller` | `character` | Coerce (wired directly) |
 | `rotator` | `quat` | Coerce (interchangeable rotation values) |
 | `quat` | `rotator` | Coerce |
 | any primitive | `string` | Via format gate |

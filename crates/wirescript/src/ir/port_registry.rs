@@ -100,6 +100,7 @@ wire_ports! {
     ItemNameOverride = "ItemNameOverride",
     ItemScale = "ItemScale",
     ProjectileOverride = "ProjectileOverride",
+    Prefab = "Prefab",
     WeaponSpeedMultiplier = "WeaponSpeedMultiplier",
     Attacker = "Attacker",
     AttackerWeapon = "AttackerWeapon",

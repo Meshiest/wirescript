@@ -6,10 +6,10 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use wirescript::analysis::{
-    collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    find_all_references, find_enclosing_call, find_name_range, format_wirescript, hover_at,
-    receiver_methods, type_str, word_at, InlayHintKind, ResourceEstimate, SymbolDef, TextRange,
-    TypeMap, VarReadContextMap,
+    asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
+    find_all_references, find_asset_refs, find_enclosing_call, find_name_range, format_wirescript,
+    hover_at, receiver_methods, type_str, word_at, AssetRef, InlayHintKind, ResourceEstimate,
+    SymbolDef, TextRange, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::Script;
 use wirescript::catalog::arrays::ARRAY_METHODS;
@@ -99,6 +99,89 @@ fn uri_to_file_string(uri: &Url) -> String {
         .unwrap_or_else(|_| uri.path().to_string())
 }
 
+/// Candidate prefab-reference strings for `$./…brz` completion: every `.brz`
+/// file under the document's directory, as `./relative/path.brz` (forward
+/// slashes, the wirescript reference form). Bounded depth so large trees don't
+/// stall completion.
+fn scan_prefab_paths(uri: &Url) -> Vec<String> {
+    let Ok(file_path) = uri.to_file_path() else {
+        return Vec::new();
+    };
+    let Some(base) = file_path.parent() else {
+        return Vec::new();
+    };
+    fn walk(dir: &std::path::Path, base: &std::path::Path, depth: usize, out: &mut Vec<String>) {
+        if depth > 6 || out.len() > 500 {
+            return;
+        }
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, base, depth + 1, out);
+            } else if path.extension().is_some_and(|e| e == "brz") {
+                if let Ok(rel) = path.strip_prefix(base) {
+                    let rel = rel.to_string_lossy().replace('\\', "/");
+                    out.push(format!("./{rel}"));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(base, base, 0, &mut out);
+    out.sort();
+    out
+}
+
+/// Resolve a prefab file reference path (the part after `$`) to a filesystem
+/// path, the same way `disk_prefab_resolver` does: `./rel` and bare `rel`
+/// resolve against the referencing file's directory; a leading `/` is absolute.
+fn resolve_prefab_path(entry_file: &str, path: &str) -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+    let base = Path::new(entry_file).parent();
+    if let Some(rel) = path.strip_prefix("./") {
+        base.map_or_else(|| PathBuf::from(rel), |b| b.join(rel))
+    } else if path.starts_with('/') {
+        PathBuf::from(path)
+    } else {
+        base.map_or_else(|| PathBuf::from(path), |b| b.join(path))
+    }
+}
+
+/// LSP diagnostics for prefab file references that don't resolve: a missing
+/// `.brz` on disk, or a ref without the required `.brz` extension.
+fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for r in find_asset_refs(source).into_iter().filter(AssetRef::is_file) {
+        let range = Range {
+            start: Position { line: r.line as u32, character: r.start_col as u32 },
+            end: Position { line: r.line as u32, character: r.end_col as u32 },
+        };
+        if !r.path.ends_with(".brz") {
+            out.push(Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String("prefab-ext".into())),
+                source: Some("wirescript".into()),
+                message: format!("prefab reference `${}` must end in `.brz`", r.path),
+                ..Default::default()
+            });
+            continue;
+        }
+        let resolved = resolve_prefab_path(file, &r.path);
+        if !resolved.is_file() {
+            out.push(Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String("prefab-missing".into())),
+                source: Some("wirescript".into()),
+                message: format!("prefab file not found: {}", resolved.display()),
+                ..Default::default()
+            });
+        }
+    }
+    out
+}
+
 struct DocState {
     source: String,
     symbols: Vec<SymbolDef>,
@@ -141,7 +224,7 @@ impl Backend {
             );
         }
 
-        resolved
+        let mut diags: Vec<Diagnostic> = resolved
             .diagnostics
             .iter()
             .chain(tc.diagnostics.iter())
@@ -161,7 +244,9 @@ impl Backend {
                     ..Default::default()
                 }
             })
-            .collect()
+            .collect();
+        diags.extend(prefab_ref_diagnostics(source, &file));
+        diags
     }
 
     async fn reanalyze_other_docs(&self, changed_uri: &Url) {
@@ -223,10 +308,48 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: Default::default(),
+                }),
                 ..Default::default()
             },
             ..Default::default()
         })
+    }
+
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
+        let uri = &params.text_document.uri;
+        let docs = match self.docs.lock() {
+            Ok(d) => d,
+            Err(_) => return Ok(None),
+        };
+        let Some(doc) = docs.get(uri) else {
+            return Ok(None);
+        };
+        let file = uri_to_file_string(uri);
+        // Clickable links for prefab file references that exist on disk.
+        let links: Vec<DocumentLink> = find_asset_refs(&doc.source)
+            .into_iter()
+            .filter(AssetRef::is_file)
+            .filter_map(|r| {
+                let target = resolve_prefab_path(&file, &r.path);
+                if !target.is_file() {
+                    return None;
+                }
+                let target_uri = Url::from_file_path(&target).ok()?;
+                Some(DocumentLink {
+                    range: Range {
+                        start: Position { line: r.line as u32, character: r.start_col as u32 },
+                        end: Position { line: r.line as u32, character: r.end_col as u32 },
+                    },
+                    target: Some(target_uri),
+                    tooltip: Some("Open prefab file".into()),
+                    data: None,
+                })
+            })
+            .collect();
+        Ok(Some(links))
     }
 
     async fn initialized(&self, _: InitializedParams) {
@@ -273,12 +396,15 @@ impl LanguageServer for Backend {
         let col = pos.character as usize;
         let uri = &params.text_document_position.text_document.uri;
 
+        let prefab_paths = scan_prefab_paths(uri);
         let items = match self.docs.lock() {
             Ok(docs) => match docs.get(uri) {
-                Some(doc) => build_completions(&doc.source, &doc.symbols, line, col),
-                None => build_completions("", &[], line, col),
+                Some(doc) => {
+                    build_completions(&doc.source, &doc.symbols, line, col, &prefab_paths)
+                }
+                None => build_completions("", &[], line, col, &prefab_paths),
             },
-            Err(_) => build_completions("", &[], line, col),
+            Err(_) => build_completions("", &[], line, col, &prefab_paths),
         };
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -325,6 +451,23 @@ impl LanguageServer for Backend {
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
+                // `$./file.brz` prefab reference → jump to the referenced file.
+                if let Some(r) = asset_ref_at(&doc.source, line, col) {
+                    if r.is_file() {
+                        let target = resolve_prefab_path(&uri_to_file_string(uri), &r.path);
+                        if let Ok(target_uri) = Url::from_file_path(&target) {
+                            if target.is_file() {
+                                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                                    uri: target_uri,
+                                    range: Range::default(),
+                                })));
+                            }
+                        }
+                    }
+                    // Asset ref or missing file: nothing to navigate to.
+                    return Ok(None);
+                }
+
                 // Type field → show all references
                 let in_type_def = doc.symbols.iter().any(|s| {
                     s.kind == "type"
@@ -739,8 +882,52 @@ fn build_completions(
     symbols: &[SymbolDef],
     line: usize,
     col: usize,
+    prefab_paths: &[String],
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
+
+    // Prefab file reference `$./file.brz` / `$/abs/file.brz`: complete from the
+    // candidate paths the frontend supplied (disk scan / drag registry). A
+    // text edit over the whole `$…` fragment keeps `.`/`/` filtering robust.
+    if let Some(l) = source.lines().nth(line) {
+        let col_idx = col.min(l.len());
+        let before = &l[..col_idx];
+        if let Some(dollar) = before.rfind('$') {
+            let frag = &before[dollar + 1..];
+            let is_prefab_frag = (frag.starts_with('.') || frag.starts_with('/'))
+                && frag
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '.' | '-'));
+            if is_prefab_frag {
+                let range = Range {
+                    start: Position {
+                        line: line as u32,
+                        character: (dollar + 1) as u32,
+                    },
+                    end: Position {
+                        line: line as u32,
+                        character: col as u32,
+                    },
+                };
+                for path in prefab_paths {
+                    if path.starts_with(frag) {
+                        items.push(CompletionItem {
+                            label: path.clone(),
+                            kind: Some(CompletionItemKind::FILE),
+                            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                                range,
+                                new_text: path.clone(),
+                            })),
+                            ..Default::default()
+                        });
+                    }
+                }
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
+    }
 
     // Asset reference `$AssetType/AssetName`: complete types after `$`, names
     // after `$Type/`.
@@ -906,10 +1093,41 @@ mod tests {
 
     fn labels(source: &str, line: usize, col: usize) -> Vec<String> {
         let syms = symbols_for(source);
-        build_completions(source, &syms, line, col)
+        build_completions(source, &syms, line, col, &[])
             .into_iter()
             .map(|i| i.label)
             .collect()
+    }
+
+    fn labels_with_prefabs(
+        source: &str,
+        line: usize,
+        col: usize,
+        prefabs: &[String],
+    ) -> Vec<String> {
+        let syms = symbols_for(source);
+        build_completions(source, &syms, line, col, prefabs)
+            .into_iter()
+            .map(|i| i.label)
+            .collect()
+    }
+
+    #[test]
+    fn prefab_ref_completes_from_candidate_paths() {
+        let prefabs = vec![
+            "./turret.brz".to_string(),
+            "./enemies/tank.brz".to_string(),
+            "./notes.txt".to_string(), // not a candidate; excluded by the scan
+        ];
+        // `SpawnPrefab(prefab = $./t` → offers the `./t…` prefab paths.
+        let src = "on x { SpawnPrefab(prefab = $./t) }";
+        let col = src.find("$./t").unwrap() + "$./t".len();
+        let got = labels_with_prefabs(src, 0, col, &prefabs);
+        assert!(got.contains(&"./turret.brz".to_string()), "got: {got:?}");
+        assert!(
+            !got.contains(&"./enemies/tank.brz".to_string()),
+            "`./t` shouldn't match `./enemies/…`: {got:?}"
+        );
     }
 
     #[test]

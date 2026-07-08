@@ -253,62 +253,95 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     node_id.port(out)
 }
 
-pub(super) fn lower_interp(
+/// Substitution inputs on one FormatText gate — the gate has exactly these 7
+/// (`InputA`..`InputG`).
+const FORMAT_SLOTS: [WirePort; 7] = [
+    WirePort::InputA, WirePort::InputB, WirePort::InputC,
+    WirePort::InputD, WirePort::InputE, WirePort::InputF,
+    WirePort::InputG,
+];
+
+/// Build one FormatText gate from a finished format string and its already
+/// lowered substitution ports (`slots.len()` must be `<= FORMAT_SLOTS.len()`).
+fn build_format_text(
     ctx: &mut LowerCtx,
-    parts: &[InterpPart],
+    format_string: String,
+    slots: Vec<PortRef>,
     range: &SourceRange,
 ) -> PortRef {
-    const SLOT_LETTERS: [WirePort; 7] = [
-        WirePort::InputA, WirePort::InputB, WirePort::InputC,
-        WirePort::InputD, WirePort::InputE, WirePort::InputF,
-        WirePort::InputG,
-    ];
-    let mut slots: Vec<PortRef> = Vec::new();
-    let mut format_string = String::new();
-    for p in parts {
-        match p {
-            InterpPart::Lit(s) => {
-                format_string.push_str(&s.replace('{', "{{").replace('}', "}}"));
-            }
-            InterpPart::Expr(expr) => {
-                if SLOT_LETTERS.get(slots.len()).is_some() {
-                    format_string.push_str(&format!("{{{}}}", slots.len()));
-                    slots.push(lower_expr(ctx, expr));
-                }
-            }
-        }
-    }
-    let mut inputs = Vec::new();
-    for (i, _) in slots.iter().enumerate() {
-        if let Some(&port_id) = SLOT_LETTERS.get(i) {
-            inputs.push(PortSpec {
-                name: intern(port_id.as_str()),
-                ty: Type::Any,
-            });
-        }
-    }
+    let inputs = (0..slots.len())
+        .map(|i| PortSpec { name: intern(FORMAT_SLOTS[i].as_str()), ty: Type::Any })
+        .collect();
     let mut props = HashMap::new();
-    props.insert(
-        intern_static("FormatString"),
-        Literal::String(format_string),
-    );
+    props.insert(intern_static("FormatString"), Literal::String(format_string));
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::STRING_FORMAT_TEXT,
         source_range: range.clone(),
         ports: GateIO {
             inputs,
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::String,
-            }],
+            outputs: vec![PortSpec { name: *sym::OUTPUT, ty: Type::String }],
         },
         properties: props,
         ..Default::default()
     });
     for (i, slot) in slots.into_iter().enumerate() {
-        if let Some(&port_id) = SLOT_LETTERS.get(i) {
-            ctx.connect(slot, node_id.port(port_id));
-        }
+        ctx.connect(slot, node_id.port(FORMAT_SLOTS[i]));
     }
     node_id.port(WirePort::Output)
+}
+
+/// Concatenate string ports into one, chaining FormatText gates in groups of
+/// `FORMAT_SLOTS.len()` (recursively) so any number of parts fits the 7-input
+/// gate.
+fn concat_string_ports(ctx: &mut LowerCtx, ports: Vec<PortRef>, range: &SourceRange) -> PortRef {
+    if ports.len() <= 1 {
+        return ports.into_iter().next().expect("at least one part");
+    }
+    let mut outs: Vec<PortRef> = Vec::new();
+    for chunk in ports.chunks(FORMAT_SLOTS.len()) {
+        if chunk.len() == 1 {
+            outs.push(chunk[0]);
+        } else {
+            let fmt: String = (0..chunk.len()).map(|i| format!("{{{i}}}")).collect();
+            outs.push(build_format_text(ctx, fmt, chunk.to_vec(), range));
+        }
+    }
+    concat_string_ports(ctx, outs, range)
+}
+
+pub(super) fn lower_interp(
+    ctx: &mut LowerCtx,
+    parts: &[InterpPart],
+    range: &SourceRange,
+) -> PortRef {
+    let max = FORMAT_SLOTS.len();
+    // A FormatText gate has only 7 substitution inputs, so a template with more
+    // than 7 `${...}` values is split across several gates whose outputs are
+    // concatenated. Literals attach to the current group; a group is flushed
+    // once it holds `max` substitutions and another arrives. Parts stay in
+    // order, so the concatenation reads identically to one long template.
+    let mut groups: Vec<(String, Vec<PortRef>)> = Vec::new();
+    let mut cur_fmt = String::new();
+    let mut cur_slots: Vec<PortRef> = Vec::new();
+    for p in parts {
+        match p {
+            InterpPart::Lit(s) => {
+                cur_fmt.push_str(&s.replace('{', "{{").replace('}', "}}"));
+            }
+            InterpPart::Expr(expr) => {
+                if cur_slots.len() == max {
+                    groups.push((std::mem::take(&mut cur_fmt), std::mem::take(&mut cur_slots)));
+                }
+                cur_fmt.push_str(&format!("{{{}}}", cur_slots.len()));
+                cur_slots.push(lower_expr(ctx, expr));
+            }
+        }
+    }
+    groups.push((cur_fmt, cur_slots));
+
+    let outs: Vec<PortRef> = groups
+        .into_iter()
+        .map(|(fmt, slots)| build_format_text(ctx, fmt, slots, range))
+        .collect();
+    concat_string_ports(ctx, outs, range)
 }

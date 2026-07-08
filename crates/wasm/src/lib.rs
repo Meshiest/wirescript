@@ -6,7 +6,7 @@ use wirescript::{
     resolve::{resolve, MemLoader},
     template_cache::TemplateCache,
     typecheck::typecheck,
-    emit::{emit_brz, EmitOptions},
+    emit::{emit_brz, EmitOptions, PrefabResolver},
 };
 
 mod analysis;
@@ -17,6 +17,23 @@ fn make_loader(files_json: &str) -> MemLoader {
     MemLoader { files }
 }
 
+/// Parse the dragged-in prefab registry: a JSON object mapping a prefab
+/// reference path (`./turret.brz`) to the file's raw bytes as a JSON number
+/// array. The sandbox builds this from files the user drags in.
+fn parse_prefab_registry(prefabs_json: &str) -> HashMap<String, Vec<u8>> {
+    serde_json::from_str(prefabs_json).unwrap_or_default()
+}
+
+/// A [`PrefabResolver`] backed by the in-memory drag registry.
+fn registry_prefab_resolver(registry: HashMap<String, Vec<u8>>) -> PrefabResolver {
+    PrefabResolver::new(move |path: &str| {
+        registry
+            .get(path)
+            .cloned()
+            .ok_or_else(|| format!("no dragged-in prefab registered for `{path}`"))
+    })
+}
+
 // ---------- wirescript analysis (LSP-like, for browser IDE) ----------
 
 #[wasm_bindgen]
@@ -25,8 +42,14 @@ pub fn wirescript_diagnostics(source: String, files_json: Option<String>) -> Str
 }
 
 #[wasm_bindgen]
-pub fn wirescript_completions(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
-    analysis::completions(&source, line, col, files_json.as_deref().unwrap_or("{}"))
+pub fn wirescript_completions(source: String, line: u32, col: u32, files_json: Option<String>, prefabs_json: Option<String>) -> String {
+    let registry = parse_prefab_registry(prefabs_json.as_deref().unwrap_or("{}"));
+    let prefab_paths: Vec<String> = {
+        let mut p: Vec<String> = registry.into_keys().collect();
+        p.sort();
+        p
+    };
+    analysis::completions(&source, line, col, files_json.as_deref().unwrap_or("{}"), &prefab_paths)
 }
 
 #[wasm_bindgen]
@@ -62,7 +85,7 @@ pub fn wirescript_inlay_hints(source: String, files_json: Option<String>) -> Str
 // ---------- wirescript compile ----------
 
 #[wasm_bindgen]
-pub fn wirescript_compile(source: String, module_name: Option<String>, files_json: Option<String>) -> Result<Vec<u8>, JsValue> {
+pub fn wirescript_compile(source: String, module_name: Option<String>, files_json: Option<String>, prefabs_json: Option<String>) -> Result<Vec<u8>, JsValue> {
     let file = module_name.as_deref().unwrap_or("inline");
     let loader = make_loader(files_json.as_deref().unwrap_or("{}"));
     let resolved = resolve(&source, file, &loader);
@@ -91,7 +114,11 @@ pub fn wirescript_compile(source: String, module_name: Option<String>, files_jso
     }
 
     let placements = wirescript::layout::layout(&lowered.module).placements;
-    let opts = EmitOptions::default();
+    let registry = parse_prefab_registry(prefabs_json.as_deref().unwrap_or("{}"));
+    let opts = EmitOptions {
+        prefab_resolver: Some(registry_prefab_resolver(registry)),
+        ..Default::default()
+    };
     emit_brz(&lowered.module, &placements, &opts, &template_cache)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }

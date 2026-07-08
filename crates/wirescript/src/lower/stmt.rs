@@ -843,11 +843,21 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
         if ports.is_empty() {
             continue;
         }
+        // Compute targets before building the union (which borrows ctx mut).
+        let out = ctx.lookup_output(&name).cloned();
+        let hub = ctx.exec_signal_hubs.get(&name).copied();
         let exec_out = build_exec_union(ctx, ports);
-        if let Some(out) = ctx.lookup_output(&name).cloned() {
+        if let Some(out) = out {
             ctx.connect(exec_out, out.node_id.port(WirePort::RerInput));
+        } else if let Some(hub) = hub {
+            // Local exec signal with a pre-declared hub (top-level `let x:
+            // exec`): feed the emit union into the hub `on x` already triggers
+            // from.
+            ctx.connect(exec_out, hub.port(WirePort::ExecA));
         } else {
-            // Local exec signal — register the Union output as a Local binding
+            // Fallback: a signal without a pre-declared hub (e.g. declared
+            // inside a handler). Bind the union output directly; `on x` for
+            // these still depends on source order.
             ctx.scope.insert(
                 name,
                 Binding::Local(LocalRecord { port: exec_out }),
