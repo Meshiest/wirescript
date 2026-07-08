@@ -51,6 +51,9 @@ pub mod sym {
     def!(RER_INPUT, "RER_Input");
     def!(RER_OUTPUT, "RER_Output");
     def!(TICKS_TO_WAIT, "TicksToWait");
+    def!(SECONDS_TO_WAIT, "SecondsToWait");
+    def!(ZERO_TICKS_TO_WAIT, "ZeroTicksToWait");
+    def!(ZERO_SECONDS_TO_WAIT, "ZeroSecondsToWait");
     def!(INITIAL_VALUE, "InitialValue");
     def!(EXEC_OUT_A, "ExecOutA");
     def!(EXEC_OUT_B, "ExecOutB");

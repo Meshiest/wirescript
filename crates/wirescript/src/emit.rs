@@ -1432,6 +1432,16 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
             &["Input"],
             false,
         )),
+        "BrickComponentType_WireGraph_Expr_String_ParseInt" => Some((
+            "BrickComponentData_WireGraph_Expr_String_ParseInt",
+            &["Input"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Expr_String_ParseNumber" => Some((
+            "BrickComponentData_WireGraph_Expr_String_ParseNumber",
+            &["Input"],
+            false,
+        )),
 
         // ── Controller / Character / Entity (exec) ─────────────────────────
         "BrickComponentType_WireGraph_Exec_Controller_DisplayText" => Some((
@@ -1457,7 +1467,7 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
         )),
         "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage" => Some((
             "BrickComponentData_WireGraph_Exec_Controller_ShowStatusMessage",
-            &[],
+            &["Message"],
             false,
         )),
         "BrickComponentType_WireGraph_Exec_Character_ShowHint" => Some((
@@ -1468,6 +1478,31 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
         "BrickComponentType_WireGraph_Exec_Character_SetTempPermission" => Some((
             "BrickComponentData_WireGraph_Exec_Character_SetTempPermission",
             &["PermissionTagStr", "bPermissionEnable"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_IncDamage" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_IncDamage",
+            &["Amount"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Character_SetDamage" => Some((
+            "BrickComponentData_WireGraph_Exec_Character_SetDamage",
+            &["Damage"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Controller_SetCanRespawn" => Some((
+            "BrickComponentData_WireGraph_Exec_Controller_SetCanRespawn",
+            &["bCanRespawn"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Entity_SetFrozen" => Some((
+            "BrickComponentData_WireGraph_Exec_Entity_SetFrozen",
+            &["bFrozen"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_PrintToConsole" => Some((
+            "BrickComponentData_WireGraph_Exec_PrintToConsole",
+            &["Text"],
             false,
         )),
         "BrickComponentType_WireGraph_Exec_ChatCommand" => Some((
@@ -1718,6 +1753,27 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
             &["TeamName"],
             false,
         )),
+        "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamLeaderboardValue"
+        | "BrickComponentType_WireGraph_Exec_Gamemode_IncrementTeamLeaderboardValue" => Some((
+            "BrickComponentData_WireGraph_Exec_Gamemode_TeamLeaderboardValue",
+            &["Key", "Value"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue" => Some((
+            "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue",
+            &["Key"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Gamemode_SetTeam" => Some((
+            "BrickComponentData_WireGraph_Exec_Gamemode_SetTeam",
+            &["bPinPlayerToTeam"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_Exec_Gamemode_PlayerWins" => Some((
+            "BrickComponentData_WireGraph_Exec_Gamemode_PlayerWins",
+            &["bTeamWinsInstead"],
+            false,
+        )),
 
         // ── Buffer ─────────────────────────────────────────────────────────
         "BrickComponentType_WireGraphPseudo_BufferTicks" => Some((
@@ -1732,6 +1788,25 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
                 "bHasQueued",
                 "bIsOffTimer",
             ],
+            false,
+        )),
+        "BrickComponentType_WireGraphPseudo_BufferSeconds" => Some((
+            "BrickComponentData_WireGraphPseudo_BufferSeconds",
+            &[
+                "SecondsToWait",
+                "ZeroSecondsToWait",
+                "CurrentTime",
+                "Input",
+                "Output",
+                "Buffered",
+                "bHasQueued",
+                "bIsOffTimer",
+            ],
+            false,
+        )),
+        "BrickComponentType_WireGraphPseudo_Dampen" => Some((
+            "BrickComponentData_WireGraphPseudo_Dampen",
+            &["Target", "Value", "SmoothTime", "Velocity"],
             false,
         )),
 
@@ -2434,6 +2509,94 @@ mod tests {
             Some((
                 "BrickComponentData_WireGraph_Expr_NearlyEqual",
                 ["InputA", "InputB", "Tolerance"].as_slice(),
+                false,
+            )),
+        );
+    }
+
+    #[test]
+    fn literal_params_with_schema_fields_are_mapped() {
+        // Guard for the missing-data-mapping bug class (MakeVector,
+        // EdgeDetector, ShowStatusMessage, Sleep, ...): a literal arg to a
+        // builtin call is inlined into the gate's data properties at lowering,
+        // but build_gate_component only writes fields listed in
+        // data_struct_for_gate — an unlisted field silently drops the value.
+        // For every call param that can carry a literal, if the gate's schema
+        // data struct has a matching field, the mapping must list it.
+        //
+        // Not covered: gates whose data struct name isn't derivable from the
+        // class name (checked via their mapping entry when present), and
+        // gates with no schema struct at all (wire-only inputs — literals
+        // there are a separate lowering concern).
+        use crate::ir::Type;
+        let schema = brdb::schemas::bricks_components_schema_max();
+        let mut findings: Vec<String> = Vec::new();
+        for (_, spec) in crate::catalog::calls::calls().iter() {
+            for p in spec.params.iter() {
+                if !matches!(
+                    p.ty,
+                    Type::String | Type::Int | Type::Float | Type::Bool | Type::Any
+                ) {
+                    continue;
+                }
+                let field = p.port.as_str();
+                let entry = data_struct_for_gate(spec.gate_class);
+                let (struct_name, listed) = match entry {
+                    Some((s, f, _)) => (s.to_string(), Some(f)),
+                    None => (
+                        spec.gate_class
+                            .replace("BrickComponentType_", "BrickComponentData_"),
+                        None,
+                    ),
+                };
+                let covered = listed.is_some_and(|f| f.contains(&field));
+                if covered {
+                    continue;
+                }
+                // Allowlist. SetInventoryEntry builds its data in a dedicated
+                // emit branch; the Teleport gates' Destination/Source are
+                // composite TeleportDestination structs, deliberately
+                // unmapped (wire-only — a scalar literal can't fill them).
+                if matches!(
+                    spec.gate_class,
+                    "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry"
+                        | "BrickComponentType_WireGraph_Exec_Entity_Teleport"
+                        | "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport"
+                ) {
+                    continue;
+                }
+                let has_field = schema
+                    .get_struct(&struct_name)
+                    .zip(schema.intern.get(field))
+                    .is_some_and(|(s, id)| s.get(&id).is_some());
+                if has_field {
+                    findings.push(format!(
+                        "{}({}) class={} field {}",
+                        spec.name, p.name, spec.gate_class, field,
+                    ));
+                }
+            }
+        }
+        findings.sort();
+        assert!(
+            findings.is_empty(),
+            "literal args to these params are silently dropped at emit — \
+             add the field to the gate's data_struct_for_gate entry:\n{}",
+            findings.join("\n")
+        );
+    }
+
+    #[test]
+    fn show_status_message_data_struct_includes_message() {
+        // Regression: the entry existed but with an empty field list, so the
+        // inlined message of `ShowStatusMessage(ctrl, "hi")` was dropped at
+        // emit — the gate pasted with an empty internal Message and no wire.
+        let entry = data_struct_for_gate(crate::ir::gate_class::CONTROLLER_SHOW_STATUS);
+        assert_eq!(
+            entry,
+            Some((
+                "BrickComponentData_WireGraph_Exec_Controller_ShowStatusMessage",
+                ["Message"].as_slice(),
                 false,
             )),
         );

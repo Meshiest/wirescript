@@ -4,6 +4,8 @@
 
 ### Bug Fixes
 
+- **`ShowStatusMessage` writes its literal message** - the gate's emit data mapping had no fields, so a literal message was inlined at lowering and then silently dropped at emit (empty internal `Message`, no wire). The mapping now includes `Message`, like the other messaging gates.
+- **12 more gates persist their literal args** - an audit of every builtin against the schema found the same silent drop on `Sleep` (delay/hold — `SleepTicks` was mapped, the seconds variant wasn't), `Dampen`, `PrintToConsole`, `Get`/`Set`/`IncrementTeamLeaderboardValue`, `IncDamage`, `SetDamage`, `PlayerWins`, `SetCanRespawn`, `SetFrozen`, `SetTeam`, `ParseInt`, `ParseNumber`. A new test cross-checks the whole call catalog against the schema so an unmapped field fails CI.
 - **Recursive chip/mod calls error instead of crashing** - a chip or mod whose body calls itself, directly or mutually (`chip Foo() { Foo() }`), recursed forever in lowering and stack-overflowed the process. Now a `WS020` error
 
 ### Editor / IDE
