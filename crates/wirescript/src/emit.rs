@@ -1404,6 +1404,7 @@ fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'s
                 "OutlineSize",
                 "Justification",
                 "Transition",
+                "Easing",
                 "Lifetime",
                 "TextId",
             ],

@@ -265,6 +265,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::opt("justify", WirePort::Justification, Type::Int),
                 CallParam::opt("lifetime", WirePort::Lifetime, Type::Float),
                 CallParam::opt("transition", WirePort::Transition, Type::Float),
+                CallParam::opt("easing", WirePort::Easing, Type::Int),
                 CallParam::opt("textId", WirePort::TextId, Type::Int),
             ],
             exec: true,

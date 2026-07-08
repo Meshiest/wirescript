@@ -413,9 +413,10 @@ Display HUD text to a player. Receiver on `controller`.
 | `angle` | `float` | No | Rotation angle |
 | `fontSize` | `float` | No | Font size |
 | `outlineSize` | `float` | No | Text outline size |
-| `justify` | `int` | No | Text justification |
+| `justify` | `int` | No | Text justification — `"Left"` / `"Center"` / `"Right"` (enum name) |
 | `lifetime` | `float` | No | Display duration (seconds) |
-| `transition` | `float` | No | Transition animation duration |
+| `transition` | `float` | No | Seconds to interpolate to the new state when re-emitted with the same `textId` |
+| `easing` | `int` | No | Interpolation curve for `transition` — `"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"` (enum name) |
 | `textId` | `int` | No | Unique ID for updating text in-place |
 
 ```wirescript

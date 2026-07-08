@@ -305,6 +305,7 @@ wire_ports! {
     ThisDestination = "ThisDestination",
     TicksToWait = "TicksToWait",
     Transition = "Transition",
+    Easing = "Easing",
     Value = "Value",
     VarRef = "VarRef",
     Vector = "Vector",
