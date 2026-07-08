@@ -599,3 +599,113 @@ fn cursor_importing_broken_lib_full_lsp_path_terminates() {
         est.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2026-07-08 incident: recursive chip/mod calls overflow the lowering stack.
+//
+// A named chip's body is lowered at its first call site
+// (lower_chip_call_instance -> build_chip_module); the compiled template is
+// only inserted into the cache AFTER that build returns. A chip whose body
+// calls itself (directly or mutually) therefore always misses the cache and
+// re-enters the build, recursing until the stack overflows and the process
+// aborts. The LSP runs this on every keystroke via collect_estimates
+// (estimate_handler compiles a synthetic chip from each handler body), so
+// opening such a file killed the LSP outright. Inline mods hit the same
+// recursion through lower_chip_call_inline expanding the body in-place.
+// ---------------------------------------------------------------------------
+
+/// Minimised shape of the crashing file: a chip declared inside an `on`
+/// handler, calling itself from its own body, plus a kick-off call.
+const RECURSIVE_CHIP_WS: &str = r#"
+array items: controller[]
+
+on RoundStart {
+  var index: int = 0
+  chip loop() {
+    Greet(items[index])
+    index += 1
+    if items[index] { loop() }
+  }
+  if items[index] { loop() }
+}
+
+chip Greet(who: controller) {
+  ShowStatusMessage(who, "hello")
+}
+"#;
+
+/// Mutual recursion through two top-level chips.
+const MUTUAL_RECURSION_WS: &str = r#"
+chip Ping(n: int) { Pong(n + 1) }
+chip Pong(n: int) { Ping(n + 1) }
+on RoundStart { Ping(0) }
+"#;
+
+/// Self-recursive inline mod (expanded at the call site, same blowup).
+const RECURSIVE_MOD_WS: &str = r#"
+mod Again(n: int) { Again(n + 1) }
+on RoundStart { Again(0) }
+"#;
+
+fn lower_source(src: &str, file: &str) -> wirescript::lower::LowerResult {
+    let loader = MemLoader { files: HashMap::new() };
+    let resolved = resolve(src, file, &loader);
+    let tc = typecheck(&resolved.ast, file);
+    wirescript::lower::lower(wirescript::lower::LowerInput {
+        ast: &resolved.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file,
+        module_name: None,
+        template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
+    })
+}
+
+fn assert_recursion_error(label: &str, src: &str) {
+    let r = lower_source(src, "rec.ws");
+    assert!(
+        r.diagnostics.iter().any(|d| d.severity == wirescript::Severity::Error
+            && d.code == "WS020"
+            && d.message.contains("recursive")),
+        "{label}: expected a WS020 recursive-call error, got: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn recursive_chip_call_lowers_with_diagnostic() {
+    arm_watchdog(20, "lower(recursive chip in handler)");
+    assert_recursion_error("handler-nested chip", RECURSIVE_CHIP_WS);
+}
+
+#[test]
+fn mutually_recursive_chips_lower_with_diagnostic() {
+    arm_watchdog(20, "lower(mutually recursive chips)");
+    assert_recursion_error("mutual chips", MUTUAL_RECURSION_WS);
+}
+
+#[test]
+fn recursive_inline_mod_lowers_with_diagnostic() {
+    arm_watchdog(20, "lower(recursive inline mod)");
+    assert_recursion_error("inline mod", RECURSIVE_MOD_WS);
+}
+
+/// The exact LSP analyze path over the crashing shape (this is what ran on
+/// every keystroke and took the server down).
+#[test]
+fn recursive_chip_estimates_terminate() {
+    arm_watchdog(20, "collect_estimates(recursive chip)");
+    let loader = MemLoader { files: HashMap::new() };
+    let resolved = resolve(RECURSIVE_CHIP_WS, "rec.ws", &loader);
+    let tc = typecheck(&resolved.ast, "rec.ws");
+    let est = collect_estimates(&resolved.ast, &tc, "rec.ws");
+    eprintln!("estimates: {} entries", est.len());
+}
+
+/// Full LSP request surface (symbols, estimates, hints, format, hover sweep).
+#[test]
+fn recursive_chip_full_lsp_surface_terminates() {
+    arm_watchdog(30, "lsp_surface(recursive chip)");
+    let loader = MemLoader { files: HashMap::new() };
+    lsp_surface("recursive-chip", RECURSIVE_CHIP_WS, "rec.ws", &loader, true);
+}

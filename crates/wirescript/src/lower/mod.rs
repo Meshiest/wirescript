@@ -105,6 +105,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         template_cache: input.template_cache.clone(),
         await_armed_port: None,
         pending_inline_record: None,
+        chip_call_stack: Vec::new(),
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -389,6 +390,11 @@ pub fn compile_chip_template(
         template_cache: cache.clone(),
         await_armed_port: None,
         pending_inline_record: None,
+        chip_call_stack: if chip_decl.name.is_empty() {
+            Vec::new()
+        } else {
+            vec![chip_decl.name.clone()]
+        },
     };
 
     // Create input ports

@@ -88,6 +88,12 @@ pub(super) struct LowerCtx<'a> {
     /// mod call. Its internal output nodes are removed, so `let s = mod(...)`
     /// consumes this to bind `s` as a record (`s.field` reads the source port).
     pub(super) pending_inline_record: Option<HashMap<crate::intern::Sym, Binding>>,
+    /// Names of chips/mods whose bodies are being lowered on the current call
+    /// path (child contexts inherit a copy). Every call is expanded into the
+    /// wire graph at compile time, so a body that (transitively) calls itself
+    /// would rebuild forever — `lower_chip_call` checks this stack and emits
+    /// WS020 instead of recursing.
+    pub(super) chip_call_stack: Vec<String>,
 }
 
 impl<'a> LowerCtx<'a> {

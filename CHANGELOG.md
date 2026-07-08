@@ -2,6 +2,10 @@
 
 ## 0.10.2 - 2026-07-08
 
+### Bug Fixes
+
+- **Recursive chip/mod calls error instead of crashing** - a chip or mod whose body calls itself, directly or mutually (`chip Foo() { Foo() }`), recursed forever in lowering and stack-overflowed the process. Now a `WS020` error
+
 ### Editor / IDE
 
 - **Method/call hovers only fire on the actual access** - hovering a variable/let/param whose name matches an array method (`var sum = 0`) or a builtin receiver-method (`var Teleport = 0`) showed the method/call hover instead of the symbol's own declaration. Array-method hovers now require a `.method` access, and builtin call/method hovers require actual call/method position (`recv.method` or `name(`); a bare identifier hovers as itself.

@@ -59,11 +59,35 @@ pub(super) fn lower_chip_call(
     args: &[CallArg],
     range: &SourceRange,
 ) -> PortRef {
-    if chip_decl.inline {
-        return lower_chip_call_inline(ctx, chip_decl, args, range);
+    let named = !chip_decl.name.is_empty();
+    if named && ctx.chip_call_stack.contains(&chip_decl.name) {
+        ctx.diagnostics.push(Diagnostic::error(
+            "WS020",
+            format!(
+                "recursive call to `{}` — chips and mods cannot call themselves \
+                 (directly or mutually): every call is expanded into the wire \
+                 graph at compile time. Re-trigger an exec input or use a \
+                 buffer-based loop instead.",
+                chip_decl.name
+            ),
+            range.clone(),
+        ));
+        return synthesise_unsupported_range(ctx, range);
+    }
+    if named {
+        ctx.chip_call_stack.push(chip_decl.name.clone());
     }
 
-    lower_chip_call_instance(ctx, chip_decl, args, range)
+    let result = if chip_decl.inline {
+        lower_chip_call_inline(ctx, chip_decl, args, range)
+    } else {
+        lower_chip_call_instance(ctx, chip_decl, args, range)
+    };
+
+    if named {
+        ctx.chip_call_stack.pop();
+    }
+    result
 }
 
 pub(super) fn lower_chip_call_inline(
@@ -560,6 +584,7 @@ fn build_chip_module(
         template_cache: ctx.template_cache.clone(),
         await_armed_port: None,
         pending_inline_record: None,
+        chip_call_stack: ctx.chip_call_stack.clone(),
     };
 
     // Inherit declarations from the parent scope so the chip body can call
