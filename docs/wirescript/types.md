@@ -254,6 +254,8 @@ var y: float = 0.0
 | `float` | `bool` | Coerce |
 | `character` | `entity` | Coerce (subtype) |
 | `controller` | `entity` | Coerce |
+| `entity` | `character` | Coerce (wired directly — an entity wire can carry a player, e.g. a sweep hit) |
+| `entity` | `controller` | Coerce (wired directly) |
 | `character` | `controller` | Coerce (wired directly) |
 | `controller` | `character` | Coerce (wired directly) |
 | `rotator` | `quat` | Coerce (interchangeable rotation values) |

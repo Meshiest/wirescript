@@ -142,7 +142,9 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     port: "Damage",
                     ty: Type::Float,
                 },
-                entity("attacker", "Attacker"),
+                // The attacker is a player character. The weapon stays
+                // `entity`. it's an item, matched by entity-typed asset refs.
+                character("attacker", "Attacker"),
                 entity("attackerWeapon", "AttackerWeapon"),
                 EventDataBinding {
                     name: "attackerWeaponName",
@@ -194,7 +196,11 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickComponentType_WireGraph_Exec_ChatCommand",
             vec![
                 controller("controller", "Controller"),
-                EventDataBinding { name: "arguments", port: "Arguments", ty: Type::String },
+                EventDataBinding {
+                    name: "arguments",
+                    port: "Arguments",
+                    ty: Type::String,
+                },
             ],
             // `on ChatCommand("greet", "Greets you", player, args)`
             vec!["CommandName", "HelpText"],

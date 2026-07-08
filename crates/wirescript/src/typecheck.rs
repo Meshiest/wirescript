@@ -2633,6 +2633,16 @@ mod tests {
         assert_no_diags(&r);
     }
 
+    #[test]
+    fn entity_receiver_accepts_character_controller_methods() {
+        // An entity wire (e.g. Sweep's HitEntity) can be a player, so
+        // character/controller receiver methods and params accept it.
+        let r = tc("in e: entity\nin t: exec\non t { e.ShowStatusMessage(\"hi\") }");
+        assert_no_diags(&r);
+        let r2 = tc("in e: entity\nin t: exec\non t { ShowStatusMessage(e, \"hi\") }");
+        assert_no_diags(&r2);
+    }
+
     // ---- array index ----
     #[test]
     fn array_index_returns_element_type() {

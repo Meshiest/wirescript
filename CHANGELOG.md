@@ -2,11 +2,24 @@
 
 ## 0.10.2 - 2026-07-08
 
+### Language / Compiler
+
+- **emit/await loops with `buffer emit`** - a buffered back-edge `emit` after an `await` now forms a working loop: `buffer emit sig` (1 tick), `buffer(N)`, `buffer(0.5s)`, `buffer(myVar)`, or `buffer(delay, hold)` inserts a `Buffer(Ticks|Seconds)` gate — the tick barrier a wire-graph cycle needs. Constants bake into the gate; variables wire into the duration port.
+- **Payload ferrying** - `emit sig = value` on a local signal stores the value in hidden per-signal vars (one per record field); `let x = await sig` / `let { a, b } = await sig` reads them back, so loop state can ride the signal. Cost: one `Var_Set` per field per emit, one `Var_Get` per field at the await. Previously the value was dropped.
+- **Body-level `let x: exec` wires correctly** - signals declared inside a body got no hub, so `await x` lowered to a dead `_Unsupported` placeholder.
+- **Signals are scoped per declaration** - two mods each declaring `let loop: exec` shared one signal (keyed by bare name): the second's `await` went dead and its emits cross-wired into the first's loop. Hubs are now keyed per declaration and resolved through the scope.
+- **Handler-local array vars re-init correctly** - `var nums = [1,2,3]` in a body emitted a `Var_Set` wired from the ArrayVar's nonexistent `VarRef` port (in-game: "Wire source port VarRef does not exist in source component"); arrays now rebuild via clear + push.
+- **Layout no longer panics on multi-cycle SCCs** - one feedback edge was dropped per SCC, so two loops sharing a chain crashed layout; it now iterates until acyclic.
+
+### Language / Compiler (types)
+
+- **`entity` coerces to `character`/`controller`** - an entity wire can carry a player (e.g. `Sweep`'s `HitEntity`), so character/controller receiver methods and typed params now accept entity values, wiring directly with no adapter gate — same rule as `character` ↔ `controller`.
+
 ### Bug Fixes
 
-- **`ShowStatusMessage` writes its literal message** - the gate's emit data mapping had no fields, so a literal message was inlined at lowering and then silently dropped at emit (empty internal `Message`, no wire). The mapping now includes `Message`, like the other messaging gates.
-- **12 more gates persist their literal args** - an audit of every builtin against the schema found the same silent drop on `Sleep` (delay/hold — `SleepTicks` was mapped, the seconds variant wasn't), `Dampen`, `PrintToConsole`, `Get`/`Set`/`IncrementTeamLeaderboardValue`, `IncDamage`, `SetDamage`, `PlayerWins`, `SetCanRespawn`, `SetFrozen`, `SetTeam`, `ParseInt`, `ParseNumber`. A new test cross-checks the whole call catalog against the schema so an unmapped field fails CI.
-- **Recursive chip/mod calls error instead of crashing** - a chip or mod whose body calls itself, directly or mutually (`chip Foo() { Foo() }`), recursed forever in lowering and stack-overflowed the process. Now a `WS020` error
+- **`CharacterDamaged` attacker is `character`-typed** - the attacker binding was `entity`, so character/controller receiver methods and typed params rejected it; attackers are always player characters. The weapon binding stays `entity` (an item, matched by entity-typed asset refs).
+- `ShowStatusMessage` and 12 more gates persist their literal args
+- **Recursive chip/mod calls error instead of crashing** - Now a `WS020` error
 
 ### Editor / IDE
 

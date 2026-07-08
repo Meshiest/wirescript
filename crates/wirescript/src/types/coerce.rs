@@ -134,6 +134,12 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     if matches!((from, to), (Character, Controller) | (Controller, Character)) {
         return CoerceRule::Coerce;
     }
+    // Entity → Character/Controller: wires carry plain object refs and an
+    // entity can be a player (e.g. Sweep's HitEntity), so the downcast is
+    // implicit — it wires directly, like character ↔ controller (no adapter).
+    if matches!((from, to), (Entity, Character) | (Entity, Controller)) {
+        return CoerceRule::Coerce;
+    }
 
     // Rotator ↔ Quat: a rotation and a quaternion are interchangeable rotation
     // values at the wire level (the engine's rotation gates accept either), so a
@@ -225,6 +231,13 @@ mod tests {
         assert_eq!(coerce(&rec, &Type::Vector), CoerceRule::Mismatch);
         // a record target is not unwrapped
         assert_eq!(coerce(&rec, &Type::Record(vec![])), CoerceRule::Mismatch);
+    }
+    #[test]
+    fn entity_downcasts_to_character_and_controller() {
+        // A Sweep's HitEntity (or any entity wire) can be a player — wires
+        // carry plain object refs, so the downcast is implicit in-game.
+        assert_eq!(coerce(&Type::Entity, &Type::Character), CoerceRule::Coerce);
+        assert_eq!(coerce(&Type::Entity, &Type::Controller), CoerceRule::Coerce);
     }
     #[test]
     fn numeric_coerces_both_ways() {
