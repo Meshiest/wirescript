@@ -107,9 +107,10 @@ on player {
         "unexpected errors: {:?}",
         r.diagnostics
     );
-    // Two returns + fallthrough needs 2 union gates (chain):
+    // Two returns + fallthrough needs 2 merge union gates (chain):
     // union1 merges return1 + return2, union2 merges union1 + fallthrough.
-    // Plus the if-join unions (2 of them). Total >= 4.
+    // (The if-joins collapse: each has only its else arm, so the prune
+    // splices them as pass-throughs.)
     let union_count = r
         .module
         .nodes
@@ -117,8 +118,8 @@ on player {
         .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Union")
         .count();
     assert!(
-        union_count >= 4,
-        "two returns + fallthrough should chain unions, found {union_count}"
+        union_count >= 2,
+        "two returns + fallthrough should chain merge unions, found {union_count}"
     );
     // No union input port should have more than one wire
     for node in r.module.nodes.values() {

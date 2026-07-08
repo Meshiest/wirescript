@@ -227,8 +227,13 @@ impl<'a> Parser<'a> {
             if let Some(last) = self.tokens.last() {
                 return last.clone();
             }
-            return Token { kind: TokenKind::Eof, text: String::new(),
-                start: Default::default(), end: Default::default(), value: None };
+            return Token {
+                kind: TokenKind::Eof,
+                text: String::new(),
+                start: Default::default(),
+                end: Default::default(),
+                value: None,
+            };
         }
         let t = self.tokens[self.pos].clone();
         self.pos += 1;
@@ -565,6 +570,30 @@ impl<'a> Parser<'a> {
                 None
             };
             self.expect(TokenKind::Op, Some("="));
+            // `let { a, b } = await sig` — destructure the awaited signal's
+            // ferried payload fields into locals.
+            if self.check(TokenKind::Kw, Some("await")) {
+                let await_start = self.advance().start;
+                if let Stmt::Await(mut a) = self.parse_await_inner(await_start, None) {
+                    let pairs: Vec<(String, String)> = match &binding {
+                        LetBinding::RecordDestruct { fields, .. } => fields
+                            .iter()
+                            .filter_map(|f| match f {
+                                RecordDestructField::Named { name, alias, .. } => Some((
+                                    name.clone(),
+                                    alias.clone().unwrap_or_else(|| name.clone()),
+                                )),
+                                RecordDestructField::Rest { .. } => None,
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    a.destructure = Some(pairs);
+                    a.range = self.make_range(start, a.range.end);
+                    self.eat_stmt_end();
+                    return TopDecl::Await(a);
+                }
+            }
             let value = self.parse_expr();
             let end = value.range().end;
             self.eat_stmt_end();
@@ -632,14 +661,22 @@ impl<'a> Parser<'a> {
             None
         };
         // `let name: exec` — local exec signal, no value needed
-        if let Some(TypeExpr::Name { name: ref type_name, range: ref type_range }) = typ {
+        if let Some(TypeExpr::Name {
+            name: ref type_name,
+            range: ref type_range,
+        }) = typ
+        {
             if type_name == "exec" && !self.check(TokenKind::Op, Some("=")) {
                 let end = type_range.end;
                 self.eat_stmt_end();
                 return TopDecl::Let(LetDecl {
                     binding,
                     typ,
-                    value: Expr::IntLit { value: 0, text: "0".into(), range: self.make_range(start, end) },
+                    value: Expr::IntLit {
+                        value: 0,
+                        text: "0".into(),
+                        range: self.make_range(start, end),
+                    },
                     range: self.make_range(start, end),
                 });
             }
@@ -1534,6 +1571,14 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "buffer" => {
+                    // `buffer(...) emit` / `buffer emit` is the emit modifier;
+                    // `buffer name = ...` is the value declaration.
+                    let next = self.peek_at(1);
+                    if next.kind == TokenKind::LParen
+                        || (next.kind == TokenKind::Kw && next.text == "emit")
+                    {
+                        return Some(self.parse_buffered_emit());
+                    }
                     if let TopDecl::Buffer(v) = self.parse_buffer_decl() {
                         return Some(Stmt::Buffer(v));
                     }
@@ -1656,8 +1701,67 @@ impl<'a> Parser<'a> {
         Stmt::Emit(Emit {
             name: name_tok.text,
             value,
+            buffer: None,
             range: self.make_range(start, end),
         })
+    }
+
+    /// `buffer(delay[, hold]) emit name [= value]` — a buffered emit. The
+    /// spec's Buffer gate delays the emit's exec (the tick-crossing barrier
+    /// that legalises loop back-edges).
+    fn parse_buffered_emit(&mut self) -> Stmt {
+        let spec = self.parse_buffer_spec();
+        let stmt = self.parse_emit();
+        match stmt {
+            Stmt::Emit(mut e) => {
+                e.range = self.make_range(spec.range.start, e.range.end);
+                e.buffer = Some(spec);
+                Stmt::Emit(e)
+            }
+            other => other,
+        }
+    }
+
+    /// `buffer(delay[, hold])` with an optional `s` unit after each duration
+    /// (`buffer(0.5s)`, `buffer(myVar s)` — seconds; unadorned = ticks), or
+    /// bare `buffer` (before `emit`) — one tick.
+    fn parse_buffer_spec(&mut self) -> BufferSpec {
+        let buffer_tok = self.expect(TokenKind::Kw, Some("buffer"));
+        let start = buffer_tok.start;
+        if !self.check(TokenKind::LParen, None) {
+            return BufferSpec {
+                delay: None,
+                hold: None,
+                seconds: false,
+                range: self.make_range(start, buffer_tok.end),
+            };
+        }
+        self.advance(); // consume `(`
+        let delay = self.parse_expr();
+        let mut seconds = self.eat_seconds_unit();
+        let hold = if self.match_tok(TokenKind::Comma, None).is_some() {
+            let h = self.parse_expr();
+            seconds |= self.eat_seconds_unit();
+            Some(h)
+        } else {
+            None
+        };
+        let end = self.expect(TokenKind::RParen, None).end;
+        BufferSpec {
+            delay: Some(delay),
+            hold,
+            seconds,
+            range: self.make_range(start, end),
+        }
+    }
+
+    /// Consume a trailing `s` seconds-unit marker after a duration expression.
+    fn eat_seconds_unit(&mut self) -> bool {
+        if self.peek().kind == TokenKind::Ident && self.peek().text == "s" {
+            self.advance();
+            return true;
+        }
+        false
     }
 
     fn parse_await_stmt(&mut self) -> Stmt {
@@ -1679,6 +1783,7 @@ impl<'a> Parser<'a> {
         let end = exec_expr.range().end;
         Stmt::Await(AwaitStmt {
             binding,
+            destructure: None,
             value_expr,
             exec_expr,
             range: self.make_range(start, end),
@@ -2089,7 +2194,9 @@ impl<'a> Parser<'a> {
                     // Tuple literal: (expr, expr, ...)
                     let mut elements = vec![e];
                     while self.match_tok(TokenKind::Comma, None).is_some() {
-                        if self.check(TokenKind::RParen, None) { break; }
+                        if self.check(TokenKind::RParen, None) {
+                            break;
+                        }
                         elements.push(self.parse_expr());
                     }
                     let end = self.expect(TokenKind::RParen, None);
@@ -2097,10 +2204,18 @@ impl<'a> Parser<'a> {
                     // For now, use existing tuple handling: emit as a Call to a synthetic tuple constructor?
                     // Actually, tuples in Wirescript are already handled by the chip output system.
                     // Create a RecordLit with numeric field names for now:
-                    let fields: Vec<crate::ast::RecordLitField> = elements.into_iter().enumerate().map(|(i, expr)| {
-                        let range = expr.range().clone();
-                        crate::ast::RecordLitField::Named { name: i.to_string(), value: expr, range }
-                    }).collect();
+                    let fields: Vec<crate::ast::RecordLitField> = elements
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, expr)| {
+                            let range = expr.range().clone();
+                            crate::ast::RecordLitField::Named {
+                                name: i.to_string(),
+                                value: expr,
+                                range,
+                            }
+                        })
+                        .collect();
                     Expr::RecordLit {
                         fields,
                         range: self.make_range(t.start, end.end),

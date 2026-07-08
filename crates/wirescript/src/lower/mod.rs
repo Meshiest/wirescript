@@ -15,12 +15,11 @@ use crate::catalog::events::find_event;
 use crate::catalog::operators::OpRule;
 use crate::diagnostic::{Diagnostic, SourceRange};
 use crate::intern::{intern, intern_static, sym};
-use crate::ir::gate_class as gc;
 use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder, port_ref};
+use crate::ir::gate_class as gc;
 use crate::ir::{
     GateIO, Literal, Module, NodeId, NodeKind, PortRef, PortSpec, ROOT_SCOPE_ID, ScopeId,
-    ScopeInfo, ScopeKind, Type,
-    port_registry::WirePort,
+    ScopeInfo, ScopeKind, Type, port_registry::WirePort,
 };
 use crate::template_cache::TemplateCache;
 use crate::typecheck::TypeCheckResult;
@@ -29,8 +28,8 @@ mod context;
 use context::*;
 
 mod predeclare;
-use predeclare::*;
 pub use predeclare::expr_to_literal;
+use predeclare::*;
 
 mod decl;
 use decl::*;
@@ -101,9 +100,13 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         },
         pending_emits: HashMap::new(),
         exec_signal_hubs: HashMap::new(),
+        exec_signal_keys: HashMap::new(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: input.template_cache.clone(),
         await_armed_port: None,
+        signal_awaits: HashMap::new(),
+        exec_branch_depth: 0,
+        exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
         chip_call_stack: Vec::new(),
     };
@@ -310,30 +313,70 @@ fn inline_orphan_literals(module: &mut Module) {
     }
 }
 
-/// Remove `Exec_Union` nodes whose ExecOut feeds nothing. Repeats until
-/// the graph is stable so a union removed for being a sink can also let
-/// its upstream unions become sinks and fall away in turn. Recurses
-/// into chip sub-modules.
+/// Clean up degenerate `Exec_Union` nodes, repeating to a fixpoint (each
+/// removal can degrade another union). Recurses into chip sub-modules.
+///
+/// - **No outgoing wires** (sink): remove the union and its incoming wires.
+/// - **No incoming wires** (dead source, e.g. an if-join whose branches both
+///   terminated via `return`/final `emit`): remove it and its outgoing wires —
+///   whatever it fed keeps its other sources only.
+/// - **Exactly one incoming wire** (pass-through): splice it out, rewiring its
+///   consumers straight to the single source.
 fn prune_dead_exec_unions(module: &mut Module) {
     loop {
-        let wire_sources: HashSet<NodeId> = module.wires.iter().map(|w| w.source.node_id).collect();
-        let dead: Vec<NodeId> = module
+        let mut in_count: HashMap<NodeId, usize> = HashMap::new();
+        let mut out_count: HashMap<NodeId, usize> = HashMap::new();
+        for w in &module.wires {
+            *out_count.entry(w.source.node_id).or_default() += 1;
+            *in_count.entry(w.target.node_id).or_default() += 1;
+        }
+        let unions: Vec<NodeId> = module
             .nodes
             .iter()
             .filter(|(_, n)| n.gate_class == gc::UNION)
-            .filter(|(id, _)| !wire_sources.contains(*id))
             .map(|(id, _)| *id)
             .collect();
-        if dead.is_empty() {
+
+        // Dead sinks/sources: no outgoing, or no incoming.
+        let dead: Vec<NodeId> = unions
+            .iter()
+            .copied()
+            .filter(|id| {
+                out_count.get(id).copied().unwrap_or(0) == 0
+                    || in_count.get(id).copied().unwrap_or(0) == 0
+            })
+            .collect();
+        if !dead.is_empty() {
+            let dead_set: HashSet<NodeId> = dead.iter().copied().collect();
+            for id in &dead {
+                module.nodes.remove(id);
+            }
+            module.wires.retain(|w| {
+                !dead_set.contains(&w.source.node_id) && !dead_set.contains(&w.target.node_id)
+            });
+            continue;
+        }
+
+        // Pass-throughs: exactly one input — splice.
+        let Some(&splice) = unions
+            .iter()
+            .find(|id| in_count.get(id).copied().unwrap_or(0) == 1)
+        else {
             break;
+        };
+        let src = module
+            .wires
+            .iter()
+            .find(|w| w.target.node_id == splice)
+            .map(|w| w.source.clone())
+            .expect("counted one incoming wire");
+        for w in module.wires.iter_mut() {
+            if w.source.node_id == splice {
+                w.source = src.clone();
+            }
         }
-        let dead_set: HashSet<NodeId> = dead.iter().copied().collect();
-        for id in &dead {
-            module.nodes.remove(id);
-        }
-        module.wires.retain(|w| {
-            !dead_set.contains(&w.source.node_id) && !dead_set.contains(&w.target.node_id)
-        });
+        module.wires.retain(|w| w.target.node_id != splice);
+        module.nodes.remove(&splice);
     }
     for child_module in module.chips.values_mut() {
         prune_dead_exec_unions(child_module);
@@ -386,9 +429,13 @@ pub fn compile_chip_template(
         type_aliases: HashMap::new(),
         pending_emits: HashMap::new(),
         exec_signal_hubs: HashMap::new(),
+        exec_signal_keys: HashMap::new(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: cache.clone(),
         await_armed_port: None,
+        signal_awaits: HashMap::new(),
+        exec_branch_depth: 0,
+        exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
         chip_call_stack: if chip_decl.name.is_empty() {
             Vec::new()

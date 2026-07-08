@@ -1,5 +1,51 @@
 use super::*;
 
+#[test]
+fn record_payload_ferries_and_destructures() {
+    // `emit loop = { sum: 0, index: 0 }` on a local signal must write one
+    // payload store per field, and `let { sum, index } = await loop` must read
+    // them back into locals on the resumed chain.
+    let src = "in run: exec\n\
+               on run {\n\
+                 let loop: exec\n\
+                 emit loop = { sum: 1, index: 2 }\n\
+                 let { sum, index } = await loop\n\
+                 PrintToConsole(\"${sum} ${index}\")\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "_Unsupported"),
+        "destructured payload fields must resolve; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    // 3 PseudoVars: sum store, index store, armed flag.
+    let vars = gate_count(&r, "BrickComponentType_WireGraphPseudo_Var");
+    assert!(
+        vars >= 3,
+        "expected 2 payload stores + armed flag, got {vars}"
+    );
+    // 2 payload writes on the emit chain (+ arm/reset sets).
+    let sets = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    assert!(
+        sets >= 4,
+        "expected per-field Var_Set + arm/reset, got {sets}"
+    );
+    let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    let cont = find_gate(&r, "BrickComponentType_WireGraph_Exec_PrintToConsole");
+    assert!(
+        wired_reachable(&r, run, cont),
+        "continuation must be exec-wired"
+    );
+}
+
 /// Test 1: Record literal and field access.
 /// `type State = { val: *int }` with `var n` makes `s.val` alias `n`.
 /// Writing `s.val = 42` in exec should produce a Var_Set targeting `n`'s PseudoVar.
@@ -23,18 +69,14 @@ on RoundStart { s.val = 42 }",
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraphPseudo_Var"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
         .expect("expected a PseudoVar node for `var n`");
 
     let var_set = r
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
         .expect("expected a Var_Set node");
 
     let ref_wire = r
@@ -70,14 +112,8 @@ on RoundStart { bump(s) }",
 
     // The mod inlines, so we should see either an IncVar or a Var_Set for
     // the `s.counter = s.counter + 1` increment.
-    let has_incr = has_gate(
-        &r,
-        "BrickComponentType_WireGraph_Exec_Var_Increment",
-    );
-    let has_set = has_gate(
-        &r,
-        "BrickComponentType_WireGraph_Exec_Var_Set",
-    );
+    let has_incr = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Increment");
+    let has_set = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
     assert!(
         has_incr || has_set,
         "record ref field increment inside mod should produce IncVar or Var_Set"
@@ -88,9 +124,7 @@ on RoundStart { bump(s) }",
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraphPseudo_Var"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
         .expect("expected a PseudoVar for `var n`");
 
     // Check that at least one VarRef wire leads back to n's PseudoVar.
@@ -127,19 +161,14 @@ on RoundStart { m.data.push(42) }",
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
         .expect("expected an ArrayVar pseudo-node for `array arr`");
 
     let push_node = r
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class
-                == "BrickComponentType_WireGraph_Exec_ArrayVar_Push"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
         .unwrap();
 
     let ref_wire = r
@@ -215,11 +244,7 @@ out result = sum",
     );
 
     // The output node should exist.
-    assert_eq!(
-        r.module.outputs.len(),
-        1,
-        "should have one output port"
-    );
+    assert_eq!(r.module.outputs.len(), 1, "should have one output port");
 }
 
 /// Test 6: Mod parameter destructuring.
@@ -238,10 +263,15 @@ on RoundStart { set_val(s) }",
     );
     assert_no_errors(&r);
     // Should have a Var_Set gate targeting n's PseudoVar
-    let has_set = r.module.nodes.values().any(|n| {
-        n.gate_class.contains("Var_Set")
-    });
-    assert!(has_set, "destructured param should allow writing through ref field");
+    let has_set = r
+        .module
+        .nodes
+        .values()
+        .any(|n| n.gate_class.contains("Var_Set"));
+    assert!(
+        has_set,
+        "destructured param should allow writing through ref field"
+    );
 }
 
 /// Test 7: Nested record field access.
@@ -268,18 +298,14 @@ on RoundStart { o.inner.x = 42 }",
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraphPseudo_Var"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
         .expect("expected a PseudoVar for `var x`");
 
     let var_set = r
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
         .expect("expected a Var_Set node");
 
     let ref_wire = r
@@ -320,9 +346,7 @@ out result = sum",
         .module
         .nodes
         .values()
-        .filter(|n| {
-            n.gate_class == "_Unsupported"
-        })
+        .filter(|n| n.gate_class == "_Unsupported")
         .count();
     assert_eq!(
         unsupported_count, 0,
@@ -342,10 +366,7 @@ on tick {
 }",
     );
     assert_no_errors(&r);
-    let get_count = gate_count(
-        &r,
-        "BrickComponentType_WireGraph_Exec_Var_Get",
-    );
+    let get_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
     assert!(
         get_count >= 1,
         "let x = var should emit a Var_Get to capture the value"
@@ -378,32 +399,46 @@ on tick {
         set_count
     );
     // The Var_Set must be connected to the exec chain (not orphaned)
-    let set_node = r.module.nodes.values()
+    let set_node = r
+        .module
+        .nodes
+        .values()
         .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
         .expect("must have a Var_Set node");
     let has_exec_in = r.module.wires.iter().any(|w| {
         w.target.node_id == set_node.id && w.target.port == crate::ir::port_registry::WirePort::Exec
     });
-    assert!(has_exec_in, "Var_Set must have exec input wired (not orphaned)");
+    assert!(
+        has_exec_in,
+        "Var_Set must have exec input wired (not orphaned)"
+    );
 
     // Also verify it compiles to brz without errors
     let lr = crate::layout::layout(&r.module);
-    let brz = crate::emit::emit_brz(&r.module, &lr.placements, &Default::default(), &std::sync::Arc::new(crate::template_cache::TemplateCache::new()));
+    let brz = crate::emit::emit_brz(
+        &r.module,
+        &lr.placements,
+        &Default::default(),
+        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+    );
     assert!(brz.is_ok(), "should compile to brz: {:?}", brz.err());
 }
 
 #[test]
 fn dump_record_vs_direct_cond_set() {
     // Version A: direct *int param (old style)
-    let r_direct = compile("\
+    let r_direct = compile(
+        "\
 var flag: int = 0
 mod cond_set(f_val: *int, cond: bool) {
   if cond { f_val |= 1 }
 }
 in tick: exec
-on tick { cond_set(flag, true) }");
+on tick { cond_set(flag, true) }",
+    );
     // Version B: record param (new style)
-    let r_record = compile("\
+    let r_record = compile(
+        "\
 type F = { val: *int }
 var flag: int = 0
 mod cond_set(f: F, cond: bool) {
@@ -413,25 +448,36 @@ in tick: exec
 on tick {
   let f: F = { val: flag }
   cond_set(f, true)
-}");
+}",
+    );
     assert_no_errors(&r_direct);
     assert_no_errors(&r_record);
 
     let direct_sets = gate_count(&r_direct, "BrickComponentType_WireGraph_Exec_Var_Set");
     let record_sets = gate_count(&r_record, "BrickComponentType_WireGraph_Exec_Var_Set");
-    eprintln!("Direct Var_Sets: {}, Record Var_Sets: {}", direct_sets, record_sets);
+    eprintln!(
+        "Direct Var_Sets: {}, Record Var_Sets: {}",
+        direct_sets, record_sets
+    );
 
-    assert_eq!(record_sets, direct_sets, "record version should have same number of Var_Sets as direct");
+    assert_eq!(
+        record_sets, direct_sets,
+        "record version should have same number of Var_Sets as direct"
+    );
 
     // Constant-folded: no Branch gate needed when condition is literal bool
     let branch_count = gate_count(&r_direct, "BrickComponentType_WireGraph_Exec_Branch");
-    assert_eq!(branch_count, 0, "literal bool condition should be constant-folded, no Branch gate");
+    assert_eq!(
+        branch_count, 0,
+        "literal bool condition should be constant-folded, no Branch gate"
+    );
 }
 
 /// Regression: array index write must work after the array is captured into a record.
 #[test]
 fn array_set_after_record_capture() {
-    let r = compile("\
+    let r = compile(
+        "\
 array io: int[]
 in tick: exec
 on tick {
@@ -439,12 +485,18 @@ on tick {
   io.push(0)
   let mem = { data: io }
   io[1] = 8
-}");
-    assert_no_errors(&r);
-    let has_arr_set = r.module.nodes.values().any(|n|
-        n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex"
+}",
     );
-    assert!(has_arr_set, "io[1] = 8 should produce ArrayVar_SetAtIndex after record capture");
+    assert_no_errors(&r);
+    let has_arr_set = r
+        .module
+        .nodes
+        .values()
+        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex");
+    assert!(
+        has_arr_set,
+        "io[1] = 8 should produce ArrayVar_SetAtIndex after record capture"
+    );
 }
 
 /// Regression: Var_Get cache invalidation must recurse into Record bindings.
@@ -507,4 +559,3 @@ on tick {
         get_count
     );
 }
-

@@ -580,9 +580,13 @@ fn build_chip_module(
         type_aliases: ctx.type_aliases.clone(),
         pending_emits: HashMap::new(),
         exec_signal_hubs: HashMap::new(),
+        exec_signal_keys: HashMap::new(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: ctx.template_cache.clone(),
         await_armed_port: None,
+        signal_awaits: HashMap::new(),
+        exec_branch_depth: 0,
+        exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
         chip_call_stack: ctx.chip_call_stack.clone(),
     };

@@ -233,8 +233,15 @@ pub enum LetBinding {
 
 #[derive(Clone, Debug)]
 pub enum RecordDestructField {
-    Named { name: String, alias: Option<String>, range: SourceRange },
-    Rest { name: String, range: SourceRange },
+    Named {
+        name: String,
+        alias: Option<String>,
+        range: SourceRange,
+    },
+    Rest {
+        name: String,
+        range: SourceRange,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -285,10 +292,7 @@ pub enum Trigger {
 #[derive(Clone, Debug)]
 pub enum TypeExpr {
     /// `int`, `bool`, `entity`, chip type name, …
-    Name {
-        name: String,
-        range: SourceRange,
-    },
+    Name { name: String, range: SourceRange },
     /// `ref T`
     Ref {
         inner: Box<TypeExpr>,
@@ -347,7 +351,10 @@ pub enum Stmt {
     Handler(Handler),
     AnonChip(AnonChipDecl),
     ChipDecl(ChipDecl),
-    Return { value: Option<Expr>, range: SourceRange },
+    Return {
+        value: Option<Expr>,
+        range: SourceRange,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -361,12 +368,33 @@ pub struct Assign {
 pub struct Emit {
     pub name: String,
     pub value: Option<Expr>,
+    /// `buffer(delay, hold)` modifier: routes this emit's exec through a
+    /// Buffer gate (the tick-crossing barrier that makes loop back-edges
+    /// legal). `None` for a plain immediate emit.
+    pub buffer: Option<BufferSpec>,
+    pub range: SourceRange,
+}
+
+/// The `buffer(delay[, hold])` spec on an emit (or bare `buffer emit` — one
+/// tick). `delay` maps to the Buffer gate's `TicksToWait`/`SecondsToWait`
+/// (`None` = 1 tick), `hold` to `ZeroTicksToWait`/`ZeroSecondsToWait` (how
+/// long the output stays up after the input drops; gate default `-1` = same
+/// as delay). An `s` unit suffix selects the seconds gate over the ticks gate.
+#[derive(Clone, Debug)]
+pub struct BufferSpec {
+    pub delay: Option<Expr>,
+    pub hold: Option<Expr>,
+    pub seconds: bool,
     pub range: SourceRange,
 }
 
 #[derive(Clone, Debug)]
 pub struct AwaitStmt {
     pub binding: Option<String>,
+    /// `let { a, b: alias } = await sig` — record-destructured payload fields
+    /// as `(field, local name)` pairs. Each field reads the signal's ferried
+    /// payload store of that name.
+    pub destructure: Option<Vec<(String, String)>>,
     pub value_expr: Option<Expr>,
     pub exec_expr: Expr,
     pub range: SourceRange,
@@ -504,7 +532,10 @@ pub enum Expr {
     /// read, embedded via `World::add_prefab`, and the gate's `Prefab`
     /// bundle_path_ref property is set to the resulting `Prefabs/Uploads/…`
     /// path. `path` is the source-level string after `$` (e.g. `./turret.brz`).
-    PrefabRef { path: String, range: SourceRange },
+    PrefabRef {
+        path: String,
+        range: SourceRange,
+    },
 }
 
 /// An element of an array literal: a single value or a `...spread` of another
@@ -594,9 +625,19 @@ pub enum InterpPart {
 
 #[derive(Clone, Debug)]
 pub enum RecordLitField {
-    Named { name: String, value: Expr, range: SourceRange },
-    Shorthand { name: String, range: SourceRange },
-    Spread { value: Expr, range: SourceRange },
+    Named {
+        name: String,
+        value: Expr,
+        range: SourceRange,
+    },
+    Shorthand {
+        name: String,
+        range: SourceRange,
+    },
+    Spread {
+        value: Expr,
+        range: SourceRange,
+    },
 }
 
 #[derive(Clone, Debug)]

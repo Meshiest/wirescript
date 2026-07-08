@@ -139,11 +139,17 @@ fn compile_with_opts_inner(
         template_cache: template_cache.clone(),
     });
 
+    // Every wire-graph cycle must cross a tick barrier (Buffer/Queue) — an
+    // unbarriered cycle (e.g. an emit/await loop back-edge without `buffer`)
+    // would retrigger within a single tick (WS005).
+    let cycles = crate::analyze::analyze_cycles(&lowered.module);
+
     let all_diags: Vec<_> = resolved
         .diagnostics
         .into_iter()
         .chain(tc.diagnostics)
         .chain(lowered.diagnostics)
+        .chain(cycles.diagnostics)
         .collect();
 
     let errors: Vec<_> = all_diags
@@ -230,11 +236,15 @@ pub fn compile_to_world(
         template_cache: template_cache.clone(),
     });
 
+    // Unbarriered wire-graph cycles error (WS005) — see compile_with_opts.
+    let cycles = crate::analyze::analyze_cycles(&lowered.module);
+
     let all_diags: Vec<_> = resolved
         .diagnostics
         .into_iter()
         .chain(tc.diagnostics)
         .chain(lowered.diagnostics)
+        .chain(cycles.diagnostics)
         .collect();
 
     let errors: Vec<_> = all_diags

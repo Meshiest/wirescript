@@ -69,19 +69,46 @@ pub(super) struct LowerCtx<'a> {
     /// Type alias map: `Name → TypeExpr::Record { ... }` for dissolving
     /// record params at chip boundaries.
     pub(super) type_aliases: HashMap<String, crate::ast::TypeExpr>,
-    /// Pending emit exec paths per output name. Accumulated during lowering,
-    /// flushed to union chains at the end so each output gets one wire.
-    pub(super) pending_emits: HashMap<String, Vec<PortRef>>,
-    /// Local `let x: exec` signals pre-declared with a stable Union "hub" gate
-    /// (name → hub node). `on x` triggers off the hub's `ExecOut`; at flush the
-    /// union of every `emit x` is wired into the hub's `ExecA`. The hub gives a
-    /// forward-referenceable trigger port so `on x` works regardless of whether
-    /// it appears before or after the emits in source.
+    /// Pending emit exec paths per output name, each tagged with the exec
+    /// chain (handler) it was emitted on. Accumulated during lowering, flushed
+    /// to union chains at the end so each output gets one wire. The chain tag
+    /// lets flush route same-chain emits through an `await`'s arm (sequenced
+    /// before the hub — a parallel arm races the awaiting `Var_Get`).
+    pub(super) pending_emits: HashMap<String, Vec<(PortRef, Option<u32>)>>,
+    /// Local `let x: exec` signals declared with a stable Union "hub" gate,
+    /// keyed by a per-declaration unique key (`name#hubId`) — NOT the bare
+    /// name, so two mods/handlers declaring the same signal name get separate
+    /// signals. `on x` triggers off the hub's `ExecOut` via the scope binding;
+    /// at flush the union of every `emit x` is wired into the hub. The hub
+    /// gives a forward-referenceable trigger port so `on x` works regardless
+    /// of whether it appears before or after the emits in source.
     pub(super) exec_signal_hubs: HashMap<String, NodeId>,
+    /// Reverse map: hub node → its unique signal key. Emit/await sites resolve
+    /// a surface name to its key through the *scope* (name → hub port → key),
+    /// so shadowed / same-named signals in different bodies stay distinct.
+    pub(super) exec_signal_keys: HashMap<NodeId, String>,
     /// Inside `await`, the armed flag's Value port. `_` in the exec expression
     /// resolves to this, allowing `await Sleep(_, 1.0)` to wire the armed flag
     /// as Sleep's input.
     pub(super) await_armed_port: Option<PortRef>,
+    /// Unconditional `await <signal>` per local exec signal: the armed flag's
+    /// var node and the chain the await sits on. At flush, emits of the signal
+    /// from the *same* chain are routed through a `Var_Set(armed = true)` into
+    /// the hub — sequencing the arm before the union so the awaiting `Var_Get`
+    /// can't race it (and so loop back-edges re-arm each iteration). Emits from
+    /// other chains stay direct, guarded by the flag. Only awaits at branch
+    /// depth 0 register here: a conditional `await` (inside `if`) keeps pure
+    /// flag semantics, since its arm must not fire for the untaken branch.
+    pub(super) signal_awaits: HashMap<String, (NodeId, Option<u32>)>,
+    /// Depth of enclosing exec `if` branches; >0 means conditionally executed.
+    pub(super) exec_branch_depth: usize,
+    /// Hidden payload stores per local exec signal: `(field, store var, type)`.
+    /// `emit sig = expr` writes the store(s) on the emit chain (before any
+    /// buffer), and `await sig` reads them back on the resumed chain — the
+    /// value crosses the tick through the persistent var, not the buffer.
+    /// A scalar payload uses one entry with field `""`; a record payload gets
+    /// one entry per field.
+    pub(super) exec_signal_payloads: HashMap<String, Vec<(String, NodeId, Type)>>,
     /// Pre-compiled template cache for standalone chip instances.
     pub(super) template_cache: Arc<crate::template_cache::TemplateCache>,
     /// Field→source-port record produced by the most recent multi-output inline
@@ -101,6 +128,16 @@ impl<'a> LowerCtx<'a> {
         let id = self.next_chain_id;
         self.next_chain_id += 1;
         id
+    }
+
+    /// Resolve a surface name to its exec-signal key, via the scope binding
+    /// (name → hub port → key). `None` when the name isn't a local exec
+    /// signal in the current scope.
+    pub(super) fn signal_key(&self, name: &str) -> Option<String> {
+        match self.scope.get(name) {
+            Some(Binding::Local(l)) => self.exec_signal_keys.get(&l.port.node_id).cloned(),
+            _ => None,
+        }
     }
 
     /// Allocate a fresh `ScopeId`, record it in `module.scopes` with the

@@ -566,12 +566,98 @@ on compute { emit ready }      // fires the signal
 on start { await ready }        // continues when ready fires
 ```
 
+### Buffered Emit
+
+`buffer emit sig` routes the emit's exec through a **Buffer** gate, delaying delivery by one tick. This is the tick-crossing barrier that makes emit/await **loops** legal: a back-edge `emit` after an `await` closes a wire-graph cycle, and every cycle must cross a Buffer or the compile errors (**WS005**).
+
+```wirescript
+buffer emit loop            // 1 tick (default)
+buffer(3) emit loop         // 3 ticks (BufferTicks)
+buffer(0.5s) emit loop      // 0.5 seconds (BufferSeconds)
+buffer(d) emit loop         // variable delay — wired into TicksToWait
+buffer(0, 1s) emit sig      // delay 0, hold output 1s after the input drops
+```
+
+- The first duration is the **delay** (`TicksToWait` / `SecondsToWait`); the optional second is the **hold** (`ZeroTicksToWait` / `ZeroSecondsToWait` — how long the output stays up after the input drops; omitted = `-1` = same as delay).
+- An `s` suffix selects the seconds gate; unadorned durations are ticks.
+- Constant durations bake into the gate; variables/expressions wire into the duration port.
+
+### Payload Ferrying
+
+`emit sig = value` on a **local** exec signal ferries the value with the signal: each emitted value is written into a hidden per-signal store var on the emit chain, and `await sig` reads it back on the resumed chain — so the value survives the buffered tick crossing.
+
+```wirescript
+let loop: exec
+
+emit loop = 0                        // scalar payload
+let index = await loop               // read it back
+
+emit loop = { sum: 0, index: 0 }     // record payload: one store per field
+let { sum, index } = await loop      // destructure the fields
+```
+
+### Loops
+
+`emit`/`await` on a local signal plus a buffered back-edge forms a loop that advances one iteration per buffer period. Loop state can live in `var`s (they persist across iterations; non-static vars reset on the entry chain, once per call):
+
+```wirescript
+mod sumItems(arr: int[]) -> int {
+  var sum = 0
+  var index = 0
+  let loop: exec
+  emit loop
+  await loop
+  if index < arr.length() {
+    sum += arr[index]
+    index += 1
+    buffer emit loop        // back-edge: crosses 1 tick, re-arms the await
+  } else {
+    return sum
+  }
+}
+```
+
+or ride the signal as a ferried payload (no mutable vars):
+
+```wirescript
+mod sumItems(arr: int[]) -> int {
+  let loop: exec
+  emit loop = { sum: 0, index: 0 }
+  let { sum, index } = await loop
+  if index < arr.length() {
+    buffer(1) emit loop = { sum: sum + arr[index], index: index + 1 }
+  } else {
+    return sum
+  }
+}
+```
+
+Semantics worth knowing:
+
+- An emit on the **same exec chain** as an unconditional `await` of that signal is sequenced through a `Var_Set(armed = true)` **before** entering the signal's union — so the awaiting `Var_Get` can never race the arm, and a loop back-edge re-arms the await every iteration.
+- Emits from **other handlers** enter the signal directly and are guarded by the armed flag: the continuation only runs if the awaiting chain has reached the `await`.
+- An `await` inside an `if` branch keeps pure flag semantics (its arm only fires when the branch is taken).
+
+### Gate Cost
+
+| Construct | Gates added |
+|-----------|-------------|
+| `emit sig` (bare) | 0 — joins the signal's union |
+| `buffer(...) emit sig` | 1 Buffer (Ticks/Seconds) |
+| `emit sig = scalar` | 1 Var_Set per emit (+1 hidden store var per signal) |
+| `emit sig = { F fields }` | F Var_Set per emit (+F store vars per signal) |
+| `await sig` (per await) | ~5: armed-flag var, arm + reset Var_Set, Var_Get, Branch |
+| `let { F fields } = await sig` | +F Var_Get |
+| per signal | 1 Union hub (+1 arm Var_Set when same-chain emits exist); a single-input hub is spliced away |
+
 ## `await` -- Suspend Exec Chain
 
 Suspends the current exec chain and resumes from the awaited expression's exec output. Everything after the `await` runs when that exec fires. Only valid in exec context.
 
 ```wirescript
 await signal                         // resume when signal fires
+let val = await signal               // capture the signal's ferried payload
+let { a, b } = await signal          // destructure a record payload
 let val = await value on trigger     // capture value when trigger fires
 await a || b                         // race -- first signal wins
 await Sleep(_, delay = 1.0)          // sleep 1 second using _ armed flag

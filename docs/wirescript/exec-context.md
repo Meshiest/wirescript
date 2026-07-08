@@ -258,6 +258,7 @@ on trigger {
 | `await expr` | Exec | Rewires exec continuation to expr |
 | `emit name` | Exec | Bare emit requires exec |
 | `emit name = expr` | Either | Value emit works in pure or exec |
+| `buffer(...) emit name` | Exec | Buffered emit — delays delivery a tick+, legalises loops |
 | `let name: exec` | Either | Declares local exec signal |
 
 ## Await
@@ -312,6 +313,29 @@ let up: exec
 
 on tick { if doubleTapped() { emit up } }
 on up { ctrl.DisplayText("menu up") }   // runs on every `emit up`
+```
+
+### Loops (buffered back-edge)
+
+An `emit` after an `await` of the same signal is a loop back-edge. It must be
+buffered — `buffer emit` (1 tick) or `buffer(N)` / `buffer(0.5s)` — because
+every wire-graph cycle must cross a tick barrier (**WS005**). Each iteration
+then advances one buffer period. Loop state lives in `var`s (persist across
+iterations, reset per call) or rides the signal as a ferried payload
+(`emit loop = { ... }` / `let { ... } = await loop`). See
+[statements — Loops](statements.md#loops) for the full pattern and its
+per-gate cost.
+
+```wirescript
+var index = 0
+let loop: exec
+emit loop
+await loop
+if index < arr.length() {
+  BroadcastChatMessage(arr[index])
+  index += 1
+  buffer emit loop      // next iteration, one tick later
+}
 ```
 
 ### Sleep / SleepTicks

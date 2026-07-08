@@ -50,7 +50,10 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
 /// `emit x` paths into the hub's `ExecA`. Non-`exec` lets are ignored here (they
 /// lower normally in pass 2).
 pub(super) fn pre_declare_exec_signal(ctx: &mut LowerCtx, l: &LetDecl) {
-    let Some(TypeExpr::Name { name: type_name, .. }) = &l.typ else {
+    let Some(TypeExpr::Name {
+        name: type_name, ..
+    }) = &l.typ
+    else {
         return;
     };
     if type_name != "exec" {
@@ -59,24 +62,49 @@ pub(super) fn pre_declare_exec_signal(ctx: &mut LowerCtx, l: &LetDecl) {
     let LetBinding::Ident { name, .. } = &l.binding else {
         return;
     };
+    build_exec_signal_hub(ctx, name, &l.range);
+}
+
+/// Create the stable `Union` "hub" for a local `let x: exec` signal: bind `x`
+/// to its `ExecOut` (so `await x` / `on x` / reads resolve to it) and register
+/// the emit target. `flush_pending_emits` later wires the union of all `emit x`
+/// paths into the hub's `ExecA`. Used for both top-level signals (this
+/// pre-declare pass) and body-level signals (from `lower_let_decl`).
+pub(super) fn build_exec_signal_hub(ctx: &mut LowerCtx, name: &str, range: &SourceRange) {
     let hub = ctx.add_gate(AddNodeOpts {
         gate_class: gc::UNION,
-        source_range: l.range.clone(),
+        source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec { name: *sym::EXEC_A, ty: Type::Exec },
-                PortSpec { name: *sym::EXEC_B, ty: Type::Exec },
+                PortSpec {
+                    name: *sym::EXEC_A,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::EXEC_B,
+                    ty: Type::Exec,
+                },
             ],
-            outputs: vec![PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec }],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
         },
         ..Default::default()
     });
     ctx.scope.insert(
-        name.clone(),
-        Binding::Local(LocalRecord { port: hub.port(WirePort::ExecOut) }),
+        name.to_string(),
+        Binding::Local(LocalRecord {
+            port: hub.port(WirePort::ExecOut),
+        }),
     );
-    ctx.exec_signal_hubs.insert(name.clone(), hub);
-    ctx.pending_emits.entry(name.clone()).or_default();
+    // Key the signal per-declaration (`name#hubId`), not by bare name: two
+    // bodies declaring the same signal name are distinct signals. Emit/await
+    // sites resolve the key through the scope binding (`LowerCtx::signal_key`).
+    let key = format!("{name}#{hub}");
+    ctx.exec_signal_hubs.insert(key.clone(), hub);
+    ctx.exec_signal_keys.insert(hub, key.clone());
+    ctx.pending_emits.entry(key).or_default();
 }
 
 pub(super) fn type_of_type_expr(t: &TypeExpr) -> Type {
@@ -141,10 +169,28 @@ pub(super) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
         Type::Bool => Some(Literal::Bool(false)),
         Type::Int => Some(Literal::Int(0)),
         Type::String => Some(Literal::String(String::new())),
-        Type::Vector => Some(Literal::Vector { x: 0.0, y: 0.0, z: 0.0 }),
-        Type::Rotator => Some(Literal::Rotator { pitch: 0.0, yaw: 0.0, roll: 0.0 }),
-        Type::Quat => Some(Literal::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }),
-        Type::Color => Some(Literal::LinearColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+        Type::Vector => Some(Literal::Vector {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        Type::Rotator => Some(Literal::Rotator {
+            pitch: 0.0,
+            yaw: 0.0,
+            roll: 0.0,
+        }),
+        Type::Quat => Some(Literal::Quat {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        }),
+        Type::Color => Some(Literal::LinearColor {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        }),
         Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab => {
             Some(Literal::Object)
         }
@@ -187,9 +233,7 @@ pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
             }
             match (name.as_str(), nums.as_slice()) {
                 ("Vec", &[x, y, z]) => Some(Literal::Vector { x, y, z }),
-                ("Rotation", &[pitch, yaw, roll]) => {
-                    Some(Literal::Rotator { pitch, yaw, roll })
-                }
+                ("Rotation", &[pitch, yaw, roll]) => Some(Literal::Rotator { pitch, yaw, roll }),
                 // Color is linear RGBA 0–1; alpha defaults to opaque.
                 ("Color", &[r, g, b]) => Some(Literal::LinearColor { r, g, b, a: 1.0 }),
                 ("Color", &[r, g, b, a]) => Some(Literal::LinearColor { r, g, b, a }),
@@ -197,7 +241,11 @@ pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
             }
         }
         // Asset reference `$Type/Name` — inlined into the gate's component data.
-        Expr::AssetRef { asset_type, asset_name, .. } => Some(Literal::Asset {
+        Expr::AssetRef {
+            asset_type,
+            asset_name,
+            ..
+        } => Some(Literal::Asset {
             asset_type: asset_type.clone(),
             asset_name: asset_name.clone(),
         }),

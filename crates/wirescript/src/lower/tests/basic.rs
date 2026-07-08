@@ -5,8 +5,9 @@ fn on_local_exec_signal_fires_from_emit_in_another_handler() {
     // `on sig` must trigger when `emit sig` runs in a *different* handler, even
     // though `on sig` appears after the emitting handler in source. Previously
     // the signal's binding was only created after all handlers were lowered, so
-    // `on sig` silently produced nothing. Now a pre-declared Union "hub" carries
-    // the emit to the listener.
+    // `on sig` silently produced nothing. The pre-declared hub carries the emit
+    // to the listener; with a single emitter the hub union is spliced out, so
+    // assert the connectivity itself: trig's chain must reach the `on sig` body.
     let src = "in trig: exec\n\
                let sig: exec\n\
                static var n: int = 0\n\
@@ -14,23 +15,449 @@ fn on_local_exec_signal_fires_from_emit_in_another_handler() {
                on sig { n = n + 1 }";
     let r = compile(src);
     assert_no_errors(&r);
-    use crate::ir::port_registry::WirePort;
-    const UNION: &str = "BrickComponentType_WireGraph_Exec_Union";
-    let hub_ok = r.module.nodes.iter().any(|(id, node)| {
-        node.gate_class == UNION
-            && r.module
-                .wires
-                .iter()
-                .any(|w| w.target.node_id == *id && w.target.port == WirePort::ExecA)
-            && r.module
-                .wires
-                .iter()
-                .any(|w| w.source.node_id == *id && w.source.port == WirePort::ExecOut)
-    });
+    let trig = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    let body = find_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Increment");
     assert!(
-        hub_ok,
-        "expected a hub Union fed by `emit sig` (ExecA) and driving `on sig` (ExecOut); gate classes: {:?}",
-        r.module.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
+        wired_reachable(&r, trig, body),
+        "emit sig in `on trig` must drive the `on sig` body; wires: {:?}",
+        r.module.wires
+    );
+}
+
+#[test]
+fn body_local_exec_signal_emit_await_connects() {
+    // `let jump: exec` declared inside a handler must wire emit->hub->await,
+    // not leave the await trigger as an _Unsupported placeholder.
+    let src = "in run: exec\n\
+               on run {\n\
+                 let jump: exec\n\
+                 emit jump\n\
+                 await jump\n\
+                 PrintToConsole(\"jump\")\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "_Unsupported"),
+        "await trigger must not lower to _Unsupported; gate classes: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    // Single emitter: no degenerate Union hub should survive, and the handler's
+    // input must drive the post-await continuation. The same-chain emit routes
+    // through a Var_Set(armed = true) *before* the (spliced) hub so the
+    // awaiting Var_Get can't race the arm.
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"),
+        "a single-emitter signal must not keep a pass-through Union; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    let cont = find_gate(&r, "BrickComponentType_WireGraph_Exec_PrintToConsole");
+    assert!(
+        wired_reachable(&r, run, cont),
+        "emit->await continuation must be exec-wired from the handler input; wires: {:?}",
+        r.module.wires
+    );
+}
+
+#[test]
+fn buffered_emit_parses() {
+    // `buffer(1) emit sig` must parse as a buffered emit (the `buffer(` form
+    // is the emit modifier; `buffer name = ...` stays the value declaration).
+    let src = "in run: exec\n\
+               on run {\n\
+                 let sig: exec\n\
+                 buffer(1) emit sig\n\
+                 await sig\n\
+                 PrintToConsole(\"x\")\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+}
+
+#[test]
+fn buffered_emit_inserts_buffer_and_breaks_cycle() {
+    // A back-edge `buffer(1) emit loop` after `await loop` must (a) route the
+    // emit's exec through a BufferTicks, and (b) leave the loop SCC with a
+    // barrier so analyze_cycles reports no WS005.
+    let src = "in run: exec\n\
+               on run {\n\
+                 let loop: exec\n\
+                 emit loop\n\
+                 await loop\n\
+                 buffer(1) emit loop\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraphPseudo_BufferTicks"),
+        "buffered emit should insert a BufferTicks; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    let cyc = crate::analyze::analyze_cycles(&r.module);
+    assert!(
+        !cyc.diagnostics.iter().any(|d| d.code == "WS005"),
+        "the buffer must sit inside the loop SCC so no WS005 fires: {:?}",
+        cyc.diagnostics
+    );
+    assert!(
+        !cyc.strongly_connected.is_empty(),
+        "the back-edge emit must actually close a cycle"
+    );
+}
+
+#[test]
+fn scalar_payload_ferries_through_local_signal() {
+    // `emit sig = 7` on a local signal must write a hidden payload store
+    // (Var_Set), and `let x = await sig` must read it back (Var_Get) — the
+    // value rides the signal instead of being dropped.
+    let src = "in run: exec\n\
+               on run {\n\
+                 let sig: exec\n\
+                 emit sig = 7\n\
+                 let x = await sig\n\
+                 PrintToConsole(\"${x}\")\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    // Stores: payload var + armed flag. The payload must be written on the
+    // emit path and read on the resumed path.
+    let vars = gate_count(&r, "BrickComponentType_WireGraphPseudo_Var");
+    assert!(
+        vars >= 2,
+        "expected payload store + armed flag, got {vars} PseudoVars"
+    );
+    let gets = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
+    assert!(
+        gets >= 2,
+        "expected armed read + payload read, got {gets} Var_Gets"
+    );
+    // And the continuation must still be reachable from the handler input.
+    let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    let cont = find_gate(&r, "BrickComponentType_WireGraph_Exec_PrintToConsole");
+    assert!(
+        wired_reachable(&r, run, cont),
+        "continuation must be exec-wired"
+    );
+}
+
+#[test]
+fn bare_buffer_emit_defaults_to_one_tick() {
+    // `buffer emit sig` (no parens) = `buffer(1) emit sig`.
+    let src = "in run: exec\n\
+               on run {\n\
+                 let sig: exec\n\
+                 emit sig\n\
+                 await sig\n\
+                 buffer emit sig\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let buf = find_gate(&r, "BrickComponentType_WireGraphPseudo_BufferTicks");
+    let node = &r.module.nodes[&buf];
+    assert_eq!(
+        node.properties.get(&*crate::intern::sym::TICKS_TO_WAIT),
+        Some(&crate::ir::Literal::Int(1)),
+        "bare buffer should default to 1 tick; props: {:?}",
+        node.properties
+    );
+}
+
+#[test]
+fn buffered_emit_seconds_uses_buffer_seconds() {
+    // An `s` unit on the duration selects the BufferSeconds gate.
+    let src = "in run: exec\n\
+               on run {\n\
+                 let sig: exec\n\
+                 emit sig\n\
+                 await sig\n\
+                 buffer(0.5s) emit sig\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraphPseudo_BufferSeconds"),
+        "`0.5s` should select BufferSeconds; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn buffered_emit_variable_delay_wires_port() {
+    // A non-constant delay must wire into the buffer's TicksToWait port
+    // instead of baking a property.
+    let src = "in run: exec\n\
+               var d: int = 3\n\
+               on run {\n\
+                 let sig: exec\n\
+                 emit sig\n\
+                 await sig\n\
+                 buffer(d) emit sig\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    use crate::ir::port_registry::WirePort;
+    assert!(
+        r.module.nodes.iter().any(|(id, n)| {
+            n.gate_class == "BrickComponentType_WireGraphPseudo_BufferTicks"
+                && r.module
+                    .wires
+                    .iter()
+                    .any(|w| w.target.node_id == *id && w.target.port == WirePort::TicksToWait)
+        }),
+        "a variable delay must wire into TicksToWait; wires: {:?}",
+        r.module.wires
+    );
+}
+
+#[test]
+fn sum_loop_compiles_with_buffered_payload() {
+    // The canonical payload-ferry loop: state rides the signal, the back-edge
+    // buffers one tick, and the whole thing forms a legal (barriered) cycle.
+    let src = "in run: exec\n\
+      mod sumItems(arr: int[]) -> int {\n\
+        let loop: exec\n\
+        emit loop = { sum: 0, index: 0 }\n\
+        let { sum, index } = await loop\n\
+        if index < arr.length() {\n\
+          buffer(1) emit loop = { sum: sum + arr[index], index: index + 1 }\n\
+        } else { return sum }\n\
+      }\n\
+      var numbers: int[] = [1, 2, 3]\n\
+      on run { BroadcastChatMessage(\"${sumItems(numbers)}\") }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "_Unsupported"),
+        "loop must lower fully; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraphPseudo_BufferTicks"),
+        "back-edge must buffer"
+    );
+    let cyc = crate::analyze::analyze_cycles(&r.module);
+    assert!(
+        !cyc.diagnostics.iter().any(|d| d.code == "WS005"),
+        "loop cycle must contain its buffer barrier: {:?}",
+        cyc.diagnostics
+    );
+    assert!(
+        !cyc.strongly_connected.is_empty(),
+        "the back-edge must actually close a cycle"
+    );
+}
+
+#[test]
+fn same_signal_name_in_two_mods_stays_separate() {
+    // Two mods each declaring `let loop: exec` must get *separate* signals —
+    // previously the second mod reused the first's hub (keyed by bare name),
+    // its await lowered to _Unsupported, and its emits cross-wired into the
+    // first mod's loop.
+    let src = "in run: exec\n\
+      mod first(arr: int[]) {\n\
+        var i = 0\n\
+        let loop: exec\n\
+        emit loop\n\
+        await loop\n\
+        if i < arr.length() {\n\
+          i += 1\n\
+          buffer emit loop\n\
+        }\n\
+      }\n\
+      mod second(arr: string[]) {\n\
+        var i = 0\n\
+        let loop: exec\n\
+        emit loop\n\
+        await loop\n\
+        if i < arr.length() {\n\
+          BroadcastChatMessage(arr[i])\n\
+          i += 1\n\
+          buffer emit loop\n\
+        }\n\
+      }\n\
+      array nums: int[] = [1, 2]\n\
+      array names: string[] = [\"a\", \"b\"]\n\
+      on run {\n\
+        first(nums)\n\
+        second(names)\n\
+      }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "_Unsupported"),
+        "both mods' awaits must resolve; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    // Each mod keeps its own buffered back-edge.
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraphPseudo_BufferTicks"),
+        2,
+        "each mod's loop needs its own buffer"
+    );
+    // Both loop bodies are driven from the handler input.
+    let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    let chat = find_gate(
+        &r,
+        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
+    );
+    assert!(
+        wired_reachable(&r, run, chat),
+        "second mod's loop body must be exec-wired"
+    );
+    let cyc = crate::analyze::analyze_cycles(&r.module);
+    assert!(
+        !cyc.diagnostics.iter().any(|d| d.code == "WS005"),
+        "both cycles carry their buffer: {:?}",
+        cyc.diagnostics
+    );
+}
+
+#[test]
+fn handler_local_array_var_rebuilds_without_bogus_var_set() {
+    // `var nums = [1,2,3]` inside a handler: the re-init on scope entry must
+    // use the array rebuild (clear + push) — the generic Var_Set reset wired a
+    // `VarRef` source port that Pseudo_ArrayVar doesn't have (in-game:
+    // "Wire source port VarRef does not exist in source component").
+    let src = "in run: exec\n\
+               on run {\n\
+                 var nums = [1, 2, 3]\n\
+                 let x = nums[0]\n\
+                 PrintToConsole(\"${x}\")\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "_Unsupported"),
+        "array literal init must lower; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    // No wire may leave a Pseudo_ArrayVar through a port it doesn't have.
+    use crate::ir::port_registry::WirePort;
+    let array_vars: std::collections::HashSet<_> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .map(|(id, _)| *id)
+        .collect();
+    for w in &r.module.wires {
+        if array_vars.contains(&w.source.node_id) {
+            assert_eq!(
+                w.source.port,
+                WirePort::ArrayVarRef,
+                "ArrayVar only exposes ArrayVarRef; found a wire leaving via {:?}",
+                w.source.port.as_str()
+            );
+        }
+    }
+    // The runtime re-init rebuilds via clear + pushes.
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"),
+        "array re-init should clear then push"
+    );
+}
+
+#[test]
+fn loop_mod_continuation_waits_for_return() {
+    // The caller's continuation must fire only on `return`, not once per
+    // iteration: previously the back-edge branch (`buffer emit loop` last in
+    // the then-block) fell through the if-join into the mod's end exec, so
+    // the caller printed per iteration ("Sum: 0" three times, then "Sum: 6").
+    let src = "in run: exec\n\
+      mod sumItems(arr: int[]) -> int {\n\
+        var sum = 0\n\
+        var index = 0\n\
+        let loop: exec\n\
+        emit loop\n\
+        await loop\n\
+        if index < arr.length() {\n\
+          sum += arr[index]\n\
+          index += 1\n\
+          buffer emit loop\n\
+        } else {\n\
+          return sum\n\
+        }\n\
+      }\n\
+      array nums: int[] = [1, 2, 3]\n\
+      on run { BroadcastChatMessage(\"Sum: ${sumItems(nums)}\") }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    // After emit-terminates-block + dead-join pruning, the only Union left is
+    // the armed-emit union (kick + back-edge): the if-join lost both arms
+    // (then ends in emit, else in return) and the mod-end union collapsed to
+    // the single return path.
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_Union"),
+        1,
+        "only the armed-emit union should remain; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| (n.gate_class, n.note))
+            .collect::<Vec<_>>()
+    );
+    // The caller's chat message has exactly one exec source — the return path.
+    use crate::ir::port_registry::WirePort;
+    let chat = find_gate(
+        &r,
+        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
+    );
+    let exec_ins: Vec<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.target.node_id == chat && w.target.port == WirePort::Exec)
+        .collect();
+    assert_eq!(
+        exec_ins.len(),
+        1,
+        "caller continuation must have a single exec source: {exec_ins:?}"
+    );
+    let src_node = &r.module.nodes[&exec_ins[0].source.node_id];
+    assert_ne!(
+        src_node.gate_class, "BrickComponentType_WireGraph_Exec_Union",
+        "continuation should come straight from the return path, not a join union"
     );
 }
 
@@ -136,7 +563,8 @@ fn var_array_desugars_to_array_var() {
         .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
         .expect("a var array should be an ArrayVar gate");
     assert!(
-        node.properties.contains_key(&crate::intern::intern("InitialValue")),
+        node.properties
+            .contains_key(&crate::intern::intern("InitialValue")),
         "var array initializer should populate the gate"
     );
     assert!(
@@ -283,9 +711,7 @@ fn quat_var_defaults_to_identity() {
 fn vector_array_init_folds_elements() {
     // Constant Vec(…) elements are valid array initializers and bake into
     // the ArrayVar's InitialValue list.
-    let r = compile(
-        "array pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]\n",
-    );
+    let r = compile("array pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]\n");
     assert_no_errors(&r);
     let node = r
         .module
@@ -330,9 +756,7 @@ fn constant_vec_inlines_into_math() {
 fn constant_vec_materializes_for_entity_gates() {
     // Entity gates take their Vector inputs from wires (no data struct), so
     // the folded constant re-materializes as a real MakeVector gate.
-    let r = compile(
-        "in e: entity\nin t: exec\non t { e.SetLocation(Vec(0.0, 0.0, 100.0)) }",
-    );
+    let r = compile("in e: entity\nin t: exec\non t { e.SetLocation(Vec(0.0, 0.0, 100.0)) }");
     assert_no_errors(&r);
     let make = r
         .module
@@ -353,7 +777,10 @@ fn constant_vec_materializes_for_split_vector() {
     // constant must stay a wired MakeVector, not silently zero out.
     let r = compile("let p = Vec(1.0, 2.0, 3.0)\nout x = p.x");
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_SplitVector"));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_SplitVector"
+    ));
     assert!(
         has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
         "component access on a folded constant needs a materialized MakeVector"
@@ -382,7 +809,10 @@ fn array_literal_assignment_desugars_to_clear_push_append() {
         .values()
         .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
         .count();
-    assert_eq!(pushes, 3, "three plain items should lower to three Push gates");
+    assert_eq!(
+        pushes, 3,
+        "three plain items should lower to three Push gates"
+    );
 }
 
 #[test]
@@ -439,7 +869,10 @@ fn every_canonical_array_method_lowers() {
         a.fillFromPlayers()\n  a.fillFromTeam(ent)\n}";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(!has_gate(&r, "_Unsupported"), "an array method lowered to _Unsupported");
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "an array method lowered to _Unsupported"
+    );
     // Guard: this test must exercise every entry in the canonical table, so
     // the table cannot list a method without proving it lowers.
     for m in crate::catalog::arrays::ARRAY_METHODS {
@@ -513,8 +946,14 @@ fn get_aim_is_one_gate_with_both_ports() {
         .filter(|w| w.source.node_id == aim_id)
         .map(|w| w.source.port.as_str())
         .collect();
-    assert!(source_ports.contains("Origin"), "Origin port not wired: {source_ports:?}");
-    assert!(source_ports.contains("Direction"), "Direction port not wired: {source_ports:?}");
+    assert!(
+        source_ports.contains("Origin"),
+        "Origin port not wired: {source_ports:?}"
+    );
+    assert!(
+        source_ports.contains("Direction"),
+        "Direction port not wired: {source_ports:?}"
+    );
 }
 
 #[test]
@@ -616,9 +1055,7 @@ fn if_expr_creates_select_gate() {
 fn give_weapon_lowers_to_set_inventory_entry_with_asset() {
     // `char.GiveWeapon($BRItemBase/Weapon_Pistol, 0)` lowers to the
     // SetInventoryEntry gate, carrying the weapon as an asset property.
-    let r = compile(
-        "in p: character\non p {\n  p.GiveWeapon($BRItemBase/Weapon_Pistol, 0)\n}",
-    );
+    let r = compile("in p: character\non p {\n  p.GiveWeapon($BRItemBase/Weapon_Pistol, 0)\n}");
     assert_no_errors(&r);
     let node = r
         .module
@@ -626,8 +1063,14 @@ fn give_weapon_lowers_to_set_inventory_entry_with_asset() {
         .values()
         .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry")
         .expect("expected a SetInventoryEntry gate");
-    match node.properties.get(&crate::intern::intern("ItemTypeIfItem")) {
-        Some(crate::ir::Literal::Asset { asset_type, asset_name }) => {
+    match node
+        .properties
+        .get(&crate::intern::intern("ItemTypeIfItem"))
+    {
+        Some(crate::ir::Literal::Asset {
+            asset_type,
+            asset_name,
+        }) => {
             assert_eq!(asset_type, "BRItemBase");
             assert_eq!(asset_name, "Weapon_Pistol");
         }
@@ -666,8 +1109,14 @@ fn play_audio_builtins_carry_audio_asset() {
         .values()
         .find(|n| n.gate_class == "Component_WireGraph_PlayAudioAt")
         .expect("expected a PlayAudioAt gate");
-    match node.properties.get(&crate::intern::intern("AudioDescriptor")) {
-        Some(crate::ir::Literal::Asset { asset_type, asset_name }) => {
+    match node
+        .properties
+        .get(&crate::intern::intern("AudioDescriptor"))
+    {
+        Some(crate::ir::Literal::Asset {
+            asset_type,
+            asset_name,
+        }) => {
             assert_eq!(asset_type, "BrickOneShotAudioDescriptor");
             assert_eq!(asset_name, "BOSA_Buttons_Button_1_Press");
         }
@@ -685,8 +1134,14 @@ fn entity_tags_lower_to_tag_gates() {
         "in p: character\non p {\n  p.SetTag(\"slot3\")\n  let t = p.GetTag()\n  p.DisplayText(\"tag ${t}\")\n}",
     );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Entity_SetTag"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Entity_GetTag"));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Exec_Entity_SetTag"
+    ));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Exec_Entity_GetTag"
+    ));
 }
 
 #[test]
@@ -703,7 +1158,10 @@ fn find_player_is_exec_and_change_detector() {
     );
     assert_no_errors(&r);
     assert!(has_gate(&r, "BrickComponentType_WireGraph_FindPlayer"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"
+    ));
 }
 
 #[test]
@@ -712,9 +1170,18 @@ fn quat_make_split_dot_lower_to_their_gates() {
         "let q = Quat(0.0, 0.0, 0.0, 1.0)\nlet s = q.SplitQuat()\nout w = s.W\nout d = q.QuatDot(q)",
     );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeQuaternion"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_SplitQuaternion"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_QuatDotProduct"));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_MakeQuaternion"
+    ));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_SplitQuaternion"
+    ));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_QuatDotProduct"
+    ));
 }
 
 #[test]
@@ -727,9 +1194,7 @@ fn inventory_family_carries_asset_properties() {
         .module
         .nodes
         .values()
-        .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem"
-        })
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem")
         .expect("expected an AddInventoryItem gate");
     match item.properties.get(&crate::intern::intern("Item")) {
         Some(crate::ir::Literal::Asset { asset_name, .. }) => {
@@ -890,20 +1355,25 @@ fn array_decl_creates_pseudo_node() {
 
 #[test]
 fn var_value_trigger_lowers_body() {
-    let r = compile("\
+    let r = compile(
+        "\
 var x: int = 0
 on x.value {
   let y = x + 10
 }
-out result = x");
+out result = x",
+    );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
-        "let inside on var.value handler should produce MathAdd gate");
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        "let inside on var.value handler should produce MathAdd gate"
+    );
 }
 
 #[test]
 fn var_value_trigger_nested_if_lowers() {
-    let r = compile("\
+    let r = compile(
+        "\
 var dir: int = 0
 var moving: bool = false
 in stop: bool
@@ -918,14 +1388,21 @@ on floor.value {
     }
   }
 }
-out result = dir");
+out result = dir",
+    );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
-        "nested let inside on var.value + if should produce CompareEqual");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareLess"),
-        "nested let inside on var.value + if should produce CompareLess");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalAND"),
-        "nested let inside on var.value + if should produce LogicalAND");
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        "nested let inside on var.value + if should produce CompareEqual"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareLess"),
+        "nested let inside on var.value + if should produce CompareLess"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalAND"),
+        "nested let inside on var.value + if should produce LogicalAND"
+    );
 }
 
 #[test]
@@ -940,8 +1417,20 @@ fn detector_builtins_map_to_split_gate_classes() {
         var n: int = 0\non ee.Rising { n = n + 1 }\non ee.Falling { n = n - 1 }";
     let r = compile(src);
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_ChangeDetector"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_EdgeDetector"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_EdgeDetectorExec"));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"
+    ));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_ChangeDetector"
+    ));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_EdgeDetector"
+    ));
+    assert!(has_gate(
+        &r,
+        "BrickComponentType_WireGraph_Expr_EdgeDetectorExec"
+    ));
 }

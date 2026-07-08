@@ -75,85 +75,101 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         g.add_edge(&w.source.node_id, &w.target.node_id, ());
     }
 
-    // SCC + feedback-edge selection. Drop exactly one edge per non-trivial SCC.
+    // SCC + feedback-edge selection. Drop one edge per non-trivial SCC and
+    // repeat until the graph is acyclic — an SCC can contain several distinct
+    // cycles (e.g. two emit/await loops sharing a chain), so a single removal
+    // per SCC isn't always enough.
     let mut feedback_edges: Vec<(NodeId, NodeId)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    let sccs = tarjan_scc(&g);
-    for scc in &sccs {
-        let has_cycle = scc.len() > 1
-            || scc
-                .first()
-                .map(|n| g.contains_edge(*n, *n))
-                .unwrap_or(false);
-        if !has_cycle {
-            continue;
-        }
+    loop {
+        let mut removed_any = false;
+        let sccs = tarjan_scc(&g);
+        for scc in &sccs {
+            let has_cycle = scc.len() > 1
+                || scc
+                    .first()
+                    .map(|n| g.contains_edge(*n, *n))
+                    .unwrap_or(false);
+            if !has_cycle {
+                continue;
+            }
 
-        let scc_set: HashSet<&NodeId> = scc.iter().copied().collect();
+            let scc_set: HashSet<&NodeId> = scc.iter().copied().collect();
 
-        // Indices into `in_scope` for edges entirely inside this SCC.
-        let cand: Vec<usize> = in_scope
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| {
-                scc_set.contains(&w.source.node_id) && scc_set.contains(&w.target.node_id)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if cand.is_empty() {
-            continue;
-        }
-
-        // Prefer edges whose target is a buffer (the feedback edge of a
-        // one-tick delay). Otherwise, take any edge.
-        let preferred: Vec<usize> = cand
-            .iter()
-            .copied()
-            .filter(|&i| {
-                let w = in_scope[i];
-                node_by_id
-                    .get(&w.target.node_id)
-                    .map(|n| n.is_buffer())
-                    .unwrap_or(false)
-            })
-            .collect();
-
-        let pool = if preferred.is_empty() {
-            warnings.push(format!(
-                "layout: non-trivial SCC without a buffer edge in region {}; \
-                 falling back to latest-source-range edge",
-                region.id
-            ));
-            cand
-        } else {
-            preferred
-        };
-        let chosen_idx = *pool
-            .iter()
-            .max_by(|&&a, &&b| {
-                let wa = in_scope[a];
-                let wb = in_scope[b];
-                let oa = node_by_id
-                    .get(&wa.source.node_id)
-                    .map(|n| n.source_range.start.offset)
-                    .unwrap_or(0);
-                let ob = node_by_id
-                    .get(&wb.source.node_id)
-                    .map(|n| n.source_range.start.offset)
-                    .unwrap_or(0);
-                oa.cmp(&ob).then_with(|| {
-                    wa.source
-                        .node_id
-                        .cmp(&wb.source.node_id)
-                        .then_with(|| wa.target.node_id.cmp(&wb.target.node_id))
+            // Indices into `in_scope` for edges entirely inside this SCC that are
+            // still present in the graph (an earlier pass may have dropped some).
+            let cand: Vec<usize> = in_scope
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| {
+                    scc_set.contains(&w.source.node_id)
+                        && scc_set.contains(&w.target.node_id)
+                        && g.contains_edge(&w.source.node_id, &w.target.node_id)
                 })
-            })
-            .expect("pool is non-empty");
-        let chosen = in_scope[chosen_idx];
+                .map(|(i, _)| i)
+                .collect();
+            if cand.is_empty() {
+                continue;
+            }
 
-        g.remove_edge(&chosen.source.node_id, &chosen.target.node_id);
-        feedback_edges.push((chosen.source.node_id, chosen.target.node_id));
+            // Prefer edges whose target is a buffer (the feedback edge of a
+            // one-tick delay). Otherwise, take any edge.
+            let preferred: Vec<usize> = cand
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let w = in_scope[i];
+                    node_by_id
+                        .get(&w.target.node_id)
+                        .map(|n| n.is_buffer())
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            let pool = if preferred.is_empty() {
+                warnings.push(format!(
+                    "layout: non-trivial SCC without a buffer edge in region {}; \
+                 falling back to latest-source-range edge",
+                    region.id
+                ));
+                cand
+            } else {
+                preferred
+            };
+            let chosen_idx = *pool
+                .iter()
+                .max_by(|&&a, &&b| {
+                    let wa = in_scope[a];
+                    let wb = in_scope[b];
+                    let oa = node_by_id
+                        .get(&wa.source.node_id)
+                        .map(|n| n.source_range.start.offset)
+                        .unwrap_or(0);
+                    let ob = node_by_id
+                        .get(&wb.source.node_id)
+                        .map(|n| n.source_range.start.offset)
+                        .unwrap_or(0);
+                    oa.cmp(&ob).then_with(|| {
+                        wa.source
+                            .node_id
+                            .cmp(&wb.source.node_id)
+                            .then_with(|| wa.target.node_id.cmp(&wb.target.node_id))
+                    })
+                })
+                .expect("pool is non-empty");
+            let chosen = in_scope[chosen_idx];
+
+            if g.remove_edge(&chosen.source.node_id, &chosen.target.node_id)
+                .is_some()
+            {
+                feedback_edges.push((chosen.source.node_id, chosen.target.node_id));
+                removed_any = true;
+            }
+        }
+        if !removed_any {
+            break;
+        }
     }
 
     // Weakly-connected-components split. Use a union-find seeded with the
@@ -396,6 +412,35 @@ mod tests {
         assert_eq!(lay.feedback_edges.len(), 1);
         assert_eq!(lay.feedback_edges[0].1, buf_id);
         assert!(lay.warnings.is_empty());
+    }
+
+    #[test]
+    fn multi_cycle_scc_breaks_all_cycles_without_panicking() {
+        // One SCC, two distinct cycles sharing node a: a → b → a and a → c → a.
+        // A single edge removal leaves the second cycle — layout must iterate
+        // until the graph is acyclic instead of panicking in toposort.
+        let a = make_node("G", 0);
+        let b = buffer_node(1);
+        let c = buffer_node(2);
+        let a_id = a.id;
+        let b_id = b.id;
+        let c_id = c.id;
+        let m = into_module(
+            vec![a, b, c],
+            vec![
+                make_wire(a_id, b_id),
+                make_wire(b_id, a_id),
+                make_wire(a_id, c_id),
+                make_wire(c_id, a_id),
+            ],
+        );
+        let root = leaf_region(&m);
+        let lay = layout_leaf(&root, &m.wires);
+        assert_eq!(
+            lay.feedback_edges.len(),
+            2,
+            "both cycles must contribute a feedback edge"
+        );
     }
 
     #[test]

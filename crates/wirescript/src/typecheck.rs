@@ -132,6 +132,9 @@ pub struct TypeCheckCtx {
     pub namespaces: HashMap<String, HashMap<String, NsDeclInfo>>,
     pub if_contexts: HashMap<(Arc<str>, usize), bool>,
     pub var_read_contexts: HashMap<(Arc<str>, usize), bool>,
+    /// Ferried payload type per local exec signal, recorded from
+    /// `emit sig = <value>` so `let { a, b } = await sig` can type its fields.
+    pub signal_payload_types: HashMap<String, Type>,
 }
 
 impl TypeCheckCtx {
@@ -144,6 +147,7 @@ impl TypeCheckCtx {
             namespaces: HashMap::new(),
             if_contexts: HashMap::new(),
             var_read_contexts: HashMap::new(),
+            signal_payload_types: HashMap::new(),
         }
     }
     pub fn exec_mode(&self) -> ExecMode {
@@ -303,9 +307,10 @@ fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
                 return prim;
             }
             if let Some(sym) = ctx.scope.lookup(name)
-                && sym.kind == SymbolKind::Type {
-                    return sym.ty.clone();
-                }
+                && sym.kind == SymbolKind::Type
+            {
+                return sym.ty.clone();
+            }
             ctx.emit("WS002", format!("unknown type '{name}'"), range.clone());
             Type::Any
         }
@@ -317,14 +322,12 @@ fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
         TypeExpr::Union { options, .. } => {
             Type::Union(options.iter().map(|f| resolve_type_expr(ctx, f)).collect())
         }
-        TypeExpr::Record { fields, .. } => {
-            Type::Record(
-                fields
-                    .iter()
-                    .map(|f| (f.name.clone(), resolve_type_expr(ctx, &f.typ)))
-                    .collect(),
-            )
-        }
+        TypeExpr::Record { fields, .. } => Type::Record(
+            fields
+                .iter()
+                .map(|f| (f.name.clone(), resolve_type_expr(ctx, &f.typ)))
+                .collect(),
+        ),
     }
 }
 
@@ -744,16 +747,18 @@ fn check_decl(
                 if let Some(ref te) = b.typ {
                     let resolved = resolve_type_expr(ctx, te);
                     if matches!(resolved, Type::Ref(_))
-                        && let Expr::Ident { range, .. } = value {
-                            ctx.var_read_contexts
-                                .remove(&(range.file.clone(), range.start.offset));
-                        }
+                        && let Expr::Ident { range, .. } = value
+                    {
+                        ctx.var_read_contexts
+                            .remove(&(range.file.clone(), range.start.offset));
+                    }
                 }
                 if b.typ.is_none()
                     && let Expr::Ident { name, .. } = value
-                        && let Some(sym) = ctx.scope.lookup(name)
-                            && sym.kind == SymbolKind::Var {
-                                ctx.diagnostics.push(Diagnostic {
+                    && let Some(sym) = ctx.scope.lookup(name)
+                    && sym.kind == SymbolKind::Var
+                {
+                    ctx.diagnostics.push(Diagnostic {
                                     severity: Severity::Warning,
                                     code: "WS017".into(),
                                     message: format!(
@@ -765,7 +770,7 @@ fn check_decl(
                                     ),
                                     range: b.range.clone(),
                                 });
-                            }
+                }
             }
         }
         TopDecl::Let(l) => {
@@ -822,7 +827,9 @@ fn check_decl(
                         crate::ast::ParamPattern::Record { fields, .. } => {
                             for field in fields {
                                 match field {
-                                    crate::ast::RecordDestructField::Named { name, alias, .. } => {
+                                    crate::ast::RecordDestructField::Named {
+                                        name, alias, ..
+                                    } => {
                                         let bind_name = alias.as_ref().unwrap_or(name);
                                         let field_ty = if let Type::Record(rec_fields) = &pt {
                                             rec_fields
@@ -1112,9 +1119,10 @@ fn block_has_return_value(block: &Block) -> bool {
                     return true;
                 }
                 if let Some(eb) = &i.else_block
-                    && block_has_return_value(eb) {
-                        return true;
-                    }
+                    && block_has_return_value(eb)
+                {
+                    return true;
+                }
             }
             _ => {}
         }
@@ -1237,7 +1245,10 @@ fn check_stmt(
                 );
             }
             if let Some(ref val) = e.value {
-                infer_expr(ctx, val, tmap, omap);
+                let t = infer_expr(ctx, val, tmap, omap);
+                // Remember the ferried payload type so a later
+                // `let { .. } = await sig` can type its destructured fields.
+                ctx.signal_payload_types.insert(e.name.clone(), t);
             }
         }
         Stmt::Await(a) => {
@@ -1246,14 +1257,17 @@ fn check_stmt(
             }
             // Push scope with `_` as Bool (the armed flag) for exec expression
             ctx.scope.push();
-            ctx.scope.declare("_", SymbolInfo {
-                kind: SymbolKind::LetBinding,
-                name: "_".into(),
-                ty: Type::Bool,
-                decl_range: a.range.clone(),
-                signature: None,
-                event_data: None,
-            });
+            ctx.scope.declare(
+                "_",
+                SymbolInfo {
+                    kind: SymbolKind::LetBinding,
+                    name: "_".into(),
+                    ty: Type::Bool,
+                    decl_range: a.range.clone(),
+                    signature: None,
+                    event_data: None,
+                },
+            );
             let exec_ty = infer_expr(ctx, &a.exec_expr, tmap, omap);
             ctx.scope.pop();
             let val_ty = if let Some(ref val) = a.value_expr {
@@ -1262,14 +1276,46 @@ fn check_stmt(
                 exec_ty
             };
             if let Some(ref binding) = a.binding {
-                ctx.scope.declare(binding, SymbolInfo {
-                    kind: SymbolKind::LetBinding,
-                    name: binding.clone(),
-                    ty: val_ty,
-                    decl_range: a.range.clone(),
-                    signature: None,
-                    event_data: None,
-                });
+                ctx.scope.declare(
+                    binding,
+                    SymbolInfo {
+                        kind: SymbolKind::LetBinding,
+                        name: binding.clone(),
+                        ty: val_ty,
+                        decl_range: a.range.clone(),
+                        signature: None,
+                        event_data: None,
+                    },
+                );
+            }
+            // `let { a, b } = await sig`: type each destructured local from the
+            // signal's recorded payload record (Any when unknown).
+            if let Some(ref fields) = a.destructure {
+                let payload_ty = match &a.exec_expr {
+                    Expr::Ident { name, .. } => ctx.signal_payload_types.get(name).cloned(),
+                    _ => None,
+                };
+                for (field, local) in fields {
+                    let fty = match &payload_ty {
+                        Some(Type::Record(fs)) => fs
+                            .iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, t)| t.clone())
+                            .unwrap_or(Type::Any),
+                        _ => Type::Any,
+                    };
+                    ctx.scope.declare(
+                        local,
+                        SymbolInfo {
+                            kind: SymbolKind::LetBinding,
+                            name: local.clone(),
+                            ty: fty,
+                            decl_range: a.range.clone(),
+                            signature: None,
+                            event_data: None,
+                        },
+                    );
+                }
             }
         }
         Stmt::If(i) => {
@@ -1349,22 +1395,23 @@ fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
         }
         LetBinding::Tuple { names, range, .. } => {
             if let Type::Tuple(fields) = t
-                && fields.len() == names.len() {
-                    for (n, ft) in names.iter().zip(fields.iter()) {
-                        ctx.scope.declare(
-                            n,
-                            SymbolInfo {
-                                kind: SymbolKind::LetBinding,
-                                name: n.clone(),
-                                ty: ft.clone(),
-                                decl_range: range.clone(),
-                                signature: None,
-                                event_data: None,
-                            },
-                        );
-                    }
-                    return;
+                && fields.len() == names.len()
+            {
+                for (n, ft) in names.iter().zip(fields.iter()) {
+                    ctx.scope.declare(
+                        n,
+                        SymbolInfo {
+                            kind: SymbolKind::LetBinding,
+                            name: n.clone(),
+                            ty: ft.clone(),
+                            decl_range: range.clone(),
+                            signature: None,
+                            event_data: None,
+                        },
+                    );
                 }
+                return;
+            }
             ctx.emit(
                 "WS010",
                 format!(
@@ -1472,8 +1519,12 @@ fn infer_assign_target(
             Some(s) if s.kind == SymbolKind::Var => unwrap_ref(&s.ty),
             Some(s) if s.kind == SymbolKind::Array => unwrap_ref(&s.ty),
             Some(s) if s.kind == SymbolKind::LetBinding => unwrap_ref(&s.ty),
-            Some(s) if s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)) => unwrap_ref(&s.ty),
-            Some(s) if s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_)) => unwrap_ref(&s.ty),
+            Some(s) if s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)) => {
+                unwrap_ref(&s.ty)
+            }
+            Some(s) if s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_)) => {
+                unwrap_ref(&s.ty)
+            }
             _ => {
                 ctx.emit(
                     "WS007",
@@ -1708,10 +1759,11 @@ fn infer_expr_inner(
             // declared var type directly.
             if (field == "Value" || field == "prev")
                 && let Expr::Ident { name, .. } = obj.as_ref()
-                    && let Some(sym) = ctx.scope.lookup(name)
-                        && let Type::Ref(inner) = &sym.ty {
-                            return inner.as_ref().clone();
-                        }
+                && let Some(sym) = ctx.scope.lookup(name)
+                && let Type::Ref(inner) = &sym.ty
+            {
+                return inner.as_ref().clone();
+            }
             if field == "value" || field == "Value" {
                 return unwrap_ref(&ot);
             }
@@ -1803,7 +1855,10 @@ fn infer_expr_inner(
                     }
                     if c.outputs.len() > 1 {
                         return Type::Record(
-                            c.outputs.iter().map(|o| (o.port.as_str().into(), o.ty.clone())).collect(),
+                            c.outputs
+                                .iter()
+                                .map(|o| (o.port.as_str().into(), o.ty.clone()))
+                                .collect(),
                         );
                     }
                     if c.exec {
@@ -1849,46 +1904,47 @@ fn infer_expr_inner(
                 range: fa_range,
             } = callee.as_ref()
                 && let Expr::Ident { name: ns_name, .. } = obj.as_ref()
-                    && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace) {
-                        let ns_lookup = ctx
-                            .namespaces
-                            .get(ns_name.as_str())
-                            .and_then(|ns_map| ns_map.get(field.as_str()))
-                            .map(|info| (info.kind, info.return_type.clone()));
-                        match ns_lookup {
-                            Some((SymbolKind::Chip, _)) => return Type::Any,
-                            Some((_, Some(ret))) => return resolve_type_expr(ctx, &ret),
-                            Some((_, None)) => return Type::Any,
-                            None => {
-                                ctx.emit(
-                                    "WS002",
-                                    format!("'{}' not found in namespace '{}'", field, ns_name),
-                                    fa_range.clone(),
-                                );
-                                return Type::Any;
-                            }
-                        }
+                && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
+            {
+                let ns_lookup = ctx
+                    .namespaces
+                    .get(ns_name.as_str())
+                    .and_then(|ns_map| ns_map.get(field.as_str()))
+                    .map(|info| (info.kind, info.return_type.clone()));
+                match ns_lookup {
+                    Some((SymbolKind::Chip, _)) => return Type::Any,
+                    Some((_, Some(ret))) => return resolve_type_expr(ctx, &ret),
+                    Some((_, None)) => return Type::Any,
+                    None => {
+                        ctx.emit(
+                            "WS002",
+                            format!("'{}' not found in namespace '{}'", field, ns_name),
+                            fa_range.clone(),
+                        );
+                        return Type::Any;
                     }
+                }
+            }
             // Array method call: arr.push(val), arr.length(), arr.pop(), etc.
             // Any array-typed value works (an `array` decl or a `var ids: T[]`),
             // gated on the field actually being an array method.
             if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
                 && let Expr::Ident { name, .. } = obj.as_ref()
-                    && let Some(sym) = ctx.scope.lookup(name)
-                        && (sym.kind == SymbolKind::Array
-                            || matches!(unwrap_ref(&sym.ty), Type::Array(_)))
-                        && crate::catalog::arrays::is_array_method(field) {
-                            let elem = match unwrap_ref(&sym.ty) {
-                                Type::Array(inner) => inner.as_ref().clone(),
-                                _ => Type::Any,
-                            };
-                            // Return type is derived from the method's gate
-                            // output ports (see catalog::arrays). Multi-output
-                            // gates (e.g. find) yield a record that auto-unwraps
-                            // to whichever field matches the use.
-                            return crate::catalog::arrays::array_return_type(field, &elem)
-                                .unwrap_or(Type::Any);
-                        }
+                && let Some(sym) = ctx.scope.lookup(name)
+                && (sym.kind == SymbolKind::Array || matches!(unwrap_ref(&sym.ty), Type::Array(_)))
+                && crate::catalog::arrays::is_array_method(field)
+            {
+                let elem = match unwrap_ref(&sym.ty) {
+                    Type::Array(inner) => inner.as_ref().clone(),
+                    _ => Type::Any,
+                };
+                // Return type is derived from the method's gate
+                // output ports (see catalog::arrays). Multi-output
+                // gates (e.g. find) yield a record that auto-unwraps
+                // to whichever field matches the use.
+                return crate::catalog::arrays::array_return_type(field, &elem)
+                    .unwrap_or(Type::Any);
+            }
             // Receiver method call: entity.SetLocation(pos)
             if let Expr::FieldAccess {
                 obj,
@@ -1896,20 +1952,24 @@ fn infer_expr_inner(
                 range: fa_range,
             } = callee.as_ref()
                 && let Some(c) = find_call(field)
-                    && c.receiver.is_some() {
-                        let mut recv_args = vec![CallArg::Positional(obj.as_ref().clone())];
-                        recv_args.extend(args.iter().cloned());
-                        check_call_args(ctx, c, &recv_args, fa_range, tmap, omap);
-                        if c.outputs.len() == 1 {
-                            return c.outputs[0].ty.clone();
-                        }
-                        if c.outputs.len() > 1 {
-                            return Type::Record(
-                                c.outputs.iter().map(|o| (o.port.as_str().into(), o.ty.clone())).collect(),
-                            );
-                        }
-                        return Type::Any;
-                    }
+                && c.receiver.is_some()
+            {
+                let mut recv_args = vec![CallArg::Positional(obj.as_ref().clone())];
+                recv_args.extend(args.iter().cloned());
+                check_call_args(ctx, c, &recv_args, fa_range, tmap, omap);
+                if c.outputs.len() == 1 {
+                    return c.outputs[0].ty.clone();
+                }
+                if c.outputs.len() > 1 {
+                    return Type::Record(
+                        c.outputs
+                            .iter()
+                            .map(|o| (o.port.as_str().into(), o.ty.clone()))
+                            .collect(),
+                    );
+                }
+                return Type::Any;
+            }
             Type::Any
         }
         Expr::IfExpr {
@@ -1996,7 +2056,9 @@ fn infer_expr_inner(
                         let spread_ty = infer_expr(ctx, value, tmap, omap);
                         if let Type::Record(spread_fields) = spread_ty {
                             for (fname, fty) in spread_fields {
-                                if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| *n == fname) {
+                                if let Some(existing) =
+                                    rec_fields.iter_mut().find(|(n, _)| *n == fname)
+                                {
                                     existing.1 = fty;
                                 } else {
                                     rec_fields.push((fname, fty));
@@ -2107,23 +2169,40 @@ fn check_let_type_annotation(
                     match f {
                         RecordLitField::Named { name, range, .. } => {
                             if !expected_fields.iter().any(|(n, _)| n == name) {
-                                ctx.emit("WS003", format!("field '{}' not in type {}", name, type_name), range.clone());
+                                ctx.emit(
+                                    "WS003",
+                                    format!("field '{}' not in type {}", name, type_name),
+                                    range.clone(),
+                                );
                             }
                         }
                         RecordLitField::Shorthand { name, range } => {
                             if !expected_fields.iter().any(|(n, _)| n == name) {
-                                ctx.emit("WS003", format!("field '{}' not in type {}", name, type_name), range.clone());
+                                ctx.emit(
+                                    "WS003",
+                                    format!("field '{}' not in type {}", name, type_name),
+                                    range.clone(),
+                                );
                             }
                         }
                         RecordLitField::Spread { value, range } => {
                             let spread_ty = infer_expr(ctx, value, tmap, omap);
                             if let Type::Record(spread_fields) = &spread_ty {
-                                let extras: Vec<&str> = spread_fields.iter()
+                                let extras: Vec<&str> = spread_fields
+                                    .iter()
                                     .filter(|(n, _)| !expected_fields.iter().any(|(en, _)| en == n))
                                     .map(|(n, _)| n.as_str())
                                     .collect();
                                 if !extras.is_empty() {
-                                    ctx.emit("WS003", format!("spread introduces fields not in {}: {}", type_name, extras.join(", ")), range.clone());
+                                    ctx.emit(
+                                        "WS003",
+                                        format!(
+                                            "spread introduces fields not in {}: {}",
+                                            type_name,
+                                            extras.join(", ")
+                                        ),
+                                        range.clone(),
+                                    );
                                 }
                             }
                         }
@@ -2133,7 +2212,11 @@ fn check_let_type_annotation(
                 if let Type::Record(inferred_fields) = inferred {
                     for (fname, _) in expected_fields {
                         if !inferred_fields.iter().any(|(n, _)| n == fname) {
-                            ctx.emit("WS003", format!("missing field '{}' for type {}", fname, type_name), l.range.clone());
+                            ctx.emit(
+                                "WS003",
+                                format!("missing field '{}' for type {}", fname, type_name),
+                                l.range.clone(),
+                            );
                         }
                     }
                 }
@@ -2588,13 +2671,16 @@ mod tests {
     // ---- array methods ----
     #[test]
     fn array_push_pop() {
-        let r = tc("array items: int[]\nin trigger: exec\non trigger { items.push(1)\nitems.pop() }");
+        let r =
+            tc("array items: int[]\nin trigger: exec\non trigger { items.push(1)\nitems.pop() }");
         assert_no_diags(&r);
     }
 
     #[test]
     fn array_length_returns_int() {
-        let r = tc("array items: int[]\nin trigger: exec\non trigger { let len = items.length()\nlet ok = len + 1 }");
+        let r = tc(
+            "array items: int[]\nin trigger: exec\non trigger { let len = items.length()\nlet ok = len + 1 }",
+        );
         assert_no_diags(&r);
         // len should be Int, so len + 1 should resolve without error.
         // If length() returned Any, the + would still work (Any coerces),
@@ -2639,37 +2725,48 @@ mod tests {
 
     #[test]
     fn record_field_access() {
-        let r = tc("type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet sum = p.x + p.y");
+        let r = tc(
+            "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet sum = p.x + p.y",
+        );
         assert_no_diags(&r);
     }
 
     #[test]
     fn record_shorthand() {
-        let r = tc("type Point = { x: int, y: int }\nlet x = 1\nlet y = 2\nlet p: Point = { x, y }");
+        let r =
+            tc("type Point = { x: int, y: int }\nlet x = 1\nlet y = 2\nlet p: Point = { x, y }");
         assert_no_diags(&r);
     }
 
     #[test]
     fn record_spread() {
-        let r = tc("type Point = { x: int, y: int }\nlet a: Point = { x: 1, y: 2 }\nlet b: Point = { ...a, y: 99 }");
+        let r = tc(
+            "type Point = { x: int, y: int }\nlet a: Point = { x: 1, y: 2 }\nlet b: Point = { ...a, y: 99 }",
+        );
         assert_no_diags(&r);
     }
 
     #[test]
     fn record_destructure() {
-        let r = tc("type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet { x, y } = p\nlet sum = x + y");
+        let r = tc(
+            "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet { x, y } = p\nlet sum = x + y",
+        );
         assert_no_diags(&r);
     }
 
     #[test]
     fn record_as_mod_param() {
-        let r = tc("type Point = { x: int, y: int }\nmod sum(p: Point) -> (r: int) { return p.x + p.y }\nlet p: Point = { x: 3, y: 4 }\nlet s = sum(p)");
+        let r = tc(
+            "type Point = { x: int, y: int }\nmod sum(p: Point) -> (r: int) { return p.x + p.y }\nlet p: Point = { x: 3, y: 4 }\nlet s = sum(p)",
+        );
         assert_no_diags(&r);
     }
 
     #[test]
     fn mod_param_record_destruct() {
-        let r = tc("type Point = { x: int, y: int }\nmod add({ x, y }: Point) -> int { return x + y }\nlet p: Point = { x: 3, y: 4 }\nlet sum = add(p)");
+        let r = tc(
+            "type Point = { x: int, y: int }\nmod add({ x, y }: Point) -> int { return x + y }\nlet p: Point = { x: 3, y: 4 }\nlet sum = add(p)",
+        );
         assert_no_diags(&r);
     }
 }

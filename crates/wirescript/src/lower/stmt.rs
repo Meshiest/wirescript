@@ -23,6 +23,20 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             // initial value each time this scope is entered. Without this,
             // PseudoVar keeps its value from the previous invocation.
             // `static var` skips this — it retains its value across calls.
+            // Array-typed vars have no `VarRef` port (only `ArrayVarRef`), so
+            // the generic Var_Set reset would emit a wire from a nonexistent
+            // source port ("Wire source port VarRef does not exist" in-game);
+            // rebuild them with the array-literal assign (clear + push) instead.
+            if !v.is_static
+                && ctx.current_exec.is_some()
+                && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
+                && var_rec.storage == VarStorage::Array
+            {
+                if let Some(init @ Expr::Array { elements, .. }) = &v.init {
+                    lower_array_literal_assign(ctx, &var_rec, elements, &v.range, init);
+                }
+                return;
+            }
             if !v.is_static
                 && let Some(exec) = ctx.current_exec
                 && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
@@ -70,12 +84,10 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                                     ty: inner.clone(),
                                 },
                             ],
-                            outputs: vec![
-                                PortSpec {
-                                    name: *sym::EXEC_OUT,
-                                    ty: Type::Exec,
-                                },
-                            ],
+                            outputs: vec![PortSpec {
+                                name: *sym::EXEC_OUT,
+                                ty: Type::Exec,
+                            }],
                         },
                         ..Default::default()
                     });
@@ -126,12 +138,10 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                                         ty: inner.clone(),
                                     },
                                 ],
-                                outputs: vec![
-                                    PortSpec {
-                                        name: *sym::EXEC_OUT,
-                                        ty: Type::Exec,
-                                    },
-                                ],
+                                outputs: vec![PortSpec {
+                                    name: *sym::EXEC_OUT,
+                                    ty: Type::Exec,
+                                }],
                             },
                             ..Default::default()
                         });
@@ -166,12 +176,10 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                                     ty: Type::Exec,
                                 },
                             ],
-                            outputs: vec![
-                                PortSpec {
-                                    name: *sym::EXEC_OUT,
-                                    ty: Type::Exec,
-                                },
-                            ],
+                            outputs: vec![PortSpec {
+                                name: *sym::EXEC_OUT,
+                                ty: Type::Exec,
+                            }],
                         },
                         ..Default::default()
                     });
@@ -289,12 +297,10 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
                         ty: inner.clone(),
                     },
                 ],
-                outputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_OUT,
-                        ty: Type::Exec,
-                    },
-                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
             },
             note: None,
             ..Default::default()
@@ -365,12 +371,10 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
                         ty: inner.clone(),
                     },
                 ],
-                outputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_OUT,
-                        ty: Type::Exec,
-                    },
-                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
             },
             note: None,
             ..Default::default()
@@ -410,12 +414,10 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
                     ty: inner.clone(),
                 },
             ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                },
-            ],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
         },
         note: None,
         ..Default::default()
@@ -543,6 +545,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let then_id = ctx.alloc_scope(ScopeKind::IfThen, s.then_block.range.clone());
     ctx.builder.current_scope_id = then_id;
     ctx.current_exec = Some(branch.port(WirePort::ExecOutA));
+    ctx.exec_branch_depth += 1;
     lower_block(ctx, &s.then_block);
     let then_end = ctx.current_exec;
 
@@ -564,6 +567,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     if let Some(else_b) = &s.else_block {
         lower_block(ctx, else_b);
     }
+    ctx.exec_branch_depth -= 1;
     let else_end = ctx.current_exec;
 
     // Restore scope so post-if code sees the pre-branch state.
@@ -587,12 +591,10 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
                     ty: Type::Exec,
                 },
             ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                },
-            ],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
         },
         ..Default::default()
     });
@@ -607,32 +609,332 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
 
 pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
     let is_output = ctx.lookup_output(&s.name).is_some();
-    let is_local_exec = ctx.pending_emits.contains_key(&s.name);
-    if !is_output && !is_local_exec {
+    // Local exec signals resolve to their per-declaration key via the scope,
+    // so same-named signals in different bodies stay separate.
+    let sig_key = ctx.signal_key(&s.name);
+    if !is_output && sig_key.is_none() {
         return;
     }
+    // Outputs are keyed by their plain name (resolved via lookup_output at
+    // flush); signals by their unique key.
+    let pending_key = if is_output {
+        s.name.clone()
+    } else {
+        sig_key.clone().expect("checked above")
+    };
 
     if let Some(ref value_expr) = s.value {
         if let Some(out) = ctx.lookup_output(&s.name).cloned() {
             let value_port = lower_expr(ctx, value_expr);
             ctx.connect(value_port, out.node_id.port(WirePort::RerInput));
+        } else if let Some(ref key) = sig_key
+            && ctx.current_exec.is_some()
+        {
+            // Local exec signal: the value is a ferried payload. Write it into
+            // the signal's hidden store(s) on the emit chain — sequenced before
+            // any buffer, so the value is stored this tick and read on the
+            // resumed chain after the exec crosses the barrier.
+            write_signal_payload(ctx, key, value_expr);
         }
         if let Some(current_exec) = ctx.current_exec {
+            let src_exec = match &s.buffer {
+                Some(spec) => buffered_exec(ctx, spec, current_exec),
+                None => current_exec,
+            };
+            let chain = ctx.builder.current_chain_id;
             ctx.pending_emits
-                .entry(s.name.clone())
+                .entry(pending_key)
                 .or_default()
-                .push(current_exec);
+                .push((src_exec, chain));
         }
     } else {
         let current_exec = match ctx.current_exec {
             Some(e) => e,
             None => return,
         };
+        let src_exec = match &s.buffer {
+            Some(spec) => buffered_exec(ctx, spec, current_exec),
+            None => current_exec,
+        };
+        let chain = ctx.builder.current_chain_id;
         ctx.pending_emits
-            .entry(s.name.clone())
+            .entry(pending_key)
             .or_default()
-            .push(current_exec);
+            .push((src_exec, chain));
     }
+}
+
+/// Route an emit's exec through a Buffer gate per its `buffer(delay, hold)`
+/// spec: the tick/seconds barrier that legalises loop back-edges (WS005) and
+/// delays the signal delivery. Constant durations bake into gate properties;
+/// `hold` defaults to `-1` (= use `delay`, the gate's "off-time follows
+/// on-time" mode). Returns the buffer's `Output` as the new emit source.
+fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: PortRef) -> PortRef {
+    let class = if spec.seconds {
+        gc::BUFFER_SECONDS
+    } else {
+        gc::BUFFER_TICKS
+    };
+    let (delay_sym, hold_sym) = if spec.seconds {
+        (*sym::SECONDS_TO_WAIT, *sym::ZERO_SECONDS_TO_WAIT)
+    } else {
+        (*sym::TICKS_TO_WAIT, *sym::ZERO_TICKS_TO_WAIT)
+    };
+    let (delay_port, hold_port) = if spec.seconds {
+        (WirePort::SecondsToWait, WirePort::ZeroSecondsToWait)
+    } else {
+        (WirePort::TicksToWait, WirePort::ZeroTicksToWait)
+    };
+    let unit_ty = if spec.seconds { Type::Float } else { Type::Int };
+    // Coerce a constant duration to the gate's unit type (int ticks / float s).
+    let unit_lit = |lit: Literal| -> Literal {
+        match (spec.seconds, lit) {
+            (true, Literal::Int(n)) => Literal::Float(n as f64),
+            (false, Literal::Float(f)) => Literal::Int(f as i64),
+            (_, other) => other,
+        }
+    };
+    // Constant durations bake into properties; anything else lowers to a value
+    // wire into the duration port. Lower the expressions *before* taking the
+    // buffer's exec source so a duration var read chains on the emit path.
+    let mut props = HashMap::new();
+    let mut inputs = vec![PortSpec {
+        name: *sym::INPUT,
+        ty: Type::Exec,
+    }];
+    let delay_wire = match &spec.delay {
+        // Bare `buffer emit`: one tick.
+        None => {
+            props.insert(
+                delay_sym,
+                if spec.seconds {
+                    Literal::Float(1.0)
+                } else {
+                    Literal::Int(1)
+                },
+            );
+            None
+        }
+        Some(d) => match crate::lower::predeclare::expr_to_literal(d) {
+            Some(lit) => {
+                props.insert(delay_sym, unit_lit(lit));
+                None
+            }
+            None => {
+                inputs.push(PortSpec {
+                    name: delay_sym,
+                    ty: unit_ty.clone(),
+                });
+                Some(lower_expr(ctx, d))
+            }
+        },
+    };
+    let hold_wire = match &spec.hold {
+        Some(h) => match crate::lower::predeclare::expr_to_literal(h) {
+            Some(lit) => {
+                props.insert(hold_sym, unit_lit(lit));
+                None
+            }
+            None => {
+                inputs.push(PortSpec {
+                    name: hold_sym,
+                    ty: unit_ty.clone(),
+                });
+                Some(lower_expr(ctx, h))
+            }
+        },
+        None => {
+            // No hold given: -1 = hold follows the delay.
+            props.insert(
+                hold_sym,
+                if spec.seconds {
+                    Literal::Float(-1.0)
+                } else {
+                    Literal::Int(-1)
+                },
+            );
+            None
+        }
+    };
+    let exec_src = ctx.current_exec.unwrap_or(exec_in);
+    let buf = ctx.add_gate(AddNodeOpts {
+        gate_class: class,
+        source_range: spec.range.clone(),
+        ports: GateIO {
+            inputs,
+            outputs: vec![PortSpec {
+                name: *sym::OUTPUT,
+                ty: Type::Exec,
+            }],
+        },
+        properties: props,
+        note: Some("buffered emit"),
+        ..Default::default()
+    });
+    ctx.connect(exec_src, buf.port(WirePort::Input));
+    if let Some(p) = delay_wire {
+        ctx.connect(p, buf.port(delay_port));
+    }
+    if let Some(p) = hold_wire {
+        ctx.connect(p, buf.port(hold_port));
+    }
+    buf.port(WirePort::Output)
+}
+
+/// The bare signal name an `await` (or exec expression) refers to, when it's a
+/// plain identifier (a local exec signal). `None` for `Sleep(...)`, `a || b`, etc.
+fn signal_name_of(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Ident { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// Get (or create) the hidden payload store var for `sig`'s `field`
+/// (`""` = scalar payload).
+fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId {
+    if let Some(list) = ctx.exec_signal_payloads.get(sig) {
+        if let Some((_, id, _)) = list.iter().find(|(f, _, _)| f == field) {
+            return *id;
+        }
+    }
+    let mut props = HashMap::new();
+    if let Some(lit) = default_literal_for_var_type(&ty) {
+        props.insert(*sym::INITIAL_VALUE, lit);
+    }
+    let store = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::PSEUDO_VAR,
+        source_range: SourceRange::default(),
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: ty.clone(),
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(ty.clone())),
+                },
+            ],
+        },
+        properties: props,
+        note: Some("signal payload store"),
+        ..Default::default()
+    });
+    ctx.exec_signal_payloads
+        .entry(sig.to_string())
+        .or_default()
+        .push((field.to_string(), store, ty));
+    store
+}
+
+/// `Var_Set(<var> = <value_port>)` chained on the current exec (advances it).
+fn chain_var_set(ctx: &mut LowerCtx, var: NodeId, value_port: PortRef, ty: Type) {
+    let Some(exec_in) = ctx.current_exec else {
+        return;
+    };
+    let set = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::VAR_SET,
+        source_range: SourceRange::default(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(ty.clone())),
+                },
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty,
+                },
+            ],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
+        },
+        note: Some("signal payload write"),
+        ..Default::default()
+    });
+    ctx.connect(exec_in, set.port(WirePort::Exec));
+    ctx.connect(var.port(WirePort::VarRef), set.port(WirePort::VarRef));
+    ctx.connect(value_port, set.port(WirePort::Value));
+    ctx.current_exec = Some(set.port(WirePort::ExecOut));
+}
+
+/// `Var_Get(<var>)` chained on the current exec (advances it); returns the
+/// Value port.
+fn chain_var_get(ctx: &mut LowerCtx, var: NodeId, ty: Type) -> PortRef {
+    let exec_in = ctx.current_exec;
+    let get = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::VAR_GET,
+        source_range: SourceRange::default(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(ty.clone())),
+                },
+            ],
+            outputs: vec![
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty,
+                },
+                PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                },
+            ],
+        },
+        note: Some("signal payload read"),
+        ..Default::default()
+    });
+    if let Some(e) = exec_in {
+        ctx.connect(e, get.port(WirePort::Exec));
+        ctx.current_exec = Some(get.port(WirePort::ExecOut));
+    }
+    ctx.connect(var.port(WirePort::VarRef), get.port(WirePort::VarRef));
+    get.port(WirePort::Value)
+}
+
+/// Write `emit sig = <value>` into the signal's payload store(s), chained on
+/// the current exec. A record literal writes one store per field; any other
+/// value uses the scalar `""` store.
+fn write_signal_payload(ctx: &mut LowerCtx, sig: &str, value_expr: &Expr) {
+    if let Expr::RecordLit { fields, .. } = value_expr {
+        for f in fields {
+            let (name, fexpr) = match f {
+                RecordLitField::Named { name, value, .. } => (name.clone(), value.clone()),
+                // `{ sum, index }` shorthand: the value is the same-named local.
+                RecordLitField::Shorthand { name, range } => (
+                    name.clone(),
+                    Expr::Ident {
+                        name: name.clone(),
+                        range: range.clone(),
+                    },
+                ),
+                RecordLitField::Spread { .. } => continue,
+            };
+            let ty = unwrap_ref(&ctx.type_of(&fexpr));
+            let value_port = lower_expr(ctx, &fexpr);
+            let store = payload_store(ctx, sig, &name, ty.clone());
+            chain_var_set(ctx, store, value_port, ty);
+        }
+        return;
+    }
+    let ty = unwrap_ref(&ctx.type_of(value_expr));
+    let value_port = lower_expr(ctx, value_expr);
+    let store = payload_store(ctx, sig, "", ty.clone());
+    chain_var_set(ctx, store, value_port, ty);
 }
 
 pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
@@ -643,8 +945,14 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         ports: GateIO {
             inputs: vec![],
             outputs: vec![
-                PortSpec { name: *sym::VALUE, ty: Type::Bool },
-                PortSpec { name: *sym::VAR_REF, ty: Type::Ref(Box::new(Type::Bool)) },
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: Type::Bool,
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(Type::Bool)),
+                },
             ],
         },
         properties: {
@@ -663,7 +971,10 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             source_range: a.range.clone(),
             ports: GateIO {
                 inputs: vec![],
-                outputs: vec![PortSpec { name: *sym::OUTPUT, ty: Type::Bool }],
+                outputs: vec![PortSpec {
+                    name: *sym::OUTPUT,
+                    ty: Type::Bool,
+                }],
             },
             properties: {
                 let mut p = HashMap::new();
@@ -677,20 +988,51 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             source_range: a.range.clone(),
             ports: GateIO {
                 inputs: vec![
-                    PortSpec { name: *sym::EXEC, ty: Type::Exec },
-                    PortSpec { name: *sym::VAR_REF, ty: Type::Ref(Box::new(Type::Bool)) },
-                    PortSpec { name: *sym::VALUE, ty: Type::Bool },
+                    PortSpec {
+                        name: *sym::EXEC,
+                        ty: Type::Exec,
+                    },
+                    PortSpec {
+                        name: *sym::VAR_REF,
+                        ty: Type::Ref(Box::new(Type::Bool)),
+                    },
+                    PortSpec {
+                        name: *sym::VALUE,
+                        ty: Type::Bool,
+                    },
                 ],
-                outputs: vec![
-                    PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec },
-                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
             },
             ..Default::default()
         });
         ctx.connect(exec_in, arm_set.port(WirePort::Exec));
-        ctx.connect(armed_id.port(WirePort::VarRef), arm_set.port(WirePort::VarRef));
-        ctx.connect(true_lit.port(WirePort::Output), arm_set.port(WirePort::Value));
+        ctx.connect(
+            armed_id.port(WirePort::VarRef),
+            arm_set.port(WirePort::VarRef),
+        );
+        ctx.connect(
+            true_lit.port(WirePort::Output),
+            arm_set.port(WirePort::Value),
+        );
         // Exec chain ends here — pre-await code is done
+    }
+
+    // Register an unconditional `await <signal>` so flush can route same-chain
+    // emits through a `Var_Set(armed = true)` sequenced *before* the hub — a
+    // parallel arm races the `Var_Get` below (it may read `false` and drop the
+    // continuation), and loop back-edges must re-arm every iteration. Awaits
+    // inside `if` branches don't register: their arm only fires when the branch
+    // is taken, so same-chain emits stay flag-guarded (ordering is ambiguous by
+    // design there).
+    if ctx.exec_branch_depth == 0 {
+        if let Some(key) = signal_name_of(&a.exec_expr).and_then(|sig| ctx.signal_key(sig)) {
+            ctx.signal_awaits
+                .entry(key)
+                .or_insert((armed_id, ctx.builder.current_chain_id));
+        }
     }
 
     // 3. Lower the exec expression (the trigger to wait for)
@@ -706,18 +1048,33 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         source_range: a.range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec { name: *sym::EXEC, ty: Type::Exec },
-                PortSpec { name: *sym::VAR_REF, ty: Type::Ref(Box::new(Type::Bool)) },
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(Type::Bool)),
+                },
             ],
             outputs: vec![
-                PortSpec { name: *sym::VALUE, ty: Type::Bool },
-                PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec },
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: Type::Bool,
+                },
+                PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                },
             ],
         },
         ..Default::default()
     });
     ctx.connect(exec_port, get_armed.port(WirePort::Exec));
-    ctx.connect(armed_id.port(WirePort::VarRef), get_armed.port(WirePort::VarRef));
+    ctx.connect(
+        armed_id.port(WirePort::VarRef),
+        get_armed.port(WirePort::VarRef),
+    );
 
     // 5. Branch on armed flag — true branch continues, false drops
     let branch = ctx.add_gate(AddNodeOpts {
@@ -725,18 +1082,36 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         source_range: a.range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec { name: *sym::EXEC, ty: Type::Exec },
-                PortSpec { name: *sym::B_COND, ty: Type::Bool },
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::B_COND,
+                    ty: Type::Bool,
+                },
             ],
             outputs: vec![
-                PortSpec { name: *sym::EXEC_OUT_A, ty: Type::Exec },
-                PortSpec { name: *sym::EXEC_OUT_B, ty: Type::Exec },
+                PortSpec {
+                    name: *sym::EXEC_OUT_A,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::EXEC_OUT_B,
+                    ty: Type::Exec,
+                },
             ],
         },
         ..Default::default()
     });
-    ctx.connect(get_armed.port(WirePort::ExecOut), branch.port(WirePort::Exec));
-    ctx.connect(get_armed.port(WirePort::Value), branch.port(WirePort::BCond));
+    ctx.connect(
+        get_armed.port(WirePort::ExecOut),
+        branch.port(WirePort::Exec),
+    );
+    ctx.connect(
+        get_armed.port(WirePort::Value),
+        branch.port(WirePort::BCond),
+    );
 
     // 6. Reset: Var_Set(armed = false) on the true branch
     let false_lit = ctx.add_gate(AddNodeOpts {
@@ -744,7 +1119,10 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         source_range: a.range.clone(),
         ports: GateIO {
             inputs: vec![],
-            outputs: vec![PortSpec { name: *sym::OUTPUT, ty: Type::Bool }],
+            outputs: vec![PortSpec {
+                name: *sym::OUTPUT,
+                ty: Type::Bool,
+            }],
         },
         properties: {
             let mut p = HashMap::new();
@@ -758,26 +1136,57 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         source_range: a.range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec { name: *sym::EXEC, ty: Type::Exec },
-                PortSpec { name: *sym::VAR_REF, ty: Type::Ref(Box::new(Type::Bool)) },
-                PortSpec { name: *sym::VALUE, ty: Type::Bool },
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(Type::Bool)),
+                },
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: Type::Bool,
+                },
             ],
-            outputs: vec![
-                PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec },
-            ],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
         },
         ..Default::default()
     });
-    ctx.connect(branch.port(WirePort::ExecOutA), reset_set.port(WirePort::Exec));
-    ctx.connect(armed_id.port(WirePort::VarRef), reset_set.port(WirePort::VarRef));
-    ctx.connect(false_lit.port(WirePort::Output), reset_set.port(WirePort::Value));
+    ctx.connect(
+        branch.port(WirePort::ExecOutA),
+        reset_set.port(WirePort::Exec),
+    );
+    ctx.connect(
+        armed_id.port(WirePort::VarRef),
+        reset_set.port(WirePort::VarRef),
+    );
+    ctx.connect(
+        false_lit.port(WirePort::Output),
+        reset_set.port(WirePort::Value),
+    );
 
     // 7. Continuation: everything after await runs from reset_set's ExecOut
     ctx.current_exec = Some(reset_set.port(WirePort::ExecOut));
 
-    // 8. Bind the value if `let x = await ...`
+    // 8. Bind the value if `let x = await ...`. For a local signal carrying a
+    // ferried payload, read the payload store on the resumed chain (the emit
+    // wrote it before the exec crossed any buffer).
     if let Some(ref binding_name) = a.binding {
-        let val_port = if let Some(ref val_expr) = a.value_expr {
+        let payload = signal_name_of(&a.exec_expr)
+            .and_then(|sig| ctx.signal_key(sig))
+            .and_then(|key| ctx.exec_signal_payloads.get(&key))
+            .and_then(|list| {
+                list.iter()
+                    .find(|(f, _, _)| f.is_empty())
+                    .map(|(_, id, ty)| (*id, ty.clone()))
+            });
+        let val_port = if let Some((store, ty)) = payload {
+            chain_var_get(ctx, store, ty)
+        } else if let Some(ref val_expr) = a.value_expr {
             lower_expr(ctx, val_expr)
         } else {
             exec_port
@@ -786,6 +1195,36 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             binding_name.clone(),
             Binding::Local(LocalRecord { port: val_port }),
         );
+    }
+
+    // 9. `let { a, b } = await sig`: read each destructured payload store on
+    // the resumed chain and bind the locals.
+    if let Some(ref fields) = a.destructure {
+        for (field, local) in fields {
+            let store = signal_name_of(&a.exec_expr)
+                .and_then(|sig| ctx.signal_key(sig))
+                .and_then(|key| ctx.exec_signal_payloads.get(&key))
+                .and_then(|list| {
+                    list.iter()
+                        .find(|(f, _, _)| f == field)
+                        .map(|(_, id, ty)| (*id, ty.clone()))
+                });
+            let Some((store, ty)) = store else {
+                ctx.warn(
+                    format!(
+                        "awaited signal has no ferried payload field `{field}` — \
+                         emit a value first (`emit <sig> = {{ {field}: ... }}`)"
+                    ),
+                    &a.range,
+                );
+                continue;
+            };
+            let val_port = chain_var_get(ctx, store, ty);
+            ctx.scope.insert(
+                local.clone(),
+                Binding::Local(LocalRecord { port: val_port }),
+            );
+        }
     }
 }
 
@@ -802,12 +1241,19 @@ fn build_exec_union(ctx: &mut LowerCtx, ports: Vec<PortRef>) -> PortRef {
             source_range: SourceRange::default(),
             ports: GateIO {
                 inputs: vec![
-                    PortSpec { name: *sym::EXEC_A, ty: Type::Exec },
-                    PortSpec { name: *sym::EXEC_B, ty: Type::Exec },
+                    PortSpec {
+                        name: *sym::EXEC_A,
+                        ty: Type::Exec,
+                    },
+                    PortSpec {
+                        name: *sym::EXEC_B,
+                        ty: Type::Exec,
+                    },
                 ],
-                outputs: vec![
-                    PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec },
-                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
             },
             ..Default::default()
         });
@@ -821,12 +1267,19 @@ fn build_exec_union(ctx: &mut LowerCtx, ports: Vec<PortRef>) -> PortRef {
             source_range: SourceRange::default(),
             ports: GateIO {
                 inputs: vec![
-                    PortSpec { name: *sym::EXEC_A, ty: Type::Exec },
-                    PortSpec { name: *sym::EXEC_B, ty: Type::Exec },
+                    PortSpec {
+                        name: *sym::EXEC_A,
+                        ty: Type::Exec,
+                    },
+                    PortSpec {
+                        name: *sym::EXEC_B,
+                        ty: Type::Exec,
+                    },
                 ],
-                outputs: vec![
-                    PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec },
-                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
             },
             ..Default::default()
         });
@@ -839,31 +1292,141 @@ fn build_exec_union(ctx: &mut LowerCtx, ports: Vec<PortRef>) -> PortRef {
 
 pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
     let pending = std::mem::take(&mut ctx.pending_emits);
-    for (name, ports) in pending {
-        if ports.is_empty() {
+    for (name, entries) in pending {
+        if entries.is_empty() {
             continue;
         }
         // Compute targets before building the union (which borrows ctx mut).
         let out = ctx.lookup_output(&name).cloned();
         let hub = ctx.exec_signal_hubs.get(&name).copied();
-        let exec_out = build_exec_union(ctx, ports);
         if let Some(out) = out {
+            let ports = entries.into_iter().map(|(p, _)| p).collect();
+            let exec_out = build_exec_union(ctx, ports);
             ctx.connect(exec_out, out.node_id.port(WirePort::RerInput));
         } else if let Some(hub) = hub {
-            // Local exec signal with a pre-declared hub (top-level `let x:
-            // exec`): feed the emit union into the hub `on x` already triggers
-            // from.
-            ctx.connect(exec_out, hub.port(WirePort::ExecA));
+            // Local exec signal with a pre-declared hub. Emits on the same
+            // chain as an unconditional `await` of this signal route through a
+            // `Var_Set(armed = true)` *before* entering the hub — sequenced, so
+            // the awaiting `Var_Get` can't race the arm, and loop back-edges
+            // re-arm every iteration. Emits from other chains enter directly,
+            // guarded by the armed flag.
+            let awaited = ctx.signal_awaits.get(&name).copied();
+            let (armed, direct): (Vec<_>, Vec<_>) = entries
+                .into_iter()
+                .partition(|(_, chain)| awaited.is_some_and(|(_, ac)| *chain == ac));
+            let mut next_hub_port = WirePort::ExecA;
+            if !armed.is_empty() {
+                let (armed_var, _) = awaited.expect("armed partition implies an await");
+                let union_out = build_exec_union(ctx, armed.into_iter().map(|(p, _)| p).collect());
+                let arm = build_arm_set(ctx, armed_var);
+                ctx.connect(union_out, arm.port(WirePort::Exec));
+                ctx.connect(arm.port(WirePort::ExecOut), hub.port(next_hub_port));
+                next_hub_port = WirePort::ExecB;
+            }
+            if !direct.is_empty() {
+                let union_out = build_exec_union(ctx, direct.into_iter().map(|(p, _)| p).collect());
+                ctx.connect(union_out, hub.port(next_hub_port));
+            }
         } else {
             // Fallback: a signal without a pre-declared hub (e.g. declared
             // inside a handler). Bind the union output directly; `on x` for
             // these still depends on source order.
-            ctx.scope.insert(
-                name,
-                Binding::Local(LocalRecord { port: exec_out }),
-            );
+            let ports = entries.into_iter().map(|(p, _)| p).collect();
+            let exec_out = build_exec_union(ctx, ports);
+            ctx.scope
+                .insert(name, Binding::Local(LocalRecord { port: exec_out }));
         }
     }
+    // A hub that ended up with a single input is a pass-through: splice it out
+    // (its one source drives everything that hung off the hub's ExecOut).
+    let hubs: Vec<NodeId> = ctx.exec_signal_hubs.values().copied().collect();
+    for hub in hubs {
+        splice_single_input_union(ctx, hub);
+    }
+}
+
+/// `Var_Set(<armed_var> = true)` gate pair (literal + set) used to arm an
+/// await's flag on the emit path, sequenced upstream of the signal hub.
+/// Mirrors the arm built in `lower_await` step 2.
+fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
+    let true_lit = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::LITERAL,
+        source_range: SourceRange::default(),
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec {
+                name: *sym::OUTPUT,
+                ty: Type::Bool,
+            }],
+        },
+        properties: {
+            let mut p = HashMap::new();
+            p.insert(*sym::VALUE, Literal::Bool(true));
+            p
+        },
+        ..Default::default()
+    });
+    let arm_set = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::VAR_SET,
+        source_range: SourceRange::default(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(Type::Bool)),
+                },
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: Type::Bool,
+                },
+            ],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
+        },
+        note: Some("emit arms await"),
+        ..Default::default()
+    });
+    ctx.connect(
+        armed_var.port(WirePort::VarRef),
+        arm_set.port(WirePort::VarRef),
+    );
+    ctx.connect(
+        true_lit.port(WirePort::Output),
+        arm_set.port(WirePort::Value),
+    );
+    arm_set
+}
+
+/// If `hub` has exactly one incoming wire, it's a degenerate pass-through
+/// union: redirect everything hanging off its `ExecOut` to the single source
+/// and remove the hub (so e.g. one emitter drives an `await`/`on` directly,
+/// with no Union gate in between).
+fn splice_single_input_union(ctx: &mut LowerCtx, hub: NodeId) {
+    let module = &mut ctx.builder.module;
+    let incoming: Vec<usize> = module
+        .wires
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.target.node_id == hub)
+        .map(|(i, _)| i)
+        .collect();
+    if incoming.len() != 1 {
+        return;
+    }
+    let src = module.wires[incoming[0]].source.clone();
+    for w in module.wires.iter_mut() {
+        if w.source.node_id == hub {
+            w.source = src.clone();
+        }
+    }
+    module.wires.remove(incoming[0]);
+    module.nodes.remove(&hub);
 }
 
 pub(super) fn lower_out_binding(

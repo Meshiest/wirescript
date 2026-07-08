@@ -400,6 +400,17 @@ pub(super) fn lower_block(ctx: &mut LowerCtx, block: &Block) {
         }
         lower_stmt(ctx, s);
     }
+    // An `emit` as the block's final statement terminates this exec chain —
+    // the pulse hands off to the signal/output and nothing follows here. In
+    // particular a loop back-edge (`buffer emit loop` last in the then-block)
+    // must NOT fall through the if-join into the mod's end exec, or the
+    // caller's continuation would fire once per iteration instead of on
+    // `return`.
+    if let Some(Stmt::Emit(e)) = block.stmts.last() {
+        if ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some() {
+            ctx.current_exec = None;
+        }
+    }
 }
 
 pub(super) fn is_handler_like(d: &TopDecl) -> bool {

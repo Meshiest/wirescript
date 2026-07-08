@@ -150,10 +150,22 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // it (an inline mod call within `d.value` sets it definitively at its end).
     ctx.pending_inline_record = None;
     // `let name: exec` — local exec signal, register as emit target
-    if let Some(TypeExpr::Name { name: ref type_name, .. }) = d.typ {
+    if let Some(TypeExpr::Name {
+        name: ref type_name,
+        ..
+    }) = d.typ
+    {
         if type_name == "exec" {
             if let LetBinding::Ident { name, .. } = &d.binding {
-                ctx.pending_emits.entry(name.clone()).or_default();
+                // Top-level signals were already hubbed by the pre-declare
+                // pass; skip the pass-2 revisit (no exec context at top level).
+                // Body-level declarations always build a fresh hub — each
+                // mod/handler instance is its own signal, even under the same
+                // name (shadowing any outer signal).
+                if ctx.current_exec.is_none() && ctx.signal_key(name).is_some() {
+                    return;
+                }
+                build_exec_signal_hub(ctx, name, &d.range);
             }
             return;
         }
@@ -248,9 +260,12 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     if let Type::Record(ref fields) = rhs_type {
         if let Expr::Call { .. } = &d.value {
             // Find the chip node whose outputs include rhs_port.node_id
-            let chip_entry = ctx.builder.module.chips.iter().find(|(_, child)| {
-                child.outputs.contains(&rhs_port.node_id)
-            });
+            let chip_entry = ctx
+                .builder
+                .module
+                .chips
+                .iter()
+                .find(|(_, child)| child.outputs.contains(&rhs_port.node_id));
             if let Some((_, child)) = chip_entry {
                 let outputs = child.outputs.clone();
                 let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::new();
@@ -268,7 +283,10 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                     LetBinding::Ident { name, .. } => {
                         ctx.scope.insert(name.clone(), Binding::Record(record));
                     }
-                    LetBinding::RecordDestruct { fields: destruct_fields, .. } => {
+                    LetBinding::RecordDestruct {
+                        fields: destruct_fields,
+                        ..
+                    } => {
                         install_record_destruct(ctx, &record, destruct_fields);
                     }
                     _ => {}
