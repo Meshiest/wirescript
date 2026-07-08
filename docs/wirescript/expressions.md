@@ -500,4 +500,5 @@ At compile the referenced `.brz` is read and **embedded into the output
 bundle** (content-addressed at `Prefabs/Uploads/<hash>.brz`), and the gate's
 `Prefab` property is set to that embedded path — so the compiled program is
 self-contained. Typing `$./` completes available `.brz` files (the editor scans
-the project directory; the web playground offers files you drag in).
+the project directory; the web playground has a Prefabs panel where you upload
+or drag in `.brz` files).

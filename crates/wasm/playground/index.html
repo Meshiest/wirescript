@@ -206,6 +206,38 @@
       padding: 4px 0;
     }
 
+    #prefabs-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #bbbbbb;
+      border-bottom: 1px solid #3c3c3c;
+    }
+    #prefabs-header button {
+      font-size: 15px;
+      line-height: 1;
+      background: none;
+      border: none;
+      color: #bbbbbb;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    #prefabs-header button:hover { color: #ffffff; }
+    #prefab-list { overflow-y: auto; padding: 4px 0; max-height: 30%; }
+    .prefab-empty {
+      padding: 4px 12px 8px 12px;
+      font-size: 11px;
+      color: #666;
+      font-style: italic;
+      line-height: 1.4;
+    }
+    #sidebar.drop-active { outline: 2px dashed #4a9d6f; outline-offset: -4px; }
+
     .file-item {
       display: flex;
       align-items: center;
@@ -785,6 +817,14 @@
         </div>
         <div id="file-list"></div>
       </div>
+      <div class="sidebar-section">
+        <div id="prefabs-header">
+          <span>Prefabs</span>
+          <button id="btn-upload-prefab" title="Upload .brz prefab(s)">⬆</button>
+        </div>
+        <div id="prefab-list"></div>
+        <input type="file" id="prefab-file-input" accept=".brz" multiple hidden>
+      </div>
     </div>
 
     <div id="editor-area">
@@ -819,6 +859,7 @@
     import * as wasm from '../pkg/wasm.js';
     import { createEditor } from './editor.js';
     import * as files from './files.js';
+    import * as prefabs from './prefabs.js';
     import * as share from './share.js';
     import { initDocs } from './docs.js';
 
@@ -955,6 +996,92 @@
         });
 
         fileList.appendChild(item);
+      }
+    }
+
+    function renderPrefabList() {
+      const list = document.getElementById('prefab-list');
+      if (!list) return;
+      list.innerHTML = '';
+      const refs = prefabs.listPrefabs();
+      if (refs.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'prefab-empty';
+        empty.textContent = 'Upload or drop .brz files, then reference them as $./name.brz';
+        list.appendChild(empty);
+        return;
+      }
+      for (const ref of refs) {
+        const name = ref.replace(/^\.\//, '');
+        const size = prefabs.prefabSize(ref);
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.title = ref + ' — ' + size + ' bytes';
+
+        const icon = document.createElement('span');
+        icon.className = 'file-icon';
+        icon.textContent = '▦';
+
+        const label = document.createElement('span');
+        label.textContent = name;
+
+        const actions = document.createElement('span');
+        actions.className = 'file-actions';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = '⧉';
+        copyBtn.title = 'Copy $' + ref;
+        copyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const refText = '$' + ref;
+          if (navigator.clipboard) navigator.clipboard.writeText(refText);
+          showToast('Copied ' + refText, 'success');
+        });
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = '✕';
+        deleteBtn.title = 'Remove';
+        deleteBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          await prefabs.deletePrefab(ref);
+          renderPrefabList();
+        });
+
+        actions.appendChild(copyBtn);
+        actions.appendChild(deleteBtn);
+        item.appendChild(icon);
+        item.appendChild(label);
+        item.appendChild(actions);
+
+        // Click a prefab to insert its reference at the cursor.
+        item.addEventListener('click', () => {
+          if (!editor) return;
+          const sel = editor.getSelection();
+          editor.executeEdits('prefab-insert', [{ range: sel, text: '$' + ref, forceMoveMarkers: true }]);
+          editor.focus();
+        });
+
+        list.appendChild(item);
+      }
+    }
+
+    async function handlePrefabFiles(fileList) {
+      let added = 0;
+      for (const f of Array.from(fileList)) {
+        if (!/\.brz$/i.test(f.name)) {
+          showToast('Skipped ' + f.name + ' (not a .brz)', 'error');
+          continue;
+        }
+        try {
+          await prefabs.addPrefab(f);
+          added++;
+        } catch (err) {
+          showToast('Failed to add ' + f.name + ': ' + err, 'error');
+        }
+      }
+      if (added > 0) {
+        renderPrefabList();
+        showToast('Added ' + added + ' prefab' + (added > 1 ? 's' : ''), 'success');
       }
     }
 
@@ -1108,7 +1235,7 @@
             if (content !== null) fileMap[name] = content;
           }
         }
-        const brz = wasm.wirescript_compile(source, moduleName, JSON.stringify(fileMap));
+        const brz = wasm.wirescript_compile(source, moduleName, JSON.stringify(fileMap), prefabs.getPrefabsJson());
         const blob = new Blob([brz], { type: 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1279,6 +1406,10 @@
         // Initialize WASM
         await init();
 
+        // Load uploaded prefabs (IndexedDB blobs) into the in-memory cache so
+        // completion + compile can read them synchronously.
+        await prefabs.initPrefabs();
+
         // Render examples sidebar
         const examples = await loadExamples();
         renderExamples(examples);
@@ -1310,7 +1441,7 @@
             }
           }
           return JSON.stringify(map);
-        });
+        }, () => prefabs.getPrefabPathsJson());
 
         // Load the active file into the editor
         loadActiveFile();
@@ -1378,6 +1509,29 @@
           a.click();
         });
         document.getElementById('btn-new-file').addEventListener('click', newFile);
+
+        // Prefab upload: button, file input, and drag-drop onto the sidebar.
+        renderPrefabList();
+        document.getElementById('btn-upload-prefab').addEventListener('click', () => {
+          document.getElementById('prefab-file-input').click();
+        });
+        document.getElementById('prefab-file-input').addEventListener('change', (e) => {
+          handlePrefabFiles(e.target.files);
+          e.target.value = '';
+        });
+        const sidebarEl = document.getElementById('sidebar');
+        const dtHasFiles = (e) => Array.from(e.dataTransfer?.items || []).some((i) => i.kind === 'file');
+        ['dragenter', 'dragover'].forEach((ev) => sidebarEl.addEventListener(ev, (e) => {
+          if (dtHasFiles(e)) { e.preventDefault(); sidebarEl.classList.add('drop-active'); }
+        }));
+        sidebarEl.addEventListener('dragleave', (e) => {
+          if (e.target === sidebarEl) sidebarEl.classList.remove('drop-active');
+        });
+        sidebarEl.addEventListener('drop', (e) => {
+          e.preventDefault();
+          sidebarEl.classList.remove('drop-active');
+          if (e.dataTransfer?.files?.length) handlePrefabFiles(e.dataTransfer.files);
+        });
 
         // Docs panel header toggle + dock button
         document.getElementById('docs-panel-header').addEventListener('click', (e) => {

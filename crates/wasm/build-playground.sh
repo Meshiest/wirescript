@@ -16,6 +16,7 @@ cp playground/index.html _site/
 cp playground/monarch.js _site/
 cp playground/editor.js _site/
 cp playground/files.js _site/
+cp playground/prefabs.js _site/
 cp playground/share.js _site/
 cp playground/docs.js _site/
 
@@ -44,6 +45,7 @@ cp playground/index.html _sdk/wirescript-sdk/playground/
 cp playground/monarch.js _sdk/wirescript-sdk/playground/
 cp playground/editor.js _sdk/wirescript-sdk/playground/
 cp playground/files.js _sdk/wirescript-sdk/playground/
+cp playground/prefabs.js _sdk/wirescript-sdk/playground/
 cp playground/share.js _sdk/wirescript-sdk/playground/
 cp playground/docs.js _sdk/wirescript-sdk/playground/
 cp pkg/wasm_bg.wasm _sdk/wirescript-sdk/playground/pkg/
