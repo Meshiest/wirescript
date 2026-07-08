@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+## 0.10.1 - 2026-07-07
+
+### Language / Compiler
+
+- **Asset references are `entity`-typed and usable as values** - `$Type/Name` now has type `entity` (was `any`), so `weapon == $BRItemBase/Weapon_Pickaxe` type-checks against an entity value (e.g. a `CharacterDamaged` weapon). As a value it materializes into the matching `*Reference` gate (`ItemReference`, `AudioReference`, `EntityTypeReference`, … chosen by asset type) — which holds the asset in its class/object field and outputs it as an entity wire — since assets can't be inlined into arbitrary ports like a Compare gate's input. Previously it errored (`WS004`).
+- **`DisplayText` gained an `easing` param** - the interpolation curve for `transition` (`"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"`), a property-only enum like `justify`. Animating a slot's position now eases instead of only running linearly.
+
 ## 0.10.0 - 2026-07-07
 
 ### Bug Fixes
@@ -23,7 +30,6 @@
 
 ### Language / Compiler
 
-- **`DisplayText` gained an `easing` param** - the interpolation curve for `transition` (`"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"`), a property-only enum like `justify`. Animating a slot's position now eases instead of only running linearly.
 - **Prefab references embed a `.brz` into `SpawnPrefab`** - `$./file.brz` (relative) / `$/abs.brz` (absolute) read the archive at compile and embed it content-addressed (brdb 0.7 `add_prefab`), setting the gate's `Prefab` path. `.brz` required (`WS019`); resolution is pluggable via `EmitOptions::prefab_resolver`.
 
 ## 0.9.0 - 2026-07-07

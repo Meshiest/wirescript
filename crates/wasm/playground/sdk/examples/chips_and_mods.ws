@@ -2,7 +2,7 @@
 // chip {} = physical microchip (visual grouping in-game)
 // mod name() {} = inline expansion (no microchip, like a macro)
 
-// Variables in a chip — visually grouped in-game
+// Variables in a chip - visually grouped in-game
 chip {
   /// Team Health
   var health: int = 100

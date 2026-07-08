@@ -1,9 +1,9 @@
-// Async Signals — emit values, await triggers, local exec signals
+// Async Signals - emit values, await triggers, local exec signals
 //
 // These features let you build event-driven pipelines where
 // one handler fires a signal and another picks up where it left off.
 
-// Local exec signals — synchronization points
+// Local exec signals - synchronization points
 let ready: exec
 let done: exec
 
@@ -17,7 +17,7 @@ in player: character
 in start: exec
 in cancel: exec
 
-// emit target = expr — set output value and fire exec
+// emit target = expr - set output value and fire exec
 on player {
   score = score + 10
   phase = phase + 1
@@ -27,7 +27,7 @@ on player {
   }
 }
 
-// await — suspend exec chain, resume when signal fires
+// await - suspend exec chain, resume when signal fires
 on start {
   score = 0
   phase = 0
@@ -45,13 +45,13 @@ on start {
   emit done
 }
 
-// let foo = await expr — capture the exec expression's value
+// let foo = await expr - capture the exec expression's value
 on start {
   let finalScore = await score on done
   emit status = finalScore
 }
 
-// await a || b — race, first signal wins
+// await a || b - race, first signal wins
 on start {
   await done || cancel
   player.DisplayText(

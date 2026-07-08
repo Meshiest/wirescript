@@ -1544,10 +1544,12 @@ fn infer_expr_inner(
             Type::Array(Box::new(elem))
         }
         Expr::AssetRef { .. } => {
-            // An external asset reference flows into object/class-typed gate
-            // ports; typed `any` so it's accepted there. Validation against the
-            // asset catalog happens in the analysis/diagnostics layer.
-            Type::Any
+            // An external asset reference (`$Type/Name`) is an object/class
+            // reference — typed `entity` so it can be compared against entity
+            // values (e.g. `weapon == $BRItemBase/Weapon_Pickaxe`) and passed
+            // into object/class gate ports (which accept `any`/entity anyway).
+            // Validation against the asset catalog happens in analysis.
+            Type::Entity
         }
         Expr::PrefabRef { path, range } => {
             // A prefab file reference flows into a `bundle_path_ref` gate

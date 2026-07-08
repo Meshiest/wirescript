@@ -11,6 +11,36 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             literal_node(ctx, e, Type::String, Literal::String(value.clone()))
         }
         Expr::InterpLit { parts, range } => lower_interp(ctx, parts, range),
+        // `$Type/Name` as a value (e.g. a compare operand `weapon == $Item/Foo`)
+        // materializes into the matching `*Reference` gate: the asset is held in
+        // that gate's class/object `Asset` field (where an asset CAN be inlined)
+        // and the gate outputs it as an `entity` wire. Assets can't be inlined
+        // into arbitrary wire-variant ports (Compare `InputB`), so this wire is
+        // how they reach such consumers. Typed `entity` (see typecheck).
+        Expr::AssetRef { asset_type, asset_name, range } => {
+            let mut props = HashMap::new();
+            props.insert(
+                intern_static("Asset"),
+                Literal::Asset {
+                    asset_type: asset_type.clone(),
+                    asset_name: asset_name.clone(),
+                },
+            );
+            let node_id = ctx.add_gate(AddNodeOpts {
+                gate_class: asset_reference_gate(asset_type),
+                source_range: range.clone(),
+                ports: GateIO {
+                    inputs: vec![],
+                    outputs: vec![PortSpec {
+                        name: *sym::VALUE,
+                        ty: Type::Entity,
+                    }],
+                },
+                properties: props,
+                ..Default::default()
+            });
+            node_id.port(WirePort::Value)
+        }
         Expr::Ident { name, range } => {
             if name == "_" {
                 if let Some(port) = ctx.await_armed_port {
@@ -122,6 +152,25 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             synthesise_unsupported_range(ctx, range)
         }
         _ => synthesise_unsupported(ctx, e),
+    }
+}
+
+/// The `*Reference` gate class that sources an asset of `asset_type` as an
+/// `entity` wire — it holds the asset in its class/object `Asset` field and
+/// outputs `Value: entity`.
+fn asset_reference_gate(asset_type: &str) -> &'static str {
+    match asset_type {
+        "BRItemBase" => "BrickComponentType_WireGraph_ItemReference",
+        "BRPickupBase" => "BrickComponentType_WireGraph_PickupReference",
+        "BRWeaponProjectile" => "BrickComponentType_WireGraph_ProjectileReference",
+        "BrickAudioDescriptor" => "BrickComponentType_WireGraph_AudioReference",
+        "BrickFontDescriptor" => "BrickComponentType_WireGraph_FontReference",
+        "BrickOneShotAudioDescriptor" => "BrickComponentType_WireGraph_OneShotAudioReference",
+        "BrickWheelEngineAudioDescriptor" => {
+            "BrickComponentType_WireGraph_WheelEngineAudioReference"
+        }
+        // Unknown/other categories → the generic entity-type reference.
+        _ => "BrickComponentType_WireGraph_EntityTypeReference",
     }
 }
 

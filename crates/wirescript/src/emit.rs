@@ -888,6 +888,51 @@ fn build_gate_component(
 /// component data.
 fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'static str], bool)> {
     match gate_class {
+        // ── Asset reference sources ────────────────────────────────────────
+        // Each holds an asset in its class/object `Asset` field and outputs it
+        // as an `entity` wire (how a `$Type/Name` value reaches a consumer).
+        "BrickComponentType_WireGraph_ItemReference" => {
+            Some(("BrickComponentData_WireGraph_ItemReference", &["Asset"], false))
+        }
+        "BrickComponentType_WireGraph_PickupReference" => {
+            Some(("BrickComponentData_WireGraph_PickupReference", &["Asset"], false))
+        }
+        "BrickComponentType_WireGraph_ProjectileReference" => Some((
+            "BrickComponentData_WireGraph_ProjectileReference",
+            &["Asset"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_EntityTypeReference" => Some((
+            "BrickComponentData_WireGraph_EntityTypeReference",
+            &["Asset"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_BrickAssetReference" => Some((
+            "BrickComponentData_WireGraph_BrickAssetReference",
+            &["Asset"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_AudioReference" => {
+            Some(("BrickComponentData_WireGraph_AudioReference", &["Asset"], false))
+        }
+        "BrickComponentType_WireGraph_OneShotAudioReference" => Some((
+            "BrickComponentData_WireGraph_OneShotAudioReference",
+            &["Asset"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_WheelEngineAudioReference" => Some((
+            "BrickComponentData_WireGraph_WheelEngineAudioReference",
+            &["Asset"],
+            false,
+        )),
+        "BrickComponentType_WireGraph_FontReference" => {
+            Some(("BrickComponentData_WireGraph_FontReference", &["Asset"], false))
+        }
+        "BrickComponentType_WireGraph_ParticleReference" => Some((
+            "BrickComponentData_WireGraph_ParticleReference",
+            &["Asset"],
+            false,
+        )),
         // ── Variables ──────────────────────────────────────────────────────
         "BrickComponentType_WireGraph_Exec_Var_Set"
         | "BrickComponentType_WireGraph_Exec_Var_Increment"
