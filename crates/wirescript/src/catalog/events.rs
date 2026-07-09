@@ -26,6 +26,13 @@ pub struct EventSpec {
     /// Named config args (`on E(Name = v)`, matched case-insensitively) → gate
     /// data-struct field name.
     pub config_named: Vec<(&'static str, &'static str)>,
+    /// Named args (`on E(name = value)`, matched case-insensitively) whose value
+    /// is WIRED into a gate INPUT port (surface name → gate input port name).
+    /// e.g. `zone = zoneBrick` on the zone events. Empty for most events.
+    pub input_named: Vec<(&'static str, &'static str)>,
+    /// The gate's exec OUTPUT port name — the port the handler body chains from.
+    /// Most events use `ExecOut`; the internal zone-event gates name it `Exec`.
+    pub exec_out: &'static str,
 }
 
 /// Every built-in event. Order matches the TS reference for deterministic
@@ -40,6 +47,25 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 data,
                 config_positional: vec![],
                 config_named: vec![],
+                input_named: vec![],
+                exec_out: "ExecOut",
+            },
+        )
+    };
+    // Like `mk`, but the event also exposes a `zone = <value>` named arg that
+    // wires its value into the gate's `Zone` input port. The internal zone-event
+    // gates name their exec output `Exec` (not `ExecOut`).
+    let mk_zone = |surface: &'static str, class: &'static str, data: Vec<EventDataBinding>| {
+        (
+            surface,
+            EventSpec {
+                surface_name: surface,
+                gate_class: class,
+                data,
+                config_positional: vec![],
+                config_named: vec![],
+                input_named: vec![("zone", "Zone")],
+                exec_out: "Exec",
             },
         )
     };
@@ -57,6 +83,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 data,
                 config_positional,
                 config_named,
+                input_named: vec![],
+                exec_out: "ExecOut",
             },
         )
     };
@@ -112,22 +140,22 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent",
             vec![controller("controller", "Controller")],
         ),
-        mk(
+        mk_zone(
             "ZoneEntered",
             "BrickComponentType_Internal_CharacterZoneEvent_Entered",
             vec![character("character", "Character")],
         ),
-        mk(
+        mk_zone(
             "ZoneLeft",
             "BrickComponentType_Internal_CharacterZoneEvent_Left",
             vec![character("character", "Character")],
         ),
-        mk(
+        mk_zone(
             "BrickChanged",
             "BrickComponentType_Internal_ZoneEvent_BrickChanged",
             vec![brick("brick", "Brick")],
         ),
-        mk(
+        mk_zone(
             "BrickRemoved",
             "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
             vec![brick("brick", "Brick")],
@@ -153,17 +181,17 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 },
             ],
         ),
-        mk(
+        mk_zone(
             "EntityZoneEntered",
             "BrickComponentType_Internal_EntityZoneEvent_Entered",
             vec![entity("entity", "Entity")],
         ),
-        mk(
+        mk_zone(
             "EntityZoneLeft",
             "BrickComponentType_Internal_EntityZoneEvent_Left",
             vec![entity("entity", "Entity")],
         ),
-        mk(
+        mk_zone(
             "ProjectileZoneEntered",
             "BrickComponentType_Internal_ProjectileZoneEvent_Entered",
             vec![
@@ -177,7 +205,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 },
             ],
         ),
-        mk(
+        mk_zone(
             "ProjectileZoneLeft",
             "BrickComponentType_Internal_ProjectileZoneEvent_Left",
             vec![

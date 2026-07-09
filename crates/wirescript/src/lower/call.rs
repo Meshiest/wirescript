@@ -60,7 +60,7 @@ pub(super) fn lower_chip_call(
     range: &SourceRange,
 ) -> PortRef {
     let named = !chip_decl.name.is_empty();
-    if named && ctx.chip_call_stack.contains(&chip_decl.name) {
+    if named && ctx.chip_call_stack.contains(&chip_decl.range) {
         ctx.diagnostics.push(Diagnostic::error(
             "WS020",
             format!(
@@ -75,7 +75,7 @@ pub(super) fn lower_chip_call(
         return synthesise_unsupported_range(ctx, range);
     }
     if named {
-        ctx.chip_call_stack.push(chip_decl.name.clone());
+        ctx.chip_call_stack.push(chip_decl.range.clone());
     }
 
     let result = if chip_decl.inline {

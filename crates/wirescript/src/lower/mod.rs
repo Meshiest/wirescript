@@ -502,7 +502,7 @@ pub fn compile_chip_template(
         chip_call_stack: if chip_decl.name.is_empty() {
             Vec::new()
         } else {
-            vec![chip_decl.name.clone()]
+            vec![chip_decl.range.clone()]
         },
     };
 

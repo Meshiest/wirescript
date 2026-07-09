@@ -412,6 +412,14 @@ on ChatCommand("greet", "Greets the player", player, args) {
 on ChatCommand("wave", Description = "Wave at everyone") { }
 ```
 
+The zone events — `ZoneEntered`, `ZoneLeft`, `EntityZoneEntered`, `EntityZoneLeft`, `ProjectileZoneEntered`, `ProjectileZoneLeft`, `BrickChanged`, `BrickRemoved` — accept a `zone = <value>` named arg that **wires** its value into the gate's `Zone` input port (rather than setting a static config field). Pass an `in` port bound to a zone brick so one wire selects the zone the gate watches — and the same port can drive several of these gates:
+
+```wirescript
+in room: entity                             // wire to a Zone brick in-game
+on ZoneEntered(character, zone = room) { }  // room feeds the gate's Zone input
+on ZoneLeft(character, zone = room) { }
+```
+
 ### Triggering on Input Ports
 
 ```wirescript

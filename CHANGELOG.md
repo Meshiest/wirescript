@@ -1,5 +1,11 @@
 # Wirescript Changelog
 
+## 0.12.1 - 2026-07-09
+
+
+- **Zone events bind their `Zone` input** - `on ZoneEntered(character, zone = z)` wires the value `z` into the event gate's `Zone` input port, so an `in` port wired to a zone brick selects the watched zone instead of hand-wiring each internal gate. Covers all zone events: `ZoneEntered`/`ZoneLeft`, `EntityZoneEntered`/`Left`, `ProjectileZoneEntered`/`Left`, `BrickChanged`/`BrickRemoved`.
+- Fix false recursion flag on imported namespaced identifier conflicting with local identifier
+
 ## 0.12.0 - 2026-07-09
 
 ### Language / Compiler

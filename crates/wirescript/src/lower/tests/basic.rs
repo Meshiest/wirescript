@@ -1438,3 +1438,52 @@ fn detector_builtins_map_to_split_gate_classes() {
         "BrickComponentType_WireGraph_Expr_EdgeDetectorExec"
     ));
 }
+
+/// `on ZoneEntered(character, zone = zoneA)` wires the `zoneA` value into the
+/// event gate's `Zone` input port. Event gates are otherwise pure sources, so
+/// an input wire into the gate — sourced from the `in` port — proves the bind.
+#[test]
+fn zone_event_input_binding() {
+    let r = compile(
+        "\
+in zoneA: entity
+on ZoneEntered(character, zone = zoneA) {
+  PrintToConsole(\"entered\")
+}",
+    );
+    assert_no_errors(&r);
+    let event_node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_Internal_CharacterZoneEvent_Entered")
+        .expect("expected a ZoneEntered event gate");
+    let zone_wire = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == event_node.id)
+        .expect("ZoneEntered gate must have its Zone input wired");
+    let src = r
+        .module
+        .nodes
+        .get(&zone_wire.source.node_id)
+        .expect("Zone wire source node");
+    assert_eq!(
+        src.gate_class, "BrickComponentType_Internal_MicrochipInput",
+        "Zone input should be wired from the `in zoneA` port"
+    );
+    // The zone gate's exec output is named `Exec`, not `ExecOut`. The handler
+    // body must chain from that port or the game silently drops the connection.
+    let exec_wire = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.source.node_id == event_node.id)
+        .expect("ZoneEntered gate must chain its exec into the handler body");
+    assert_eq!(
+        exec_wire.source.port.as_str(),
+        "Exec",
+        "zone event exec output port must be `Exec`, not `ExecOut`"
+    );
+}

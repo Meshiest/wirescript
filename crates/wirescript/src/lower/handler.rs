@@ -14,7 +14,7 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
         None => return,
     };
     let mut outputs = vec![PortSpec {
-        name: *sym::EXEC_OUT,
+        name: intern(evt.exec_out),
         ty: Type::Exec,
     }];
     for d2 in &evt.data {
@@ -34,8 +34,8 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     });
     let saved_exec = ctx.current_exec;
     let saved_entry = ctx.handler_entry_exec;
-    ctx.current_exec = Some(event_node.port(WirePort::ExecOut));
-    ctx.handler_entry_exec = Some(event_node.port(WirePort::ExecOut));
+    ctx.current_exec = Some(port_ref(event_node, evt.exec_out));
+    ctx.handler_entry_exec = Some(port_ref(event_node, evt.exec_out));
     reset_var_get_caches(ctx);
     lower_block(ctx, body);
     if let Some(e) = ctx.current_exec {
@@ -295,8 +295,27 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         _ => SourceRange::default(),
     };
 
+    // Named args that wire a value into a gate INPUT port (e.g. `zone = zoneA`).
+    let mut input_wires: Vec<(&'static str, &Expr)> = Vec::new();
+    for (surf, port) in &evt.input_named {
+        for arg in &h.config {
+            if let HandlerConfigArg::Named { name, value } = arg {
+                if name.eq_ignore_ascii_case(surf) {
+                    input_wires.push((port, value));
+                }
+            }
+        }
+    }
+    let event_inputs: Vec<PortSpec> = input_wires
+        .iter()
+        .map(|&(port, _)| PortSpec {
+            name: intern(port),
+            ty: Type::Any,
+        })
+        .collect();
+
     let mut event_outputs = vec![PortSpec {
-        name: *sym::EXEC_OUT,
+        name: intern(evt.exec_out),
         ty: Type::Exec,
     }];
     for d in &evt.data {
@@ -309,12 +328,20 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         gate_class: evt.gate_class,
         source_range: trigger_range,
         ports: GateIO {
-            inputs: vec![],
+            inputs: event_inputs,
             outputs: event_outputs,
         },
         properties: event_config_props(evt, &h.config),
         ..Default::default()
     });
+
+    // Wire each input value into the gate's named input port. Lowered here (in
+    // the enclosing scope, before the handler body scope is pushed) so top-level
+    // `in` ports like `zoneA` resolve.
+    for &(port, value_expr) in &input_wires {
+        let src = lower_expr(ctx, value_expr);
+        ctx.connect(src, port_ref(event_node, port));
+    }
 
     ctx.scope.push(crate::scope::ScopeTag::BLOCK);
     for (i, pname) in h.params.iter().enumerate() {
@@ -328,8 +355,8 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
 
     let saved_exec = ctx.current_exec;
     let saved_entry = ctx.handler_entry_exec;
-    ctx.current_exec = Some(event_node.port(WirePort::ExecOut));
-    ctx.handler_entry_exec = Some(event_node.port(WirePort::ExecOut));
+    ctx.current_exec = Some(port_ref(event_node, evt.exec_out));
+    ctx.handler_entry_exec = Some(port_ref(event_node, evt.exec_out));
     reset_var_get_caches(ctx);
 
     ctx.with_scope(

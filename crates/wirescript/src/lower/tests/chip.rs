@@ -2,6 +2,71 @@ use crate::{ir::port_registry::WirePort, template_cache::TemplateCache};
 
 use super::*;
 
+// ── Recursion guard (WS020) ──
+
+/// Lower a main source plus in-memory imported modules (resolve → typecheck →
+/// lower) and return all diagnostics — for exercising cross-module scenarios
+/// the single-source `compile` helper can't reach.
+fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diagnostic::Diagnostic> {
+    let files: std::collections::HashMap<String, String> = files
+        .iter()
+        .map(|(n, s)| (n.to_string(), s.to_string()))
+        .collect();
+    let loader = crate::resolve::MemLoader { files };
+    let resolved = crate::resolve::resolve(main_src, "main.ws", &loader);
+    let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws");
+    let lowered = lower(LowerInput {
+        ast: &resolved.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file: "main.ws",
+        module_name: None,
+        template_cache: std::sync::Arc::new(TemplateCache::new()),
+    });
+    let mut diags = resolved.diagnostics;
+    diags.extend(tc.diagnostics);
+    diags.extend(lowered.diagnostics);
+    diags
+}
+
+/// A mod that transitively calls itself must still be flagged WS020 — the guard
+/// now keys on the decl's source range (not just its name), so real recursion
+/// (same decl re-entered) is still caught.
+#[test]
+fn genuine_self_recursion_still_flagged() {
+    let r = compile("mod foo() -> int { return foo() }\nout result = foo()");
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS020"),
+        "self-recursion must still be WS020; got {:?}",
+        r.diagnostics
+    );
+}
+
+/// Regression: a local mod calling a SAME-NAMED mod imported from another
+/// module (`mod drawCard` calling `card.drawCard`) is not recursion — they're
+/// distinct decls. The name-based guard falsely flagged this; keying on the
+/// decl's source range (which includes the file) fixes it.
+#[test]
+fn same_name_mod_across_modules_is_not_recursion() {
+    let display = "mod drawCard() -> int { return 1 }";
+    let main = "import * as card from \"display\"\n\
+                mod drawCard() -> int { return card.drawCard() }\n\
+                out result = drawCard()";
+    let diags = lower_with_imports(main, &[("display.ws", display)]);
+    assert!(
+        !diags.iter().any(|d| d.code == "WS020"),
+        "same-named mod across modules must not be flagged recursive; got {:?}",
+        diags
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.severity == crate::diagnostic::Severity::Error),
+        "should compile without errors; got {:?}",
+        diags
+    );
+}
+
 #[test]
 fn chip_decl_sets_child_root_scope_to_chip_body() {
     // Standalone chips are instantiated per call, so we need to call it.
