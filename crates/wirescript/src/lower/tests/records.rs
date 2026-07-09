@@ -310,6 +310,88 @@ out result = g({ a: x, b: 1 })",
     );
 }
 
+/// Regression: a top-level `let` constant referenced inside a chip body must
+/// resolve — `Binding::Local` (constant lets) is inherited into the chip scope,
+/// not dropped. This was the second half of the roles.ws bug: even after
+/// record-literal args destructured, `{ team: T_GREY }` inside the `InitRoles`
+/// chip pushed 0 because the const `T_GREY` was invisible in the chip body and
+/// lowered to an `_Unsupported` default. Mirrors roles' non-foldable path:
+/// a const field value `.push()`ed into a top-level array from inside a chip.
+#[test]
+fn top_level_const_visible_inside_chip() {
+    let r = compile(
+        "\
+let TG = 2
+type RD = { tm: int }
+array teams: int[]
+mod addR(next: *int, { tm }: RD) -> int {
+  teams.push(tm)
+  let code = next
+  next = next + 1
+  return code
+}
+chip Init() -> (A: int) {
+  var nxt: int = 0
+  emit A = addR(nxt, { tm: TG })
+}
+in go: exec
+let I = Init(exec = go)",
+    );
+    assert_no_errors(&r);
+    // No `_Unsupported` anywhere — including inside the chip body, where the
+    // pushed const value used to lower to an unsupported placeholder (→ 0).
+    let mut unsupported = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "_Unsupported")
+        .count();
+    for (_, child) in &r.module.chips {
+        unsupported += child
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == "_Unsupported")
+            .count();
+    }
+    assert_eq!(
+        unsupported, 0,
+        "top-level const inside a chip must resolve, not lower to _Unsupported"
+    );
+}
+
+/// Regression: a top-level `in` port referenced inside a chip body must
+/// resolve. Chips close over the whole module-global (ROOT) scope, so inputs
+/// are visible just like vars/consts — not dropped by a per-type whitelist.
+#[test]
+fn top_level_input_visible_inside_chip() {
+    let r = compile(
+        "\
+in y: int
+array out_arr: int[]
+chip C() { out_arr.push(y) }
+in go: exec
+let I = C(exec = go)",
+    );
+    assert_no_errors(&r);
+    let mut unsupported = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "_Unsupported")
+        .count();
+    for (_, child) in &r.module.chips {
+        unsupported += child
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == "_Unsupported")
+            .count();
+    }
+    assert_eq!(
+        unsupported, 0,
+        "a top-level input referenced inside a chip must resolve, not lower to _Unsupported"
+    );
+}
+
 /// Test 6: Mod parameter destructuring.
 /// `mod set_val({ val }: State) { val = 42 }` — the destructured `val` field
 /// is a `*int` ref, so writing `val = 42` inside the mod should produce a

@@ -98,6 +98,16 @@ impl<V> Scope<V> {
         self.frames.iter().rev().flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
     }
 
+    /// Iterate only the module-global (ROOT) frame — the outermost scope.
+    /// These are the names a chip body closes over; handler-local and block
+    /// frames are intentionally excluded.
+    pub fn iter_root(&self) -> impl Iterator<Item = (&str, &V)> {
+        self.frames
+            .iter()
+            .filter(|f| f.tag.contains(ScopeTag::ROOT))
+            .flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
+    }
+
     /// Iterate entries from the top frame downward, stopping when a frame
     /// whose tag intersects `boundary` is reached (that frame IS included).
     pub fn iter_within(&self, boundary: ScopeTag) -> impl Iterator<Item = (&str, &V)> {

@@ -599,23 +599,15 @@ fn build_chip_module(
         chip_call_stack: ctx.chip_call_stack.clone(),
     };
 
-    // Inherit declarations from the parent scope so the chip body can call
-    // mods/chips defined outside its own body, and reference outer vars,
-    // arrays, buffers, and record bindings directly — wire refs cross chip
-    // boundaries, so the body's gates connect to the caller's nodes exactly
-    // like captured ref params do. Chip params declared below shadow
-    // inherited names.
-    for (name, binding) in ctx.scope.iter() {
-        match binding {
-            Binding::Chip(_)
-            | Binding::Namespace(_)
-            | Binding::Var(_)
-            | Binding::Buffer(_)
-            | Binding::Record(_) => {
-                child_ctx.scope.insert(name.to_string(), binding.clone());
-            }
-            _ => {}
-        }
+    // A chip closes over the module globals (the ROOT scope): every top-level
+    // declaration — mods/chips, vars, arrays, buffers, consts, inputs, outputs,
+    // records — is visible in the body, with wire refs crossing the chip
+    // boundary just like captured ref params. Handler-local lets and event
+    // params live in inner frames and are intentionally NOT captured (a
+    // persistent chip can't sample a transient handler value; pass it as an
+    // explicit param instead). Chip params declared below shadow inherited names.
+    for (name, binding) in ctx.scope.iter_root() {
+        child_ctx.scope.insert(name.to_string(), binding.clone());
     }
 
     for inp in &chip_decl.inputs {

@@ -13,6 +13,8 @@
 - **`min`/`max` and 14 more expression gates embed literals** - `min`, `max`, `sign`, `round`, `exp`, `ln`, the hyperbolics, `Deg2Rad`/`Rad2Deg`, `BitCount`, and `ScaleVec` share data structs that had no mapping, so literal args (`min(a, 3.0)`) were dropped.
 - **`ScaleVec` wires to the real ports** - `Input`/`Scalar`, not `InputA`/`InputB` (which don't exist on the gate).
 - Destructuring record literals now properly lowered to bindings.
+- **Record literals as call args bind their fields** - passing `{ a: 1, b: 2 }` to a destructured (`f({ a, b }: P)`) or whole-record (`f(p: P)`) param now lowers the fields.
+- **Chips capture the whole module scope** - a chip body now sees every top-level declaration (consts, `in`/`out`, vars, arrays, buffers, records) via wire refs across the boundary; a per-type whitelist previously dropped top-level `let`/`in` references, lowering them to `_Unsupported` defaults. Handler-local `let`s and event params stay out — pass them as explicit params.
 
 
 ## 0.10.2 - 2026-07-08
