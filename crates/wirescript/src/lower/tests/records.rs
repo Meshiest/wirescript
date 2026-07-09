@@ -359,6 +359,45 @@ let I = Init(exec = go)",
     );
 }
 
+/// Regression (roles bug): a top-level constant used inside a chip must reach
+/// its consumer as INLINE gate data, with no value wire crossing the chip
+/// boundary. The const's `_Literal` is cloned into the chip, then folded into
+/// the consumer by `inline_orphan_literals`.
+#[test]
+fn const_inlines_into_chip_gate_no_boundary_wire() {
+    let r = compile(
+        "let TG = 2\ntype RD = { tm: int }\narray teams: int[]\nmod addR(next: *int, { tm }: RD) -> int {\n  teams.push(tm)\n  let code = next\n  next = next + 1\n  return code\n}\nchip Init() -> (A: int) {\n  var nxt: int = 0\n  emit A = addR(nxt, { tm: TG })\n}\nin go: exec\nlet I = Init(exec = go)",
+    );
+    assert_no_errors(&r);
+    for chip in r.module.chips.values() {
+        let push = chip
+            .nodes
+            .values()
+            .find(|n| n.gate_class.contains("ArrayVar_Push"))
+            .expect("expected an ArrayVar_Push in the chip");
+        // The constant reached the push as INLINE data (Value = 2), not a wire.
+        assert_eq!(
+            push.properties.get(&crate::intern::intern("Value")),
+            Some(&crate::ir::Literal::Int(2)),
+            "const should inline into the push's Value data as 2"
+        );
+        // No VALUE wire crosses the boundary: the push's `Value` input must not
+        // be fed by a wire from outside the chip (ref ports like ArrayVarRef may
+        // legitimately cross; value ports may not).
+        let value_sym = crate::intern::intern("Value");
+        for w in &chip.wires {
+            if w.target.node_id == push.id
+                && crate::intern::intern(w.target.port.as_str()) == value_sym
+            {
+                assert!(
+                    chip.nodes.contains_key(&w.source.node_id),
+                    "the push Value is fed by a cross-boundary wire"
+                );
+            }
+        }
+    }
+}
+
 /// Regression: a top-level `in` port referenced inside a chip body must
 /// resolve. Chips close over the whole module-global (ROOT) scope, so inputs
 /// are visible just like vars/consts — not dropped by a per-type whitelist.

@@ -599,15 +599,43 @@ fn build_chip_module(
         chip_call_stack: ctx.chip_call_stack.clone(),
     };
 
-    // A chip closes over the module globals (the ROOT scope): every top-level
-    // declaration — mods/chips, vars, arrays, buffers, consts, inputs, outputs,
-    // records — is visible in the body, with wire refs crossing the chip
-    // boundary just like captured ref params. Handler-local lets and event
-    // params live in inner frames and are intentionally NOT captured (a
-    // persistent chip can't sample a transient handler value; pass it as an
-    // explicit param instead). Chip params declared below shadow inherited names.
-    for (name, binding) in ctx.scope.iter_root() {
-        child_ctx.scope.insert(name.to_string(), binding.clone());
+    // A chip is visual grouping only — wire refs cross the boundary freely — so
+    // its body closes over the ENTIRE enclosing lexical scope: module globals
+    // plus any handler-local `let`s, event params, and block locals in scope at
+    // the instantiation point. `iter()` yields innermost-first; keep the first
+    // (nearest) binding per name so inner shadows outer. Chip params declared
+    // below shadow these in turn.
+    //
+    // Constants get one extra step: a `let X = <const>` is a `Local` pointing at
+    // a `_Literal` node in the parent module. Cloning that literal into the
+    // chip's own module lets `inline_orphan_literals` fold it into its consumers
+    // as inline gate data (fewer gates) rather than a separate constant brick.
+    let mut seen = std::collections::HashSet::new();
+    let inherited: Vec<(String, Binding)> = ctx
+        .scope
+        .iter()
+        .filter(|(name, _)| seen.insert(name.to_string()))
+        .map(|(name, b)| (name.to_string(), b.clone()))
+        .collect();
+    for (name, binding) in inherited {
+        if let Binding::Local(local) = &binding
+            && let Some(src) = ctx.builder.module.nodes.get(&local.port.node_id)
+            && src.gate_class == gc::LITERAL
+        {
+            let opts = AddNodeOpts {
+                gate_class: gc::LITERAL,
+                source_range: src.source_range.clone(),
+                ports: (*src.ports).clone(),
+                properties: (*src.properties).clone(),
+                ..Default::default()
+            };
+            let new_id = child_ctx.add_gate(opts);
+            child_ctx
+                .scope
+                .insert(name, Binding::Local(LocalRecord { port: new_id.port(local.port.port) }));
+            continue;
+        }
+        child_ctx.scope.insert(name, binding);
     }
 
     for inp in &chip_decl.inputs {

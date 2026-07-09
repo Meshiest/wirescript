@@ -30,61 +30,61 @@ fn string_literal_emits_concatenate_gate() {
 }
 
 #[test]
-fn string_in_select_wires_through_concatenate() {
-    // if-then-else with string branches must wire through Concatenate gates
-    // into the Select gate's wire_graph_variant inputs, not inline them
+fn string_in_select_inlines_as_variant() {
+    // if-then-else with constant string branches inlines the strings directly
+    // into the Select gate's wire_graph_variant inputs — no `String_Concatenate`
+    // wrapper (that was the pre-inline-support way of wiring a string in).
     let r = compile("out x = if true then \"yes\" else \"no\"");
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
-    let has_select = r.module.nodes.values().any(|n| {
-        n.gate_class == "BrickComponentType_WireGraph_Expr_Select"
-    });
-    assert!(has_select, "if-expr should create Select gate");
-    // Both branches should be Concatenate gates
+    assert_no_errors(&r);
+    let select = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .expect("if-expr should create a Select gate");
+    // No concat wrappers remain.
     let concat_count = r
         .module
         .nodes
         .values()
-        .filter(|n| {
-            n.gate_class
-                == "BrickComponentType_WireGraph_Expr_String_Concatenate"
-        })
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_String_Concatenate")
         .count();
-    assert!(
-        concat_count >= 2,
-        "both string branches should be Concatenate gates, found {concat_count}"
+    assert_eq!(
+        concat_count, 0,
+        "string branches should inline, not wire through Concatenate; found {concat_count}"
     );
-    // Select's InputA and InputB should be wired from Concatenate outputs, not inlined
-    let select_id = r
-        .module
-        .nodes
+    // Both branches inline as InputA/InputB data (branch→input slot is a
+    // Select-gate convention, so check the set, not a fixed slot).
+    let mut strs: Vec<String> = ["InputA", "InputB"]
         .iter()
-        .find(|(_, n)| {
-            n.gate_class == "BrickComponentType_WireGraph_Expr_Select"
-        })
-        .map(|(id, _)| id.clone())
-        .unwrap();
-    let wires_into_select: Vec<_> = r
+        .filter_map(
+            |p| match select.properties.get(&crate::intern::intern(p)) {
+                Some(crate::ir::Literal::String(s)) => Some(s.to_string()),
+                _ => None,
+            },
+        )
+        .collect();
+    strs.sort();
+    assert_eq!(
+        strs,
+        vec!["no".to_string(), "yes".to_string()],
+        "both string branches should inline into the Select"
+    );
+    // No input wires feed InputA/InputB — they're inline data now.
+    let input_wires = r
         .module
         .wires
         .iter()
         .filter(|w| {
-            w.target.node_id == select_id
-                && (w.target.port == crate::ir::port_registry::WirePort::InputA
-                    || w.target.port == crate::ir::port_registry::WirePort::InputB)
+            w.target.node_id == select.id
+                && matches!(
+                    w.target.port,
+                    crate::ir::port_registry::WirePort::InputA
+                        | crate::ir::port_registry::WirePort::InputB
+                )
         })
-        .collect();
-    assert_eq!(
-        wires_into_select.len(),
-        2,
-        "Select should have 2 input wires (from Concatenate gates), found {}",
-        wires_into_select.len()
-    );
+        .count();
+    assert_eq!(input_wires, 0, "Select string inputs should be inline, not wired");
 }
 
 #[test]
@@ -116,29 +116,50 @@ fn string_concat_op_works() {
 }
 
 #[test]
+fn constant_string_inlines_into_consumers() {
+    // A constant string used in a wire-value context (array push, var init,
+    // comparison) folds into the consumer's data as a wire-variant — no legacy
+    // `String_Concatenate` wrapper. Real concats (`a .. b`, wired inputs) are
+    // unaffected (covered by `string_concat_op_works`).
+    for src in [
+        "array a: string[]\nin t: exec\non t { a.push(\"x\") }",
+        "in t: exec\non t { var s: string = \"hi\" }",
+        "in s: string\nout r = s == \"y\"",
+    ] {
+        let r = compile(src);
+        assert_no_errors(&r);
+        let concat = r
+            .module
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_String_Concatenate")
+            .count();
+        assert_eq!(
+            concat, 0,
+            "constant string should inline, not spawn a Concatenate gate:\n{src}"
+        );
+    }
+}
+
+#[test]
 fn empty_string_in_select_not_lost() {
-    // Empty string "" in if-then-else should produce a Concatenate gate, not be lost
+    // An empty string "" branch must still reach the Select — now inlined as an
+    // empty-string wire-variant (InputA = ""), not dropped.
     let r = compile("out x = if true then \"\" else \"fail\"");
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
-    let concat_count = r
+    assert_no_errors(&r);
+    let select = r
         .module
         .nodes
         .values()
-        .filter(|n| {
-            n.gate_class
-                == "BrickComponentType_WireGraph_Expr_String_Concatenate"
-        })
-        .count();
-    assert!(
-        concat_count >= 2,
-        "both branches (including empty string) should be Concatenate gates, found {concat_count}"
-    );
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .expect("if-expr should create a Select gate");
+    let has_empty = ["InputA", "InputB"].iter().any(|p| {
+        matches!(
+            select.properties.get(&crate::intern::intern(p)),
+            Some(crate::ir::Literal::String(s)) if s.is_empty()
+        )
+    });
+    assert!(has_empty, "the empty-string branch should inline as \"\" (not lost)");
 }
 
 #[test]

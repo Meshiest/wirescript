@@ -301,6 +301,63 @@ fn inline_orphan_literals(module: &mut Module) {
             removed.insert(lit_id);
             changed = true;
         }
+
+        // Fold pure constant-string `String_Concatenate` wrappers (the legacy
+        // way a string literal became a wire, before inline wire-variant
+        // support) into consumers that accept an inline string variant. Unlike
+        // `_Literal`, this is gated on `port_accepts_inline_variant` — a string
+        // can't fill a wire-only port, so those keep the real concat gate.
+        let concat_ids: Vec<NodeId> = module
+            .nodes
+            .iter()
+            .filter(|(id, n)| n.gate_class == gc::STRING_CONCATENATE && !removed.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        for cid in concat_ids {
+            if incoming_count.get(&cid).copied().unwrap_or(0) != 0 {
+                continue;
+            }
+            let Some(out) = outgoing.get(&cid).filter(|v| v.len() == 1) else {
+                continue;
+            };
+            let (target_id, target_port) = out[0];
+            // Only a single constant string (INPUT_A set, INPUT_B + Separator
+            // empty) — real 2-input concats have wired inputs (incoming != 0).
+            let text = {
+                let Some(node) = module.nodes.get(&cid) else {
+                    continue;
+                };
+                let Some(Literal::String(text)) = node.properties.get(&*sym::INPUT_A).cloned()
+                else {
+                    continue;
+                };
+                let is_empty = |k| match node.properties.get(&k) {
+                    None => true,
+                    Some(Literal::String(s)) => s.is_empty(),
+                    _ => false,
+                };
+                if !is_empty(*sym::INPUT_B) || !is_empty(intern("Separator")) {
+                    continue;
+                }
+                text
+            };
+            let accepts = module.nodes.get(&target_id).is_some_and(|t| {
+                crate::emit::port_accepts_inline_variant(t.gate_class, target_port)
+            });
+            if !accepts {
+                continue;
+            }
+            let target_port_sym = intern(target_port.as_str());
+            if let Some(t) = module.nodes.get_mut(&target_id) {
+                std::sync::Arc::make_mut(&mut t.properties)
+                    .entry(target_port_sym)
+                    .or_insert(Literal::String(text));
+            }
+            module.nodes.remove(&cid);
+            removed.insert(cid);
+            changed = true;
+        }
+
         if !changed {
             break;
         }
