@@ -753,21 +753,25 @@ fn constant_vec_inlines_into_math() {
 }
 
 #[test]
-fn constant_vec_materializes_for_entity_gates() {
-    // Entity gates take their Vector inputs from wires (no data struct), so
-    // the folded constant re-materializes as a real MakeVector gate.
+fn constant_vec_embeds_for_entity_gates() {
+    // Entity gates store an unwired Vector input in their data struct, so a
+    // folded constant embeds as gate data instead of spawning a MakeVector.
     let r = compile("in e: entity\nin t: exec\non t { e.SetLocation(Vec(0.0, 0.0, 100.0)) }");
     assert_no_errors(&r);
-    let make = r
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        "SetLocation literal should embed as gate data, not spawn a MakeVector"
+    );
+    let set_loc = r
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MakeVector")
-        .expect("SetLocation arg should materialize a MakeVector gate");
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Entity_SetLocation")
+        .expect("SetLocation gate should exist");
     assert_eq!(
-        make.properties.get(&crate::intern::intern("Z")),
-        Some(&crate::ir::Literal::Float(100.0)),
-        "materialized MakeVector should carry the folded components"
+        set_loc.properties.get(&crate::intern::intern("Vector")),
+        Some(&crate::ir::Literal::Vector { x: 0.0, y: 0.0, z: 100.0 }),
+        "the folded vector should ride the gate's data properties"
     );
 }
 

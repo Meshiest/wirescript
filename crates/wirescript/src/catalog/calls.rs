@@ -554,8 +554,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             "ScaleVec",
             gc::VEC_SCALE,
             vec![
-                CallParam::req("v", WirePort::InputA, Type::Vector),
-                CallParam::req("scalar", WirePort::InputB, Type::Float),
+                CallParam::req("v", WirePort::Input, Type::Vector),
+                CallParam::req("scalar", WirePort::Scalar, Type::Float),
             ],
             WirePort::Output,
             Type::Vector,

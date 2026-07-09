@@ -1,5 +1,19 @@
 # Wirescript Changelog
 
+## 0.11.0 - 2026-07-08
+
+### Language / Compiler
+
+- **Gate data mappings derive from game data** - the hand-maintained gate->data-struct table is gone; struct names and field lists come from the game-extracted pair table + schema, so new gates need no table edits. Stale entries for components the game doesn't have were dropped.
+- **Vector/Rotation literals embed into gate data** - `e.SetLocation(Vec(0.0, 0.0, 100.0))` bakes the vector into the gate instead of spawning a wired `MakeVector`. `Split*` inputs still materialize.
+- **Exhaustive gate-data write audit** - a test serializes a literal into every representable field of every game component through the real writer; a failure names the gate and field.
+
+### Bug Fixes
+
+- **`min`/`max` and 14 more expression gates embed literals** - `min`, `max`, `sign`, `round`, `exp`, `ln`, the hyperbolics, `Deg2Rad`/`Rad2Deg`, `BitCount`, and `ScaleVec` share data structs that had no mapping, so literal args (`min(a, 3.0)`) were dropped.
+- **`ScaleVec` wires to the real ports** - `Input`/`Scalar`, not `InputA`/`InputB` (which don't exist on the gate).
+
+
 ## 0.10.2 - 2026-07-08
 
 ### Language / Compiler

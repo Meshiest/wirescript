@@ -628,6 +628,60 @@ fn exec_param_handler_drives_chip_body() {
 }
 
 #[test]
+fn entity_setters_compile_to_brz() {
+    // Entity Set*/Teleport gates derive their data structs (Vector/Rotator
+    // and composite TeleportDestination fields) — the writer must fill
+    // defaults for all of them without failing the emit.
+    let src = "in trigger: exec\nin e: entity\nin d: entity\non trigger {\n  \
+        e.SetLocation(Vec(1.0, 2.0, 3.0))\n  \
+        e.SetRotation(Rotation(0.0, 90.0, 0.0))\n  \
+        e.SetVelocity(Vec(0.0, 0.0, 10.0))\n  \
+        e.Teleport(d)\n}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let placements = crate::layout::layout(&r.module).placements;
+    let opts = crate::emit::EmitOptions::default();
+    let brz = crate::emit::emit_brz(
+        &r.module,
+        &placements,
+        &opts,
+        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+    );
+    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+}
+
+#[test]
+fn entity_setter_embeds_vector_literal() {
+    // Set* gates store unwired input values in their data structs, so folded
+    // Vec/Rotation literals embed directly instead of spawning a
+    // MakeVector/MakeRotation wired into the port.
+    let src = "in trigger: exec\nin e: entity\non trigger {\n  \
+        e.SetLocation(Vec(1.0, 2.0, 3.0))\n  \
+        e.SetRotation(Rotation(0.0, 90.0, 0.0))\n}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    for class in [
+        crate::ir::gate_class::MAKE_VECTOR,
+        crate::ir::gate_class::MAKE_ROTATION,
+    ] {
+        assert!(
+            !r.module.nodes.values().any(|n| n.gate_class == class),
+            "literal args should embed as gate data, not spawn {class}"
+        );
+    }
+    // and the emit path serializes the embedded f64 struct values
+    let placements = crate::layout::layout(&r.module).placements;
+    let opts = crate::emit::EmitOptions::default();
+    let brz = crate::emit::emit_brz(
+        &r.module,
+        &placements,
+        &opts,
+        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+    );
+    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+}
+
+#[test]
 fn spawn_prefab_compiles_to_brz() {
     // The PrefabSpawner data struct has an array field (SpawnedEntityIds)
     // wirescript never populates - LiteralComponent must report it as

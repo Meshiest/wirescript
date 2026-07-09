@@ -30,7 +30,8 @@ use std::collections::HashMap as StdMap;
 
 use brdb::{
     AsBrdbValue, BString, BrickType, Color, IntVector, Position, Vector3f, WireConnection,
-    WirePort as BrdbWirePort, World, assets::LiteralComponent,
+    WirePort as BrdbWirePort, World,
+    assets::LiteralComponent,
     schema::{WireArrayVariant, WireVariant},
 };
 
@@ -469,9 +470,7 @@ fn emit_module(
                 // A constant initializer is carried as an `InitialValue` list
                 // literal; otherwise the array starts empty.
                 let av = match node.properties.get(&intern_static("InitialValue")) {
-                    Some(Literal::Array(lits)) => {
-                        wire_array_variant_from_literals(elem_ty, lits)
-                    }
+                    Some(Literal::Array(lits)) => wire_array_variant_from_literals(elem_ty, lits),
                     _ => empty_wire_array_variant(elem_ty),
                 };
                 let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
@@ -523,7 +522,10 @@ fn emit_module(
                     _ => 0,
                 };
                 let item_idx = match node.properties.get(&intern_static("ItemTypeIfItem")) {
-                    Some(Literal::Asset { asset_type, asset_name }) => {
+                    Some(Literal::Asset {
+                        asset_type,
+                        asset_name,
+                    }) => {
                         let (idx, _) = world
                             .global_data
                             .external_asset_references
@@ -533,15 +535,30 @@ fn emit_module(
                     _ => None,
                 };
                 let brick_wrapper = LiteralComponent::new("BrickTypeNetWrapper").with_data([
-                    ("BrickAsset", Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>),
-                    ("ProceduralSize", Box::new(IntVector::default()) as Box<dyn AsBrdbValue>),
+                    (
+                        "BrickAsset",
+                        Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>,
+                    ),
+                    (
+                        "ProceduralSize",
+                        Box::new(IntVector::default()) as Box<dyn AsBrdbValue>,
+                    ),
                 ]);
                 let entry_plan = LiteralComponent::new("BRInventoryEntryPlan").with_data([
                     // EBRInventoryEntryPlanType::Item = 3
                     ("Type", Box::new(3u8) as Box<dyn AsBrdbValue>),
-                    ("BrickTypeIfBrick", Box::new(brick_wrapper) as Box<dyn AsBrdbValue>),
-                    ("EntityTypeIfEntity", Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>),
-                    ("ItemTypeIfItem", Box::new(BrdbValue::Asset(item_idx)) as Box<dyn AsBrdbValue>),
+                    (
+                        "BrickTypeIfBrick",
+                        Box::new(brick_wrapper) as Box<dyn AsBrdbValue>,
+                    ),
+                    (
+                        "EntityTypeIfEntity",
+                        Box::new(BrdbValue::Asset(None)) as Box<dyn AsBrdbValue>,
+                    ),
+                    (
+                        "ItemTypeIfItem",
+                        Box::new(BrdbValue::Asset(item_idx)) as Box<dyn AsBrdbValue>,
+                    ),
                 ]);
                 let entry = LiteralComponent::new("BRInventoryEntryConfig")
                     .with_data([("Item", Box::new(()) as Box<dyn AsBrdbValue>)]);
@@ -767,7 +784,16 @@ fn build_gate_component(
                 }
                 Some(lit) => {
                     if schema_field_is_wire_variant(struct_name, field) {
-                        literal_to_boxed_wire_variant(lit, ports, field)
+                        // prim_math_variant doesn't support Bool — coerce to Int
+                        if schema_field_is_prim_math_variant(struct_name, field) {
+                            if let Literal::Bool(b) = lit {
+                                Box::new(WireVariant::Int(if *b { 1 } else { 0 }))
+                            } else {
+                                literal_to_boxed_wire_variant(lit, ports, field)
+                            }
+                        } else {
+                            literal_to_boxed_wire_variant(lit, ports, field)
+                        }
                     } else if schema_field_is(struct_name, field, "class")
                         || schema_field_is(struct_name, field, "object")
                     {
@@ -879,969 +905,41 @@ fn build_gate_component(
 /// Returns `(struct_name, field_names, use_wire_variant)` for gates whose
 /// component data struct must be serialized.
 ///
-/// Source of truth: `brdb/crates/brdb/schemas/BRSavedComponentChunkSoA_max.schema`
-/// and `brdb/crates/brdb/src/assets/gates/logic.rs` for component->struct mapping.
-///
-/// Every component type the game recognizes MUST appear here with the correct
-/// struct name, even if the struct has 0 fields. A missing entry causes the
-/// game to skip reading data for that type--misaligning all subsequent
-/// component data.
+/// Fully derived: `brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS` (the
+/// game-extracted component→struct table, exhaustive over the game's
+/// components) supplies the struct, the max schema supplies the field list —
+/// see [`derived_gate_data`]. A class in neither place has no data component.
+/// Per-field schema checks in `build_gate_component` decide variant vs native
+/// handling, so the `use_wire_variant` flag is always false here.
 fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'static [&'static str], bool)> {
-    match gate_class {
-        // ── Asset reference sources ────────────────────────────────────────
-        // Each holds an asset in its class/object `Asset` field and outputs it
-        // as an `entity` wire (how a `$Type/Name` value reaches a consumer).
-        "BrickComponentType_WireGraph_ItemReference" => {
-            Some(("BrickComponentData_WireGraph_ItemReference", &["Asset"], false))
+    derived_gate_data()
+        .get(gate_class)
+        .map(|(s, f)| (*s, f.as_slice(), false))
+}
+
+/// (struct name, full field list) per component class, derived from
+/// `brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS` + the max schema.
+/// Hand-written arms in [`data_struct_for_gate`] take precedence — they
+/// encode the deliberate exceptions (wire-only gates, struct overrides,
+/// classes absent from the pair table).
+fn derived_gate_data() -> &'static StdMap<&'static str, (&'static str, Vec<&'static str>)> {
+    static MAP: std::sync::OnceLock<StdMap<&'static str, (&'static str, Vec<&'static str>)>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let schema = brdb::schemas::bricks_components_schema_max();
+        let mut m = StdMap::new();
+        for (comp, strct) in brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS {
+            let Some(s) = schema.get_struct(strct) else {
+                continue;
+            };
+            let fields: Vec<&'static str> = s
+                .keys()
+                .filter_map(|k| schema.intern.lookup_ref(*k))
+                .collect();
+            m.insert(*comp, (*strct, fields));
         }
-        "BrickComponentType_WireGraph_PickupReference" => {
-            Some(("BrickComponentData_WireGraph_PickupReference", &["Asset"], false))
-        }
-        "BrickComponentType_WireGraph_ProjectileReference" => Some((
-            "BrickComponentData_WireGraph_ProjectileReference",
-            &["Asset"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_EntityTypeReference" => Some((
-            "BrickComponentData_WireGraph_EntityTypeReference",
-            &["Asset"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_BrickAssetReference" => Some((
-            "BrickComponentData_WireGraph_BrickAssetReference",
-            &["Asset"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_AudioReference" => {
-            Some(("BrickComponentData_WireGraph_AudioReference", &["Asset"], false))
-        }
-        "BrickComponentType_WireGraph_OneShotAudioReference" => Some((
-            "BrickComponentData_WireGraph_OneShotAudioReference",
-            &["Asset"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_WheelEngineAudioReference" => Some((
-            "BrickComponentData_WireGraph_WheelEngineAudioReference",
-            &["Asset"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_FontReference" => {
-            Some(("BrickComponentData_WireGraph_FontReference", &["Asset"], false))
-        }
-        "BrickComponentType_WireGraph_ParticleReference" => Some((
-            "BrickComponentData_WireGraph_ParticleReference",
-            &["Asset"],
-            false,
-        )),
-        // ── Variables ──────────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Var_Set"
-        | "BrickComponentType_WireGraph_Exec_Var_Increment"
-        | "BrickComponentType_WireGraph_Exec_Var_Get" => Some((
-            "BrickComponentData_WireGraph_Exec_Var_EditOrGet",
-            &["Value"],
-            true,
-        )),
-        "BrickComponentType_WireGraphPseudo_Var" => {
-            Some(("BrickComponentData_WireGraphPseudo_Var", &["Value"], true))
-        }
-        "BrickComponentType_WireGraphPseudo_ArrayVar" => {
-            Some(("BrickComponentData_WireGraphPseudo_ArrayVar", &[], false))
-        }
-
-        // ── Array variables ────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_ElementOp",
-            &["Index", "Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Get" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Get",
-            &["Index", "Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Push" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Push",
-            &["Value"],
-            true,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Pop" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Pop",
-            &["Value"],
-            true,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_RemoveAtIndex" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_RemoveAtIndex",
-            &["Index"],
-            false,
-        )),
-        // Value/index args of these gates are read from component data, so a
-        // literal argument must be inlined here (else it defaults to 0).
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Find" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Find",
-            &["Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Insert" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Insert",
-            &["Index", "Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Resize" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Resize",
-            &["Size", "Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Swap" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Swap",
-            &["IndexA", "IndexB"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_GetLength",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"
-        | "BrickComponentType_WireGraph_Exec_ArrayVar_Shuffle" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Base",
-            &[],
-            false,
-        )),
-        // Legacy alias
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Base" => Some((
-            "BrickComponentData_WireGraph_Exec_ArrayVar_Base",
-            &[],
-            false,
-        )),
-
-        // ── Entity manipulation ────────────────────────────────────────────
-        // Entity gates have Vector/Rotator struct fields. Values come from
-        // wires so no data struct is needed.
-        "BrickComponentType_WireGraph_Exec_Entity_SetLocation"
-        | "BrickComponentType_WireGraph_Exec_Entity_SetRotation"
-        | "BrickComponentType_WireGraph_Exec_Entity_SetLocationRotation"
-        | "BrickComponentType_WireGraph_Exec_Entity_AddLocationRotation"
-        | "BrickComponentType_WireGraph_Exec_Entity_SetVelocity"
-        | "BrickComponentType_WireGraph_Exec_Entity_AddVelocity"
-        | "BrickComponentType_WireGraph_Exec_Entity_SetLinearVelocity"
-        | "BrickComponentType_WireGraph_Exec_Entity_SetAngularVelocity"
-        | "BrickComponentType_WireGraph_Exec_Entity_SetGravityDirection"
-        | "BrickComponentType_WireGraph_Exec_Entity_Teleport"
-        | "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport" => None,
-
-        // ── Gamemode ──────────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Gamemode_SetLeaderboardValue"
-        | "BrickComponentType_WireGraph_Exec_Gamemode_IncrementLeaderboardValue" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_LeaderboardValue",
-            &["Key", "Value"],
-            false,
-        )),
-
-        // ── Prefab spawner ────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_PrefabSpawner" => Some((
-            "BrickComponentData_WireGraph_Exec_PrefabSpawner",
-            &["Prefab", "Lifetime", "Limit"],
-            false,
-        )),
-
-        // ── Sweep (raycasting) ────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Sweep" => Some((
-            "BrickComponentData_WireGraph_Exec_Sweep",
-            &[
-                "Distance",
-                "Radius",
-                "bDetectBricks",
-                "bDetectPlayers1",
-                "bDetectPlayers2",
-                "bDetectPlayers3",
-                "bDetectPlayers4",
-                "bDetectPhysics",
-                "bDetectMap",
-                "bRelative",
-                "bIgnoreOwningGrid",
-            ],
-            false,
-        )),
-
-        // ── Vector / Color constructors ───────────────────────────────────
-        // Literal X/Y/Z args are inlined as properties, so without this entry
-        // they're dropped and the vector defaults to (0,0,0).
-        "BrickComponentType_WireGraph_Expr_MakeVector" => Some((
-            "BrickComponentData_WireGraph_Expr_MakeVector",
-            &["X", "Y", "Z"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_MakeColor" => Some((
-            "BrickComponentData_WireGraph_Expr_MakeColor",
-            &["R", "G", "B", "A"],
-            false,
-        )),
-
-        // ── Rotation / quaternion (cl14428+) ──────────────────────────────
-        // Scalar fields (Pitch/Yaw/Roll/Angle/Alpha) inline literal args; the
-        // struct-typed inputs (Vector/Quat/Rotator) come from wires and are
-        // filled from defaults. Each must list its struct so component data
-        // stays aligned.
-        // InputA/InputB are prim-math variants (wrapped per-field via the schema
-        // check), Tolerance is a plain f64. Without this entry a literal `b` or
-        // tolerance arg (e.g. `NearlyEqual(x, 1.0, 0.001)`) drops to 0.
-        "BrickComponentType_WireGraph_Expr_NearlyEqual" => Some((
-            "BrickComponentData_WireGraph_Expr_NearlyEqual",
-            &["InputA", "InputB", "Tolerance"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_MakeRotation" => Some((
-            "BrickComponentData_WireGraph_Expr_MakeRotation",
-            &["Pitch", "Yaw", "Roll"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_SplitRotation" => Some((
-            "BrickComponentData_WireGraph_Expr_SplitRotation",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_RotateVector" => Some((
-            "BrickComponentData_WireGraph_Expr_RotateVector",
-            &["Rotation", "Vector"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_InvertRotation" => Some((
-            "BrickComponentData_WireGraph_Expr_InvertRotation",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_DirectionToRotation" => Some((
-            "BrickComponentData_WireGraph_Expr_DirectionToRotation",
-            &["Direction"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_RotationToDirection" => Some((
-            "BrickComponentData_WireGraph_Expr_RotationToDirection",
-            &["Rotation"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_QuatBetween" => Some((
-            "BrickComponentData_WireGraph_Expr_QuatBetween",
-            &["From", "To"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_QuatAngleBetween" => Some((
-            "BrickComponentData_WireGraph_Expr_QuatAngleBetween",
-            &["InputA", "InputB"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_QuatFromAxisAngle" => Some((
-            "BrickComponentData_WireGraph_Expr_QuatFromAxisAngle",
-            &["Axis", "Angle"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_QuatToAxisAngle" => Some((
-            "BrickComponentData_WireGraph_Expr_QuatToAxisAngle",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_QuatSlerp" => Some((
-            "BrickComponentData_WireGraph_Expr_QuatSlerp",
-            &["InputA", "InputB", "Alpha", "bShortestPath"],
-            false,
-        )),
-
-        // ── Controller role check (cl14428+) ──────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Controller_HasRole" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_HasRole",
-            &["RoleName"],
-            false,
-        )),
-
-        // ── Stateful exec value gates (cl14428+) ──────────────────────────
-        // Count inlines a literal; Value is persisted cycle/toggle state.
-        "BrickComponentType_WireGraph_Exec_Cycle" => Some((
-            "BrickComponentData_WireGraph_Exec_Cycle",
-            &["Count", "Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Toggle" => Some((
-            "BrickComponentData_WireGraph_Exec_Toggle",
-            &["Value"],
-            false,
-        )),
-
-        // ── sRGB / hex color (cl14428+) ───────────────────────────────────
-        "BrickComponentType_WireGraph_Expr_MakeColorSRGB" => Some((
-            "BrickComponentData_WireGraph_Expr_MakeColorSRGB",
-            &["R", "G", "B", "A"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_SplitColorSRGB" => Some((
-            "BrickComponentData_WireGraph_Expr_SplitColorSRGB",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_MakeColorHex" => Some((
-            "BrickComponentData_WireGraph_Expr_MakeColorHex",
-            &["Hex"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_ColorToHex" => Some((
-            "BrickComponentData_WireGraph_Expr_ColorToHex",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_ColorBlend" => Some((
-            "BrickComponentData_WireGraph_Expr_ColorBlend",
-            &["ColorA", "ColorB", "Alpha", "BlendSpace"],
-            false,
-        )),
-
-        // ── Exec flow ──────────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Branch" => {
-            Some(("BrickComponentData_WireGraph_ExecBranch", &[], false))
-        }
-        "BrickComponentType_WireGraph_Exec_Union" => {
-            Some(("BrickComponentData_WireGraph_ExecUnion", &[], false))
-        }
-
-        // ── Select / Swap ──────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Expr_Select" => Some((
-            "BrickComponentData_WireGraph_Expr_Select",
-            &["bSelectB", "InputA", "InputB"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_Swap" => Some((
-            "BrickComponentData_WireGraph_Expr_Swap",
-            &["bSwap", "InputA", "InputB"],
-            false,
-        )),
-
-        // ── Random ─────────────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Random" => Some((
-            "BrickComponentData_WireGraph_Exec_Random",
-            &["Seed", "Min", "Max"],
-            false,
-        )),
-
-        // ── Math (binary, prim_math_variant) ───────────────────────────────
-        "BrickComponentType_WireGraph_Expr_MathAdd"
-        | "BrickComponentType_WireGraph_Expr_MathSubtract"
-        | "BrickComponentType_WireGraph_Expr_MathMultiply"
-        | "BrickComponentType_WireGraph_Expr_MathDivide"
-        | "BrickComponentType_WireGraph_Expr_MathModulo"
-        | "BrickComponentType_WireGraph_Expr_MathModuloFloored" => Some((
-            "BrickComponentData_WireGraph_Expr_PrimMathVariantPrimMathVariant_PrimMathVariant",
-            &["InputA", "InputB"],
-            true,
-        )),
-        // MathPow has its own struct (f64, not prim_math_variant)
-        "BrickComponentType_WireGraph_Expr_MathPow" => Some((
-            "BrickComponentData_WireGraph_Expr_MathPow",
-            &["Input", "Exponent"],
-            false,
-        )),
-        // Math (unary, prim_math_variant) -- Negate, Abs, etc.
-        "BrickComponentType_WireGraph_Expr_MathNegate"
-        | "BrickComponentType_WireGraph_Expr_MathAbs" => Some((
-            "BrickComponentData_WireGraph_Expr_PrimMathVariant_PrimMathVariant",
-            &["Input"],
-            true,
-        )),
-        // Math (unary, f64 -> f64) -- Ceil, Floor, Sqrt, Sin, Cos, Tan, Asin, Acos, Atan, Log
-        "BrickComponentType_WireGraph_Expr_Ceil"
-        | "BrickComponentType_WireGraph_Expr_Floor"
-        | "BrickComponentType_WireGraph_Expr_MathSqrt"
-        | "BrickComponentType_WireGraph_Expr_MathSin"
-        | "BrickComponentType_WireGraph_Expr_MathCos"
-        | "BrickComponentType_WireGraph_Expr_MathTan"
-        | "BrickComponentType_WireGraph_Expr_MathAsin"
-        | "BrickComponentType_WireGraph_Expr_MathAcos"
-        | "BrickComponentType_WireGraph_Expr_MathAtan"
-        | "BrickComponentType_WireGraph_Expr_MathLog" => Some((
-            "BrickComponentData_WireGraph_Expr_Float_Float",
-            &["Input"],
-            false,
-        )),
-        // MathAtan2 (two f64 inputs)
-        "BrickComponentType_WireGraph_Expr_MathAtan2" => Some((
-            "BrickComponentData_WireGraph_Expr_MathAtan2",
-            &["Y", "X"],
-            false,
-        )),
-        // MathLogBase (f64 + f64)
-        "BrickComponentType_WireGraph_Expr_MathLogBase" => Some((
-            "BrickComponentData_WireGraph_Expr_MathLogBase",
-            &["Input", "Base"],
-            false,
-        )),
-        // MathBlend (f64 + two prim_math_variants)
-        "BrickComponentType_WireGraph_Expr_MathBlend" => Some((
-            "BrickComponentData_WireGraph_Expr_MathBlend",
-            &["Blend", "InputA", "InputB"],
-            false,
-        )),
-        // MathEasing: two easing enums + two prim_math_variants + f64 blend.
-        // use_wire_variant must be false (like MathBlend) so the per-field
-        // schema check writes InputA/InputB as variants while the enum fields
-        // (Function/Direction) still go through try_resolve_enum.
-        "BrickComponentType_WireGraph_Expr_MathEasing" => Some((
-            "BrickComponentData_WireGraph_Expr_MathEasing",
-            &["Function", "Direction", "InputA", "InputB", "Blend"],
-            false,
-        )),
-        // Tween (Pseudo): variant target, f64 duration, two easing enums.
-        "BrickComponentType_WireGraphPseudo_Tween" => Some((
-            "BrickComponentData_WireGraphPseudo_Tween",
-            &["Target", "Duration", "Function", "Direction"],
-            false,
-        )),
-        // Timer (Pseudo): f64 limit + persisted Time/bRunning state.
-        "BrickComponentType_WireGraphPseudo_Timer" => Some((
-            "BrickComponentData_WireGraphPseudo_Timer",
-            &["Limit", "Time", "bRunning"],
-            false,
-        )),
-        // MathClamp (three prim_math_variants)
-        "BrickComponentType_WireGraph_Expr_MathClamp" => Some((
-            "BrickComponentData_WireGraph_Expr_MathClamp",
-            &["Min", "Max", "Input"],
-            true,
-        )),
-
-        // ── Compare ────────────────────────────────────────────────────────
-        // Eq/Neq use wire_graph_variant (can compare any type)
-        "BrickComponentType_WireGraph_Expr_CompareEqual"
-        | "BrickComponentType_WireGraph_Expr_CompareNotEqual" => Some((
-            "BrickComponentData_WireGraph_Expr_Compare",
-            &["InputA", "InputB"],
-            true,
-        )),
-        // Lt/Leq/Gt/Geq use wire_graph_prim_math_variant (numbers only)
-        "BrickComponentType_WireGraph_Expr_CompareLess"
-        | "BrickComponentType_WireGraph_Expr_CompareLessOrEqual"
-        | "BrickComponentType_WireGraph_Expr_CompareGreater"
-        | "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual" => Some((
-            "BrickComponentData_WireGraph_Expr_MathCompare",
-            &["InputA", "InputB"],
-            true,
-        )),
-
-        // ── Logic (bool) ──────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Expr_LogicalAND"
-        | "BrickComponentType_WireGraph_Expr_LogicalOR"
-        | "BrickComponentType_WireGraph_Expr_LogicalXOR"
-        | "BrickComponentType_WireGraph_Expr_LogicalNAND"
-        | "BrickComponentType_WireGraph_Expr_LogicalNOR" => Some((
-            "BrickComponentData_WireGraph_Expr_BoolBool_Bool",
-            &["bInputA", "bInputB"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_LogicalNOT" => Some((
-            "BrickComponentData_WireGraph_Expr_Bool_Bool",
-            &["bInput"],
-            false,
-        )),
-
-        // ── Bitwise (i64) ─────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Expr_BitwiseAND"
-        | "BrickComponentType_WireGraph_Expr_BitwiseOR"
-        | "BrickComponentType_WireGraph_Expr_BitwiseXOR"
-        | "BrickComponentType_WireGraph_Expr_BitwiseNAND"
-        | "BrickComponentType_WireGraph_Expr_BitwiseNOR"
-        | "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft"
-        | "BrickComponentType_WireGraph_Expr_BitwiseShiftRight" => Some((
-            "BrickComponentData_WireGraph_Expr_IntInt_Int",
-            &["InputA", "InputB"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_BitwiseNOT" => Some((
-            "BrickComponentData_WireGraph_Expr_Int_Int",
-            &["Input"],
-            false,
-        )),
-
-        // ── String ops ─────────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Expr_String_FormatText" => Some((
-            "BrickComponentData_WireGraph_Expr_String_FormatText",
-            &[
-                "FormatString",
-                "InputA",
-                "InputB",
-                "InputC",
-                "InputD",
-                "InputE",
-                "InputF",
-                "InputG",
-            ],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Concatenate" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Concatenate",
-            &["InputA", "InputB", "Separator"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Length" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Length",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Contains" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Contains",
-            &["Input", "Search"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Find" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Find",
-            &["Input", "Search", "bCaseSensitive"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Replace" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Replace",
-            &["Input", "Search", "Replacement"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Split" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Split",
-            &["Input", "Delimiter"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Substring" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Substring",
-            &["Input", "Start", "Length"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_StartsWith" => Some((
-            "BrickComponentData_WireGraph_Expr_String_StartsWith",
-            &["Input", "Prefix"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_EndsWith" => Some((
-            "BrickComponentData_WireGraph_Expr_String_EndsWith",
-            &["Input", "Suffix"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_ToLower" => Some((
-            "BrickComponentData_WireGraph_Expr_String_ToLower",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_ToUpper" => Some((
-            "BrickComponentData_WireGraph_Expr_String_ToUpper",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_Trim" => Some((
-            "BrickComponentData_WireGraph_Expr_String_Trim",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_ParseInt" => Some((
-            "BrickComponentData_WireGraph_Expr_String_ParseInt",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_String_ParseNumber" => Some((
-            "BrickComponentData_WireGraph_Expr_String_ParseNumber",
-            &["Input"],
-            false,
-        )),
-
-        // ── Controller / Character / Entity (exec) ─────────────────────────
-        "BrickComponentType_WireGraph_Exec_Controller_DisplayText" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_DisplayText",
-            &[
-                "Text",
-                "AnchorX",
-                "AnchorY",
-                "PositionX",
-                "PositionY",
-                "Angle",
-                "ScaleX",
-                "ScaleY",
-                "FontSize",
-                "OutlineSize",
-                "Justification",
-                "Transition",
-                "Easing",
-                "Lifetime",
-                "TextId",
-            ],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_ShowStatusMessage",
-            &["Message"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_ShowHint" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_ShowHint",
-            &["HintTitle", "HintText"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_SetTempPermission" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_SetTempPermission",
-            &["PermissionTagStr", "bPermissionEnable"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_IncDamage" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_IncDamage",
-            &["Amount"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_SetDamage" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_SetDamage",
-            &["Damage"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Controller_SetCanRespawn" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_SetCanRespawn",
-            &["bCanRespawn"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_SetFrozen" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_SetFrozen",
-            &["bFrozen"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_PrintToConsole" => Some((
-            "BrickComponentData_WireGraph_Exec_PrintToConsole",
-            &["Text"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_ChatCommand" => Some((
-            "BrickComponentData_WireGraph_Exec_ChatCommand",
-            &["CommandName", "HelpText"],
-            false,
-        )),
-
-        // ── Messaging ───────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Controller_ShowChatMessage" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_ShowChatMessage",
-            &["Message"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Controller_ShowMessageBox" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_ShowMessageBox",
-            &["Title", "Message"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_BroadcastChatMessage",
-            &["Message"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_BroadcastStatusMessage",
-            &["Message", "bFlashIfUnchanged"],
-            false,
-        )),
-
-        // ── Audio ──────────────────────────────────────────────────────────
-        // AudioDescriptor is a class/object field: an inlined `$…` asset ref
-        // is registered in the external-asset table by build_gate_component.
-        "Component_WireGraph_PlayAudioAt" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_PlayAudioAt",
-            &[
-                "AudioDescriptor",
-                "VolumeMultiplier",
-                "PitchMultiplier",
-                "InnerRadius",
-                "MaxDistance",
-                "bSpatialization",
-            ],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_PlayGlobalAudio" => Some((
-            "BrickComponentData_WireGraph_Exec_PlayGlobalAudio",
-            &["AudioDescriptor", "VolumeMultiplier", "PitchMultiplier"],
-            false,
-        )),
-
-        // ── Entity tags ─────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Entity_GetTag" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_GetTag",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_SetTag" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_SetTag",
-            &["Tag"],
-            false,
-        )),
-
-        // ── Player lookup ──────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_FindPlayer" => Some((
-            "BrickComponentData_WireGraph_FindPlayer",
-            &["Query"],
-            false,
-        )),
-
-        // ── Change detectors ────────────────────────────────────
-        "BrickComponentType_WireGraph_Expr_ChangeDetector" => Some((
-            "BrickComponentData_WireGraph_Expr_ChangeDetector",
-            &["Input"],
-            true,
-        )),
-        "BrickComponentType_WireGraph_Expr_ChangeDetectorExec" => Some((
-            "BrickComponentData_WireGraph_Expr_ChangeDetectorExec",
-            &["Input"],
-            true,
-        )),
-
-        // ── Quaternion make/split/dot ───────────────────────────
-        "BrickComponentType_WireGraph_Expr_MakeQuaternion" => Some((
-            "BrickComponentData_WireGraph_Expr_MakeQuaternion",
-            &["X", "Y", "Z", "W"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_SplitQuaternion" => Some((
-            "BrickComponentData_WireGraph_Expr_SplitQuaternion",
-            &["Input"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_QuatDotProduct" => Some((
-            "BrickComponentData_WireGraph_Expr_QuatDotProduct",
-            &["InputA", "InputB"],
-            false,
-        )),
-
-        // ── Character inventory family ──────────────────────────
-        // Item / EntityType / BrickAsset / ItemType / ProjectileOverride are
-        // class/object asset fields (see build_gate_component).
-        "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_AddInventoryItem",
-            &["Item"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_SetInventoryItem" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_SetInventoryItem",
-            &["Slot", "Item"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_AddInventoryBrick" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_AddInventoryBrick",
-            &["BrickAsset", "ProceduralSize"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_SetInventoryBrick" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_SetInventoryBrick",
-            &["Slot", "BrickAsset", "ProceduralSize"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_AddInventoryEntity" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_AddInventoryEntity",
-            &["EntityType"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntity" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_SetInventoryEntity",
-            &["Slot", "EntityType"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_AddInventoryItemAdv",
-            &[
-                "ItemType",
-                "DamageMultiplier",
-                "WeaponSpeedMultiplier",
-                "ItemScale",
-                "ItemNameOverride",
-                "ProjectileOverride",
-            ],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_SetInventoryItemAdv" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_SetInventoryItemAdv",
-            &[
-                "Slot",
-                "ItemType",
-                "DamageMultiplier",
-                "WeaponSpeedMultiplier",
-                "ItemScale",
-                "ItemNameOverride",
-                "ProjectileOverride",
-            ],
-            false,
-        )),
-
-        // Empty-data-struct gates: the game still expects the struct to be
-        // registered (reads 0 bytes per instance).
-        "BrickComponentType_WireGraph_Exec_Controller_GetFromEntity" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_GetFromEntity",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_GetFromController" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_GetFromController",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Character_GetAim" => Some((
-            "BrickComponentData_WireGraph_Exec_Character_GetAim",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_GetLocation" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_GetLocation",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_GetRotation" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_GetRotation",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_GetLocationRotation" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_GetLocationRotation",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_GetLinearVelocity" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_GetLinearVelocity",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_GetAngularVelocity" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_GetAngularVelocity",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Entity_GetVelocity" => Some((
-            "BrickComponentData_WireGraph_Exec_Entity_GetVelocity",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_GetTeam" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_GetTeam",
-            &[],
-            false,
-        )),
-        // Permission gates carry the permission name as a `str` property.
-        // (SetTempPermission already has an entry above.)
-        "BrickComponentType_WireGraph_Exec_Controller_HasPermission" => Some((
-            "BrickComponentData_WireGraph_Exec_Controller_HasPermission",
-            &["PermissionName"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamPinned" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_SetTeamPinned",
-            &["bPinned"],
-            false,
-        )),
-        "Component_Internal_InputSplitter" => {
-            Some(("BrickComponentData_Internal_InputSplitter_V2", &[], false))
-        }
-
-        // ── Variant conversion ─────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Expr_Variant_ToVariant"
-        | "BrickComponentType_WireGraph_Expr_Variant_FromVariant" => Some((
-            "BrickComponentData_WireGraph_Expr_Variant_Variant",
-            &["Input"],
-            true,
-        )),
-
-        // ── Gamemode ───────────────────────────────────────────────────────
-        "BrickComponentType_WireGraph_Exec_Gamemode_GetLeaderboardValue" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_GetLeaderboardValue",
-            &["Key"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_LeaderboardValue" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_LeaderboardValue",
-            &["Key", "Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamByName" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamByName",
-            &["TeamName"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamLeaderboardValue"
-        | "BrickComponentType_WireGraph_Exec_Gamemode_IncrementTeamLeaderboardValue" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_TeamLeaderboardValue",
-            &["Key", "Value"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue",
-            &["Key"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_SetTeam" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_SetTeam",
-            &["bPinPlayerToTeam"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Exec_Gamemode_PlayerWins" => Some((
-            "BrickComponentData_WireGraph_Exec_Gamemode_PlayerWins",
-            &["bTeamWinsInstead"],
-            false,
-        )),
-
-        // ── Buffer ─────────────────────────────────────────────────────────
-        "BrickComponentType_WireGraphPseudo_BufferTicks" => Some((
-            "BrickComponentData_WireGraphPseudo_BufferTicks",
-            &[
-                "TicksToWait",
-                "ZeroTicksToWait",
-                "CurrentTicks",
-                "Input",
-                "Output",
-                "Buffered",
-                "bHasQueued",
-                "bIsOffTimer",
-            ],
-            false,
-        )),
-        "BrickComponentType_WireGraphPseudo_BufferSeconds" => Some((
-            "BrickComponentData_WireGraphPseudo_BufferSeconds",
-            &[
-                "SecondsToWait",
-                "ZeroSecondsToWait",
-                "CurrentTime",
-                "Input",
-                "Output",
-                "Buffered",
-                "bHasQueued",
-                "bIsOffTimer",
-            ],
-            false,
-        )),
-        "BrickComponentType_WireGraphPseudo_Dampen" => Some((
-            "BrickComponentData_WireGraphPseudo_Dampen",
-            &["Target", "Value", "SmoothTime", "Velocity"],
-            false,
-        )),
-
-        // ── Edge detectors ─────────────────────────────────────────────────
-        // (the plain detector's key was missing "Type" and never matched)
-        "BrickComponentType_WireGraph_Expr_EdgeDetector" => Some((
-            "BrickComponentData_WireGraph_Expr_EdgeDetector",
-            &["Input", "bPulseOnRisingEdge", "bPulseOnFallingEdge"],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Expr_EdgeDetectorExec" => Some((
-            "BrickComponentData_WireGraph_Expr_EdgeDetectorExec",
-            &["Input"],
-            false,
-        )),
-
-        // ── Fake events (character/controller/round) ───────────────────────
-        "BrickComponentType_WireGraph_Fake_CharacterEvent" => Some((
-            "BrickComponentData_WireGraph_Fake_CharacterEvent",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Fake_ControllerEvent" => Some((
-            "BrickComponentData_WireGraph_Fake_ControllerEvent",
-            &[],
-            false,
-        )),
-        "BrickComponentType_WireGraph_Fake_RoundEvent" => Some((
-            "BrickComponentData_WireGraph_Fake_RoundEvent",
-            &["RoundNumber"],
-            false,
-        )),
-
-        _ => None,
-    }
+        m
+    })
 }
 
 fn coerce_for_prim_math(wv: WireVariant) -> WireVariant {
@@ -1860,10 +958,28 @@ fn var_type_to_wire_variant(ty: Option<&crate::ir::Type>) -> WireVariant {
             WireVariant::Object(None)
         }
         Some(Type::String) => WireVariant::Str(String::new()),
-        Some(Type::Vector) => WireVariant::Vector(Vector3f { x: 0.0, y: 0.0, z: 0.0 }),
-        Some(Type::Rotator) => WireVariant::Rotator { pitch: 0.0, yaw: 0.0, roll: 0.0 },
-        Some(Type::Quat) => WireVariant::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
-        Some(Type::Color) => WireVariant::LinearColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+        Some(Type::Vector) => WireVariant::Vector(Vector3f {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        Some(Type::Rotator) => WireVariant::Rotator {
+            pitch: 0.0,
+            yaw: 0.0,
+            roll: 0.0,
+        },
+        Some(Type::Quat) => WireVariant::Quat {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+        Some(Type::Color) => WireVariant::LinearColor {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
         _ => WireVariant::Number(0.0),
     }
 }
@@ -1925,7 +1041,9 @@ fn wire_array_variant_from_literals(
         Some(Type::Int) => WireArrayVariant::Int64Array(lits.iter().map(as_i64).collect()),
         Some(Type::Bool) => WireArrayVariant::BoolArray(
             lits.iter()
-                .map(|l| matches!(l, Literal::Bool(true)) || matches!(l, Literal::Int(n) if *n != 0))
+                .map(|l| {
+                    matches!(l, Literal::Bool(true)) || matches!(l, Literal::Int(n) if *n != 0)
+                })
                 .collect(),
         ),
         Some(Type::String) => WireArrayVariant::StringArray(
@@ -1944,7 +1062,11 @@ fn wire_array_variant_from_literals(
                         y: *y as f32,
                         z: *z as f32,
                     },
-                    _ => Vector3f { x: 0.0, y: 0.0, z: 0.0 },
+                    _ => Vector3f {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
                 })
                 .collect(),
         ),
@@ -2026,7 +1148,87 @@ fn literal_to_boxed_native(lit: &Literal) -> Box<dyn AsBrdbValue> {
         Literal::Int(n) => Box::new(*n),
         Literal::Float(f) => Box::new(*f),
         Literal::Bool(b) => Box::new(*b),
+        Literal::Vector { x, y, z } => Box::new(VectorValue { x: *x, y: *y, z: *z }),
+        Literal::Rotator { pitch, yaw, roll } => Box::new(RotatorValue {
+            pitch: *pitch,
+            yaw: *yaw,
+            roll: *roll,
+        }),
+        Literal::Quat { x, y, z, w } => Box::new(QuatValue {
+            x: *x,
+            y: *y,
+            z: *z,
+            w: *w,
+        }),
         _ => Box::new(0i64),
+    }
+}
+
+// Folded literals embedded into native f64 struct fields (the schema's
+// `Vector`/`Rotator`/`Quat` structs) — brdb's Vector3f/Quat4f are f32, so
+// these mirror its AsBrdbValue impl at full precision.
+struct VectorValue {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+impl AsBrdbValue for VectorValue {
+    fn as_brdb_struct_prop_value(
+        &self,
+        schema: &brdb::schema::BrdbSchema,
+        _struct_name: brdb::schema::BrdbInterned,
+        prop_name: brdb::schema::BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        match prop_name.get(schema).unwrap() {
+            "X" => Ok(&self.x),
+            "Y" => Ok(&self.y),
+            "Z" => Ok(&self.z),
+            n => unimplemented!("unimplemented Vector field {n}"),
+        }
+    }
+}
+
+struct RotatorValue {
+    pitch: f64,
+    yaw: f64,
+    roll: f64,
+}
+impl AsBrdbValue for RotatorValue {
+    fn as_brdb_struct_prop_value(
+        &self,
+        schema: &brdb::schema::BrdbSchema,
+        _struct_name: brdb::schema::BrdbInterned,
+        prop_name: brdb::schema::BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        match prop_name.get(schema).unwrap() {
+            "Pitch" => Ok(&self.pitch),
+            "Yaw" => Ok(&self.yaw),
+            "Roll" => Ok(&self.roll),
+            n => unimplemented!("unimplemented Rotator field {n}"),
+        }
+    }
+}
+
+struct QuatValue {
+    x: f64,
+    y: f64,
+    z: f64,
+    w: f64,
+}
+impl AsBrdbValue for QuatValue {
+    fn as_brdb_struct_prop_value(
+        &self,
+        schema: &brdb::schema::BrdbSchema,
+        _struct_name: brdb::schema::BrdbInterned,
+        prop_name: brdb::schema::BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        match prop_name.get(schema).unwrap() {
+            "X" => Ok(&self.x),
+            "Y" => Ok(&self.y),
+            "Z" => Ok(&self.z),
+            "W" => Ok(&self.w),
+            n => unimplemented!("unimplemented Quat field {n}"),
+        }
     }
 }
 
@@ -2188,14 +1390,26 @@ const C_INT: Color = Color {
     g: 184,
     b: 199,
 }; // int — cyan
-const C_FLOAT: Color = Color { r: 39, g: 145, b: 72 }; // float — green
-const C_BOOL: Color = Color { r: 176, g: 39, b: 39 }; // bool — red
+const C_FLOAT: Color = Color {
+    r: 39,
+    g: 145,
+    b: 72,
+}; // float — green
+const C_BOOL: Color = Color {
+    r: 176,
+    g: 39,
+    b: 39,
+}; // bool — red
 const C_STRING: Color = Color {
     r: 184,
     g: 161,
     b: 28,
 }; // string — yellow
-const C_CHARACTER: Color = Color { r: 21, g: 28, b: 138 }; // character — deep blue
+const C_CHARACTER: Color = Color {
+    r: 21,
+    g: 28,
+    b: 138,
+}; // character — deep blue
 const C_STRUCT: Color = Color {
     r: 184,
     g: 109,
@@ -2367,10 +1581,12 @@ fn schema_field_is_wire_variant(struct_name: &str, field: &str) -> bool {
 
 /// Can a folded constant (`Vec/Rotation/Color` on literal args, lowered to a
 /// `_Literal` node) be delivered to this (gate, port) sink as inlined
-/// component data? True only for fields `build_gate_component` writes as wire
-/// variants. Everything else — entity gates with plain struct fields,
-/// `Split*` inputs, chip IO, unmapped gates — must keep a real `Make*` gate,
-/// which the lowering pass materializes on demand.
+/// component data? True for wire-variant fields and for native
+/// `Vector`/`Rotator`/`Quat` struct fields (the gate stores an unwired
+/// input's value in its data — entity `Set*` gates, Sweep, …). Everything
+/// else — `LinearColor` fields, `Split*` inputs, chip IO, unmapped gates —
+/// must keep a real `Make*` gate, which the lowering pass materializes on
+/// demand.
 pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> bool {
     let Some((struct_name, fields, use_wire_variant)) = data_struct_for_gate(gate_class) else {
         return false;
@@ -2379,7 +1595,18 @@ pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> b
     if !fields.contains(&field) {
         return false;
     }
-    use_wire_variant || schema_field_is_wire_variant(struct_name, field)
+    if use_wire_variant || schema_field_is_wire_variant(struct_name, field) {
+        return true;
+    }
+    // Split* gates keep materialized Make* inputs — not yet verified that
+    // they read an unwired input from data like the Set* gates do.
+    if gate_class.contains("_Expr_Split") {
+        return false;
+    }
+    matches!(
+        schema_field_type_str(struct_name, field).as_deref(),
+        Some("Vector" | "Rotator" | "Quat")
+    )
 }
 
 /// If the field's schema type is an enum, resolve `lit` to its integer
@@ -2419,11 +1646,26 @@ mod tests {
     fn var_values_cover_all_variant_members() {
         use crate::ir::Type;
         // A var can hold any WireGraphVariant member, defaulted by its type.
-        assert!(matches!(var_type_to_wire_variant(Some(&Type::Bool)), WireVariant::Bool(false)));
-        assert!(matches!(var_type_to_wire_variant(Some(&Type::Int)), WireVariant::Int(0)));
-        assert!(matches!(var_type_to_wire_variant(Some(&Type::Float)), WireVariant::Number(_)));
-        assert!(matches!(var_type_to_wire_variant(Some(&Type::String)), WireVariant::Str(_)));
-        assert!(matches!(var_type_to_wire_variant(Some(&Type::Vector)), WireVariant::Vector(_)));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::Bool)),
+            WireVariant::Bool(false)
+        ));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::Int)),
+            WireVariant::Int(0)
+        ));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::Float)),
+            WireVariant::Number(_)
+        ));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::String)),
+            WireVariant::Str(_)
+        ));
+        assert!(matches!(
+            var_type_to_wire_variant(Some(&Type::Vector)),
+            WireVariant::Vector(_)
+        ));
         assert!(matches!(
             var_type_to_wire_variant(Some(&Type::Rotator)),
             WireVariant::Rotator { .. }
@@ -2436,11 +1678,21 @@ mod tests {
             var_type_to_wire_variant(Some(&Type::Color)),
             WireVariant::LinearColor { .. }
         ));
-        assert!(matches!(var_type_to_wire_variant(Some(&Type::Entity)), WireVariant::Object(None)));
-        // Literal initializers convert to the matching variant member.
-        assert!(matches!(literal_to_wire_variant(&Literal::String("x".into())), Some(WireVariant::Str(_))));
         assert!(matches!(
-            literal_to_wire_variant(&Literal::Vector { x: 1.0, y: 2.0, z: 3.0 }),
+            var_type_to_wire_variant(Some(&Type::Entity)),
+            WireVariant::Object(None)
+        ));
+        // Literal initializers convert to the matching variant member.
+        assert!(matches!(
+            literal_to_wire_variant(&Literal::String("x".into())),
+            Some(WireVariant::Str(_))
+        ));
+        assert!(matches!(
+            literal_to_wire_variant(&Literal::Vector {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0
+            }),
             Some(WireVariant::Vector(_))
         ));
     }
@@ -2515,6 +1767,121 @@ mod tests {
     }
 
     #[test]
+    fn every_gate_data_field_serializes_a_literal() {
+        // Exhaustive write audit: one node per derived gate class, with a
+        // schema-typed literal in EVERY representable field, emitted through
+        // the real brz writer. Catches any field whose inlined literal can't
+        // be boxed/serialized (the `min/max` and Vector→0i64 bug class) for
+        // every component in the game, present and future.
+        use crate::ir::Literal;
+        use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder};
+
+        let schema = brdb::schemas::bricks_components_schema_max();
+        let mut builder = ModuleBuilder::new("audit");
+        builder.module.scopes.insert(
+            crate::ir::ROOT_SCOPE_ID,
+            crate::ir::ScopeInfo {
+                kind: crate::ir::ScopeKind::ModuleRoot,
+                source_range: crate::diagnostic::SourceRange::default(),
+                parent: None,
+            },
+        );
+        let mut ids = IdAllocator::default();
+        let mut filled = 0usize;
+        let mut gates = 0usize;
+
+        for (class, (struct_name, fields)) in derived_gate_data() {
+            // Special-cased emit branches with their own property contracts.
+            if matches!(
+                *class,
+                "BrickComponentType_WireGraphPseudo_Var"
+                    | "BrickComponentType_WireGraphPseudo_ArrayVar"
+                    | "BrickComponentType_Internal_MicrochipInput"
+                    | "BrickComponentType_Internal_MicrochipOutput"
+                    | "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry"
+            ) {
+                continue;
+            }
+            let mut props: std::collections::HashMap<crate::intern::Sym, Literal> =
+                std::collections::HashMap::new();
+            for field in fields {
+                let Some(ty) = schema_field_type_str(struct_name, field) else {
+                    continue;
+                };
+                let lit = if schema.get_enum(&ty).is_some() {
+                    Some(Literal::Int(0))
+                } else {
+                    match ty.as_str() {
+                        "str" => Some(Literal::String("x".into())),
+                        "bool" => Some(Literal::Bool(true)),
+                        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
+                            Some(Literal::Int(1))
+                        }
+                        "f32" | "f64" => Some(Literal::Float(1.5)),
+                        "WireGraphVariant" | "WireGraphPrimMathVariant" => {
+                            Some(Literal::Float(2.5))
+                        }
+                        "Vector" => Some(Literal::Vector { x: 1.0, y: 2.0, z: 3.0 }),
+                        "Rotator" => Some(Literal::Rotator { pitch: 1.0, yaw: 2.0, roll: 3.0 }),
+                        "Quat" => Some(Literal::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }),
+                        "class" | "object" => Some(Literal::Asset {
+                            asset_type: "BRItemBase".into(),
+                            asset_name: "Weapon_Pickaxe".into(),
+                        }),
+                        // arrays, composite structs, bundle_path_ref: not
+                        // literal-representable — writer fills defaults.
+                        _ => None,
+                    }
+                };
+                if let Some(l) = lit {
+                    props.insert(crate::intern::intern(field), l);
+                    filled += 1;
+                }
+            }
+            builder.add_gate(
+                &mut ids,
+                AddNodeOpts {
+                    gate_class: class,
+                    properties: props,
+                    ..Default::default()
+                },
+            );
+            gates += 1;
+        }
+        assert!(gates > 150, "sweep should cover the whole pair table, got {gates}");
+        assert!(filled > 200, "sweep should fill real fields, got {filled}");
+
+        let module = builder.module;
+        let placements = crate::layout::layout(&module).placements;
+        let brz = emit_brz(
+            &module,
+            &placements,
+            &EmitOptions::default(),
+            &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+        );
+        assert!(
+            brz.is_ok(),
+            "every gate's data fields should serialize inlined literals: {:?}",
+            brz.err()
+        );
+    }
+
+    #[test]
+    fn unlisted_gates_derive_data_structs_from_pair_table() {
+        // Gates without a hand-written entry derive their (struct, full field
+        // list) from brdb's game-extracted pair table + the schema, so a new
+        // game gate embeds literals without a table edit.
+        let entry = data_struct_for_gate("BrickComponentType_Internal_CharacterZoneEvent_Entered");
+        let (s, fields, uwv) = entry.expect("zone event should derive from the pair table");
+        assert_eq!(s, "BrickComponentData_Internal_CharacterZoneEvent");
+        assert!(
+            fields.contains(&"bCollisionEnabled_Player"),
+            "derived fields should be the full struct: {fields:?}"
+        );
+        assert!(!uwv, "derived entries rely on per-field variant detection");
+    }
+
+    #[test]
     fn literal_params_with_schema_fields_are_mapped() {
         // Guard for the missing-data-mapping bug class (MakeVector,
         // EdgeDetector, ShowStatusMessage, Sleep, ...): a literal arg to a
@@ -2543,11 +1910,19 @@ mod tests {
                 let entry = data_struct_for_gate(spec.gate_class);
                 let (struct_name, listed) = match entry {
                     Some((s, f, _)) => (s.to_string(), Some(f)),
-                    None => (
-                        spec.gate_class
-                            .replace("BrickComponentType_", "BrickComponentData_"),
-                        None,
-                    ),
+                    None => {
+                        // Resolve the gate's data struct via the game-extracted
+                        // pair table — many gates share structs (PrimMath,
+                        // Float_Float, …) whose names aren't derivable from the
+                        // class name. Not in the table → no data component.
+                        match brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
+                            .iter()
+                            .find(|(t, _)| *t == spec.gate_class)
+                        {
+                            Some((_, s)) => (s.to_string(), None),
+                            None => continue,
+                        }
+                    }
                 };
                 let covered = listed.is_some_and(|f| f.contains(&field));
                 if covered {
@@ -2610,7 +1985,10 @@ mod tests {
         )
         .expect("justify maps to an enum field");
         for expected in ["Left", "Center", "Right"] {
-            assert!(vals.iter().any(|v| v == expected), "missing {expected}: {vals:?}");
+            assert!(
+                vals.iter().any(|v| v == expected),
+                "missing {expected}: {vals:?}"
+            );
         }
         // Names must be bare (no `EnumType::` prefix).
         assert!(vals.iter().all(|v| !v.contains("::")), "prefixed: {vals:?}");
@@ -2656,12 +2034,27 @@ mod tests {
     fn enum_resolve_easing_function_and_direction() {
         const EASING: &str = "BrickComponentData_WireGraph_Expr_MathEasing";
         // Named easing functions/directions resolve to their engine enum ints.
-        assert_eq!(try_resolve_enum(EASING, "Function", &Literal::String("Quad".into())), Some(2));
-        assert_eq!(try_resolve_enum(EASING, "Function", &Literal::String("Cubic".into())), Some(3));
-        assert_eq!(try_resolve_enum(EASING, "Direction", &Literal::String("InOut".into())), Some(2));
-        assert_eq!(try_resolve_enum(EASING, "Direction", &Literal::String("Out".into())), Some(1));
+        assert_eq!(
+            try_resolve_enum(EASING, "Function", &Literal::String("Quad".into())),
+            Some(2)
+        );
+        assert_eq!(
+            try_resolve_enum(EASING, "Function", &Literal::String("Cubic".into())),
+            Some(3)
+        );
+        assert_eq!(
+            try_resolve_enum(EASING, "Direction", &Literal::String("InOut".into())),
+            Some(2)
+        );
+        assert_eq!(
+            try_resolve_enum(EASING, "Direction", &Literal::String("Out".into())),
+            Some(1)
+        );
         // ints pass through
-        assert_eq!(try_resolve_enum(EASING, "Function", &Literal::Int(5)), Some(5));
+        assert_eq!(
+            try_resolve_enum(EASING, "Function", &Literal::Int(5)),
+            Some(5)
+        );
     }
 
     #[test]
