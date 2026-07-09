@@ -324,7 +324,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
 }
 
 /// Lower a record literal into a `HashMap<Sym, Binding>`.
-fn lower_record_lit(
+pub(super) fn lower_record_lit(
     ctx: &mut LowerCtx,
     fields: &[RecordLitField],
 ) -> HashMap<crate::intern::Sym, Binding> {

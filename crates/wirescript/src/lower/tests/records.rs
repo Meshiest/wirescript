@@ -247,6 +247,69 @@ out result = sum",
     assert_eq!(r.module.outputs.len(), 1, "should have one output port");
 }
 
+/// Regression: a record LITERAL passed directly to a destructured VALUE param
+/// must bind its fields — not lower to an `_Unsupported` value port. This is
+/// the roles.ws bug: `addRole(next, { team: T_GREY, … })` pushed all-default
+/// rows because the literal arg never became a `Binding::Record`, so the
+/// destructuring was skipped. A record *variable* arg already worked; only a
+/// record *literal* arg was broken.
+#[test]
+fn record_literal_arg_to_destructured_param() {
+    let r = compile(
+        "\
+type P = { a: int, b: int }
+in x: int
+mod f({ a, b }: P) -> int { return a + b }
+out result = f({ a: x, b: 1 })",
+    );
+    assert_no_errors(&r);
+    let unsupported = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "_Unsupported")
+        .count();
+    assert_eq!(
+        unsupported, 0,
+        "record literal arg to a destructured param must not produce _Unsupported"
+    );
+    // `a` binds to `x` (non-constant) so `a + b` can't be folded away; the add
+    // surviving proves the destructured field value actually flowed in.
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        "destructured field `a` (= x) + b should produce a MathAdd"
+    );
+}
+
+/// Regression: a record LITERAL passed to a WHOLE-record param must bind as a
+/// record so `p.field` resolves (same root cause / fix as the destructured
+/// case). `main.ws` dodged this only by passing record *variables*.
+#[test]
+fn record_literal_arg_to_record_param() {
+    let r = compile(
+        "\
+type P = { a: int, b: int }
+in x: int
+mod g(p: P) -> int { return p.a + p.b }
+out result = g({ a: x, b: 1 })",
+    );
+    assert_no_errors(&r);
+    let unsupported = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "_Unsupported")
+        .count();
+    assert_eq!(
+        unsupported, 0,
+        "record literal arg to a whole-record param must not produce _Unsupported"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        "p.a (= x) + p.b should produce a MathAdd"
+    );
+}
+
 /// Test 6: Mod parameter destructuring.
 /// `mod set_val({ val }: State) { val = 42 }` — the destructured `val` field
 /// is a `*int` ref, so writing `val = 42` inside the mod should produce a

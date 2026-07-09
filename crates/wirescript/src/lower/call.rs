@@ -113,6 +113,14 @@ pub(super) fn lower_chip_call_inline(
         let Some(arg_expr) = positional_args.get(i) else {
             continue;
         };
+        // A record literal arg lowers to a Binding::Record (as `let x = {..}`
+        // does), so record and destructured params receive their fields instead
+        // of a single unsupported value port.
+        if let Expr::RecordLit { fields, .. } = arg_expr {
+            let record = lower_record_lit(ctx, fields);
+            record_bindings.push((param.name.clone(), record));
+            continue;
+        }
         if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, arg_expr).cloned() {
             record_bindings.push((param.name.clone(), fields));
             continue;
