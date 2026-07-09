@@ -262,6 +262,17 @@ pub fn build_world(
         !opts.open,
     );
 
+    // Top-level chip label: the root module's name (entry file stem, or an
+    // explicit module_name override). The chip brick is the one
+    // `add_microchip` just pushed onto the main grid.
+    let root_label = resolve(module.name);
+    if !root_label.is_empty() {
+        let label = text_label(&mut world, root_label, 0.0, -0.5, LABEL_LINE_HEIGHT);
+        if let Some(chip_brick) = world.bricks.last_mut() {
+            chip_brick.add_component_box(Box::new(label));
+        }
+    }
+
     // Push root inner grid FIRST so it gets the lowest grid ID (persistent
     // index 2). Child grids pushed during emit_module_bricks get 3, 4, etc.
     let root_grid_idx = world.grids.len();
@@ -271,6 +282,8 @@ pub fn build_world(
         node_brick_ids: HashMap::new(),
         class_index: HashMap::new(),
         prefab_resolver: opts.prefab_resolver.clone(),
+        wire_sources: HashMap::new(),
+        var_labels: HashMap::new(),
     };
     emit_module(
         &mut world,
@@ -314,6 +327,54 @@ pub fn build_world(
 /// reverse-engineering microchip_stack_clean.brdb).
 const CHIP_PLATE_Z_OFFSET: f32 = 20.0;
 
+/// Name labels on chips, vars, and I/O gates.
+const LABEL_LINE_HEIGHT: f32 = 2.4;
+/// Smaller tag on Var_Get/Set-style gates naming the variable they touch.
+const VAR_TAG_LINE_HEIGHT: f32 = 1.2;
+
+/// Floating text-label component (`Component_TextDisplay`) attached as a
+/// second component on chip / variable / I/O-gate bricks, showing the
+/// element's name. Fields left unset (colors, outline widths, sharp
+/// corners, …) are filled from brdb's `STRUCT_DEFAULTS`.
+fn text_label(
+    world: &mut World,
+    text: &str,
+    rotation_deg: f32,
+    offset_z: f32,
+    line_height: f32,
+) -> LiteralComponent {
+    use brdb::schema::BrdbValue;
+    let (font_idx, _) = world.global_data.external_asset_references.insert_full((
+        "BrickFontDescriptor".to_string(),
+        "IosevkaTerm".to_string(),
+    ));
+    let anchor = LiteralComponent::new("Vector2f").with_data([
+        ("X", Box::new(0.5f32) as Box<dyn AsBrdbValue>),
+        ("Y", Box::new(0.5f32)),
+    ]);
+    LiteralComponent::new("Component_TextDisplay").with_data([
+        ("Text", Box::new(text.to_string()) as Box<dyn AsBrdbValue>),
+        ("Font", Box::new(BrdbValue::Asset(Some(font_idx)))),
+        ("Rotation", Box::new(rotation_deg)),
+        ("LineHeight", Box::new(line_height)),
+        ("Anchor", Box::new(anchor)),
+        (
+            "Offset",
+            Box::new(Vector3f {
+                x: 0.0,
+                y: 0.0,
+                z: offset_z,
+            }),
+        ),
+        // Top face of the brick (enum default 0 is X_Positive).
+        ("Face", Box::new(4u8)),
+        // EBRTextOutline::Outlined; the enum default (None) hides the
+        // outline entirely, and 4px reads better than the template's 2.
+        ("Outline", Box::new(2u8)),
+        ("OutlineWidth", Box::new(4.0f32)),
+    ])
+}
+
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
 static EMIT_CLONE_NS: AtomicU64 = AtomicU64::new(0);
 static EMIT_BRICK_NS: AtomicU64 = AtomicU64::new(0);
@@ -339,6 +400,13 @@ struct EmitContext {
     class_index: HashMap<NodeId, &'static str>,
     /// Resolver for `$./file.brz` prefab references, from `EmitOptions`.
     prefab_resolver: Option<PrefabResolver>,
+    /// (target node, target port) → source node, accumulated across all
+    /// modules so Var_Get/Set gates can trace `VarRef` wires that cross
+    /// module boundaries (scope captures, anon-chip partitions).
+    wire_sources: HashMap<(NodeId, WirePort), NodeId>,
+    /// Pseudo_Var/ArrayVar node → its labelable source name. Vars are
+    /// always emitted before the gates that reference them.
+    var_labels: HashMap<NodeId, String>,
 }
 
 fn emit_module(
@@ -369,6 +437,8 @@ fn emit_module(
     let mut wire_target_index: StdMap<(NodeId, WirePort), NodeId> = StdMap::new();
     for w in &module.wires {
         wire_target_index.insert((w.target.node_id, w.target.port), w.source.node_id);
+        ctx.wire_sources
+            .insert((w.target.node_id, w.target.port), w.source.node_id);
     }
 
     let mut sorted_ids: Vec<&NodeId> = module.nodes.keys().collect();
@@ -579,6 +649,54 @@ fn emit_module(
         // EMIT_COMP_NS.fetch_add(_ct.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
         brick.add_component_box(Box::new(comp));
 
+        // Second component: floating name label on I/O gates and variables.
+        // (Chip bricks get theirs in pass 2 / build_world.)
+        // All kinds float the label above the gate brick (Offset.z +0.5;
+        // the chip-shell template value of -0.5 sinks it into these bricks).
+        // `_`-prefixed names are synthesized plumbing (e.g. a chip's
+        // `_exec_in`/`_exec_out` ports) — not worth a label.
+        let named = |l: &Literal| match l {
+            Literal::String(s) if !s.is_empty() && !s.starts_with('_') => Some(s.clone()),
+            _ => None,
+        };
+        let label_spec = match effective_class_str {
+            "BrickComponentType_Internal_MicrochipInput"
+            | "BrickComponentType_Internal_MicrochipOutput" => node
+                .properties
+                .get(&port_label_sym)
+                .and_then(named)
+                .map(|s| (s, LABEL_LINE_HEIGHT)),
+            "BrickComponentType_WireGraphPseudo_Var"
+            | "BrickComponentType_WireGraphPseudo_ArrayVar" => {
+                let label = node.properties.get(&*sym::NAME_LABEL).and_then(named);
+                if let Some(name) = &label {
+                    ctx.var_labels.insert(**id, name.clone());
+                }
+                label.map(|s| (s, LABEL_LINE_HEIGHT))
+            }
+            // Var/ArrayVar exec gates: a smaller tag naming the variable
+            // they access, traced through the gate's (Array)VarRef wire.
+            // The var node is always emitted first, so its label is known.
+            c if c.starts_with("BrickComponentType_WireGraph_Exec_Var_")
+                || c.starts_with("BrickComponentType_WireGraph_Exec_ArrayVar_") =>
+            {
+                node.ports
+                    .inputs
+                    .iter()
+                    .find(|p| matches!(resolve(p.name), "VarRef" | "ArrayVarRef"))
+                    .and_then(|p| {
+                        let port = WirePort::from_name(resolve(p.name));
+                        ctx.wire_sources.get(&(node.id, port))
+                    })
+                    .and_then(|src| ctx.var_labels.get(src))
+                    .map(|s| (s.clone(), VAR_TAG_LINE_HEIGHT))
+            }
+            _ => None,
+        };
+        if let Some((text, line_height)) = label_spec {
+            brick.add_component_box(Box::new(text_label(world, &text, -45.0, 0.5, line_height)));
+        }
+
         bricks.push(brick);
         ctx.node_brick_ids.insert(**id, brick_id);
         ctx.class_index.insert(**id, node.gate_class);
@@ -652,7 +770,7 @@ fn emit_module(
 
         world.add_brick_grid(child_entity, child_bricks);
 
-        let (chip_brick, chip_brick_id) = brdb::Brick {
+        let (mut chip_brick, chip_brick_id) = brdb::Brick {
             asset: brdb::assets::bricks::B_MICROCHIP,
             position: inner_pos,
             ..Default::default()
@@ -661,6 +779,22 @@ fn emit_module(
             "Component_Internal_Microchip",
         )))
         .with_id_split();
+        // Named chips get a floating name label; anonymous groupings
+        // (ModuleRoot-scoped partitions) stay unlabeled.
+        if let Some(crate::ir::ScopeInfo {
+            kind: crate::ir::ScopeKind::ChipBody { name },
+            ..
+        }) = child_module.scopes.get(&crate::ir::ROOT_SCOPE_ID)
+            && !name.is_empty()
+        {
+            chip_brick.add_component_box(Box::new(text_label(
+                world,
+                name,
+                -45.0,
+                -0.5,
+                LABEL_LINE_HEIGHT,
+            )));
+        }
         bricks.push(chip_brick);
         ctx.node_brick_ids.insert(**id, chip_brick_id);
         ctx.class_index.insert(**id, node.gate_class);

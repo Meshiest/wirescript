@@ -70,7 +70,12 @@ pub struct LowerInput<'a> {
 
 pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let ids = IdAllocator::default();
-    let builder = ModuleBuilder::new(input.module_name.unwrap_or("main"));
+    // Root module name is on the top-level chip's emitted text label.
+    // Explicit `module_name` wins; otherwise use the entry file's stem.
+    let file_stem = std::path::Path::new(input.file)
+        .file_stem()
+        .and_then(|s| s.to_str());
+    let builder = ModuleBuilder::new(input.module_name.or(file_stem).unwrap_or("main"));
     let diagnostics: Vec<Diagnostic> = Vec::new();
 
     let mut ctx = LowerCtx {

@@ -62,6 +62,9 @@ pub mod sym {
     def!(B_SELECT_B, "bSelectB");
     def!(B_OUT_OF_BOUNDS, "bOutOfBounds");
     def!(PORT_LABEL, "PortLabel");
+    // Pseudo-property (not a game field): the declaration's source name,
+    // carried on Var/ArrayVar nodes so emit can attach a text label.
+    def!(NAME_LABEL, "_label");
 
     // Gate classes
     def!(LITERAL, "_Literal");

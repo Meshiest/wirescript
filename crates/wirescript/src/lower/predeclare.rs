@@ -281,6 +281,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     if let Type::Array(elem) = &inner_type {
         let elem_type = elem.as_ref().clone();
         let mut properties = HashMap::new();
+        properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
         if let Some(Expr::Array { elements, .. }) = &d.init {
             let lits: Vec<Literal> = elements.iter().filter_map(array_elem_literal).collect();
             if lits.len() == elements.len() {
@@ -319,6 +320,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         .and_then(expr_to_literal)
         .or_else(|| default_literal_for_var_type(&inner_type));
     let mut properties = HashMap::new();
+    properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
     if let Some(lit) = init_lit {
         properties.insert(*sym::INITIAL_VALUE, lit);
     }
@@ -397,6 +399,7 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     // be a literal. Carry the values as an `InitialValue` property the emitter
     // writes straight into the ArrayVar's array variant (no runtime gates).
     let mut properties = HashMap::new();
+    properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
     if !d.init.is_empty() {
         let lits: Vec<Literal> = d.init.iter().filter_map(array_elem_literal).collect();
         if lits.len() == d.init.len() {
