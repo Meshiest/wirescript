@@ -29,6 +29,34 @@ fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diag
     diags
 }
 
+#[test]
+fn const_literal_reaches_into_anon_chip() {
+    // Regression: a top-level const `let` referenced inside a `chip on` handler
+    // must have its Literal cloned INTO the chip's child module. Otherwise the
+    // parent→chip data wire dangles (its target moved into the child during
+    // partition_anon_chips) and the chip-side input silently reads the port
+    // default (0) — exactly what broke every scalar const inside a `chip on`.
+    // K has two consumers (the top-level `out` and the in-chip comparison), so
+    // `inline_orphan_literals` (single-consumer only) leaves it a real Literal
+    // gate — the case that dangles across the chip boundary.
+    let src = "let K: int = 7\nout dummy = K\nin trigger: exec\nchip on trigger { var x: int = 0\n  if x == K { x = 1 } }";
+    let r = compile(src);
+    let child = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("the `chip on` block should produce one anon chip module");
+    let lit7 = child.nodes.values().any(|n| {
+        n.gate_class == crate::ir::gate_class::LITERAL
+            && n.properties.get(&*crate::intern::sym::VALUE) == Some(&crate::ir::Literal::Int(7))
+    });
+    assert!(
+        lit7,
+        "const literal `K = 7` must be cloned into the chip body so the wire stays internal"
+    );
+}
+
 /// A mod that transitively calls itself must still be flagged WS020 — the guard
 /// now keys on the decl's source range (not just its name), so real recursion
 /// (same decl re-entered) is still caught.

@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 0.12.3 - 2026-07-10
+
+- Fix literal constants not reaching anonymous chips
+
 ## 0.12.2 - 2026-07-09
 
 

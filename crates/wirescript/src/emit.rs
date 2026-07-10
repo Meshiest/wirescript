@@ -154,6 +154,9 @@ pub fn partition_anon_chips(module: &mut Module) {
         return;
     }
 
+    // Parent-side Literal nodes we clone into chips (below); cleaned up after.
+    let mut cloned_literal_sources: HashSet<NodeId> = HashSet::new();
+
     for chip_id in chip_ids {
         let tagged: HashSet<NodeId> = module
             .nodes
@@ -178,6 +181,8 @@ pub fn partition_anon_chips(module: &mut Module) {
         // parent as remote wires. Layout wires keep chips inline in the DAG.
         let mut parent_wires = Vec::new();
         let mut seen_layout_edges: HashSet<(NodeId, NodeId)> = HashSet::new();
+        // Per-chip dedupe of Literal nodes cloned into this chip.
+        let mut literal_clones: HashMap<NodeId, NodeId> = HashMap::new();
         for w in std::mem::take(&mut module.wires) {
             let src_in = tagged.contains(&w.source.node_id);
             let tgt_in = tagged.contains(&w.target.node_id);
@@ -199,6 +204,36 @@ pub fn partition_anon_chips(module: &mut Module) {
                         });
                     }
                 } else if tgt_in && !src_in {
+                    // A parent-side constant `Literal` feeding a node that moved
+                    // into this chip: keeping the plain data wire in the parent
+                    // leaves it dangling (its target is now in the child), so the
+                    // chip-side input silently reads the port default (0). Vars
+                    // cross the boundary via a Ref port; a Literal has none — so
+                    // clone it into the child and keep the wire internal.
+                    let is_literal = module
+                        .nodes
+                        .get(&w.source.node_id)
+                        .map(|n| n.gate_class == gc::LITERAL)
+                        .unwrap_or(false);
+                    if is_literal {
+                        let existing = literal_clones.get(&w.source.node_id).copied();
+                        let clone_id = if let Some(id) = existing {
+                            id
+                        } else {
+                            let mut cl = module.nodes[&w.source.node_id].clone();
+                            let nid = NodeId::fresh();
+                            cl.id = nid;
+                            cl.chip_id = None;
+                            child.nodes.insert(nid, cl);
+                            literal_clones.insert(w.source.node_id, nid);
+                            cloned_literal_sources.insert(w.source.node_id);
+                            nid
+                        };
+                        let mut w2 = w;
+                        w2.source.node_id = clone_id;
+                        child.wires.push(w2);
+                        continue;
+                    }
                     let edge = (w.source.node_id, chip_id);
                     if seen_layout_edges.insert(edge) {
                         parent_wires.push(Wire {
@@ -219,6 +254,14 @@ pub fn partition_anon_chips(module: &mut Module) {
         module.wires = parent_wires;
 
         module.chips.insert(chip_id, child);
+    }
+
+    // Drop parent-side Literal nodes that were fully cloned into chips and now
+    // have no remaining parent consumer, so they don't emit as stray gates.
+    for lit_id in cloned_literal_sources {
+        if !module.wires.iter().any(|w| w.source.node_id == lit_id) {
+            module.nodes.remove(&lit_id);
+        }
     }
 
     // Re-nest orphaned inner chip modules: if a child module contains a
