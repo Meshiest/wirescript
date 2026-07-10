@@ -2004,6 +2004,22 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             receiver: None,
         },
     );
+    // Read Brick Grid — the brick grid this gate's microchip is placed on.
+    m.insert(
+        "ReadBrickGrid",
+        CallSpec {
+            name: "ReadBrickGrid",
+            gate_class: gc::READ_BRICK_GRID,
+            params: vec![],
+            exec: false,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::BrickGrid,
+                ty: Type::Entity,
+            }],
+            receiver: None,
+        },
+    );
     m.insert(
         "NearlyEqual",
         CallSpec {

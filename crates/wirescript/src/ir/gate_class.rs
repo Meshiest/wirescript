@@ -169,6 +169,7 @@ pub const EXEC_TOGGLE: &str = "BrickComponentType_WireGraph_Exec_Toggle";
 pub const PRINT_TO_CONSOLE: &str = "BrickComponentType_WireGraph_Exec_PrintToConsole";
 pub const DELTA_TIME: &str = "BrickComponentType_WireGraph_DeltaTime";
 pub const SERVER_UPTIME: &str = "BrickComponentType_WireGraph_ServerUptime";
+pub const READ_BRICK_GRID: &str = "BrickComponentType_Internal_ReadBrickGrid";
 pub const NEARLY_EQUAL: &str = "BrickComponentType_WireGraph_Expr_NearlyEqual";
 pub const PSEUDO_DAMPEN: &str = "BrickComponentType_WireGraphPseudo_Dampen";
 pub const PSEUDO_TWEEN: &str = "BrickComponentType_WireGraphPseudo_Tween";

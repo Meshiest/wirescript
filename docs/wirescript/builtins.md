@@ -860,6 +860,7 @@ components can also filter on tags. Receiver on `entity`.
 | `PrintToConsole(text)` | `(text: any) -> ()` (exec) | Print a value to the game console (debugging) |
 | `DeltaTime()` | `() -> float` | Seconds elapsed since the previous tick |
 | `ServerUptime()` | `() -> float` | Seconds the server has been running |
+| `ReadBrickGrid()` | `() -> entity` | The brick grid this gate's microchip is on, as an entity |
 | `NearlyEqual(a, b, tolerance)` | `(a: float, b: float, tolerance: float) -> bool` | Approximate float equality |
 | `Dampen(target, smoothTime)` | `(target: float, smoothTime: float) -> float` | Critically-damped smoothing toward a target |
 | `Easing(a, b, blend, fn?, dir?)` | `(a: float, b: float, blend: float, fn?: any, dir?: any) -> float` | Ease from `a` to `b` by `blend` |
@@ -879,6 +880,15 @@ in trigger: exec
 let t = Timer(10.0, restart = trigger)
 out elapsed = t.Time
 on t.Expired { /* fired when Time reaches the limit */ }
+```
+
+`ReadBrickGrid()` is pure and takes no arguments — it returns the brick grid
+that this gate's microchip is placed on as an `entity`, ready to pass to entity
+getters/setters or wire into gates that expect a brick grid:
+
+```wirescript
+let grid = ReadBrickGrid()
+let origin = grid.GetLocation()
 ```
 
 ## ChatCommand (Event)
