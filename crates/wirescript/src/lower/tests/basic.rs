@@ -589,6 +589,27 @@ fn find_returns_record_unwrapping_to_index() {
 }
 
 #[test]
+fn find_result_field_access_inline_without_binding() {
+    // Regression: `.Found` / `.Index` directly on an inline `find()` (no `let`
+    // binding) must lower the Find gate and read its output — not fall through
+    // to an `_Unsupported` placeholder that drops the whole call. Previously
+    // `arr.find(x).Found` emitted nothing because `obj` (the call) was never
+    // lowered when the field didn't name a swizzle/index port.
+    let src = "array a: int[]\nvar hit: bool\nin t: exec\n\
+        on t {\n  hit = !a.find(3).Found\n}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Find"),
+        "inline find().Found must still emit the Find gate"
+    );
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "inline find().Found must not degrade to an _Unsupported placeholder"
+    );
+}
+
+#[test]
 fn array_var_type_inferred_without_annotation() {
     // `var foo = [10, 20, 30]` (no `: int[]`) infers an array type and bakes
     // its literals into an ArrayVar gate.

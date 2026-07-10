@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 0.13.0 - 2026-07-10
+
+- Fixed Inline field access on a call result dropping the call (`arr.find(x).Found` / `.Index`)
+
 ## 0.12.3 - 2026-07-10
 
 - Fix literal constants not reaching anonymous chips

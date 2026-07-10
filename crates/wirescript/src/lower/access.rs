@@ -257,7 +257,35 @@ pub(super) fn lower_field_access(
             };
             obj_port.node_id.port(port_id)
         }
-        _ => synthesise_unsupported(ctx, e),
+        _ => {
+            // `field` may name an output port on the gate an inline call
+            // lowers to — e.g. `.Found` / `.Index` on `arr.find(x)` used
+            // directly, without first binding the result to a `let`. Lower the
+            // call (emitting its gate) and resolve the field to a sibling
+            // output port, exactly as the bound-ident path above does. Without
+            // this, `obj` is never lowered and the field access degrades to an
+            // `_Unsupported` placeholder — silently dropping the call.
+            if let Expr::Call { .. } = obj {
+                let aliased = match field {
+                    "Forward" => "InputForward",
+                    "Right" => "InputRight",
+                    "Jump" => "bPressedJump",
+                    other => other,
+                };
+                let obj_port = lower_expr(ctx, obj);
+                if let Some(node) = ctx.builder.module.nodes.get(&obj_port.node_id) {
+                    let resolved = node.ports.outputs.iter().find_map(|p| {
+                        let pname = crate::intern::resolve(p.name);
+                        (pname == aliased || crate::catalog::arrays::field_name(pname) == field)
+                            .then_some(pname)
+                    });
+                    if let Some(pname) = resolved {
+                        return port_ref(obj_port.node_id, pname);
+                    }
+                }
+            }
+            synthesise_unsupported(ctx, e)
+        }
     }
 }
 
