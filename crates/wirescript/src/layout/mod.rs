@@ -106,11 +106,23 @@ pub fn layout(module: &Module) -> LayoutResult {
     layout_with_opts(module, &LayoutOptions::default())
 }
 
+/// Like [`layout`] but does NOT recurse into child chips
+/// (`chip_layouts` is left empty). The emit pipeline lays out each chip
+/// exactly once at the level that emits it, so eager recursion here
+/// would redo every descendant's layout only to throw it away.
+pub fn layout_root(module: &Module) -> LayoutResult {
+    layout_impl(module, &LayoutOptions::default(), false)
+}
+
 /// Fast 3D grid layout for large modules — places nodes in a cube arrangement
 /// using actual brick sizes from the inventory, skipping expensive DAG analysis.
 /// The resulting brick mass is centered around the origin so it sits in the
 /// middle of the microchip plane, not offset to a corner.
 pub fn layout_grid(module: &Module, opts: &LayoutOptions) -> LayoutResult {
+    layout_grid_impl(module, opts, true)
+}
+
+fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutResult {
     let spawnable: Vec<(&NodeId, &Node)> = module
         .nodes
         .iter()
@@ -177,7 +189,11 @@ pub fn layout_grid(module: &Module, opts: &LayoutOptions) -> LayoutResult {
 
     LayoutResult {
         placements,
-        chip_layouts: recurse_chips(module, opts),
+        chip_layouts: if recurse {
+            recurse_chips(module, opts)
+        } else {
+            HashMap::new()
+        },
         bounds_min: IntVec3 {
             x: -half_x,
             y: -half_y,
@@ -195,8 +211,12 @@ const GRID_LAYOUT_THRESHOLD: usize = 5000;
 
 /// Like [`layout`] but with explicit options.
 pub fn layout_with_opts(module: &Module, opts: &LayoutOptions) -> LayoutResult {
+    layout_impl(module, opts, true)
+}
+
+fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutResult {
     if module.nodes.len() > GRID_LAYOUT_THRESHOLD {
-        return layout_grid(module, opts);
+        return layout_grid_impl(module, opts, recurse);
     }
 
     // Flat DAG layout over the whole module — block structure is
@@ -217,7 +237,11 @@ pub fn layout_with_opts(module: &Module, opts: &LayoutOptions) -> LayoutResult {
     if laid.local.is_empty() {
         return LayoutResult {
             placements,
-            chip_layouts: recurse_chips(module, opts),
+            chip_layouts: if recurse {
+                recurse_chips(module, opts)
+            } else {
+                HashMap::new()
+            },
             bounds_min: IntVec3::default(),
             bounds_max: IntVec3::default(),
         };
@@ -265,7 +289,11 @@ pub fn layout_with_opts(module: &Module, opts: &LayoutOptions) -> LayoutResult {
 
     LayoutResult {
         placements,
-        chip_layouts: recurse_chips(module, opts),
+        chip_layouts: if recurse {
+            recurse_chips(module, opts)
+        } else {
+            HashMap::new()
+        },
         bounds_min: IntVec3 {
             x: min_x,
             y: min_y,
@@ -289,9 +317,42 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
         matches!(node.kind, NodeKind::Input | NodeKind::Output) || is_pseudo_storage(node)
     }
 
+    // The set of laid-out nodes and the wire topology never change between
+    // passes (only placements move), so resolve each node's primary
+    // consumer once: first consumer in the layout by source order, wire
+    // order breaking ties.
+    let mut consumers: HashMap<NodeId, NodeId> = HashMap::new();
+    for w in &module.wires {
+        if !laid.local.contains_key(&w.target.node_id) {
+            continue;
+        }
+        let offset = |c: &NodeId| {
+            module
+                .nodes
+                .get(c)
+                .map(|n| n.source_range.start.offset)
+                .unwrap_or(usize::MAX)
+        };
+        consumers
+            .entry(w.source.node_id)
+            .and_modify(|best| {
+                if offset(&w.target.node_id) < offset(best) {
+                    *best = w.target.node_id;
+                }
+            })
+            .or_insert(w.target.node_id);
+    }
+
+    // Occupancy count per cell, maintained incrementally across moves so
+    // collision checks are O(1) instead of a scan over every placement.
+    let mut occupied: HashMap<(i32, i32), u32> = HashMap::new();
+    for p in laid.local.values() {
+        *occupied.entry((p.dx, p.dy)).or_insert(0) += 1;
+    }
+
+    let ids: Vec<NodeId> = laid.local.keys().cloned().collect();
     for _ in 0..4 {
         let mut changed = false;
-        let ids: Vec<NodeId> = laid.local.keys().cloned().collect();
         for id in &ids {
             let Some(node) = module.nodes.get(id) else {
                 continue;
@@ -311,22 +372,7 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
             if takes_exec {
                 continue;
             }
-            // Primary consumer: first consumer in the layout by source order.
-            let mut consumers: Vec<&NodeId> = module
-                .wires
-                .iter()
-                .filter(|w| &w.source.node_id == id)
-                .map(|w| &w.target.node_id)
-                .filter(|c| laid.local.contains_key(*c))
-                .collect();
-            consumers.sort_by_key(|c| {
-                module
-                    .nodes
-                    .get(*c)
-                    .map(|n| n.source_range.start.offset)
-                    .unwrap_or(usize::MAX)
-            });
-            let Some(&target_id) = consumers.first() else {
+            let Some(target_id) = consumers.get(id) else {
                 continue;
             };
             let target = laid.local[target_id];
@@ -346,16 +392,18 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
                 if cx == me.dx && cy == me.dy {
                     break;
                 }
-                let collision = laid
-                    .local
-                    .iter()
-                    .any(|(oid, op)| oid != id && op.dx == cx && op.dy == cy);
-                if collision {
+                // The candidate is never this node's own cell (checked
+                // above), so any occupant is a collision.
+                if occupied.get(&(cx, cy)).is_some_and(|&c| c > 0) {
                     continue;
                 }
                 let entry = laid.local.get_mut(id).unwrap();
                 entry.dx = cx;
                 entry.dy = cy;
+                if let Some(c) = occupied.get_mut(&(me.dx, me.dy)) {
+                    *c -= 1;
+                }
+                *occupied.entry((cx, cy)).or_insert(0) += 1;
                 moved = true;
                 break;
             }

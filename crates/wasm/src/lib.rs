@@ -113,7 +113,7 @@ pub fn wirescript_compile(source: String, module_name: Option<String>, files_jso
         return Err(JsValue::from_str(&errors.join("\n")));
     }
 
-    let placements = wirescript::layout::layout(&lowered.module).placements;
+    let placements = wirescript::layout::layout_root(&lowered.module).placements;
     let registry = parse_prefab_registry(prefabs_json.as_deref().unwrap_or("{}"));
     let opts = EmitOptions {
         prefab_resolver: Some(registry_prefab_resolver(registry)),

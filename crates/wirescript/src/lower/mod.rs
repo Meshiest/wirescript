@@ -385,61 +385,147 @@ fn inline_orphan_literals(module: &mut Module) {
 /// - **Exactly one incoming wire** (pass-through): splice it out, rewiring its
 ///   consumers straight to the single source.
 fn prune_dead_exec_unions(module: &mut Module) {
-    loop {
-        let mut in_count: HashMap<NodeId, usize> = HashMap::new();
-        let mut out_count: HashMap<NodeId, usize> = HashMap::new();
-        for w in &module.wires {
-            *out_count.entry(w.source.node_id).or_default() += 1;
-            *in_count.entry(w.target.node_id).or_default() += 1;
-        }
-        let unions: Vec<NodeId> = module
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.gate_class == gc::UNION)
-            .map(|(id, _)| *id)
-            .collect();
-
-        // Dead sinks/sources: no outgoing, or no incoming.
-        let dead: Vec<NodeId> = unions
-            .iter()
-            .copied()
-            .filter(|id| {
-                out_count.get(id).copied().unwrap_or(0) == 0
-                    || in_count.get(id).copied().unwrap_or(0) == 0
-            })
-            .collect();
-        if !dead.is_empty() {
-            let dead_set: HashSet<NodeId> = dead.iter().copied().collect();
-            for id in &dead {
-                module.nodes.remove(id);
+    /// Chase a source through spliced unions to the node actually carrying
+    /// its wires now. Returns `None` for a pure splice cycle (unions feeding
+    /// only each other — dead code whose wires all drop).
+    fn resolve_src(
+        spliced: &HashMap<NodeId, crate::ir::PortRef>,
+        start: &crate::ir::PortRef,
+    ) -> Option<crate::ir::PortRef> {
+        let mut cur = start.clone();
+        let mut hops = 0usize;
+        while let Some(next) = spliced.get(&cur.node_id) {
+            cur = next.clone();
+            hops += 1;
+            if hops > spliced.len() {
+                return None;
             }
-            module.wires.retain(|w| {
-                !dead_set.contains(&w.source.node_id) && !dead_set.contains(&w.target.node_id)
-            });
+        }
+        Some(cur)
+    }
+
+    // Degrees + adjacency computed once and maintained incrementally via a
+    // worklist. The old version rebuilt counts over every wire and spliced
+    // one union per full rebuild — O(unions × wires) on union-heavy modules.
+    let mut in_count: HashMap<NodeId, usize> = HashMap::new();
+    let mut out_count: HashMap<NodeId, usize> = HashMap::new();
+    let mut in_edges: HashMap<NodeId, Vec<crate::ir::PortRef>> = HashMap::new();
+    let mut out_edges: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for w in &module.wires {
+        *out_count.entry(w.source.node_id).or_default() += 1;
+        *in_count.entry(w.target.node_id).or_default() += 1;
+        in_edges
+            .entry(w.target.node_id)
+            .or_default()
+            .push(w.source.clone());
+        out_edges
+            .entry(w.source.node_id)
+            .or_default()
+            .push(w.target.node_id);
+    }
+
+    let mut queue: Vec<NodeId> = module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == gc::UNION)
+        .map(|(id, _)| *id)
+        .collect();
+    let is_union: HashSet<NodeId> = queue.iter().copied().collect();
+
+    let mut removed: HashSet<NodeId> = HashSet::new();
+    let mut spliced: HashMap<NodeId, crate::ir::PortRef> = HashMap::new();
+
+    while let Some(id) = queue.pop() {
+        if removed.contains(&id) || spliced.contains_key(&id) {
             continue;
         }
-
-        // Pass-throughs: exactly one input — splice.
-        let Some(&splice) = unions
-            .iter()
-            .find(|id| in_count.get(id).copied().unwrap_or(0) == 1)
-        else {
-            break;
-        };
-        let src = module
-            .wires
-            .iter()
-            .find(|w| w.target.node_id == splice)
-            .map(|w| w.source.clone())
-            .expect("counted one incoming wire");
-        for w in module.wires.iter_mut() {
-            if w.source.node_id == splice {
-                w.source = src.clone();
+        let ins = in_count.get(&id).copied().unwrap_or(0);
+        let outs = out_count.get(&id).copied().unwrap_or(0);
+        if ins == 0 || outs == 0 {
+            // Dead sink/source: remove the union; its live edges die with it,
+            // so decrement each live neighbor and requeue affected unions.
+            removed.insert(id);
+            for s in in_edges.get(&id).into_iter().flatten() {
+                let Some(src) = resolve_src(&spliced, s) else {
+                    continue;
+                };
+                if removed.contains(&src.node_id) {
+                    continue; // edge already died with its source
+                }
+                if let Some(c) = out_count.get_mut(&src.node_id) {
+                    *c = c.saturating_sub(1);
+                }
+                if is_union.contains(&src.node_id) {
+                    queue.push(src.node_id);
+                }
             }
+            for t in out_edges.get(&id).into_iter().flatten() {
+                if removed.contains(t) || spliced.contains_key(t) {
+                    continue; // edge already accounted for at the other end
+                }
+                if let Some(c) = in_count.get_mut(t) {
+                    *c = c.saturating_sub(1);
+                }
+                if is_union.contains(t) {
+                    queue.push(*t);
+                }
+            }
+        } else if ins == 1 {
+            // Pass-through: splice out. Consumers keep their in-degree (the
+            // wires just change source); the carrier gains this union's
+            // out-edges and loses the one edge that fed it.
+            let raw = in_edges
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .filter_map(|s| resolve_src(&spliced, s))
+                .find(|s| !removed.contains(&s.node_id))
+                .expect("counted one incoming wire");
+            spliced.insert(id, raw.clone());
+            let transferred = out_edges.remove(&id).unwrap_or_default();
+            // Only LIVE transferred edges count toward the carrier's degree —
+            // edges to removed/spliced targets were already discounted.
+            let live = transferred
+                .iter()
+                .filter(|t| !removed.contains(t) && !spliced.contains_key(t))
+                .count();
+            if let Some(c) = out_count.get_mut(&raw.node_id) {
+                *c += live;
+                *c = c.saturating_sub(1);
+            }
+            out_edges
+                .entry(raw.node_id)
+                .or_default()
+                .extend(transferred);
         }
-        module.wires.retain(|w| w.target.node_id != splice);
-        module.nodes.remove(&splice);
     }
+
+    if !removed.is_empty() || !spliced.is_empty() {
+        for id in removed.iter().chain(spliced.keys()) {
+            module.nodes.remove(id);
+        }
+        module.wires.retain_mut(|w| {
+            // Wires into a removed union die; wires into a spliced union are
+            // superseded by the rewired consumer edges.
+            if removed.contains(&w.target.node_id) || spliced.contains_key(&w.target.node_id) {
+                return false;
+            }
+            if removed.contains(&w.source.node_id) {
+                return false;
+            }
+            if spliced.contains_key(&w.source.node_id) {
+                let Some(src) = resolve_src(&spliced, &w.source) else {
+                    return false;
+                };
+                if removed.contains(&src.node_id) {
+                    return false;
+                }
+                w.source = src;
+            }
+            true
+        });
+    }
+
     for child_module in module.chips.values_mut() {
         prune_dead_exec_unions(child_module);
     }

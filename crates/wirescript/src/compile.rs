@@ -4,7 +4,7 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::emit::Placement;
 use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world, emit_brz};
 use crate::ir::NodeId;
-use crate::layout::layout;
+use crate::layout::layout_root;
 use crate::lower::{LowerInput, lower};
 use crate::resolve::{FsLoader, resolve};
 use crate::template_cache::TemplateCache;
@@ -162,7 +162,7 @@ fn compile_with_opts_inner(
     }
 
     report(&progress);
-    let lr = layout(&lowered.module);
+    let lr = layout_root(&lowered.module);
 
     const EDGE_MARGIN: i32 = 5;
     const MIN_EXTENT: i32 = 5;
@@ -256,7 +256,7 @@ pub fn compile_to_world(
         return Err(CompileError::HasErrors(errors));
     }
 
-    let lr = layout(&lowered.module);
+    let lr = layout_root(&lowered.module);
 
     const EDGE_MARGIN: i32 = 5;
     const MIN_EXTENT: i32 = 5;

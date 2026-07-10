@@ -2,7 +2,14 @@
 
 ## 0.13.0 - 2026-07-10
 
+- **~4x faster compiles on large projects** (gba: 5.9s -> 1.5s):
+  - Each chip is laid out exactly once - the pre-emit layout pass no longer recurses into children that emit re-lays-out anyway
+  - Layout: one toposort bucketed per connected component (was one full-graph sort *per* component); source-to-consumer alignment uses a prebuilt consumer map + O(1) occupancy checks
+  - Emit: gate data fields' schema classification (variant/asset/enum/str) and interned names resolved once per gate class instead of per brick; brick assets no longer clone a String per brick
+  - Lower: dead exec-union pruning is a single incremental worklist pass instead of a full graph rebuild per spliced union
+- brdb 0.8.0: unset component fields skip a linear defaults scan + two error-String allocations per field; brz index compression actually works (its size guard was dead code)
 - Fixed Inline field access on a call result dropping the call (`arr.find(x).Found` / `.Index`)
+- `ControllerJoined`/`ControllerLeft` expose the player's id: `on ControllerLeft(controller, userId)` (`string`) - stable when the controller is torn down on disconnect
 
 ## 0.12.3 - 2026-07-10
 

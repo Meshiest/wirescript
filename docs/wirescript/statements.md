@@ -800,8 +800,8 @@ These events are available as handler triggers. Parameters listed can be bound u
 | `RoundEnd` | (none) | Game round ended |
 | `CharacterSpawned` | `character: character` | A character spawned |
 | `CharacterDied` | `character: character` | A character died |
-| `ControllerJoined` | `controller: controller` | A player joined |
-| `ControllerLeft` | `controller: controller` | A player left |
+| `ControllerJoined` | `controller: controller`, `userId: string` | A player joined |
+| `ControllerLeft` | `controller: controller`, `userId: string` | A player left (`userId` stays valid even as the controller is torn down on disconnect) |
 | `ZoneEntered` | `character: character` | A character entered a zone |
 | `ZoneLeft` | `character: character` | A character left a zone |
 | `EntityZoneEntered` | `entity: entity` | An entity entered a zone |

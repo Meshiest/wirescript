@@ -1460,6 +1460,40 @@ fn detector_builtins_map_to_split_gate_classes() {
     ));
 }
 
+/// `on ControllerLeft(controller, userId)` exposes the gate's `UserId` output
+/// as a second positional param. The gate is a pure source, so a wire SOURCED
+/// from its `UserId` port into the handler body proves the id is bound.
+#[test]
+fn controller_left_exposes_user_id() {
+    let r = compile(
+        "\
+var lastLeft: string
+on ControllerLeft(controller, userId) {
+  lastLeft = userId
+}",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "userId must bind to the gate's UserId port, not an _Unsupported placeholder"
+    );
+    let event_node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| {
+            n.gate_class == "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent"
+        })
+        .expect("expected a ControllerLeft event gate");
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == event_node.id && w.source.port.as_str() == "UserId"),
+        "the handler body must consume the event gate's UserId output"
+    );
+}
+
 /// `on ZoneEntered(character, zone = zoneA)` wires the `zoneA` value into the
 /// event gate's `Zone` input port. Event gates are otherwise pure sources, so
 /// an input wire into the gate — sourced from the `in` port — proves the bind.

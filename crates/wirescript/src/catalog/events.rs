@@ -108,6 +108,15 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         port,
         ty: Type::Entity,
     };
+    // The player-join/left gates expose a `UserId` output (gate type `any`);
+    // surface it as `string` so it compares, interpolates, and keys leaderboards
+    // like `GetUserId()`. Useful for disconnect cleanup, where the `controller`
+    // reference may already be torn down but the id is still stable.
+    let string = |name, port| EventDataBinding {
+        name,
+        port,
+        ty: Type::String,
+    };
 
     let entries = vec![
         mk(
@@ -133,12 +142,18 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         mk(
             "ControllerJoined",
             "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent",
-            vec![controller("controller", "Controller")],
+            vec![
+                controller("controller", "Controller"),
+                string("userId", "UserId"),
+            ],
         ),
         mk(
             "ControllerLeft",
             "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent",
-            vec![controller("controller", "Controller")],
+            vec![
+                controller("controller", "Controller"),
+                string("userId", "UserId"),
+            ],
         ),
         mk_zone(
             "ZoneEntered",

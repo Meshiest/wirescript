@@ -192,8 +192,18 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
     // Deterministic WCC order: by the least source_range.start among each
     // WCC's nodes (then by least node_id).
     let mut wcc_list: Vec<(usize, Vec<&NodeId>)> = wccs.into_iter().collect();
-    wcc_list
-        .sort_by(|(_, a), (_, b)| wcc_sort_key(a, &node_by_id).cmp(&wcc_sort_key(b, &node_by_id)));
+    wcc_list.sort_by_cached_key(|(_, nodes)| wcc_sort_key(nodes, &node_by_id));
+
+    // One topological sort of the whole (now-acyclic) graph, bucketed
+    // per WCC root so each WCC gets its nodes already in topo order.
+    let topo_all =
+        petgraph::algo::toposort(&g, None).expect("cycles have been broken before WCC layout");
+    let mut wcc_topo: HashMap<usize, Vec<&NodeId>> = HashMap::new();
+    for n in topo_all {
+        if let Some(&i) = idx.get(&n) {
+            wcc_topo.entry(uf.find(i)).or_default().push(n);
+        }
+    }
 
     // Per-WCC: longest-path depth (from sources) + y-rank by source order.
     // Accumulate placements into a global map with a vertical offset per WCC.
@@ -201,18 +211,13 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
     let mut y_offset: i32 = 0;
     let mut max_width: i32 = 0;
 
-    for (_, mut wcc_nodes) in wcc_list {
+    for (root, mut wcc_nodes) in wcc_list {
         // Subgraph filter: only edges between wcc_nodes remain.
         let wcc_set: HashSet<&NodeId> = wcc_nodes.iter().copied().collect();
 
         // Longest-path depth: for each node in topo order, depth = max
         // over predecessors of (pred_depth + 1). Sources have depth 0.
-        let topo_all =
-            petgraph::algo::toposort(&g, None).expect("cycles have been broken before WCC layout");
-        let topo: Vec<&NodeId> = topo_all
-            .into_iter()
-            .filter(|n| wcc_set.contains(n))
-            .collect();
+        let topo: Vec<&NodeId> = wcc_topo.remove(&root).unwrap_or_default();
 
         let mut depth: HashMap<&NodeId, i32> = HashMap::new();
         for &n in &topo {

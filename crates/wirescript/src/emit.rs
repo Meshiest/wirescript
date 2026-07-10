@@ -509,12 +509,18 @@ fn emit_module(
             .get(id)
             .ok_or_else(|| EmitError::MissingPlacement(id.to_string()))?;
         let gate_class_str = node.gate_class;
-        let brick_asset = infer_brick_for_gate(gate_class_str);
+        // One catalog lookup per brick: brick asset + half-size both come
+        // from the same entry. Unknown classes (synthetic IR-only nodes)
+        // fall back to a reroute node. The catalog is 'static, so the
+        // asset name needs no per-brick String clone.
+        let catalog_entry = crate::catalog::default_catalog().find_by_class(gate_class_str);
+        let brick_asset: &'static str = catalog_entry
+            .map(|g| g.brick_asset.as_str())
+            .unwrap_or("B_1x1_Reroute_Node");
         // Offset each brick by its half-size so the brick's min corner aligns
         // with the cell grid line at (pos.x, pos.y). This keeps every brick
         // inside its own cell regardless of size (1x1, wide DisplayText, etc.)
         // and prevents overlaps between adjacent cells of different sizes.
-        let catalog_entry = crate::catalog::default_catalog().find_by_class(gate_class_str);
         let (offset_x, offset_y) = match catalog_entry {
             Some(g) => (g.half_size.x, g.half_size.y),
             _ => (5, 5),
@@ -766,7 +772,7 @@ fn emit_module(
             z: pos.z,
         };
 
-        let child_layout = crate::layout::layout(child_module);
+        let child_layout = crate::layout::layout_root(child_module);
         let half_x = (child_layout.bounds_max.x - child_layout.bounds_min.x) / 2;
         let half_y = (child_layout.bounds_max.y - child_layout.bounds_min.y) / 2;
         let child_extent = IntVector {
@@ -944,36 +950,27 @@ fn build_gate_component(
     // Always write the data struct when the gate type has one — even if no
     // fields are inlined. This ensures ALL instances of the same component
     // type have matching data, preventing reader misalignment.
-    if let Some((struct_name, field_names, use_wire_variant)) = data_struct_for_gate(gate_class) {
+    if let Some(fields) = gate_field_meta(gate_class) {
         let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
-        for field in field_names {
-            let val: Box<dyn AsBrdbValue> = match inlined.get(&intern_static(field)) {
-                Some(lit) if use_wire_variant => {
-                    if schema_field_is_prim_math_variant(struct_name, field) {
-                        if let Literal::Bool(b) = lit {
-                            Box::new(WireVariant::Int(if *b { 1 } else { 0 }))
-                        } else {
-                            literal_to_boxed_wire_variant(lit, ports, field)
-                        }
+        for fm in fields {
+            let field = fm.name;
+            let is_variant = matches!(
+                fm.kind,
+                FieldKind::WireVariant | FieldKind::PrimMathVariant
+            );
+            let val: Box<dyn AsBrdbValue> = match inlined.get(&fm.sym) {
+                Some(lit) if is_variant => {
+                    // prim_math_variant doesn't support Bool — coerce to Int
+                    if fm.kind == FieldKind::PrimMathVariant
+                        && let Literal::Bool(b) = lit
+                    {
+                        Box::new(WireVariant::Int(if *b { 1 } else { 0 }))
                     } else {
                         literal_to_boxed_wire_variant(lit, ports, field)
                     }
                 }
-                Some(lit) => {
-                    if schema_field_is_wire_variant(struct_name, field) {
-                        // prim_math_variant doesn't support Bool — coerce to Int
-                        if schema_field_is_prim_math_variant(struct_name, field) {
-                            if let Literal::Bool(b) = lit {
-                                Box::new(WireVariant::Int(if *b { 1 } else { 0 }))
-                            } else {
-                                literal_to_boxed_wire_variant(lit, ports, field)
-                            }
-                        } else {
-                            literal_to_boxed_wire_variant(lit, ports, field)
-                        }
-                    } else if schema_field_is(struct_name, field, "class")
-                        || schema_field_is(struct_name, field, "object")
-                    {
+                Some(lit) => match fm.kind {
+                    FieldKind::AssetRef => {
                         // Asset-reference field (AudioDescriptor, Item, …):
                         // register the `$Type/Name` in the world's external
                         // asset table and store the index.
@@ -992,7 +989,8 @@ fn build_gate_component(
                             _ => None,
                         };
                         Box::new(BrdbValue::Asset(idx))
-                    } else if schema_field_is(struct_name, field, "bundle_path_ref") {
+                    }
+                    FieldKind::BundlePathRef => {
                         // Prefab file reference (`$./file.brz`): resolve to raw
                         // bytes, embed content-addressed via add_prefab, and
                         // store the resulting `Prefabs/Uploads/…` path.
@@ -1014,30 +1012,14 @@ fn build_gate_component(
                             // front end (the port only accepts `$…` refs).
                             _ => Box::new(String::new()),
                         }
-                    } else if let Some(ev) = try_resolve_enum(struct_name, field, lit) {
-                        Box::new(ev)
-                    } else if schema_field_is(struct_name, field, "str") {
-                        Box::new(literal_to_string(lit))
-                    } else {
-                        literal_to_boxed_native(lit)
                     }
-                }
-                None if use_wire_variant => {
-                    let port_ty = ports
-                        .inputs
-                        .iter()
-                        .chain(ports.outputs.iter())
-                        .find(|p| resolve(p.name) == *field)
-                        .map(|p| &p.ty);
-                    let wv = var_type_to_wire_variant(port_ty);
-                    // prim_math_variant doesn't support Bool — coerce to Int
-                    let wv = if schema_field_is_prim_math_variant(struct_name, field) {
-                        coerce_for_prim_math(wv)
-                    } else {
-                        wv
-                    };
-                    Box::new(wv)
-                }
+                    FieldKind::Enum(type_name) => match resolve_enum_value(type_name, lit) {
+                        Some(ev) => Box::new(ev),
+                        None => literal_to_boxed_native(lit),
+                    },
+                    FieldKind::Str => Box::new(literal_to_string(lit)),
+                    _ => literal_to_boxed_native(lit),
+                },
                 // No inlined value. Wire-typed ports still need a typed variant
                 // default so the variant member matches the port type (the
                 // component_db defaults don't carry wire variants). Every other
@@ -1046,27 +1028,25 @@ fn build_gate_component(
                 // STRUCT_DEFAULTS — the single source of truth for gate defaults
                 // (e.g. DisplayText FontSize=16, Lifetime=5) — falling back to a
                 // type-zero when no default is registered.
-                None => {
-                    if schema_field_is_wire_variant(struct_name, field) {
-                        let port_ty = ports
-                            .inputs
-                            .iter()
-                            .chain(ports.outputs.iter())
-                            .find(|p| resolve(p.name) == *field)
-                            .map(|p| &p.ty);
-                        let wv = var_type_to_wire_variant(port_ty);
-                        let wv = if schema_field_is_prim_math_variant(struct_name, field) {
-                            coerce_for_prim_math(wv)
-                        } else {
-                            wv
-                        };
-                        Box::new(wv)
+                None if is_variant => {
+                    let port_ty = ports
+                        .inputs
+                        .iter()
+                        .chain(ports.outputs.iter())
+                        .find(|p| p.name == fm.sym)
+                        .map(|p| &p.ty);
+                    let wv = var_type_to_wire_variant(port_ty);
+                    // prim_math_variant doesn't support Bool — coerce to Int
+                    let wv = if fm.kind == FieldKind::PrimMathVariant {
+                        coerce_for_prim_math(wv)
                     } else {
-                        continue;
-                    }
+                        wv
+                    };
+                    Box::new(wv)
                 }
+                None => continue,
             };
-            data.insert(BString::from(field.to_string()), val);
+            data.insert(BString::Static(field), val);
         }
         return Ok(LiteralComponent::new_from_data(
             gate_class,
@@ -1076,7 +1056,7 @@ fn build_gate_component(
 
     // Default: dataless component stub — registers component type only,
     // no struct data (engine uses the default from the brick type).
-    Ok(LiteralComponent::new(gate_class.to_string()))
+    Ok(LiteralComponent::new(gate_class))
 }
 
 /// Returns `(struct_name, field_names, use_wire_variant)` for gates whose
@@ -1117,6 +1097,84 @@ fn derived_gate_data() -> &'static StdMap<&'static str, (&'static str, Vec<&'sta
         }
         m
     })
+}
+
+/// Per-field emit classification, resolved once per gate data struct
+/// instead of re-querying the schema (several interner probes plus a
+/// `String` allocation per predicate) for every field of every brick.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldKind {
+    /// `WireGraphVariant`
+    WireVariant,
+    /// `WireGraphPrimMathVariant` (no bool member — bools coerce to int)
+    PrimMathVariant,
+    /// Asset reference (`class` / `object`)
+    AssetRef,
+    /// `bundle_path_ref` (embedded prefab path)
+    BundlePathRef,
+    /// `str`
+    Str,
+    /// Schema enum type (payload = the enum's type name in the schema)
+    Enum(&'static str),
+    /// Anything else — serialized as a native literal
+    Native,
+}
+
+struct FieldMeta {
+    name: &'static str,
+    /// `name` pre-interned, so the per-brick inlined-literal lookup skips
+    /// the interner.
+    sym: Sym,
+    kind: FieldKind,
+}
+
+/// Field metadata for a gate's component data struct: same source as
+/// [`derived_gate_data`] (pair table × max schema), with each field's
+/// emit classification and interned name computed once.
+fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> {
+    use brdb::schema::BrdbSchemaStructProperty;
+    static MAP: std::sync::OnceLock<StdMap<&'static str, Vec<FieldMeta>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let schema = brdb::schemas::bricks_components_schema_max();
+        let mut m = StdMap::new();
+        for (comp, strct) in brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS {
+            let Some(s) = schema.get_struct(strct) else {
+                continue;
+            };
+            let fields: Vec<FieldMeta> = s
+                .iter()
+                .filter_map(|(k, prop)| {
+                    let name = schema.intern.lookup_ref(*k)?;
+                    let kind = match prop {
+                        BrdbSchemaStructProperty::Type(t) => {
+                            match schema.intern.lookup_ref(*t) {
+                                Some("WireGraphVariant") => FieldKind::WireVariant,
+                                Some("WireGraphPrimMathVariant") => FieldKind::PrimMathVariant,
+                                Some("class") | Some("object") => FieldKind::AssetRef,
+                                Some("bundle_path_ref") => FieldKind::BundlePathRef,
+                                Some("str") => FieldKind::Str,
+                                Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
+                                _ => FieldKind::Native,
+                            }
+                        }
+                        // Array/FlatArray/Map fields have no special emit
+                        // handling — the native literal path covers them.
+                        _ => FieldKind::Native,
+                    };
+                    Some(FieldMeta {
+                        name,
+                        sym: intern_static(name),
+                        kind,
+                    })
+                })
+                .collect();
+            m.insert(*comp, fields);
+        }
+        m
+    })
+    .get(gate_class)
+    .map(|f| f.as_slice())
 }
 
 fn coerce_for_prim_math(wv: WireVariant) -> WireVariant {
@@ -1488,18 +1546,6 @@ fn is_spawnable(kind: NodeKind, gate_class: &str) -> bool {
     )
 }
 
-/// Map a component class name to the brick asset that hosts it.
-///
-/// Uses the bundled catalog for the authoritative mapping. Falls back to
-/// `B_1x1_Reroute_Node` for any class not found in the catalog (e.g.,
-/// synthetic IR-only nodes that shouldn't reach here).
-fn infer_brick_for_gate(component_class: &str) -> String {
-    crate::catalog::default_catalog()
-        .find_by_class(component_class)
-        .map(|g| g.brick_asset.clone())
-        .unwrap_or_else(|| "B_1x1_Reroute_Node".to_string())
-}
-
 fn wire_to_connection_indexed(
     w: &Wire,
     node_brick_ids: &HashMap<NodeId, usize>,
@@ -1715,9 +1761,6 @@ fn schema_field_type_str(struct_name: &str, field: &str) -> Option<String> {
     Some(prop.as_string(schema))
 }
 
-fn schema_field_is(struct_name: &str, field: &str, type_name: &str) -> bool {
-    schema_field_type_str(struct_name, field).as_deref() == Some(type_name)
-}
 
 /// The enum variant names a gate's data `field` accepts, if that field is an
 /// enum — e.g. DisplayText's `Justification` → `["Left", "Center", "Right"]`.
@@ -1743,9 +1786,6 @@ pub fn field_enum_values(gate_class: &str, field: &str) -> Option<Vec<String>> {
 /// used). The emit's Bool→Int coercion hangs off this predicate: the variant
 /// has no `bool` member, so a missed match writes a `WireVariant::Bool` that the
 /// brdb schema writer rejects.
-fn schema_field_is_prim_math_variant(struct_name: &str, field: &str) -> bool {
-    schema_field_is(struct_name, field, "WireGraphPrimMathVariant")
-}
 
 /// True if the field's schema type is any wire-graph variant — plain
 /// (`WireGraphVariant`) or prim-math (`WireGraphPrimMathVariant`).
@@ -1790,10 +1830,17 @@ pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> b
 /// discriminant. Accepts both `Literal::Int` (passthrough) and
 /// `Literal::String` (looked up by variant name, with or without the
 /// enum-name prefix).
+#[cfg(test)]
 fn try_resolve_enum(struct_name: &str, field: &str, lit: &Literal) -> Option<u8> {
-    let schema = brdb::schemas::bricks_components_schema_max();
     let type_name = schema_field_type_str(struct_name, field)?;
-    let enum_def = schema.get_enum(&type_name)?;
+    resolve_enum_value(&type_name, lit)
+}
+
+/// Resolve a literal against a schema enum type by name — exact match
+/// first (`EBRDisplayTextJustification::Left`), then bare suffix (`Left`).
+fn resolve_enum_value(type_name: &str, lit: &Literal) -> Option<u8> {
+    let schema = brdb::schemas::bricks_components_schema_max();
+    let enum_def = schema.get_enum(type_name)?;
     match lit {
         Literal::Int(n) => Some(*n as u8),
         Literal::String(s) => {
