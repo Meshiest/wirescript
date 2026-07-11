@@ -963,7 +963,33 @@ fn check_decl(
             }
             check_stmt(ctx, &Stmt::If(i.clone()), tmap, omap);
         }
-        TopDecl::Import(_) | TopDecl::Namespace(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
+        TopDecl::Namespace(ns) => {
+            // A namespaced (`import * as ns`) mod body references its sibling
+            // constants and mods by BARE name, and those mods are inlined at
+            // call sites in the importing module. Typecheck the bodies here in
+            // an isolated scope (siblings registered as bare names) so operator
+            // resolutions and expression types get recorded — otherwise the
+            // inlined body's arithmetic and sibling calls lower to _Unsupported.
+            ctx.scope.push();
+            for d in &ns.decls {
+                register_decl(ctx, d);
+            }
+            for d in &ns.decls {
+                if matches!(
+                    d,
+                    TopDecl::Let(_) | TopDecl::Var(_) | TopDecl::Array(_) | TopDecl::Buffer(_)
+                ) {
+                    check_decl(ctx, d, tmap, omap);
+                }
+            }
+            for d in &ns.decls {
+                if matches!(d, TopDecl::Chip(_) | TopDecl::Fn(_)) {
+                    check_decl(ctx, d, tmap, omap);
+                }
+            }
+            ctx.scope.pop();
+        }
+        TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
     }
 }
 
@@ -1874,6 +1900,56 @@ fn infer_expr_inner(
                     );
                     return Type::Any;
                 };
+                // Use-before-declaration. Chips/mods are registered in source
+                // order during lowering, so a call whose declaration lexically
+                // follows the call site cannot resolve — it would synthesise an
+                // `_Unsupported` gate that silently reads 0 at runtime. Only
+                // applies to same-file chip/mod decls (imports live elsewhere
+                // and are always available).
+                if sym.kind == SymbolKind::Chip
+                    && sym.signature.is_some()
+                    && sym.decl_range.file == range.file
+                    && (range.start.line, range.start.col)
+                        < (sym.decl_range.start.line, sym.decl_range.start.col)
+                {
+                    ctx.emit(
+                        "WS021",
+                        format!(
+                            "call to `{name}` before its declaration — chips and \
+                             mods must be declared before the point where they \
+                             are used (move the declaration above its first caller)"
+                        ),
+                        range.clone(),
+                    );
+                }
+                // Argument-count check. User chips/mods/fns have no default
+                // parameters, so the positional-argument count must equal the
+                // parameter count — each param (including a whole-record or
+                // destructured one) takes exactly one positional arg. Named args
+                // (e.g. `exec =`) aren't parameters; a spread makes the count
+                // dynamic, so skip the check then. A mismatch would otherwise
+                // leave a param unbound, silently reading 0 / an empty value.
+                if let Some(sig) = &sym.signature {
+                    let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
+                    if !has_spread {
+                        let positional = args
+                            .iter()
+                            .filter(|a| matches!(a, CallArg::Positional(_)))
+                            .count();
+                        let expected = sig.params.len();
+                        if positional != expected {
+                            ctx.emit(
+                                "WS022",
+                                format!(
+                                    "`{name}` expects {expected} argument{} but {positional} {} given",
+                                    if expected == 1 { "" } else { "s" },
+                                    if positional == 1 { "was" } else { "were" },
+                                ),
+                                range.clone(),
+                            );
+                        }
+                    }
+                }
                 if let Some(sig) = sym.signature {
                     // A call with an `exec =` trigger also returns the chip's
                     // completion exec as an `exec` field (unless the chip
@@ -2269,6 +2345,60 @@ mod tests {
             .filter(|d| d.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn use_before_declaration_is_ws021() {
+        // A chip/mod call whose declaration lexically follows the call site
+        // cannot resolve during lowering (decls register in source order), so
+        // typecheck flags it so the editor surfaces it before compiling.
+        let r = tc("mod caller() { let x = target(1) }\nmod target(n: int) -> int { return n }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS021"),
+            "use-before-declaration must emit WS021; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn declaration_before_use_no_ws021() {
+        let r = tc("mod target(n: int) -> int { return n }\nmod caller() { let x = target(1) }");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS021"),
+            "declaration-before-use must NOT emit WS021; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn wrong_arg_count_is_ws022() {
+        // User chips/mods have no default params, so too few (or too many)
+        // positional args leaves a param unbound / an arg dropped.
+        let too_few = tc("mod f(a: int, b: int) -> int { return a + b }\nin z: exec\non z { let x = f(1) }");
+        assert!(
+            too_few.diagnostics.iter().any(|d| d.code == "WS022"),
+            "too-few args must emit WS022; got {:?}",
+            too_few.diagnostics
+        );
+        let too_many =
+            tc("mod g(a: int) -> int { return a }\nin z: exec\non z { let x = g(1, 2) }");
+        assert!(
+            too_many.diagnostics.iter().any(|d| d.code == "WS022"),
+            "too-many args must emit WS022; got {:?}",
+            too_many.diagnostics
+        );
+    }
+
+    #[test]
+    fn correct_arg_count_no_ws022() {
+        // Matching arity, and an extra `exec =` trigger (not a parameter), are
+        // both fine.
+        let ok = tc("mod f(a: int, b: int) -> int { return a + b }\nin z: exec\non z { let x = f(1, 2) }");
+        assert!(
+            !ok.diagnostics.iter().any(|d| d.code == "WS022"),
+            "matching arity must NOT emit WS022; got {:?}",
+            ok.diagnostics
+        );
     }
 
     #[test]

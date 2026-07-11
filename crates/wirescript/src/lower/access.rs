@@ -452,7 +452,8 @@ fn resolve_array_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRe
 
 pub(super) fn lower_array_method(
     ctx: &mut LowerCtx,
-    var_rec: &VarRecord,
+    array_ref: PortRef,
+    elem_ty: Type,
     method: &str,
     args: &[CallArg],
     range: &SourceRange,
@@ -462,7 +463,6 @@ pub(super) fn lower_array_method(
         Some(e) => e,
         None => return synthesise_unsupported(ctx, e),
     };
-    let array_ref = var_rec.node_id.port(WirePort::ArrayVarRef);
     // Every method handled here must also appear in the canonical
     // `catalog::arrays::ARRAY_METHODS` table (which drives editor completion /
     // hover); the `every_canonical_array_method_lowers` test enforces it.
@@ -525,7 +525,7 @@ pub(super) fn lower_array_method(
                     outputs: vec![
                         PortSpec {
                             name: *sym::VALUE,
-                            ty: var_rec.inner_type.clone(),
+                            ty: elem_ty.clone(),
                         },
                         PortSpec {
                             name: *sym::EXEC_OUT,
@@ -712,7 +712,7 @@ pub(super) fn lower_array_method(
             array_ref,
             gc::ARRAY_SUM,
             vec![],
-            vec![(WirePort::Value, var_rec.inner_type.clone())],
+            vec![(WirePort::Value, elem_ty.clone())],
             WirePort::Value,
         ),
         "min" | "max" => array_exec_op(
@@ -722,7 +722,7 @@ pub(super) fn lower_array_method(
             if method == "min" { gc::ARRAY_MIN } else { gc::ARRAY_MAX },
             vec![],
             vec![
-                (WirePort::Value, var_rec.inner_type.clone()),
+                (WirePort::Value, elem_ty.clone()),
                 (WirePort::BIsEmpty, Type::Bool),
             ],
             WirePort::Value,

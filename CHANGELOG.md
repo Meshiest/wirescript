@@ -9,8 +9,16 @@
   - Lower: dead exec-union pruning is a single incremental worklist pass instead of a full graph rebuild per spliced union
 - brdb 0.8.0: unset component fields skip a linear defaults scan + two error-String allocations per field; brz index compression actually works (its size guard was dead code)
 - Fixed Inline field access on a call result dropping the call (`arr.find(x).Found` / `.Index`)
+- Fixed a standalone `chip` whose exec-bearing body ends in `return <value>` shipping without its exec output
 - Fixed `out X = X` emitting no wire when the output shares its name with a var/array
+- LSP: hovering a field on a call result (`ids.find(x).Found`) resolves its type from the call's recor
+- LSP: goto-definition on a namespaced call (`card.drawCard` with `import * as card`) resolves in the imported file instead of jumping to a same-named local decl
+- Chip exec I/O gates are labeled `exec` and the anonymous `-> type` return output is labeled `return` (previously synthesized `_exec_in`/`_exec_out`/`_` ports had no label)
 - `ControllerJoined`/`ControllerLeft` expose the player's id: `on ControllerLeft(controller, userId)` (`string`) - stable when the controller is torn down on disconnect
+- **Calling a chip/mod before it is declared is now a hard error (WS021)** in both the compiler and the LSP, instead of silently lowering to a placeholder that reads its default (`0`) at runtime
+- **`in X: T[]` array inputs are first-class** - an array-typed `in` port now supports array methods (`X.length()`, `X.push(v)`, ...) and can be passed to a mod/chip's `T[]` parameter
+- **Namespaced (`import * as ns`) module members resolve inside their own mods**. Named imports (`import { f }`) were unaffected.
+- **Chip/mod calls check their argument count (WS022)** in both the compiler and the LSP. User chips/mods have no default parameters, so a wrong positional-argument count left a param unbound (silently reading 0 / an empty value) or dropped an extra arg; it is now a hard error. An `exec =` trigger isn't counted as a parameter; a spread arg skips the check.
 
 ## 0.12.3 - 2026-07-10
 

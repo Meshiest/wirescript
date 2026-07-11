@@ -114,6 +114,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
         chip_call_stack: Vec::new(),
+        known_fn_names: Arc::new(collect_fn_names(input.ast)),
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -145,6 +146,45 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         module,
         diagnostics: ctx.diagnostics,
     }
+}
+
+/// Collect every chip/mod name declared anywhere in the (import-merged) program
+/// — top-level and nested. Lets lowering tell a use-before-declaration call
+/// (a real chip/mod, just registered later → WS021) from a call to a name that
+/// is not a function at all (e.g. an unimplemented builtin → placeholder).
+fn collect_fn_names(ast: &Script) -> HashSet<String> {
+    fn walk_block(block: &Block, names: &mut HashSet<String>) {
+        for s in &block.stmts {
+            match s {
+                Stmt::ChipDecl(c) => {
+                    names.insert(c.name.clone());
+                    walk_block(&c.body, names);
+                }
+                Stmt::AnonChip(ac) => walk_block(&ac.body, names),
+                Stmt::Handler(h) => walk_block(&h.body, names),
+                Stmt::If(i) => {
+                    walk_block(&i.then_block, names);
+                    if let Some(eb) = &i.else_block {
+                        walk_block(eb, names);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut names = HashSet::new();
+    for d in &ast.decls {
+        match d {
+            TopDecl::Chip(c) => {
+                names.insert(c.name.clone());
+                walk_block(&c.body, &mut names);
+            }
+            TopDecl::AnonChip(ac) => walk_block(&ac.body, &mut names),
+            TopDecl::Handler(h) => walk_block(&h.body, &mut names),
+            _ => {}
+        }
+    }
+    names
 }
 
 /// Constant `Vec/Rotation/Color` calls lower to `_Literal` nodes so consumers
@@ -590,6 +630,7 @@ pub fn compile_chip_template(
         } else {
             vec![chip_decl.range.clone()]
         },
+        known_fn_names: Arc::new(HashSet::new()),
     };
 
     // Create input ports

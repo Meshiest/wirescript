@@ -390,32 +390,55 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                 exec: false,
             });
         }
-        LetBinding::Tuple { names, .. } => {
-            for name in names {
+        LetBinding::Tuple { names, .. } | LetBinding::Record { names, .. } => {
+            for (i, name) in names.iter().enumerate() {
+                // Positional destructure: the i-th field/element of the
+                // initializer's record/tuple type, falling back to a
+                // same-named record field.
+                let ty = value_field_type(&l.value, tmap, Some(i), name);
                 syms.push(SymbolDef {
-                    name: name.clone(), kind: "let", range: l.range.clone(), ty: None, exec: false,
-                });
-            }
-        }
-        LetBinding::Record { names, .. } => {
-            for name in names {
-                syms.push(SymbolDef {
-                    name: name.clone(), kind: "let", range: l.range.clone(), ty: None, exec: false,
+                    name: name.clone(), kind: "let", range: l.range.clone(), ty, exec: false,
                 });
             }
         }
         LetBinding::RecordDestruct { fields, .. } => {
             for field in fields {
-                let name = match field {
-                    RecordDestructField::Named { name, alias, .. } => {
-                        alias.as_deref().unwrap_or(name).to_string()
-                    }
-                    RecordDestructField::Rest { name, .. } => name.clone(),
+                let (name, ty) = match field {
+                    RecordDestructField::Named { name, alias, .. } => (
+                        alias.as_deref().unwrap_or(name).to_string(),
+                        // The bound name may be aliased; the record field is `name`.
+                        value_field_type(&l.value, tmap, None, name),
+                    ),
+                    RecordDestructField::Rest { name, .. } => (name.clone(), None),
                 };
                 syms.push(SymbolDef {
-                    name, kind: "let", range: l.range.clone(), ty: None, exec: false,
+                    name, kind: "let", range: l.range.clone(), ty, exec: false,
                 });
             }
         }
+    }
+}
+
+/// Type of a destructured binding, read from the initializer expression's
+/// type in `tmap`: record fields resolve by `field` name (or by `index` for
+/// positional patterns); tuples resolve by index only.
+fn value_field_type(
+    value: &Expr,
+    tmap: &TypeMap,
+    index: Option<usize>,
+    field: &str,
+) -> Option<String> {
+    use crate::ir::Type;
+    let r = value.range();
+    let ty = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))?;
+    match ty {
+        Type::Record(fs) => fs
+            .iter()
+            .find(|(k, _)| k == field)
+            .map(|(_, t)| t)
+            .or_else(|| index.and_then(|i| fs.get(i)).map(|(_, t)| t))
+            .map(type_str),
+        Type::Tuple(ts) => index.and_then(|i| ts.get(i)).map(type_str),
+        _ => None,
     }
 }

@@ -874,3 +874,108 @@ fn named_chip_body_captures_top_level_state() {
     let push_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
     assert!(push_wired, "free-array push should be exec-wired");
 }
+
+// ── Use-before-declaration guard (WS021) ──
+
+#[test]
+fn use_before_declaration_is_ws021() {
+    // A handler transitively calls `target`, declared later in source. Chips/mods
+    // register into scope in source order, so the call cannot resolve during
+    // lowering: it would otherwise become an `_Unsupported` gate that silently
+    // reads its default (0) at runtime. It must be a hard error instead.
+    let src = "in z: exec\n\
+        mod caller() { let x = target(1) BroadcastChatMessage(\"${x}\") }\n\
+        on z { caller() }\n\
+        mod target(n: int) -> int { return n + 1 }\n";
+    let r = compile(src);
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS021"),
+        "use-before-declaration must emit WS021; got {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn declaration_before_use_is_not_ws021() {
+    // Same program, `target` declared before its caller: resolves normally.
+    let src = "in z: exec\n\
+        mod target(n: int) -> int { return n + 1 }\n\
+        mod caller() { let x = target(1) BroadcastChatMessage(\"${x}\") }\n\
+        on z { caller() }\n";
+    let r = compile(src);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS021"),
+        "declaration-before-use must NOT emit WS021; got {:?}",
+        r.diagnostics
+    );
+}
+
+// ── `in` array inputs are first-class ──
+
+#[test]
+fn in_array_supports_methods_and_index() {
+    // An `in X: T[]` input must work like a var array: index AND methods.
+    let src = "in counts: int[]\nin z: exec\n\
+        on z { let a = counts[0]  let b = counts.length()  BroadcastChatMessage(\"${a} ${b}\") }";
+    let r = compile(src);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "input-array index/method must lower (no placeholder); got {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn in_array_passes_to_inline_mod() {
+    // Passing an `in` array to an inline mod's `int[]` param must bind it, so
+    // the mod body's reads resolve to the input's ref.
+    let src = "in counts: int[]\narray dst: int[]\nin z: exec\n\
+        mod f(a: int[], d: int[]) { d.clear()  d.push(a[0])  BroadcastChatMessage(\"${a.length()}\") }\n\
+        on z { f(counts, dst) }";
+    let r = compile(src);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "input array passed to inline mod must bind (no placeholder); got {:?}",
+        r.diagnostics
+    );
+}
+
+// ── Namespaced (`import * as`) mods resolve their siblings ──
+
+#[test]
+fn namespaced_mod_resolves_siblings() {
+    // A namespaced mod body references sibling constants, arrays, and mods by
+    // bare name; those must resolve when the mod is inlined at a call site in
+    // the importing module (no `_Unsupported` placeholders).
+    let lib = "let K = 7.0\n\
+        array TBL: int[] = [10, 20, 30]\n\
+        mod helper(n: int) -> int { return n + 1 }\n\
+        mod draw(ctrl: controller, i: int) {\n\
+          let v = K + TBL[i]\n\
+          let h = helper(i)\n\
+          ctrl.DisplayText(\"hi\", positionX = v, fontSize = h)\n\
+        }";
+    let diags = lower_with_imports(
+        "import * as lib from \"lib\"\non ControllerJoined(c, uid) { lib.draw(c, 0) }",
+        &[("lib", lib)],
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == "WSP001"),
+        "namespaced mod's sibling refs must resolve (no placeholder); got {:?}",
+        diags
+    );
+}
+
+#[test]
+fn unknown_non_function_call_is_not_ws021() {
+    // A call to a name that is NOT a declared chip/mod (here `vec`, a builtin the
+    // lowerer doesn't implement) must keep the "unsupported placeholder" path,
+    // not be reported as a use-before-declaration.
+    let src = "let v = vec(1.0, 2.0, 3.0)\n";
+    let r = compile(src);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS021"),
+        "unimplemented builtin must NOT emit WS021; got {:?}",
+        r.diagnostics
+    );
+}

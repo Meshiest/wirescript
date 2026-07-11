@@ -19,6 +19,25 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if let Some(spec) = find_call(name) {
             return lower_builtin_call(ctx, spec, args, range, e);
         }
+        // An identifier callee that is neither an in-scope chip/mod nor a
+        // builtin. If the name IS declared as a chip/mod somewhere in the
+        // program, it's a use-before-declaration (chips/mods register in source
+        // order): the call would otherwise synthesise an `_Unsupported` gate
+        // that silently reads its default (0) at runtime — make it a hard error.
+        // Names that are not chips/mods at all (e.g. a builtin not yet lowered)
+        // fall through to the usual placeholder path.
+        if ctx.known_fn_names.contains(name) {
+            ctx.diagnostics.push(Diagnostic::error(
+                "WS021",
+                format!(
+                    "call to undeclared function `{name}` — chips and mods must be \
+                     declared before the point where they are used (move the \
+                     declaration above its first caller)"
+                ),
+                range.clone(),
+            ));
+            return synthesise_unsupported_range(ctx, range);
+        }
     }
     // Namespace calls: ns.foo(args)
     if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
@@ -33,13 +52,47 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             && let Some(var_rec) = ctx.lookup_var(name).cloned()
             && var_rec.storage == VarStorage::Array
         {
-            return lower_array_method(ctx, &var_rec, field, args, range, e);
+            return lower_array_method(
+                ctx,
+                var_rec.node_id.port(WirePort::ArrayVarRef),
+                var_rec.inner_type.clone(),
+                field,
+                args,
+                range,
+                e,
+            );
+        }
+        // Array method on an `in X: T[]` input. The array ref lives at the
+        // input's RER_Output (not an ArrayVarRef port), but is otherwise usable
+        // exactly like a var array — inputs are first-class wherever in scope.
+        if let Expr::Ident { name, .. } = obj.as_ref()
+            && crate::catalog::arrays::is_array_method(field)
+            && let Some(Binding::Input(inp)) = ctx.scope.get(name).cloned()
+            && let Type::Array(elem) = inp.ty.clone()
+        {
+            return lower_array_method(
+                ctx,
+                inp.node_id.port(WirePort::RerOutput),
+                *elem,
+                field,
+                args,
+                range,
+                e,
+            );
         }
         // Record-resolved array methods: cpu.regs.push(val)
         if let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
             && var_rec.storage == VarStorage::Array
         {
-            return lower_array_method(ctx, &var_rec, field, args, range, e);
+            return lower_array_method(
+                ctx,
+                var_rec.node_id.port(WirePort::ArrayVarRef),
+                var_rec.inner_type.clone(),
+                field,
+                args,
+                range,
+                e,
+            );
         }
         // Receiver method calls: entity.SetLocation(pos) -> SetLocation(entity, pos)
         if let Some(spec) = find_call(field)
@@ -107,6 +160,7 @@ pub(super) fn lower_chip_call_inline(
     // Collect param bindings first (before mutating ctx) so ref lookups
     // see the caller's vars.
     let mut ref_bindings: Vec<(String, VarRecord)> = Vec::new();
+    let mut input_bindings: Vec<(String, NodeRecord)> = Vec::new();
     let mut val_bindings: Vec<(String, PortRef, Type)> = Vec::new();
     let mut record_bindings: Vec<(String, HashMap<crate::intern::Sym, Binding>)> = Vec::new();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
@@ -144,6 +198,13 @@ pub(super) fn lower_chip_call_inline(
                             storage: var_rec.storage,
                         },
                     ));
+                } else if let Expr::Ident { name, .. } = arg_expr
+                    && let Some(Binding::Input(inp)) = ctx.scope.get(name)
+                {
+                    // An `in X: T[]` / ref input passed by reference: forward the
+                    // input binding so the mod body resolves the param to the
+                    // input's RER_Output ref, exactly like a var array/ref.
+                    input_bindings.push((param.name.clone(), inp.clone()));
                 }
             }
             _ => {
@@ -157,6 +218,9 @@ pub(super) fn lower_chip_call_inline(
     ctx.scope.push(crate::scope::ScopeTag::MODULE);
     for (name, rec) in ref_bindings {
         ctx.scope.insert(name, Binding::Var(rec));
+    }
+    for (name, rec) in input_bindings {
+        ctx.scope.insert(name, Binding::Input(rec));
     }
     for (name, port, _ty) in val_bindings {
         ctx.scope.insert(name, Binding::Local(LocalRecord { port }));
@@ -597,6 +661,7 @@ fn build_chip_module(
         exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
         chip_call_stack: ctx.chip_call_stack.clone(),
+        known_fn_names: ctx.known_fn_names.clone(),
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -618,6 +683,13 @@ fn build_chip_module(
         .map(|(name, b)| (name.to_string(), b.clone()))
         .collect();
     for (name, binding) in inherited {
+        // A chip body can't target the enclosing module's `out`s, and inheriting
+        // them inflates `output_count()`. That makes a single-`return` chip skip
+        // its own value-output wiring (`Stmt::Return` only wires when
+        // `output_count() == 1`) whenever the parent module declares any `out`.
+        if matches!(&binding, Binding::Output(_)) {
+            continue;
+        }
         if let Binding::Local(local) = &binding
             && let Some(src) = ctx.builder.module.nodes.get(&local.port.node_id)
             && src.gate_class == gc::LITERAL
@@ -831,6 +903,43 @@ fn build_chip_module(
     }
 
     if auto_exec {
+        // A trailing `return` moved the body's tail exec into mod_return_exec
+        // (leaving current_exec = None); merge it back with any fallthrough so an
+        // exec-bearing body that ends in `return` still drives `_exec_out`. The
+        // inline-mod path does this same merge; without it here the body's exec
+        // chain (e.g. from an array find) is orphaned and no exec output is made.
+        if let Some(ret) = child_ctx.mod_return_exec.take() {
+            let merged = match child_ctx.current_exec.take() {
+                Some(fall) => {
+                    let union = child_ctx.add_gate(AddNodeOpts {
+                        gate_class: gc::UNION,
+                        source_range: chip_decl.range.clone(),
+                        ports: GateIO {
+                            inputs: vec![
+                                PortSpec {
+                                    name: *sym::EXEC_A,
+                                    ty: Type::Exec,
+                                },
+                                PortSpec {
+                                    name: *sym::EXEC_B,
+                                    ty: Type::Exec,
+                                },
+                            ],
+                            outputs: vec![PortSpec {
+                                name: *sym::EXEC_OUT,
+                                ty: Type::Exec,
+                            }],
+                        },
+                        ..Default::default()
+                    });
+                    child_ctx.connect(fall, union.port(WirePort::ExecA));
+                    child_ctx.connect(ret, union.port(WirePort::ExecB));
+                    union.port(WirePort::ExecOut)
+                }
+                None => ret,
+            };
+            child_ctx.current_exec = Some(merged);
+        }
         if let Some(tail_exec) = child_ctx.current_exec {
             let exec_out = child_ctx.builder.add_output(
                 &mut child_ctx.ids,
@@ -991,6 +1100,13 @@ fn wire_chip_args_and_outputs(
                 if let Some(var_rec) = ctx.lookup_var(name).cloned() {
                     ctx.connect(
                         var_rec.node_id.port(ref_port_id),
+                        mc_input.port(WirePort::RerInput),
+                    );
+                } else if let Some(Binding::Input(inp)) = ctx.scope.get(name).cloned() {
+                    // An `in X: T[]` / ref input passed by reference: its array
+                    // ref lives at RER_Output, not an ArrayVarRef/VarRef port.
+                    ctx.connect(
+                        inp.node_id.port(WirePort::RerOutput),
                         mc_input.port(WirePort::RerInput),
                     );
                 }

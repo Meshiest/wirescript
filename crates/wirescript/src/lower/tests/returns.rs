@@ -253,6 +253,180 @@ on player {
 }
 
 #[test]
+fn standalone_chip_exec_body_return_keeps_exec_output() {
+    // Regression: a standalone `chip` whose body runs an exec op (array find)
+    // and returns a value must expose BOTH its value output and an `_exec_out`.
+    // A trailing `return` moves the body's tail exec into mod_return_exec; the
+    // standalone-chip path never merged it back before building `_exec_out`, so
+    // the exec chain was orphaned and the chip shipped with only one output.
+    let r = compile(
+        "\
+array counts: int[]
+chip slotOfUser(uid: int) -> int {
+  let res = counts.find(uid)
+  return if res.Found then res.Index else -1
+}
+in z: exec
+on z {
+  let s = slotOfUser(1)
+}",
+    );
+    assert!(
+        r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "unexpected errors: {:?}",
+        r.diagnostics
+    );
+    let chip = r
+        .module
+        .chips
+        .values()
+        .find(|c| crate::intern::resolve(c.name).contains("slotOfUser"))
+        .expect("slotOfUser chip module should exist");
+    assert_eq!(
+        chip.outputs.len(),
+        2,
+        "an exec-body chip that returns a value needs a value output AND an _exec_out, found {}",
+        chip.outputs.len()
+    );
+    // The value output (declared first) must be fed by the if-expr SELECT - the
+    // returned value - not clobbered by the exec chain.
+    let val_out = chip.outputs[0];
+    let fed = chip
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == val_out)
+        .expect("value output should be wired");
+    let src_class = &chip.nodes[&fed.source.node_id].gate_class;
+    assert!(
+        src_class.contains("Expr_Select"),
+        "value output must be fed by the if-expr SELECT, got {src_class}"
+    );
+}
+
+#[test]
+fn standalone_chip_return_wires_value_with_parent_out() {
+    // Regression: a single-`return` chip's value output must be wired even when
+    // the enclosing module declares an `out`. The chip inherits the enclosing
+    // scope, and the inherited `Binding::Output` used to inflate output_count()
+    // past 1 - so `Stmt::Return`'s `else if output_count() == 1` value-wiring
+    // branch was skipped and the SELECT never reached the MicrochipOutput.
+    let r = compile(
+        "\
+in z: exec
+array counts: int[]
+out counts2: int[] = counts
+chip slotOfUser(uid: int) -> int {
+  let res = counts.find(uid)
+  return if res.Found then res.Index else -1
+}
+on z {
+  BroadcastChatMessage(\"slot: ${slotOfUser(1)}\")
+}",
+    );
+    assert!(
+        r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "unexpected errors: {:?}",
+        r.diagnostics
+    );
+    let chip = r
+        .module
+        .chips
+        .values()
+        .find(|c| crate::intern::resolve(c.name).contains("slotOfUser"))
+        .expect("slotOfUser chip");
+    let val_out = chip.outputs[0];
+    let fed = chip
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == val_out)
+        .expect("value output must be wired even with a parent `out`");
+    let src_class = &chip.nodes[&fed.source.node_id].gate_class;
+    assert!(
+        src_class.contains("Expr_Select"),
+        "value output must be fed by the SELECT, got {src_class}"
+    );
+}
+
+#[test]
+fn standalone_chip_multi_call_preserves_value_wire() {
+    // The 2raab case: the chip is called many times, so only the first call
+    // builds the module - the rest instantiate the cached template. EVERY
+    // instance must keep its value output fed by the SELECT and expose _exec_out.
+    let r = compile(
+        "\
+array counts: int[]
+chip slotOfUser(uid: int) -> int {
+  let res = counts.find(uid)
+  return if res.Found then res.Index else -1
+}
+in z: exec
+on z {
+  let a = slotOfUser(1)
+  let b = slotOfUser(2)
+}",
+    );
+    assert!(
+        r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "unexpected errors: {:?}",
+        r.diagnostics
+    );
+    let chips: Vec<_> = r
+        .module
+        .chips
+        .values()
+        .filter(|c| crate::intern::resolve(c.name).contains("slotOfUser"))
+        .collect();
+    assert_eq!(chips.len(), 2, "expected two slotOfUser instances, found {}", chips.len());
+    for chip in chips {
+        assert_eq!(chip.outputs.len(), 2, "each instance needs value + exec outputs");
+        let val_out = chip.outputs[0];
+        let fed = chip
+            .wires
+            .iter()
+            .find(|w| w.target.node_id == val_out)
+            .expect("value output should be wired in every instance");
+        let src_class = &chip.nodes[&fed.source.node_id].gate_class;
+        assert!(
+            src_class.contains("Expr_Select"),
+            "value output must be fed by the SELECT in every instance, got {src_class}"
+        );
+    }
+}
+
+#[test]
+fn inline_mod_exec_body_returns_select_reaches_consumer() {
+    // The 2raab slot lookup as an INLINE mod: exec op (find) then `return <if>`.
+    // The SELECT holding the returned value must reach the caller's consumer
+    // (a Var_Set), i.e. the return value isn't dropped when the body also
+    // advances the exec chain.
+    let r = compile(
+        "\
+array counts: int[]
+mod slotOfUser(uid: int) -> int {
+  let res = counts.find(uid)
+  return if res.Found then res.Index else -1
+}
+var result: int = 0
+in z: exec
+on z {
+  result = slotOfUser(1)
+}",
+    );
+    assert!(
+        r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "unexpected errors: {:?}",
+        r.diagnostics
+    );
+    assert!(!has_gate(&r, "_Unsupported"), "no unsupported placeholder expected");
+    let select = find_gate(&r, "BrickComponentType_WireGraph_Expr_Select");
+    let set = find_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    assert!(
+        wired_reachable(&r, select, set),
+        "the returned SELECT value must reach the `result` Var_Set"
+    );
+}
+
+#[test]
 fn multi_return_value_uses_var() {
     let r = compile("\
 mod my_clamp(v: int, lo: int, hi: int) -> (result: int) {

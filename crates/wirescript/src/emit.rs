@@ -375,6 +375,20 @@ const LABEL_LINE_HEIGHT: f32 = 2.4;
 /// Smaller tag on Var_Get/Set-style gates naming the variable they touch.
 const VAR_TAG_LINE_HEIGHT: f32 = 1.2;
 
+/// Floating-label text for a microchip I/O gate, from its `PortLabel`
+/// property. User-given names label as themselves. Synthesized plumbing
+/// maps to friendly labels: the auto exec ports (`_exec_in`/`_exec_out`)
+/// read `exec`, and the anonymous `-> type` return output (`_`) reads
+/// `return`. Any other `_`-prefixed name stays unlabeled.
+fn microchip_io_label(node: &Node) -> Option<String> {
+    match node.properties.get(&*sym::PORT_LABEL)? {
+        Literal::String(s) if s == "_exec_in" || s == "_exec_out" => Some("exec".to_string()),
+        Literal::String(s) if s == "_" => Some("return".to_string()),
+        Literal::String(s) if !s.is_empty() && !s.starts_with('_') => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// Floating text-label component (`Component_TextDisplay`) attached as a
 /// second component on chip / variable / I/O-gate bricks, showing the
 /// element's name. Fields left unset (colors, outline widths, sharp
@@ -702,19 +716,18 @@ fn emit_module(
         // (Chip bricks get theirs in pass 2 / build_world.)
         // All kinds float the label above the gate brick (Offset.z +0.5;
         // the chip-shell template value of -0.5 sinks it into these bricks).
-        // `_`-prefixed names are synthesized plumbing (e.g. a chip's
-        // `_exec_in`/`_exec_out` ports) — not worth a label.
+        // `_`-prefixed names are synthesized plumbing — chip I/O maps the
+        // well-known ones to friendly labels (see microchip_io_label);
+        // everywhere else they stay unlabeled.
         let named = |l: &Literal| match l {
             Literal::String(s) if !s.is_empty() && !s.starts_with('_') => Some(s.clone()),
             _ => None,
         };
         let label_spec = match effective_class_str {
             "BrickComponentType_Internal_MicrochipInput"
-            | "BrickComponentType_Internal_MicrochipOutput" => node
-                .properties
-                .get(&port_label_sym)
-                .and_then(named)
-                .map(|s| (s, LABEL_LINE_HEIGHT)),
+            | "BrickComponentType_Internal_MicrochipOutput" => {
+                microchip_io_label(node).map(|s| (s, LABEL_LINE_HEIGHT))
+            }
             "BrickComponentType_WireGraphPseudo_Var"
             | "BrickComponentType_WireGraphPseudo_ArrayVar" => {
                 let label = node.properties.get(&*sym::NAME_LABEL).and_then(named);
@@ -2361,4 +2374,34 @@ mod tests {
             Some(3),
         );
     }
+    #[test]
+    fn microchip_io_labels_map_synthesized_names() {
+        fn node_with_label(label: &str) -> Node {
+            let mut props = HashMap::new();
+            props.insert(*sym::PORT_LABEL, Literal::String(label.into()));
+            Node {
+                id: NodeId::fresh(),
+                kind: crate::ir::NodeKind::Input,
+                gate_class: "BrickComponentType_Internal_MicrochipInput",
+                properties: std::sync::Arc::new(props),
+                ports: std::sync::Arc::new(crate::ir::GateIO::default()),
+                source_range: crate::diagnostic::SourceRange::default(),
+                chip_id: None,
+                chain_id: None,
+                scope_id: crate::ir::ROOT_SCOPE_ID,
+                note: None,
+            }
+        }
+        // Synthesized exec plumbing reads "exec"; the anonymous return "_"
+        // reads "return"; user names pass through; other underscore-prefixed
+        // plumbing stays unlabeled.
+        let get = |l: &str| microchip_io_label(&node_with_label(l));
+        assert_eq!(get("_exec_in").as_deref(), Some("exec"));
+        assert_eq!(get("_exec_out").as_deref(), Some("exec"));
+        assert_eq!(get("_").as_deref(), Some("return"));
+        assert_eq!(get("speed").as_deref(), Some("speed"));
+        assert_eq!(get("_hidden"), None);
+        assert_eq!(get(""), None);
+    }
+
 }

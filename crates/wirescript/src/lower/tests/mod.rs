@@ -14,6 +14,7 @@ mod returns;
 mod scope;
 mod string;
 mod types;
+mod wire_completeness;
 
 pub(super) fn compile(src: &str) -> LowerResult {
     let parsed = parse(src, "test");

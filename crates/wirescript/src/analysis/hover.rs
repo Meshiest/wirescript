@@ -553,6 +553,20 @@ fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[
         return Some(fmt_field(type_str(&ft)));
     }
 
+    // Layer 2.5: Non-identifier object - a call/index result like
+    // `arr.find(x).Found`, where the backwards text scan above lands on `)`
+    // and can't name the object. The typechecker still recorded the object
+    // expression's span: the innermost type_map entry ending exactly at the
+    // `.` is the object, and its record type carries the field.
+    if let Some(ft) = type_map
+        .iter()
+        .filter(|((f2, _, e), _)| **f2 == *f && *e == lo + obj_end)
+        .max_by_key(|((_, s, _), _)| *s)
+        .and_then(|(_, obj_ty)| resolve_field_in_type(obj_ty, field))
+    {
+        return Some(fmt_field(type_str(&ft)));
+    }
+
     // Layer 3: Symbol-based fallback - look up the object name in symbols, find
     // its type declaration, and resolve the field from the type's string form.
     // This handles imported files where type_map offsets don't match the current source.
@@ -832,4 +846,42 @@ let v = p.x";
             "got: {h}"
         );
     }
+    #[test]
+    fn call_result_field_access_hover_shows_field_type() {
+        // `arr.find(x).Found` - the object is a call result, not an
+        // identifier, so the field type must resolve from the call
+        // expression's record type in the type map.
+        let src = "array ids: string[]
+chip a(uid: string) -> int {
+  return if ids.find(uid).Found then 1 else 0
+}";
+        let line2 = src.lines().nth(2).unwrap();
+        let col = line2.find("Found").unwrap();
+        let h = hover_for(src, 2, col).expect("hover on .Found should return something");
+        assert!(
+            h.contains("field Found: bool"),
+            "call-result field hover should type from the record, got: {h}"
+        );
+    }
+
+    #[test]
+    fn record_destructured_let_hover_shows_field_types() {
+        // `let { Found, Index } = ids.find(uid)` - each destructured name
+        // takes its field's type from the initializer's record type.
+        let src = "array ids: string[]
+chip a(uid: string) -> int {
+  let { Found, Index } = ids.find(uid)
+  return if Found then Index else -1
+}";
+        let line2 = src.lines().nth(2).unwrap();
+        let h = hover_for(src, 2, line2.find("Found").unwrap()).expect("hover on Found");
+        assert!(h.contains("bool"), "destructured Found should be bool, got: {h}");
+        let h2 = hover_for(src, 2, line2.find("Index").unwrap()).expect("hover on Index");
+        assert!(h2.contains("int"), "destructured Index should be int, got: {h2}");
+        // Usages resolve through the same symbol.
+        let line3 = src.lines().nth(3).unwrap();
+        let h3 = hover_for(src, 3, line3.find("Found").unwrap()).expect("hover on Found use");
+        assert!(h3.contains("bool"), "Found usage should be bool, got: {h3}");
+    }
+
 }

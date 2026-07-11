@@ -72,8 +72,37 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Namespace(ns) => {
             let mut ns_decls = HashMap::new();
             for d in &ns.decls {
-                if let TopDecl::Chip(c) = d {
-                    ns_decls.insert(c.name.clone(), c.clone());
+                match d {
+                    TopDecl::Chip(c) => {
+                        ns_decls.insert(c.name.clone(), c.clone());
+                        // A namespaced mod's body also calls its SIBLING mods by
+                        // bare name (`drawCardBg(...)`, not `card.drawCardBg`);
+                        // register them so those calls resolve when the body is
+                        // inlined at a call site in the importing module. (The
+                        // namespaced form stays available via the Namespace
+                        // binding below.)
+                        if ctx.scope.get(&c.name).is_none() {
+                            ctx.scope
+                                .insert(c.name.clone(), Binding::Chip(Box::new(c.clone())));
+                        }
+                    }
+                    // A namespaced (`import * as ns`) mod's body references its
+                    // OWN module's `let` constants / `array` / `var` by bare
+                    // name. Those mods are inlined at call sites in the importing
+                    // module, where the members aren't otherwise in scope — so
+                    // lower them here, into the enclosing scope, or every such
+                    // reference drops to an `_Unsupported` placeholder that reads
+                    // 0 at runtime. (Constant `array` initializers bake straight
+                    // into the ArrayVar node during pre-declaration.)
+                    TopDecl::Let(l) => lower_let_decl(ctx, l),
+                    TopDecl::Array(a) if ctx.scope.get(&a.name).is_none() => {
+                        pre_declare_array(ctx, a)
+                    }
+                    TopDecl::Var(v) if ctx.scope.get(&v.name).is_none() => pre_declare_var(ctx, v),
+                    TopDecl::Buffer(b) if ctx.scope.get(&b.name).is_none() => {
+                        pre_declare_buffer(ctx, b)
+                    }
+                    _ => {}
                 }
             }
             ctx.scope

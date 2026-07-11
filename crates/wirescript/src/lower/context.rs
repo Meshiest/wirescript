@@ -132,6 +132,13 @@ pub(super) struct LowerCtx<'a> {
     /// includes the file), NOT its name, so two distinct same-named mods — e.g. a
     /// local `drawCard` and one imported from another module — aren't conflated.
     pub(super) chip_call_stack: Vec<crate::diagnostic::SourceRange>,
+    /// Every chip/mod name declared anywhere in the (import-merged) program.
+    /// Chips/mods are registered into scope in source order, so a call to one
+    /// not yet registered fails to resolve. Distinguishing "declared later"
+    /// (a use-before-declaration → WS021 error) from "not a function at all"
+    /// (e.g. an unimplemented builtin → placeholder) needs the full name set.
+    /// Shared (Arc) so child contexts clone it cheaply.
+    pub(super) known_fn_names: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 impl<'a> LowerCtx<'a> {

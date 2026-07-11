@@ -442,14 +442,16 @@ fn lower_array_literal_assign(
     range: &SourceRange,
     value: &Expr,
 ) {
-    lower_array_method(ctx, var_rec, "clear", &[], range, value);
+    let array_ref = var_rec.node_id.port(WirePort::ArrayVarRef);
+    let elem_ty = var_rec.inner_type.clone();
+    lower_array_method(ctx, array_ref, elem_ty.clone(), "clear", &[], range, value);
     for el in elements {
         let arg = [CallArg::Positional(el.expr().clone())];
         let method = match el {
             ArrayElem::Item(_) => "push",
             ArrayElem::Spread(_) => "append",
         };
-        lower_array_method(ctx, var_rec, method, &arg, el.range(), value);
+        lower_array_method(ctx, array_ref, elem_ty.clone(), method, &arg, el.range(), value);
     }
 }
 
