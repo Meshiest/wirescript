@@ -19,6 +19,12 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             if ctx.lookup_var(&v.name).is_none() {
                 pre_declare_var(ctx, v);
             }
+            // Pure position (chip/mod body instantiated without exec) or
+            // `static var`: no exec reset runs, so a non-constant init is
+            // dropped — surface it.
+            if v.is_static || ctx.current_exec.is_none() {
+                warn_unbaked_var_init(ctx, v, false);
+            }
             // In exec context, emit a Var_Set to reset the variable to its
             // initial value each time this scope is entered. Without this,
             // PseudoVar keeps its value from the previous invocation.
@@ -34,6 +40,14 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             {
                 if let Some(init @ Expr::Array { elements, .. }) = &v.init {
                     lower_array_literal_assign(ctx, &var_rec, elements, &v.range, init);
+                } else if let Some(init) = &v.init {
+                    ctx.warn(
+                        format!(
+                            "'var {}' array initializer must be an array literal — this value is dropped; build the array with methods like push/copyFrom instead",
+                            v.name
+                        ),
+                        init.range(),
+                    );
                 }
                 return;
             }
@@ -110,6 +124,11 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             if ctx.lookup_buffer(&b.name).is_none() {
                 pre_declare_buffer(ctx, b);
             }
+            // Wire the initializer into the buffer's Input. Pre-declaration
+            // (here or in a body pre-pass) only creates the gate; without this
+            // the initializer of any statement-position buffer (chip/mod/
+            // handler body) is silently dropped and the input dangles.
+            lower_buffer_body(ctx, b);
         }
         Stmt::Return { value, .. } => {
             if let Some(expr) = value {

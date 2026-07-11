@@ -267,6 +267,44 @@ fn array_elem_literal(el: &ArrayElem) -> Option<Literal> {
     }
 }
 
+/// A `var` initializer that can't bake into the gate as a constant: returns it
+/// for diagnosis. `None` = no initializer, or it bakes fine.
+fn var_init_unbaked(v: &VarDecl) -> Option<&Expr> {
+    let init = v.init.as_ref()?;
+    let unbaked = match init {
+        Expr::Array { elements, .. } => elements.iter().any(|el| array_elem_literal(el).is_none()),
+        e => expr_to_literal(e).is_none(),
+    };
+    unbaked.then_some(init)
+}
+
+/// Warn when a `var` initializer is silently dropped: it can't bake into the
+/// Variable gate as a constant, and no exec-context reset will apply it (the
+/// var is in pure position, or is `static`, which skips the per-entry reset) —
+/// so the var starts at its type default. `skip_array_inits` avoids
+/// double-reporting top-level array literals the type checker already errors
+/// on.
+pub(super) fn warn_unbaked_var_init(ctx: &mut LowerCtx, v: &VarDecl, skip_array_inits: bool) {
+    let Some(init) = var_init_unbaked(v) else {
+        return;
+    };
+    if skip_array_inits && matches!(init, Expr::Array { .. }) {
+        return;
+    }
+    let msg = if v.is_static {
+        format!(
+            "'static var {}' initializer must be a compile-time constant — this value is dropped and the var starts at its type default",
+            v.name
+        )
+    } else {
+        format!(
+            "'var {}' initializer is not a compile-time constant — outside an exec context it is dropped and the var starts at its type default; assign the value inside an exec handler instead",
+            v.name
+        )
+    };
+    ctx.warn(msg, init.range());
+}
+
 pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     let inner_type = d
         .typ

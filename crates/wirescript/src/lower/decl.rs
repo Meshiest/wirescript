@@ -9,7 +9,10 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Event(e) => lower_event_decl(ctx, e),
         TopDecl::Let(l) => lower_let_decl(ctx, l),
         TopDecl::Buffer(b) => lower_buffer_body(ctx, b),
-        TopDecl::Var(_) | TopDecl::Array(_) | TopDecl::In(_) => {} // handled in pre-pass
+        // Gate created in pre-pass; top level is pure, so a non-constant init
+        // has no exec reset to apply it — surface the drop.
+        TopDecl::Var(v) => warn_unbaked_var_init(ctx, v, true),
+        TopDecl::Array(_) | TopDecl::In(_) => {} // handled in pre-pass
         TopDecl::Chip(c) => lower_chip_decl(ctx, c),
         TopDecl::AnonChip(ac) => lower_anon_chip(ctx, ac),
         TopDecl::Assign(a) => lower_assign(ctx, a),
@@ -71,6 +74,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
         TopDecl::Namespace(ns) => {
             let mut ns_decls = HashMap::new();
+            let mut ns_buffers = Vec::new();
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
@@ -98,12 +102,23 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     TopDecl::Array(a) if ctx.scope.get(&a.name).is_none() => {
                         pre_declare_array(ctx, a)
                     }
-                    TopDecl::Var(v) if ctx.scope.get(&v.name).is_none() => pre_declare_var(ctx, v),
+                    TopDecl::Var(v) if ctx.scope.get(&v.name).is_none() => {
+                        pre_declare_var(ctx, v);
+                        // Module-level = pure: a non-constant init is dropped.
+                        warn_unbaked_var_init(ctx, v, true);
+                    }
                     TopDecl::Buffer(b) if ctx.scope.get(&b.name).is_none() => {
-                        pre_declare_buffer(ctx, b)
+                        pre_declare_buffer(ctx, b);
+                        ns_buffers.push(b);
                     }
                     _ => {}
                 }
+            }
+            // Wire buffer initializers only after every ns member is in scope
+            // (an init may reference a member declared after it). Only buffers
+            // pre-declared above — a name the importer already owns stays its.
+            for b in ns_buffers {
+                lower_buffer_body(ctx, b);
             }
             ctx.scope
                 .insert(ns.name.clone(), Binding::Namespace(ns_decls));

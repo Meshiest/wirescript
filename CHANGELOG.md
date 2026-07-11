@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 0.13.1 - 2026-07-11
+
+- **Fixed `buffer` initializers inside chip/mod/handler bodies never wiring** - the buffer gate was created but its initializer expression was silently dropped, leaving its input dangling (e.g. a NAND oscillator `buffer t: bool = !(t && e)` in a chip body never ticked).
+- **Silently-dropped `var` initializers now warn (WSP001)** - a non-constant initializer can't bake into the Variable gate, and only takes effect where an exec-context reset applies it; previously the var silently started at its type default. Now warned: a non-constant init in pure position (top level, imported module member, or a chip/mod body instantiated without exec context), a non-constant `static var` init anywhere (statics skip the per-entry reset), and an exec-context array-var init that isn't an array literal. Use a `let` for a pure computed binding, or assign the var inside an exec handler.
+
 ## 0.13.0 - 2026-07-10
 
 - **~4x faster compiles on large projects** (gba: 5.9s -> 1.5s):

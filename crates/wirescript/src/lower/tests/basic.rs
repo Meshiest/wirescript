@@ -1631,3 +1631,68 @@ fn out_binding_declared_before_var_still_wires() {
         r.module.wires
     );
 }
+
+// ── Silently-dropped var initializers warn (WSP001, "dropped") ──
+
+fn dropped_init_warns(r: &LowerResult) -> Vec<String> {
+    r.diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == crate::diagnostic::Severity::Warning && d.message.contains("dropped")
+        })
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn top_level_nonconstant_var_init_warns() {
+    let r = compile("in a: int\nvar x: int = a + 1\nout r = x");
+    let warns = dropped_init_warns(&r);
+    assert_eq!(warns.len(), 1, "diags: {:?}", r.diagnostics);
+    assert!(warns[0].contains("'var x'"), "got: {}", warns[0]);
+}
+
+#[test]
+fn top_level_constant_var_init_no_warn() {
+    let r = compile("var x: int = 5\nvar v: vector = Vec(1.0, 2.0, 3.0)\nout r = x");
+    assert!(
+        dropped_init_warns(&r).is_empty(),
+        "diags: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn chip_pure_var_init_from_param_warns() {
+    let r = compile("chip g(e: bool) {\n  var x: bool = e\n}\nvar e: bool = true\ng(e)");
+    let warns = dropped_init_warns(&r);
+    assert_eq!(warns.len(), 1, "diags: {:?}", r.diagnostics);
+}
+
+#[test]
+fn handler_var_runtime_init_no_warn() {
+    let r = compile("in start: exec\nin a: int\non start { var x: int = a + 1\nx = x }");
+    assert!(
+        dropped_init_warns(&r).is_empty(),
+        "diags: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn static_var_nonconstant_init_warns_even_in_exec() {
+    let r = compile("in start: exec\nin a: int\non start { static var x: int = a + 1\nx = x }");
+    let warns = dropped_init_warns(&r);
+    assert_eq!(warns.len(), 1, "diags: {:?}", r.diagnostics);
+    assert!(warns[0].contains("static var"), "got: {}", warns[0]);
+}
+
+#[test]
+fn exec_array_var_nonliteral_init_warns() {
+    let r = compile(
+        "in start: exec\non start { var f: int[] = [1, 2]\nvar g2: int[] = f\ng2.push(3) }",
+    );
+    let warns = dropped_init_warns(&r);
+    assert_eq!(warns.len(), 1, "diags: {:?}", r.diagnostics);
+    assert!(warns[0].contains("array literal"), "got: {}", warns[0]);
+}
