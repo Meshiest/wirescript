@@ -43,6 +43,15 @@ pub(super) enum Binding {
     Record(HashMap<crate::intern::Sym, Binding>),
 }
 
+/// Scope key for an `Output` binding. Outputs share scope frames with value
+/// bindings (inline-mod MODULE frames must isolate them), but live under a
+/// key no identifier can collide with (`:` can't appear in an identifier) so
+/// `out X = X` can still read a var/array named `X` — a same-name output used
+/// to clobber the var's slot and the init expr lowered to `_Unsupported`.
+pub(super) fn output_scope_key(name: &str) -> String {
+    format!("out:{name}")
+}
+
 pub(super) struct LowerCtx<'a> {
     pub(super) builder: ModuleBuilder,
     pub(super) ids: IdAllocator,
@@ -260,7 +269,7 @@ impl<'a> LowerCtx<'a> {
     }
 
     pub(super) fn lookup_output(&self, name: &str) -> Option<&NodeRecord> {
-        match self.scope.get(name) {
+        match self.scope.get(&output_scope_key(name)) {
             Some(Binding::Output(r)) => Some(r),
             _ => None,
         }

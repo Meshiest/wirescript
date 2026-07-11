@@ -696,7 +696,7 @@ pub fn compile_chip_template(
             ctx.builder
                 .add_output(&mut ctx.ids, &out.name, t.clone(), chip_decl.range.clone());
         ctx.scope.insert(
-            out.name.clone(),
+            crate::lower::context::output_scope_key(&out.name),
             Binding::Output(NodeRecord { node_id, ty: t }),
         );
     }

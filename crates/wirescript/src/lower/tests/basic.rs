@@ -1542,3 +1542,92 @@ on ZoneEntered(character, zone = zoneA) {
         "zone event exec output port must be `Exec`, not `ExecOut`"
     );
 }
+
+#[test]
+fn out_binding_same_name_as_array_wires_array_ref() {
+    // `out X = X` where X is also an array: the output binding must not
+    // clobber the array's scope entry - the init expr reads the ArrayVar,
+    // not an _Unsupported placeholder (which emit would drop the wire for).
+    let r = compile("array deckCounts: int[]\nout deckCounts: int[] = deckCounts");
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "init expr should resolve to the array var"
+    );
+    let out_id = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.kind == crate::ir::NodeKind::Output)
+        .expect("output node")
+        .id;
+    let arr_id = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .expect("array var node")
+        .id;
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == arr_id
+            && w.target.node_id == out_id
+            && w.target.port == WirePort::RerInput),
+        "expected wire ArrayVar -> Output.RER_Input, wires: {:?}",
+        r.module.wires
+    );
+}
+
+#[test]
+fn out_binding_same_name_as_var_wires_var_value() {
+    // Scalar flavor of the same-name case: `var n` + `out n = n`.
+    let r = compile("var n: int\nout n: int = n");
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "init expr should resolve to the var"
+    );
+    let out_id = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.kind == crate::ir::NodeKind::Output)
+        .expect("output node")
+        .id;
+    let var_id = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("var node")
+        .id;
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == var_id
+            && w.target.node_id == out_id
+            && w.target.port == WirePort::RerInput),
+        "expected wire Var -> Output.RER_Input, wires: {:?}",
+        r.module.wires
+    );
+}
+
+#[test]
+fn out_binding_declared_before_var_still_wires() {
+    // Reverse order: the var predeclare must not clobber the output either.
+    let r = compile("out n: int = n\nvar n: int");
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    let out_id = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.kind == crate::ir::NodeKind::Output)
+        .expect("output node")
+        .id;
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == out_id && w.target.port == WirePort::RerInput),
+        "expected a wire into Output.RER_Input, wires: {:?}",
+        r.module.wires
+    );
+}

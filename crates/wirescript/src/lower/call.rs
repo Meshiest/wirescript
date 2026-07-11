@@ -229,7 +229,7 @@ pub(super) fn lower_chip_call_inline(
     let mut mod_output_ids = Vec::new();
     for out in &chip_decl.outputs {
         pre_declare_output(ctx, &out.name, None, Some(&out.typ), &out.range);
-        if let Some(Binding::Output(r)) = ctx.scope.get(&out.name) {
+        if let Some(r) = ctx.lookup_output(&out.name) {
             mod_output_ids.push(r.node_id);
         }
     }
@@ -781,7 +781,7 @@ fn build_chip_module(
             chip_decl.range.clone(),
         );
         child_ctx.scope.insert(
-            out.name.clone(),
+            crate::lower::context::output_scope_key(&out.name),
             Binding::Output(NodeRecord { node_id, ty: t }),
         );
     }

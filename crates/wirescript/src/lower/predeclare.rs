@@ -460,7 +460,7 @@ pub(super) fn pre_declare_output(
         .builder
         .add_output(&mut ctx.ids, name, t.clone(), range.clone());
     ctx.scope.insert(
-        name.to_string(),
+        crate::lower::context::output_scope_key(name),
         Binding::Output(NodeRecord { node_id, ty: t }),
     );
 }
