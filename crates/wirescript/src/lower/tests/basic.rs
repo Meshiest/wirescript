@@ -230,6 +230,50 @@ fn buffered_emit_variable_delay_wires_port() {
 }
 
 #[test]
+fn array_pop_value_and_isempty_use_distinct_ports() {
+    // Regression: `pop()` exposes a record { Value, IsEmpty }. The lowering must
+    // declare BOTH outputs. Before, only `Value` was declared, so `.IsEmpty`
+    // silently fell back to the `Value` port - `.Value` and `.IsEmpty` read the
+    // same wire, and in-game the pop's `Value` output resolved to `bIsEmpty`
+    // (0 for a non-empty pop), so popping always yielded 0.
+    let src = "array a: int[]\n\
+               in go: exec\n\
+               var v: int = 0\n\
+               var e: bool = false\n\
+               on go {\n\
+                 a.push(42)\n\
+                 let p = a.pop()\n\
+                 v = p.Value\n\
+                 e = p.IsEmpty\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    use crate::ir::port_registry::WirePort;
+    let pop_id = *r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Pop")
+        .map(|(id, _)| id)
+        .expect("a pop gate should exist");
+    let out_ports: Vec<WirePort> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.node_id == pop_id)
+        .map(|w| w.source.port)
+        .collect();
+    assert!(
+        out_ports.contains(&WirePort::Value),
+        "`v = p.Value` must read the pop's Value port; source ports: {out_ports:?}"
+    );
+    assert!(
+        out_ports.contains(&WirePort::BIsEmpty),
+        "`e = p.IsEmpty` must read the pop's bIsEmpty port, not fall back to Value; source ports: {out_ports:?}"
+    );
+}
+
+#[test]
 fn sum_loop_compiles_with_buffered_payload() {
     // The canonical payload-ferry loop: state rides the signal, the back-edge
     // buffers one tick, and the whole thing forms a legal (barriered) cycle.

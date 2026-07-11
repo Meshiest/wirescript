@@ -506,40 +506,23 @@ pub(super) fn lower_array_method(
             ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
             node_id.port(WirePort::ExecOut)
         }
-        "pop" => {
-            let exec_in = ctx.current_exec.unwrap_or(current_exec);
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::ARRAY_POP,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: *sym::ARRAY_VAR_REF,
-                            ty: Type::Array(Box::new(Type::Any)),
-                        },
-                    ],
-                    outputs: vec![
-                        PortSpec {
-                            name: *sym::VALUE,
-                            ty: elem_ty.clone(),
-                        },
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
-                    ],
-                },
-                ..Default::default()
-            });
-            ctx.connect(exec_in, node_id.port(WirePort::Exec));
-            ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
-            ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-            node_id.port(WirePort::Value)
-        }
+        // Result is a record { Value, IsEmpty } accessed via `.Value` /
+        // `.IsEmpty`, or used bare as the popped element (its default). Both
+        // outputs MUST be declared - otherwise `.IsEmpty` silently falls back
+        // to the `Value` port, and the emitted gate's `Value` output binds to
+        // the wrong schema slot (returning bIsEmpty = 0 for a non-empty pop).
+        "pop" => array_exec_op(
+            ctx,
+            range,
+            array_ref,
+            gc::ARRAY_POP,
+            vec![],
+            vec![
+                (WirePort::Value, elem_ty.clone()),
+                (WirePort::BIsEmpty, Type::Bool),
+            ],
+            WirePort::Value,
+        ),
         "clear" | "shuffle" => {
             let exec_in = ctx.current_exec.unwrap_or(current_exec);
             let gate_class = if method == "clear" {
