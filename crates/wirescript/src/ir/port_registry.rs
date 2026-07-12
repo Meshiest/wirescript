@@ -73,6 +73,7 @@ wire_ports! {
     Restart = "Restart",
     Pause = "Pause",
     Resume = "Resume",
+    DestroyAll = "DestroyAll",
     Time = "Time",
     Expired = "Expired",
     UserName = "UserName",

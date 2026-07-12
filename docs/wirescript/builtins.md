@@ -932,6 +932,7 @@ on ChatCommand("wave", Description = "Wave at everyone") {
 | `velocity` | `vector` | No | Initial velocity of the spawned entity |
 | `lifetime` | `float` | No | Lifetime in seconds (0 = permanent) |
 | `limit` | `int` | No | Max concurrent instances |
+| `destroyAll` | `exec` | No | Wire an exec here; pulsing it destroys every entity this gate has already spawned. Independent of the spawn `Exec`, so one gate both spawns and clears. |
 
 Returns: `entity` -- the spawned entity. Give the prefab with a `$…brz`
 reference; omit `prefab` to configure it on the placed gate in-game instead
@@ -947,6 +948,20 @@ on trigger {
   )
   spawned.SetVelocity(linear = launchDir)
 }
+```
+
+`destroyAll` is a secondary exec trigger (like `Timer`'s `restart`): wire a reset /
+round-start signal into it to remove every entity this spawner has produced, without
+re-spawning. The gate spawns when its own exec chain fires and clears when
+`destroyAll` fires:
+
+```wirescript
+in reset: exec
+on trigger {
+  let cube = SpawnPrefab(prefab = $./msg.brz, limit = 64, destroyAll = reset)
+  cube.SetTag(payload)
+}
+// pulsing `reset` destroys every cube this gate has spawned
 ```
 
 A `$./file.brz` reference reads the `.brz` at compile and embeds it into the

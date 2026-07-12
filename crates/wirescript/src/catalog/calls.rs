@@ -2176,6 +2176,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::opt("velocity", WirePort::SpawnVelocity, Type::Vector),
                 CallParam::opt("lifetime", WirePort::Lifetime, Type::Float),
                 CallParam::opt("limit", WirePort::Limit, Type::Int),
+                // Wire an exec pulse here to destroy every prefab this gate has
+                // spawned (exposes the gate's existing `DestroyAll` input port).
+                CallParam::opt("destroyAll", WirePort::DestroyAll, Type::Exec),
             ],
             exec: true,
             outputs: vec![CallOutput {
