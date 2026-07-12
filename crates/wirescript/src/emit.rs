@@ -401,9 +401,8 @@ const REROUTER_LABEL_LINE_HEIGHT: f32 = 1.2;
 /// around from there. The floating text label rides the brick's yaw (its own
 /// TextDisplay rotation stays 0), giving the in/out 180° text flip for free.
 ///
-/// World↔screen mapping pinned in-game: +X = up, +Y = right. PROVISIONAL: the
-/// yaw *sense* (whether `Deg90` turns toward −X or +X) still wants one in-game
-/// confirmation — if top/bottom pins read reversed, swap their arms below.
+/// World↔screen mapping, confirmed in-game: +X = up, +Y = right, and `Deg90`
+/// yaws toward −X — so the per-side values below point each output pin outward.
 fn rerouter_orientation(side: &str, is_input: bool) -> brdb::Rotation {
     use brdb::Rotation::*;
     // Outward-facing yaw per side (output pins).

@@ -22,6 +22,6 @@ bearilog = { path = "crates/bearilog" }
 # Pull brdb from the sibling checkout so the microchip + schema work in brdb
 # flows straight through without a crates.io publish cycle.
 # brdb = { path = "../brdb/crates/brdb", default-features = false }
-brdb = { version = "0.8.0", default-features = false }
+brdb = { version = "0.9.1", default-features = false }
 builder = { path = "crates/builder" }
 wirescript = { path = "crates/wirescript" }

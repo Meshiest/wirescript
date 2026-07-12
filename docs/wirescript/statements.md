@@ -359,13 +359,14 @@ Rules:
 Placement:
 
 - Rerouters sit flush against the chosen side of the chip brick,
-  bottom-aligned with it, spaced 4 grid units apart and centred on the edge.
+  bottom-aligned with it, spaced 2 grid units apart and starting from the
+  top corner (left/right sides) or left corner (top/bottom sides) of the edge.
 - Ports on the same side appear in **declaration order**, with `in` and
   `out` freely interleaved. Left/right sides run top to bottom; top/bottom
   sides run left to right.
-- Each rerouter carries a floating label with the port's name, rotated to
-  face outward from its side (input labels face the opposite way from
-  output labels).
+- Each rerouter is coloured by its port's value type and carries a floating
+  label with the port's name; a side's input and output labels read opposite
+  ways so the two are easy to tell apart.
 
 ```
                 @top ports (left to right)

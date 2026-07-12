@@ -201,9 +201,9 @@ dependencies = [
 
 [[package]]
 name = "brdb"
-version = "0.8.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88edf8b3f3ecc2debb3bf3b408fb79115287fba7da9d8b2c541d510849fd30d2"
+checksum = "ba1fb2b1b3c93780f00491fa89196f3be91ee60317f604d152e88eca570cc347"
 dependencies = [
  "blake3",
  "indexmap",
