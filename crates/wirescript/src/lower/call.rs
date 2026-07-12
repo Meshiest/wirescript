@@ -292,7 +292,7 @@ pub(super) fn lower_chip_call_inline(
     // Track their IDs so cleanup only removes these, not parent outputs.
     let mut mod_output_ids = Vec::new();
     for out in &chip_decl.outputs {
-        pre_declare_output(ctx, &out.name, None, Some(&out.typ), &out.range);
+        pre_declare_output(ctx, &out.name, None, Some(&out.typ), None, &out.range);
         if let Some(r) = ctx.lookup_output(&out.name) {
             mod_output_ids.push(r.node_id);
         }
@@ -662,6 +662,7 @@ fn build_chip_module(
         pending_inline_record: None,
         chip_call_stack: ctx.chip_call_stack.clone(),
         known_fn_names: ctx.known_fn_names.clone(),
+        is_root_module: false,
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -892,6 +893,7 @@ fn build_chip_module(
                     &o.name,
                     o.value.as_ref(),
                     o.typ.as_ref(),
+                    o.side,
                     &o.range,
                 );
             }

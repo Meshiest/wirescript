@@ -1054,6 +1054,16 @@ fn build_completions(
         });
     }
 
+    // `@side` port annotations (outer rerouter pins).
+    for side in ["@left", "@right", "@top", "@bottom"] {
+        items.push(CompletionItem {
+            label: side.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("outer rerouter pin".to_string()),
+            ..Default::default()
+        });
+    }
+
     // Built-in events (RoundStart, ChatCommand, CharacterSpawned, ...).
     for (name, evt) in events().iter() {
         let params: Vec<&str> = evt.data.iter().map(|d| d.name).collect();

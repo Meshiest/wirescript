@@ -65,6 +65,10 @@ pub mod sym {
     // Pseudo-property (not a game field): the declaration's source name,
     // carried on Var/ArrayVar nodes so emit can attach a text label.
     def!(NAME_LABEL, "_label");
+    // Pseudo-property (not a game field): the `@side` port annotation,
+    // carried on MicrochipInput/Output nodes so emit can place an outer
+    // rerouter. Never written to the brick.
+    def!(REROUTE_SIDE, "_reroute_side");
 
     // Gate classes
     def!(LITERAL, "_Literal");

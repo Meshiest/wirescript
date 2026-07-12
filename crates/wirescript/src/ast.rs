@@ -195,10 +195,41 @@ pub struct EventDecl {
     pub range: SourceRange,
 }
 
+/// Side of the compiled microchip that a port's outer rerouter is placed on
+/// (`@left` / `@right` / `@top` / `@bottom` annotation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl PortSide {
+    pub fn from_word(w: &str) -> Option<Self> {
+        match w {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct InDecl {
     pub name: String,
     pub typ: TypeExpr,
+    pub side: Option<PortSide>,
     pub range: SourceRange,
 }
 
@@ -413,6 +444,7 @@ pub struct OutBinding {
     pub name: String,
     pub value: Option<Expr>,
     pub typ: Option<TypeExpr>,
+    pub side: Option<PortSide>,
     pub range: SourceRange,
 }
 

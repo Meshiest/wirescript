@@ -115,6 +115,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         pending_inline_record: None,
         chip_call_stack: Vec::new(),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
+        is_root_module: true,
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -631,6 +632,7 @@ pub fn compile_chip_template(
             vec![chip_decl.range.clone()]
         },
         known_fn_names: Arc::new(HashSet::new()),
+        is_root_module: false,
     };
 
     // Create input ports
@@ -757,6 +759,7 @@ pub fn compile_chip_template(
                     &o.name,
                     o.value.as_ref(),
                     o.typ.as_ref(),
+                    o.side,
                     &o.range,
                 );
             }

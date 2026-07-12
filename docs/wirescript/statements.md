@@ -167,7 +167,7 @@ array flags: bool[]
 ```
 
 The type annotation must end with `[]` to indicate it is an array type. The
-element type selects the backing array variant (`int` → Int64 array, `float` →
+element type selects the backing array variant (`int` -> Int64 array, `float` ->
 double array, `bool`, `string`, `vector`, and object types each map to their
 matching array kind), so elements keep their declared type rather than all
 being stored as doubles.
@@ -205,13 +205,13 @@ from the literal when there's no annotation:
 
 ```wirescript
 var queue: int[] = [1, 2, 3]   // annotated
-var queue = [1, 2, 3]          // element type inferred → int[]
+var queue = [1, 2, 3]          // element type inferred -> int[]
 ```
 
 ### Building an array at runtime (assignment + spread)
 
 Inside an exec handler you can assign an array literal to an array variable. It
-desugars to **clear → push each item → append each spread**, so the elements may
+desugars to **clear -> push each item -> append each spread**, so the elements may
 be any runtime value, and a `...spread` splices another array's contents in
 place:
 
@@ -222,7 +222,7 @@ var work: int[]
 on tick {
   let n = score + 1
   work = [n, 1, ...base, 5]   // clear, push n, push 1, append base, push 5
-                              // → [n, 1, 3, 4, 5]
+                              // -> [n, 1, 3, 4, 5]
 }
 ```
 
@@ -333,6 +333,51 @@ out foo: int = myVar      // exposes the value (uses .Value)
 out foo: *int = myVar     // exposes the variable reference
 ```
 
+## `@left` / `@right` / `@top` / `@bottom` -- Outer Rerouter Pins
+
+Annotating a top-level `in` or `out` with a side places a physical Rerouter
+brick on the outside of the compiled microchip, pre-wired to that port.
+Placed chips can then be wired up like an IC: wire **into** an input pin's
+rerouter, and **from** an output pin's rerouter.
+
+```wirescript
+@left in go: exec          // same line
+@left
+out done: exec             // or on the line directly above
+@right out score = 1
+@top in players: int
+```
+
+Rules:
+
+- Valid sides are exactly `left`, `right`, `top`, `bottom`; one annotation
+  per declaration.
+- Only **top-level** `in`/`out` of the compiled file may be annotated.
+  Inside `chip {}` or `mod` bodies the annotation is an error (WS023).
+- Unannotated ports get no rerouter — the feature is fully opt-in.
+
+Placement:
+
+- Rerouters sit flush against the chosen side of the chip brick,
+  bottom-aligned with it, spaced 4 grid units apart and centred on the edge.
+- Ports on the same side appear in **declaration order**, with `in` and
+  `out` freely interleaved. Left/right sides run top to bottom; top/bottom
+  sides run left to right.
+- Each rerouter carries a floating label with the port's name, rotated to
+  face outward from its side (input labels face the opposite way from
+  output labels).
+
+```
+                @top ports (left to right)
+                ┌──[d]────────────┐
+   @left ports  │                 │  @right ports
+(top to bottom) │                 │  (top to bottom)
+        [a] ────┤    microchip    ├──── [c]
+        [b] ────┤                 │
+                └─────────────────┘
+                @bottom ports (left to right)
+```
+
 ## `if` -- Conditional Statement
 
 The `if` statement executes a block conditionally. It **requires exec context** -- you can only use `if` statements inside `on` handlers or after handlers in the exec chain.
@@ -403,8 +448,8 @@ Some events also accept **config args** that configure the event gate itself. St
 
 ```wirescript
 on ChatCommand("greet", "Greets the player", player, args) {
-  // "greet" → command name, "Greets the player" → help text
-  // player → controller output, args → arguments output
+  // "greet" -> command name, "Greets the player" -> help text
+  // player -> controller output, args -> arguments output
   player.DisplayText("Hello ${args}")
 }
 
@@ -774,8 +819,8 @@ Compound assignment operators combine an operation with assignment:
 on tick {
   counter += 1       // IncVar gate
   health -= damage   // Var_Get + Sub + Var_Set
-  mask &= 0xFF       // Var_Get → BitAnd → Var_Set
-  bits <<= 1         // Var_Get → Shift → Var_Set
+  mask &= 0xFF       // Var_Get -> BitAnd -> Var_Set
+  bits <<= 1         // Var_Get -> Shift -> Var_Set
 }
 ```
 

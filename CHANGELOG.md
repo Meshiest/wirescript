@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 0.14.0 - 2026-07-12
+
+- **Port-side rerouter pins** - annotate top-level ports with `@left`/`@right`/`@top`/`@bottom` (same line or the line above) to emit a pre-wired rerouter brick flush against that side of the compiled microchip. Ports on a side keep declaration order (ins and outs interleave); each pin is labeled with its port name. Annotations inside `chip {}`/`mod` bodies are rejected with WS023.
+
 ## 0.13.1 - 2026-07-11
 
 - **Fixed `array.pop()` returning `0`** - the lowering only declared the gate's `Value` output, so `.IsEmpty` silently fell back to the `Value` port and the emitted `Value` wire bound to the wrong slot (reading `bIsEmpty`, `0` for a non-empty pop). Both outputs are now declared; `.Value` reads the popped element and `.IsEmpty` reads `bIsEmpty` (true once the array is empty *after* the pop).

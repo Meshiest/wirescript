@@ -310,7 +310,7 @@ pub fn build_world(
     // `add_microchip` just pushed onto the main grid.
     let root_label = resolve(module.name);
     if !root_label.is_empty() {
-        let label = text_label(&mut world, root_label, 0.0, -0.5, LABEL_LINE_HEIGHT);
+        let label = text_label(&mut world, root_label, -45.0, -0.5, LABEL_LINE_HEIGHT, 0.5);
         if let Some(chip_brick) = world.bricks.last_mut() {
             chip_brick.add_component_box(Box::new(label));
         }
@@ -350,6 +350,10 @@ pub fn build_world(
         .collect();
     world.grids[root_grid_idx] = (inner_pair.0, shifted);
 
+    // Outer rerouters for `@side`-annotated root ports, wired through the
+    // chip wall (remote wires — see save.rs add_wire).
+    emit_port_rerouters(&mut world, &ctx, module, opts);
+
     // Embed the full component catalog. The game's schema reader was fixed to
     // load the whole catalog, so the minimal "only used components" embed (which
     // worked around the old reader rejecting the full catalog) is no longer
@@ -375,6 +379,73 @@ const LABEL_LINE_HEIGHT: f32 = 2.4;
 /// Smaller tag on Var_Get/Set-style gates naming the variable they touch.
 const VAR_TAG_LINE_HEIGHT: f32 = 1.2;
 
+/// Grid-unit offset from the chip brick's centre to a flush outer rerouter's
+/// centre: chip half-extent (5) + rerouter half-extent (1).
+const REROUTER_EDGE_OFFSET: i32 = 6;
+/// Spacing between adjacent rerouter centres along a side.
+const REROUTER_PITCH: i32 = 2;
+/// Along-edge coordinate of the first pin: flush at the top/left corner of the
+/// chip's 10-wide edge (chip half-extent 5 − rerouter half-extent 1). Pins run
+/// inward from here (top→bottom, left→right) rather than centred on the edge.
+const REROUTER_RUN_START: i32 = 4;
+/// Rerouter centre sits 1 unit below the chip centre so both bases rest on
+/// the same plane (chip half-height 2, rerouter half-height 1).
+const REROUTER_Z_OFFSET: i32 = -1;
+/// Rerouter name labels use the smaller tag size, not the full gate-label size.
+const REROUTER_LABEL_LINE_HEIGHT: f32 = 1.2;
+
+/// Yaw applied to an outer rerouter brick so its wire nub faces away from the
+/// chip. Output pins face outward; input pins are flipped 180° so an input and
+/// an output on the same side read opposite ways (as requested). The reroute
+/// node's default yaw (`Deg0`) points +Y — "screen right" — so the sides step
+/// around from there. The floating text label rides the brick's yaw (its own
+/// TextDisplay rotation stays 0), giving the in/out 180° text flip for free.
+///
+/// World↔screen mapping pinned in-game: +X = up, +Y = right. PROVISIONAL: the
+/// yaw *sense* (whether `Deg90` turns toward −X or +X) still wants one in-game
+/// confirmation — if top/bottom pins read reversed, swap their arms below.
+fn rerouter_orientation(side: &str, is_input: bool) -> brdb::Rotation {
+    use brdb::Rotation::*;
+    // Outward-facing yaw per side (output pins).
+    // Deg0=+Y, Deg90=−X, Deg180=−Y, Deg270=+X.
+    let outward = match side {
+        "right" => Deg0,   // faces +Y (screen right)
+        "bottom" => Deg90, // faces −X (screen down)
+        "left" => Deg180,  // faces −Y (screen left)
+        _ => Deg270,       // top, faces +X (screen up)
+    };
+    if is_input {
+        match outward {
+            Deg0 => Deg180,
+            Deg90 => Deg270,
+            Deg180 => Deg0,
+            Deg270 => Deg90,
+        }
+    } else {
+        outward
+    }
+}
+
+/// TextDisplay rotation (degrees) for a rerouter pin's name label. Calibrated
+/// in-game: on each side the input and output labels read opposite ways.
+/// left/top edges → input 0°, output 180°; right/bottom edges → input 180°,
+/// output 0°.
+fn rerouter_label_rotation(side: &str, is_input: bool) -> f32 {
+    let left_or_top = matches!(side, "left" | "top");
+    if left_or_top == is_input { 0.0 } else { 180.0 }
+}
+
+/// TextDisplay horizontal anchor for a rerouter pin's name label. Calibrated
+/// in-game: right/bottom edges anchor at 0, left/top at 1, so the name hangs
+/// off the pin's outer end on each edge.
+fn rerouter_label_anchor_x(side: &str) -> f32 {
+    if matches!(side, "right" | "bottom") {
+        0.0
+    } else {
+        1.0
+    }
+}
+
 /// Floating-label text for a microchip I/O gate, from its `PortLabel`
 /// property. User-given names label as themselves. Synthesized plumbing
 /// maps to friendly labels: the auto exec ports (`_exec_in`/`_exec_out`)
@@ -399,14 +470,15 @@ fn text_label(
     rotation_deg: f32,
     offset_z: f32,
     line_height: f32,
+    anchor_x: f32,
 ) -> LiteralComponent {
     use brdb::schema::BrdbValue;
-    let (font_idx, _) = world.global_data.external_asset_references.insert_full((
-        "BrickFontDescriptor".to_string(),
-        "IosevkaTerm".to_string(),
-    ));
+    let (font_idx, _) = world
+        .global_data
+        .external_asset_references
+        .insert_full(("BrickFontDescriptor".to_string(), "IosevkaTerm".to_string()));
     let anchor = LiteralComponent::new("Vector2f").with_data([
-        ("X", Box::new(0.5f32) as Box<dyn AsBrdbValue>),
+        ("X", Box::new(anchor_x) as Box<dyn AsBrdbValue>),
         ("Y", Box::new(0.5f32)),
     ]);
     LiteralComponent::new("Component_TextDisplay").with_data([
@@ -430,6 +502,130 @@ fn text_label(
         ("Outline", Box::new(2u8)),
         ("OutlineWidth", Box::new(4.0f32)),
     ])
+}
+
+/// Place one outer-grid rerouter per `@side`-annotated root port, flush
+/// against the chip brick's edge, pre-wired to the port's inner
+/// MicrochipInput/Output gate. The brdb writer serialises the cross-grid
+/// wires as remote wire sources automatically.
+fn emit_port_rerouters(world: &mut World, ctx: &EmitContext, module: &Module, opts: &EmitOptions) {
+    let side_sym = *sym::REROUTE_SIDE;
+
+    // side → [(source offset, node id, is_input)], later sorted per side so
+    // ins and outs interleave in declaration order (the spec's ordering rule).
+    let mut by_side: StdMap<&'static str, Vec<(usize, NodeId, bool)>> = StdMap::new();
+    for (ids, is_input) in [(&module.inputs, true), (&module.outputs, false)] {
+        for id in ids.iter() {
+            let Some(node) = module.nodes.get(id) else {
+                continue;
+            };
+            let Some(Literal::String(side)) = node.properties.get(&side_sym) else {
+                continue;
+            };
+            let side: &'static str = match side.as_str() {
+                "left" => "left",
+                "right" => "right",
+                "top" => "top",
+                _ => "bottom",
+            };
+            by_side
+                .entry(side)
+                .or_default()
+                .push((node.source_range.start.offset, *id, is_input));
+        }
+    }
+
+    // Fixed side order for deterministic brick/wire output.
+    for side in ["left", "right", "top", "bottom"] {
+        let Some(mut ports) = by_side.remove(side) else {
+            continue;
+        };
+        ports.sort_by_key(|(off, id, _)| (*off, id.0));
+        for (i, (_, node_id, is_input)) in ports.into_iter().enumerate() {
+            let Some(&io_brick_id) = ctx.node_brick_ids.get(&node_id) else {
+                continue;
+            };
+            let node = &module.nodes[&node_id];
+
+            // Pins run from the top/left corner inward at REROUTER_PITCH spacing,
+            // first-declared first: `run` steps from REROUTER_RUN_START toward
+            // the far end.
+            let run = REROUTER_RUN_START - REROUTER_PITCH * i as i32;
+            // World↔screen pinned in-game: +X = up, +Y = right. Edges: left =
+            // −Y, right = +Y, top = +X, bottom = −X. Left/right pins run down
+            // the X axis from the top (+X); top/bottom pins run along Y from the
+            // left (−Y), so their `run` is negated.
+            let (dx, dy) = match side {
+                "left" => (run, -REROUTER_EDGE_OFFSET),
+                "right" => (run, REROUTER_EDGE_OFFSET),
+                "top" => (REROUTER_EDGE_OFFSET, -run),
+                _ => (-REROUTER_EDGE_OFFSET, -run), // bottom
+            };
+            let position = Position {
+                x: opts.chip_pos.x + dx,
+                y: opts.chip_pos.y + dy,
+                z: opts.chip_pos.z + REROUTER_Z_OFFSET,
+            };
+
+            let (mut brick, rer_brick_id) = brdb::Brick {
+                asset: BrickType::from("B_1x1_Reroute_Node"),
+                position,
+                color: io_node_color(node), // matches the inner chip-I/O gate colour
+                rotation: rerouter_orientation(side, is_input),
+                ..Default::default()
+            }
+            .with_id_split();
+            // Saved worlds use the component's instance name; the rerouter's
+            // data struct is empty.
+            brick.add_component_box(Box::new(LiteralComponent::new(gc::REROUTER)));
+
+            if let Some(name) = microchip_io_label(node) {
+                // Rotation + anchor are calibrated per side/direction (see
+                // rerouter_label_rotation / rerouter_label_anchor_x).
+                let label = text_label(
+                    world,
+                    &name,
+                    rerouter_label_rotation(side, is_input),
+                    0.5,
+                    REROUTER_LABEL_LINE_HEIGHT,
+                    rerouter_label_anchor_x(side),
+                );
+                brick.add_component_box(Box::new(label));
+            }
+            world.bricks.push(brick);
+
+            // in:  rerouter.RER_Output → MicrochipInput.RER_Input
+            // out: MicrochipOutput.RER_Output → rerouter.RER_Input
+            // (mirrors the chip-port remap in build_port_index)
+            let rer_port = |port: &'static str| BrdbWirePort {
+                brick_id: rer_brick_id,
+                component_type: BString::Static(gc::REROUTER),
+                port_name: BString::Static(port),
+            };
+            let io_class = if is_input {
+                gc::MICROCHIP_INPUT
+            } else {
+                gc::MICROCHIP_OUTPUT
+            };
+            let io_port = |port: &'static str| BrdbWirePort {
+                brick_id: io_brick_id,
+                component_type: BString::Static(io_class),
+                port_name: BString::Static(port),
+            };
+            let conn = if is_input {
+                WireConnection {
+                    source: rer_port("RER_Output"),
+                    target: io_port("RER_Input"),
+                }
+            } else {
+                WireConnection {
+                    source: io_port("RER_Output"),
+                    target: rer_port("RER_Input"),
+                }
+            };
+            world.add_wire(conn);
+        }
+    }
 }
 
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
@@ -756,7 +952,14 @@ fn emit_module(
             _ => None,
         };
         if let Some((text, line_height)) = label_spec {
-            brick.add_component_box(Box::new(text_label(world, &text, -45.0, 0.5, line_height)));
+            brick.add_component_box(Box::new(text_label(
+                world,
+                &text,
+                -45.0,
+                0.5,
+                line_height,
+                0.5,
+            )));
         }
 
         bricks.push(brick);
@@ -855,6 +1058,7 @@ fn emit_module(
                 -45.0,
                 -0.5,
                 LABEL_LINE_HEIGHT,
+                0.5,
             )));
         }
         bricks.push(chip_brick);
@@ -967,10 +1171,7 @@ fn build_gate_component(
         let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
         for fm in fields {
             let field = fm.name;
-            let is_variant = matches!(
-                fm.kind,
-                FieldKind::WireVariant | FieldKind::PrimMathVariant
-            );
+            let is_variant = matches!(fm.kind, FieldKind::WireVariant | FieldKind::PrimMathVariant);
             let val: Box<dyn AsBrdbValue> = match inlined.get(&fm.sym) {
                 Some(lit) if is_variant => {
                     // prim_math_variant doesn't support Bool — coerce to Int
@@ -1160,17 +1361,15 @@ fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> {
                 .filter_map(|(k, prop)| {
                     let name = schema.intern.lookup_ref(*k)?;
                     let kind = match prop {
-                        BrdbSchemaStructProperty::Type(t) => {
-                            match schema.intern.lookup_ref(*t) {
-                                Some("WireGraphVariant") => FieldKind::WireVariant,
-                                Some("WireGraphPrimMathVariant") => FieldKind::PrimMathVariant,
-                                Some("class") | Some("object") => FieldKind::AssetRef,
-                                Some("bundle_path_ref") => FieldKind::BundlePathRef,
-                                Some("str") => FieldKind::Str,
-                                Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
-                                _ => FieldKind::Native,
-                            }
-                        }
+                        BrdbSchemaStructProperty::Type(t) => match schema.intern.lookup_ref(*t) {
+                            Some("WireGraphVariant") => FieldKind::WireVariant,
+                            Some("WireGraphPrimMathVariant") => FieldKind::PrimMathVariant,
+                            Some("class") | Some("object") => FieldKind::AssetRef,
+                            Some("bundle_path_ref") => FieldKind::BundlePathRef,
+                            Some("str") => FieldKind::Str,
+                            Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
+                            _ => FieldKind::Native,
+                        },
                         // Array/FlatArray/Map fields have no special emit
                         // handling — the native literal path covers them.
                         _ => FieldKind::Native,
@@ -1396,7 +1595,11 @@ fn literal_to_boxed_native(lit: &Literal) -> Box<dyn AsBrdbValue> {
         Literal::Int(n) => Box::new(*n),
         Literal::Float(f) => Box::new(*f),
         Literal::Bool(b) => Box::new(*b),
-        Literal::Vector { x, y, z } => Box::new(VectorValue { x: *x, y: *y, z: *z }),
+        Literal::Vector { x, y, z } => Box::new(VectorValue {
+            x: *x,
+            y: *y,
+            z: *z,
+        }),
         Literal::Rotator { pitch, yaw, roll } => Box::new(RotatorValue {
             pitch: *pitch,
             yaw: *yaw,
@@ -1664,11 +1867,13 @@ fn color_for_node(
     module: &Module,
     wire_target_index: &StdMap<(NodeId, WirePort), NodeId>,
 ) -> Color {
-    if matches!(
-        node.kind,
-        NodeKind::Event | NodeKind::Input | NodeKind::Output
-    ) {
+    if matches!(node.kind, NodeKind::Event) {
         return C_YELLOW;
+    }
+    // Microchip I/O gates colour by their port's value type so the type reads
+    // at a glance; exec (trigger) ports keep the neutral yellow.
+    if matches!(node.kind, NodeKind::Input | NodeKind::Output) {
+        return io_node_color(node);
     }
     if node.gate_class.contains("Exec_Branch")
         || node.gate_class.contains("Exec_Union")
@@ -1748,6 +1953,23 @@ fn var_ref_target_type(
         .map(|p| p.ty.clone())
 }
 
+/// Colour for a microchip I/O gate (and its outer rerouter pin), taken from
+/// the port's declared value type. Both the `RER_Input` and `RER_Output` ports
+/// carry that type; exec (trigger) ports keep the neutral yellow.
+fn io_node_color(node: &Node) -> Color {
+    let ty = node
+        .ports
+        .outputs
+        .iter()
+        .chain(node.ports.inputs.iter())
+        .map(|p| &p.ty)
+        .next();
+    match ty {
+        Some(Type::Exec) | None => C_YELLOW,
+        Some(t) => color_for_type(t),
+    }
+}
+
 fn color_for_type(t: &Type) -> Color {
     match t {
         Type::Int => C_INT,
@@ -1773,7 +1995,6 @@ fn schema_field_type_str(struct_name: &str, field: &str) -> Option<String> {
     let prop = s.get(&field_id)?;
     Some(prop.as_string(schema))
 }
-
 
 /// The enum variant names a gate's data `field` accepts, if that field is an
 /// enum — e.g. DisplayText's `Justification` → `["Left", "Center", "Right"]`.
@@ -2058,9 +2279,22 @@ mod tests {
                         "WireGraphVariant" | "WireGraphPrimMathVariant" => {
                             Some(Literal::Float(2.5))
                         }
-                        "Vector" => Some(Literal::Vector { x: 1.0, y: 2.0, z: 3.0 }),
-                        "Rotator" => Some(Literal::Rotator { pitch: 1.0, yaw: 2.0, roll: 3.0 }),
-                        "Quat" => Some(Literal::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }),
+                        "Vector" => Some(Literal::Vector {
+                            x: 1.0,
+                            y: 2.0,
+                            z: 3.0,
+                        }),
+                        "Rotator" => Some(Literal::Rotator {
+                            pitch: 1.0,
+                            yaw: 2.0,
+                            roll: 3.0,
+                        }),
+                        "Quat" => Some(Literal::Quat {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                            w: 1.0,
+                        }),
                         "class" | "object" => Some(Literal::Asset {
                             asset_type: "BRItemBase".into(),
                             asset_name: "Weapon_Pickaxe".into(),
@@ -2085,7 +2319,10 @@ mod tests {
             );
             gates += 1;
         }
-        assert!(gates > 150, "sweep should cover the whole pair table, got {gates}");
+        assert!(
+            gates > 150,
+            "sweep should cover the whole pair table, got {gates}"
+        );
         assert!(filled > 200, "sweep should fill real fields, got {filled}");
 
         let module = builder.module;
@@ -2403,5 +2640,4 @@ mod tests {
         assert_eq!(get("_hidden"), None);
         assert_eq!(get(""), None);
     }
-
 }

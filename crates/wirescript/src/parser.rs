@@ -375,6 +375,26 @@ impl<'a> Parser<'a> {
     fn parse_top_decl(&mut self) -> Option<TopDecl> {
         self.eat_newlines();
         let t = self.peek().clone();
+        if t.kind == TokenKind::Annotation {
+            let side = self.parse_side_annotation();
+            let t2 = self.peek().clone();
+            if t2.kind == TokenKind::Kw && t2.text == "in" {
+                return Some(self.parse_in_decl(side));
+            }
+            if t2.kind == TokenKind::Kw && t2.text == "out" {
+                return Some(TopDecl::Out(self.parse_out_binding(side)));
+            }
+            self.error(
+                "a side annotation must be followed by an 'in' or 'out' declaration"
+                    .to_string(),
+                t.start,
+                t2.end,
+            );
+            if t2.kind == TokenKind::Eof {
+                return None;
+            }
+            return self.parse_top_decl(); // annotation consumed → guaranteed progress
+        }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
                 "var" => return Some(self.parse_var_decl(false)),
@@ -385,8 +405,8 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "buffer" => return Some(self.parse_buffer_decl()),
-                "in" => return Some(self.parse_in_decl()),
-                "out" => return Some(TopDecl::Out(self.parse_out_binding())),
+                "in" => return Some(self.parse_in_decl(None)),
+                "out" => return Some(TopDecl::Out(self.parse_out_binding(None))),
                 "let" => return Some(self.parse_let_decl()),
                 "on" => return Some(TopDecl::Handler(self.parse_handler())),
                 "array" => return Some(self.parse_array_decl()),
@@ -476,7 +496,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_in_decl(&mut self) -> TopDecl {
+    fn parse_in_decl(&mut self, side: Option<PortSide>) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("in")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         self.expect(TokenKind::Colon, None);
@@ -486,11 +506,41 @@ impl<'a> Parser<'a> {
         TopDecl::In(InDecl {
             name,
             typ,
+            side,
             range: self.make_range(start, end),
         })
     }
 
-    fn parse_out_binding(&mut self) -> OutBinding {
+    /// Consume a leading `@side` annotation token (plus any duplicates, which
+    /// are errors), returning the side. Newlines after the annotation are
+    /// eaten so the annotation may sit on its own line above the declaration.
+    fn parse_side_annotation(&mut self) -> Option<PortSide> {
+        let tok = self.expect(TokenKind::Annotation, None);
+        let side = PortSide::from_word(&tok.text);
+        if side.is_none() {
+            self.error(
+                format!(
+                    "unknown annotation '@{}'; expected @left, @right, @top, or @bottom",
+                    tok.text
+                ),
+                tok.start,
+                tok.end,
+            );
+        }
+        loop {
+            while self.check(TokenKind::Newline, None) {
+                self.advance();
+            }
+            if !self.check(TokenKind::Annotation, None) {
+                break;
+            }
+            let dup = self.advance();
+            self.error("duplicate side annotation".to_string(), dup.start, dup.end);
+        }
+        side
+    }
+
+    fn parse_out_binding(&mut self, side: Option<PortSide>) -> OutBinding {
         let start = self.expect(TokenKind::Kw, Some("out")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let typ = if self.match_tok(TokenKind::Colon, None).is_some() {
@@ -506,6 +556,7 @@ impl<'a> Parser<'a> {
                 name,
                 value: Some(value),
                 typ,
+                side,
                 range: self.make_range(start, end),
             }
         } else {
@@ -515,6 +566,7 @@ impl<'a> Parser<'a> {
                 name,
                 value: None,
                 typ,
+                side,
                 range: self.make_range(start, end),
             }
         }
@@ -1555,6 +1607,29 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
         let t = self.peek().clone();
+        if t.kind == TokenKind::Annotation {
+            let side = self.parse_side_annotation();
+            let t2 = self.peek().clone();
+            if t2.kind == TokenKind::Kw && t2.text == "in" {
+                if let TopDecl::In(i) = self.parse_in_decl(side) {
+                    return Some(Stmt::In(i));
+                }
+                return None;
+            }
+            if t2.kind == TokenKind::Kw && t2.text == "out" {
+                return Some(Stmt::OutBinding(self.parse_out_binding(side)));
+            }
+            self.error(
+                "a side annotation must be followed by an 'in' or 'out' declaration"
+                    .to_string(),
+                t.start,
+                t2.end,
+            );
+            if matches!(t2.kind, TokenKind::Eof | TokenKind::RBrace) {
+                return None;
+            }
+            return self.parse_stmt(); // annotation consumed → guaranteed progress
+        }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
                 "var" => {
@@ -1583,7 +1658,7 @@ impl<'a> Parser<'a> {
                         return Some(Stmt::Buffer(v));
                     }
                 }
-                "out" => return Some(Stmt::OutBinding(self.parse_out_binding())),
+                "out" => return Some(Stmt::OutBinding(self.parse_out_binding(None))),
                 "let" => {
                     let decl = self.parse_let_decl();
                     match decl {
@@ -1598,7 +1673,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "in" => {
-                    if let TopDecl::In(i) = self.parse_in_decl() {
+                    if let TopDecl::In(i) = self.parse_in_decl(None) {
                         return Some(Stmt::In(i));
                     }
                 }
@@ -2700,4 +2775,82 @@ mod tests {
     }
 
     // event keyword was removed — event alias/captured tests removed
+
+    #[test]
+    fn side_annotation_same_line_and_line_above() {
+        let r = parse("@left in a: bool\n@right\nout b = a", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::In(i) = &r.ast.decls[0] else {
+            panic!("decl 0: {:?}", r.ast.decls[0])
+        };
+        assert_eq!(i.side, Some(PortSide::Left));
+        let TopDecl::Out(o) = &r.ast.decls[1] else {
+            panic!("decl 1: {:?}", r.ast.decls[1])
+        };
+        assert_eq!(o.side, Some(PortSide::Right));
+    }
+
+    #[test]
+    fn unannotated_ports_have_no_side() {
+        let r = parse("in a: bool\nout b = a", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::In(i) = &r.ast.decls[0] else {
+            panic!()
+        };
+        assert_eq!(i.side, None);
+    }
+
+    #[test]
+    fn unknown_annotation_word_errors() {
+        let r = parse("@middle in a: bool", "test");
+        assert_eq!(r.diagnostics.len(), 1, "diags: {:?}", r.diagnostics);
+        assert!(r.diagnostics[0].message.contains("unknown annotation '@middle'"));
+        // Declaration still parses, just without a side.
+        let TopDecl::In(i) = &r.ast.decls[0] else {
+            panic!()
+        };
+        assert_eq!(i.side, None);
+    }
+
+    #[test]
+    fn annotation_before_non_port_decl_errors() {
+        let r = parse("@left var x: int = 1", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("must be followed by an 'in' or 'out'")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+        // The var itself still parses.
+        assert!(matches!(&r.ast.decls[0], TopDecl::Var(_)));
+    }
+
+    #[test]
+    fn duplicate_annotation_errors_first_wins() {
+        let r = parse("@left @right in a: bool", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("duplicate side annotation")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+        let TopDecl::In(i) = &r.ast.decls[0] else {
+            panic!()
+        };
+        assert_eq!(i.side, Some(PortSide::Left));
+    }
+
+    #[test]
+    fn annotation_parses_at_statement_level() {
+        // Inside a chip body it must PARSE (lowering rejects it later with WS023).
+        let r = parse("chip { @left in a: bool }", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::AnonChip(ac) = &r.ast.decls[0] else {
+            panic!()
+        };
+        let Stmt::In(i) = &ac.body.stmts[0] else {
+            panic!("stmt: {:?}", ac.body.stmts[0])
+        };
+        assert_eq!(i.side, Some(PortSide::Left));
+    }
 }

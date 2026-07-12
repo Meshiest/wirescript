@@ -8,6 +8,7 @@ mod block_expr;
 mod chip;
 mod compound;
 mod fusion;
+mod port_side;
 mod purity;
 mod records;
 mod returns;

@@ -34,6 +34,9 @@ pub enum TokenKind {
     /// Asset reference literal `$AssetType/AssetName`. The `Str` value holds the
     /// path without the leading `$`.
     AssetRef,
+    /// `@word` annotation (`@left` etc.). `text` holds the word without `@`;
+    /// the parser validates it.
+    Annotation,
     Arrow,    // `->`
     FatArrow, // `=>`
     Op,
@@ -193,6 +196,19 @@ impl<'a> Lexer<'a> {
                     .is_some_and(|n| is_ident_start(n) || n == '.' || n == '/')
             {
                 self.read_asset_ref();
+                continue;
+            }
+            // `@word` annotation (port-side annotations `@left/@right/...`).
+            if c == '@' && self.peek_char(1).is_some_and(is_ident_start) {
+                let start = self.snapshot();
+                self.advance(); // skip '@'
+                let word_start = self.pos;
+                while self.pos < self.bytes.len() && is_ident_cont(self.bytes[self.pos] as char) {
+                    self.advance();
+                }
+                let text = self.source[word_start..self.pos].to_string();
+                let end = self.snapshot();
+                self.emit(TokenKind::Annotation, text, start, end, None);
                 continue;
             }
             if self.read_punct() {
@@ -936,5 +952,26 @@ mod tests {
         for kw in KEYWORDS {
             assert!(set.contains(kw), "{kw} missing from keyword set");
         }
+    }
+
+    #[test]
+    fn annotation_token_lexes() {
+        let r = lex("@left in x: bool", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        assert_eq!(r.tokens[0].kind, TokenKind::Annotation);
+        assert_eq!(r.tokens[0].text, "left");
+        assert_eq!(r.tokens[1].kind, TokenKind::Kw);
+        assert_eq!(r.tokens[1].text, "in");
+    }
+
+    #[test]
+    fn bare_at_is_still_an_error() {
+        let r = lex("@ left", "test");
+        assert_eq!(r.diagnostics.len(), 1, "diags: {:?}", r.diagnostics);
+        assert!(
+            r.diagnostics[0].message.contains("unexpected character '@'"),
+            "got: {}",
+            r.diagnostics[0].message
+        );
     }
 }

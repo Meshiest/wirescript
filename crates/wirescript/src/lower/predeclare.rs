@@ -8,9 +8,14 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Array(a) => pre_declare_array(ctx, a),
         TopDecl::Buffer(b) => pre_declare_buffer(ctx, b),
         TopDecl::In(i) => pre_declare_input(ctx, i),
-        TopDecl::Out(o) => {
-            pre_declare_output(ctx, &o.name, o.value.as_ref(), o.typ.as_ref(), &o.range)
-        }
+        TopDecl::Out(o) => pre_declare_output(
+            ctx,
+            &o.name,
+            o.value.as_ref(),
+            o.typ.as_ref(),
+            o.side,
+            &o.range,
+        ),
         TopDecl::Let(l) => pre_declare_exec_signal(ctx, l),
         TopDecl::AnonChip(ac) => {
             let chip_node_id = ctx.add_gate(AddNodeOpts {
@@ -35,6 +40,9 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
                     Stmt::Array(a) => pre_declare_array(ctx, a),
                     Stmt::In(i) => pre_declare_input(ctx, i),
+                    Stmt::OutBinding(o) if o.side.is_some() => {
+                        report_non_root_side(ctx, &o.range);
+                    }
                     _ => {}
                 }
             }
@@ -469,11 +477,45 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     );
 }
 
+/// Push the WS023 "annotation on a non-root port" diagnostic. Shared so the
+/// message text has a single source (apply_port_side and the anon-chip output
+/// path both use it).
+fn report_non_root_side(ctx: &mut LowerCtx, range: &SourceRange) {
+    ctx.diagnostics.push(Diagnostic::error(
+        "WS023",
+        "side annotations only apply to top-level ports of the compiled file",
+        range.clone(),
+    ));
+}
+
+/// Attach a `@side` annotation to a freshly created I/O node, or reject it
+/// with WS023 when the port doesn't belong to the root module (chip/mod
+/// bodies, anonymous chips).
+fn apply_port_side(
+    ctx: &mut LowerCtx,
+    node_id: NodeId,
+    side: Option<crate::ast::PortSide>,
+    range: &SourceRange,
+) {
+    let Some(side) = side else { return };
+    if !ctx.is_root_module || ctx.current_anon_chip.is_some() {
+        report_non_root_side(ctx, range);
+        return;
+    }
+    if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
+        std::sync::Arc::make_mut(&mut node.properties).insert(
+            *crate::intern::sym::REROUTE_SIDE,
+            Literal::String(side.as_str().to_string()),
+        );
+    }
+}
+
 pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
     let t = type_of_type_expr(&d.typ);
     let node_id = ctx
         .builder
         .add_input(&mut ctx.ids, &d.name, t.clone(), d.range.clone());
+    apply_port_side(ctx, node_id, d.side, &d.range);
     ctx.scope.insert(
         d.name.clone(),
         Binding::Input(NodeRecord { node_id, ty: t }),
@@ -485,6 +527,7 @@ pub(super) fn pre_declare_output(
     name: &str,
     value: Option<&Expr>,
     typ: Option<&TypeExpr>,
+    side: Option<crate::ast::PortSide>,
     range: &SourceRange,
 ) {
     let t = if let Some(v) = value {
@@ -497,6 +540,7 @@ pub(super) fn pre_declare_output(
     let node_id = ctx
         .builder
         .add_output(&mut ctx.ids, name, t.clone(), range.clone());
+    apply_port_side(ctx, node_id, side, range);
     ctx.scope.insert(
         crate::lower::context::output_scope_key(name),
         Binding::Output(NodeRecord { node_id, ty: t }),
