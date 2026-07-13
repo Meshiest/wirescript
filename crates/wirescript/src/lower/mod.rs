@@ -140,8 +140,17 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let _ = ids_unused;
     let mut module = ctx.builder.module;
     prune_dead_exec_unions(&mut module);
+    // Before literal-inlining/materialization: a real computation still has its
+    // operand WIRES here, so only genuinely wireless orphans (e.g. a top-level
+    // constant duplicated by a namespace + named import of the same module) are
+    // pruned — not a user's connected-but-unused `let y = x * 2`.
+    prune_dead_pure_gates(&mut module, false);
     materialize_unfoldable_constants(&mut module);
     inline_orphan_literals(&mut module);
+    // Folding an operand into its consumer can leave a bare `_Literal` wired to
+    // nothing; sweep those literal orphans too (always safe — a literal has no
+    // inputs, so it can never be a user computation whose operands were inlined).
+    prune_dead_pure_gates(&mut module, true);
     crate::emit::partition_anon_chips(&mut module);
     LowerResult {
         module,
@@ -413,6 +422,87 @@ fn inline_orphan_literals(module: &mut Module) {
     }
     for child_module in module.chips.values_mut() {
         inline_orphan_literals(child_module);
+    }
+}
+
+/// Remove pure, side-effect-free expression gates that are fully disconnected —
+/// no data wire touches them on either side.
+///
+/// Such orphans arise when a module is imported via BOTH a namespace
+/// (`import * as x`) and a named import: the named path materializes a top-level
+/// `let` wired to its consumers, while the namespace path materializes the SAME
+/// `let` again (every importable decl is carried in the namespace), and that copy
+/// is referenced by nothing — so a constant ships as a gate wired to nothing.
+/// `inline_orphan_literals` only folds literals with exactly one consumer, so a
+/// zero-connection orphan slips through. Dropping these changes no behavior.
+///
+/// The criterion is deliberately "no data wires at all", NOT "output feeds
+/// nothing": a user's connected-but-unused computation (`let y = x * 2` with `y`
+/// unused) still has input wires, and this project's cleanups prune only
+/// compiler-generated cruft, never user computations. A duplicated top-level
+/// constant has neither inputs (it's a literal) nor outputs, so it is caught
+/// while `let y = x * 2` is left intact.
+///
+/// Connectivity is computed across the WHOLE module tree at once: a gate in one
+/// module can be wired to a node in another via a cross-scope wire, so the
+/// per-module recursion the neighbouring cleanups use would wrongly drop a gate
+/// wired only to a sibling/child module.
+///
+/// `literals_only` restricts pruning to `_Literal` gates — used for the pass run
+/// AFTER literal-inlining, where an `Expr_*` gate can be wireless simply because
+/// its operands were folded into properties (a real, if unused, computation),
+/// whereas a wireless literal is always a dead constant.
+fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
+    let is_pure = |gate_class: &str| -> bool {
+        gate_class == gc::LITERAL
+            || (!literals_only && gate_class.starts_with("BrickComponentType_WireGraph_Expr_"))
+    };
+    // Node ids touched by a real (non-Layout) data wire, as source OR target.
+    fn collect_connected(module: &Module, connected: &mut HashSet<NodeId>) {
+        for w in &module.wires {
+            if w.source.port != WirePort::Layout {
+                connected.insert(w.source.node_id);
+            }
+            if w.target.port != WirePort::Layout {
+                connected.insert(w.target.node_id);
+            }
+        }
+        for child in module.chips.values() {
+            collect_connected(child, connected);
+        }
+    }
+    fn collect_orphans(
+        module: &Module,
+        connected: &HashSet<NodeId>,
+        is_pure: &impl Fn(&str) -> bool,
+        dead: &mut HashSet<NodeId>,
+    ) {
+        for (id, n) in &module.nodes {
+            if n.kind == NodeKind::Gate && is_pure(n.gate_class) && !connected.contains(id) {
+                dead.insert(*id);
+            }
+        }
+        for child in module.chips.values() {
+            collect_orphans(child, connected, is_pure, dead);
+        }
+    }
+    fn remove_dead(module: &mut Module, dead: &HashSet<NodeId>) {
+        module.nodes.retain(|id, _| !dead.contains(id));
+        // Only Layout wires can touch a dead node (it has no data wires); drop them too.
+        module
+            .wires
+            .retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
+        module.scope_captures.retain(|id| !dead.contains(id));
+        for child in module.chips.values_mut() {
+            remove_dead(child, dead);
+        }
+    }
+    let mut connected = HashSet::new();
+    collect_connected(module, &mut connected);
+    let mut dead = HashSet::new();
+    collect_orphans(module, &connected, &is_pure, &mut dead);
+    if !dead.is_empty() {
+        remove_dead(module, &dead);
     }
 }
 

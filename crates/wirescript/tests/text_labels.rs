@@ -49,9 +49,10 @@ fn labels_attach_to_chip_var_and_io_bricks() {
     );
 
     // One label per named element — root chip, `counter`, `tick`, `result`,
-    // the `Foo` chip brick, Foo's internal `x`/`r` I/O gates — plus a smaller
-    // variable tag on the Var_Get and Var_Increment gates from the handler.
-    // Foo's synthesized `_exec_in`/`_exec_out` ports stay unlabeled.
+    // the `Foo` chip brick, Foo's internal `x`/`r` I/O gates, and Foo's
+    // synthesized `_exec_in`/`_exec_out` ports (both read `exec`, see
+    // microchip_io_label) — plus a smaller variable tag on the Var_Get and
+    // Var_Increment gates from the handler.
     let labeled: Vec<String> = r
         .world
         .grids
@@ -69,8 +70,8 @@ fn labels_attach_to_chip_var_and_io_bricks() {
         .collect();
     assert_eq!(
         labeled.len(),
-        9,
-        "expected root + counter + tick + result + Foo + x + r + get/increment tags, got {labeled:#?}"
+        11,
+        "expected root + counter + tick + result + Foo + x + r + 2 exec ports + get/increment tags, got {labeled:#?}"
     );
 }
 
@@ -139,12 +140,15 @@ fn labels_serialize_with_style() {
 
     texts.sort_by(|a, b| a.partial_cmp(b).unwrap());
     // Element names at full size; the handler's Var_Get + Var_Increment
-    // gates carry smaller `counter` tags.
+    // gates carry smaller `counter` tags; Foo's synthesized `_exec_in`/
+    // `_exec_out` ports each read `exec`.
     let expected = [
         ("Foo", 2.4),
         ("counter", 1.2),
         ("counter", 1.2),
         ("counter", 2.4),
+        ("exec", 2.4),
+        ("exec", 2.4),
         ("labels", 2.4),
         ("r", 2.4),
         ("result", 2.4),

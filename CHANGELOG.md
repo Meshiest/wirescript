@@ -3,6 +3,7 @@
 ## 0.14.1 - 2026-07-13
 
 - LSP: fixed a mod whose body is a single `return <expr>` being mislabeled `exec` on hover - `return` alone no longer forces the exec label; only an exec op in the returned expression (e.g. an array read) does.
+- Lowering: a module imported via BOTH a namespace (`import * as x`) and a named import no longer ships that module's top-level `let` constants twice. The namespace path carries every importable decl, so a constant already pulled in (and wired) by the named import was materialized a second time wired to nothing - a loose orphan gate. Fully-disconnected pure gates (and, after literal-inlining, orphan literals) are now pruned.
 
 ## 0.14.0 - 2026-07-12
 

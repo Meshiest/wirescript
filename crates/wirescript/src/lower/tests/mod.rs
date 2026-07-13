@@ -8,6 +8,7 @@ mod block_expr;
 mod chip;
 mod compound;
 mod fusion;
+mod imports;
 mod port_side;
 mod purity;
 mod records;
@@ -39,6 +40,28 @@ pub(super) fn compile(src: &str) -> LowerResult {
             .filter(|d| d.severity == crate::diagnostic::Severity::Warning),
     );
     r
+}
+
+/// Compile `entry_src` as the root file, resolving its `import`s against the
+/// in-memory `deps` (each `(name, source)` is loaded as `name.ws`).
+pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResult {
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader {
+        files: deps
+            .iter()
+            .map(|(k, v)| (format!("{k}.ws"), v.to_string()))
+            .collect(),
+    };
+    let resolved = resolve(entry_src, "main", &loader);
+    let tc = typecheck(&resolved.ast, "main");
+    lower(LowerInput {
+        ast: &resolved.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file: "main",
+        module_name: None,
+        template_cache: Arc::new(TemplateCache::new()),
+    })
 }
 
 pub(super) fn assert_no_errors(r: &LowerResult) {
