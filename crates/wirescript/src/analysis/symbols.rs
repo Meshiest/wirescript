@@ -69,11 +69,13 @@ fn stmt_has_exec(s: &Stmt) -> bool {
         // Let/var/buffer/array bindings — check the initialiser expression.
         Stmt::Let(l) => expr_has_exec(&l.value),
         Stmt::Var(v) => v.init.as_ref().is_some_and(expr_has_exec),
-        Stmt::Return { value, .. } => {
-            // return itself requires exec; value is just an expression.
-            let _ = value;
-            true
-        }
+        // `return <expr>` in a single-output mod is that mod's output value, so
+        // it only needs exec if its expression does (e.g. an array read). A bare
+        // `return` is an early exit from an exec chain — exec control flow.
+        Stmt::Return { value, .. } => match value {
+            Some(v) => expr_has_exec(v),
+            None => true,
+        },
         _ => false,
     }
 }
@@ -416,6 +418,52 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolve::{FsLoader, resolve};
+    use crate::typecheck::typecheck;
+
+    /// The `exec` flag the LSP hover shows for the mod/chip named `name`.
+    fn mod_exec(source: &str, name: &str) -> bool {
+        let resolved = resolve(source, "test", &FsLoader);
+        let tc = typecheck(&resolved.ast, "test");
+        collect_symbols(&resolved.ast, &tc.type_of_expr)
+            .into_iter()
+            .find(|s| s.name == name && (s.kind == "mod" || s.kind == "chip"))
+            .unwrap_or_else(|| panic!("no mod/chip symbol named {name}"))
+            .exec
+    }
+
+    #[test]
+    fn pure_return_expr_mod_is_pure() {
+        // Regression: `return <expr>` was flagged exec unconditionally, so a
+        // pure single-output mod (only comparisons + literals) read as exec.
+        let src = "mod band(n: int) -> int {\n  return if n >= 22 then 4 else if n >= 11 then 1 else 0\n}";
+        assert!(!mod_exec(src, "band"), "pure return-expr mod should be pure");
+    }
+
+    #[test]
+    fn array_index_return_mod_is_exec() {
+        // `return arr[i]` reads an array -> Exec_ArrayVar_Get -> genuinely exec.
+        let src = "array xs: int[]\nmod at(i: int) -> int {\n  return xs[i]\n}";
+        assert!(mod_exec(src, "at"), "array-index return mod should be exec");
+    }
+
+    #[test]
+    fn bare_return_mod_is_exec() {
+        // A bare early `return` is exec-chain control flow.
+        let src = "mod f(x: int) {\n  return\n}";
+        assert!(mod_exec(src, "f"), "bare return should be exec");
+    }
+
+    #[test]
+    fn if_statement_mod_is_exec() {
+        let src = "array xs: int[]\nmod g(x: int) {\n  if x > 0 { xs.push(x) }\n}";
+        assert!(mod_exec(src, "g"), "if-statement mod should be exec");
     }
 }
 

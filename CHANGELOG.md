@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 0.14.1 - 2026-07-13
+
+- LSP: fixed a mod whose body is a single `return <expr>` being mislabeled `exec` on hover - `return` alone no longer forces the exec label; only an exec op in the returned expression (e.g. an array read) does.
+
 ## 0.14.0 - 2026-07-12
 
 - **Port-side rerouter pins** - annotate top-level ports with `@left`/`@right`/`@top`/`@bottom` (same line or the line above) to emit a pre-wired rerouter brick flush against that side of the compiled microchip. Ports on a side keep declaration order (ins and outs interleave); each pin is labeled with its port name. Annotations inside `chip {}`/`mod` bodies are rejected with WS023.
