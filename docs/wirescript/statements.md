@@ -40,7 +40,7 @@ on RoundStart {
 }
 ```
 
-Top-level (module-scope) `var` declarations are always persistent — `static` is only meaningful inside handlers and mods.
+Top-level (module-scope) `var` declarations are always persistent — `static` is only meaningful inside handlers and mods, so **`static var` at top/root level is a no-op** (just use `var`).
 
 ### Variable Identity
 
@@ -465,6 +465,11 @@ in room: entity                             // wire to a Zone brick in-game
 on ZoneEntered(character, zone = room) { }  // room feeds the gate's Zone input
 on ZoneLeft(character, zone = room) { }
 ```
+
+> **Frozen entities still fire entity zone events** — `SetFrozen(true)` does not
+> suppress `EntityZoneEntered`. But an entry only fires on a **boundary crossing**:
+> `SetLocation`-ing an entity to a zone it is *already* inside does **not** re-fire
+> the event. To force a fresh entry, move it out of the zone and back in.
 
 ### Triggering on Input Ports
 

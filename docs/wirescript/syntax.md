@@ -170,6 +170,13 @@ The following words are reserved and cannot be used as identifiers:
 | `false` | Boolean literal |
 | `ref` | Reference type or ref-of expression |
 | `open` | Modifier for anonymous chips (start expanded) |
+| `type` | Record type declaration |
+| `static` | Persistent-variable modifier (inside handlers/mods) |
+| `await` | Suspend an exec chain until a signal fires |
+
+Using a reserved word as an identifier (eg. `from`) as a variable or parameter
+name produces a **cascade of confusing `WSP001 expected Ident, got '<word>'
+(Kw)` parse errors** that mask the real cause.
 
 ## Literals
 

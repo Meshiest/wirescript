@@ -511,7 +511,8 @@ entity.SetLocation(pos: vector)
 SetLocation(entity: entity, pos: vector)
 ```
 
-Set entity position.
+Set entity position. Use this (not `Teleport`) to move an entity to world
+coordinates. `pos` is a real `vector` port.
 
 ### SetRotation
 ```
@@ -979,8 +980,18 @@ compiled program carries its prefab. See
 | `direction` | `vector` | Yes | Ray direction |
 | `Distance` | `float` | Yes | Maximum ray distance |
 | `radius` | `float` | No | Sphere radius (0 = line trace) |
-| `relative` | `bool` | No | Use relative coordinates |
-| `ignore` | `entity` | No | Entity to ignore |
+| `relative` | `bool` | No | Interpret `origin`/`direction` in the owning grid's local frame |
+| `ignore` | `entity` | No | A single entity to exclude from hits |
+| `ignoreOwningGrid` | `bool` | No | Exclude the grid this gate sits on (prevents self-hits) |
+| `detectBricks` | `bool` | No | Detect brick grids, including spawned prefabs — **default false** |
+| `detectMap` | `bool` | No | Detect the static world / environment — **default false** |
+| `detectPhysics` | `bool` | No | Detect physics-simulating objects — **default false** |
+| `detectPlayers1`–`detectPlayers4` | `bool` | No | Detect players on collision channels 1–4 — **default false** |
+
+> **Detection is opt-in.** Every `detect*` flag defaults to `false`, so a Sweep
+> with none set **detects nothing and always fires `Miss`.** Enable the channel you
+> want: `detectBricks` for brick grids / spawned prefabs, `detectPlayers1` for
+> players, `detectPhysics` for loose physics objects.
 
 Returns a record with fields:
 - `HitDistance: float` -- Distance to hit point
@@ -993,9 +1004,15 @@ Returns a record with fields:
 ```wirescript
 on trigger {
   let aim = char.GetAim()
-  let result = Sweep(aim.Origin, aim.Direction, 10000.0, radius = 5.0, ignore = char)
-
-  // result.HitDistance, result.HitEntity, etc.
+  // Run the Sweep INSIDE the exec handler; handle it with nested Hit/Miss branches.
+  // A top-level `Sweep(..., exec = t)` does NOT fire.
+  let r = Sweep(aim.Origin, aim.Direction, 10000.0,
+    radius = 5.0, ignore = char, detectPlayers1 = true)
+  on r.Hit  { r.HitEntity.ShowStatusMessage("hit!") }
+  on r.Miss { /* nothing in range */ }
+  // If should also work here
+  if r.Hit  { r.HitEntity.ShowStatusMessage("hit!") }
+  if r.Miss { /* nothing in range */ }
 }
 ```
 
