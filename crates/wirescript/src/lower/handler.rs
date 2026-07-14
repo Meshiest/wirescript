@@ -235,9 +235,18 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         return;
     }
 
-    // Try: local (let binding) as trigger - fires on value change
+    // Try: local (let binding) as trigger - fires on value change. A field
+    // trigger (`on split.Jump`) selects the named output port on the local's
+    // gate (e.g. InputReader's `bPressedJump`) instead of its default port.
     let local_rec = ctx.lookup_local(&trigger_name).cloned();
     if let Some(rec) = local_rec {
+        let base_port = match &trigger_field {
+            Some(field) => {
+                crate::lower::access::resolve_output_field_port(ctx, rec.port.node_id, field)
+                    .unwrap_or(rec.port)
+            }
+            None => rec.port,
+        };
         let trigger_port = if negated {
             // `on !x` → add LogicalNOT gate, wire x → NOT, use NOT output as trigger
             let not_id = ctx.add_gate(AddNodeOpts {
@@ -254,19 +263,21 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
                 },
                 ..Default::default()
             });
-            ctx.connect(rec.port, not_id.port(WirePort::BInput));
+            ctx.connect(base_port, not_id.port(WirePort::BInput));
             not_id.port(WirePort::BOutput)
         } else {
-            rec.port
+            base_port
         };
         let saved = (ctx.current_exec, ctx.handler_entry_exec);
         ctx.current_exec = Some(trigger_port);
         ctx.handler_entry_exec = Some(trigger_port);
         reset_var_get_caches(ctx);
+        let trigger_label = match &trigger_field {
+            Some(field) => format!("{}.{}", trigger_name, field),
+            None => trigger_name.clone(),
+        };
         ctx.with_scope(
-            ScopeKind::HandlerBody {
-                trigger_label: trigger_name.clone(),
-            },
+            ScopeKind::HandlerBody { trigger_label },
             h.range.clone(),
             |ctx| lower_block(ctx, &h.body),
         );

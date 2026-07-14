@@ -1661,11 +1661,20 @@ impl<'a> Parser<'a> {
             let mut fields: Vec<RecordTypeField> = Vec::new();
             self.eat_newlines();
             while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+                // A `///` doc comment may precede a field; keyed by the field's
+                // offset so hover can show it (same channel as decl/stmt docs).
+                let doc = self.collect_doc_comment();
+                if self.check(TokenKind::RBrace, None) || self.peek().kind == TokenKind::Eof {
+                    break; // trailing doc with no following field
+                }
                 let fstart = self.peek().start;
                 let fname = self.expect(TokenKind::Ident, None).text;
                 self.expect(TokenKind::Colon, None);
                 let ftyp = self.parse_type();
                 let fend = self.peek().start;
+                if let Some(doc) = doc {
+                    self.doc_comments.insert(fstart.offset, doc);
+                }
                 fields.push(RecordTypeField {
                     name: fname,
                     typ: ftyp,
@@ -2705,6 +2714,22 @@ mod tests {
     fn empty_source_parses() {
         let s = parse_ok("");
         assert!(s.decls.is_empty());
+    }
+
+    #[test]
+    fn record_type_field_doc_comments_parse_and_store() {
+        let r = parse(
+            "type Point = {\n  /// the x coordinate\n  x: int,\n  /// the y coordinate\n  y: int,\n}",
+            "test",
+        );
+        assert!(
+            r.diagnostics.is_empty(),
+            "record field doc comments should parse: {:?}",
+            r.diagnostics
+        );
+        let docs: Vec<&String> = r.doc_comments.values().collect();
+        assert!(docs.iter().any(|d| d.contains("the x coordinate")), "x doc missing: {docs:?}");
+        assert!(docs.iter().any(|d| d.contains("the y coordinate")), "y doc missing: {docs:?}");
     }
 
     #[test]

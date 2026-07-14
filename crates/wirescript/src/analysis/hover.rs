@@ -70,7 +70,7 @@ pub fn hover_at(
         .or_else(|| hover_builtin_call(source, &word, line, col))
         .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
         .or_else(|| hover_on_keyword(source, &word, resource_estimates, line))
-        .or_else(|| hover_record_or_type_field(source, symbols, &word, line))
+        .or_else(|| hover_record_or_type_field(source, symbols, doc_comments, &word, line, col))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
         .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
 }
@@ -337,8 +337,10 @@ fn hover_on_keyword(
 fn hover_record_or_type_field(
     source: &str,
     symbols: &[SymbolDef],
+    doc_comments: &HashMap<usize, String>,
     word: &str,
     line: usize,
+    col: usize,
 ) -> Option<String> {
     // Record literal field (e.g. `{ counter: score }`)
     if let Some(v) = resolve_record_lit_field(source, symbols, word, line) {
@@ -353,7 +355,15 @@ fn hover_record_or_type_field(
         {
             if let Some(ref ty_str) = sym.ty {
                 if let Some(field_type) = extract_record_field_type(ty_str, word) {
-                    return Some(format!("```wirescript\n{}.{}: {}\n```", sym.name, word, field_type));
+                    let mut hover = format!("```wirescript\n{}.{}: {}\n```", sym.name, word, field_type);
+                    // Field `///` doc comment, stored by the parser keyed by the
+                    // field name's offset.
+                    let field_off = line_offset_at(source, line)
+                        + word_start_in_line(source.lines().nth(line)?, col);
+                    if let Some(doc) = doc_comments.get(&field_off) {
+                        hover += &format!("\n\n{doc}");
+                    }
+                    return Some(hover);
                 }
             }
         }
@@ -374,6 +384,28 @@ fn hover_user_symbol(
     col: usize,
 ) -> Option<String> {
     let sym = symbols.iter().find(|s| s.name == word)?;
+
+    // Namespace alias (`import * as card`): it has no type — show it as a
+    // namespace and list the members it brings in (its qualified `card.*`
+    // symbols), rather than falling through to `namespace card: unknown`.
+    if sym.kind == "namespace" {
+        let prefix = format!("{}.", sym.name);
+        let members: Vec<&str> = symbols
+            .iter()
+            .filter_map(|s| s.name.strip_prefix(&prefix))
+            .filter(|m| !m.contains('.'))
+            .collect();
+        let mut v = format!("```wirescript\nnamespace {}\n```", sym.name);
+        if !members.is_empty() {
+            v += &format!(
+                "\n\n{} member{}: {}",
+                members.len(),
+                if members.len() == 1 { "" } else { "s" },
+                members.join(", ")
+            );
+        }
+        return Some(v);
+    }
 
     let ty_str = sym.ty.as_deref().unwrap_or("unknown");
     let mut v = match sym.kind {
@@ -684,6 +716,57 @@ mod tests {
             line,
             col,
         )
+    }
+
+    #[test]
+    fn record_type_field_doc_comment_shows_on_hover() {
+        let src = "type Point = {\n  /// the x coordinate\n  x: int,\n  y: int,\n}";
+        // `x` is on line 2 (0-based); hover it.
+        let col_x = src.lines().nth(2).unwrap().find('x').unwrap();
+        let hx = hover_for(src, 2, col_x).expect("hover on documented field x");
+        assert!(hx.contains("Point.x: int"), "field type missing: {hx}");
+        assert!(hx.contains("the x coordinate"), "field doc missing: {hx}");
+        // The undocumented field `y` shows no doc.
+        let col_y = src.lines().nth(3).unwrap().find('y').unwrap();
+        let hy = hover_for(src, 3, col_y).expect("hover on field y");
+        assert!(hy.contains("Point.y: int"), "y type missing: {hy}");
+        assert!(!hy.contains("coordinate"), "y should have no doc: {hy}");
+    }
+
+    #[test]
+    fn namespace_alias_hovers_with_members_not_unknown() {
+        use crate::resolve::MemLoader;
+        let loader = MemLoader {
+            files: [(
+                "display.ws".to_string(),
+                "mod drawCard(n: int) {}\nlet WIDTH = 10".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let src = "import * as card from \"display\"";
+        let resolved = resolve(src, "main", &loader);
+        let tc = typecheck(&resolved.ast, "main");
+        let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main"));
+        let estimates =
+            crate::analysis::resource_estimate::collect_estimates(&resolved.ast, &tc, "main");
+        let col = src.find("card").unwrap();
+        let text = hover_at(
+            src,
+            "main",
+            &symbols,
+            &tc.type_of_expr,
+            &resolved.doc_comments,
+            &tc.if_contexts,
+            &tc.var_read_contexts,
+            &estimates,
+            0,
+            col,
+        )
+        .expect("hover on a namespace alias should return something");
+        assert!(text.contains("namespace card"), "should show namespace, got: {text}");
+        assert!(!text.contains("unknown"), "must not show `unknown`, got: {text}");
+        assert!(text.contains("drawCard"), "should list members, got: {text}");
     }
 
     #[test]

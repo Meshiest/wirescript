@@ -204,7 +204,7 @@ fn doc_comment_renders_under_the_title() {
                 .expect("read components");
             for c in comps {
                 if let Some(BrdbValue::String(text)) = c.get("Text") {
-                    if text == "<size=\"96\">Foo</>\nAdds one to x.\nPure and simple." {
+                    if text == "<size=\"96\">Foo</>\n\nAdds one to x.\nPure and simple." {
                         found = true;
                     }
                 }

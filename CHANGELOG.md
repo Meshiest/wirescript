@@ -1,5 +1,23 @@
 # Wirescript Changelog
 
+## 0.16.0 - 2026-07-14
+
+- **Fixed LSP field triggers on a local in handlers** - an `on <local>.<field>` handler (`on reader.Jump` where `reader = pl.InputReader()`) ignored the field and fired off the local's default port. It now selects the matching output port (`bPressedJump`/…), including negated (`on !reader.Jump`).
+- **Duplicate constant gates merged per chip** - a constant that survives inlining (a repeated `"PREFIX: "` string wrapper, a multi-consumer literal) is emitted once and fans out. Applies to pure gates with no wired input; `Random` and stateful detectors are never merged. Cut ~1200 gates from a large project.
+- **LSP: member completion after `receiver.` wins inside a call arg** - `Call(arg = recv.<here>` completes `recv`'s members, not the call's params; a record value completes its fields (including `on reader.<here>`). A plain `Call(<here>` still completes params.
+- **LSP: more completion contexts** —
+  - `import * as u` then `u.<here>` lists the module's members (was empty).
+  - `var pos: vector` → `pos.<here>` offers type methods + swizzle (`x`/`y`/`z`, `r`/`g`/`b`/`a`) alongside `.Value`/`.prev`; `static var` now gets `.Value`/`.prev`.
+  - Values typed by a `type Foo = { … }` alias complete `Foo`'s fields.
+  - User `mod`/`chip`/`fn` calls complete their param names instead of the global list.
+  - All-required calls (`Vec(<here>)`) offer their params; method calls no longer offer the bound receiver param.
+  - `@`-annotation list adds `@label` and `@closed`.
+  - Native LSP and web playground now share these paths.
+- **Doc comments on record-type fields** - a `///` comment on a field inside a `type T = { … }` declaration used to be a parse error; it now parses and shows on hover of that field.
+- **Fixed hover on a namespace alias** - hovering `card` in `import * as card` showed `namespace card: unknown`; it now shows `namespace card` and lists the members it brings in.
+- **VS Code formatter (Prettier plugin)** - now puts a space after commas, splits too-long braced imports (fill) and binary-operation statements (one operator per line, lowest-precedence first) at 100 cols, joins a statement-form `else` onto its closing brace (`}\n else {` → `} else {`), and honors `// fmt-ignore` (standalone protects the next line; trailing protects its own). `///` doc comments auto-continue when you press Enter.
+- **Opened-plane headers space the doc off the title** - the header now puts a blank line between the size-96 title and the chip/module doc comment instead of butting them together.
+
 ## 0.15.0 - 2026-07-13
 
 - **Color arithmetic** - `+ - * / %` now operate RGBA channel-wise on two `color` operands, and mixing a color with a scalar broadcasts it across the channels (`c1 + c2`, `tint * 0.5`), all on the same PrimMath gate that already runs vectors and rotations.

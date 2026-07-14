@@ -99,6 +99,35 @@ pub(super) fn binding_to_port(
     }
 }
 
+/// Map a short field name (`.Forward`, `.Jump`) to the full gate port name it
+/// stands for. InputSplitter exposes a few arbitrarily-named ports whose
+/// surface field names differ from the underlying port.
+pub(super) fn alias_output_field(field: &str) -> &str {
+    match field {
+        "Forward" => "InputForward",
+        "Right" => "InputRight",
+        "Jump" => "bPressedJump",
+        other => other,
+    }
+}
+
+/// Resolve a field name to a real output port on `node_id`: an exact/aliased
+/// match, or the port whose cleaned name matches (e.g. `bFound` for `.Found`).
+/// Returns `None` when no output port corresponds to the field.
+pub(super) fn resolve_output_field_port(
+    ctx: &LowerCtx,
+    node_id: crate::ir::NodeId,
+    field: &str,
+) -> Option<PortRef> {
+    let aliased = alias_output_field(field);
+    let node = ctx.builder.module.nodes.get(&node_id)?;
+    let pname = node.ports.outputs.iter().find_map(|p| {
+        let pname = crate::intern::resolve(p.name);
+        (pname == aliased || crate::catalog::arrays::field_name(pname) == field).then_some(pname)
+    })?;
+    Some(port_ref(node_id, pname))
+}
+
 /// A vector (`x`/`y`/`z`) or color (`r`/`g`/`b`/`a`) component name, in either
 /// case. These don't name gate ports — they desugar to a SplitVector /
 /// SplitColor gate, so access through a local must fall through to that logic.
@@ -137,12 +166,7 @@ pub(super) fn lower_field_access(
         // Short field names map to full port names for known components.
         if let Some(local) = ctx.lookup_local(name).cloned() {
             // InputReader exposes a few arbitrarily-named ports.
-            let aliased = match field {
-                "Forward" => "InputForward",
-                "Right" => "InputRight",
-                "Jump" => "bPressedJump",
-                other => other,
-            };
+            let aliased = alias_output_field(field);
             // Resolve the field to a real output port on the node: an exact /
             // aliased match, or the port whose cleaned name matches (e.g. the
             // `bFound` port for `.Found`, derived via the same rule the return
@@ -266,22 +290,9 @@ pub(super) fn lower_field_access(
             // this, `obj` is never lowered and the field access degrades to an
             // `_Unsupported` placeholder — silently dropping the call.
             if let Expr::Call { .. } = obj {
-                let aliased = match field {
-                    "Forward" => "InputForward",
-                    "Right" => "InputRight",
-                    "Jump" => "bPressedJump",
-                    other => other,
-                };
                 let obj_port = lower_expr(ctx, obj);
-                if let Some(node) = ctx.builder.module.nodes.get(&obj_port.node_id) {
-                    let resolved = node.ports.outputs.iter().find_map(|p| {
-                        let pname = crate::intern::resolve(p.name);
-                        (pname == aliased || crate::catalog::arrays::field_name(pname) == field)
-                            .then_some(pname)
-                    });
-                    if let Some(pname) = resolved {
-                        return port_ref(obj_port.node_id, pname);
-                    }
+                if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
+                    return port;
                 }
             }
             synthesise_unsupported(ctx, e)

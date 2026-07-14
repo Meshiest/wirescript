@@ -112,6 +112,39 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
     serde_json::to_string(&diags).unwrap_or_else(|_| "[]".into())
 }
 
+/// Swizzle components (`vector`/`color`) + receiver methods valid for a typed value.
+fn push_type_members(ty: &str, items: &mut Vec<CompletionOut>) {
+    for f in wirescript::analysis::swizzle_fields(ty) {
+        items.push(CompletionOut {
+            label: f.to_string(),
+            kind: "field",
+            detail: Some("field".to_string()),
+            insert_text: Some(f.to_string()),
+        });
+    }
+    for (name, sig) in receiver_methods(ty) {
+        items.push(CompletionOut {
+            label: name.to_string(),
+            kind: "method",
+            detail: Some(sig),
+            insert_text: None,
+        });
+    }
+}
+
+/// Record fields for a receiver type: an inline `{…}` record, or a named `type`
+/// alias resolved through its `type` symbol.
+fn resolve_record_fields(
+    ty: &str,
+    symbols: &[wirescript::analysis::SymbolDef],
+) -> Option<Vec<String>> {
+    if let Some(fields) = wirescript::analysis::record_field_names(ty) {
+        return Some(fields);
+    }
+    let alias = symbols.iter().find(|s| s.name == ty && s.kind == "type")?;
+    wirescript::analysis::record_field_names(alias.ty.as_deref()?)
+}
+
 pub fn completions(
     source: &str,
     line: u32,
@@ -193,74 +226,90 @@ pub fn completions(
         }
     }
 
-    // Array method completions after `arrayVar.`
-    let l = source.lines().nth(line as usize).unwrap_or("");
-    let col_idx = (col as usize).min(l.len());
-    if col_idx > 0 {
-        let before = &l[..col_idx];
-        if let Some(dot_pos) = before.rfind('.') {
-            let prefix = before[..dot_pos].trim_end();
-            let var_name_start = prefix
-                .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            let var_name = &prefix[var_name_start..];
-            if !var_name.is_empty() {
-                let sym = symbols.iter().find(|s| s.name == var_name);
-                // Arrays — `array` decls and any array-typed value (e.g. a
-                // `var ids: string[]`). Methods come from the canonical table.
-                let is_array = sym.is_some_and(|s| {
-                    s.kind == "array" || s.ty.as_deref().is_some_and(|t| t.ends_with("[]"))
+    // Member access `receiver.partial` — precise: the receiver identifier must
+    // directly precede the dot, and only identifier chars may sit between the
+    // dot and the cursor. A plain `Call(` boundary yields no receiver and falls
+    // through to the param completion below.
+    if let Some(var_name) =
+        wirescript::analysis::member_receiver_at(source, line as usize, col as usize)
+    {
+        let sym = symbols.iter().find(|s| s.name == var_name);
+        // Arrays — `array` decls and any array-typed value (e.g. a
+        // `var ids: string[]`). Methods come from the canonical table.
+        let is_array = sym.is_some_and(|s| {
+            s.kind == "array" || s.ty.as_deref().is_some_and(|t| t.ends_with("[]"))
+        });
+        if is_array {
+            for m in wirescript::catalog::arrays::ARRAY_METHODS {
+                items.push(CompletionOut {
+                    label: m.name.to_string(),
+                    kind: "method",
+                    detail: Some(format!("{}{} - {}", m.name, m.signature, m.doc)),
+                    insert_text: None,
                 });
-                if is_array {
-                    for m in wirescript::catalog::arrays::ARRAY_METHODS {
-                        items.push(CompletionOut {
-                            label: m.name.to_string(),
-                            kind: "method",
-                            detail: Some(format!("{}{} - {}", m.name, m.signature, m.doc)),
-                            insert_text: None,
-                        });
-                    }
-                    return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
-                }
-                let is_var = symbols
-                    .iter()
-                    .any(|s| s.name == var_name && s.kind == "var");
-                if is_var {
-                    items.push(CompletionOut {
-                        label: "Value".to_string(),
-                        kind: "field",
-                        detail: Some("Read current value (pure)".to_string()),
-                        insert_text: Some("Value".to_string()),
-                    });
-                    items.push(CompletionOut {
-                        label: "prev".to_string(),
-                        kind: "field",
-                        detail: Some("Read previous tick's value".to_string()),
-                        insert_text: Some("prev".to_string()),
-                    });
-                    return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
-                }
-                // Receiver methods for a typed value (e.g. string methods on a
-                // string). A member-access context never falls through to the
-                // global keyword/function list.
-                if let Some(ty) = symbols
-                    .iter()
-                    .find(|s| s.name == var_name)
-                    .and_then(|s| s.ty.as_deref())
-                {
-                    for (name, sig) in receiver_methods(ty) {
-                        items.push(CompletionOut {
-                            label: name.to_string(),
-                            kind: "method",
-                            detail: Some(sig),
-                            insert_text: None,
-                        });
-                    }
-                }
-                return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
             }
+            return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
         }
+        // Namespace alias (`import * as u`): offer its qualified `u.member` symbols.
+        if sym.is_some_and(|s| s.kind == "namespace") {
+            let prefix = format!("{var_name}.");
+            for m in &symbols {
+                if let Some(member) = m.name.strip_prefix(&prefix) {
+                    if member.contains('.') {
+                        continue;
+                    }
+                    items.push(CompletionOut {
+                        label: member.to_string(),
+                        kind: "method",
+                        detail: None,
+                        insert_text: Some(member.to_string()),
+                    });
+                }
+            }
+            return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+        }
+        // Vars (`var`/`static var`): `.Value`/`.prev` plus the element type's
+        // methods/swizzle (`pos.Normalize()`, `pos.x`).
+        if sym.is_some_and(|s| matches!(s.kind, "var" | "static var")) {
+            items.push(CompletionOut {
+                label: "Value".to_string(),
+                kind: "field",
+                detail: Some("Read current value (pure)".to_string()),
+                insert_text: Some("Value".to_string()),
+            });
+            items.push(CompletionOut {
+                label: "prev".to_string(),
+                kind: "field",
+                detail: Some("Read previous tick's value".to_string()),
+                insert_text: Some("prev".to_string()),
+            });
+            if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
+                push_type_members(ty, &mut items);
+            }
+            return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+        }
+        // Record-typed value (e.g. `let split = pl.InputReader()` → {Forward,
+        // Right, Jump}, or a named `type` alias): offer the record's field names.
+        if let Some(fields) = sym
+            .and_then(|s| s.ty.as_deref())
+            .and_then(|ty| resolve_record_fields(ty, &symbols))
+        {
+            for f in fields {
+                items.push(CompletionOut {
+                    label: f.clone(),
+                    kind: "field",
+                    detail: Some("field".to_string()),
+                    insert_text: Some(f),
+                });
+            }
+            return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+        }
+        // Any other typed value: methods (e.g. string methods) + swizzle. A
+        // member-access context never falls through to the global list.
+        if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
+            push_type_members(ty, &mut items);
+        }
+        return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
     }
 
     // Param completions inside a call
@@ -292,7 +341,12 @@ pub fn completions(
                     }
                 }
             }
-            for p in &spec.params {
+            for (i, p) in spec.params.iter().enumerate() {
+                // The receiver param (index 0 on a method call) is already
+                // supplied via the `x.Method(` syntax — don't offer it.
+                if i == 0 && spec.receiver.is_some() {
+                    continue;
+                }
                 if p.optional {
                     items.push(CompletionOut {
                         label: format!("{} = ", p.name),
@@ -311,6 +365,25 @@ pub fn completions(
             }
             if !items.is_empty() {
                 return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+            }
+        } else if let Some(sig) = symbols
+            .iter()
+            .find(|s| s.name == call_name.as_str() && matches!(s.kind, "mod" | "chip" | "fn"))
+            .and_then(|s| s.ty.as_deref())
+        {
+            // User-defined mod/chip/fn call: complete its parameter names.
+            if let Some(names) = wirescript::analysis::param_names(sig) {
+                for name in names {
+                    items.push(CompletionOut {
+                        label: name.clone(),
+                        kind: "field",
+                        detail: None,
+                        insert_text: Some(name),
+                    });
+                }
+                if !items.is_empty() {
+                    return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                }
             }
         }
     }
@@ -352,16 +425,8 @@ pub fn completions(
         });
     }
     for ty in &[
-        "int",
-        "float",
-        "bool",
-        "string",
-        "entity",
-        "controller",
-        "character",
-        "vector",
-        "rotator",
-        "color",
+        "int", "float", "bool", "string", "entity", "controller", "character", "vector", "rotator",
+        "color", "exec",
     ] {
         items.push(CompletionOut {
             label: ty.to_string(),
@@ -370,7 +435,25 @@ pub fn completions(
             insert_text: None,
         });
     }
-    for sym in &symbols {
+    // Annotations: `@side` port pins plus the chip annotations.
+    for (ann, detail) in [
+        ("@left", "outer rerouter pin"),
+        ("@right", "outer rerouter pin"),
+        ("@top", "outer rerouter pin"),
+        ("@bottom", "outer rerouter pin"),
+        ("@label", "display-text override"),
+        ("@closed", "compile chip collapsed"),
+    ] {
+        items.push(CompletionOut {
+            label: ann.to_string(),
+            kind: "keyword",
+            detail: Some(detail.to_string()),
+            insert_text: None,
+        });
+    }
+    // Qualified namespace members (`u.member`) are reached only through `u.`
+    // member completion, so keep them out of the bare-identifier list.
+    for sym in symbols.iter().filter(|s| !s.name.contains('.')) {
         items.push(CompletionOut {
             label: sym.name.clone(),
             kind: sym.kind,

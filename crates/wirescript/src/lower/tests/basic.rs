@@ -1740,3 +1740,33 @@ fn exec_array_var_nonliteral_init_warns() {
     assert_eq!(warns.len(), 1, "diags: {:?}", r.diagnostics);
     assert!(warns[0].contains("array literal"), "got: {}", warns[0]);
 }
+
+#[test]
+fn on_input_splitter_field_trigger_selects_named_port() {
+    // `on split.Jump` where `split = pl.InputReader()` must trigger from the
+    // splitter's `bPressedJump` output — not its default `InputForward` port.
+    // Regression: the local-trigger branch ignored the trigger field, so every
+    // `on split.*` handler wired to whichever port the local pointed at.
+    let src = "in pl: character\n\
+               let split = pl.InputReader()\n\
+               on split.Jump { pl.ShowStatusMessage(\"jump\") }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let splitter = find_gate(&r, "Component_Internal_InputSplitter");
+    let show = find_gate(
+        &r,
+        "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage",
+    );
+    let trig = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.source.node_id == splitter && w.target.node_id == show)
+        .expect("splitter must drive the handler body");
+    assert_eq!(
+        trig.source.port.as_str(),
+        "bPressedJump",
+        "on split.Jump must trigger from bPressedJump, got {}",
+        trig.source.port.as_str()
+    );
+}

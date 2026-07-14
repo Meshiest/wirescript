@@ -8,8 +8,9 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
     find_all_references, find_asset_refs, find_enclosing_call, find_name_range, format_wirescript,
-    hover_at, named_arg_value, receiver_methods, type_str, word_at, AssetRef, InlayHintKind,
-    ResourceEstimate, SymbolDef, TextRange, TypeMap, VarReadContextMap,
+    hover_at, member_receiver_at, named_arg_value, param_names, receiver_methods, record_field_names,
+    swizzle_fields, type_str, word_at, AssetRef, InlayHintKind, ResourceEstimate, SymbolDef,
+    TextRange, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::Script;
 use wirescript::catalog::arrays::ARRAY_METHODS;
@@ -718,11 +719,47 @@ impl LanguageServer for Backend {
             )
             .await;
 
-        let result = compile_result.map_err(|e| tower_lsp::jsonrpc::Error {
-            code: tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
-            message: e.to_string().into(),
-            data: None,
-        })?;
+        let result = match compile_result {
+            Ok(r) => r,
+            // Build errors (e.g. an unbarriered wire-graph cycle, WS005) carry a
+            // source range each. Hand them back to the editor as structured, located
+            // diagnostics so they render in the Problems panel / as squiggles instead
+            // of a stringified popup. This only runs on the on-demand Compile command,
+            // never in live analyze(), so it can't reintroduce the lowering-on-every-
+            // keystroke blowup that keeps analyze() typecheck-only.
+            Err(wirescript::CompileError::HasErrors(diags)) => {
+                let items: Vec<serde_json::Value> = diags
+                    .iter()
+                    .map(|d| {
+                        let severity = match d.severity {
+                            wirescript::diagnostic::Severity::Error => "error",
+                            wirescript::diagnostic::Severity::Warning => "warning",
+                            _ => "info",
+                        };
+                        serde_json::json!({
+                            "file": &*d.range.file,
+                            "startLine": d.range.start.line.saturating_sub(1),
+                            "startChar": d.range.start.col.saturating_sub(1),
+                            "endLine": d.range.end.line.saturating_sub(1),
+                            "endChar": d.range.end.col.saturating_sub(1),
+                            "severity": severity,
+                            "code": d.code,
+                            "message": d.message,
+                        })
+                    })
+                    .collect();
+                return Ok(Some(serde_json::json!({ "ok": false, "diagnostics": items })));
+            }
+            // Emit / IO failures have no per-source location — keep them as a plain
+            // error the extension can pop up.
+            Err(e) => {
+                return Err(tower_lsp::jsonrpc::Error {
+                    code: tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
+                    message: e.to_string().into(),
+                    data: None,
+                });
+            }
+        };
 
         std::fs::write(out_path, &result.brz).map_err(|e| tower_lsp::jsonrpc::Error {
             code: tower_lsp::jsonrpc::ErrorCode::InternalError,
@@ -730,7 +767,7 @@ impl LanguageServer for Backend {
             data: None,
         })?;
 
-        Ok(Some(serde_json::json!({ "path": out_path })))
+        Ok(Some(serde_json::json!({ "ok": true, "path": out_path })))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
@@ -817,13 +854,36 @@ async fn main() {
     Server::new(stdin, stdout, socket).serve(service).await;
 }
 
-/// Completions for `receiver.` — array methods, var fields, or the receiver
-/// methods valid for a typed value. Returns only the members of the receiver
-/// (possibly empty); it never falls through to the global keyword/function
-/// list, so e.g. a `string` receiver shows only string methods.
+/// Completions for `receiver.` — array methods, var fields, record fields, or
+/// the receiver methods valid for a typed value. Returns only the members of the
+/// receiver (possibly empty); it never falls through to the global
+/// keyword/function list, so e.g. a `string` receiver shows only string methods.
 fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let sym = symbols.iter().find(|s| s.name == var_name);
+
+    // Field name (record field / swizzle component) completion item.
+    let field_item = |name: String| CompletionItem {
+        label: name.clone(),
+        kind: Some(CompletionItemKind::FIELD),
+        detail: Some("field".to_string()),
+        insert_text: Some(name),
+        ..Default::default()
+    };
+    // Method + swizzle members valid for a typed value.
+    let push_type_members = |ty: &str, items: &mut Vec<CompletionItem>| {
+        for f in swizzle_fields(ty) {
+            items.push(field_item(f.to_string()));
+        }
+        for (name, sig) in receiver_methods(ty) {
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some(sig),
+                ..Default::default()
+            });
+        }
+    };
 
     // Arrays — declared with `array` or any array-typed value (e.g. a
     // `var ids: string[]`). All methods come from the canonical table.
@@ -843,7 +903,29 @@ fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionIt
         return items;
     }
 
-    if sym.is_some_and(|s| s.kind == "var") {
+    // Namespace alias (`import * as u`): offer its qualified `u.member` symbols.
+    if sym.is_some_and(|s| s.kind == "namespace") {
+        let prefix = format!("{var_name}.");
+        for m in symbols {
+            if let Some(member) = m.name.strip_prefix(&prefix) {
+                if member.contains('.') {
+                    continue; // deeper nesting isn't a direct member
+                }
+                items.push(CompletionItem {
+                    label: member.to_string(),
+                    kind: Some(namespace_member_kind(m.kind)),
+                    insert_text: Some(member.to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+        return items;
+    }
+
+    // Vars (mutable `var` / `static var`) expose `.Value`/`.prev`, plus any
+    // method/swizzle valid for the var's element type (`pos.Normalize()`,
+    // `pos.x`).
+    if sym.is_some_and(|s| matches!(s.kind, "var" | "static var")) {
         for (name, detail) in &[
             ("Value", "Read current value (pure)"),
             ("prev", "Read previous tick's value"),
@@ -856,23 +938,53 @@ fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionIt
                 ..Default::default()
             });
         }
+        if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
+            push_type_members(ty, &mut items);
+        }
         return items;
     }
 
-    // Receiver methods for a typed value (e.g. string methods on a string),
-    // via the shared analysis helper used by every editor frontend.
-    if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
-        for (name, sig) in receiver_methods(ty) {
-            items.push(CompletionItem {
-                label: name.to_string(),
-                kind: Some(CompletionItemKind::METHOD),
-                detail: Some(sig),
-                ..Default::default()
-            });
+    // Record-typed value (e.g. `let split = pl.InputReader()` → {Forward, Right,
+    // Jump}, or a multi-output mod result): offer the record's field names, so
+    // `split.<here>` / `on split.<here>` completes `Forward`/`Right`/`Jump`. The
+    // type may be an inline `{…}` string or a named `type` alias resolved here.
+    if let Some(fields) = sym
+        .and_then(|s| s.ty.as_deref())
+        .and_then(|ty| resolve_record_fields(ty, symbols))
+    {
+        for f in fields {
+            items.push(field_item(f));
         }
+        return items;
+    }
+
+    // Any other typed value: methods (e.g. string methods on a string) + swizzle.
+    if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
+        push_type_members(ty, &mut items);
     }
 
     items
+}
+
+/// Record field names for a receiver type string: an inline `{…}` record, or a
+/// named `type` alias resolved through the `type` symbol it points at.
+fn resolve_record_fields(ty: &str, symbols: &[SymbolDef]) -> Option<Vec<String>> {
+    if let Some(fields) = record_field_names(ty) {
+        return Some(fields);
+    }
+    let alias = symbols.iter().find(|s| s.name == ty && s.kind == "type")?;
+    record_field_names(alias.ty.as_deref()?)
+}
+
+/// The completion-item kind for a namespace member of the given symbol kind.
+fn namespace_member_kind(kind: &str) -> CompletionItemKind {
+    match kind {
+        "mod" | "chip" | "fn" => CompletionItemKind::FUNCTION,
+        "let" => CompletionItemKind::CONSTANT,
+        "type" => CompletionItemKind::CLASS,
+        "event" => CompletionItemKind::EVENT,
+        _ => CompletionItemKind::FIELD,
+    }
 }
 
 /// Build completion items for a position. Pure (no document lock / async) so it
@@ -965,6 +1077,15 @@ fn build_completions(
         }
     }
 
+    // Member access `receiver.partial` — return only the receiver's members.
+    // Checked before call-param completion so `Call(arg = recv.<here>` shows
+    // recv's methods, not the enclosing call's params. A plain `Call(` (the dot
+    // belongs to the callee, cursor at an arg boundary) yields no receiver here
+    // and falls through to param completion below.
+    if let Some(var_name) = member_receiver_at(source, line, col) {
+        return member_completions(&var_name, symbols);
+    }
+
     // Named params inside a function call: `Call(<here>)`.
     if let Some(call_name) = find_enclosing_call(source, line, col) {
         if let Some(spec) = calls().get(call_name.as_str()) {
@@ -992,13 +1113,25 @@ fn build_completions(
                     }
                 }
             }
-            for p in &spec.params {
+            for (i, p) in spec.params.iter().enumerate() {
+                // The receiver param (index 0 on a method call) is already
+                // supplied via the `x.Method(` syntax — don't offer it.
+                if i == 0 && spec.receiver.is_some() {
+                    continue;
+                }
                 if p.optional {
                     items.push(CompletionItem {
                         label: format!("{} = ", p.name),
                         kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(type_str(&p.ty)),
+                        detail: Some(format!("{} (optional)", type_str(&p.ty))),
                         insert_text: Some(format!("{} = ", p.name)),
+                        ..Default::default()
+                    });
+                } else {
+                    items.push(CompletionItem {
+                        label: p.name.to_string(),
+                        kind: Some(CompletionItemKind::FIELD),
+                        detail: Some(format!("{} (required)", type_str(&p.ty))),
                         ..Default::default()
                     });
                 }
@@ -1006,35 +1139,43 @@ fn build_completions(
             if !items.is_empty() {
                 return items;
             }
-        }
-    }
-
-    // Member access `receiver.` — return only the receiver's members.
-    if let Some(l) = source.lines().nth(line) {
-        let col_idx = col.min(l.len());
-        if col_idx > 0 {
-            if let Some(dot_pos) = l[..col_idx].rfind('.') {
-                let prefix = l[..dot_pos].trim_end();
-                let var_start = prefix
-                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-                let var_name = &prefix[var_start..];
-                if !var_name.is_empty() {
-                    return member_completions(var_name, symbols);
+        } else if let Some(sig) = symbols
+            .iter()
+            .find(|s| s.name == call_name.as_str() && matches!(s.kind, "mod" | "chip" | "fn"))
+            .and_then(|s| s.ty.as_deref())
+        {
+            // User-defined mod/chip/fn call: complete its parameter names,
+            // parsed from the signature string in the symbol's type.
+            if let Some(names) = param_names(sig) {
+                for name in names {
+                    items.push(CompletionItem {
+                        label: name.clone(),
+                        kind: Some(CompletionItemKind::FIELD),
+                        insert_text: Some(name),
+                        ..Default::default()
+                    });
+                }
+                if !items.is_empty() {
+                    return items;
                 }
             }
         }
     }
 
-    // User symbols.
+    // User symbols. Qualified namespace members (`u.member`) are addressed only
+    // through `u.` member completion, so keep them out of the bare-identifier list.
     for sym in symbols {
+        if sym.name.contains('.') {
+            continue;
+        }
         let kind = match sym.kind {
-            "var" | "buffer" | "array" => CompletionItemKind::VARIABLE,
+            "var" | "static var" | "buffer" | "array" => CompletionItemKind::VARIABLE,
             "fn" | "mod" | "chip" => CompletionItemKind::FUNCTION,
             "in" => CompletionItemKind::FIELD,
             "let" => CompletionItemKind::CONSTANT,
             "event" => CompletionItemKind::EVENT,
+            "namespace" => CompletionItemKind::MODULE,
+            "type" => CompletionItemKind::CLASS,
             _ => CompletionItemKind::TEXT,
         };
         items.push(CompletionItem {
@@ -1054,12 +1195,19 @@ fn build_completions(
         });
     }
 
-    // `@side` port annotations (outer rerouter pins).
-    for side in ["@left", "@right", "@top", "@bottom"] {
+    // Annotations: `@side` port pins plus the chip annotations.
+    for (ann, detail) in [
+        ("@left", "outer rerouter pin"),
+        ("@right", "outer rerouter pin"),
+        ("@top", "outer rerouter pin"),
+        ("@bottom", "outer rerouter pin"),
+        ("@label", "display-text override"),
+        ("@closed", "compile chip collapsed"),
+    ] {
         items.push(CompletionItem {
-            label: side.to_string(),
+            label: ann.to_string(),
             kind: Some(CompletionItemKind::KEYWORD),
-            detail: Some("outer rerouter pin".to_string()),
+            detail: Some(detail.to_string()),
             ..Default::default()
         });
     }
@@ -1224,5 +1372,141 @@ mod tests {
         let ls = labels(src, 1, 4);
         assert!(ls.iter().any(|l| l == "push"), "push missing on var array: {ls:?}");
         assert!(ls.iter().any(|l| l == "find"), "find missing on var array: {ls:?}");
+    }
+
+    #[test]
+    fn namespace_dot_completes_members() {
+        // `import * as u` exposes qualified `u.member` symbols; `u.` lists the
+        // members by their bare names, and they never leak into the global list.
+        let symbols = vec![
+            SymbolDef { name: "u".into(), kind: "namespace", range: Default::default(), ty: None, exec: false },
+            SymbolDef { name: "u.swap".into(), kind: "mod", range: Default::default(), ty: None, exec: false },
+            SymbolDef { name: "u.clamp".into(), kind: "fn", range: Default::default(), ty: None, exec: false },
+        ];
+        let src = "let a = u.";
+        let ls: Vec<String> = build_completions(src, &symbols, 0, src.len(), &[])
+            .into_iter()
+            .map(|i| i.label)
+            .collect();
+        assert!(ls.contains(&"swap".to_string()), "swap missing: {ls:?}");
+        assert!(ls.contains(&"clamp".to_string()), "clamp missing: {ls:?}");
+        assert!(!ls.iter().any(|l| l.contains('.')), "qualified name leaked: {ls:?}");
+        // A bare-identifier position must NOT list the qualified members.
+        let bare: Vec<String> = build_completions("", &symbols, 0, 0, &[])
+            .into_iter()
+            .map(|i| i.label)
+            .collect();
+        assert!(bare.contains(&"u".to_string()), "namespace alias missing: {bare:?}");
+        assert!(!bare.iter().any(|l| l.contains('.')), "qualified leaked into global: {bare:?}");
+    }
+
+    #[test]
+    fn typed_var_dot_shows_value_and_type_methods() {
+        // `var pos: vector` completes `.Value`/`.prev` AND vector methods/swizzle.
+        let src = "var pos: vector = Vec(1.0, 2.0, 3.0)\npos.";
+        let ls = labels(src, 1, 4);
+        assert!(ls.iter().any(|l| l == "Value"), "Value missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "Normalize"), "vector method missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "x"), "swizzle x missing: {ls:?}");
+    }
+
+    #[test]
+    fn static_var_dot_shows_value_prev() {
+        let src = "static var score: int = 0\nscore.";
+        let ls = labels(src, 1, 6);
+        assert!(ls.iter().any(|l| l == "Value"), "Value missing on static var: {ls:?}");
+        assert!(ls.iter().any(|l| l == "prev"), "prev missing on static var: {ls:?}");
+    }
+
+    #[test]
+    fn named_record_alias_dot_completes_fields() {
+        // `let p: Pos = …` where `Pos` is a `type` alias completes Pos's fields.
+        let src = "type Pos = { x: int, y: int }\nlet p: Pos = { x: 1, y: 2 }\np.";
+        let ls = labels(src, 2, 2);
+        assert!(ls.iter().any(|l| l == "x"), "field x missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "y"), "field y missing: {ls:?}");
+    }
+
+    #[test]
+    fn user_mod_call_completes_param_names() {
+        // Inside `shift(‸)` for a user mod, its param names are offered — not the
+        // whole global keyword/function list.
+        let src = "mod shift(dist: int, fast: bool) {}\non x { shift() }";
+        let line = "on x { shift() }";
+        let col = line.find("shift(").unwrap() + "shift(".len();
+        let ls = labels(src, 1, col);
+        assert!(ls.iter().any(|l| l == "dist"), "param dist missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "fast"), "param fast missing: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "if"), "global list leaked: {ls:?}");
+    }
+
+    #[test]
+    fn builtin_all_required_call_shows_required_params() {
+        // `Vec(‸)` — all params required — offers x/y/z, not the global list.
+        let src = "let v = Vec()";
+        let col = src.find("Vec(").unwrap() + "Vec(".len();
+        let ls = labels(src, 0, col);
+        for p in ["x", "y", "z"] {
+            assert!(ls.iter().any(|l| l == p), "required param {p} missing: {ls:?}");
+        }
+        assert!(!ls.iter().any(|l| l == "if"), "global list leaked: {ls:?}");
+    }
+
+    #[test]
+    fn method_call_skips_receiver_param() {
+        // `ctrl.DisplayText(‸)` must not offer the already-bound receiver param.
+        let src = "in ctrl: controller\non x { ctrl.DisplayText(\"hi\", ) }";
+        let line = "on x { ctrl.DisplayText(\"hi\", ) }";
+        let col = line.find("\"hi\", ").unwrap() + "\"hi\", ".len();
+        let ls = labels(src, 1, col);
+        assert!(ls.iter().any(|l| l.starts_with("fontSize")), "optional param missing: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "controller" || l == "target"), "receiver leaked: {ls:?}");
+    }
+
+    #[test]
+    fn annotation_completions_include_label_and_closed() {
+        let ls = labels("", 0, 0);
+        for a in ["@left", "@label", "@closed"] {
+            assert!(ls.iter().any(|l| l == a), "annotation {a} missing: {ls:?}");
+        }
+    }
+
+    #[test]
+    fn input_reader_field_trigger_completes_record_fields() {
+        // `on split.<here>` where `split = pl.InputReader()` completes the
+        // splitter's record fields (Forward/Right/Jump), not nothing.
+        let src = "in pl: character\nlet split = pl.InputReader()\non split.";
+        let ls = labels(src, 2, 9); // cursor right after `on split.`
+        for f in ["Forward", "Right", "Jump"] {
+            assert!(ls.iter().any(|l| l == f), "record field {f} missing: {ls:?}");
+        }
+        // Member context is isolated — no keyword/function leak.
+        assert!(!ls.iter().any(|l| l == "if"), "keyword leaked: {ls:?}");
+    }
+
+    #[test]
+    fn receiver_method_completes_inside_nested_call_arg() {
+        // `pl.AddVelocity(linear = pl.<here>` completes pl's methods, not the
+        // enclosing AddVelocity's params — the member access wins.
+        let src = "in pl: character\non x { pl.AddVelocity(linear = pl.) }";
+        let col = src.lines().nth(1).unwrap().find("pl.)").unwrap() + 3;
+        let ls = labels(src, 1, col);
+        assert!(ls.iter().any(|l| l == "GetVelocity"), "GetVelocity missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "GetLocation"), "GetLocation missing: {ls:?}");
+        // The enclosing call's param name must NOT show here.
+        assert!(!ls.iter().any(|l| l == "linear = "), "call param leaked: {ls:?}");
+    }
+
+    #[test]
+    fn plain_call_paren_still_shows_params() {
+        // A plain `Call(<here>` (dot belongs to the callee) still offers the
+        // call's optional params — member access must not hijack this.
+        let src = "in pl: character\non x { pl.DisplayText(\"hi\", ) }";
+        let col = src.lines().nth(1).unwrap().find("\"hi\", ") .unwrap() + "\"hi\", ".len();
+        let ls = labels(src, 1, col);
+        assert!(
+            ls.iter().any(|l| l.starts_with("fontSize")),
+            "optional param missing: {ls:?}"
+        );
     }
 }

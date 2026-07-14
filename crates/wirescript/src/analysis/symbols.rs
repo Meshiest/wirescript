@@ -302,7 +302,48 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 exec: false,
             });
         }
+        TopDecl::Namespace(ns) => {
+            // `import * as u from "…"` — the alias itself, plus its importable
+            // members as qualified `u.member` symbols. The `.` in the name keeps
+            // them out of the global identifier list (filtered there); member
+            // completion after `u.` reads them back by prefix.
+            syms.push(SymbolDef {
+                name: ns.name.clone(),
+                kind: "namespace",
+                range: ns.range.clone(),
+                ty: None,
+                exec: false,
+            });
+            for d in &ns.decls {
+                if let Some((mname, mkind)) = namespace_member_decl(d) {
+                    syms.push(SymbolDef {
+                        name: format!("{}.{}", ns.name, mname),
+                        kind: mkind,
+                        range: ns.range.clone(),
+                        ty: None,
+                        exec: false,
+                    });
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+/// The importable name + symbol kind a namespace member exposes, or `None` for a
+/// non-importable decl (`var`/`array`/`in`/`out`/handlers). Mirrors the set the
+/// resolver allows through `import { … }` / `import * as`.
+fn namespace_member_decl(d: &TopDecl) -> Option<(String, &'static str)> {
+    match d {
+        TopDecl::Chip(c) => Some((c.name.clone(), if c.inline { "mod" } else { "chip" })),
+        TopDecl::Fn(f) => Some((f.name.clone(), "fn")),
+        TopDecl::Let(l) => match &l.binding {
+            LetBinding::Ident { name, .. } => Some((name.clone(), "let")),
+            _ => None,
+        },
+        TopDecl::TypeAlias(t) => Some((t.name.clone(), "type")),
+        TopDecl::Event(e) => Some((e.name.clone(), "event")),
+        _ => None,
     }
 }
 
@@ -424,8 +465,37 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::{FsLoader, resolve};
+    use crate::resolve::{FsLoader, MemLoader, resolve};
     use crate::typecheck::typecheck;
+
+    #[test]
+    fn namespace_import_collects_qualified_members() {
+        // `import * as u` must yield a `u` namespace symbol plus qualified
+        // `u.<member>` symbols for the module's importable decls, so member
+        // completion after `u.` can find them.
+        let loader = MemLoader {
+            files: [(
+                "lib.ws".to_string(),
+                "mod swap(a: int) {}\nlet PI = 3\ntype Pt = { x: int }".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let resolved = resolve("import * as u from \"lib\"", "main", &loader);
+        let tc = typecheck(&resolved.ast, "main");
+        let syms = collect_symbols(&resolved.ast, &tc.type_of_expr);
+        assert!(
+            syms.iter().any(|s| s.name == "u" && s.kind == "namespace"),
+            "namespace alias symbol missing: {:?}",
+            syms.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        for (m, k) in [("u.swap", "mod"), ("u.PI", "let"), ("u.Pt", "type")] {
+            assert!(
+                syms.iter().any(|s| s.name == m && s.kind == k),
+                "namespace member {m} ({k}) missing"
+            );
+        }
+    }
 
     /// The `exec` flag the LSP hover shows for the mod/chip named `name`.
     fn mod_exec(source: &str, name: &str) -> bool {

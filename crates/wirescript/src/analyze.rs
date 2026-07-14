@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
+use crate::ir::port_registry::WirePort;
 use crate::ir::{Module, Node, NodeId};
 
 const BARRIER_CLASSES: &[&str] = &[
@@ -49,7 +50,7 @@ fn analyze_module(m: &Module, out: &mut CycleResult) {
                 .unwrap_or(false)
         });
         if !has_barrier {
-            out.diagnostics.push(emit_cycle_diagnostic(m, &scc));
+            out.diagnostics.push(emit_cycle_diagnostic(m, &adj, &scc));
         }
         out.strongly_connected.push(scc);
     }
@@ -61,6 +62,13 @@ fn build_adjacency(m: &Module) -> HashMap<NodeId, Vec<NodeId>> {
         adj.insert(*id, Vec::new());
     }
     for w in &m.wires {
+        // `_Layout` wires are cosmetic row/inline placement hints, not signal flow —
+        // emit.rs skips them when writing real connections (see its Pass 3), so they
+        // must not count toward wire-graph cycles either. Left in, a chip container's
+        // layout edges to the nodes it holds form loops that raise false WS005 errors.
+        if w.source.port == WirePort::Layout || w.target.port == WirePort::Layout {
+            continue;
+        }
         adj.entry(w.source.node_id)
             .or_default()
             .push(w.target.node_id);
@@ -74,19 +82,129 @@ fn has_self_loop(adj: &HashMap<NodeId, Vec<NodeId>>, id: &NodeId) -> bool {
         .unwrap_or(false)
 }
 
-fn emit_cycle_diagnostic(m: &Module, scc: &[NodeId]) -> Diagnostic {
+fn emit_cycle_diagnostic(
+    m: &Module,
+    adj: &HashMap<NodeId, Vec<NodeId>>,
+    scc: &[NodeId],
+) -> Diagnostic {
     let anchor = earliest_source_node(m, scc);
     let range = anchor
         .map(|n| n.source_range.clone())
         .unwrap_or_else(|| SourceRange::new("<ir>", Default::default(), Default::default()));
+
+    // Trace a representative loop through the component so the message shows the
+    // actual back-edge path — each gate's class + source location + debug note, and
+    // the wire PORTS on every hop (so exec edges and data edges, and exactly which
+    // pin closes the loop, are visible). This is what turns an un-actionable WS005
+    // into a fixable one.
+    let loop_path = find_cycle_path(adj, scc);
+    let mut trace = String::new();
+    for (i, id) in loop_path.iter().enumerate() {
+        let arrow = if i == 0 {
+            String::new()
+        } else {
+            edge_label(m, loop_path[i - 1], *id)
+        };
+        match m.nodes.get(id) {
+            Some(n) => {
+                let note = n.note.map(|s| format!(" \"{s}\"")).unwrap_or_default();
+                trace.push_str(&format!(
+                    "\n    {arrow}{}{note} @ {}:{}:{}",
+                    short_class(n.gate_class),
+                    n.source_range.file,
+                    n.source_range.start.line,
+                    n.source_range.start.col,
+                ));
+            }
+            None => trace.push_str(&format!("\n    {arrow}<unknown node {}>", id.0)),
+        }
+    }
+    // Close the loop back to the first node so the cycle reads unambiguously.
+    if let (Some(&last), Some(&first)) = (loop_path.last(), loop_path.first()) {
+        if let Some(fnode) = m.nodes.get(&first) {
+            trace.push_str(&format!(
+                "\n    {}(back to {})",
+                edge_label(m, last, first),
+                short_class(fnode.gate_class),
+            ));
+        }
+    }
+    let extra = scc.len().saturating_sub(loop_path.len());
+    let more = if extra > 0 {
+        format!("\n    ({extra} more gate(s) share this strongly-connected component)")
+    } else {
+        String::new()
+    };
+
     Diagnostic {
         severity: Severity::Error,
         code: "WS005".to_string(),
-        message:
-            "cycle in the wire graph has no barrier (Buffer/Queue/EdgeDetector required to break it)"
-                .to_string(),
+        message: format!(
+            "cycle in the wire graph has no barrier (Buffer/Queue/EdgeDetector required to break it) — \
+             {} gate(s) in the loop:{trace}{more}",
+            loop_path.len(),
+        ),
         range,
     }
+}
+
+/// Recover a representative simple cycle inside an SCC. Because the component is
+/// strongly connected, greedily following the first in-component out-edge from any
+/// member is guaranteed to revisit a node, and the segment from that first visit is
+/// a cycle. Returns the node ids in loop order (the last edges back to the first);
+/// a single-node vec for a self-loop.
+fn find_cycle_path(adj: &HashMap<NodeId, Vec<NodeId>>, scc: &[NodeId]) -> Vec<NodeId> {
+    if scc.len() == 1 {
+        return vec![scc[0]]; // self-loop
+    }
+    let members: HashSet<NodeId> = scc.iter().copied().collect();
+    let mut walk: Vec<NodeId> = Vec::new();
+    let mut seen_at: HashMap<NodeId, usize> = HashMap::new();
+    let mut cur = scc[0];
+    loop {
+        if let Some(&p) = seen_at.get(&cur) {
+            return walk[p..].to_vec();
+        }
+        seen_at.insert(cur, walk.len());
+        walk.push(cur);
+        match adj
+            .get(&cur)
+            .and_then(|ns| ns.iter().copied().find(|w| members.contains(w)))
+        {
+            Some(w) => cur = w,
+            None => return walk, // defensive: a real SCC member always has an in-SCC edge
+        }
+    }
+}
+
+/// Label the edge `src -> dst` with a representative wire's ports, e.g.
+/// `--[ExecOut -> ExecIn]--> ` (exec) vs `--[Value -> B]--> ` (data). Falls back to
+/// a plain `-> ` when no direct wire is found (shouldn't happen along a real path).
+fn edge_label(m: &Module, src: NodeId, dst: NodeId) -> String {
+    match m
+        .wires
+        .iter()
+        .find(|w| w.source.node_id == src && w.target.node_id == dst)
+    {
+        Some(w) => format!("--[{} -> {}]--> ", w.source.port.as_str(), w.target.port.as_str()),
+        None => "-> ".to_string(),
+    }
+}
+
+/// Strip the noisy `BrickComponentType_*` prefix so the trace reads `Math_Add`
+/// instead of `BrickComponentType_WireGraph_Math_Add`.
+fn short_class(class: &str) -> &str {
+    for prefix in [
+        "BrickComponentType_WireGraphPseudo_",
+        "BrickComponentType_WireGraph_",
+        "BrickComponentType_Internal_",
+        "BrickComponentType_",
+    ] {
+        if let Some(rest) = class.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+    class
 }
 
 fn earliest_source_node<'a>(m: &'a Module, ids: &[NodeId]) -> Option<&'a Node> {
@@ -236,6 +354,62 @@ mod tests {
         assert_eq!(r.strongly_connected.len(), 1);
         assert_eq!(r.diagnostics.len(), 1);
         assert_eq!(r.diagnostics[0].code, "WS005");
+    }
+
+    #[test]
+    fn cycle_diag_lists_loop_members() {
+        // A → B → A: the WS005 message must name both gates and show the path so
+        // the loop is actually diagnosable.
+        let mut m = Module::new("loop");
+        let a = gate("Alpha");
+        let b = gate("Beta");
+        let a_id = a.id;
+        let b_id = b.id;
+        m.add_node(a);
+        m.add_node(b);
+        m.add_wire(wire_between(a_id, b_id));
+        m.add_wire(wire_between(b_id, a_id));
+        let r = analyze_cycles(&m);
+        assert_eq!(r.diagnostics.len(), 1);
+        let msg = &r.diagnostics[0].message;
+        assert!(msg.contains("Alpha"), "should name the gate: {msg}");
+        assert!(msg.contains("Beta"), "should name the gate: {msg}");
+        assert!(msg.contains("->"), "should show the loop path: {msg}");
+        assert!(msg.contains("2 gate(s) in the loop"), "should count the loop: {msg}");
+    }
+
+    fn layout_wire(src: NodeId, dst: NodeId) -> Wire {
+        Wire {
+            source: PortRef {
+                node_id: src,
+                port: crate::ir::port_registry::WirePort::Layout,
+            },
+            target: PortRef {
+                node_id: dst,
+                port: crate::ir::port_registry::WirePort::Layout,
+            },
+        }
+    }
+
+    #[test]
+    fn layout_wires_are_not_signal_cycles() {
+        // A loop made only of `_Layout` placement wires is cosmetic, not signal flow,
+        // and must NOT raise WS005 (regression: chip-inline layout edges did).
+        let mut m = Module::new("layout-loop");
+        let a = gate("Alpha");
+        let b = gate("Beta");
+        let a_id = a.id;
+        let b_id = b.id;
+        m.add_node(a);
+        m.add_node(b);
+        m.add_wire(layout_wire(a_id, b_id));
+        m.add_wire(layout_wire(b_id, a_id));
+        let r = analyze_cycles(&m);
+        assert!(
+            r.diagnostics.is_empty(),
+            "layout wires must not trip the cycle check: {:?}",
+            r.diagnostics
+        );
     }
 
     #[test]

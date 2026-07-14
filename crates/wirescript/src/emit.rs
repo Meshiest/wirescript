@@ -597,7 +597,9 @@ fn text_label(
 /// tags in names/docs are a feature, not escaped).
 fn chip_header_text(title: Option<&str>, doc: Option<&str>) -> Option<String> {
     match (title, doc) {
-        (Some(t), Some(d)) => Some(format!("<size=\"96\">{t}</>\n{d}")),
+        // Blank line between the big title and the doc so the doc isn't cramped
+        // right under the size-96 heading.
+        (Some(t), Some(d)) => Some(format!("<size=\"96\">{t}</>\n\n{d}")),
         (Some(t), None) => Some(format!("<size=\"96\">{t}</>")),
         (None, Some(d)) => Some(d.to_string()),
         (None, None) => None,

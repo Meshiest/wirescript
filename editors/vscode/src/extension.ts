@@ -19,6 +19,8 @@ import {
   Range,
   Position,
   WorkspaceEdit,
+  Diagnostic,
+  DiagnosticSeverity,
 } from "vscode";
 import {
   LanguageClient,
@@ -221,12 +223,38 @@ export function activate(context: ExtensionContext) {
                   // Line comment — skip the rest of the line
                   break;
                 } else if (raw[j] === '"' || raw[j] === "'") {
-                  // String literal — skip until matching close quote, respecting escapes
+                  // String literal — skip its literal text, but DESCEND into any
+                  // ${ ... } interpolation. Identifiers used only inside interpolated
+                  // strings (e.g. "${teamName(t)}") are real usages; skipping them
+                  // makes an import look unused and silently prunes it, breaking the
+                  // build. The interpolation body is code, so feed it to the scanner.
                   const quote = raw[j];
                   j++;
                   while (j < raw.length && raw[j] !== quote) {
-                    if (raw[j] === "\\") j++; // skip escape
-                    j++;
+                    if (raw[j] === "\\") {
+                      j += 2; // skip escape + escaped char
+                    } else if (raw[j] === "$" && raw[j + 1] === "{") {
+                      // Delimit each interpolation so back-to-back ones ("${a}${b}",
+                      // or "${a}">${b}") don't merge into a single bogus identifier.
+                      code += " ";
+                      j += 2;
+                      let depth = 1;
+                      while (j < raw.length && depth > 0) {
+                        if (raw[j] === "{") {
+                          depth++;
+                        } else if (raw[j] === "}") {
+                          depth--;
+                          if (depth === 0) {
+                            j++;
+                            break;
+                          }
+                        }
+                        code += raw[j];
+                        j++;
+                      }
+                    } else {
+                      j++;
+                    }
                   }
                   j++; // skip closing quote
                 } else {
@@ -284,6 +312,12 @@ export function activate(context: ExtensionContext) {
   compileStatus.name = "Wirescript Compile";
   context.subscriptions.push(compileStatus);
 
+  // Build-error diagnostics (from the on-demand Compile command). Kept in its own
+  // collection so it never fights the language server's live typecheck diagnostics —
+  // VS Code merges the two in the Problems panel. Cleared on each compile attempt.
+  const buildDiagnostics = languages.createDiagnosticCollection("wirescript-build");
+  context.subscriptions.push(buildDiagnostics);
+
   // Listen for compile progress from LSP
   client.onNotification("wirescript/compileProgress", (params: any) => {
     if (params.done) {
@@ -310,8 +344,12 @@ export function activate(context: ExtensionContext) {
       compileStatus.text = "$(sync~spin) Compiling...";
       compileStatus.show();
 
+      // Fresh compile — drop any stale build errors before we try again.
+      buildDiagnostics.clear();
+
+      let result: any;
       try {
-        await client.sendRequest("workspace/executeCommand", {
+        result = await client.sendRequest("workspace/executeCommand", {
           command: "wirescript.compile",
           arguments: [doc.uri.toString(), outPath],
         });
@@ -320,6 +358,44 @@ export function activate(context: ExtensionContext) {
         setTimeout(() => compileStatus.hide(), 5000);
         window.showErrorMessage(
           `Wirescript compile failed: ${err.message || err}`,
+        );
+        return;
+      }
+
+      // Build errors come back located — render them in the Problems panel + as
+      // squiggles (grouped by file, since a cycle can span imported modules).
+      if (result && result.ok === false) {
+        const byFile = new Map<string, Diagnostic[]>();
+        for (const d of result.diagnostics ?? []) {
+          const uri = d.file ? Uri.file(d.file) : doc.uri;
+          const key = uri.toString();
+          const range = new Range(
+            d.startLine ?? 0,
+            d.startChar ?? 0,
+            d.endLine ?? 0,
+            d.endChar ?? 0,
+          );
+          const severity =
+            d.severity === "warning"
+              ? DiagnosticSeverity.Warning
+              : d.severity === "info"
+                ? DiagnosticSeverity.Information
+                : DiagnosticSeverity.Error;
+          const diag = new Diagnostic(range, d.message, severity);
+          if (d.code) diag.code = d.code;
+          diag.source = "wirescript build";
+          const list = byFile.get(key) ?? [];
+          list.push(diag);
+          byFile.set(key, list);
+        }
+        for (const [key, diags] of byFile) {
+          buildDiagnostics.set(Uri.parse(key), diags);
+        }
+        const n = (result.diagnostics ?? []).length;
+        compileStatus.text = "$(error) Compile failed";
+        setTimeout(() => compileStatus.hide(), 5000);
+        window.showErrorMessage(
+          `Wirescript compile failed: ${n} problem${n === 1 ? "" : "s"} — see the Problems panel.`,
         );
         return;
       }

@@ -266,3 +266,44 @@ fn numeric_literal_still_uses_literal_node() {
         "numeric literal should not produce a Concatenate gate"
     );
 }
+
+#[test]
+fn identical_constant_strings_dedup_within_chip() {
+    // Three copies of the constant `"PREFIX: "` — each a String_Concatenate
+    // wrapper feeding a `..` — collapse to one gate that fans out to all three
+    // `.. name` concats, instead of one wrapper per line.
+    let src = "in pl: character\n\
+               in ctrl: controller\n\
+               in go: exec\n\
+               on go {\n\
+                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())\n\
+                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())\n\
+                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let concat = "BrickComponentType_WireGraph_Expr_String_Concatenate";
+    // 1 shared constant wrapper + 3 per-line `.. name` concats (was 6 before).
+    assert_eq!(
+        gate_count(&r, concat),
+        4,
+        "identical constant strings should share one gate"
+    );
+    // The constant wrapper (no incoming wire) drives all three consumers.
+    let targets: std::collections::HashSet<crate::ir::NodeId> =
+        r.module.wires.iter().map(|w| w.target.node_id).collect();
+    let shared = r
+        .module
+        .nodes
+        .iter()
+        .find(|(id, n)| n.gate_class == concat && !targets.contains(id))
+        .map(|(id, _)| *id)
+        .expect("one constant concat wrapper with no wired input");
+    let fanout = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.node_id == shared)
+        .count();
+    assert_eq!(fanout, 3, "shared constant should fan out to 3 consumers");
+}

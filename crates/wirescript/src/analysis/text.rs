@@ -8,6 +8,109 @@ pub fn word_at(source: &str, line: usize, col: usize) -> Option<String> {
     if w.is_empty() { None } else { Some(w.to_string()) }
 }
 
+/// If the cursor sits in a `receiver.partial` member-access position — the text
+/// just before the cursor is `<ident>.<zero-or-more ident chars>` — return the
+/// receiver identifier. Returns `None` at an argument boundary like `Call(`,
+/// where the nearest `.` belongs to the callee and the cursor is not typing a
+/// member, so param completion can take over. Used by every editor frontend to
+/// give member completions priority over the enclosing call's param names.
+pub fn member_receiver_at(source: &str, line: usize, col: usize) -> Option<String> {
+    let l = source.lines().nth(line)?;
+    let col_idx = col.min(l.len());
+    let before = &l[..col_idx];
+    // The partial member name being typed (identifier chars adjacent to cursor).
+    let frag_start = before
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    // The char immediately before that fragment must be the member dot.
+    if frag_start == 0 || before.as_bytes()[frag_start - 1] != b'.' {
+        return None;
+    }
+    // The receiver is the identifier directly before the dot (no whitespace).
+    let recv = &before[..frag_start - 1];
+    let recv_start = recv
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let name = &recv[recv_start..];
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Names of the `name: type` entries in `inner`, split on top-level commas so a
+/// nested record/tuple/array field type isn't mis-split. Each entry's name is
+/// the text before its first `:`.
+fn field_entry_names(inner: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let push = |seg: &str, out: &mut Vec<String>| {
+        let name = seg.split(':').next().unwrap_or("").trim();
+        if !name.is_empty() {
+            out.push(name.to_string());
+        }
+    };
+    for (i, b) in inner.bytes().enumerate() {
+        match b {
+            b'{' | b'(' | b'[' => depth += 1,
+            b'}' | b')' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                push(&inner[start..i], &mut fields);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    push(&inner[start..], &mut fields);
+    fields
+}
+
+/// Field names of a record type string like `{Forward: float, Jump: bool}` (the
+/// shape `analysis::type_str` prints for `Type::Record`), or `None` if `ty`
+/// isn't a record.
+pub fn record_field_names(ty: &str) -> Option<Vec<String>> {
+    let inner = ty.strip_prefix('{')?.strip_suffix('}')?;
+    let fields = field_entry_names(inner);
+    (!fields.is_empty()).then_some(fields)
+}
+
+/// Parameter names of a callable signature string like
+/// `(dist: int, fast: bool) -> int` (the shape a mod/chip/fn `SymbolDef.ty`
+/// holds), or `None` if `sig` has no parameter list. Returns an empty `Vec` for
+/// a zero-param callable (`()`), which the caller distinguishes from `None`.
+pub fn param_names(sig: &str) -> Option<Vec<String>> {
+    let open = sig.find('(')?;
+    let bytes = sig.as_bytes();
+    let mut depth = 0i32;
+    let mut close = None;
+    for i in open..sig.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(field_entry_names(&sig[open + 1..close?]))
+}
+
+/// Component field names a `vector` (`x`/`y`/`z`) or `color` (`r`/`g`/`b`/`a`)
+/// receiver can be swizzled by; empty for any other type. These desugar to a
+/// Split gate in lowering rather than being catalog methods, so they aren't in
+/// `receiver_methods` and must be offered separately.
+pub fn swizzle_fields(ty: &str) -> &'static [&'static str] {
+    match ty {
+        "vector" => &["x", "y", "z"],
+        "color" => &["r", "g", "b", "a"],
+        _ => &[],
+    }
+}
+
 /// A `$` reference token found in source: a prefab file reference
 /// (`$./x.brz`, `$/abs.brz`) or an external asset reference (`$Type/Name`).
 /// Line/column spans are 0-based character offsets.
