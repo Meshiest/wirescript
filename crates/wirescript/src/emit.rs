@@ -37,6 +37,8 @@ use brdb::{
 
 use crate::intern::{Sym, intern_static, resolve, sym};
 use crate::ir::port_registry::WirePort;
+use crate::layout::LayoutResult;
+use crate::layout::wall::WallLayout;
 use crate::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc};
 
 /// Register all component type → struct name mappings and wire port names
@@ -91,36 +93,28 @@ impl std::fmt::Debug for PrefabResolver {
 pub struct EmitOptions {
     /// World position of the outer deployment chip brick, in global-grid units.
     pub chip_pos: Placement,
-    /// World location of the inner-grid entity in centimetres (matches the
-    /// engine's `Entity.location`). A common convention is
-    /// `(chip_pos * 10, z = chip_pos.z * 10 + 40)`. Phase 2 will compute this
-    /// from chip_pos automatically.
-    pub inner_grid_location: Vector3f,
-    /// Half-extent of the inner grid in grid units (matches
-    /// `BP_MicrochipBrickGridDynamicActor_C.PlaneExtent`).
-    pub inner_plane_extent: IntVector,
     /// Bundle description written to the .brz metadata.
     pub description: String,
-    /// When true, all microchips are emitted uncollapsed (expanded).
+    /// When true, the root microchip is emitted uncollapsed (expanded).
+    /// Non-root chips are always open unless annotated `@closed`.
     pub open: bool,
     /// Resolves `$./file.brz` / `$/abs/file.brz` prefab references to bytes.
     /// `None` makes any prefab reference an emit error.
     pub prefab_resolver: Option<PrefabResolver>,
+    /// Doc comment rendered under the root plane's title (module-level `///`
+    /// block — the doc attached to the file's first declaration, mirroring
+    /// how namespace imports derive their module doc).
+    pub module_doc: Option<String>,
 }
 
 impl Default for EmitOptions {
     fn default() -> Self {
         Self {
             chip_pos: Placement { x: 0, y: 0, z: 0 },
-            inner_grid_location: Vector3f {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            inner_plane_extent: IntVector { x: 14, y: 14, z: 2 },
             description: String::from("wirescript emit"),
             open: false,
             prefab_resolver: None,
+            module_doc: None,
         }
     }
 }
@@ -150,6 +144,32 @@ pub fn partition_anon_chips(module: &mut Module) {
     let layout_port = WirePort::Layout;
 
     let chip_ids: HashSet<NodeId> = module.nodes.values().filter_map(|n| n.chip_id).collect();
+
+    // Anon chips with an entirely empty functional body (e.g. `@label("...")
+    // chip on trigger { }`) tag no descendant nodes at all, so the partition
+    // loop below never sees them: they'd stay bare orphan `Chip` nodes with
+    // no `module.chips` entry, and emit skips those — silently discarding
+    // the `@label`/`@closed`/doc annotations along with them. Give them an
+    // empty child module so the (labelled/collapsed) shell still reaches
+    // emit. Named chip instances already have a populated module by this
+    // point (see `lower/call.rs`), so this only ever catches anon chips.
+    let empty_annotated: Vec<NodeId> = module
+        .nodes
+        .iter()
+        .filter(|(id, n)| {
+            n.kind == NodeKind::Chip
+                && !chip_ids.contains(id)
+                && !module.chips.contains_key(id)
+                && (n.properties.contains_key(&*sym::NAME_LABEL)
+                    || n.properties.contains_key(&*sym::CHIP_CLOSED)
+                    || n.properties.contains_key(&*sym::DOC_TEXT))
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    for id in empty_annotated {
+        module.chips.insert(id, Module::new(&format!("_anon_{id}")));
+    }
+
     if chip_ids.is_empty() {
         return;
     }
@@ -291,26 +311,41 @@ pub fn partition_anon_chips(module: &mut Module) {
 
 pub fn build_world(
     module: &Module,
-    placements: &HashMap<NodeId, Placement>,
+    layout: &LayoutResult,
     opts: &EmitOptions,
     template_cache: &std::sync::Arc<crate::template_cache::TemplateCache>,
 ) -> Result<World, EmitError> {
     let mut world = World::new();
     world.meta.bundle.description = opts.description.clone();
 
+    let wall = crate::layout::wall::assign_wall_slots(
+        module,
+        layout,
+        (opts.chip_pos.x, opts.chip_pos.y, opts.chip_pos.z),
+    );
+
     let (_chip_brick_id, _root_entity_id, mut inner_pair) = world.add_microchip(
         opts.chip_pos.into(),
-        opts.inner_grid_location,
-        opts.inner_plane_extent,
+        wall.root.location,
+        wall.root.extent,
         !opts.open,
     );
+    inner_pair.0.rotation = WALL_ROT;
 
     // Top-level chip label: the root module's name (entry file stem, or an
     // explicit module_name override). The chip brick is the one
     // `add_microchip` just pushed onto the main grid.
     let root_label = resolve(module.name);
     if !root_label.is_empty() {
-        let label = text_label(&mut world, root_label, -45.0, -0.5, LABEL_LINE_HEIGHT, 0.5);
+        let label = text_label(
+            &mut world,
+            root_label,
+            -45.0,
+            -0.5,
+            LABEL_LINE_HEIGHT,
+            0.5,
+            0.5,
+        );
         if let Some(chip_brick) = world.bricks.last_mut() {
             chip_brick.add_component_box(Box::new(label));
         }
@@ -332,12 +367,20 @@ pub fn build_world(
         &mut world,
         &mut ctx,
         module,
-        placements,
+        layout,
         &mut inner_pair.1,
-        opts.inner_grid_location,
-        opts.open,
+        &wall,
         template_cache,
     )?;
+
+    let root_title = (!root_label.is_empty()).then(|| root_label.to_string());
+    emit_plane_header(
+        &mut world,
+        &mut inner_pair.1,
+        wall.root.extent,
+        root_title.as_deref(),
+        opts.module_doc.as_deref(),
+    );
 
     // Replace placeholder with actual bricks (shifted by -CHUNK_HALF).
     let shifted: Vec<brdb::Brick> = inner_pair
@@ -370,9 +413,20 @@ pub fn build_world(
     Ok(world)
 }
 
-/// Microchip circuitboard plate height offset (game convention from
-/// reverse-engineering microchip_stack_clean.brdb).
-const CHIP_PLATE_Z_OFFSET: f32 = 20.0;
+/// Shared upright rotation for every chip grid entity, PINNED IN-GAME via a
+/// quat sampler (a pure −90° about Y). MEASURED mapping of grid-local axes
+/// (edge-marker sampler, facing the pane from the chip's bottom-port side):
+/// local +X → world up (dataflow runs bottom→top), local +Y → viewer-right,
+/// local +Z (board front) → toward the viewer (the chip's bottom-port side).
+/// Everything geometric hangs off this: the pane's TOP edge is the local +X
+/// edge (headers go there), its horizontal half-span is `extent.y`, and its
+/// vertical half-span is `extent.x` (see layout/wall.rs packing).
+const WALL_ROT: brdb::Quat4f = brdb::Quat4f {
+    x: 0.0,
+    y: -std::f32::consts::FRAC_1_SQRT_2,
+    z: 0.0,
+    w: std::f32::consts::FRAC_1_SQRT_2,
+};
 
 /// Name labels on chips, vars, and I/O gates.
 const LABEL_LINE_HEIGHT: f32 = 2.4;
@@ -445,12 +499,45 @@ fn rerouter_label_anchor_x(side: &str) -> f32 {
     }
 }
 
+/// `@closed` marks a chip's inner grid collapsed; absent = open. Non-root
+/// chips default open.
+fn chip_is_closed(node: &Node) -> bool {
+    matches!(
+        node.properties.get(&*sym::CHIP_CLOSED),
+        Some(Literal::Bool(true))
+    )
+}
+
+/// Display name for a chip: the `@label` override wins, else the chip's
+/// declared name (anonymous partitions have none).
+fn chip_display_name(node: &Node, child_module: &Module) -> Option<String> {
+    if let Some(Literal::String(s)) = node.properties.get(&*sym::NAME_LABEL) {
+        if !s.is_empty() {
+            return Some(s.clone());
+        }
+    }
+    match child_module.scopes.get(&crate::ir::ROOT_SCOPE_ID) {
+        Some(crate::ir::ScopeInfo {
+            kind: crate::ir::ScopeKind::ChipBody { name },
+            ..
+        }) if !name.is_empty() => Some(name.clone()),
+        _ => None,
+    }
+}
+
 /// Floating-label text for a microchip I/O gate, from its `PortLabel`
 /// property. User-given names label as themselves. Synthesized plumbing
 /// maps to friendly labels: the auto exec ports (`_exec_in`/`_exec_out`)
 /// read `exec`, and the anonymous `-> type` return output (`_`) reads
-/// `return`. Any other `_`-prefixed name stays unlabeled.
+/// `return`. Any other `_`-prefixed name stays unlabeled. `@label("…")`
+/// overrides all of the above (covers both pass-1 I/O gate labels and
+/// outer-rerouter labels — both call this).
 fn microchip_io_label(node: &Node) -> Option<String> {
+    if let Some(Literal::String(s)) = node.properties.get(&*sym::NAME_LABEL) {
+        if !s.is_empty() {
+            return Some(s.clone());
+        }
+    }
     match node.properties.get(&*sym::PORT_LABEL)? {
         Literal::String(s) if s == "_exec_in" || s == "_exec_out" => Some("exec".to_string()),
         Literal::String(s) if s == "_" => Some("return".to_string()),
@@ -470,6 +557,7 @@ fn text_label(
     offset_z: f32,
     line_height: f32,
     anchor_x: f32,
+    anchor_y: f32,
 ) -> LiteralComponent {
     use brdb::schema::BrdbValue;
     let (font_idx, _) = world
@@ -478,7 +566,7 @@ fn text_label(
         .insert_full(("BrickFontDescriptor".to_string(), "IosevkaTerm".to_string()));
     let anchor = LiteralComponent::new("Vector2f").with_data([
         ("X", Box::new(anchor_x) as Box<dyn AsBrdbValue>),
-        ("Y", Box::new(0.5f32)),
+        ("Y", Box::new(anchor_y)),
     ]);
     LiteralComponent::new("Component_TextDisplay").with_data([
         ("Text", Box::new(text.to_string()) as Box<dyn AsBrdbValue>),
@@ -501,6 +589,65 @@ fn text_label(
         ("Outline", Box::new(2u8)),
         ("OutlineWidth", Box::new(4.0f32)),
     ])
+}
+
+/// Header block for an opened plane: `<size="96">{title}</>` then the doc
+/// comment on the following lines. A documented but nameless chip renders the
+/// doc alone; nothing at all → no header. Text passes through raw (rich-text
+/// tags in names/docs are a feature, not escaped).
+fn chip_header_text(title: Option<&str>, doc: Option<&str>) -> Option<String> {
+    match (title, doc) {
+        (Some(t), Some(d)) => Some(format!("<size=\"96\">{t}</>\n{d}")),
+        (Some(t), None) => Some(format!("<size=\"96\">{t}</>")),
+        (None, Some(d)) => Some(d.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// Grid units the header brick's centre sits BEYOND the plane's top edge —
+/// which under the measured `WALL_ROT` mapping is the local +X edge (the
+/// brick is 1×1 → half-size 5, so at +5 its near face rests exactly on the
+/// edge). It must never sit inside the plane: gates reach `extent.x - 5`
+/// (extent = layout half-span + 5), and the game DROPS overlapping bricks at
+/// load — orphaning the dropped brick's components and dangling every wire
+/// into it. Pinned during in-game verification.
+const HEADER_EDGE_LIFT: i32 = 5;
+
+/// Invisible 1×1 carrier brick floating just above the plane's top-centre —
+/// local (extent.x + lift, 0) under the measured `WALL_ROT` mapping (local
+/// +X = world up, local Y = world horizontal). Text is centred and flows
+/// downward from the top edge (`Anchor = (0.5, 0)`).
+fn emit_plane_header(
+    world: &mut World,
+    bricks: &mut Vec<brdb::Brick>,
+    extent: IntVector,
+    title: Option<&str>,
+    doc: Option<&str>,
+) {
+    let Some(text) = chip_header_text(title, doc) else {
+        return;
+    };
+    // A 1x1F procedural default brick (10x10x4 cm -> half-extents 5,5,2).
+    let mut brick = brdb::Brick {
+        asset: brdb::BrickType::from((brdb::assets::bricks::PB_DEFAULT_BRICK, (5, 5, 2))),
+        position: brdb::Position {
+            x: extent.x + HEADER_EDGE_LIFT,
+            y: 0,
+            z: 2,
+        },
+        visible: false,
+        ..Default::default()
+    };
+    brick.add_component_box(Box::new(text_label(
+        world,
+        &text,
+        0.0,
+        0.5,
+        LABEL_LINE_HEIGHT,
+        0.5,
+        0.0,
+    )));
+    bricks.push(brick);
 }
 
 /// Place one outer-grid rerouter per `@side`-annotated root port, flush
@@ -588,6 +735,7 @@ fn emit_port_rerouters(world: &mut World, ctx: &EmitContext, module: &Module, op
                     0.5,
                     REROUTER_LABEL_LINE_HEIGHT,
                     rerouter_label_anchor_x(side),
+                    0.5,
                 );
                 brick.add_component_box(Box::new(label));
             }
@@ -665,10 +813,9 @@ fn emit_module(
     world: &mut World,
     ctx: &mut EmitContext,
     module: &Module,
-    placements: &HashMap<NodeId, Placement>,
+    layout: &LayoutResult,
     bricks: &mut Vec<brdb::Brick>,
-    parent_grid_origin: Vector3f,
-    force_open: bool,
+    wall: &WallLayout,
     template_cache: &std::sync::Arc<crate::template_cache::TemplateCache>,
 ) -> Result<(), EmitError> {
     let value_sym = *sym::VALUE;
@@ -714,7 +861,8 @@ fn emit_module(
         if !is_spawnable(node.kind, node.gate_class) {
             continue;
         }
-        let pos = placements
+        let pos = layout
+            .placements
             .get(id)
             .ok_or_else(|| EmitError::MissingPlacement(id.to_string()))?;
         let gate_class_str = node.gate_class;
@@ -958,6 +1106,7 @@ fn emit_module(
                 0.5,
                 line_height,
                 0.5,
+                0.5,
             )));
         }
 
@@ -978,7 +1127,8 @@ fn emit_module(
             Some(m) => m,
             None => continue,
         };
-        let pos = placements
+        let pos = layout
+            .placements
             .get(id)
             .ok_or_else(|| EmitError::MissingPlacement(id.to_string()))?;
         let inner_pos = brdb::Position {
@@ -987,35 +1137,26 @@ fn emit_module(
             z: pos.z,
         };
 
-        let child_layout = crate::layout::layout_root(child_module);
-        let half_x = (child_layout.bounds_max.x - child_layout.bounds_min.x) / 2;
-        let half_y = (child_layout.bounds_max.y - child_layout.bounds_min.y) / 2;
-        let child_extent = IntVector {
-            x: (half_x + 5).max(5),
-            y: (half_y + 5).max(5),
-            z: 0,
-        };
+        let child_layout = layout
+            .chip_layouts
+            .get(id)
+            .ok_or_else(|| EmitError::MissingPlacement(id.to_string()))?;
+        let slot = wall
+            .chips
+            .get(id)
+            .ok_or_else(|| EmitError::MissingPlacement(id.to_string()))?;
 
         let chip_entity_id = brdb::Brick::next_id();
-        let child_location = Vector3f {
-            x: parent_grid_origin.x + inner_pos.x as f32,
-            y: parent_grid_origin.y + inner_pos.y as f32,
-            z: parent_grid_origin.z + inner_pos.z as f32 + CHIP_PLATE_Z_OFFSET,
-        };
         let child_entity = brdb::Entity {
             asset: brdb::assets::entities::MICROCHIP_GRID,
             id: Some(chip_entity_id),
-            location: child_location,
+            location: slot.location,
+            rotation: WALL_ROT,
             frozen: true,
             data: brdb::assets::entities::microchip_grid_entity(
-                !force_open
-                    && !node
-                        .properties
-                        .get(&intern_static("_open"))
-                        .map(|l| matches!(l, Literal::Bool(true)))
-                        .unwrap_or(false),
+                chip_is_closed(node),
                 IntVector { x: 0, y: 0, z: 0 },
-                child_extent,
+                slot.extent,
             ),
             ..Default::default()
         };
@@ -1025,12 +1166,23 @@ fn emit_module(
             world,
             ctx,
             child_module,
-            &child_layout.placements,
+            child_layout,
             &mut child_bricks,
-            child_location,
-            force_open,
+            wall,
             template_cache,
         )?;
+
+        let header_doc = match node.properties.get(&*sym::DOC_TEXT) {
+            Some(Literal::String(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        emit_plane_header(
+            world,
+            &mut child_bricks,
+            slot.extent,
+            chip_display_name(node, child_module).as_deref(),
+            header_doc.as_deref(),
+        );
 
         world.add_brick_grid(child_entity, child_bricks);
 
@@ -1043,20 +1195,17 @@ fn emit_module(
             "Component_Internal_Microchip",
         )))
         .with_id_split();
-        // Named chips get a floating name label; anonymous groupings
-        // (ModuleRoot-scoped partitions) stay unlabeled.
-        if let Some(crate::ir::ScopeInfo {
-            kind: crate::ir::ScopeKind::ChipBody { name },
-            ..
-        }) = child_module.scopes.get(&crate::ir::ROOT_SCOPE_ID)
-            && !name.is_empty()
-        {
+        // Named chips get a floating name label (the `@label` override wins
+        // over the declared name); anonymous groupings (ModuleRoot-scoped
+        // partitions) stay unlabeled.
+        if let Some(name) = chip_display_name(node, child_module) {
             chip_brick.add_component_box(Box::new(text_label(
                 world,
-                name,
+                &name,
                 -45.0,
                 -0.5,
                 LABEL_LINE_HEIGHT,
+                0.5,
                 0.5,
             )));
         }
@@ -1086,12 +1235,27 @@ fn emit_module(
         match wire_to_connection_indexed(w, &ctx.node_brick_ids, &ctx.class_index, &port_index) {
             Ok(conn) => world.add_wire(conn),
             Err(e) => {
+                // `seen` distinguishes "node exists but never got a brick"
+                // (its module was visited; the node is non-spawnable or
+                // skipped) from "its module was never emitted at all" —
+                // the key discriminator when diagnosing dropped wires.
+                let seen = |id: &NodeId| {
+                    if ctx.node_brick_ids.contains_key(id) {
+                        "brick"
+                    } else if ctx.class_index.contains_key(id) {
+                        "seen-no-brick"
+                    } else {
+                        "never-visited"
+                    }
+                };
                 eprintln!(
-                    "[wire] dropped: {} → {} (port {}→{}): {e:?}",
+                    "[wire] dropped: {} → {} (port {}→{}): {e:?} (src: {}, dst: {})",
                     w.source.node_id,
                     w.target.node_id,
                     w.source.port.as_str(),
-                    w.target.port.as_str()
+                    w.target.port.as_str(),
+                    seen(&w.source.node_id),
+                    seen(&w.target.node_id),
                 );
             }
         }
@@ -1728,11 +1892,11 @@ fn literal_to_wire_variant(lit: &Literal) -> Option<WireVariant> {
 /// these directly; use [`emit_brdb`] for that.
 pub fn emit_brz(
     module: &Module,
-    placements: &HashMap<NodeId, Placement>,
+    layout: &LayoutResult,
     opts: &EmitOptions,
     template_cache: &std::sync::Arc<crate::template_cache::TemplateCache>,
 ) -> Result<Vec<u8>, EmitError> {
-    let world = build_world(module, placements, opts, template_cache)?;
+    let world = build_world(module, layout, opts, template_cache)?;
     Ok(world.to_brz_vec()?)
 }
 
@@ -1741,12 +1905,12 @@ pub fn emit_brz(
 #[cfg(feature = "brdb-full")]
 pub fn emit_brdb(
     module: &Module,
-    placements: &HashMap<NodeId, Placement>,
+    layout: &LayoutResult,
     opts: &EmitOptions,
     template_cache: &std::sync::Arc<crate::template_cache::TemplateCache>,
     path: impl AsRef<Path>,
 ) -> Result<(), EmitError> {
-    let world = build_world(module, placements, opts, template_cache)?;
+    let world = build_world(module, layout, opts, template_cache)?;
     world.write_brdb(path)?;
     Ok(())
 }
@@ -2325,10 +2489,10 @@ mod tests {
         assert!(filled > 200, "sweep should fill real fields, got {filled}");
 
         let module = builder.module;
-        let placements = crate::layout::layout(&module).placements;
+        let lr = crate::layout::layout(&module);
         let brz = emit_brz(
             &module,
-            &placements,
+            &lr,
             &EmitOptions::default(),
             &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
         );
@@ -2638,5 +2802,25 @@ mod tests {
         assert_eq!(get("speed").as_deref(), Some("speed"));
         assert_eq!(get("_hidden"), None);
         assert_eq!(get(""), None);
+    }
+
+    #[test]
+    fn chip_is_closed_reads_the_closed_prop() {
+        let mut node = Node {
+            id: NodeId::fresh(),
+            kind: crate::ir::NodeKind::Chip,
+            gate_class: gc::MICROCHIP,
+            properties: std::sync::Arc::new(HashMap::new()),
+            ports: std::sync::Arc::new(crate::ir::GateIO::default()),
+            source_range: crate::diagnostic::SourceRange::default(),
+            chip_id: None,
+            chain_id: None,
+            scope_id: crate::ir::ROOT_SCOPE_ID,
+            note: None,
+        };
+        assert!(!chip_is_closed(&node), "default is open");
+        std::sync::Arc::make_mut(&mut node.properties)
+            .insert(*sym::CHIP_CLOSED, Literal::Bool(true));
+        assert!(chip_is_closed(&node));
     }
 }

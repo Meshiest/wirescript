@@ -49,6 +49,7 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         file: name,
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &parsed.doc_comments,
     });
     lr.module
 }

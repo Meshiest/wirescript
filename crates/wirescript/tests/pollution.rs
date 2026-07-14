@@ -48,6 +48,7 @@ fn lower_source(src: &str) -> wirescript::lower::LowerResult {
         file: "test.ws",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
     })
 }
 
@@ -333,7 +334,7 @@ on tick {
     // Must also emit valid BRZ.
     let layout_result = layout(&lr.module);
     let template_cache = Arc::new(TemplateCache::new());
-    let brz = emit_brz(&lr.module, &layout_result.placements, &EmitOptions::default(), &template_cache);
+    let brz = emit_brz(&lr.module, &layout_result, &EmitOptions::default(), &template_cache);
     assert!(brz.is_ok(), "BRZ emit failed: {:?}", brz.err());
     let brz_bytes = brz.unwrap();
     assert!(

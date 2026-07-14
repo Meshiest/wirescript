@@ -174,6 +174,10 @@ pub struct ChipDecl {
     /// When true, always expanded inline at call sites (no physical
     /// microchip). Set by the `mod` keyword.
     pub inline: bool,
+    /// `@label("…")` display-text override for the chip's labels and header.
+    pub label: Option<String>,
+    /// `@closed`: emit this chip's inner grid collapsed.
+    pub closed: bool,
 }
 
 /// Anonymous chip: `chip { body }` — shares parent scope, creates a
@@ -184,6 +188,10 @@ pub struct AnonChipDecl {
     pub open: bool,
     pub body: Block,
     pub range: SourceRange,
+    /// `@label("…")` display-text override for the chip's labels and header.
+    pub label: Option<String>,
+    /// `@closed`: emit this chip's inner grid collapsed.
+    pub closed: bool,
 }
 
 /// `event foo = Trigger` or `event foo = on Trigger { ... }`
@@ -230,6 +238,8 @@ pub struct InDecl {
     pub name: String,
     pub typ: TypeExpr,
     pub side: Option<PortSide>,
+    /// `@label("…")` display-text override for the port's floating label.
+    pub label: Option<String>,
     pub range: SourceRange,
 }
 
@@ -388,6 +398,28 @@ pub enum Stmt {
     },
 }
 
+impl Stmt {
+    pub fn range(&self) -> &SourceRange {
+        match self {
+            Stmt::Assign(d) => &d.range,
+            Stmt::Emit(d) => &d.range,
+            Stmt::Await(d) => &d.range,
+            Stmt::If(d) => &d.range,
+            Stmt::In(d) => &d.range,
+            Stmt::Let(d) => &d.range,
+            Stmt::OutBinding(d) => &d.range,
+            Stmt::ExprStmt(d) => &d.range,
+            Stmt::Var(d) => &d.range,
+            Stmt::Buffer(d) => &d.range,
+            Stmt::Array(d) => &d.range,
+            Stmt::Handler(d) => &d.range,
+            Stmt::AnonChip(d) => &d.range,
+            Stmt::ChipDecl(d) => &d.range,
+            Stmt::Return { range, .. } => range,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Assign {
     pub target: Expr,
@@ -445,6 +477,8 @@ pub struct OutBinding {
     pub value: Option<Expr>,
     pub typ: Option<TypeExpr>,
     pub side: Option<PortSide>,
+    /// `@label("…")` display-text override for the port's floating label.
+    pub label: Option<String>,
     pub range: SourceRange,
 }
 

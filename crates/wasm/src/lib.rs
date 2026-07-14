@@ -98,6 +98,7 @@ pub fn wirescript_compile(source: String, module_name: Option<String>, files_jso
         file,
         module_name: module_name.as_deref(),
         template_cache: template_cache.clone(),
+        doc_comments: &resolved.doc_comments,
     });
 
     let errors: Vec<String> = resolved
@@ -113,12 +114,12 @@ pub fn wirescript_compile(source: String, module_name: Option<String>, files_jso
         return Err(JsValue::from_str(&errors.join("\n")));
     }
 
-    let placements = wirescript::layout::layout_root(&lowered.module).placements;
+    let lr = wirescript::layout::layout(&lowered.module);
     let registry = parse_prefab_registry(prefabs_json.as_deref().unwrap_or("{}"));
     let opts = EmitOptions {
         prefab_resolver: Some(registry_prefab_resolver(registry)),
         ..Default::default()
     };
-    emit_brz(&lowered.module, &placements, &opts, &template_cache)
+    emit_brz(&lowered.module, &lr, &opts, &template_cache)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }

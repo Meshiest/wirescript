@@ -30,11 +30,11 @@ fn rerouter_ports() -> GateIO {
 #[test]
 fn empty_module_produces_nonzero_brz_bytes() {
     let module = Module::new("phase1_empty");
-    let placements = HashMap::new();
+    let lr = wirescript::layout::LayoutResult::default();
     let template_cache = Arc::new(TemplateCache::new());
     let bytes = emit_brz(
         &module,
-        &placements,
+        &lr,
         &EmitOptions::default(),
         &template_cache,
     )
@@ -65,11 +65,15 @@ fn single_reroute_gate_inside_chip() {
 
     let mut placements = HashMap::new();
     placements.insert(rer_id, Placement { x: 0, y: 0, z: 2 });
+    let lr = wirescript::layout::LayoutResult {
+        placements,
+        ..Default::default()
+    };
 
     let template_cache = Arc::new(TemplateCache::new());
     let bytes = emit_brz(
         &module,
-        &placements,
+        &lr,
         &EmitOptions::default(),
         &template_cache,
     )
@@ -116,11 +120,15 @@ fn wire_between_two_gates_produces_connection() {
     let mut placements = HashMap::new();
     placements.insert(id_a, Placement { x: 0, y: 0, z: 2 });
     placements.insert(id_b, Placement { x: 8, y: 0, z: 2 });
+    let lr = wirescript::layout::LayoutResult {
+        placements,
+        ..Default::default()
+    };
 
     let template_cache = Arc::new(TemplateCache::new());
     let bytes = emit_brz(
         &module,
-        &placements,
+        &lr,
         &EmitOptions::default(),
         &template_cache,
     )

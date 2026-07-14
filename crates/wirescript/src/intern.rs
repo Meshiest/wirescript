@@ -69,6 +69,12 @@ pub mod sym {
     // carried on MicrochipInput/Output nodes so emit can place an outer
     // rerouter. Never written to the brick.
     def!(REROUTE_SIDE, "_reroute_side");
+    // Pseudo-property (not a game field): `@closed` — emit this chip's inner
+    // grid collapsed. Absent = open (the default for non-root chips).
+    def!(CHIP_CLOSED, "_closed");
+    // Pseudo-property (not a game field): the `///` doc comment preceding the
+    // chip declaration, rendered under the title on the opened plane's header.
+    def!(DOC_TEXT, "_doc");
 
     // Gate classes
     def!(LITERAL, "_Literal");

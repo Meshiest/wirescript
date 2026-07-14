@@ -68,6 +68,8 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 },
                 range: f.range.clone(),
                 inline: true,
+                label: None,
+                closed: false,
             };
             lower_chip_decl(ctx, &chip);
         }

@@ -26,7 +26,8 @@ Anonymous chips are purely organizational -- they group related gates into a mic
 
 ### `open` Modifier
 
-The `open` keyword marks an anonymous chip as "expanded by default" in the visual editor:
+Chips compile open by default now (see [Open and Closed Chips](#open-and-closed-chips)
+below), so the `open` keyword is a redundant no-op kept for backward compatibility:
 
 ```wirescript
 open chip {
@@ -318,6 +319,77 @@ var x: int = 10
 var y: int = 20
 Swap(x, y)  // x and y are passed by reference
 ```
+
+## Open and Closed Chips
+
+Non-root chips compile **open** by default: each chip's inner grid renders
+as an upright plane facing the same side of the chip as its `@bottom`
+rerouter pins, stacked in a wall above the placed microchip brick. The
+root module's plane sits at the bottom, its bottom edge just above the
+brick; directly-nested chips occupy a row above it; deeper nesting stacks
+higher still. Rows are centred and packed side by side, ordered first by
+parent position, then by source order within a parent. Within a plane the
+dataflow axis runs bottom-to-top: input gates sit at the bottom edge,
+outputs at the top.
+
+Annotate a chip with `@closed` to collapse it instead. A closed chip still
+reserves its slot in the wall, so opening it later in-game reveals it in
+place:
+
+```wirescript
+@closed chip Counter(bump: exec) -> (value: int) {
+  var n: int = 0
+  on bump { n = n + 1 }
+  out value = n.Value
+}
+
+@closed chip {
+  var scratch: int = 0
+}
+```
+
+`@closed` works on every chip form -- `chip Name(...)`, `chip { ... }`,
+`chip on`, and `chip let`. `open chip { ... }` still parses, but is now a
+redundant no-op; combining `@closed` with `open` on the same chip is an
+error.
+
+## Chip Labels and Headers
+
+`@label("text")` overrides the display text on a chip's shell-brick label
+and its plane header:
+
+```wirescript
+@label("Score Tracker") chip {
+  var score: int = 0
+}
+```
+
+`@label` also applies to `in`/`out` declarations at any nesting level, and
+stacks with a `@left`/`@right`/`@top`/`@bottom` side annotation in either
+order -- see [Outer Rerouter Pins](statements.md#left--right--top--bottom----outer-rerouter-pins).
+There it overrides the port's floating display label (and its rerouter pin
+label); the port's wiring-UI name is unaffected either way.
+
+Each opened plane with a title or doc comment gets a header at its top
+edge: the title rendered as `<size="96">...</>`, with the chip's `///` doc
+comment on the line below. The title is the chip's `@label` text if
+present, otherwise its name (the root chip's title is the module name); an
+anonymous, undocumented chip gets no header at all. Header text is passed
+through raw, so rich-text tags inside a name or doc comment render as rich
+text:
+
+```wirescript
+/// Counts ticks forever.
+chip Counter(bump: exec) -> (value: int) {
+  var n: int = 0
+  on bump { n = n + 1 }
+  out value = n.Value
+}
+```
+
+`mod` declarations always inline into their callers and never become a
+physical chip, so any annotation -- `@closed`, `@label`, or a side pin --
+on a `mod` is an error.
 
 ## `mod` -- Inline Chips
 

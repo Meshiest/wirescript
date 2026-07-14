@@ -52,7 +52,8 @@ fn labels_attach_to_chip_var_and_io_bricks() {
     // the `Foo` chip brick, Foo's internal `x`/`r` I/O gates, and Foo's
     // synthesized `_exec_in`/`_exec_out` ports (both read `exec`, see
     // microchip_io_label) — plus a smaller variable tag on the Var_Get and
-    // Var_Increment gates from the handler.
+    // Var_Increment gates from the handler, plus the two invisible plane
+    // header bricks (root plane + Foo plane).
     let labeled: Vec<String> = r
         .world
         .grids
@@ -70,8 +71,8 @@ fn labels_attach_to_chip_var_and_io_bricks() {
         .collect();
     assert_eq!(
         labeled.len(),
-        11,
-        "expected root + counter + tick + result + Foo + x + r + 2 exec ports + get/increment tags, got {labeled:#?}"
+        13,
+        "expected root + counter + tick + result + Foo + x + r + 2 exec ports + get/increment tags + 2 plane headers, got {labeled:#?}"
     );
 }
 
@@ -141,8 +142,12 @@ fn labels_serialize_with_style() {
     texts.sort_by(|a, b| a.partial_cmp(b).unwrap());
     // Element names at full size; the handler's Var_Get + Var_Increment
     // gates carry smaller `counter` tags; Foo's synthesized `_exec_in`/
-    // `_exec_out` ports each read `exec`.
+    // `_exec_out` ports each read `exec`; the root and Foo planes each get an
+    // invisible header brick with a `<size="96">{title}</>` text (no doc
+    // comments here, so no lines follow the title).
     let expected = [
+        ("<size=\"96\">Foo</>", 2.4),
+        ("<size=\"96\">labels</>", 2.4),
         ("Foo", 2.4),
         ("counter", 1.2),
         ("counter", 1.2),
@@ -160,4 +165,51 @@ fn labels_serialize_with_style() {
         .map(|(t, h)| (t.to_string(), *h))
         .collect();
     assert_eq!(texts, expected, "serialized label texts + sizes");
+}
+
+/// A chip's `///` doc comment renders on the header, below the `<size="96">`
+/// title line.
+#[test]
+fn doc_comment_renders_under_the_title() {
+    use brdb::IntoReader;
+    use brdb::schema::BrdbValue;
+
+    let src = "/// Adds one to x.\n\
+               /// Pure and simple.\n\
+               chip Foo(x: int) -> (r: int) { out r = x + 1 }\n\
+               let f = Foo(1)\n\
+               out result = f.r\n";
+    let cr = wirescript::compile::compile(CompileInput {
+        source: src,
+        file: "docs.ws",
+        module_name: None,
+    })
+    .expect("should compile");
+    let path = std::env::temp_dir().join("ws_header_doc_test.brz");
+    std::fs::write(&path, &cr.brz).expect("write brz");
+    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
+
+    let mut found = false;
+    for gid in 1..32 {
+        let chunks = match reader.brick_chunk_index(gid) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        for chunk in chunks {
+            if chunk.num_components == 0 {
+                continue;
+            }
+            let (_soa, comps) = reader
+                .component_chunk_soa(gid, chunk.index)
+                .expect("read components");
+            for c in comps {
+                if let Some(BrdbValue::String(text)) = c.get("Text") {
+                    if text == "<size=\"96\">Foo</>\nAdds one to x.\nPure and simple." {
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(found, "expected the Foo header with its doc comment");
 }

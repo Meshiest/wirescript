@@ -135,6 +135,42 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
                 ports: BINARY_PORTS,
             },
         ]);
+        // Colors run on the same PrimMath gate too: the variant member set
+        // includes LinearColor, so `c1 + c2` operates RGBA channel-wise and
+        // mixing a color with a scalar broadcasts it across the channels
+        // (`c * 2.0` scales every channel). The result is always a color.
+        rules.extend([
+            OpRule {
+                operands: &[Type::Color, Type::Color],
+                result: Type::Color,
+                gate_class: class_math,
+                ports: BINARY_PORTS,
+            },
+            OpRule {
+                operands: &[Type::Color, Type::Float],
+                result: Type::Color,
+                gate_class: class_math,
+                ports: BINARY_PORTS,
+            },
+            OpRule {
+                operands: &[Type::Color, Type::Int],
+                result: Type::Color,
+                gate_class: class_math,
+                ports: BINARY_PORTS,
+            },
+            OpRule {
+                operands: &[Type::Float, Type::Color],
+                result: Type::Color,
+                gate_class: class_math,
+                ports: BINARY_PORTS,
+            },
+            OpRule {
+                operands: &[Type::Int, Type::Color],
+                result: Type::Color,
+                gate_class: class_math,
+                ports: BINARY_PORTS,
+            },
+        ]);
         // Rotation family (quat / rotator) on the same PrimMath gate: the
         // variant member set also covers rotations, so `q1 * q2` composes two
         // rotations, etc. quat↔rotator are interchangeable rotation values, so
@@ -362,12 +398,15 @@ fn build_operators() -> Vec<OpSpec> {
             OpSpec {
                 op: "!",
                 arity: 1,
-                rules: NOT_TYPES.iter().map(|t| OpRule {
-                    operands: Box::leak(Box::new([t.clone()])),
-                    result: Bool,
-                    gate_class: gc::LOGICAL_NOT,
-                    ports: BOOL_UNARY_PORTS,
-                }).collect(),
+                rules: NOT_TYPES
+                    .iter()
+                    .map(|t| OpRule {
+                        operands: Box::leak(Box::new([t.clone()])),
+                        result: Bool,
+                        gate_class: gc::LOGICAL_NOT,
+                        ports: BOOL_UNARY_PORTS,
+                    })
+                    .collect(),
             }
         },
         logical_binary("^^", "BrickComponentType_WireGraph_Expr_LogicalXOR"),
@@ -417,10 +456,30 @@ fn build_operators() -> Vec<OpSpec> {
                 op: "**",
                 arity: 2,
                 rules: vec![
-                    OpRule { operands: &[Float, Float], result: Float, gate_class: gc::MATH_POW, ports: POW_PORTS },
-                    OpRule { operands: &[Int, Int], result: Int, gate_class: gc::MATH_POW, ports: POW_PORTS },
-                    OpRule { operands: &[Float, Int], result: Float, gate_class: gc::MATH_POW, ports: POW_PORTS },
-                    OpRule { operands: &[Int, Float], result: Float, gate_class: gc::MATH_POW, ports: POW_PORTS },
+                    OpRule {
+                        operands: &[Float, Float],
+                        result: Float,
+                        gate_class: gc::MATH_POW,
+                        ports: POW_PORTS,
+                    },
+                    OpRule {
+                        operands: &[Int, Int],
+                        result: Int,
+                        gate_class: gc::MATH_POW,
+                        ports: POW_PORTS,
+                    },
+                    OpRule {
+                        operands: &[Float, Int],
+                        result: Float,
+                        gate_class: gc::MATH_POW,
+                        ports: POW_PORTS,
+                    },
+                    OpRule {
+                        operands: &[Int, Float],
+                        result: Float,
+                        gate_class: gc::MATH_POW,
+                        ports: POW_PORTS,
+                    },
                 ],
             }
         },
@@ -442,8 +501,8 @@ fn build_operators() -> Vec<OpSpec> {
         {
             use Type::*;
             const CONCAT_TYPES: &[Type] = &[
-                String, Int, Float, Bool, Vector, Rotator, Quat, Color, Entity,
-                Controller, Character, Brick, Prefab,
+                String, Int, Float, Bool, Vector, Rotator, Quat, Color, Entity, Controller,
+                Character, Brick, Prefab,
             ];
             let mut rules = Vec::new();
             for a in CONCAT_TYPES {
@@ -525,10 +584,7 @@ mod tests {
             Type::Controller,
             Type::Character,
         ] {
-            for operands in [
-                [Type::String, t.clone()],
-                [t.clone(), Type::String],
-            ] {
+            for operands in [[Type::String, t.clone()], [t.clone(), Type::String]] {
                 let r = resolve_op("..", &operands)
                     .unwrap_or_else(|| panic!(".. on {operands:?} should resolve"));
                 assert!(matches!(r.result, Type::String));
@@ -556,7 +612,39 @@ mod tests {
             ] {
                 let r = resolve_op(op, &operands)
                     .unwrap_or_else(|| panic!("{op} {operands:?} should resolve"));
-                assert!(matches!(r.result, Type::Vector), "{op} {operands:?} -> vector");
+                assert!(
+                    matches!(r.result, Type::Vector),
+                    "{op} {operands:?} -> vector"
+                );
+                assert_eq!(r.gate_class, gate, "{op} {operands:?} uses {gate}");
+            }
+        }
+    }
+
+    #[test]
+    fn color_arithmetic_resolves_to_math_gates() {
+        for (op, gate) in [
+            ("+", "BrickComponentType_WireGraph_Expr_MathAdd"),
+            ("-", "BrickComponentType_WireGraph_Expr_MathSubtract"),
+            ("*", "BrickComponentType_WireGraph_Expr_MathMultiply"),
+            ("/", "BrickComponentType_WireGraph_Expr_MathDivide"),
+            ("%", "BrickComponentType_WireGraph_Expr_MathModulo"),
+        ] {
+            // color*color and color*scalar (both directions) lower to the same
+            // math gate and produce a color (RGBA channel-wise).
+            for operands in [
+                [Type::Color, Type::Color],
+                [Type::Color, Type::Float],
+                [Type::Color, Type::Int],
+                [Type::Float, Type::Color],
+                [Type::Int, Type::Color],
+            ] {
+                let r = resolve_op(op, &operands)
+                    .unwrap_or_else(|| panic!("{op} {operands:?} should resolve"));
+                assert!(
+                    matches!(r.result, Type::Color),
+                    "{op} {operands:?} -> color"
+                );
                 assert_eq!(r.gate_class, gate, "{op} {operands:?} uses {gate}");
             }
         }

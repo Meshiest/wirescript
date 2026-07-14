@@ -18,6 +18,7 @@
 mod compose;
 mod dag;
 mod region;
+pub mod wall;
 
 use std::collections::HashMap;
 

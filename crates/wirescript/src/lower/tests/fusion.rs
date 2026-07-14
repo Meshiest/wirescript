@@ -154,6 +154,7 @@ fn namespace_import_buffer_initializer_is_wired() {
         file: "test",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
     });
     let gates: Vec<_> = r.module.nodes.values().map(|n| n.gate_class).collect();
     let buffer = r

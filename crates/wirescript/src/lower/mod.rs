@@ -66,6 +66,7 @@ pub struct LowerInput<'a> {
     pub file: &'a str,
     pub module_name: Option<&'a str>,
     pub template_cache: Arc<TemplateCache>,
+    pub doc_comments: &'a HashMap<usize, String>,
 }
 
 pub fn lower(input: LowerInput<'_>) -> LowerResult {
@@ -113,9 +114,11 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         exec_branch_depth: 0,
         exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
+        pending_return_record: None,
         chip_call_stack: Vec::new(),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
         is_root_module: true,
+        doc_comments: input.doc_comments,
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -689,6 +692,10 @@ pub fn compile_chip_template(
         },
     );
 
+    // Resource-estimation templates don't need real doc text (DOC_TEXT is
+    // display-only) — an empty map keeps the LowerCtx lifetime local.
+    let empty_docs: HashMap<usize, String> = HashMap::new();
+
     let mut ctx = LowerCtx {
         builder,
         ids: IdAllocator::default(),
@@ -716,6 +723,7 @@ pub fn compile_chip_template(
         exec_branch_depth: 0,
         exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
+        pending_return_record: None,
         chip_call_stack: if chip_decl.name.is_empty() {
             Vec::new()
         } else {
@@ -723,6 +731,7 @@ pub fn compile_chip_template(
         },
         known_fn_names: Arc::new(HashSet::new()),
         is_root_module: false,
+        doc_comments: &empty_docs,
     };
 
     // Create input ports
@@ -850,6 +859,7 @@ pub fn compile_chip_template(
                     o.value.as_ref(),
                     o.typ.as_ref(),
                     o.side,
+                    o.label.as_deref(),
                     &o.range,
                 );
             }

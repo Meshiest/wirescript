@@ -124,6 +124,12 @@ pub(super) struct LowerCtx<'a> {
     /// mod call. Its internal output nodes are removed, so `let s = mod(...)`
     /// consumes this to bind `s` as a record (`s.field` reads the source port).
     pub(super) pending_inline_record: Option<HashMap<crate::intern::Sym, Binding>>,
+    /// Field→binding map stashed by a `return { ... }` record literal while an
+    /// inline mod body is being lowered. A record literal is not a standalone
+    /// expression, and `-> { a, b }` is a single record-typed output, so the
+    /// call consumes this (instead of the removed output node) to bind the
+    /// caller's record. Set only by a record-literal return; taken by the call.
+    pub(super) pending_return_record: Option<HashMap<crate::intern::Sym, Binding>>,
     /// Source ranges of chips/mods whose bodies are being lowered on the current
     /// call path (child contexts inherit a copy). Every call is expanded into the
     /// wire graph at compile time, so a body that (transitively) calls itself
@@ -142,6 +148,9 @@ pub(super) struct LowerCtx<'a> {
     /// True only for the compiled entry file's root LowerCtx. `@side` port
     /// annotations are legal only there (WS023 elsewhere).
     pub(super) is_root_module: bool,
+    /// `///` doc comments keyed by the declaration's source start offset.
+    /// Consumed when stamping `DOC_TEXT` onto chip nodes.
+    pub(super) doc_comments: &'a HashMap<usize, String>,
 }
 
 impl<'a> LowerCtx<'a> {

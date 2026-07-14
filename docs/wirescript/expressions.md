@@ -48,6 +48,7 @@ let s = "x=" .. x + 1  // = "x=" .. (x + 1) -- careful!
 | `/` | Division | (same as `+`) | (same as `+`) |
 | `%` | Modulo | (same as `+`) | (same as `+`) |
 | `+` `-` `*` `/` `%` | Vector math | `vector, vector` (or `vector` + scalar) | `vector` |
+| `+` `-` `*` `/` `%` | Color math | `color, color` (or `color` + scalar) | `color` |
 | `+` `-` `*` `/` `%` | Rotation math | `quat, quat` / `rotator, rotator` (or a mix) | `quat`/`rotator` |
 | `+` `-` `*` `/` `%` | Object operand | `int`/`float` + an object (player, entity, …) | numeric |
 | `**` | Exponentiation | `int`/`float` (not vectors) | (same as `+`) |
@@ -61,6 +62,13 @@ the same math gates (whose inputs accept the vector, `f64` and `i64` wire
 variants). Mixing a vector with a scalar broadcasts the scalar across the
 components (`v * 2.0`, `10.0 * v`, `v / 4`); the result is a vector. The
 `Scale` helper still works for explicit vector–scalar scaling.
+
+Colors work the same way — the math gate's variant set also covers `color`
+(`LinearColor`), so `+ - * / %` operate **RGBA channel-wise** on two `color`
+operands, and mixing a color with a **number** broadcasts that number across the
+channels: add one to lighten (`c + 0.1`), multiply to scale (`tint * 0.5` dims
+every channel including alpha), either direction (`0.1 + c`, `2 * c`). The result
+is a color.
 
 The same gates also accept the rotation family (`quat` / `rotator`), so `q1 * q2`
 composes two rotations. Same-type operands keep their type; a `quat`/`rotator`
@@ -80,6 +88,9 @@ let c = 2 ** 10      // 1024: int
 let d = -42           // -42: int (negative literal folded at parse time)
 let p = Vec(1.0, 2.0, 3.0) + Vec(4.0, 5.0, 6.0)  // (5, 7, 9): vector
 let q = Vec(1.0, 2.0, 3.0) * 2.0                 // (2, 4, 6): vector × scalar
+let blend = c1 * 0.5 + c2 * 0.5                  // RGBA channel-wise color blend: color
+let lighter = tint + 0.1                          // add a number to every channel: color
+let dimmer = tint * 0.5                           // multiply every channel: color
 let spin = a1.ToRotation() * a2.ToRotation()     // compose two rotations: quat
 let n = 1 + player                                // object → (player || false)
 ```

@@ -116,7 +116,7 @@
       "patterns": [
         {
           "name": "storage.modifier.annotation.wirescript",
-          "match": "@(left|right|top|bottom)\\b"
+          "match": "@(left|right|top|bottom|label|closed)\\b"
         }
       ]
     },

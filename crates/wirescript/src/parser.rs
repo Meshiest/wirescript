@@ -147,6 +147,15 @@ fn trigger_to_expr(t: &Trigger) -> Expr {
 
 // ---------- parser state ----------
 
+/// Annotations consumed before a declaration. Each keeps its source range
+/// for error reporting at the consuming site.
+#[derive(Default)]
+struct ParsedAnnotations {
+    side: Option<(PortSide, SourceRange)>,
+    label: Option<(String, SourceRange)>,
+    closed: Option<SourceRange>,
+}
+
 struct Parser<'a> {
     tokens: Vec<Token>,
     file: &'a str,
@@ -376,16 +385,60 @@ impl<'a> Parser<'a> {
         self.eat_newlines();
         let t = self.peek().clone();
         if t.kind == TokenKind::Annotation {
-            let side = self.parse_side_annotation();
+            let anns = self.parse_annotations();
             let t2 = self.peek().clone();
-            if t2.kind == TokenKind::Kw && t2.text == "in" {
-                return Some(self.parse_in_decl(side));
+            let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
+            if kw("in") || kw("out") {
+                if let Some(r) = &anns.closed {
+                    self.error(
+                        "@closed is not allowed on 'in'/'out' declarations".to_string(),
+                        r.start,
+                        r.end,
+                    );
+                }
+                let side = anns.side.map(|(s, _)| s);
+                let label = anns.label.map(|(l, _)| l);
+                if kw("in") {
+                    return Some(self.parse_in_decl(side, label));
+                }
+                return Some(TopDecl::Out(self.parse_out_binding(side, label)));
             }
-            if t2.kind == TokenKind::Kw && t2.text == "out" {
-                return Some(TopDecl::Out(self.parse_out_binding(side)));
+            let next_is_open_chip = kw("open")
+                && self.peek_at(1).kind == TokenKind::Kw
+                && self.peek_at(1).text == "chip";
+            if kw("chip") || next_is_open_chip {
+                if let Some((_, r)) = &anns.side {
+                    self.error(
+                        "a side annotation must be followed by an 'in' or 'out' declaration"
+                            .to_string(),
+                        r.start,
+                        r.end,
+                    );
+                }
+                let label = anns.label.map(|(l, _)| l);
+                if next_is_open_chip {
+                    if let Some(r) = &anns.closed {
+                        self.error(
+                            "@closed cannot be combined with 'open chip'".to_string(),
+                            r.start,
+                            r.end,
+                        );
+                    }
+                    self.advance(); // consume "open"
+                    return Some(self.parse_chip_decl(true, label, false));
+                }
+                return Some(self.parse_chip_decl(false, label, anns.closed.is_some()));
+            }
+            if kw("mod") {
+                self.error(
+                    "annotations are not allowed on 'mod' declarations".to_string(),
+                    t.start,
+                    t2.end,
+                );
+                return Some(self.parse_mod_decl());
             }
             self.error(
-                "a side annotation must be followed by an 'in' or 'out' declaration"
+                "an annotation must be followed by an 'in', 'out', or chip declaration"
                     .to_string(),
                 t.start,
                 t2.end,
@@ -393,7 +446,7 @@ impl<'a> Parser<'a> {
             if t2.kind == TokenKind::Eof {
                 return None;
             }
-            return self.parse_top_decl(); // annotation consumed → guaranteed progress
+            return self.parse_top_decl(); // annotations consumed → guaranteed progress
         }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
@@ -405,17 +458,17 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "buffer" => return Some(self.parse_buffer_decl()),
-                "in" => return Some(self.parse_in_decl(None)),
-                "out" => return Some(TopDecl::Out(self.parse_out_binding(None))),
+                "in" => return Some(self.parse_in_decl(None, None)),
+                "out" => return Some(TopDecl::Out(self.parse_out_binding(None, None))),
                 "let" => return Some(self.parse_let_decl()),
                 "on" => return Some(TopDecl::Handler(self.parse_handler())),
                 "array" => return Some(self.parse_array_decl()),
-                "chip" => return Some(self.parse_chip_decl(false)),
+                "chip" => return Some(self.parse_chip_decl(false, None, false)),
                 "mod" => return Some(self.parse_mod_decl()),
                 "open" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
                         self.advance(); // consume "open"
-                        return Some(self.parse_chip_decl(true));
+                        return Some(self.parse_chip_decl(true, None, false));
                     }
                 }
                 "fn" => return Some(self.parse_fn_decl()),
@@ -496,7 +549,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_in_decl(&mut self, side: Option<PortSide>) -> TopDecl {
+    fn parse_in_decl(&mut self, side: Option<PortSide>, label: Option<String>) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("in")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         self.expect(TokenKind::Colon, None);
@@ -507,40 +560,91 @@ impl<'a> Parser<'a> {
             name,
             typ,
             side,
+            label,
             range: self.make_range(start, end),
         })
     }
 
-    /// Consume a leading `@side` annotation token (plus any duplicates, which
-    /// are errors), returning the side. Newlines after the annotation are
-    /// eaten so the annotation may sit on its own line above the declaration.
-    fn parse_side_annotation(&mut self) -> Option<PortSide> {
-        let tok = self.expect(TokenKind::Annotation, None);
-        let side = PortSide::from_word(&tok.text);
-        if side.is_none() {
-            self.error(
-                format!(
-                    "unknown annotation '@{}'; expected @left, @right, @top, or @bottom",
-                    tok.text
-                ),
-                tok.start,
-                tok.end,
-            );
-        }
-        loop {
+    /// Consume a run of leading annotations (`@left`-style sides,
+    /// `@label("…")`, `@closed`). Newlines after each annotation are eaten so
+    /// annotations may sit on their own lines above the declaration.
+    fn parse_annotations(&mut self) -> ParsedAnnotations {
+        let mut anns = ParsedAnnotations::default();
+        while self.check(TokenKind::Annotation, None) {
+            let tok = self.advance();
+            match tok.text.as_str() {
+                "label" => {
+                    let mut text: Option<(String, Pos)> = None;
+                    if self.match_tok(TokenKind::LParen, None).is_some() {
+                        if self.check(TokenKind::Str, None) {
+                            let s_tok = self.advance();
+                            let s = match &s_tok.value {
+                                Some(TokenValue::Str(s)) => s.clone(),
+                                _ => s_tok.text.clone(),
+                            };
+                            text = Some((s, s_tok.end));
+                        }
+                        self.match_tok(TokenKind::RParen, None);
+                    }
+                    match text {
+                        Some((s, end)) if s.is_empty() => {
+                            self.error(
+                                "@label text must not be empty".to_string(),
+                                tok.start,
+                                end,
+                            );
+                        }
+                        Some((s, end)) => {
+                            if anns.label.is_some() {
+                                self.error("duplicate @label".to_string(), tok.start, end);
+                            } else {
+                                anns.label = Some((s, self.make_range(tok.start, end)));
+                            }
+                        }
+                        None => self.error(
+                            "@label requires a string argument: @label(\"text\")".to_string(),
+                            tok.start,
+                            tok.end,
+                        ),
+                    }
+                }
+                "closed" => {
+                    if anns.closed.is_some() {
+                        self.error("duplicate @closed".to_string(), tok.start, tok.end);
+                    } else {
+                        anns.closed = Some(self.make_range(tok.start, tok.end));
+                    }
+                }
+                w => match PortSide::from_word(w) {
+                    Some(side) => {
+                        if anns.side.is_some() {
+                            self.error(
+                                "duplicate side annotation".to_string(),
+                                tok.start,
+                                tok.end,
+                            );
+                        } else {
+                            anns.side = Some((side, self.make_range(tok.start, tok.end)));
+                        }
+                    }
+                    None => self.error(
+                        format!(
+                            "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, or @closed",
+                            w
+                        ),
+                        tok.start,
+                        tok.end,
+                    ),
+                },
+            }
             while self.check(TokenKind::Newline, None) {
                 self.advance();
             }
-            if !self.check(TokenKind::Annotation, None) {
-                break;
-            }
-            let dup = self.advance();
-            self.error("duplicate side annotation".to_string(), dup.start, dup.end);
         }
-        side
+        anns
     }
 
-    fn parse_out_binding(&mut self, side: Option<PortSide>) -> OutBinding {
+    fn parse_out_binding(&mut self, side: Option<PortSide>, label: Option<String>) -> OutBinding {
         let start = self.expect(TokenKind::Kw, Some("out")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let typ = if self.match_tok(TokenKind::Colon, None).is_some() {
@@ -557,6 +661,7 @@ impl<'a> Parser<'a> {
                 value: Some(value),
                 typ,
                 side,
+                label: label.clone(),
                 range: self.make_range(start, end),
             }
         } else {
@@ -567,6 +672,7 @@ impl<'a> Parser<'a> {
                 value: None,
                 typ,
                 side,
+                label,
                 range: self.make_range(start, end),
             }
         }
@@ -844,7 +950,7 @@ impl<'a> Parser<'a> {
     }
 
     // `chip Name(params) [-> outputs] { body }`
-    fn parse_chip_decl(&mut self, open: bool) -> TopDecl {
+    fn parse_chip_decl(&mut self, open: bool, label: Option<String>, closed: bool) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("chip")).start;
         // Shorthand: `chip let a = 1, b = 2, c = 3`
         if self.check(TokenKind::Kw, Some("let")) {
@@ -891,6 +997,8 @@ impl<'a> Parser<'a> {
                     range: self.make_range(start, end),
                 },
                 range: self.make_range(start, end),
+                label: label.clone(),
+                closed,
             });
         }
         // `chip on trigger { ... }` → `chip { on trigger { ... } }`
@@ -904,6 +1012,8 @@ impl<'a> Parser<'a> {
                     range: self.make_range(start, end),
                 },
                 range: self.make_range(start, end),
+                label: label.clone(),
+                closed,
             });
         }
         // Anonymous chip: `chip { body }` — no name, no params.
@@ -914,6 +1024,8 @@ impl<'a> Parser<'a> {
                 open,
                 body,
                 range: self.make_range(start, end),
+                label,
+                closed,
             });
         }
         let name = self.expect(TokenKind::Ident, None).text;
@@ -932,6 +1044,8 @@ impl<'a> Parser<'a> {
             body,
             range: self.make_range(start, end),
             inline: false,
+            label,
+            closed,
         })
     }
 
@@ -1035,6 +1149,8 @@ impl<'a> Parser<'a> {
             body,
             range: self.make_range(start, end),
             inline: true,
+            label: None,
+            closed: false,
         })
     }
 
@@ -1586,6 +1702,18 @@ impl<'a> Parser<'a> {
             let stmt_start = self.peek().start;
             if let Some(s) = self.parse_stmt() {
                 if let Some(doc) = doc {
+                    // Key by the statement's own range start — this is the
+                    // offset lowering looks doc comments up by (e.g. a chip
+                    // decl's range starts at the `chip` keyword). When the
+                    // statement begins with annotations (`@label(...)`,
+                    // `@closed`, `@left`/etc.), `stmt_start` is the `@` token
+                    // instead, which no lookup ever queries — so also key
+                    // under `stmt_start` (harmless when it's the same offset)
+                    // to keep this the safest, most permissive insertion.
+                    let decl_start = s.range().start.offset;
+                    if decl_start != stmt_start.offset {
+                        self.doc_comments.insert(decl_start, doc.clone());
+                    }
                     self.doc_comments.insert(stmt_start.offset, doc);
                 }
                 // Drain any synthetic let bindings queued by parse_handler
@@ -1608,19 +1736,72 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Option<Stmt> {
         let t = self.peek().clone();
         if t.kind == TokenKind::Annotation {
-            let side = self.parse_side_annotation();
+            let anns = self.parse_annotations();
             let t2 = self.peek().clone();
-            if t2.kind == TokenKind::Kw && t2.text == "in" {
-                if let TopDecl::In(i) = self.parse_in_decl(side) {
-                    return Some(Stmt::In(i));
+            let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
+            if kw("in") || kw("out") {
+                if let Some(r) = &anns.closed {
+                    self.error(
+                        "@closed is not allowed on 'in'/'out' declarations".to_string(),
+                        r.start,
+                        r.end,
+                    );
+                }
+                let side = anns.side.map(|(s, _)| s);
+                let label = anns.label.map(|(l, _)| l);
+                if kw("in") {
+                    if let TopDecl::In(i) = self.parse_in_decl(side, label) {
+                        return Some(Stmt::In(i));
+                    }
+                    return None;
+                }
+                return Some(Stmt::OutBinding(self.parse_out_binding(side, label)));
+            }
+            let next_is_open_chip = kw("open")
+                && self.peek_at(1).kind == TokenKind::Kw
+                && self.peek_at(1).text == "chip";
+            if kw("chip") || next_is_open_chip {
+                if let Some((_, r)) = &anns.side {
+                    self.error(
+                        "a side annotation must be followed by an 'in' or 'out' declaration"
+                            .to_string(),
+                        r.start,
+                        r.end,
+                    );
+                }
+                let label = anns.label.map(|(l, _)| l);
+                let (open, closed) = if next_is_open_chip {
+                    if let Some(r) = &anns.closed {
+                        self.error(
+                            "@closed cannot be combined with 'open chip'".to_string(),
+                            r.start,
+                            r.end,
+                        );
+                    }
+                    self.advance(); // consume "open"
+                    (true, false)
+                } else {
+                    (false, anns.closed.is_some())
+                };
+                match self.parse_chip_decl(open, label, closed) {
+                    TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
+                    TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
+                    _ => return None,
+                }
+            }
+            if kw("mod") {
+                self.error(
+                    "annotations are not allowed on 'mod' declarations".to_string(),
+                    t.start,
+                    t2.end,
+                );
+                if let TopDecl::Chip(c) = self.parse_mod_decl() {
+                    return Some(Stmt::ChipDecl(c));
                 }
                 return None;
             }
-            if t2.kind == TokenKind::Kw && t2.text == "out" {
-                return Some(Stmt::OutBinding(self.parse_out_binding(side)));
-            }
             self.error(
-                "a side annotation must be followed by an 'in' or 'out' declaration"
+                "an annotation must be followed by an 'in', 'out', or chip declaration"
                     .to_string(),
                 t.start,
                 t2.end,
@@ -1628,7 +1809,7 @@ impl<'a> Parser<'a> {
             if matches!(t2.kind, TokenKind::Eof | TokenKind::RBrace) {
                 return None;
             }
-            return self.parse_stmt(); // annotation consumed → guaranteed progress
+            return self.parse_stmt(); // annotations consumed → guaranteed progress
         }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
@@ -1658,7 +1839,7 @@ impl<'a> Parser<'a> {
                         return Some(Stmt::Buffer(v));
                     }
                 }
-                "out" => return Some(Stmt::OutBinding(self.parse_out_binding(None))),
+                "out" => return Some(Stmt::OutBinding(self.parse_out_binding(None, None))),
                 "let" => {
                     let decl = self.parse_let_decl();
                     match decl {
@@ -1673,7 +1854,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "in" => {
-                    if let TopDecl::In(i) = self.parse_in_decl(None) {
+                    if let TopDecl::In(i) = self.parse_in_decl(None, None) {
                         return Some(Stmt::In(i));
                     }
                 }
@@ -1698,7 +1879,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "if" => return Some(self.parse_if_stmt()),
-                "chip" => match self.parse_chip_decl(false) {
+                "chip" => match self.parse_chip_decl(false, None, false) {
                     TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
                     TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
                     _ => {}
@@ -1706,7 +1887,7 @@ impl<'a> Parser<'a> {
                 "open" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
                         self.advance();
-                        if let TopDecl::AnonChip(ac) = self.parse_chip_decl(true) {
+                        if let TopDecl::AnonChip(ac) = self.parse_chip_decl(true, None, false) {
                             return Some(Stmt::AnonChip(ac));
                         }
                     }
@@ -2818,7 +2999,7 @@ mod tests {
         assert!(
             r.diagnostics
                 .iter()
-                .any(|d| d.message.contains("must be followed by an 'in' or 'out'")),
+                .any(|d| d.message.contains("must be followed by an 'in', 'out', or chip declaration")),
             "diags: {:?}",
             r.diagnostics
         );
@@ -2852,5 +3033,152 @@ mod tests {
             panic!("stmt: {:?}", ac.body.stmts[0])
         };
         assert_eq!(i.side, Some(PortSide::Left));
+    }
+
+    #[test]
+    fn label_annotation_on_anon_chip() {
+        let r = parse("@label(\"Score Tracker\") chip { var a: int = 0 }", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::AnonChip(ac) = &r.ast.decls[0] else {
+            panic!("decl 0: {:?}", r.ast.decls[0])
+        };
+        assert_eq!(ac.label.as_deref(), Some("Score Tracker"));
+        assert!(!ac.closed);
+    }
+
+    #[test]
+    fn closed_annotation_on_named_chip_and_chip_forms() {
+        let r = parse(
+            "@closed chip Foo(x: int) { }\n\
+             @closed chip on t { }\n\
+             @closed chip let a = 1\n\
+             @label(\"consts\") @closed chip { }",
+            "test",
+        );
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::Chip(c) = &r.ast.decls[0] else { panic!() };
+        assert!(c.closed);
+        for i in 1..=2 {
+            let TopDecl::AnonChip(ac) = &r.ast.decls[i] else {
+                panic!("decl {i}: {:?}", r.ast.decls[i])
+            };
+            assert!(ac.closed, "decl {i} should be closed");
+        }
+        let TopDecl::AnonChip(ac) = &r.ast.decls[3] else { panic!() };
+        assert!(ac.closed);
+        assert_eq!(ac.label.as_deref(), Some("consts"));
+    }
+
+    #[test]
+    fn label_stacks_with_side_on_ports_any_order() {
+        let r = parse(
+            "@left @label(\"Fire!\") in t: exec\n@label(\"Total\") @right out s = t",
+            "test",
+        );
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::In(i) = &r.ast.decls[0] else { panic!() };
+        assert_eq!(i.side, Some(PortSide::Left));
+        assert_eq!(i.label.as_deref(), Some("Fire!"));
+        let TopDecl::Out(o) = &r.ast.decls[1] else { panic!() };
+        assert_eq!(o.side, Some(PortSide::Right));
+        assert_eq!(o.label.as_deref(), Some("Total"));
+    }
+
+    #[test]
+    fn closed_on_port_errors() {
+        let r = parse("@closed in t: exec", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("@closed is not allowed on 'in'/'out'")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+        // The port itself still parses.
+        assert!(matches!(&r.ast.decls[0], TopDecl::In(_)));
+    }
+
+    #[test]
+    fn label_argument_errors() {
+        let r = parse("@label chip { }", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("@label requires a string argument")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+        let r = parse("@label(\"\") chip { }", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("@label text must not be empty")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+        let r = parse("@label(\"a\") @label(\"b\") chip { }", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("duplicate @label")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn closed_open_chip_contradiction_errors() {
+        let r = parse("@closed open chip { var a: int = 0 }", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("@closed cannot be combined with 'open chip'")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn annotation_on_mod_errors() {
+        let r = parse("@label(\"x\") mod inc(v: int) -> int { return v + 1 }", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("annotations are not allowed on 'mod'")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+        // The mod itself still parses.
+        assert!(matches!(&r.ast.decls[0], TopDecl::Chip(c) if c.inline));
+    }
+
+    #[test]
+    fn unknown_annotation_lists_all_words() {
+        let r = parse("@middle in a: bool", "test");
+        assert!(
+            r.diagnostics[0]
+                .message
+                .contains("expected @left, @right, @top, @bottom, @label, or @closed"),
+            "diags: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn open_chip_still_parses_as_noop() {
+        let r = parse("open chip { var a: int = 0 }", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::AnonChip(ac) = &r.ast.decls[0] else { panic!() };
+        assert!(ac.open);
+        assert!(!ac.closed);
+    }
+
+    #[test]
+    fn chip_annotations_parse_at_statement_level() {
+        let r = parse("chip Outer(x: int) { @closed chip { var a: int = 0 } }", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::Chip(c) = &r.ast.decls[0] else { panic!() };
+        let Stmt::AnonChip(ac) = &c.body.stmts[0] else {
+            panic!("stmt: {:?}", c.body.stmts[0])
+        };
+        assert!(ac.closed);
     }
 }

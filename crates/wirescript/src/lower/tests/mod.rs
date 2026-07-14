@@ -3,6 +3,7 @@ use crate::parser::parse;
 use crate::template_cache::TemplateCache;
 use crate::typecheck::typecheck;
 
+mod annotations;
 mod basic;
 mod block_expr;
 mod chip;
@@ -33,6 +34,7 @@ pub(super) fn compile(src: &str) -> LowerResult {
         file: "test",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &parsed.doc_comments,
     });
     r.diagnostics.extend(
         tc.diagnostics
@@ -61,6 +63,7 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
         file: "main",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
     })
 }
 

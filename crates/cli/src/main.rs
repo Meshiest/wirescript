@@ -133,17 +133,13 @@ fn run_wirescript(
             file: &file,
             module_name: module_name.as_deref(),
             template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
+            doc_comments: &resolved.doc_comments,
         });
         wirescript::ir::dump_module_with_source(&lowered.module, 0, Some(&src));
     }
 
     let opts = wirescript::EmitOptions {
         chip_pos: wirescript::Placement { x, y, z },
-        inner_grid_location: brdb::Vector3f {
-            x: x as f32,
-            y: y as f32,
-            z: z as f32 + 21.0,
-        },
         open,
         ..Default::default()
     };

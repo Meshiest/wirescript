@@ -14,6 +14,7 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             o.value.as_ref(),
             o.typ.as_ref(),
             o.side,
+            o.label.as_deref(),
             &o.range,
         ),
         TopDecl::Let(l) => pre_declare_exec_signal(ctx, l),
@@ -26,9 +27,15 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             });
             if let Some(node) = ctx.builder.module.nodes.get_mut(&chip_node_id) {
                 node.kind = NodeKind::Chip;
-                if ac.open {
-                    std::sync::Arc::make_mut(&mut node.properties)
-                        .insert(intern_static("_open"), Literal::Bool(true));
+                let props = std::sync::Arc::make_mut(&mut node.properties);
+                if ac.closed {
+                    props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
+                }
+                if let Some(label) = &ac.label {
+                    props.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+                }
+                if let Some(doc) = ctx.doc_comments.get(&ac.range.start.offset) {
+                    props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
                 }
             }
             // Tag pre-declared nodes with chip_id.
@@ -516,6 +523,12 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
         .builder
         .add_input(&mut ctx.ids, &d.name, t.clone(), d.range.clone());
     apply_port_side(ctx, node_id, d.side, &d.range);
+    if let Some(label) = &d.label {
+        if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
+            std::sync::Arc::make_mut(&mut node.properties)
+                .insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+        }
+    }
     ctx.scope.insert(
         d.name.clone(),
         Binding::Input(NodeRecord { node_id, ty: t }),
@@ -528,6 +541,7 @@ pub(super) fn pre_declare_output(
     value: Option<&Expr>,
     typ: Option<&TypeExpr>,
     side: Option<crate::ast::PortSide>,
+    label: Option<&str>,
     range: &SourceRange,
 ) {
     let t = if let Some(v) = value {
@@ -541,6 +555,12 @@ pub(super) fn pre_declare_output(
         .builder
         .add_output(&mut ctx.ids, name, t.clone(), range.clone());
     apply_port_side(ctx, node_id, side, range);
+    if let Some(label) = label {
+        if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
+            std::sync::Arc::make_mut(&mut node.properties)
+                .insert(*sym::NAME_LABEL, Literal::String(label.to_string()));
+        }
+    }
     ctx.scope.insert(
         crate::lower::context::output_scope_key(name),
         Binding::Output(NodeRecord { node_id, ty: t }),

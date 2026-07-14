@@ -131,7 +131,14 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             lower_buffer_body(ctx, b);
         }
         Stmt::Return { value, .. } => {
-            if let Some(expr) = value {
+            if let Some(Expr::RecordLit { fields, .. }) = value {
+                // A record-literal return: `-> { a, b }` is a single record-typed
+                // output, and a bare record literal is not a standalone
+                // expression, so destructure it into a field->binding map. The
+                // inline-mod call binds the caller's record from this (see
+                // `pending_return_record`) rather than from a single value port.
+                ctx.pending_return_record = Some(lower_record_lit(ctx, fields));
+            } else if let Some(expr) = value {
                 let val_port = lower_expr(ctx, expr);
                 let ret_var = ctx.mod_return_var.clone();
                 if let Some(ref var_rec) = ret_var {

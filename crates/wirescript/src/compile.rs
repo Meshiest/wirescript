@@ -4,7 +4,7 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::emit::Placement;
 use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world, emit_brz};
 use crate::ir::NodeId;
-use crate::layout::layout_root;
+use crate::layout::layout;
 use crate::lower::{LowerInput, lower};
 use crate::resolve::{FsLoader, resolve};
 use crate::template_cache::TemplateCache;
@@ -122,6 +122,12 @@ fn compile_with_opts_inner(
 
     report(&progress);
     let resolved = resolve(source, file, &FsLoader);
+    opts.module_doc = resolved
+        .ast
+        .decls
+        .first()
+        .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
+        .cloned();
     let tc = typecheck(&resolved.ast, file);
 
     let template_cache = {
@@ -137,6 +143,7 @@ fn compile_with_opts_inner(
         file,
         module_name,
         template_cache: template_cache.clone(),
+        doc_comments: &resolved.doc_comments,
     });
 
     // Every wire-graph cycle must cross a tick barrier (Buffer/Queue) — an
@@ -162,20 +169,8 @@ fn compile_with_opts_inner(
     }
 
     report(&progress);
-    let lr = layout_root(&lowered.module);
+    let lr = layout(&lowered.module);
 
-    const EDGE_MARGIN: i32 = 5;
-    const MIN_EXTENT: i32 = 5;
-    let span_x = (lr.bounds_max.x - lr.bounds_min.x) / 2;
-    let span_y = (lr.bounds_max.y - lr.bounds_min.y) / 2;
-    let extent_x = (span_x + EDGE_MARGIN).max(MIN_EXTENT);
-    let extent_y = (span_y + EDGE_MARGIN).max(MIN_EXTENT);
-
-    opts.inner_plane_extent = brdb::IntVector {
-        x: extent_x,
-        y: extent_y,
-        z: 2,
-    };
     if opts.description.is_empty() {
         opts.description = format!(
             "wirescript compile: {}",
@@ -187,8 +182,7 @@ fn compile_with_opts_inner(
     }
 
     report(&progress);
-    let brz = emit_brz(&lowered.module, &lr.placements, &opts, &template_cache)
-        .map_err(CompileError::Emit)?;
+    let brz = emit_brz(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
 
     if let Some(ref cb) = progress {
         cb(CompileProgress {
@@ -223,6 +217,12 @@ pub fn compile_to_world(
     }
     let t0 = std::time::Instant::now();
     let resolved = resolve(source, file, &FsLoader);
+    opts.module_doc = resolved
+        .ast
+        .decls
+        .first()
+        .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
+        .cloned();
     let tc = typecheck(&resolved.ast, file);
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());
@@ -234,6 +234,7 @@ pub fn compile_to_world(
         file,
         module_name,
         template_cache: template_cache.clone(),
+        doc_comments: &resolved.doc_comments,
     });
 
     // Unbarriered wire-graph cycles error (WS005) — see compile_with_opts.
@@ -256,17 +257,8 @@ pub fn compile_to_world(
         return Err(CompileError::HasErrors(errors));
     }
 
-    let lr = layout_root(&lowered.module);
+    let lr = layout(&lowered.module);
 
-    const EDGE_MARGIN: i32 = 5;
-    const MIN_EXTENT: i32 = 5;
-    let span_x = (lr.bounds_max.x - lr.bounds_min.x) / 2;
-    let span_y = (lr.bounds_max.y - lr.bounds_min.y) / 2;
-    opts.inner_plane_extent = brdb::IntVector {
-        x: (span_x + EDGE_MARGIN).max(MIN_EXTENT),
-        y: (span_y + EDGE_MARGIN).max(MIN_EXTENT),
-        z: 2,
-    };
     if opts.description.is_empty() {
         opts.description = format!(
             "wirescript compile: {}",
@@ -277,8 +269,8 @@ pub fn compile_to_world(
         );
     }
 
-    let world = build_world(&lowered.module, &lr.placements, &opts, &template_cache)
-        .map_err(CompileError::Emit)?;
+    let world =
+        build_world(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
     eprintln!("[compile] total: {:.2}s", t0.elapsed().as_secs_f64());
 
     Ok(CompileWorldResult {

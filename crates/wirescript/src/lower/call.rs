@@ -292,7 +292,7 @@ pub(super) fn lower_chip_call_inline(
     // Track their IDs so cleanup only removes these, not parent outputs.
     let mut mod_output_ids = Vec::new();
     for out in &chip_decl.outputs {
-        pre_declare_output(ctx, &out.name, None, Some(&out.typ), None, &out.range);
+        pre_declare_output(ctx, &out.name, None, Some(&out.typ), None, None, &out.range);
         if let Some(r) = ctx.lookup_output(&out.name) {
             mod_output_ids.push(r.node_id);
         }
@@ -479,7 +479,14 @@ pub(super) fn lower_chip_call_inline(
     // so `let s = mod(...); s.field` resolves to the right port (the output
     // nodes below are internal and removed). Set definitively for THIS call —
     // `None` for single-output — so a nested multi-output arg call doesn't leak.
-    ctx.pending_inline_record = if chip_decl.outputs.len() > 1 {
+    let return_record = ctx.pending_return_record.take();
+    ctx.pending_inline_record = if let Some(rec) = return_record {
+        // A `return { ... }` record literal: `-> { a, b }` is one record-typed
+        // output, so the fields were destructured into a field->binding map
+        // rather than wired to the (single) output node. Bind the caller's
+        // record from that map.
+        Some(rec)
+    } else if chip_decl.outputs.len() > 1 {
         let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::new();
         for (i, out) in chip_decl.outputs.iter().enumerate() {
             let Some(&out_id) = inline_output_ids.get(i) else {
@@ -660,9 +667,11 @@ fn build_chip_module(
         exec_branch_depth: 0,
         exec_signal_payloads: HashMap::new(),
         pending_inline_record: None,
+        pending_return_record: None,
         chip_call_stack: ctx.chip_call_stack.clone(),
         known_fn_names: ctx.known_fn_names.clone(),
         is_root_module: false,
+        doc_comments: ctx.doc_comments,
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -894,6 +903,7 @@ fn build_chip_module(
                     o.value.as_ref(),
                     o.typ.as_ref(),
                     o.side,
+                    o.label.as_deref(),
                     &o.range,
                 );
             }
@@ -1025,6 +1035,16 @@ pub(super) fn lower_chip_call_instance(
     });
     if let Some(node) = ctx.builder.module.nodes.get_mut(&chip_node_id) {
         node.kind = NodeKind::Chip;
+        let props = std::sync::Arc::make_mut(&mut node.properties);
+        if chip_decl.closed {
+            props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
+        }
+        if let Some(label) = &chip_decl.label {
+            props.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+        }
+        if let Some(doc) = ctx.doc_comments.get(&chip_decl.range.start.offset) {
+            props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
+        }
     }
 
     let child_inputs = child_module.inputs.clone();

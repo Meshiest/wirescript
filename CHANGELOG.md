@@ -1,5 +1,14 @@
 # Wirescript Changelog
 
+## 0.15.0 - 2026-07-13
+
+- **Color arithmetic** - `+ - * / %` now operate RGBA channel-wise on two `color` operands, and mixing a color with a scalar broadcasts it across the channels (`c1 + c2`, `tint * 0.5`), all on the same PrimMath gate that already runs vectors and rotations.
+- **`Random` is polymorphic** on the PrimMath variant: `min`/`max` may be a `vector`, `rotator`, `quat`, or `color`, and it rolls each component independently, returning that same type (`Random(Vec(0,0,0), Vec(1,1,1))` → a random point in the unit cube). The scalar `int` form is unchanged.
+- **Fixed anonymous-record mod returns** - a `mod` returning a record literal (`-> {head, rest}` with `return { head: ..., rest: ... }`) lowered the literal to a single `_Unsupported` gate, so the caller's `f.head`/`f.rest` both read that one broken gate instead of their real sources. The record is now destructured into a field→source map (like a multi-output mod), so each field wires to its own value.
+- **Non-root chips compile open by default** - opened planes stack as a wall above the compiled microchip brick (root plane at the bottom, deeper nesting higher). The new **`@closed`** annotation collapses a chip; it keeps its wall slot. `open chip` is now a redundant no-op.
+- **New `@label("text")` annotation** - display-text override for chip labels/headers and `in`/`out` port labels (stacks with `@side` in any order); the wiring-UI port name is unchanged.
+- **Opened planes render a header** - a `<size="96">` title (the `@label` text, else the chip name) plus the chip's `///` doc comment, on an invisible brick at the plane's top edge.
+
 ## 0.14.1 - 2026-07-13
 
 - LSP: fixed a mod whose body is a single `return <expr>` being mislabeled `exec` on hover - `return` alone no longer forces the exec label; only an exec op in the returned expression (e.g. an array read) does.

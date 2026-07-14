@@ -379,6 +379,22 @@ Placement:
                 @bottom ports (left to right)
 ```
 
+### `@label` -- Port Display Label
+
+`@label("text")` overrides the floating display label on a port's gate
+(and its rerouter pin label, if the port also has a side annotation). The
+port's wiring-UI name always stays the declared identifier -- `@label`
+only changes what's shown floating in the world.
+
+Unlike `@left`/`@right`/`@top`/`@bottom`, which are top-level only,
+`@label` works on `in`/`out` declarations at **any** nesting level, and it
+stacks with a side annotation in either order:
+
+```wirescript
+@left @label("Fire!") in trigger: exec
+@label("Fire!") @left in trigger: exec   // order doesn't matter
+```
+
 ## `if` -- Conditional Statement
 
 The `if` statement executes a block conditionally. It **requires exec context** -- you can only use `if` statements inside `on` handlers or after handlers in the exec chain.

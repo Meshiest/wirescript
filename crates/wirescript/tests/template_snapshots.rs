@@ -40,6 +40,7 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
         file: "test.ws",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
     });
 
     fn count_recursive(module: &Module) -> (usize, usize, usize) {

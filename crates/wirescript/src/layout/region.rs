@@ -141,6 +141,7 @@ mod tests {
             file: "test",
             module_name: None,
             template_cache: Arc::new(TemplateCache::new()),
+            doc_comments: &parsed.doc_comments,
         });
         r.module
     }

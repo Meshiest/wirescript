@@ -46,6 +46,51 @@ fn record_payload_ferries_and_destructures() {
     );
 }
 
+#[test]
+fn record_literal_return_destructures_to_fields() {
+    // A mod with an anonymous record return (`-> { head, rest }` via
+    // `return { head: ..., rest: ... }`) must wire each field to its own source,
+    // not collapse to a single `_Unsupported` gate the caller can't destructure.
+    // Here head/rest come from a Split's Left/Right, so f.head and f.rest must
+    // resolve to two DISTINCT ports.
+    let src = "mod field(t: string) -> {head: string, rest: string} {\n\
+               let p = t.Split(\" \")\n\
+               return { head: p.Left, rest: p.Right }\n\
+               }\n\
+               in s: string\n\
+               let f = field(s)\n\
+               out h = f.head\n\
+               out r = f.rest";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "_Unsupported"),
+        "record-literal return must not lower to _Unsupported; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    // The two outputs (h = f.head, r = f.rest) must be fed by DISTINCT source
+    // ports (Split.Left vs Split.Right) - the bug wired both to one gate.
+    let out_sources: Vec<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| r.module.outputs.contains(&w.target.node_id))
+        .map(|w| (w.source.node_id, w.source.port))
+        .collect();
+    assert_eq!(out_sources.len(), 2, "two outputs, got {out_sources:?}");
+    assert_ne!(
+        out_sources[0], out_sources[1],
+        "f.head and f.rest must read distinct ports, got {out_sources:?}"
+    );
+}
+
 /// Test 1: Record literal and field access.
 /// `type State = { val: *int }` with `var n` makes `s.val` alias `n`.
 /// Writing `s.val = 42` in exec should produce a Var_Set targeting `n`'s PseudoVar.
@@ -601,7 +646,7 @@ on tick {
     let lr = crate::layout::layout(&r.module);
     let brz = crate::emit::emit_brz(
         &r.module,
-        &lr.placements,
+        &lr,
         &Default::default(),
         &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );

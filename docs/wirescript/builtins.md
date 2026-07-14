@@ -1020,7 +1020,8 @@ on trigger {
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `Random(min, max)` | `(min: int, max: int) -> int` | Generate a random integer in [min, max] |
+| `Random(min, max)` | `(min: int, max: int) -> int` | Random integer in `[min, max]` |
+| `Random(min, max)` | `(min: T, max: T) -> T`, `T` ∈ `vector`/`rotator`/`quat`/`color` | Per-component random of the same type |
 
 ```wirescript
 on RoundStart {
@@ -1028,6 +1029,8 @@ on RoundStart {
   if r == 0 { specialEvent = true }
 }
 ```
+
+`Random` rides the same PrimMath variant as the [arithmetic operators](expressions.md#arithmetic-operators), so its `min`/`max` may be a `vector`, `rotator`, `quat`, or `color` — it then rolls each component independently and returns that same type. `Random(Vec(0.0, 0.0, 0.0), Vec(1.0, 1.0, 1.0))` is a random point in the unit cube; `Random(a, b)` on two colors is a random color between them (all four RGBA channels). Both bounds share the type of the result.
 
 Note: `Random` is an exec function because it requires sequential execution to produce a new random value each time.
 

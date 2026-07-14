@@ -22,6 +22,7 @@ fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diag
         file: "main.ws",
         module_name: None,
         template_cache: std::sync::Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
     });
     let mut diags = resolved.diagnostics;
     diags.extend(tc.diagnostics);
@@ -228,11 +229,11 @@ fn chip_call_output_wire_in_parent() {
 fn chip_call_compiles_to_brz() {
     let src = "chip ALU(a: int, b: int) -> (result: int) { out result = a + b }\nlet r = ALU(1, 2)\nout sum = r.result";
     let r = compile(src);
-    let placements = crate::layout::layout(&r.module).placements;
+    let lr = crate::layout::layout(&r.module);
     let opts = crate::emit::EmitOptions::default();
     let brz = crate::emit::emit_brz(
         &r.module,
-        &placements,
+        &lr,
         &opts,
         &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
@@ -328,6 +329,7 @@ fn namespace_chip_call_resolves() {
         file: "test",
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
     });
     assert!(
         lr.diagnostics
@@ -435,7 +437,7 @@ out key_state = pad.key_state",
     let lr = crate::layout::layout(&r.module);
     let brz = crate::emit::emit_brz(
         &r.module,
-        &lr.placements,
+        &lr,
         &Default::default(),
         &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
@@ -663,7 +665,7 @@ on player {
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
     let tc = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
-    let brz = crate::emit::emit_brz(&r.module, &lr.placements, &Default::default(), &tc);
+    let brz = crate::emit::emit_brz(&r.module, &lr, &Default::default(), &tc);
     assert!(
         brz.is_ok(),
         "string interpolation should emit valid brz: {:?}",
@@ -732,11 +734,11 @@ fn entity_setters_compile_to_brz() {
         e.Teleport(d)\n}";
     let r = compile(src);
     assert_no_errors(&r);
-    let placements = crate::layout::layout(&r.module).placements;
+    let lr = crate::layout::layout(&r.module);
     let opts = crate::emit::EmitOptions::default();
     let brz = crate::emit::emit_brz(
         &r.module,
-        &placements,
+        &lr,
         &opts,
         &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
@@ -763,11 +765,11 @@ fn entity_setter_embeds_vector_literal() {
         );
     }
     // and the emit path serializes the embedded f64 struct values
-    let placements = crate::layout::layout(&r.module).placements;
+    let lr = crate::layout::layout(&r.module);
     let opts = crate::emit::EmitOptions::default();
     let brz = crate::emit::emit_brz(
         &r.module,
-        &placements,
+        &lr,
         &opts,
         &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
@@ -784,11 +786,11 @@ fn spawn_prefab_compiles_to_brz() {
         let boat = SpawnPrefab(offset = Vec(0.0, 0.0, 50.0), rotation = Rotation(0.0, 90.0, 0.0), velocity = Vec(0.0, 0.0, 100.0), lifetime = 10.0, limit = 5)\n}";
     let r = compile(src);
     assert_no_errors(&r);
-    let placements = crate::layout::layout(&r.module).placements;
+    let lr = crate::layout::layout(&r.module);
     let opts = crate::emit::EmitOptions::default();
     let brz = crate::emit::emit_brz(
         &r.module,
-        &placements,
+        &lr,
         &opts,
         &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );

@@ -61,12 +61,16 @@ fn phase1_sample() {
     placements.insert(id_a, Placement { x: 0, y: 0, z: 2 });
     placements.insert(id_b, Placement { x: 8, y: 0, z: 2 });
 
+    let lr = wirescript::layout::LayoutResult {
+        placements,
+        ..Default::default()
+    };
     let template_cache = Arc::new(TemplateCache::new());
-    let bytes = emit_brz(&module, &placements, &EmitOptions::default(), &template_cache).expect("emit brz");
+    let bytes = emit_brz(&module, &lr, &EmitOptions::default(), &template_cache).expect("emit brz");
     fs::write("/tmp/wirescript_phase1.brz", &bytes).expect("write brz file");
     let brdb_path = "/tmp/wirescript_phase1.brdb";
     let _ = fs::remove_file(brdb_path);
-    emit_brdb(&module, &placements, &EmitOptions::default(), &template_cache, brdb_path).expect("emit brdb");
+    emit_brdb(&module, &lr, &EmitOptions::default(), &template_cache, brdb_path).expect("emit brdb");
     println!(
         "Wrote /tmp/wirescript_phase1.brz ({} bytes) + /tmp/wirescript_phase1.brdb.\nLoad in-game with:\n  BR.World.LoadAdditive wirescript_phase1",
         bytes.len(),

@@ -255,6 +255,8 @@ fn estimate_handler(
             body: h.body.clone(),
             range: h.range.clone(),
             inline: false,
+            label: None,
+            closed: false,
         };
         let template_est = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             compile_chip_template(&synthetic, tc, file, cache)
@@ -486,6 +488,8 @@ fn estimate_anon_chip(
         body: ac.body.clone(),
         range: ac.range.clone(),
         inline: false,
+        label: None,
+        closed: false,
     };
     let template_est = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compile_chip_template(&synthetic, tc, file, cache)

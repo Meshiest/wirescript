@@ -1875,6 +1875,26 @@ fn infer_expr_inner(
                             ctx.emit("WS007", format!("exec call '{name}' outside an exec context (pass exec = ... to override)"), range.clone());
                         }
                     }
+                    // Random rides the PrimMath variant like the math operators:
+                    // its min/max may be a vector/rotator/quat/color (a
+                    // per-component random on the same gate), and the result then
+                    // matches that type rather than the int-typed CallSpec.
+                    if name == "Random" {
+                        let arg_tys: Vec<Type> = args
+                            .iter()
+                            .filter_map(|a| match a {
+                                CallArg::Positional(e) => {
+                                    Some(unwrap_ref(&infer_expr(ctx, e, tmap, omap)))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        if let Some(t) = arg_tys.into_iter().find(|t| {
+                            matches!(t, Type::Vector | Type::Color | Type::Rotator | Type::Quat)
+                        }) {
+                            return t;
+                        }
+                    }
                     check_call_args(ctx, c, args, range, tmap, omap);
                     if c.outputs.len() == 1 {
                         return c.outputs[0].ty.clone();
@@ -2367,6 +2387,29 @@ mod tests {
             !r.diagnostics.iter().any(|d| d.code == "WS021"),
             "declaration-before-use must NOT emit WS021; got {:?}",
             r.diagnostics
+        );
+    }
+
+    #[test]
+    fn random_is_polymorphic_on_prim_math_variant() {
+        // Random rides the PrimMath variant like the math operators: min/max may
+        // be a vector/rotator/quat/color and the result matches, so assigning it
+        // to a same-typed var is clean (no WS003 int-mismatch).
+        let r = tc("in a: vector\nin b: vector\nin c1: color\nin c2: color\nvar rv: vector = Vec(0.0, 0.0, 0.0)\nvar rc: color = ColorHex(\"#000000\")\nin go: exec\non go {\n  rv = Random(a, b)\n  rc = Random(c1, c2)\n}");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn random_int_stays_int() {
+        // The scalar path is unchanged: Random(int, int) is an int, so it does
+        // NOT assign into a vector var.
+        let ok = tc("var n: int = 0\nin go: exec\non go { n = Random(1, 10) }");
+        assert_no_diags(&ok);
+        let bad = tc("var v: vector = Vec(0.0, 0.0, 0.0)\nin go: exec\non go { v = Random(1, 10) }");
+        assert!(
+            bad.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "Random(int, int) is int and must not assign into a vector var; got {:?}",
+            bad.diagnostics
         );
     }
 

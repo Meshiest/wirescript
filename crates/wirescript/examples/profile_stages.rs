@@ -2,7 +2,7 @@
 //!   cargo run --release -p wirescript --example profile_stages -- <file.ws>
 use std::time::Instant;
 use wirescript::emit::{EmitOptions, emit_brz};
-use wirescript::layout::layout_root as layout;
+use wirescript::layout::layout;
 use wirescript::lower::{LowerInput, lower};
 use wirescript::resolve::{FsLoader, resolve};
 use wirescript::template_cache::TemplateCache;
@@ -29,6 +29,7 @@ fn main() {
         file: &file,
         module_name: None,
         template_cache: template_cache.clone(),
+        doc_comments: &resolved.doc_comments,
     });
     eprintln!("lower:                       {:>8.2?}", t.elapsed());
     eprintln!(
@@ -63,15 +64,8 @@ fn main() {
 
     let mut opts = EmitOptions::default();
     opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file));
-    let span_x = (lr.bounds_max.x - lr.bounds_min.x) / 2;
-    let span_y = (lr.bounds_max.y - lr.bounds_min.y) / 2;
-    opts.inner_plane_extent = brdb::IntVector {
-        x: (span_x + 5).max(5),
-        y: (span_y + 5).max(5),
-        z: 2,
-    };
     let t = Instant::now();
-    let world = wirescript::build_world(&lowered.module, &lr.placements, &opts, &template_cache)
+    let world = wirescript::build_world(&lowered.module, &lr, &opts, &template_cache)
         .expect("emit");
     eprintln!("build_world:                 {:>8.2?}", t.elapsed());
 
