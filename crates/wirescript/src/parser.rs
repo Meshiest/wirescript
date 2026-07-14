@@ -345,6 +345,10 @@ impl<'a> Parser<'a> {
         let start = self.peek().start;
         let mut decls: Vec<TopDecl> = Vec::new();
         self.eat_newlines();
+        // A leading `///` block separated from the first declaration by a blank
+        // line documents the module, not the first decl — so it doesn't merge
+        // into it.
+        let module_doc = self.collect_module_doc();
         while self.peek().kind != TokenKind::Eof {
             let doc = self.collect_doc_comment();
             let before = self.pos;
@@ -378,6 +382,45 @@ impl<'a> Parser<'a> {
         Script {
             decls,
             range: self.make_range(start, end),
+            module_doc,
+        }
+    }
+
+    /// If the file opens with a `///` block that is separated from the first
+    /// declaration by a blank line, consume it as the module doc and return it.
+    /// Otherwise consume nothing (the block, if any, is left for the first
+    /// declaration's `collect_doc_comment`).
+    fn collect_module_doc(&mut self) -> Option<String> {
+        if self.peek().kind != TokenKind::DocComment {
+            return None;
+        }
+        let save = self.pos;
+        let mut lines = Vec::new();
+        loop {
+            // Current token is a DocComment line.
+            lines.push(self.peek().text.clone());
+            self.advance();
+            if self.peek().kind != TokenKind::Newline {
+                // Doc line at EOF / not newline-terminated — treat as module doc.
+                return Some(lines.join("\n"));
+            }
+            self.advance(); // the doc line's terminating newline
+            match self.peek().kind {
+                // Another doc line continues this block.
+                TokenKind::DocComment => continue,
+                // A blank line (or a discarded `//` comment, which leaves only
+                // its newline) separates the block from the first decl → module doc.
+                TokenKind::Newline => {
+                    self.eat_newlines();
+                    return Some(lines.join("\n"));
+                }
+                // A declaration follows immediately → the block documents it, not
+                // the module. Rewind so the main loop attaches it to that decl.
+                _ => {
+                    self.pos = save;
+                    return None;
+                }
+            }
         }
     }
 
@@ -2714,6 +2757,45 @@ mod tests {
     fn empty_source_parses() {
         let s = parse_ok("");
         assert!(s.decls.is_empty());
+    }
+
+    #[test]
+    fn top_doc_block_before_blank_is_module_doc_not_merged() {
+        // A `///` block at the top, separated from the first decl by a blank
+        // line (or a `//` comment), is the module doc — it must NOT merge into
+        // the following declaration's own doc comment.
+        let src = "/// mod line 1\n/// mod line 2\n\n//\n\n/// chip doc\nchip {\n  var x: int = 0\n}";
+        let r = parse(src, "test");
+        let md = r.ast.module_doc.as_deref().unwrap_or("<none>");
+        assert!(
+            md.contains("mod line 1") && md.contains("mod line 2"),
+            "module doc should hold the top block: {md:?}"
+        );
+        assert!(!md.contains("chip doc"), "module doc must not merge the chip doc: {md:?}");
+        assert!(
+            r.doc_comments.values().any(|d| d == "chip doc"),
+            "chip doc must remain its own comment: {:?}",
+            r.doc_comments
+        );
+        assert!(
+            r.doc_comments.values().all(|d| !d.contains("mod line")),
+            "the module doc must not attach to a declaration: {:?}",
+            r.doc_comments
+        );
+    }
+
+    #[test]
+    fn top_doc_block_adjacent_to_decl_is_decl_doc_not_module() {
+        // No blank line → the block documents the first decl (unchanged), so
+        // `module_doc` is None and the first decl carries it.
+        let src = "/// first decl doc\nvar x: int = 0";
+        let r = parse(src, "test");
+        assert!(r.ast.module_doc.is_none(), "adjacent block is not a module doc: {:?}", r.ast.module_doc);
+        assert!(
+            r.doc_comments.values().any(|d| d == "first decl doc"),
+            "adjacent block documents the decl: {:?}",
+            r.doc_comments
+        );
     }
 
     #[test]

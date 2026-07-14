@@ -40,6 +40,22 @@ on reset {
 | `any` | Universal type -- compatible with everything. Used internally. |
 | `never` | Bottom type -- no value inhabits this type. Used internally. |
 
+### Object references & assets
+
+`entity`, `character`, `controller`, `brick`, and `prefab` are all **object references** -- a wire carries a handle to a game object, not a copy of it. **Asset references** (`$AssetType/AssetName`, e.g. `$BrickAudioDescriptor/BA_MUS_…`) are object references too: each lowers to its own reference gate (an `AudioReference` brick, and so on) whose output is wired wherever you use it.
+
+Because they share the same underlying object wire variant, an `entity[]` array (or an object-typed `var`) can hold any of them -- including asset references:
+
+```wirescript
+array songs: entity[]
+
+on load {
+  songs.push($BrickAudioDescriptor/BA_MUS_Component_Basil_CoffeeShop)
+}
+```
+
+**References can't be inlined into an initializer.** A constant `array` / `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate. An object reference must be wired in from its own brick, so it can't sit in a constant initializer -- build the array with `.push(...)` inside an exec handler instead. Writing `array songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
+
 ## Compound Types
 
 ### Reference Types (`ref T`)

@@ -122,12 +122,17 @@ fn compile_with_opts_inner(
 
     report(&progress);
     let resolved = resolve(source, file, &FsLoader);
-    opts.module_doc = resolved
-        .ast
-        .decls
-        .first()
-        .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
-        .cloned();
+    // An explicit top-of-file module doc (a `///` block separated from the first
+    // decl by a blank line) is the root header; otherwise fall back to the first
+    // declaration's doc comment.
+    opts.module_doc = resolved.ast.module_doc.clone().or_else(|| {
+        resolved
+            .ast
+            .decls
+            .first()
+            .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
+            .cloned()
+    });
     let tc = typecheck(&resolved.ast, file);
 
     let template_cache = {
@@ -217,12 +222,14 @@ pub fn compile_to_world(
     }
     let t0 = std::time::Instant::now();
     let resolved = resolve(source, file, &FsLoader);
-    opts.module_doc = resolved
-        .ast
-        .decls
-        .first()
-        .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
-        .cloned();
+    opts.module_doc = resolved.ast.module_doc.clone().or_else(|| {
+        resolved
+            .ast
+            .decls
+            .first()
+            .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
+            .cloned()
+    });
     let tc = typecheck(&resolved.ast, file);
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());

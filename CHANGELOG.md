@@ -17,6 +17,8 @@
 - **Fixed hover on a namespace alias** - hovering `card` in `import * as card` showed `namespace card: unknown`; it now shows `namespace card` and lists the members it brings in.
 - **VS Code formatter (Prettier plugin)** - now puts a space after commas, splits too-long braced imports (fill) and binary-operation statements (one operator per line, lowest-precedence first) at 100 cols, joins a statement-form `else` onto its closing brace (`}\n else {` → `} else {`), and honors `// fmt-ignore` (standalone protects the next line; trailing protects its own). `///` doc comments auto-continue when you press Enter.
 - **Opened-plane headers space the doc off the title** - the header now puts a blank line between the size-96 title and the chip/module doc comment instead of butting them together.
+- **Warn on asset/reference values in an array initializer (WS024)** - an asset (`$Type/Name`) or prefab reference is an object reference wired in from its own brick, so it can't bake into a constant `array`/`var` initializer (it was silently dropped). Build the array with `.push(...)` in an exec handler; docs now note that all references (`entity`/`character`/`controller`/`brick`/`prefab`/assets) are object values that share the object wire and can't be inlined.
+- **Module doc comments no longer merge into the first declaration** - a `///` block at the top of a file, separated from the first declaration by a blank line (or a `//` comment), is now the module doc (the root plane header) and stays distinct from that declaration's own `///` doc. A doc block sitting directly above a declaration still documents it as before.
 
 ## 0.15.0 - 2026-07-13
 

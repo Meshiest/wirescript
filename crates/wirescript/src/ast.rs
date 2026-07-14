@@ -9,6 +9,10 @@ use crate::diagnostic::SourceRange;
 pub struct Script {
     pub decls: Vec<TopDecl>,
     pub range: SourceRange,
+    /// A `///` doc block at the very top of the file, separated from the first
+    /// declaration by a blank line — documents the module (root plane header)
+    /// rather than the first declaration.
+    pub module_doc: Option<String>,
 }
 
 // ---------- top-level declarations ----------

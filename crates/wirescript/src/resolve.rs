@@ -292,13 +292,16 @@ fn resolve_import(
             }
         }
         ImportKind::Namespace(ns_name) => {
-            // Collect module-level doc comment (first doc_comment before any decl)
-            let module_doc = parsed
-                .ast
-                .decls
-                .first()
-                .and_then(|d| parsed.doc_comments.get(&d.range().start.offset))
-                .cloned();
+            // Module doc: an explicit top-of-file `///` block, else the first
+            // declaration's doc comment.
+            let module_doc = parsed.ast.module_doc.clone().or_else(|| {
+                parsed
+                    .ast
+                    .decls
+                    .first()
+                    .and_then(|d| parsed.doc_comments.get(&d.range().start.offset))
+                    .cloned()
+            });
 
             target_decls.push(TopDecl::Namespace(NamespaceDecl {
                 name: ns_name.clone(),
@@ -389,6 +392,7 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
         ast: Script {
             decls,
             range: parsed.ast.range,
+            module_doc: parsed.ast.module_doc.clone(),
         },
         diagnostics,
         doc_comments,

@@ -651,20 +651,39 @@ fn check_top_level_array_init(
                 "spread `...` in an array initializer is only allowed when building the array inside an exec handler",
                 e.range().clone(),
             );
-        } else if crate::lower::expr_to_literal(e).is_none() {
+        } else if let Some(lit) = crate::lower::expr_to_literal(e) {
+            // Asset / prefab references are object references — they lower to
+            // their own reference gate (e.g. AudioReference) whose output must be
+            // WIRED into the array, so they can't be baked into the initializer's
+            // constant value list. Inlined here they'd be silently dropped.
+            if matches!(
+                lit,
+                crate::ir::Literal::Asset { .. } | crate::ir::Literal::PrefabRef { .. }
+            ) {
+                ctx.diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    code: "WS024".into(),
+                    message: "asset / prefab references can't be inlined into an array initializer — \
+                              they're object references wired in from their own brick. Build the array \
+                              with `.push(...)` inside an exec handler instead."
+                        .into(),
+                    range: e.range().clone(),
+                });
+            } else if !matches!(elem_ty, Type::Any) && coerce(&t, elem_ty) == CoerceRule::Mismatch {
+                ctx.emit(
+                    "WS003",
+                    format!(
+                        "array element: expected {}, got {}",
+                        crate::analysis::type_str(elem_ty),
+                        crate::analysis::type_str(&t)
+                    ),
+                    e.range().clone(),
+                );
+            }
+        } else {
             ctx.emit(
                 "WS003",
                 "array initializer elements must be constant literals — assign the array inside an exec handler to build it from runtime values",
-                e.range().clone(),
-            );
-        } else if !matches!(elem_ty, Type::Any) && coerce(&t, elem_ty) == CoerceRule::Mismatch {
-            ctx.emit(
-                "WS003",
-                format!(
-                    "array element: expected {}, got {}",
-                    crate::analysis::type_str(elem_ty),
-                    crate::analysis::type_str(&t)
-                ),
                 e.range().clone(),
             );
         }
@@ -2410,6 +2429,30 @@ mod tests {
             bad.diagnostics.iter().any(|d| d.severity == Severity::Error),
             "Random(int, int) is int and must not assign into a vector var; got {:?}",
             bad.diagnostics
+        );
+    }
+
+    #[test]
+    fn asset_in_array_initializer_warns_ws024() {
+        // Asset/prefab references are object references wired in from their own
+        // brick; they can't bake into a constant array initializer (they'd be
+        // silently dropped), so warn.
+        let r = tc(
+            "array songs: entity[] = [$BrickAudioDescriptor/BA_MUS_Component_Basil_CoffeeShop]",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS024" && d.severity == Severity::Warning),
+            "asset in array initializer should warn WS024; got {:?}",
+            r.diagnostics
+        );
+        // A constant array initializer must NOT warn.
+        let ok = tc("array nums: int[] = [1, 2, 3]");
+        assert!(
+            !ok.diagnostics.iter().any(|d| d.code == "WS024"),
+            "constant array initializer must not warn; got {:?}",
+            ok.diagnostics
         );
     }
 
