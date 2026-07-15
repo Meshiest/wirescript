@@ -16,8 +16,7 @@ use crate::ir::{Module, NodeId};
 /// Horizontal gap between adjacent planes in a row (grid units / cm).
 pub const WALL_GUTTER_X: i32 = 10;
 /// Vertical gap between a row's top edge and the next row's bottom edge (cm).
-/// Pinned during in-game verification.
-pub const WALL_GUTTER_Z: f32 = 10.0;
+pub const WALL_GUTTER_Z: f32 = 20.0;
 /// Gap between the chip brick's top face and the root plane's bottom edge
 /// (cm). Pinned during in-game verification.
 pub const WALL_ROOT_CLEARANCE: f32 = 10.0;

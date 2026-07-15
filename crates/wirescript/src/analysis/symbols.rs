@@ -316,12 +316,25 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
             });
             for d in &ns.decls {
                 if let Some((mname, mkind)) = namespace_member_decl(d) {
+                    // Compute the member's real signature + exec-ness by running
+                    // the normal decl collection into a scratch buffer, then
+                    // re-key it under the qualified `ns.member` name. The member
+                    // decl lives in the imported file (not local), so this yields
+                    // just its one signature symbol; any extras are discarded
+                    // here. Without a `ty`, hover on `ns.member` shows nothing.
+                    let mut scratch = Vec::new();
+                    collect_decl(&mut scratch, d, tmap, file, script);
+                    let (ty, exec) = scratch
+                        .iter()
+                        .find(|s| s.name == mname && s.kind == mkind)
+                        .map(|s| (s.ty.clone(), s.exec))
+                        .unwrap_or((None, false));
                     syms.push(SymbolDef {
                         name: format!("{}.{}", ns.name, mname),
                         kind: mkind,
                         range: ns.range.clone(),
-                        ty: None,
-                        exec: false,
+                        ty,
+                        exec,
                     });
                 }
             }

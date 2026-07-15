@@ -1,5 +1,14 @@
 # Wirescript Changelog
 
+## 0.16.1 - 2026-07-15
+
+- **`chip let` labels the chip with its binding name** - a `chip let x = …` (or `chip let a = 1, b = 2`) previously compiled to an unlabeled microchip; it now shows the binding name(s) as its display label so the let-chip is identifiable. An explicit `@label(...)` still overrides.
+- **Wider vertical gap between chip-pane rows** - the wall layout's row-to-row vertical gutter was widened so stacked chip planes read as more clearly separated.
+- **Fixed repeated chip-instance calls sharing wire endpoints** - calling the same `chip` more than once (`foo(0)`, `foo(1)`, …) stamped the second and later copies from a cached template whose *boundary* wires — a parent gate into a nested chip's input, or a nested chip's output into a parent consumer — were not remapped to the copy's fresh nodes. Every extra instance's boundary wires therefore converged on the **first** instance's input ports, so the game rejected the duplicates at load ("Failed to connect wire"). Template instantiation now stamps child chips before their boundary wires and remaps those wires to each instance's own nodes.
+- **Hover on a namespace member shows its signature** - hovering the member in a namespace-qualified call (`u.foo` where `u` is an `import * as u`) returned nothing even though go-to-definition worked. The member is now shown with its full signature (and exec-ness), matching a direct call's hover; the qualified `u.foo` symbol carries the real signature instead of an empty type.
+- **Unresolved namespace/method call is now a hard error (WS002)** - a call like `ns.foo(...)` whose base `ns` is not a namespace, variable, or value in scope (e.g. an `import * as ns` was removed but its calls remain) used to slip past type-checking and lower to an `_Unsupported` gate that silently did nothing at runtime. It now errors at the dangling base identifier, like a bare unknown identifier.
+- **Organize Imports preserves namespace, bare, and multi-line imports** - Alt+Shift+O previously understood only single-line `import { … } from "…"`, so an `import * as ns from "…"`, a bare `import "…"`, or a multi-line braced import that sat between other imports was destroyed by the rewrite. Every import form is now recognized and kept — namespace and bare imports are never pruned, unused named imports still are — and a namespace import sorts before a named import from the same module.
+
 ## 0.16.0 - 2026-07-14
 
 - **Fixed LSP field triggers on a local in handlers** - an `on <local>.<field>` handler (`on reader.Jump` where `reader = pl.InputReader()`) ignored the field and fired off the local's default port. It now selects the matching output port (`bPressedJump`/…), including negated (`on !reader.Jump`).

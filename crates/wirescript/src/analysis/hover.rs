@@ -71,6 +71,7 @@ pub fn hover_at(
         .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
         .or_else(|| hover_on_keyword(source, &word, resource_estimates, line))
         .or_else(|| hover_record_or_type_field(source, symbols, doc_comments, &word, line, col))
+        .or_else(|| hover_namespace_member(source, symbols, doc_comments, resource_estimates, &word, line, col))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
         .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
 }
@@ -407,26 +408,7 @@ fn hover_user_symbol(
         return Some(v);
     }
 
-    let ty_str = sym.ty.as_deref().unwrap_or("unknown");
-    let mut v = match sym.kind {
-        "mod" | "chip" | "fn" => {
-            let sig = if sym.exec {
-                if ty_str.starts_with('(') && ty_str.len() > 2 { format!("(exec, {}", &ty_str[1..]) } else { "(exec)".into() }
-            } else { ty_str.to_string() };
-            format!("```wirescript\n{} {}{}\n```", sym.kind, sym.name, sig)
-        }
-        _ => format!("```wirescript\n{} {}: {}\n```", sym.kind, sym.name, ty_str),
-    };
-
-    if let Some(doc) = doc_comments.get(&sym.range.start.offset) {
-        v += &format!("\n\n{}", doc);
-    }
-    if matches!(sym.kind, "mod" | "chip" | "fn") {
-        if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
-            let ek = if sym.kind == "mod" { EstimateKind::Mod } else { EstimateKind::Chip };
-            v += &format!("\n\n{}", format_estimate(est, ek));
-        }
-    }
+    let mut v = render_decl_hover(sym, doc_comments, resource_estimates);
 
     // For var reads: show exec/pure context at the hovered location
     if sym.kind == "var" {
@@ -443,6 +425,76 @@ fn hover_user_symbol(
     }
 
     Some(v)
+}
+
+/// Render a declaration symbol's hover card: its signature line (mods/chips/fns
+/// show `(exec, params) -> ret`; everything else `kind name: type`), followed by
+/// its doc comment and, for callables, a resource estimate. Shared by plain
+/// symbol hover and namespace-member hover.
+fn render_decl_hover(
+    sym: &SymbolDef,
+    doc_comments: &HashMap<usize, String>,
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+) -> String {
+    let ty_str = sym.ty.as_deref().unwrap_or("unknown");
+    let mut v = match sym.kind {
+        "mod" | "chip" | "fn" => {
+            let sig = if sym.exec {
+                if ty_str.starts_with('(') && ty_str.len() > 2 { format!("(exec, {}", &ty_str[1..]) } else { "(exec)".into() }
+            } else { ty_str.to_string() };
+            format!("```wirescript\n{} {}{}\n```", sym.kind, sym.name, sig)
+        }
+        _ => format!("```wirescript\n{} {}: {}\n```", sym.kind, sym.name, ty_str),
+    };
+    if let Some(doc) = doc_comments.get(&sym.range.start.offset) {
+        v += &format!("\n\n{}", doc);
+    }
+    if matches!(sym.kind, "mod" | "chip" | "fn") {
+        if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
+            let ek = if sym.kind == "mod" { EstimateKind::Mod } else { EstimateKind::Chip };
+            v += &format!("\n\n{}", format_estimate(est, ek));
+        }
+    }
+    v
+}
+
+/// Hover for the member in a namespace-qualified reference — the `drawTopText`
+/// in `card.drawTopText` where `card` is an `import * as card`. The member is
+/// stored in `symbols` under its qualified `card.drawTopText` name, so the plain
+/// bare-word lookup in [`hover_user_symbol`] misses it; form the qualified name
+/// here and render its signature (go-to-definition already resolved this path).
+fn hover_namespace_member(
+    source: &str,
+    symbols: &[SymbolDef],
+    doc_comments: &HashMap<usize, String>,
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    // The cursor must be on the `member` half of an `obj.member` access.
+    let l = source.lines().nth(line)?;
+    let c = col.min(l.len());
+    let start = l[..c]
+        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    if start == 0 || l.as_bytes()[start - 1] != b'.' {
+        return None;
+    }
+    let obj_end = start - 1;
+    let obj_start = l[..obj_end]
+        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let obj_name = &l[obj_start..obj_end];
+    // `obj` must be a namespace alias for this to be a namespace-member access.
+    if !symbols.iter().any(|s| s.name == obj_name && s.kind == "namespace") {
+        return None;
+    }
+    let qualified = format!("{obj_name}.{word}");
+    let sym = symbols.iter().find(|s| s.name == qualified)?;
+    Some(render_decl_hover(sym, doc_comments, resource_estimates))
 }
 
 fn resolve_record_lit_field(source: &str, symbols: &[SymbolDef], field: &str, line: usize) -> Option<String> {
@@ -716,6 +768,47 @@ mod tests {
             line,
             col,
         )
+    }
+
+    #[test]
+    fn namespace_member_hovers_with_signature() {
+        // Hovering the member in `card.drawCard` (a namespace-qualified call)
+        // must show its signature, not nothing. The member is stored under the
+        // qualified `card.drawCard` symbol name, which the bare-word lookup in
+        // hover_user_symbol misses — go-to-definition worked but hover didn't.
+        use crate::resolve::MemLoader;
+        let loader = MemLoader {
+            files: [(
+                "display.ws".to_string(),
+                "mod drawCard(n: int, label: string) {}".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let src = "import * as card from \"display\"\non RoundStart { card.drawCard(1, \"hi\") }";
+        let resolved = resolve(src, "main", &loader);
+        let tc = typecheck(&resolved.ast, "main");
+        let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main"));
+        let estimates =
+            crate::analysis::resource_estimate::collect_estimates(&resolved.ast, &tc, "main");
+        let line1 = src.lines().nth(1).unwrap();
+        let col = line1.find("drawCard").unwrap();
+        let text = hover_at(
+            src,
+            "main",
+            &symbols,
+            &tc.type_of_expr,
+            &resolved.doc_comments,
+            &tc.if_contexts,
+            &tc.var_read_contexts,
+            &estimates,
+            1,
+            col,
+        )
+        .expect("hover on a namespace member should return something");
+        assert!(text.contains("drawCard"), "should name the member, got: {text}");
+        assert!(text.contains("n: int"), "should show the signature, got: {text}");
+        assert!(!text.contains("unknown"), "must not show `unknown`, got: {text}");
     }
 
     #[test]

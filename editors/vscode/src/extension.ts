@@ -179,10 +179,13 @@ export function activate(context: ExtensionContext) {
           const text = document.getText();
           const lines = text.split(/\r?\n/);
           const importLines: {
-            idx: number;
+            idx: number; // first source line of this import
+            idxEnd: number; // last source line (> idx for multi-line named imports)
             line: string;
             path: string;
-            names: string[];
+            kind: "named" | "namespace" | "bare";
+            names: string[]; // named imports only
+            alias: string; // namespace imports only (`import * as <alias>`)
           }[] = [];
           const nonImportIdents = new Set<string>();
 
@@ -191,15 +194,85 @@ export function activate(context: ExtensionContext) {
           // are not counted as usage.
           let inBlockComment = false;
           for (let i = 0; i < lines.length; i++) {
-            const m = lines[i].match(
+            // Recognize all three import forms. Previously only the braced/named
+            // form matched; namespace (`import * as ns from "x"`) and bare
+            // (`import "x"`) imports fell through to the code scanner and — worse
+            // — were deleted whenever they sat between two named imports, since
+            // the whole span gets replaced by the rebuilt named imports.
+            const named = lines[i].match(
               /^import\s*\{([^}]+)\}\s*from\s*"([^"]+)"/,
             );
-            if (m && !inBlockComment) {
-              const names = m[1]
+            const namespace = lines[i].match(
+              /^import\s*\*\s*as\s+(\w+)\s+from\s*"([^"]+)"/,
+            );
+            const bare = lines[i].match(/^import\s+"([^"]+)"\s*$/);
+            if (named && !inBlockComment) {
+              const names = named[1]
                 .split(",")
                 .map((s) => s.trim())
                 .filter(Boolean);
-              importLines.push({ idx: i, line: lines[i], path: m[2], names });
+              importLines.push({
+                idx: i,
+                idxEnd: i,
+                line: lines[i],
+                path: named[2],
+                kind: "named",
+                names,
+                alias: "",
+              });
+            } else if (namespace && !inBlockComment) {
+              importLines.push({
+                idx: i,
+                idxEnd: i,
+                line: lines[i],
+                path: namespace[2],
+                kind: "namespace",
+                names: [],
+                alias: namespace[1],
+              });
+            } else if (bare && !inBlockComment) {
+              importLines.push({
+                idx: i,
+                idxEnd: i,
+                line: lines[i],
+                path: bare[1],
+                kind: "bare",
+                names: [],
+                alias: "",
+              });
+            } else if (!inBlockComment && /^import\s*\{/.test(lines[i])) {
+              // Multi-line named import: `import {` opens here but the closing
+              // `} from "path"` is on a later line. Accumulate until we reach it.
+              // Without this the continuation lines read as code and the whole
+              // import is destroyed by the span replacement below.
+              let buf = lines[i];
+              let j = i;
+              while (
+                j + 1 < lines.length &&
+                !/\}\s*from\s*"[^"]+"/.test(buf)
+              ) {
+                j++;
+                buf += "\n" + lines[j];
+              }
+              const multi = buf.match(
+                /^import\s*\{([\s\S]*?)\}\s*from\s*"([^"]+)"/,
+              );
+              if (multi) {
+                const names = multi[1]
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+                importLines.push({
+                  idx: i,
+                  idxEnd: j,
+                  line: lines[i],
+                  path: multi[2],
+                  kind: "named",
+                  names,
+                  alias: "",
+                });
+                i = j; // skip the consumed continuation lines
+              }
             } else {
               // Strip comments and string literals before scanning for identifiers.
               // Process character by character to handle //, /* */, and "" '' strings.
@@ -270,24 +343,47 @@ export function activate(context: ExtensionContext) {
 
           if (importLines.length === 0) return [];
 
-          // Remove unused imports, sort remaining names, sort import lines by path
+          // Prune unused NAMED imports; always preserve namespace + bare imports
+          // (their usage can't be determined reliably from identifiers alone, and
+          // wrongly removing one silently breaks the build). Re-render each, then
+          // sort by path; same-path ties order by rendered line, so `import *`
+          // sorts before `import {` (as the existing convention has it).
           const cleaned = importLines
             .map((imp) => {
-              const used = imp.names.filter((n) => nonImportIdents.has(n));
-              if (used.length === 0) return null;
-              used.sort();
-              return {
-                ...imp,
-                names: used,
-                line: `import { ${used.join(", ")} } from "${imp.path}"`,
-              };
+              if (imp.kind === "named") {
+                const used = imp.names.filter((n) => nonImportIdents.has(n));
+                if (used.length === 0) return null;
+                used.sort();
+                return {
+                  ...imp,
+                  names: used,
+                  line: `import { ${used.join(", ")} } from "${imp.path}"`,
+                };
+              }
+              if (imp.kind === "namespace") {
+                return {
+                  ...imp,
+                  line: `import * as ${imp.alias} from "${imp.path}"`,
+                };
+              }
+              return { ...imp, line: `import "${imp.path}"` };
             })
             .filter(Boolean) as typeof importLines;
-          cleaned.sort((a, b) => a.path.localeCompare(b.path));
+          const kindRank = (k: string) =>
+            k === "namespace" ? 0 : k === "named" ? 1 : 2;
+          cleaned.sort(
+            (a, b) =>
+              a.path.localeCompare(b.path) ||
+              kindRank(a.kind) - kindRank(b.kind) ||
+              a.line.localeCompare(b.line),
+          );
 
-          // Build the replacement
+          // Build the replacement. The span must cover every source line the
+          // imports occupy — including multi-line named imports' continuations
+          // (idxEnd > idx) — or trailing continuation lines would survive as
+          // orphaned text after the rebuilt block.
           const firstIdx = importLines[0].idx;
-          const lastIdx = importLines[importLines.length - 1].idx;
+          const lastIdx = Math.max(...importLines.map((imp) => imp.idxEnd));
           const newImports = cleaned.map((c) => c.line).join("\n");
           const range = new Range(
             new Position(firstIdx, 0),

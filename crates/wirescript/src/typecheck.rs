@@ -2085,6 +2085,30 @@ fn infer_expr_inner(
                 }
                 return Type::Any;
             }
+            // A method/namespace call whose base identifier resolves to nothing:
+            // e.g. `card.drawLobby(...)` after an `import * as card` was removed.
+            // None of the branches above matched and `card` is not a namespace,
+            // variable, or value in scope. Left alone this silently lowers to an
+            // `_Unsupported` gate that reads a default (does nothing) at runtime —
+            // flag the dangling base, mirroring the bare-identifier WS002 above.
+            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
+                && let Expr::Ident {
+                    name,
+                    range: base_range,
+                } = obj.as_ref()
+                && ctx.scope.lookup(name).is_none()
+                && find_call(name).is_none()
+            {
+                ctx.emit(
+                    "WS002",
+                    format!(
+                        "unknown identifier '{name}' in call `{name}.{field}(...)` — \
+                         no namespace, variable, or value named '{name}' is in scope \
+                         (is an import missing?)"
+                    ),
+                    base_range.clone(),
+                );
+            }
             Type::Any
         }
         Expr::IfExpr {
@@ -2685,6 +2709,23 @@ mod tests {
     fn unknown_var_emits_diag() {
         let r = tc("on RoundStart { x = 1 }");
         assert!(r.diagnostics.iter().any(|d| d.code == "WS002"));
+    }
+
+    #[test]
+    fn namespace_call_with_undefined_base_is_ws002() {
+        // A namespace-qualified call whose base identifier isn't in scope — e.g.
+        // an `import * as card` was removed but `card.drawLobby(...)` calls
+        // remain. None of the namespace/array/receiver branches match, so
+        // without an explicit check the call silently lowers to an
+        // `_Unsupported` gate that does nothing at runtime.
+        let r = tc("mod drawLobby(n: int) { }\non RoundStart { card.drawLobby(1) }");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS002" && d.message.contains("card")),
+            "undefined namespace base must emit WS002; got {:?}",
+            r.diagnostics
+        );
     }
 
     #[test]

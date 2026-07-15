@@ -100,11 +100,45 @@ impl CompiledTemplate {
             }
         }
 
-        // --- 3. Helper: remap a single NodeId -----------------------------------
-        // Priority: internal fresh ID > external caller ID > pass through.
+        // --- 3. Instantiate chip children FIRST, collecting each child's FULL
+        // (recursive) old→new id map. This module's wires can reference a child's
+        // boundary nodes directly — a parent gate wires into a nested chip's
+        // MicrochipInput, and a nested chip's MicrochipOutput feeds a parent
+        // consumer. Those child IDs are not in `id_map` (they live in the child
+        // module), so without the child maps the wire remap below would pass them
+        // through to the ORIGINAL template IDs, making every instance's boundary
+        // wires converge on the first instance's ports (fan-in collisions the game
+        // then fails to connect). Children must be stamped before the wires so the
+        // wires can point at the freshly-minted child boundary nodes.
+        let mut descendant_map: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut new_chips: HashMap<NodeId, Module> = HashMap::new();
+        for (old_chip_key, child_module) in &self.module.chips {
+            let new_chip_key = id_map.get(old_chip_key).copied().unwrap_or(*old_chip_key);
+            let child_template = CompiledTemplate::from_module(child_module.clone());
+            // Merge parent's id_map into child captures so internal-to-parent
+            // nodes that the child references get remapped correctly.
+            let mut child_captures = captures.clone();
+            for (name, old_id) in &child_template.external_refs {
+                if let Some(&fresh) = id_map.get(old_id) {
+                    child_captures.insert(name.clone(), fresh);
+                }
+            }
+            let (child_instance, child_map) =
+                child_template.instantiate_with_map("", &child_captures);
+            descendant_map.extend(child_map);
+            new_chips.insert(new_chip_key, child_instance);
+        }
+
+        // --- 4. Helper: remap a single NodeId -----------------------------------
+        // Priority: this module's fresh ID > freshly-stamped descendant (child)
+        // ID > external caller ID > pass through. The three maps have disjoint
+        // key domains (own nodes / descendant nodes / captured externals), so the
+        // priority only guards against accidental overlap.
         let remap = |id: NodeId| -> NodeId {
             if let Some(&fresh) = id_map.get(&id) {
                 fresh
+            } else if let Some(&child) = descendant_map.get(&id) {
+                child
             } else if let Some(&caller) = external_map.get(&id) {
                 caller
             } else {
@@ -112,7 +146,7 @@ impl CompiledTemplate {
             }
         };
 
-        // --- 4. Clone nodes with remapped IDs ----------------------------------
+        // --- 5. Clone nodes with remapped IDs ----------------------------------
         let mut new_nodes = HashMap::new();
         for (old_id, node) in &self.module.nodes {
             let new_id = remap(*old_id);
@@ -135,7 +169,9 @@ impl CompiledTemplate {
             new_nodes.insert(new_id, new_node);
         }
 
-        // --- 5. Clone wires with remapped node IDs -----------------------------
+        // --- 6. Clone wires with remapped node IDs -----------------------------
+        // Uses the combined remap, so a boundary wire targeting a child node now
+        // points at that child instance's fresh node instead of the template's.
         let new_wires: Vec<Wire> = self
             .module
             .wires
@@ -149,27 +185,6 @@ impl CompiledTemplate {
                     node_id: remap(w.target.node_id),
                     port: w.target.port,
                 },
-            })
-            .collect();
-
-        // --- 6. Recursively remap chip children --------------------------------
-        let new_chips: HashMap<NodeId, Module> = self
-            .module
-            .chips
-            .iter()
-            .map(|(old_chip_key, child_module)| {
-                let new_chip_key = remap(*old_chip_key);
-                let child_template = CompiledTemplate::from_module(child_module.clone());
-                // Merge parent's id_map into child captures so internal-to-parent
-                // nodes that the child references get remapped correctly.
-                let mut child_captures = captures.clone();
-                for (name, old_id) in &child_template.external_refs {
-                    if let Some(&fresh) = id_map.get(old_id) {
-                        child_captures.insert(name.clone(), fresh);
-                    }
-                }
-                let child_instance = child_template.instantiate("", &child_captures);
-                (new_chip_key, child_instance)
             })
             .collect();
 
@@ -196,7 +211,12 @@ impl CompiledTemplate {
             template_key: self.module.template_key,
             scope_captures: new_scope_captures,
         };
-        (module, id_map)
+        // Return this module's map PLUS all descendants' maps, so a caller
+        // remapping boundary PortRefs (or a parent instantiation) can resolve
+        // references to any node anywhere in the stamped subtree.
+        let mut full_map = id_map;
+        full_map.extend(descendant_map);
+        (module, full_map)
     }
 }
 
@@ -895,5 +915,113 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Test 12 ───────────────────────────────────────────────────────────────
+    #[test]
+    fn instantiate_boundary_wire_into_child_is_per_instance() {
+        // A parent module with a gate wired into a CHILD chip's input node: the
+        // wire lives in the PARENT wire list but its target is a CHILD node (how
+        // a chip call wires an argument into a nested chip). Two instances must
+        // NOT converge on the same child node — that fan-in collision is what
+        // made the game drop every second-instance boundary wire.
+        use crate::intern::sym;
+        use crate::ir::port_registry::WirePort;
+
+        let gate_id = NodeId::fresh();
+        let chip_key = NodeId::fresh();
+        let child_input_id = NodeId::fresh();
+
+        let mc_input = "BrickComponentType_Internal_MicrochipInput";
+        let mc_chip = "Component_Internal_Microchip";
+        let add_gate = "BrickComponentType_WireGraph_Expr_Add";
+
+        // Child module: one MicrochipInput node.
+        let mut child = Module::new("child");
+        child.nodes.insert(
+            child_input_id,
+            Node {
+                id: child_input_id,
+                kind: NodeKind::Input,
+                gate_class: mc_input,
+                properties: Arc::new(HashMap::new()),
+                ports: Arc::new(GateIO {
+                    inputs: vec![PortSpec { name: *sym::RER_INPUT, ty: Type::Int }],
+                    outputs: vec![PortSpec { name: *sym::RER_OUTPUT, ty: Type::Int }],
+                }),
+                source_range: Default::default(),
+                chip_id: None,
+                chain_id: None,
+                scope_id: 0,
+                note: None,
+            },
+        );
+        child.inputs.push(child_input_id);
+
+        // Parent: a gate + the chip node, plus a wire gate.Output ->
+        // child_input.RER_Input (target is the CHILD node, not a parent node).
+        let mut parent = Module::new("parent");
+        parent.nodes.insert(
+            gate_id,
+            Node {
+                id: gate_id,
+                kind: NodeKind::Gate,
+                gate_class: add_gate,
+                properties: Arc::new(HashMap::new()),
+                ports: Arc::new(GateIO::default()),
+                source_range: Default::default(),
+                chip_id: None,
+                chain_id: None,
+                scope_id: 0,
+                note: None,
+            },
+        );
+        parent.nodes.insert(
+            chip_key,
+            Node {
+                id: chip_key,
+                kind: NodeKind::Chip,
+                gate_class: mc_chip,
+                properties: Arc::new(HashMap::new()),
+                ports: Arc::new(GateIO::default()),
+                source_range: Default::default(),
+                chip_id: None,
+                chain_id: None,
+                scope_id: 0,
+                note: None,
+            },
+        );
+        parent.chips.insert(chip_key, child);
+        parent.wires.push(Wire {
+            source: PortRef { node_id: gate_id, port: WirePort::Output },
+            target: PortRef { node_id: child_input_id, port: WirePort::RerInput },
+        });
+
+        let t = CompiledTemplate::from_module(parent);
+        let caps = HashMap::new();
+        let inst0 = t.instantiate("i0", &caps);
+        let inst1 = t.instantiate("i1", &caps);
+
+        let boundary_target = |m: &Module| -> NodeId {
+            m.wires
+                .iter()
+                .find(|w| w.target.port == WirePort::RerInput)
+                .expect("boundary wire present")
+                .target
+                .node_id
+        };
+        let t0 = boundary_target(&inst0);
+        let t1 = boundary_target(&inst1);
+        assert_ne!(
+            t0, t1,
+            "two instances' boundary wires target the SAME child node (fan-in collision)"
+        );
+
+        // Each instance's boundary target must be a real node in THAT instance's
+        // freshly-stamped child (not the template's original id).
+        let child_has = |m: &Module, id: NodeId| m.chips.values().any(|c| c.nodes.contains_key(&id));
+        assert!(child_has(&inst0, t0), "inst0 boundary target not in its child");
+        assert!(child_has(&inst1, t1), "inst1 boundary target not in its child");
+        assert_ne!(t0, child_input_id, "boundary target leaked the template id");
     }
 }

@@ -88,6 +88,33 @@ fn anon_chip_gets_label_closed_and_doc_props() {
 }
 
 #[test]
+fn chip_let_labels_the_chip_with_the_binding_name() {
+    // `chip let x = ...` has no name of its own; it should display the binding
+    // name so the compiled let-chip is identifiable in the wire graph.
+    let m = lower_src("@closed chip let sphereCheckSize = 5");
+    let chips = chip_nodes(&m);
+    assert_eq!(chips.len(), 1);
+    assert_eq!(
+        chips[0].properties.get(&*sym::NAME_LABEL),
+        Some(&Literal::String("sphereCheckSize".into()))
+    );
+
+    // Multiple bindings (`chip let a = 1, b = 2`) join their names.
+    let m2 = lower_src("chip let a = 1, b = 2");
+    assert_eq!(
+        chip_nodes(&m2)[0].properties.get(&*sym::NAME_LABEL),
+        Some(&Literal::String("a, b".into()))
+    );
+
+    // An explicit `@label(...)` still wins over the derived name.
+    let m3 = lower_src("@label(\"Reach\") chip let sphereCheckSize = 5");
+    assert_eq!(
+        chip_nodes(&m3)[0].properties.get(&*sym::NAME_LABEL),
+        Some(&Literal::String("Reach".into()))
+    );
+}
+
+#[test]
 fn named_chip_instances_inherit_decl_annotations_and_doc() {
     let m = lower_src(
         "/// Adds one.\n\

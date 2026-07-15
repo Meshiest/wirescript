@@ -1033,6 +1033,22 @@ impl<'a> Parser<'a> {
                 })
                 .unwrap_or(start);
             self.eat_stmt_end();
+            // A `chip let` has no name of its own, so default its display label
+            // to the binding name(s) — the chip should show what it computes.
+            // An explicit `@label(...)` still wins.
+            let derived_label = label.clone().or_else(|| {
+                let names: Vec<&str> = stmts
+                    .iter()
+                    .filter_map(|s| match s {
+                        Stmt::Let(LetDecl {
+                            binding: LetBinding::Ident { name, .. },
+                            ..
+                        }) => Some(name.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                (!names.is_empty()).then(|| names.join(", "))
+            });
             return TopDecl::AnonChip(AnonChipDecl {
                 open,
                 body: Block {
@@ -1040,7 +1056,7 @@ impl<'a> Parser<'a> {
                     range: self.make_range(start, end),
                 },
                 range: self.make_range(start, end),
-                label: label.clone(),
+                label: derived_label,
                 closed,
             });
         }

@@ -71,6 +71,20 @@ enum Command {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Wirescript lowering recurses in proportion to program size, so a large
+    // module can overflow the default main-thread stack (RUST_MIN_STACK only
+    // affects spawned threads, not main). Run the work on a worker thread with a
+    // big stack so large programs compile.
+    std::thread::Builder::new()
+        .stack_size(1024 * 1024 * 1024) // 1 GiB (reserved, not committed)
+        .spawn(|| run().map_err(|e| e.to_string()))
+        .expect("failed to spawn compile thread")
+        .join()
+        .expect("compile thread panicked")
+        .map_err(|e| e.into())
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Command::Compile {
