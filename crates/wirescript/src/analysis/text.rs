@@ -1,8 +1,15 @@
+/// Byte index just past the char at byte `i` of `s`. `i + 1` is only correct
+/// for ASCII — after an `rfind` that landed on a multi-byte char (e.g. `─` in
+/// a comment), `i + 1` is not a char boundary and slicing there panics.
+fn after_char(s: &str, i: usize) -> usize {
+    i + s[i..].chars().next().map_or(1, |c| c.len_utf8())
+}
+
 pub fn word_at(source: &str, line: usize, col: usize) -> Option<String> {
     let l = source.lines().nth(line)?;
     // Convert character column to byte offset safely
     let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
-    let start = l[..c].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| i + 1).unwrap_or(0);
+    let start = l[..c].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| after_char(l, i)).unwrap_or(0);
     let end = l[c..].find(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| c + i).unwrap_or(l.len());
     let w = &l[start..end];
     if w.is_empty() { None } else { Some(w.to_string()) }
@@ -16,12 +23,14 @@ pub fn word_at(source: &str, line: usize, col: usize) -> Option<String> {
 /// give member completions priority over the enclosing call's param names.
 pub fn member_receiver_at(source: &str, line: usize, col: usize) -> Option<String> {
     let l = source.lines().nth(line)?;
-    let col_idx = col.min(l.len());
+    // `col` is a char column — convert to a byte offset (a raw byte index
+    // would slice mid-char and panic on multi-byte text earlier in the line).
+    let col_idx = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
     let before = &l[..col_idx];
     // The partial member name being typed (identifier chars adjacent to cursor).
     let frag_start = before
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
+        .map(|i| after_char(before, i))
         .unwrap_or(0);
     // The char immediately before that fragment must be the member dot.
     if frag_start == 0 || before.as_bytes()[frag_start - 1] != b'.' {
@@ -31,7 +40,7 @@ pub fn member_receiver_at(source: &str, line: usize, col: usize) -> Option<Strin
     let recv = &before[..frag_start - 1];
     let recv_start = recv
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
+        .map(|i| after_char(recv, i))
         .unwrap_or(0);
     let name = &recv[recv_start..];
     (!name.is_empty()).then(|| name.to_string())
@@ -283,7 +292,7 @@ pub fn find_enclosing_call(source: &str, line: usize, col: usize) -> Option<Stri
     let before = prefix[..open].trim_end();
     let start = before
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|k| k + 1)
+        .map(|k| after_char(before, k))
         .unwrap_or(0);
     let name = &before[start..];
     if name.is_empty() {
@@ -326,7 +335,7 @@ pub fn named_arg_value(source: &str, line: usize, col: usize) -> Option<(String,
     let head = before[..eq].trim_end();
     let start = head
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|k| k + 1)
+        .map(|k| after_char(head, k))
         .unwrap_or(0);
     let name = &head[start..];
     if name.is_empty() {
@@ -339,6 +348,24 @@ pub fn named_arg_value(source: &str, line: usize, col: usize) -> Option<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_at_survives_multibyte_neighbors() {
+        // Regression: the word boundary search used `rfind(...) + 1`, which
+        // lands INSIDE a multi-byte char (`─` is 3 bytes) and panicked the
+        // whole LSP on hover over comments like `// ── Tunables ──…`.
+        let l = "// ── Tunables ──";
+        assert_eq!(word_at(l, 0, 6).as_deref(), Some("Tunables"));
+        // Cursor ON the box-drawing char: no word, no panic.
+        assert_eq!(word_at(l, 0, 3), None);
+        // Same +1 pattern in the other line scanners.
+        assert_eq!(
+            find_enclosing_call("let x = ─f(a, ", 0, 13).as_deref(),
+            Some("f")
+        );
+        assert!(named_arg_value("  ─x = ", 0, 7).is_some());
+        assert_eq!(member_receiver_at("─a.b", 0, 4).as_deref(), Some("a"));
+    }
 
     #[test]
     fn named_arg_value_detects_value_slot() {

@@ -253,39 +253,56 @@ struct TarjanState {
     result: Vec<Vec<NodeId>>,
 }
 
-fn strongconnect(adj: &HashMap<NodeId, Vec<NodeId>>, v: &NodeId, s: &mut TarjanState) {
-    s.idx.insert(*v, s.counter);
-    s.low.insert(*v, s.counter);
-    s.counter += 1;
-    s.stack.push(*v);
-    s.on_stack.insert(*v);
+/// Iterative Tarjan DFS. The textbook recursive form nests one call frame per
+/// node along a path, so recursion depth scales with program size — a long
+/// exec chain (thousands of gates in sequence) overflowed default thread
+/// stacks and aborted the host process. The DFS frame lives on the heap
+/// instead: `(node, next-neighbor index)`.
+fn strongconnect(adj: &HashMap<NodeId, Vec<NodeId>>, root: &NodeId, s: &mut TarjanState) {
+    let visit = |w: NodeId, s: &mut TarjanState| {
+        s.idx.insert(w, s.counter);
+        s.low.insert(w, s.counter);
+        s.counter += 1;
+        s.stack.push(w);
+        s.on_stack.insert(w);
+    };
 
-    let neighbors: Vec<NodeId> = adj.get(v).cloned().unwrap_or_default();
-    for w in &neighbors {
-        if !s.idx.contains_key(w) {
-            strongconnect(adj, w, s);
-            let lw = s.low[w];
-            let lv = s.low[v];
-            s.low.insert(*v, lv.min(lw));
-        } else if s.on_stack.contains(w) {
-            let iw = s.idx[w];
-            let lv = s.low[v];
-            s.low.insert(*v, lv.min(iw));
-        }
-    }
-
-    if s.low[v] == s.idx[v] {
-        let mut scc = Vec::new();
-        loop {
-            let w = s.stack.pop().expect("stack must contain v");
-            s.on_stack.remove(&w);
-            let is_v = w == *v;
-            scc.push(w);
-            if is_v {
-                break;
+    visit(*root, s);
+    let mut frames: Vec<(NodeId, usize)> = vec![(*root, 0)];
+    while let Some(&(v, i)) = frames.last() {
+        let neighbors = adj.get(&v).map(|n| n.as_slice()).unwrap_or(&[]);
+        if let Some(&w) = neighbors.get(i) {
+            frames.last_mut().expect("frame just read").1 += 1;
+            if !s.idx.contains_key(&w) {
+                visit(w, s);
+                frames.push((w, 0));
+            } else if s.on_stack.contains(&w) {
+                let lv = s.low[&v].min(s.idx[&w]);
+                s.low.insert(v, lv);
+            }
+        } else {
+            // All neighbors done: close v's SCC if it is a root, then fold
+            // its low-link into the parent (the recursive version does this
+            // right after the nested call returns).
+            frames.pop();
+            if s.low[&v] == s.idx[&v] {
+                let mut scc = Vec::new();
+                loop {
+                    let w = s.stack.pop().expect("stack must contain v");
+                    s.on_stack.remove(&w);
+                    let is_v = w == v;
+                    scc.push(w);
+                    if is_v {
+                        break;
+                    }
+                }
+                s.result.push(scc);
+            }
+            if let Some(&(p, _)) = frames.last() {
+                let lp = s.low[&p].min(s.low[&v]);
+                s.low.insert(p, lp);
             }
         }
-        s.result.push(scc);
     }
 }
 

@@ -690,11 +690,17 @@ impl LanguageServer for Backend {
         let client = self.client.clone();
         let src_owned = src.clone();
         let file_owned = file.clone();
+        // The compile runs on threads with no ambient tokio context (a
+        // blocking-pool thread, and inside that the library's big-stack
+        // compile worker) — capture an explicit runtime handle for the
+        // progress callback; a bare `tokio::spawn` there panics with "no
+        // reactor running" and takes the whole server down.
+        let rt = tokio::runtime::Handle::current();
         let compile_result = tokio::task::spawn_blocking(move || {
             let progress_cb: wirescript::ProgressCallback =
                 Box::new(move |p: wirescript::CompileProgress| {
                     let client = client.clone();
-                    tokio::spawn(async move {
+                    rt.spawn(async move {
                         client.send_notification::<CompileProgressNotification>(
                         serde_json::json!({ "step": p.step, "total": p.total, "done": p.done })
                     ).await;
@@ -711,7 +717,12 @@ impl LanguageServer for Backend {
             )
         })
         .await
-        .unwrap();
+        // A panic inside the compile must fail THIS request, not the server.
+        .map_err(|e| tower_lsp::jsonrpc::Error {
+            code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+            message: format!("compile task failed: {e}").into(),
+            data: None,
+        })?;
 
         self.client
             .send_notification::<CompileProgressNotification>(

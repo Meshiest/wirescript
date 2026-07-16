@@ -46,6 +46,40 @@ pub fn compile(input: CompileInput<'_>) -> Result<CompileResult, CompileError> {
     compile_with_opts(input, EmitOptions::default())
 }
 
+/// Stack reserved for a compile run. Some compile recursion still scales
+/// with program structure (lowering/emit), and callers routinely invoke
+/// compile from small-stack threads — the LSP's compile command runs on a
+/// ~2 MiB tokio blocking thread, which large programs overflowed, aborting
+/// the whole process. Reserved address space only — pages are committed as
+/// used, so the worker costs nothing beyond what the compile actually
+/// touches. (The former deepest site, the Tarjan SCC walk in
+/// `analyze_cycles`, is now iterative and needs no stack headroom at all.)
+const COMPILE_STACK_SIZE: usize = 256 * 1024 * 1024; // 256 MiB reserved
+
+/// Run `f` on a dedicated big-stack worker thread so every compile entry
+/// point is safe regardless of the caller's stack. Scoped, so borrowed
+/// inputs (`CompileInput<'_>`) work without `'static` bounds.
+#[cfg(not(target_arch = "wasm32"))]
+fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        let handle = std::thread::Builder::new()
+            .name("wirescript-compile".into())
+            .stack_size(COMPILE_STACK_SIZE)
+            .spawn_scoped(s, f)
+            .expect("failed to spawn compile worker thread");
+        match handle.join() {
+            Ok(v) => v,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
+}
+
+/// wasm32 has no threads — run inline (wasm callers control their own stack).
+#[cfg(target_arch = "wasm32")]
+fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    f()
+}
+
 /// A [`PrefabResolver`] that reads `.brz` files from disk. `$./rel.brz`
 /// resolves relative to `entry_file`'s directory; `$/abs.brz` is a
 /// filesystem-absolute path. (Relative refs in imported files also resolve
@@ -81,14 +115,14 @@ pub fn compile_with_progress(
     opts: EmitOptions,
     progress: ProgressCallback,
 ) -> Result<CompileResult, CompileError> {
-    compile_with_opts_inner(input, opts, Some(progress))
+    on_compile_stack(move || compile_with_opts_inner(input, opts, Some(progress)))
 }
 
 pub fn compile_with_opts(
     input: CompileInput<'_>,
     opts: EmitOptions,
 ) -> Result<CompileResult, CompileError> {
-    compile_with_opts_inner(input, opts, None)
+    on_compile_stack(move || compile_with_opts_inner(input, opts, None))
 }
 
 fn compile_with_opts_inner(
@@ -212,6 +246,13 @@ pub struct CompileWorldResult {
 
 pub fn compile_to_world(
     input: CompileInput<'_>,
+    opts: EmitOptions,
+) -> Result<CompileWorldResult, CompileError> {
+    on_compile_stack(move || compile_to_world_inner(input, opts))
+}
+
+fn compile_to_world_inner(
+    input: CompileInput<'_>,
     mut opts: EmitOptions,
 ) -> Result<CompileWorldResult, CompileError> {
     let source = input.source;
@@ -285,4 +326,43 @@ pub fn compile_to_world(
         diagnostics: all_diags,
         placements: lr.placements,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compile recursion depth scales with program size (Tarjan SCC walk in
+    /// analyze_cycles, lowering/emit recursion), and real callers invoke
+    /// compile from small-stack threads — the LSP's compile command runs on a
+    /// tokio blocking thread (2 MiB). The entry points must be safe no matter
+    /// how small the caller's stack is. A stack overflow aborts the whole
+    /// process, so without the internal big-stack worker this test crashes
+    /// the test run rather than failing an assertion.
+    #[test]
+    fn compile_survives_small_caller_stack() {
+        let mut src = String::from("in x: int\nlet a0 = x + 1\n");
+        for i in 1..8000 {
+            src.push_str(&format!("let a{i} = a{} + 1\n", i - 1));
+        }
+        src.push_str("out result = a7999\n");
+        let out = std::thread::Builder::new()
+            .stack_size(384 * 1024)
+            .spawn(move || {
+                compile(CompileInput {
+                    source: &src,
+                    file: "small_stack_test",
+                    module_name: None,
+                })
+                .map(|r| r.brz.len())
+            })
+            .expect("spawn small-stack caller")
+            .join()
+            .expect("small-stack compile panicked");
+        assert!(
+            out.is_ok(),
+            "compile failed: {:?}",
+            out.err().map(|e| e.to_string())
+        );
+    }
 }

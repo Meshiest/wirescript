@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+## Unreleased
+
+## 0.16.2 - 2026-07-15
+
+- **Fixed LSP process crash (stack overflow) compiling large programs** - the cycle-analysis SCC walk recursed once per gate along a path, so a long exec chain (a mod inlined hundreds of times → tens of thousands of gates in sequence) overflowed the default ~2 MiB thread the LSP ran compiles on, aborting the whole language server — after which nothing compiled until a restart. The SCC walk is now iterative (heap-allocated DFS frames, no depth limit), and every `compile*` entry point additionally runs on a dedicated worker thread with a 256 MiB *reserved* stack (committed only as used) to cover the remaining structure-proportional recursion in lowering/emit, so the caller's stack size no longer matters. The CLI already carried a local guard; it now lives at the source so all consumers are covered.
+- **Fixed LSP process crash on multi-byte text (hover/completion)** - the word/receiver/call scanners found a boundary with `rfind` and stepped past it with `+ 1`, which lands *inside* a multi-byte character — hovering near text like `// ── Section ──` box-drawing rules panicked at a non-char-boundary slice and killed the server. All four scan sites now step past the found character by its real width, and member-receiver lookup converts the cursor column from chars to bytes instead of indexing bytes directly.
+
 ## 0.16.1 - 2026-07-15
 
 - **`chip let` labels the chip with its binding name** - a `chip let x = …` (or `chip let a = 1, b = 2`) previously compiled to an unlabeled microchip; it now shows the binding name(s) as its display label so the let-chip is identifiable. An explicit `@label(...)` still overrides.
