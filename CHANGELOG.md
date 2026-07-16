@@ -1,5 +1,11 @@
 # Wirescript Changelog
 
+## 0.16.3 - 2026-07-16
+
+- **Compiler is ~2x faster on large projects** - mimalloc in the native binaries, thin LTO, a single-pass anon-chip partition, a quadratic wire-scan fix in inline chip calls, and Arc-shared ports/templates: lowering −69%, end-to-end −42%, lowering allocations −46%.
+- **Compiled output is deterministic** - Anon-chip partitioning iterated a randomly-ordered set, so emitted gate/wire structure varied run to run; chips now partition in sorted order and repeated compiles produce identical graphs.
+- **New `fuzz_programs` example** - Seeded grammar fuzzer that hunts silent miscompiles: programs with no error diagnostics whose output has `_Unsupported` gates, duplicate/fan-in wires, or dangling endpoints. Findings write to a gitignored `fuzz_findings/`.
+
 ## 0.16.2 - 2026-07-15
 
 - **Fixed LSP crash (stack overflow) on large programs** - The cycle-analysis SCC walk is now iterative, and every `compile*` entry point runs on a worker thread with a 256 MiB reserved stack.

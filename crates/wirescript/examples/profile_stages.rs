@@ -8,6 +8,9 @@ use wirescript::resolve::{FsLoader, resolve};
 use wirescript::template_cache::TemplateCache;
 use wirescript::typecheck::typecheck;
 
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let file = std::env::args().nth(1).expect("usage: profile_stages <file.ws>");
     let source = std::fs::read_to_string(&file).expect("read source");

@@ -1,6 +1,9 @@
 use std::{env, fs, path::Path, process};
 use wirescript::{resolve, typecheck::typecheck, FsLoader, Severity};
 
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {

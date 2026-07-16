@@ -11,3 +11,6 @@ crates/wasm/playground/docs/
 # Local raw inventory dump (source for gen_inventory.mjs); the generated
 # logic_gate_inventory.simple.json is the committed artifact.
 crates/wirescript/data/inventory_dump.ndjson
+# Fuzzer output (regenerate: cargo run --release -p wirescript --example
+# fuzz_programs -- --seed N); fixed bugs get real regression tests instead.
+fuzz_findings/

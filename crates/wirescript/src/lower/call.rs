@@ -17,7 +17,7 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             return lower_chip_call(ctx, &chip_decl, args, range);
         }
         if let Some(spec) = find_call(name) {
-            return lower_builtin_call(ctx, spec, args, range, e);
+            return lower_builtin_call(ctx, spec, None, args, range, e);
         }
         // An identifier callee that is neither an in-scope chip/mod nor a
         // builtin. If the name IS declared as a chip/mod somewhere in the
@@ -98,9 +98,9 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if let Some(spec) = find_call(field)
             && spec.receiver.is_some()
         {
-            let mut recv_args = vec![CallArg::Positional(obj.as_ref().clone())];
-            recv_args.extend(args.iter().cloned());
-            return lower_builtin_call(ctx, spec, &recv_args, range, e);
+            // The receiver fills the spec's first param; passing it separately
+            // avoids deep-cloning the receiver + args into a new arg vector.
+            return lower_builtin_call(ctx, spec, Some(obj), args, range, e);
         }
     }
     synthesise_unsupported(ctx, e)
@@ -149,6 +149,11 @@ pub(super) fn lower_chip_call_inline(
     args: &[CallArg],
     _range: &SourceRange,
 ) -> PortRef {
+    // This call's output nodes don't exist yet, so any wire touching them
+    // lands at an index >= this. The output-source lookups and the
+    // output-node removal below only scan this tail instead of the whole
+    // module wire list (which made deep inline-call chains quadratic).
+    let wire_start = ctx.builder.module.wires.len();
     let positional_args: Vec<&Expr> = args
         .iter()
         .filter_map(|a| match a {
@@ -456,9 +461,7 @@ pub(super) fn lower_chip_call_inline(
         multi_return_port
     } else if chip_decl.outputs.len() == 1 {
         let out_id = &inline_output_ids[0];
-        ctx.builder
-            .module
-            .wires
+        ctx.builder.module.wires[wire_start..]
             .iter()
             .find(|w| w.target.node_id == *out_id && w.target.port == WirePort::RerInput)
             .map(|w| w.source)
@@ -492,10 +495,7 @@ pub(super) fn lower_chip_call_inline(
             let Some(&out_id) = inline_output_ids.get(i) else {
                 continue;
             };
-            if let Some(src) = ctx
-                .builder
-                .module
-                .wires
+            if let Some(src) = ctx.builder.module.wires[wire_start..]
                 .iter()
                 .find(|w| w.target.node_id == out_id && w.target.port == WirePort::RerInput)
                 .map(|w| w.source)
@@ -512,13 +512,25 @@ pub(super) fn lower_chip_call_inline(
     };
 
     // Inline mod outputs are internal — remove the MicrochipOutput nodes.
-    for id in inline_output_ids {
-        ctx.builder.module.nodes.remove(id);
-        ctx.builder.module.outputs.retain(|o| o != id);
-        ctx.builder
-            .module
-            .wires
-            .retain(|w| w.source.node_id != *id && w.target.node_id != *id);
+    // Their wires all live in the tail added during this call; compact it in
+    // place (order-preserving) rather than retain-scanning the whole list.
+    if !inline_output_ids.is_empty() {
+        for id in inline_output_ids {
+            ctx.builder.module.nodes.remove(id);
+            ctx.builder.module.outputs.retain(|o| o != id);
+        }
+        let wires = &mut ctx.builder.module.wires;
+        let mut write = wire_start;
+        for read in wire_start..wires.len() {
+            let w = wires[read];
+            if !inline_output_ids.contains(&w.source.node_id)
+                && !inline_output_ids.contains(&w.target.node_id)
+            {
+                wires[write] = w;
+                write += 1;
+            }
+        }
+        wires.truncate(write);
     }
 
     for (i, param) in chip_decl.inputs.iter().enumerate() {
@@ -1312,6 +1324,7 @@ fn wire_chip_args_and_outputs(
 pub(super) fn lower_builtin_call(
     ctx: &mut LowerCtx,
     spec: &crate::catalog::calls::CallSpec,
+    receiver: Option<&Expr>,
     args: &[CallArg],
     range: &SourceRange,
     e: &Expr,
@@ -1328,6 +1341,13 @@ pub(super) fn lower_builtin_call(
     // Match args to params
     let mut bound: HashMap<&str, &Expr> = HashMap::default();
     let mut next_pos = 0usize;
+    // A method-call receiver is the first positional argument.
+    if let Some(recv) = receiver {
+        if let Some(p) = spec.params.first() {
+            bound.insert(p.name, recv);
+        }
+        next_pos = 1;
+    }
     for a in args {
         match a {
             CallArg::Named { name, value } => {

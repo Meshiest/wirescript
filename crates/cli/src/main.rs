@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 use std::{error::Error, path::PathBuf};
 
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Logic-brick toolchain: compile wirescript source to Brickadia saves.
 #[derive(Parser, Debug)]
 #[command(version, about)]

@@ -33,9 +33,13 @@ async function main() {
   const line = parseInt(lineStr, 10) - 1;
   const col = parseInt(colStr || '1', 10) - 1;
 
-  const { default: init, wirescript_hover } = await import('./pkg/wasm.js');
-  const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
-  await init({ module_or_path: wasmBytes });
+  const mod = await import('./pkg/wasm.js');
+  // nodejs-target pkg exports directly; web-target pkg needs init().
+  if (typeof mod.default === 'function') {
+    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
+    await mod.default({ module_or_path: wasmBytes });
+  }
+  const wirescript_hover = mod.wirescript_hover ?? mod.default?.wirescript_hover;
 
   const result = wirescript_hover(source, line, col, buildFileMap(file));
   if (!result) {

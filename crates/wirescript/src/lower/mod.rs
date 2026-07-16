@@ -315,35 +315,45 @@ fn materialize_unfoldable_constants(module: &mut Module) {
 /// `n + 1`, `n > 10`, etc. Recurses into chip sub-modules.
 fn inline_orphan_literals(module: &mut Module) {
     let value_sym = *sym::VALUE;
+    // Per-source (count, first target): the single-consumer check only ever
+    // needs the one target wire, so no per-node target Vecs. Buffers are
+    // reused across fixpoint iterations.
+    let mut outgoing: HashMap<NodeId, (usize, PortRef)> =
+        HashMap::with_capacity_and_hasher(module.nodes.len(), Default::default());
+    let mut incoming_count: HashMap<NodeId, usize> =
+        HashMap::with_capacity_and_hasher(module.nodes.len(), Default::default());
+    let mut lit_ids: Vec<NodeId> = Vec::new();
+    let mut concat_ids: Vec<NodeId> = Vec::new();
+    let mut removed: HashSet<NodeId> = HashSet::default();
+    // Built once, then maintained incrementally: a fold only ever removes the
+    // folded node and its single outgoing wire, so surviving nodes' entries
+    // never change except the target's incoming count.
+    for w in &module.wires {
+        let e = outgoing.entry(w.source.node_id).or_insert((0, w.target));
+        e.0 += 1;
+        *incoming_count.entry(w.target.node_id).or_default() += 1;
+    }
     loop {
-        let mut outgoing: HashMap<NodeId, Vec<(NodeId, WirePort)>> = HashMap::default();
-        let mut incoming_count: HashMap<NodeId, usize> = HashMap::default();
-        for w in &module.wires {
-            outgoing
-                .entry(w.source.node_id)
-                .or_default()
-                .push((w.target.node_id, w.target.port));
-            *incoming_count.entry(w.target.node_id).or_default() += 1;
-        }
-
-        let lit_ids: Vec<NodeId> = module
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.gate_class == gc::LITERAL)
-            .map(|(id, _)| *id)
-            .collect();
+        lit_ids.clear();
+        lit_ids.extend(
+            module
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.gate_class == gc::LITERAL)
+                .map(|(id, _)| *id),
+        );
         let mut changed = false;
-        let mut removed: HashSet<NodeId> = HashSet::default();
-        for lit_id in lit_ids {
-            let out = outgoing.get(&lit_id);
-            let out_len = out.map_or(0, |v| v.len());
+        for &lit_id in &lit_ids {
+            let Some(&(out_len, target)) = outgoing.get(&lit_id) else {
+                continue;
+            };
             if out_len != 1 {
                 continue;
             }
             if incoming_count.get(&lit_id).copied().unwrap_or(0) != 0 {
                 continue;
             }
-            let (target_id, target_port) = out.unwrap()[0];
+            let (target_id, target_port) = (target.node_id, target.port);
             let value = match module
                 .nodes
                 .get(&lit_id)
@@ -361,6 +371,10 @@ fn inline_orphan_literals(module: &mut Module) {
             }
             module.nodes.remove(&lit_id);
             removed.insert(lit_id);
+            outgoing.remove(&lit_id);
+            if let Some(c) = incoming_count.get_mut(&target_id) {
+                *c = c.saturating_sub(1);
+            }
             changed = true;
         }
 
@@ -369,20 +383,22 @@ fn inline_orphan_literals(module: &mut Module) {
         // support) into consumers that accept an inline string variant. Unlike
         // `_Literal`, this is gated on `port_accepts_inline_variant` — a string
         // can't fill a wire-only port, so those keep the real concat gate.
-        let concat_ids: Vec<NodeId> = module
-            .nodes
-            .iter()
-            .filter(|(id, n)| n.gate_class == gc::STRING_CONCATENATE && !removed.contains(id))
-            .map(|(id, _)| *id)
-            .collect();
-        for cid in concat_ids {
+        concat_ids.clear();
+        concat_ids.extend(
+            module
+                .nodes
+                .iter()
+                .filter(|(id, n)| n.gate_class == gc::STRING_CONCATENATE && !removed.contains(id))
+                .map(|(id, _)| *id),
+        );
+        for &cid in &concat_ids {
             if incoming_count.get(&cid).copied().unwrap_or(0) != 0 {
                 continue;
             }
-            let Some(out) = outgoing.get(&cid).filter(|v| v.len() == 1) else {
+            let Some(&(1, target)) = outgoing.get(&cid) else {
                 continue;
             };
-            let (target_id, target_port) = out[0];
+            let (target_id, target_port) = (target.node_id, target.port);
             // Only a single constant string (INPUT_A set, INPUT_B + Separator
             // empty) — real 2-input concats have wired inputs (incoming != 0).
             let text = {
@@ -417,12 +433,20 @@ fn inline_orphan_literals(module: &mut Module) {
             }
             module.nodes.remove(&cid);
             removed.insert(cid);
+            outgoing.remove(&cid);
+            if let Some(c) = incoming_count.get_mut(&target_id) {
+                *c = c.saturating_sub(1);
+            }
             changed = true;
         }
 
         if !changed {
             break;
         }
+    }
+    // Removed nodes had no incoming wires, so only source-side wires can
+    // reference them — one sweep at the end covers every iteration's folds.
+    if !removed.is_empty() {
         module
             .wires
             .retain(|w| !removed.contains(&w.source.node_id));
@@ -644,30 +668,44 @@ fn prune_dead_exec_unions(module: &mut Module) {
     // Degrees + adjacency computed once and maintained incrementally via a
     // worklist. The old version rebuilt counts over every wire and spliced
     // one union per full rebuild — O(unions × wires) on union-heavy modules.
-    let mut in_count: HashMap<NodeId, usize> = HashMap::default();
-    let mut out_count: HashMap<NodeId, usize> = HashMap::default();
-    let mut in_edges: HashMap<NodeId, Vec<crate::ir::PortRef>> = HashMap::default();
-    let mut out_edges: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
-    for w in &module.wires {
-        *out_count.entry(w.source.node_id).or_default() += 1;
-        *in_count.entry(w.target.node_id).or_default() += 1;
-        in_edges
-            .entry(w.target.node_id)
-            .or_default()
-            .push(w.source.clone());
-        out_edges
-            .entry(w.source.node_id)
-            .or_default()
-            .push(w.target.node_id);
-    }
-
-    let mut queue: Vec<NodeId> = module
+    let queue: Vec<NodeId> = module
         .nodes
         .iter()
         .filter(|(_, n)| n.gate_class == gc::UNION)
         .map(|(id, _)| *id)
         .collect();
+    if queue.is_empty() {
+        for child_module in module.chips.values_mut() {
+            prune_dead_exec_unions(child_module);
+        }
+        return;
+    }
     let is_union: HashSet<NodeId> = queue.iter().copied().collect();
+    let mut queue = queue;
+
+    // Counts and adjacency are only ever READ for union nodes (the queue is
+    // union-only and every requeue is guarded by `is_union`), so only track
+    // union entries — decrements on other nodes fall through `get_mut`.
+    let mut in_count: HashMap<NodeId, usize> = HashMap::default();
+    let mut out_count: HashMap<NodeId, usize> = HashMap::default();
+    let mut in_edges: HashMap<NodeId, Vec<crate::ir::PortRef>> = HashMap::default();
+    let mut out_edges: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
+    for w in &module.wires {
+        if is_union.contains(&w.source.node_id) {
+            *out_count.entry(w.source.node_id).or_default() += 1;
+            out_edges
+                .entry(w.source.node_id)
+                .or_default()
+                .push(w.target.node_id);
+        }
+        if is_union.contains(&w.target.node_id) {
+            *in_count.entry(w.target.node_id).or_default() += 1;
+            in_edges
+                .entry(w.target.node_id)
+                .or_default()
+                .push(w.source.clone());
+        }
+    }
 
     let mut removed: HashSet<NodeId> = HashSet::default();
     let mut spliced: HashMap<NodeId, crate::ir::PortRef> = HashMap::default();
@@ -730,10 +768,14 @@ fn prune_dead_exec_unions(module: &mut Module) {
                 *c += live;
                 *c = c.saturating_sub(1);
             }
-            out_edges
-                .entry(raw.node_id)
-                .or_default()
-                .extend(transferred);
+            // Adjacency is only read back for unions; drop transfers to
+            // non-union carriers.
+            if is_union.contains(&raw.node_id) {
+                out_edges
+                    .entry(raw.node_id)
+                    .or_default()
+                    .extend(transferred);
+            }
         }
     }
 

@@ -134,8 +134,8 @@ impl ModuleBuilder {
             id,
             kind,
             gate_class: opts.gate_class,
-            properties: Arc::new(opts.properties),
-            ports: Arc::new(opts.ports),
+            properties: shared_properties(opts.properties),
+            ports: shared_gate_io(opts.ports),
             source_range: opts.source_range,
             chip_id: opts.chip_id,
             chain_id,
@@ -145,6 +145,34 @@ impl ModuleBuilder {
         self.module.nodes.insert(id, node);
         id
     }
+}
+
+/// Most nodes carry no properties — share one immutable empty map instead of
+/// allocating an `Arc<HashMap>` per node. (`Arc::make_mut` copies on write.)
+fn shared_properties(props: HashMap<Sym, Literal>) -> Arc<HashMap<Sym, Literal>> {
+    static EMPTY: std::sync::LazyLock<Arc<HashMap<Sym, Literal>>> =
+        std::sync::LazyLock::new(|| Arc::new(HashMap::default()));
+    if props.is_empty() {
+        EMPTY.clone()
+    } else {
+        Arc::new(props)
+    }
+}
+
+/// Hash-cons `GateIO`s: gates of the same class/type signature repeat the
+/// same port table thousands of times, so share one `Arc` per distinct value.
+/// Node ports are never mutated after construction, so sharing is safe.
+fn shared_gate_io(io: GateIO) -> Arc<GateIO> {
+    use std::sync::Mutex;
+    static CACHE: std::sync::LazyLock<Mutex<crate::collections::HashSet<Arc<GateIO>>>> =
+        std::sync::LazyLock::new(|| Mutex::new(crate::collections::HashSet::default()));
+    let mut cache = CACHE.lock().unwrap();
+    if let Some(existing) = cache.get(&io) {
+        return existing.clone();
+    }
+    let arc = Arc::new(io);
+    cache.insert(arc.clone());
+    arc
 }
 
 #[derive(Clone, Debug)]

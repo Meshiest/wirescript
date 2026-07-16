@@ -90,7 +90,7 @@ pub struct ScopeInfo {
 /// Primitive types tracked on ports + wires for compatibility checks.
 /// A subset of the TS `Type` ADT — enough for Phase 1 emit + layout.
 /// Extended with `Ref` / `Array` / etc. in Phase 3 (typecheck).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     Bool,
     Int,
@@ -174,13 +174,13 @@ pub enum Literal {
     PrefabRef { path: String },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PortSpec {
     pub name: Sym,
     pub ty: Type,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GateIO {
     pub inputs: Vec<PortSpec>,
     pub outputs: Vec<PortSpec>,

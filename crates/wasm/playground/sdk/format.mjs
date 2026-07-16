@@ -19,9 +19,13 @@ async function main() {
 
   const source = readFileSync(resolve(file), 'utf-8');
 
-  const { default: init, wirescript_format } = await import('./pkg/wasm.js');
-  const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
-  await init({ module_or_path: wasmBytes });
+  const mod = await import('./pkg/wasm.js');
+  // nodejs-target pkg exports directly; web-target pkg needs init().
+  if (typeof mod.default === 'function') {
+    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
+    await mod.default({ module_or_path: wasmBytes });
+  }
+  const wirescript_format = mod.wirescript_format ?? mod.default?.wirescript_format;
 
   const formatted = wirescript_format(source, 2, false);
 

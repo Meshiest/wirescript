@@ -31,9 +31,13 @@ async function main() {
   const source = readFileSync(resolve(file), 'utf-8');
   const outFile = process.argv[3] || file.replace(/\.[^.]+$/, '.brz');
 
-  const { default: init, wirescript_compile } = await import('./pkg/wasm.js');
-  const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
-  await init({ module_or_path: wasmBytes });
+  const mod = await import('./pkg/wasm.js');
+  // nodejs-target pkg exports directly; web-target pkg needs init().
+  if (typeof mod.default === 'function') {
+    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
+    await mod.default({ module_or_path: wasmBytes });
+  }
+  const wirescript_compile = mod.wirescript_compile ?? mod.default?.wirescript_compile;
 
   try {
     const bytes = wirescript_compile(source, basename(file).replace(/\.[^.]+$/, ''), buildFileMap(file));

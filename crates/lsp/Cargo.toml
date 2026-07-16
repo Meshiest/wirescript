@@ -8,6 +8,7 @@ name = "wirescript-lsp"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc = "0.1"
 wirescript = { path = "../wirescript" }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "io-std"] }

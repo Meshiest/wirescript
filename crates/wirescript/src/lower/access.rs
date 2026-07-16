@@ -123,7 +123,8 @@ pub(super) fn resolve_output_field_port(
     let node = ctx.builder.module.nodes.get(&node_id)?;
     let pname = node.ports.outputs.iter().find_map(|p| {
         let pname = crate::intern::resolve(p.name);
-        (pname == aliased || crate::catalog::arrays::field_name(pname) == field).then_some(pname)
+        (pname == aliased || crate::catalog::arrays::field_name_ref(pname) == field)
+            .then_some(pname)
     })?;
     Some(port_ref(node_id, pname))
 }
@@ -181,7 +182,7 @@ pub(super) fn lower_field_access(
                     // existing `X`/`Y`/`Z` / `R`/`G`/`B`/`A` port instead of
                     // re-splitting the first field.
                     (pname == aliased
-                        || crate::catalog::arrays::field_name(pname) == field
+                        || crate::catalog::arrays::field_name_ref(pname) == field
                         || (is_swizzle_field(field) && pname.eq_ignore_ascii_case(field)))
                     .then_some(pname)
                 });

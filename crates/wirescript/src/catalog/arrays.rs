@@ -75,12 +75,18 @@ pub fn is_array_method(name: &str) -> bool {
 /// boolean prefix (`bFound` -> `Found`, `bIsEmpty` -> `IsEmpty`). The lowering
 /// uses this to resolve a field back to its port without a hand-written map.
 pub fn field_name(port: &str) -> String {
+    field_name_ref(port).to_string()
+}
+
+/// Allocation-free view of [`field_name`] — the hot port-resolution paths
+/// only ever compare it against a field string.
+pub fn field_name_ref(port: &str) -> &str {
     if let Some(rest) = port.strip_prefix('b') {
         if rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-            return rest.to_string();
+            return rest;
         }
     }
-    port.to_string()
+    port
 }
 
 /// Map a gate port type to a Wirescript type. The generic `any` value port

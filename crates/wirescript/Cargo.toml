@@ -1,6 +1,6 @@
 [package]
 name = "wirescript"
-version = "0.16.1"
+version = "0.16.3"
 edition = "2024"
 
 [lib]
@@ -13,6 +13,8 @@ path = "src/bin/check.rs"
 [features]
 default = ["brdb-full"]
 brdb-full = ["brdb/brdb"]
+# Temporary allocation-site profiling (examples/dhat_lower.rs).
+dhat-heap = ["dep:dhat"]
 
 [dependencies]
 brdb = { workspace = true, features = ["brz"] }
@@ -23,3 +25,8 @@ serde_json = "1"
 petgraph = "0.7"
 bitflags = "2"
 lasso = { version = "0.7", features = ["multi-threaded"] }
+dhat = { version = "0.3", optional = true }
+
+# Native-only: global allocator for the check bin + examples (never wasm32).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = "0.1"

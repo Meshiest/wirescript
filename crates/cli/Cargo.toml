@@ -5,6 +5,7 @@ edition = "2024"
 
 
 [dependencies]
+mimalloc = "0.1"
 clap.workspace = true
 clap-stdin.workspace = true
 brdb = { workspace = true, features = ["brz", "brdb"] }
