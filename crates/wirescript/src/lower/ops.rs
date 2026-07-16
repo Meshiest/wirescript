@@ -85,7 +85,7 @@ fn wrap_object_for_math(
     }
 
     // `false` literal feeding the OR's second input.
-    let mut false_props = HashMap::new();
+    let mut false_props = HashMap::default();
     false_props.insert(*sym::VALUE, Literal::Bool(false));
     let false_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::LITERAL,
@@ -272,7 +272,7 @@ fn build_format_text(
     let inputs = (0..slots.len())
         .map(|i| PortSpec { name: intern(FORMAT_SLOTS[i].as_str()), ty: Type::Any })
         .collect();
-    let mut props = HashMap::new();
+    let mut props = HashMap::default();
     props.insert(intern_static("FormatString"), Literal::String(format_string));
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::STRING_FORMAT_TEXT,

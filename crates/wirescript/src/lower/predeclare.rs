@@ -333,7 +333,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // `= [..]` initializer carries its constant literals like `array` does.
     if let Type::Array(elem) = &inner_type {
         let elem_type = elem.as_ref().clone();
-        let mut properties = HashMap::new();
+        let mut properties = HashMap::default();
         properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
         if let Some(Expr::Array { elements, .. }) = &d.init {
             let lits: Vec<Literal> = elements.iter().filter_map(array_elem_literal).collect();
@@ -372,7 +372,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         .as_ref()
         .and_then(expr_to_literal)
         .or_else(|| default_literal_for_var_type(&inner_type));
-    let mut properties = HashMap::new();
+    let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
     if let Some(lit) = init_lit {
         properties.insert(*sym::INITIAL_VALUE, lit);
@@ -433,7 +433,7 @@ pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
                 ty: inner_type.clone(),
             }],
         },
-        properties: [(*sym::TICKS_TO_WAIT, Literal::Int(1))].into(),
+        properties: [(*sym::TICKS_TO_WAIT, Literal::Int(1))].into_iter().collect(),
         note: None,
         ..Default::default()
     });
@@ -451,7 +451,7 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     // Constant initializer (`array foo: int[] = [1, 2, 3]`): every element must
     // be a literal. Carry the values as an `InitialValue` property the emitter
     // writes straight into the ArrayVar's array variant (no runtime gates).
-    let mut properties = HashMap::new();
+    let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
     if !d.init.is_empty() {
         let lits: Vec<Literal> = d.init.iter().filter_map(array_elem_literal).collect();

@@ -12,7 +12,7 @@ use wirescript::{
 mod analysis;
 
 fn make_loader(files_json: &str) -> MemLoader {
-    let files: HashMap<String, String> =
+    let files: wirescript::collections::HashMap<String, String> =
         serde_json::from_str(files_json).unwrap_or_default();
     MemLoader { files }
 }

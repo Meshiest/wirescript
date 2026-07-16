@@ -24,7 +24,7 @@ pub struct Region<'a> {
 #[cfg(test)]
 use crate::ir::{Module, ROOT_SCOPE_ID};
 #[cfg(test)]
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 /// Build the region tree rooted at `ROOT_SCOPE_ID`.
 ///
@@ -36,7 +36,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 pub fn build_region_tree(module: &Module) -> Region<'_> {
     // Bucket nodes by scope.
-    let mut nodes_by_scope: HashMap<ScopeId, Vec<&Node>> = HashMap::new();
+    let mut nodes_by_scope: HashMap<ScopeId, Vec<&Node>> = HashMap::default();
     for node in module.nodes.values() {
         let sid = if module.scopes.contains_key(&node.scope_id) {
             node.scope_id
@@ -56,7 +56,7 @@ pub fn build_region_tree(module: &Module) -> Region<'_> {
     }
 
     // Build parent → children map over the scope table.
-    let mut children_of: HashMap<ScopeId, Vec<ScopeId>> = HashMap::new();
+    let mut children_of: HashMap<ScopeId, Vec<ScopeId>> = HashMap::default();
     for (&id, info) in &module.scopes {
         if id == ROOT_SCOPE_ID {
             continue;
@@ -218,7 +218,7 @@ mod tests {
             id: nid,
             kind: crate::ir::NodeKind::Gate,
             gate_class: "G",
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO::default()),
             source_range: Default::default(),
             chip_id: None,

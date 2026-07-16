@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::emit::Placement;

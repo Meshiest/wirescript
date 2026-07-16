@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
 use crate::ir::Type;

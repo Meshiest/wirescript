@@ -20,7 +20,7 @@ mod dag;
 mod region;
 pub mod wall;
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use crate::catalog::default_catalog;
 use crate::emit::Placement;
@@ -141,7 +141,7 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
     let count = spawnable.len();
     let side = (count as f64).cbrt().ceil() as usize;
 
-    let mut placements: HashMap<NodeId, Placement> = HashMap::new();
+    let mut placements: HashMap<NodeId, Placement> = HashMap::default();
     let mut x = 0i32;
     let mut y = 0i32;
     let mut z = Z_PLANE;
@@ -193,7 +193,7 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
         chip_layouts: if recurse {
             recurse_chips(module, opts)
         } else {
-            HashMap::new()
+            HashMap::default()
         },
         bounds_min: IntVec3 {
             x: -half_x,
@@ -234,14 +234,14 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
     };
     let mut laid = layout_leaf(&whole_module, &module.wires);
 
-    let mut placements: HashMap<NodeId, Placement> = HashMap::new();
+    let mut placements: HashMap<NodeId, Placement> = HashMap::default();
     if laid.local.is_empty() {
         return LayoutResult {
             placements,
             chip_layouts: if recurse {
                 recurse_chips(module, opts)
             } else {
-                HashMap::new()
+                HashMap::default()
             },
             bounds_min: IntVec3::default(),
             bounds_max: IntVec3::default(),
@@ -293,7 +293,7 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
         chip_layouts: if recurse {
             recurse_chips(module, opts)
         } else {
-            HashMap::new()
+            HashMap::default()
         },
         bounds_min: IntVec3 {
             x: min_x,
@@ -322,7 +322,7 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
     // passes (only placements move), so resolve each node's primary
     // consumer once: first consumer in the layout by source order, wire
     // order breaking ties.
-    let mut consumers: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut consumers: HashMap<NodeId, NodeId> = HashMap::default();
     for w in &module.wires {
         if !laid.local.contains_key(&w.target.node_id) {
             continue;
@@ -346,7 +346,7 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
 
     // Occupancy count per cell, maintained incrementally across moves so
     // collision checks are O(1) instead of a scan over every placement.
-    let mut occupied: HashMap<(i32, i32), u32> = HashMap::new();
+    let mut occupied: HashMap<(i32, i32), u32> = HashMap::default();
     for p in laid.local.values() {
         *occupied.entry((p.dx, p.dy)).or_insert(0) += 1;
     }
@@ -575,8 +575,8 @@ fn resolve_variable_sizes(
     laid: &RegionLayout,
     module: &Module,
 ) -> (HashMap<NodeId, (i32, i32)>, i32, i32) {
-    let mut row_thickness: HashMap<i32, i32> = HashMap::new(); // dy → Placement.x thickness
-    let mut col_thickness: HashMap<i32, i32> = HashMap::new(); // dx → Placement.y thickness
+    let mut row_thickness: HashMap<i32, i32> = HashMap::default(); // dy → Placement.x thickness
+    let mut col_thickness: HashMap<i32, i32> = HashMap::default(); // dx → Placement.y thickness
     for (id, p) in &laid.local {
         let (hsx, hsy) = module
             .nodes
@@ -597,7 +597,7 @@ fn resolve_variable_sizes(
 
     let mut sorted_dys: Vec<i32> = row_thickness.keys().copied().collect();
     sorted_dys.sort();
-    let mut row_off: HashMap<i32, i32> = HashMap::new();
+    let mut row_off: HashMap<i32, i32> = HashMap::default();
     let mut total_x = 0i32;
     for dy in &sorted_dys {
         row_off.insert(*dy, total_x);
@@ -606,14 +606,14 @@ fn resolve_variable_sizes(
 
     let mut sorted_dxs: Vec<i32> = col_thickness.keys().copied().collect();
     sorted_dxs.sort();
-    let mut col_off: HashMap<i32, i32> = HashMap::new();
+    let mut col_off: HashMap<i32, i32> = HashMap::default();
     let mut total_y = 0i32;
     for dx in &sorted_dxs {
         col_off.insert(*dx, total_y);
         total_y += col_thickness[dx];
     }
 
-    let mut out: HashMap<NodeId, (i32, i32)> = HashMap::new();
+    let mut out: HashMap<NodeId, (i32, i32)> = HashMap::default();
     for (id, p) in &laid.local {
         let px = row_off[&p.dy];
         let py = col_off[&p.dx];
@@ -623,7 +623,7 @@ fn resolve_variable_sizes(
 }
 
 fn recurse_chips(module: &Module, opts: &LayoutOptions) -> HashMap<NodeId, LayoutResult> {
-    let mut chip_layouts: HashMap<NodeId, LayoutResult> = HashMap::new();
+    let mut chip_layouts: HashMap<NodeId, LayoutResult> = HashMap::default();
     for (chip_id, child_module) in &module.chips {
         chip_layouts.insert(*chip_id, layout_with_opts(child_module, opts));
     }
@@ -650,7 +650,7 @@ mod tests {
             id: NodeId::fresh(),
             kind: NodeKind::Gate,
             gate_class: crate::ir::gate_class::REROUTER,
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
                 inputs: vec![PortSpec { name: *crate::intern::sym::RER_INPUT, ty: Type::Any }],
                 outputs: vec![PortSpec { name: *crate::intern::sym::RER_OUTPUT, ty: Type::Any }],

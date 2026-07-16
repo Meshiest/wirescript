@@ -398,7 +398,7 @@ fn event_config_props(
     evt: &crate::catalog::events::EventSpec,
     config: &[HandlerConfigArg],
 ) -> HashMap<crate::intern::Sym, Literal> {
-    let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::new();
+    let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
     let mut positional = 0;
     for arg in config {
         let (field, value) = match arg {

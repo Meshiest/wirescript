@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::sync::Arc;
 
 use crate::diagnostic::SourceRange;
@@ -69,7 +69,7 @@ impl ModuleBuilder {
         ty: Type,
         source_range: SourceRange,
     ) -> NodeId {
-        let mut props = HashMap::new();
+        let mut props = HashMap::default();
         props.insert(*sym::PORT_LABEL, Literal::String(port_name.into()));
         let id = self.add_node(
             ids,
@@ -98,7 +98,7 @@ impl ModuleBuilder {
         ty: Type,
         source_range: SourceRange,
     ) -> NodeId {
-        let mut props = HashMap::new();
+        let mut props = HashMap::default();
         props.insert(*sym::PORT_LABEL, Literal::String(port_name.into()));
         let id = self.add_node(
             ids,
@@ -167,7 +167,7 @@ impl Default for AddNodeOpts {
             gate_class: "",
             source_range: SourceRange::default(),
             ports: GateIO::default(),
-            properties: HashMap::new(),
+            properties: HashMap::default(),
             chip_id: None,
             chain_id: None,
             scope_id: None,

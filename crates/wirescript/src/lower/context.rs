@@ -144,7 +144,7 @@ pub(super) struct LowerCtx<'a> {
     /// (a use-before-declaration → WS021 error) from "not a function at all"
     /// (e.g. an unimplemented builtin → placeholder) needs the full name set.
     /// Shared (Arc) so child contexts clone it cheaply.
-    pub(super) known_fn_names: std::sync::Arc<std::collections::HashSet<String>>,
+    pub(super) known_fn_names: std::sync::Arc<crate::collections::HashSet<String>>,
     /// True only for the compiled entry file's root LowerCtx. `@side` port
     /// annotations are legal only there (WS023 elsewhere).
     pub(super) is_root_module: bool,

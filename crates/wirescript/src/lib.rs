@@ -8,6 +8,7 @@ pub mod analysis;
 pub mod analyze;
 pub mod ast;
 pub mod catalog;
+pub mod collections;
 pub mod compile;
 pub mod diagnostic;
 pub mod emit;

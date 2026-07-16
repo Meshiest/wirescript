@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use bitflags::bitflags;
 
@@ -37,12 +37,12 @@ impl<V> Default for Scope<V> {
 impl<V> Scope<V> {
     pub fn new() -> Self {
         Self {
-            frames: vec![Frame { tag: ScopeTag::ROOT, entries: HashMap::new() }],
+            frames: vec![Frame { tag: ScopeTag::ROOT, entries: HashMap::default() }],
         }
     }
 
     pub fn push(&mut self, tag: ScopeTag) {
-        self.frames.push(Frame { tag, entries: HashMap::new() });
+        self.frames.push(Frame { tag, entries: HashMap::default() });
     }
 
     pub fn pop(&mut self) {

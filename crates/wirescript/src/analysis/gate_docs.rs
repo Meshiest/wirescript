@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::sync::OnceLock;
 use serde::Deserialize;
 

@@ -22,7 +22,7 @@
 //!     OR
 //!     → World::write_brdb(path) (SQLite database file)
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 #[cfg(feature = "brdb-full")]
 use std::path::Path;
 
@@ -175,7 +175,7 @@ pub fn partition_anon_chips(module: &mut Module) {
     }
 
     // Parent-side Literal nodes we clone into chips (below); cleaned up after.
-    let mut cloned_literal_sources: HashSet<NodeId> = HashSet::new();
+    let mut cloned_literal_sources: HashSet<NodeId> = HashSet::default();
 
     for chip_id in chip_ids {
         let tagged: HashSet<NodeId> = module
@@ -200,9 +200,9 @@ pub fn partition_anon_chips(module: &mut Module) {
         // Partition wires: internal go to child, cross-boundary stay in
         // parent as remote wires. Layout wires keep chips inline in the DAG.
         let mut parent_wires = Vec::new();
-        let mut seen_layout_edges: HashSet<(NodeId, NodeId)> = HashSet::new();
+        let mut seen_layout_edges: HashSet<(NodeId, NodeId)> = HashSet::default();
         // Per-chip dedupe of Literal nodes cloned into this chip.
-        let mut literal_clones: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut literal_clones: HashMap<NodeId, NodeId> = HashMap::default();
         for w in std::mem::take(&mut module.wires) {
             let src_in = tagged.contains(&w.source.node_id);
             let tgt_in = tagged.contains(&w.target.node_id);
@@ -357,11 +357,11 @@ pub fn build_world(
     world.grids.push((inner_pair.0.clone(), Vec::new()));
 
     let mut ctx = EmitContext {
-        node_brick_ids: HashMap::new(),
-        class_index: HashMap::new(),
+        node_brick_ids: HashMap::default(),
+        class_index: HashMap::default(),
         prefab_resolver: opts.prefab_resolver.clone(),
-        wire_sources: HashMap::new(),
-        var_labels: HashMap::new(),
+        wire_sources: HashMap::default(),
+        var_labels: HashMap::default(),
     };
     emit_module(
         &mut world,
@@ -1272,7 +1272,7 @@ fn build_port_index(
     node_brick_ids: &HashMap<NodeId, usize>,
 ) -> HashMap<(NodeId, &'static str), (usize, &'static str, &'static str)> {
     let port_label_sym = *sym::PORT_LABEL;
-    let mut idx = HashMap::new();
+    let mut idx = HashMap::default();
     for (chip_nid, node) in &module.nodes {
         if node.kind != NodeKind::Chip {
             continue;
@@ -2425,8 +2425,8 @@ mod tests {
             ) {
                 continue;
             }
-            let mut props: std::collections::HashMap<crate::intern::Sym, Literal> =
-                std::collections::HashMap::new();
+            let mut props: crate::collections::HashMap<crate::intern::Sym, Literal> =
+                std::collections::HashMap::default();
             for field in fields {
                 let Some(ty) = schema_field_type_str(struct_name, field) else {
                     continue;
@@ -2779,7 +2779,7 @@ mod tests {
     #[test]
     fn microchip_io_labels_map_synthesized_names() {
         fn node_with_label(label: &str) -> Node {
-            let mut props = HashMap::new();
+            let mut props = HashMap::default();
             props.insert(*sym::PORT_LABEL, Literal::String(label.into()));
             Node {
                 id: NodeId::fresh(),
@@ -2812,7 +2812,7 @@ mod tests {
             id: NodeId::fresh(),
             kind: crate::ir::NodeKind::Chip,
             gate_class: gc::MICROCHIP,
-            properties: std::sync::Arc::new(HashMap::new()),
+            properties: std::sync::Arc::new(HashMap::default()),
             ports: std::sync::Arc::new(crate::ir::GateIO::default()),
             source_range: crate::diagnostic::SourceRange::default(),
             chip_id: None,

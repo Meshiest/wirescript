@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Pos, Severity, SourceRange};
 use crate::lexer::{InterpPart as LexInterpPart, Token, TokenKind, TokenValue, lex};
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 fn shift_pos(p: &mut Pos, origin: &Pos) {
     p.offset += origin.offset;
@@ -177,7 +177,7 @@ impl<'a> Parser<'a> {
             file,
             pos: 0,
             diagnostics: initial,
-            doc_comments: HashMap::new(),
+            doc_comments: HashMap::default(),
             expr_trigger_counter: 0,
             pending_stmts: Vec::new(),
         }

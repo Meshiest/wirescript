@@ -16,7 +16,7 @@
 //! headers, chip I/O, loop feedback columns). Those are layered on top
 //! by [`crate::layout::compose`] in Phase 5.
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use petgraph::algo::tarjan_scc;
 use petgraph::graphmap::DiGraphMap;
@@ -174,7 +174,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
 
     // Weakly-connected-components split. Use a union-find seeded with the
     // current (post-feedback-removal) edge set, walked as undirected.
-    let mut idx: HashMap<&NodeId, usize> = HashMap::new();
+    let mut idx: HashMap<&NodeId, usize> = HashMap::default();
     for (i, id) in node_ids.iter().enumerate() {
         idx.insert(*id, i);
     }
@@ -185,7 +185,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         }
     }
     // Bucket nodes by root.
-    let mut wccs: HashMap<usize, Vec<&NodeId>> = HashMap::new();
+    let mut wccs: HashMap<usize, Vec<&NodeId>> = HashMap::default();
     for (i, id) in node_ids.iter().enumerate() {
         wccs.entry(uf.find(i)).or_default().push(*id);
     }
@@ -198,7 +198,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
     // per WCC root so each WCC gets its nodes already in topo order.
     let topo_all =
         petgraph::algo::toposort(&g, None).expect("cycles have been broken before WCC layout");
-    let mut wcc_topo: HashMap<usize, Vec<&NodeId>> = HashMap::new();
+    let mut wcc_topo: HashMap<usize, Vec<&NodeId>> = HashMap::default();
     for n in topo_all {
         if let Some(&i) = idx.get(&n) {
             wcc_topo.entry(uf.find(i)).or_default().push(n);
@@ -207,7 +207,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
 
     // Per-WCC: longest-path depth (from sources) + y-rank by source order.
     // Accumulate placements into a global map with a vertical offset per WCC.
-    let mut local: HashMap<NodeId, LocalPlacement> = HashMap::new();
+    let mut local: HashMap<NodeId, LocalPlacement> = HashMap::default();
     let mut y_offset: i32 = 0;
     let mut max_width: i32 = 0;
 
@@ -219,7 +219,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         // over predecessors of (pred_depth + 1). Sources have depth 0.
         let topo: Vec<&NodeId> = wcc_topo.remove(&root).unwrap_or_default();
 
-        let mut depth: HashMap<&NodeId, i32> = HashMap::new();
+        let mut depth: HashMap<&NodeId, i32> = HashMap::default();
         for &n in &topo {
             let d = g
                 .neighbors_directed(n, petgraph::Direction::Incoming)
@@ -231,7 +231,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         }
 
         // Group by depth, sort siblings by source_range.start then id.
-        let mut by_level: HashMap<i32, Vec<&NodeId>> = HashMap::new();
+        let mut by_level: HashMap<i32, Vec<&NodeId>> = HashMap::default();
         for &n in &topo {
             by_level.entry(depth[&n]).or_default().push(n);
         }
@@ -327,7 +327,7 @@ mod tests {
             id: NodeId::fresh(),
             kind: NodeKind::Gate,
             gate_class,
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO::default()),
             source_range: SourceRange {
                 file: "t".into(),
@@ -484,7 +484,7 @@ mod tests {
         let root = leaf_region(&m);
         let lay = layout_leaf(&root, &m.wires);
         // No two placements share the same (dx, dy).
-        let mut seen: HashSet<(i32, i32)> = HashSet::new();
+        let mut seen: HashSet<(i32, i32)> = HashSet::default();
         for p in lay.local.values() {
             assert!(
                 seen.insert((p.dx, p.dy)),

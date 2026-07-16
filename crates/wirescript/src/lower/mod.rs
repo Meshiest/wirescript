@@ -6,7 +6,7 @@
 //! step. Expressions produce gate nodes whose value output is threaded
 //! into their consumer.
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::{ChipDecl, *};
@@ -90,13 +90,13 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         handler_end_execs: Vec::new(),
         current_exec: None,
         handler_entry_exec: None,
-        captured_events: HashMap::new(),
+        captured_events: HashMap::default(),
         next_chain_id: 0,
         current_anon_chip: None,
         mod_return_exec: None,
         mod_return_var: None,
         type_aliases: {
-            let mut m = HashMap::new();
+            let mut m = HashMap::default();
             for d in &input.ast.decls {
                 if let crate::ast::TopDecl::TypeAlias(ta) = d {
                     m.insert(ta.name.clone(), ta.typ.clone());
@@ -104,15 +104,15 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             }
             m
         },
-        pending_emits: HashMap::new(),
-        exec_signal_hubs: HashMap::new(),
-        exec_signal_keys: HashMap::new(),
+        pending_emits: HashMap::default(),
+        exec_signal_hubs: HashMap::default(),
+        exec_signal_keys: HashMap::default(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: input.template_cache.clone(),
         await_armed_port: None,
-        signal_awaits: HashMap::new(),
+        signal_awaits: HashMap::default(),
         exec_branch_depth: 0,
-        exec_signal_payloads: HashMap::new(),
+        exec_signal_payloads: HashMap::default(),
         pending_inline_record: None,
         pending_return_record: None,
         chip_call_stack: Vec::new(),
@@ -189,7 +189,7 @@ fn collect_fn_names(ast: &Script) -> HashSet<String> {
             }
         }
     }
-    let mut names = HashSet::new();
+    let mut names = HashSet::default();
     for d in &ast.decls {
         match d {
             TopDecl::Chip(c) => {
@@ -215,7 +215,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
     use crate::ir::{Node, NodeId, NodeKind, PortRef, PortSpec};
     let value_sym = *sym::VALUE;
     let mut make_nodes: Vec<Node> = Vec::new();
-    let mut make_for: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut make_for: HashMap<NodeId, NodeId> = HashMap::default();
     let mut rewires: Vec<(usize, NodeId)> = Vec::new();
 
     for (i, w) in module.wires.iter().enumerate() {
@@ -316,8 +316,8 @@ fn materialize_unfoldable_constants(module: &mut Module) {
 fn inline_orphan_literals(module: &mut Module) {
     let value_sym = *sym::VALUE;
     loop {
-        let mut outgoing: HashMap<NodeId, Vec<(NodeId, WirePort)>> = HashMap::new();
-        let mut incoming_count: HashMap<NodeId, usize> = HashMap::new();
+        let mut outgoing: HashMap<NodeId, Vec<(NodeId, WirePort)>> = HashMap::default();
+        let mut incoming_count: HashMap<NodeId, usize> = HashMap::default();
         for w in &module.wires {
             outgoing
                 .entry(w.source.node_id)
@@ -333,7 +333,7 @@ fn inline_orphan_literals(module: &mut Module) {
             .map(|(id, _)| *id)
             .collect();
         let mut changed = false;
-        let mut removed: HashSet<NodeId> = HashSet::new();
+        let mut removed: HashSet<NodeId> = HashSet::default();
         for lit_id in lit_ids {
             let out = outgoing.get(&lit_id);
             let out_len = out.map_or(0, |v| v.len());
@@ -463,7 +463,7 @@ fn dedup_constant_gates(root: &mut Module) {
 
     // dup node id -> keeper node id (same class ⇒ same output ports, so each
     // consumer keeps its own `source.port` and only the node id changes).
-    let mut redirect: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
 
     fn collect(module: &mut Module, redirect: &mut HashMap<NodeId, NodeId>) {
         let has_incoming: HashSet<NodeId> = module
@@ -472,7 +472,7 @@ fn dedup_constant_gates(root: &mut Module) {
             .filter(|w| w.target.port != WirePort::Layout)
             .map(|w| w.target.node_id)
             .collect();
-        let mut groups: HashMap<String, Vec<NodeId>> = HashMap::new();
+        let mut groups: HashMap<String, Vec<NodeId>> = HashMap::default();
         for (id, n) in &module.nodes {
             let is_pure = n.gate_class == gc::LITERAL
                 || n.gate_class
@@ -512,11 +512,11 @@ fn dedup_constant_gates(root: &mut Module) {
             !redirect.contains_key(&w.target.node_id)
         });
         // Redirection can collapse two wires onto the same source→target pair.
-        let mut seen: HashSet<(PortRef, PortRef)> = HashSet::new();
+        let mut seen: HashSet<(PortRef, PortRef)> = HashSet::default();
         module.wires.retain(|w| seen.insert((w.source, w.target)));
         // A dropped dup referenced as an external capture becomes its keeper.
         if !module.scope_captures.is_empty() {
-            let mut seen_caps = HashSet::new();
+            let mut seen_caps = HashSet::default();
             module.scope_captures = module
                 .scope_captures
                 .iter()
@@ -603,9 +603,9 @@ fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
             remove_dead(child, dead);
         }
     }
-    let mut connected = HashSet::new();
+    let mut connected = HashSet::default();
     collect_connected(module, &mut connected);
-    let mut dead = HashSet::new();
+    let mut dead = HashSet::default();
     collect_orphans(module, &connected, &is_pure, &mut dead);
     if !dead.is_empty() {
         remove_dead(module, &dead);
@@ -644,10 +644,10 @@ fn prune_dead_exec_unions(module: &mut Module) {
     // Degrees + adjacency computed once and maintained incrementally via a
     // worklist. The old version rebuilt counts over every wire and spliced
     // one union per full rebuild — O(unions × wires) on union-heavy modules.
-    let mut in_count: HashMap<NodeId, usize> = HashMap::new();
-    let mut out_count: HashMap<NodeId, usize> = HashMap::new();
-    let mut in_edges: HashMap<NodeId, Vec<crate::ir::PortRef>> = HashMap::new();
-    let mut out_edges: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    let mut in_count: HashMap<NodeId, usize> = HashMap::default();
+    let mut out_count: HashMap<NodeId, usize> = HashMap::default();
+    let mut in_edges: HashMap<NodeId, Vec<crate::ir::PortRef>> = HashMap::default();
+    let mut out_edges: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
     for w in &module.wires {
         *out_count.entry(w.source.node_id).or_default() += 1;
         *in_count.entry(w.target.node_id).or_default() += 1;
@@ -669,8 +669,8 @@ fn prune_dead_exec_unions(module: &mut Module) {
         .collect();
     let is_union: HashSet<NodeId> = queue.iter().copied().collect();
 
-    let mut removed: HashSet<NodeId> = HashSet::new();
-    let mut spliced: HashMap<NodeId, crate::ir::PortRef> = HashMap::new();
+    let mut removed: HashSet<NodeId> = HashSet::default();
+    let mut spliced: HashMap<NodeId, crate::ir::PortRef> = HashMap::default();
 
     while let Some(id) = queue.pop() {
         if removed.contains(&id) || spliced.contains_key(&id) {
@@ -797,7 +797,7 @@ pub fn compile_chip_template(
 
     // Resource-estimation templates don't need real doc text (DOC_TEXT is
     // display-only) — an empty map keeps the LowerCtx lifetime local.
-    let empty_docs: HashMap<usize, String> = HashMap::new();
+    let empty_docs: HashMap<usize, String> = HashMap::default();
 
     let mut ctx = LowerCtx {
         builder,
@@ -810,21 +810,21 @@ pub fn compile_chip_template(
         handler_end_execs: Vec::new(),
         current_exec: None,
         handler_entry_exec: None,
-        captured_events: HashMap::new(),
+        captured_events: HashMap::default(),
         next_chain_id: 0,
         current_anon_chip: None,
         mod_return_exec: None,
         mod_return_var: None,
-        type_aliases: HashMap::new(),
-        pending_emits: HashMap::new(),
-        exec_signal_hubs: HashMap::new(),
-        exec_signal_keys: HashMap::new(),
+        type_aliases: HashMap::default(),
+        pending_emits: HashMap::default(),
+        exec_signal_hubs: HashMap::default(),
+        exec_signal_keys: HashMap::default(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: cache.clone(),
         await_armed_port: None,
-        signal_awaits: HashMap::new(),
+        signal_awaits: HashMap::default(),
         exec_branch_depth: 0,
-        exec_signal_payloads: HashMap::new(),
+        exec_signal_payloads: HashMap::default(),
         pending_inline_record: None,
         pending_return_record: None,
         chip_call_stack: if chip_decl.name.is_empty() {
@@ -832,7 +832,7 @@ pub fn compile_chip_template(
         } else {
             vec![chip_decl.range.clone()]
         },
-        known_fn_names: Arc::new(HashSet::new()),
+        known_fn_names: Arc::new(HashSet::default()),
         is_root_module: false,
         doc_comments: &empty_docs,
     };
@@ -850,7 +850,7 @@ pub fn compile_chip_template(
             _ => None,
         };
         if let Some(fields) = &resolved_record {
-            let mut record_fields = HashMap::new();
+            let mut record_fields = HashMap::default();
             for field in fields {
                 let port_name = format!("{}_{}", inp.name, field.name);
                 let ft = type_of_type_expr(&field.typ);

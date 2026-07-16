@@ -9,8 +9,8 @@ use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
     find_all_references, find_asset_refs, find_enclosing_call, find_name_range, format_wirescript,
     hover_at, member_receiver_at, named_arg_value, param_names, receiver_methods, record_field_names,
-    swizzle_fields, type_str, word_at, AssetRef, InlayHintKind, ResourceEstimate, SymbolDef,
-    TextRange, TypeMap, VarReadContextMap,
+    rename_edit_text, swizzle_fields, type_str, word_at, AssetRef, InlayHintKind, ResourceEstimate,
+    SymbolDef, TextRange, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::Script;
 use wirescript::catalog::arrays::ARRAY_METHODS;
@@ -66,6 +66,19 @@ fn collect_references_across_files(
         }
     }
 
+    // Canonical filesystem paths of the open docs, so the same-directory disk
+    // scan below can skip them. Url equality can NOT decide "already open":
+    // the client's URI spelling (e.g. `file:///c%3A/…`) differs from
+    // `Url::from_file_path`'s (`file:///C:/…`), so a Url-keyed skip re-added
+    // every open doc from disk. References then showed each site twice, and
+    // rename emitted two identical TextEdits per site — overlapping edits the
+    // editor refuses to apply, silently leaving those files un-renamed.
+    let open_paths: std::collections::HashSet<std::path::PathBuf> = docs
+        .keys()
+        .filter_map(|u| u.to_file_path().ok())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .collect();
+
     if let Ok(file_path) = uri.to_file_path() {
         if let Some(dir) = file_path.parent() {
             for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -73,13 +86,14 @@ fn collect_references_across_files(
                 if !path.extension().map_or(false, |e| e == "ws") {
                     continue;
                 }
+                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if open_paths.contains(&canonical) {
+                    continue;
+                }
                 let entry_uri = match Url::from_file_path(&path) {
                     Ok(u) => u,
                     Err(_) => continue,
                 };
-                if docs.contains_key(&entry_uri) {
-                    continue;
-                }
                 let src = match std::fs::read_to_string(&path) {
                     Ok(s) => s,
                     Err(_) => continue,
@@ -90,6 +104,19 @@ fn collect_references_across_files(
             }
         }
     }
+
+    // Deterministic order + belt-and-braces dedup: rename must never hand the
+    // client two edits for the same site.
+    results.sort_by(|a, b| {
+        (a.0.as_str(), a.1.start_line, a.1.start_col, a.1.end_line, a.1.end_col).cmp(&(
+            b.0.as_str(),
+            b.1.start_line,
+            b.1.start_col,
+            b.1.end_line,
+            b.1.end_col,
+        ))
+    });
+    results.dedup();
 
     results
 }
@@ -186,11 +213,11 @@ fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
 struct DocState {
     source: String,
     symbols: Vec<SymbolDef>,
-    doc_comments: HashMap<usize, String>,
+    doc_comments: wirescript::collections::HashMap<usize, String>,
     type_map: TypeMap,
     if_contexts: wirescript::analysis::IfContextMap,
     var_read_contexts: VarReadContextMap,
-    resource_estimates: HashMap<String, ResourceEstimate>,
+    resource_estimates: wirescript::collections::HashMap<String, ResourceEstimate>,
     pre_resolve_ast: Script,
 }
 
@@ -559,16 +586,14 @@ impl LanguageServer for Backend {
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
                 if let Some(word) = word_at(&doc.source, line, col) {
-                    if calls().contains_key(word.as_str()) || KEYWORDS.contains(&word.as_str()) {
+                    if calls().contains_key(word.as_str())
+                        || KEYWORDS.contains(&word.as_str())
+                        || events().contains_key(word.as_str())
+                    {
                         return Ok(None);
                     }
-                    // Type fields: use text-based range
-                    let in_type = doc.symbols.iter().any(|s| {
-                        s.kind == "type"
-                            && s.range.start.line.saturating_sub(1) as usize <= line
-                            && s.range.end.line.saturating_sub(1) as usize >= line
-                    });
-                    if in_type {
+                    // The word's own range on this line (text-based).
+                    let word_range = || {
                         let l = doc.source.lines().nth(line).unwrap_or("");
                         let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
                         let ws = l[..c]
@@ -579,17 +604,26 @@ impl LanguageServer for Backend {
                             .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
                             .map(|i| c + i)
                             .unwrap_or(l.len());
-                        return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                            range: Range {
-                                start: Position {
-                                    line: line as u32,
-                                    character: ws as u32,
-                                },
-                                end: Position {
-                                    line: line as u32,
-                                    character: we as u32,
-                                },
+                        Range {
+                            start: Position {
+                                line: line as u32,
+                                character: ws as u32,
                             },
+                            end: Position {
+                                line: line as u32,
+                                character: we as u32,
+                            },
+                        }
+                    };
+                    // Type fields: use text-based range
+                    let in_type = doc.symbols.iter().any(|s| {
+                        s.kind == "type"
+                            && s.range.start.line.saturating_sub(1) as usize <= line
+                            && s.range.end.line.saturating_sub(1) as usize >= line
+                    });
+                    if in_type {
+                        return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                            range: word_range(),
                             placeholder: word,
                         }));
                     }
@@ -605,6 +639,14 @@ impl LanguageServer for Backend {
                             }));
                         }
                     }
+                    // Anything else find-references can see — a namespace-
+                    // qualified member (`u.foo`), a record field in a literal,
+                    // a shorthand binding — is renameable too. Refusing here
+                    // blocked rename from exactly the sites references finds.
+                    return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                        range: word_range(),
+                        placeholder: word,
+                    }));
                 }
             }
         }
@@ -624,14 +666,9 @@ impl LanguageServer for Backend {
 
                     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
                     for (file_uri, r) in &refs {
-                        let new_text = if r.is_shorthand {
-                            format!("{}: {}", new_name, word)
-                        } else {
-                            new_name.clone()
-                        };
                         changes.entry(file_uri.clone()).or_default().push(TextEdit {
                             range: text_range_to_lsp(r),
-                            new_text,
+                            new_text: rename_edit_text(r, &word, new_name),
                         });
                     }
 
@@ -1277,6 +1314,63 @@ fn build_completions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn doc_state(source: &str) -> DocState {
+        let pre_resolve = wirescript::parse(source, "test");
+        let resolved = resolve(source, "test", &FsLoader);
+        let tc = typecheck(&resolved.ast, "test");
+        DocState {
+            source: source.to_string(),
+            symbols: Vec::new(),
+            doc_comments: Default::default(),
+            type_map: tc.type_of_expr,
+            if_contexts: tc.if_contexts,
+            var_read_contexts: tc.var_read_contexts,
+            resource_estimates: Default::default(),
+            pre_resolve_ast: pre_resolve.ast,
+        }
+    }
+
+    #[test]
+    fn cross_file_references_skip_open_docs_even_with_respelled_uris() {
+        // Clients spell file URIs differently from `Url::from_file_path`
+        // (VS Code sends `file:///c%3A/…`); the same-directory disk scan must
+        // still recognize an open doc as the same file and not re-collect it,
+        // or rename gets two identical edits per site and the client refuses
+        // to apply them.
+        let dir = std::env::temp_dir().join(format!("ws-lsp-refs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.ws");
+        let source = "mod foo() {\n}\nin go: exec\non go { foo() }\n";
+        std::fs::write(&file, source).unwrap();
+
+        let canonical_uri = Url::from_file_path(&file).unwrap();
+        // Same file, percent-encoded spelling → a different Url value.
+        let respelled = canonical_uri.as_str().replacen("main.ws", "mai%6E.ws", 1);
+        let client_uri = Url::parse(&respelled).unwrap();
+        assert_ne!(client_uri, canonical_uri, "respelling must differ as a Url");
+        assert_eq!(
+            client_uri.to_file_path().unwrap(),
+            canonical_uri.to_file_path().unwrap(),
+            "…but point at the same file"
+        );
+
+        let mut docs = HashMap::new();
+        docs.insert(client_uri.clone(), doc_state(source));
+
+        let refs = collect_references_across_files(&docs, &client_uri, "foo");
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(
+            refs.len(),
+            2,
+            "each site once (def + call), not doubled by the disk scan: {refs:?}"
+        );
+        assert!(
+            refs.iter().all(|(u, _)| u == &client_uri),
+            "sites must be reported under the open doc's URI: {refs:?}"
+        );
+    }
 
     fn symbols_for(source: &str) -> Vec<SymbolDef> {
         let resolved = resolve(source, "test", &FsLoader);

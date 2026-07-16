@@ -61,7 +61,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                             gate_class: gc::LITERAL,
                             source_range: v.range.clone(),
                             properties: {
-                                let mut p = HashMap::new();
+                                let mut p = HashMap::default();
                                 p.insert(*sym::VALUE, lit);
                                 p
                             },
@@ -725,7 +725,7 @@ fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: Por
     // Constant durations bake into properties; anything else lowers to a value
     // wire into the duration port. Lower the expressions *before* taking the
     // buffer's exec source so a duration var read chains on the emit path.
-    let mut props = HashMap::new();
+    let mut props = HashMap::default();
     let mut inputs = vec![PortSpec {
         name: *sym::INPUT,
         ty: Type::Exec,
@@ -826,7 +826,7 @@ fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId
             return *id;
         }
     }
-    let mut props = HashMap::new();
+    let mut props = HashMap::default();
     if let Some(lit) = default_literal_for_var_type(&ty) {
         props.insert(*sym::INITIAL_VALUE, lit);
     }
@@ -984,7 +984,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             ],
         },
         properties: {
-            let mut p = HashMap::new();
+            let mut p = HashMap::default();
             p.insert(*sym::INITIAL_VALUE, Literal::Bool(false));
             p
         },
@@ -1005,7 +1005,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
                 }],
             },
             properties: {
-                let mut p = HashMap::new();
+                let mut p = HashMap::default();
                 p.insert(*sym::VALUE, Literal::Bool(true));
                 p
             },
@@ -1153,7 +1153,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             }],
         },
         properties: {
-            let mut p = HashMap::new();
+            let mut p = HashMap::default();
             p.insert(*sym::VALUE, Literal::Bool(false));
             p
         },
@@ -1388,7 +1388,7 @@ fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
             }],
         },
         properties: {
-            let mut p = HashMap::new();
+            let mut p = HashMap::default();
             p.insert(*sym::VALUE, Literal::Bool(true));
             p
         },

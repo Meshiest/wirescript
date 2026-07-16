@@ -10,7 +10,8 @@
 //!   partitioned into tiers of work that can be done in parallel, where every
 //!   module in tier *N* depends only on modules in tiers 0…N-1.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::collections::{HashMap, HashSet};
+use std::collections::VecDeque;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{
@@ -35,9 +36,9 @@ impl TemplateCache {
     /// Create an empty cache.
     pub fn new() -> Self {
         Self {
-            templates: RwLock::new(HashMap::new()),
-            inline_mods: RwLock::new(HashMap::new()),
-            deps: RwLock::new(HashMap::new()),
+            templates: RwLock::new(HashMap::default()),
+            inline_mods: RwLock::new(HashMap::default()),
+            deps: RwLock::new(HashMap::default()),
         }
     }
 
@@ -97,8 +98,8 @@ impl TemplateCache {
         let deps = self.deps.read().unwrap();
 
         // Build in-degree map and reverse adjacency (who depends on me?).
-        let mut in_degree: HashMap<&str, usize> = HashMap::new();
-        let mut rev_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut in_degree: HashMap<&str, usize> = HashMap::default();
+        let mut rev_adj: HashMap<&str, Vec<&str>> = HashMap::default();
 
         for name in deps.keys() {
             in_degree.entry(name.as_str()).or_insert(0);
@@ -118,7 +119,7 @@ impl TemplateCache {
         // We double-counted: the `entry(...).or_insert(0)` above already
         // initialised everything to 0, then we added the dep counts on top.
         // That is correct — reset and recount cleanly.
-        let mut in_degree: HashMap<&str, usize> = HashMap::new();
+        let mut in_degree: HashMap<&str, usize> = HashMap::default();
         for name in deps.keys() {
             in_degree.insert(name.as_str(), deps[name].len());
         }
@@ -184,7 +185,7 @@ impl TemplateCache {
         // Second pass: for each chip/mod, find which known names it calls.
         for decl in &ast.decls {
             if let TopDecl::Chip(c) = decl {
-                let mut called = HashSet::new();
+                let mut called = HashSet::default();
                 collect_calls_in_block(&c.body, &known, &mut called);
                 let dep_refs: Vec<&str> = called.iter().map(|s| s.as_str()).collect();
                 self.register_dependency(&c.name, &dep_refs);
@@ -205,7 +206,7 @@ impl TemplateCache {
             deps.keys().cloned().collect()
         };
 
-        let mut found: HashSet<String> = HashSet::new();
+        let mut found: HashSet<String> = HashSet::default();
         for decl in &ast.decls {
             match decl {
                 // Skip chip/mod bodies — those are NOT top-level call sites.
@@ -248,7 +249,7 @@ impl TemplateCache {
     pub fn reachable_from(&self, roots: &[&str]) -> HashSet<String> {
         let deps = self.deps.read().unwrap();
 
-        let mut visited: HashSet<String> = HashSet::new();
+        let mut visited: HashSet<String> = HashSet::default();
         let mut queue: VecDeque<String> = roots.iter().map(|s| s.to_string()).collect();
 
         while let Some(node) = queue.pop_front() {
@@ -285,7 +286,7 @@ impl TemplateCache {
             .collect();
 
         let mut tiers: Vec<Vec<String>> = Vec::new();
-        let mut done: HashSet<&str> = HashSet::new();
+        let mut done: HashSet<&str> = HashSet::default();
 
         loop {
             // Find all nodes whose remaining deps are empty (i.e. all satisfied).

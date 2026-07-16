@@ -75,7 +75,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         }
         TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
         TopDecl::Namespace(ns) => {
-            let mut ns_decls = HashMap::new();
+            let mut ns_decls = HashMap::default();
             let mut ns_buffers = Vec::new();
             for d in &ns.decls {
                 match d {
@@ -314,7 +314,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 .find(|(_, child)| child.outputs.contains(&rhs_port.node_id));
             if let Some((_, child)) = chip_entry {
                 let outputs = child.outputs.clone();
-                let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::new();
+                let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::default();
                 for (i, (field_name, _ty)) in fields.iter().enumerate() {
                     if let Some(&out_id) = outputs.get(i) {
                         record.insert(
@@ -374,7 +374,7 @@ pub(super) fn lower_record_lit(
     ctx: &mut LowerCtx,
     fields: &[RecordLitField],
 ) -> HashMap<crate::intern::Sym, Binding> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for field in fields {
         match field {
             RecordLitField::Named { name, value, .. } => {

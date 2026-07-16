@@ -52,7 +52,7 @@ pub(super) fn binding_to_port(
                     return Some(cached.port(WirePort::Value));
                 }
                 let inner = var_rec.inner_type.clone();
-                let mut get_props = HashMap::new();
+                let mut get_props = HashMap::default();
                 if let Some(lit) = default_literal_for_var_type(&inner) {
                     get_props.insert(*sym::VALUE, lit);
                 }

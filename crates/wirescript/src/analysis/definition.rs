@@ -283,7 +283,7 @@ mod tests {
     use crate::resolve::{MemLoader, resolve};
 
     fn goto(main: &str, display: &str, line: usize, col: usize) -> Option<Location> {
-        let mut files = std::collections::HashMap::new();
+        let mut files = crate::collections::HashMap::default();
         files.insert("display.ws".to_string(), display.to_string());
         let loader = MemLoader { files };
         let pre = crate::parse(main, "main.ws");

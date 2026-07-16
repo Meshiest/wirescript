@@ -12,7 +12,7 @@
 //! - `*n`: explicit deref; requires exec context.
 //! - `n.Value`: delayed-read form; always yields T.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::sync::Arc;
 
 use crate::scope::Scope as ScopeStack;
@@ -144,10 +144,10 @@ impl TypeCheckCtx {
             scope: Scope::new(),
             exec_stack: vec![ExecMode::Pure],
             file: file.to_string(),
-            namespaces: HashMap::new(),
-            if_contexts: HashMap::new(),
-            var_read_contexts: HashMap::new(),
-            signal_payload_types: HashMap::new(),
+            namespaces: HashMap::default(),
+            if_contexts: HashMap::default(),
+            var_read_contexts: HashMap::default(),
+            signal_payload_types: HashMap::default(),
         }
     }
     pub fn exec_mode(&self) -> ExecMode {
@@ -193,8 +193,8 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
     let mut ctx = TypeCheckCtx::new(file);
     register_builtin_events(&mut ctx);
 
-    let mut tmap: HashMap<(Arc<str>, usize, usize), Type> = HashMap::new();
-    let mut omap: HashMap<(Arc<str>, usize, usize), OpRule> = HashMap::new();
+    let mut tmap: HashMap<(Arc<str>, usize, usize), Type> = HashMap::default();
+    let mut omap: HashMap<(Arc<str>, usize, usize), OpRule> = HashMap::default();
 
     // Two-pass: register all top-level decls first so forward refs resolve.
     for d in &script.decls {
@@ -592,7 +592,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     event_data: None,
                 },
             );
-            let mut ns_map = HashMap::new();
+            let mut ns_map = HashMap::default();
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
@@ -929,7 +929,7 @@ fn check_decl(
             // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
             // `x = expr` assignment.
             if !c.outputs.is_empty() && !block_has_return_value(&c.body) {
-                let mut assigned = std::collections::HashSet::new();
+                let mut assigned = std::collections::HashSet::default();
                 collect_output_assignments(&c.body, &mut assigned);
                 for out in &c.outputs {
                     if !assigned.contains(&out.name) {
@@ -2869,7 +2869,7 @@ mod tests {
     fn namespace_symbol_registered() {
         use crate::resolve::{MemLoader, resolve};
         let loader = MemLoader {
-            files: [("lib.ws".into(), "mod foo(v: *int) { v = v + 1 }".into())].into(),
+            files: [("lib.ws".into(), "mod foo(v: *int) { v = v + 1 }".into())].into_iter().collect(),
         };
         let resolved = resolve("import * as lib from \"lib\"", "main.ws", &loader);
         let r = typecheck(&resolved.ast, "main.ws");

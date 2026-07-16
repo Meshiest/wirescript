@@ -1,7 +1,7 @@
 //! Built-in event registry. Maps PascalCase surface names (used in
 //! `on X { ... }`) to gate classes + bound data outputs.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::ir::Type;

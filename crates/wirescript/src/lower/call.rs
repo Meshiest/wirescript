@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     let (callee, args, range) = match e {
@@ -487,7 +487,7 @@ pub(super) fn lower_chip_call_inline(
         // record from that map.
         Some(rec)
     } else if chip_decl.outputs.len() > 1 {
-        let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::new();
+        let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::default();
         for (i, out) in chip_decl.outputs.iter().enumerate() {
             let Some(&out_id) = inline_output_ids.get(i) else {
                 continue;
@@ -555,7 +555,7 @@ fn resolve_caller_captures(
             CallArg::Named { .. } | CallArg::Spread(_) => None,
         })
         .collect();
-    let mut captures = HashMap::new();
+    let mut captures = HashMap::default();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
         let Some(arg_expr) = positional_args.get(i) else {
             continue;
@@ -651,21 +651,21 @@ fn build_chip_module(
         handler_end_execs: Vec::new(),
         current_exec: None,
         handler_entry_exec: None,
-        captured_events: HashMap::new(),
+        captured_events: HashMap::default(),
         next_chain_id: 0,
         current_anon_chip: None,
         mod_return_exec: None,
         mod_return_var: None,
         type_aliases: ctx.type_aliases.clone(),
-        pending_emits: HashMap::new(),
-        exec_signal_hubs: HashMap::new(),
-        exec_signal_keys: HashMap::new(),
+        pending_emits: HashMap::default(),
+        exec_signal_hubs: HashMap::default(),
+        exec_signal_keys: HashMap::default(),
         next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: ctx.template_cache.clone(),
         await_armed_port: None,
-        signal_awaits: HashMap::new(),
+        signal_awaits: HashMap::default(),
         exec_branch_depth: 0,
-        exec_signal_payloads: HashMap::new(),
+        exec_signal_payloads: HashMap::default(),
         pending_inline_record: None,
         pending_return_record: None,
         chip_call_stack: ctx.chip_call_stack.clone(),
@@ -685,7 +685,7 @@ fn build_chip_module(
     // a `_Literal` node in the parent module. Cloning that literal into the
     // chip's own module lets `inline_orphan_literals` fold it into its consumers
     // as inline gate data (fewer gates) rather than a separate constant brick.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::collections::HashSet::default();
     let inherited: Vec<(String, Binding)> = ctx
         .scope
         .iter()
@@ -735,7 +735,7 @@ fn build_chip_module(
             _ => None,
         };
         if let Some(fields) = &resolved_record {
-            let mut record_fields = HashMap::new();
+            let mut record_fields = HashMap::default();
             for field in fields {
                 let port_name = format!("{}_{}", inp.name, field.name);
                 let ft = type_of_type_expr(&field.typ);
@@ -991,7 +991,7 @@ pub(super) fn lower_chip_call_instance(
     let mut child_module = if let Some(template) = ctx.template_cache.get(&chip_decl.name) {
         // Build remap: for each param name in the template's capture_names,
         // look up the caller's VarRecord and map old_id -> new_id.
-        let mut captures = std::collections::HashMap::new();
+        let mut captures = std::collections::HashMap::default();
         for (name, old_id) in &template.external_refs {
             if let Some(var_rec) = caller_captures.get(name) {
                 captures.insert(old_id.to_string(), var_rec.node_id);
@@ -1194,7 +1194,7 @@ fn wire_chip_args_and_outputs(
         let t = type_of_type_expr(&param.typ);
         let val_port = match arg_expr {
             Expr::IntLit { value, .. } => {
-                let mut props = HashMap::new();
+                let mut props = HashMap::default();
                 props.insert(*sym::VALUE, Literal::Int(*value));
                 let nid = ctx.add_gate(AddNodeOpts {
                     gate_class: gc::PSEUDO_VAR,
@@ -1218,7 +1218,7 @@ fn wire_chip_args_and_outputs(
                 nid.port(WirePort::Value)
             }
             Expr::FloatLit { value, .. } => {
-                let mut props = HashMap::new();
+                let mut props = HashMap::default();
                 props.insert(*sym::VALUE, Literal::Float(*value));
                 let nid = ctx.add_gate(AddNodeOpts {
                     gate_class: gc::PSEUDO_VAR,
@@ -1242,7 +1242,7 @@ fn wire_chip_args_and_outputs(
                 nid.port(WirePort::Value)
             }
             Expr::BoolLit { value, .. } => {
-                let mut props = HashMap::new();
+                let mut props = HashMap::default();
                 props.insert(*sym::VALUE, Literal::Bool(*value));
                 let nid = ctx.add_gate(AddNodeOpts {
                     gate_class: gc::PSEUDO_VAR,
@@ -1326,7 +1326,7 @@ pub(super) fn lower_builtin_call(
     }
 
     // Match args to params
-    let mut bound: HashMap<&str, &Expr> = HashMap::new();
+    let mut bound: HashMap<&str, &Expr> = HashMap::default();
     let mut next_pos = 0usize;
     for a in args {
         match a {
@@ -1353,7 +1353,7 @@ pub(super) fn lower_builtin_call(
         val_port: PortRef,
     }
     let mut wires: Vec<WireEntry> = Vec::new();
-    let mut properties: HashMap<crate::intern::Sym, Literal> = HashMap::new();
+    let mut properties: HashMap<crate::intern::Sym, Literal> = HashMap::default();
 
     for p in spec.params.iter() {
         let Some(&arg_expr) = bound.get(p.name) else {
@@ -1471,7 +1471,7 @@ pub(super) fn lower_builtin_call(
     // port-name matching. Set definitively for THIS call — `None` otherwise —
     // so a nested record-returning arg call doesn't leak into the outer let.
     ctx.pending_inline_record = if spec.outputs.iter().any(|o| o.field.is_some()) {
-        let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::new();
+        let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::default();
         for out in &spec.outputs {
             if let Some(field) = out.field {
                 record.insert(

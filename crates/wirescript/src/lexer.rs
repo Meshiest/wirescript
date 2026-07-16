@@ -4,7 +4,7 @@
 //! parser). Horizontal whitespace is skipped. Block and line comments are
 //! discarded; block comments may nest.
 
-use std::collections::HashSet;
+use crate::collections::HashSet;
 use std::sync::OnceLock;
 
 use crate::diagnostic::{Diagnostic, Pos, SourceRange};

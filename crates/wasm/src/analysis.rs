@@ -82,7 +82,7 @@ impl From<TextRange> for LocationOut {
 }
 
 fn make_loader(files_json: &str) -> MemLoader {
-    let files: HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
+    let files: wirescript::collections::HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
     MemLoader { files }
 }
 
@@ -553,8 +553,8 @@ struct WorkspaceSymbol {
 }
 
 pub fn workspace_symbols(files_json: &str) -> String {
-    let files: HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
-    let _empty_tmap: TypeMap = HashMap::new();
+    let files: wirescript::collections::HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
+    let _empty_tmap: TypeMap = TypeMap::default();
     let mut syms = Vec::new();
     for (path, source) in &files {
         let parsed = parse(source, path);

@@ -8,7 +8,7 @@ use super::*;
 /// lower) and return all diagnostics — for exercising cross-module scenarios
 /// the single-source `compile` helper can't reach.
 fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diagnostic::Diagnostic> {
-    let files: std::collections::HashMap<String, String> = files
+    let files: crate::collections::HashMap<String, String> = files
         .iter()
         .map(|(n, s)| (n.to_string(), s.to_string()))
         .collect();
@@ -305,7 +305,7 @@ fn namespace_chip_call_resolves() {
     use crate::resolve::{MemLoader, resolve};
     let lib_src = "chip Double(x: int) -> (result: int) { out result = x + x }";
     let main_src = "import * as math from \"lib\"\nlet r = math.Double(5)\nout result = r.result";
-    let mut files = std::collections::HashMap::new();
+    let mut files = std::collections::HashMap::default();
     files.insert("lib.ws".to_string(), lib_src.into());
     let loader = MemLoader { files };
     let resolved = resolve(main_src, "test", &loader);

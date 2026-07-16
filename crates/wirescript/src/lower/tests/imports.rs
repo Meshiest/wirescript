@@ -10,7 +10,7 @@ fn is_pure(gate_class: &str) -> bool {
 
 /// Node ids that appear in any wire, as source or target.
 fn wired_nodes(r: &LowerResult) -> HashSet<crate::ir::NodeId> {
-    let mut set = HashSet::new();
+    let mut set = HashSet::default();
     fn walk(m: &crate::ir::Module, set: &mut HashSet<crate::ir::NodeId>) {
         for w in &m.wires {
             set.insert(w.source.node_id);

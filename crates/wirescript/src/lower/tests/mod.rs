@@ -97,7 +97,7 @@ pub(super) fn wired_reachable(
     from: crate::ir::NodeId,
     to: crate::ir::NodeId,
 ) -> bool {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::collections::HashSet::default();
     let mut stack = vec![from];
     while let Some(n) = stack.pop() {
         if n == to {

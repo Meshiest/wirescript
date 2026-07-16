@@ -18,7 +18,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         // into arbitrary wire-variant ports (Compare `InputB`), so this wire is
         // how they reach such consumers. Typed `entity` (see typecheck).
         Expr::AssetRef { asset_type, asset_name, range } => {
-            let mut props = HashMap::new();
+            let mut props = HashMap::default();
             props.insert(
                 intern_static("Asset"),
                 Literal::Asset {
@@ -179,7 +179,7 @@ pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal)
     // on consumer gates (e.g. Select). Emit them as String_Concatenate gates
     // whose str-typed fields accept inline strings, producing a wire signal.
     if let Literal::String(ref s) = lit {
-        let mut props = HashMap::new();
+        let mut props = HashMap::default();
         props.insert(*sym::INPUT_A, Literal::String(s.clone()));
         props.insert(*sym::INPUT_B, Literal::String(String::new()));
         props.insert(intern_static("Separator"), Literal::String(String::new()));
@@ -198,7 +198,7 @@ pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal)
         });
         return node_id.port(WirePort::Output);
     }
-    let mut props = HashMap::new();
+    let mut props = HashMap::default();
     props.insert(*sym::VALUE, lit);
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::LITERAL,
@@ -231,7 +231,7 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
                     return cached.port(WirePort::Value);
                 }
                 let inner = var_rec.inner_type.clone();
-                let mut get_props = HashMap::new();
+                let mut get_props = HashMap::default();
                 if let Some(lit) = default_literal_for_var_type(&inner) {
                     get_props.insert(*sym::VALUE, lit);
                 }

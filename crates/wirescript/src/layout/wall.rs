@@ -6,7 +6,7 @@
 //! faces the chip's @bottom-rerouter side. A pane's vertical half-span is
 //! therefore `extent.x` and its horizontal half-span `extent.y`.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use brdb::{IntVector, Vector3f};
 
@@ -128,7 +128,7 @@ pub fn assign_wall_slots(
     };
     baseline += 2.0 * root_extent.x as f32 + WALL_GUTTER_Z;
 
-    let mut chips = HashMap::new();
+    let mut chips = HashMap::default();
     for row in rows {
         let total_w: i32 = row.iter().map(|(_, e)| 2 * e.y).sum::<i32>()
             + WALL_GUTTER_X * (row.len() as i32 - 1);

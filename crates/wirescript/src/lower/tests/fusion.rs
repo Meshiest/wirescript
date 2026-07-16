@@ -137,7 +137,7 @@ fn namespace_import_buffer_initializer_is_wired() {
     use crate::resolve::{MemLoader, resolve};
     let lib_src = "var e: bool = true\nbuffer t: bool = !(t && e)";
     let main_src = "import * as lib from \"lib\"\nout r = 1";
-    let mut files = std::collections::HashMap::new();
+    let mut files = std::collections::HashMap::default();
     files.insert("lib.ws".to_string(), lib_src.into());
     let loader = MemLoader { files };
     let resolved = resolve(main_src, "test", &loader);

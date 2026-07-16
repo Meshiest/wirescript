@@ -9,7 +9,7 @@
 //! (IfCond / IfThen / IfElse) are placed with IfCond above and
 //! IfThen / IfElse side-by-side below.
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::ir::{Node, NodeId, ScopeKind, Wire};
 
@@ -38,14 +38,14 @@ fn compose_stack(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
     let row_items = build_row_items(region);
     if row_items.is_empty() {
         return RegionLayout {
-            local: HashMap::new(),
+            local: HashMap::default(),
             bbox: (0, 0),
             feedback_edges: Vec::new(),
             warnings: Vec::new(),
         };
     }
 
-    let mut local: HashMap<NodeId, LocalPlacement> = HashMap::new();
+    let mut local: HashMap<NodeId, LocalPlacement> = HashMap::default();
     let mut feedback_edges: Vec<(NodeId, NodeId)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut y_cursor: i32 = 0;
@@ -112,7 +112,7 @@ fn compose_if_group(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         .map(|r| layout_region(r, wires))
         .unwrap_or_else(empty_layout);
 
-    let mut local: HashMap<NodeId, LocalPlacement> = HashMap::new();
+    let mut local: HashMap<NodeId, LocalPlacement> = HashMap::default();
     let mut feedback_edges = Vec::new();
     let mut warnings = Vec::new();
 
@@ -281,7 +281,7 @@ fn layout_stmt_group(parent: &Region<'_>, nodes: &[&Node], wires: &[Wire]) -> Re
 
 fn empty_layout() -> RegionLayout {
     RegionLayout {
-        local: HashMap::new(),
+        local: HashMap::default(),
         bbox: (0, 0),
         feedback_edges: Vec::new(),
         warnings: Vec::new(),
@@ -360,7 +360,7 @@ mod tests {
         let m = compile(src);
         let root = super::super::region::build_region_tree(&m);
         let out = layout_region(&root, &m.wires);
-        let mut seen: HashSet<(i32, i32)> = HashSet::new();
+        let mut seen: HashSet<(i32, i32)> = HashSet::default();
         for (id, p) in &out.local {
             assert!(
                 seen.insert((p.dx, p.dy)),
@@ -487,7 +487,7 @@ mod tests {
             id: crate::ir::NodeId::fresh(),
             kind: crate::ir::NodeKind::Gate,
             gate_class: "G",
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO::default()),
             source_range: make_range(offset, offset + 1),
             chip_id: None,

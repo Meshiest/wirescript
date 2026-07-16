@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostic::{Diagnostic, SourceRange};
@@ -149,7 +149,7 @@ fn resolve_file(
             stack,
             diagnostics,
             &mut imported_ast.decls,
-            &mut HashMap::new(),
+            &mut HashMap::default(),
         );
     }
 
@@ -341,8 +341,8 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
 
     let mut decls: Vec<TopDecl> = Vec::new();
     let mut main_decls: Vec<TopDecl> = Vec::new();
-    let mut cache: HashMap<String, ParseResult> = HashMap::new();
-    let mut stack: HashSet<String> = HashSet::new();
+    let mut cache: HashMap<String, ParseResult> = HashMap::default();
+    let mut stack: HashSet<String> = HashSet::default();
 
     let canon_self = loader.canonical_path(file, ".");
     stack.insert(canon_self.clone());
@@ -400,7 +400,7 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
 }
 
 fn collect_runtime_idents_in_decls(decls: &[TopDecl]) -> HashSet<String> {
-    let mut idents = HashSet::new();
+    let mut idents = HashSet::default();
     for d in decls {
         collect_runtime_idents_in_decl(d, &mut idents);
     }
@@ -464,7 +464,7 @@ fn collect_runtime_idents_in_block(block: &Block, idents: &mut HashSet<String>) 
 }
 
 fn collect_idents_in_decls(decls: &[TopDecl]) -> HashSet<String> {
-    let mut idents = HashSet::new();
+    let mut idents = HashSet::default();
     for d in decls {
         collect_idents_in_decl(d, &mut idents);
     }

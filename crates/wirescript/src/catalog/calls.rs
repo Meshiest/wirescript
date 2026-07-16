@@ -8,7 +8,7 @@
 //! hand-authored, so we keep the Rust form structurally identical for
 //! easy cross-checking.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::ir::Type;
@@ -242,7 +242,7 @@ fn character_exec(
 }
 
 fn build_calls() -> HashMap<&'static str, CallSpec> {
-    let mut m: HashMap<&'static str, CallSpec> = HashMap::new();
+    let mut m: HashMap<&'static str, CallSpec> = HashMap::default();
 
     // ---- Controller --------------------------------------------------------
     m.insert(

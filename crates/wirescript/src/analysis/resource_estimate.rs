@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ast::{Script, TopDecl, ChipDecl, AnonChipDecl, Handler, Stmt, Block, Expr, CallArg};
@@ -80,8 +80,8 @@ pub fn collect_estimates(
     file: &str,
 ) -> HashMap<String, ResourceEstimate> {
     let cache = Arc::new(TemplateCache::new());
-    let mut base_estimates: HashMap<String, ResourceEstimate> = HashMap::new();
-    let mut call_graph: HashMap<String, Vec<String>> = HashMap::new();
+    let mut base_estimates: HashMap<String, ResourceEstimate> = HashMap::default();
+    let mut call_graph: HashMap<String, Vec<String>> = HashMap::default();
 
     // Phase 1: compile templates for base estimates + build call graph
     for decl in &ast.decls {
@@ -89,7 +89,7 @@ pub fn collect_estimates(
     }
 
     // Phase 2: expand estimates by following the call graph
-    let mut expanded: HashMap<String, ResourceEstimate> = HashMap::new();
+    let mut expanded: HashMap<String, ResourceEstimate> = HashMap::default();
     let keys: Vec<String> = base_estimates.keys().cloned().collect();
     for key in &keys {
         let est = expand_estimate(key, &base_estimates, &call_graph, &mut expanded, &mut Vec::new());

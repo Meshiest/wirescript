@@ -5,7 +5,7 @@
 //! per the design plan. We run Tarjan's SCC and for every non-trivial
 //! component verify a barrier is present.
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
 use crate::ir::port_registry::WirePort;
@@ -57,7 +57,7 @@ fn analyze_module(m: &Module, out: &mut CycleResult) {
 }
 
 fn build_adjacency(m: &Module) -> HashMap<NodeId, Vec<NodeId>> {
-    let mut adj: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    let mut adj: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
     for id in m.nodes.keys() {
         adj.insert(*id, Vec::new());
     }
@@ -159,7 +159,7 @@ fn find_cycle_path(adj: &HashMap<NodeId, Vec<NodeId>>, scc: &[NodeId]) -> Vec<No
     }
     let members: HashSet<NodeId> = scc.iter().copied().collect();
     let mut walk: Vec<NodeId> = Vec::new();
-    let mut seen_at: HashMap<NodeId, usize> = HashMap::new();
+    let mut seen_at: HashMap<NodeId, usize> = HashMap::default();
     let mut cur = scc[0];
     loop {
         if let Some(&p) = seen_at.get(&cur) {
@@ -226,9 +226,9 @@ fn earliest_source_node<'a>(m: &'a Module, ids: &[NodeId]) -> Option<&'a Node> {
 
 fn tarjan(adj: &HashMap<NodeId, Vec<NodeId>>) -> Vec<Vec<NodeId>> {
     let mut state = TarjanState {
-        idx: HashMap::new(),
-        low: HashMap::new(),
-        on_stack: HashSet::new(),
+        idx: HashMap::default(),
+        low: HashMap::default(),
+        on_stack: HashSet::default(),
         stack: Vec::new(),
         counter: 0,
         result: Vec::new(),
@@ -318,7 +318,7 @@ mod tests {
             id: NodeId::fresh(),
             kind: NodeKind::Gate,
             gate_class: class,
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(crate::GateIO::default()),
             source_range: SourceRange::default(),
             chip_id: None,

@@ -7,7 +7,7 @@ pub mod calls;
 pub mod events;
 pub mod operators;
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use serde::Deserialize;
 
@@ -136,14 +136,17 @@ impl Catalog {
     }
 
     fn from_raw(raw: RawInventory) -> Self {
-        let mut by_display = HashMap::new();
-        let mut by_class = HashMap::new();
-        let mut by_family: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut by_kind: HashMap<ComponentKind, Vec<usize>> = HashMap::new();
+        let mut by_display = HashMap::default();
+        let mut by_class = HashMap::default();
+        let mut by_family: HashMap<String, Vec<usize>> = HashMap::default();
+        let mut by_kind: HashMap<ComponentKind, Vec<usize>> = HashMap::default();
         for (i, g) in raw.entries.iter().enumerate() {
             by_display.insert(g.brick_display_name.clone(), i);
             by_class.insert(g.component.class.clone(), i);
-            by_family.entry(g.component.family.clone()).or_default().push(i);
+            by_family
+                .entry(g.component.family.clone())
+                .or_default()
+                .push(i);
             by_kind.entry(g.component.kind).or_default().push(i);
         }
         Self {

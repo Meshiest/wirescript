@@ -8,7 +8,7 @@
 //! module remapping every node ID to `intern("{prefix}/{old_name}")`.  Because
 //! the prefix is unique per call site the resulting IDs are globally disjoint.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use crate::emit::Placement;
 use crate::ir::{Module, Node, NodeId, PortRef, Wire};
@@ -72,7 +72,7 @@ impl CompiledTemplate {
     /// * `prefix` — a unique string that distinguishes this instance from all
     ///   others (e.g. `"inst0"`, `"foo/bar/2"`).
     /// * `captures` — maps each name in [`external_refs`] to the caller's node
-    ///   ID that should be wired in its place.  Pass `&HashMap::new()` when
+    ///   ID that should be wired in its place.  Pass `&HashMap::default()` when
     ///   there are no external refs.
     pub fn instantiate(&self, prefix: &str, captures: &HashMap<String, NodeId>) -> Module {
         self.instantiate_with_map(prefix, captures).0
@@ -87,13 +87,13 @@ impl CompiledTemplate {
         captures: &HashMap<String, NodeId>,
     ) -> (Module, HashMap<NodeId, NodeId>) {
         // --- 1. Build id_map: every internal node gets a fresh numeric ID ----
-        let mut id_map: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut id_map: HashMap<NodeId, NodeId> = HashMap::default();
         for old_id in self.module.nodes.keys() {
             id_map.insert(*old_id, NodeId::fresh());
         }
 
         // --- 2. Build external_map: captured scope vars use the caller's ID --
-        let mut external_map: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut external_map: HashMap<NodeId, NodeId> = HashMap::default();
         for (name, old_id) in &self.external_refs {
             if let Some(&caller_id) = captures.get(name) {
                 external_map.insert(*old_id, caller_id);
@@ -110,8 +110,8 @@ impl CompiledTemplate {
         // wires converge on the first instance's ports (fan-in collisions the game
         // then fails to connect). Children must be stamped before the wires so the
         // wires can point at the freshly-minted child boundary nodes.
-        let mut descendant_map: HashMap<NodeId, NodeId> = HashMap::new();
-        let mut new_chips: HashMap<NodeId, Module> = HashMap::new();
+        let mut descendant_map: HashMap<NodeId, NodeId> = HashMap::default();
+        let mut new_chips: HashMap<NodeId, Module> = HashMap::default();
         for (old_chip_key, child_module) in &self.module.chips {
             let new_chip_key = id_map.get(old_chip_key).copied().unwrap_or(*old_chip_key);
             let child_template = CompiledTemplate::from_module(child_module.clone());
@@ -147,7 +147,7 @@ impl CompiledTemplate {
         };
 
         // --- 5. Clone nodes with remapped IDs ----------------------------------
-        let mut new_nodes = HashMap::new();
+        let mut new_nodes = HashMap::default();
         for (old_id, node) in &self.module.nodes {
             let new_id = remap(*old_id);
             let new_chip_id = node.chip_id.map(|c| remap(c));
@@ -288,7 +288,7 @@ mod tests {
             id: in_a_id,
             kind: NodeKind::Input,
             gate_class: mc_input,
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
                 inputs: vec![PortSpec { name: rer_in_sym, ty: Type::Int }],
                 outputs: vec![PortSpec { name: rer_out_sym, ty: Type::Int }],
@@ -305,7 +305,7 @@ mod tests {
             id: in_b_id,
             kind: NodeKind::Input,
             gate_class: mc_input,
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
                 inputs: vec![PortSpec { name: rer_in_sym, ty: Type::Int }],
                 outputs: vec![PortSpec { name: rer_out_sym, ty: Type::Int }],
@@ -322,7 +322,7 @@ mod tests {
             id: add_id,
             kind: NodeKind::Gate,
             gate_class: add_gate,
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
                 inputs: vec![PortSpec { name: input_a_sym, ty: Type::Int }],
                 outputs: vec![
@@ -342,7 +342,7 @@ mod tests {
             id: out_r_id,
             kind: NodeKind::Output,
             gate_class: mc_output,
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
                 inputs: vec![PortSpec { name: rer_in_sym, ty: Type::Int }],
                 outputs: vec![PortSpec { name: rer_out_sym, ty: Type::Int }],
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn instantiate_produces_unique_ids() {
         let t = CompiledTemplate::from_module(simple_add_module());
-        let caps = HashMap::new();
+        let caps = HashMap::default();
 
         let inst0 = t.instantiate("inst0", &caps);
         let inst1 = t.instantiate("inst1", &caps);
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn instantiate_preserves_wire_integrity() {
         let t = CompiledTemplate::from_module(simple_add_module());
-        let inst = t.instantiate("check", &HashMap::new());
+        let inst = t.instantiate("check", &HashMap::default());
 
         for wire in &inst.wires {
             assert!(
@@ -488,7 +488,7 @@ mod tests {
 
         // Caller owns a node with a fresh id.
         let caller_node_id = NodeId::fresh();
-        let mut captures = HashMap::new();
+        let mut captures = HashMap::default();
         captures.insert("external_var".to_string(), caller_node_id);
 
         let inst = t.instantiate("cap_test", &captures);
@@ -523,7 +523,7 @@ mod tests {
         t.module.nodes.remove(&in_a_id);
 
         let caller_id = NodeId::fresh();
-        let mut captures = HashMap::new();
+        let mut captures = HashMap::default();
         captures.insert("in_a".to_string(), caller_id);
 
         let inst = t.instantiate("ext_test", &captures);
@@ -556,8 +556,8 @@ mod tests {
     #[test]
     fn instantiate_50_times_all_disjoint() {
         let t = CompiledTemplate::from_module(simple_add_module());
-        let caps = HashMap::new();
-        let mut all_ids: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+        let caps = HashMap::default();
+        let mut all_ids: std::collections::HashSet<NodeId> = std::collections::HashSet::default();
 
         for i in 0..50 {
             let inst = t.instantiate(&format!("stress{i}"), &caps);
@@ -598,7 +598,7 @@ mod tests {
                 id: mid_gate_id,
                 kind: NodeKind::Gate,
                 gate_class: add_gate,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -613,7 +613,7 @@ mod tests {
                 id: leaf_chip_key,
                 kind: NodeKind::Chip,
                 gate_class: mc_chip,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -635,7 +635,7 @@ mod tests {
                 id: top_gate_id,
                 kind: NodeKind::Gate,
                 gate_class: add_gate,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -650,7 +650,7 @@ mod tests {
                 id: mid_chip_key,
                 kind: NodeKind::Chip,
                 gate_class: mc_chip,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -662,7 +662,7 @@ mod tests {
         top.chips.insert(mid_chip_key, mid);
 
         let t = CompiledTemplate::from_module(top);
-        let caps = HashMap::new();
+        let caps = HashMap::default();
 
         let inst0 = t.instantiate("top0", &caps);
         let inst1 = t.instantiate("top1", &caps);
@@ -688,7 +688,7 @@ mod tests {
     fn instantiate_empty_template() {
         let m = Module::new("empty");
         let t = CompiledTemplate::from_module(m);
-        let inst = t.instantiate("e0", &HashMap::new());
+        let inst = t.instantiate("e0", &HashMap::default());
 
         assert_eq!(inst.nodes.len(), 0, "expected 0 nodes");
         assert_eq!(inst.wires.len(), 0, "expected 0 wires");
@@ -708,7 +708,7 @@ mod tests {
                 id: gate_id,
                 kind: NodeKind::Gate,
                 gate_class: add_gate,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -719,7 +719,7 @@ mod tests {
         );
 
         let t = CompiledTemplate::from_module(m);
-        let inst = t.instantiate("nc0", &HashMap::new());
+        let inst = t.instantiate("nc0", &HashMap::default());
 
         assert_eq!(inst.nodes.len(), 1, "expected exactly 1 node");
         let new_id = *inst.nodes.keys().next().unwrap();
@@ -761,7 +761,7 @@ mod tests {
                 id: gate_id,
                 kind: NodeKind::Gate,
                 gate_class: add_gate_class,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO {
                     inputs: vec![
                         PortSpec { name: input_a_sym, ty: Type::Int },
@@ -816,7 +816,7 @@ mod tests {
         t.external_refs.push(("ext_b".to_string(), ext_b_id));
         t.external_refs.push(("ext_c".to_string(), ext_c_id));
 
-        let mut captures = HashMap::new();
+        let mut captures = HashMap::default();
         captures.insert("ext_a".to_string(), real_a);
         captures.insert("ext_b".to_string(), real_b);
         captures.insert("ext_c".to_string(), real_c);
@@ -876,7 +876,7 @@ mod tests {
                 id: chip_key_id,
                 kind: NodeKind::Chip,
                 gate_class: mc_chip,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -887,7 +887,7 @@ mod tests {
         );
 
         let t = CompiledTemplate::from_module(m);
-        let caps = HashMap::new();
+        let caps = HashMap::default();
 
         let inst0 = t.instantiate("ci0", &caps);
         let inst1 = t.instantiate("ci1", &caps);
@@ -944,7 +944,7 @@ mod tests {
                 id: child_input_id,
                 kind: NodeKind::Input,
                 gate_class: mc_input,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO {
                     inputs: vec![PortSpec { name: *sym::RER_INPUT, ty: Type::Int }],
                     outputs: vec![PortSpec { name: *sym::RER_OUTPUT, ty: Type::Int }],
@@ -967,7 +967,7 @@ mod tests {
                 id: gate_id,
                 kind: NodeKind::Gate,
                 gate_class: add_gate,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -982,7 +982,7 @@ mod tests {
                 id: chip_key,
                 kind: NodeKind::Chip,
                 gate_class: mc_chip,
-                properties: Arc::new(HashMap::new()),
+                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO::default()),
                 source_range: Default::default(),
                 chip_id: None,
@@ -998,7 +998,7 @@ mod tests {
         });
 
         let t = CompiledTemplate::from_module(parent);
-        let caps = HashMap::new();
+        let caps = HashMap::default();
         let inst0 = t.instantiate("i0", &caps);
         let inst1 = t.instantiate("i1", &caps);
 

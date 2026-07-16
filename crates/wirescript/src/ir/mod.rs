@@ -13,7 +13,7 @@ pub mod build;
 pub mod gate_class;
 pub mod port_registry;
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use crate::intern::Sym;
 use crate::ir::port_registry::WirePort;
@@ -304,7 +304,7 @@ pub struct Module {
 
 impl Default for Module {
     fn default() -> Self {
-        let mut scopes = HashMap::new();
+        let mut scopes = HashMap::default();
         scopes.insert(
             ROOT_SCOPE_ID,
             ScopeInfo {
@@ -315,9 +315,9 @@ impl Default for Module {
         );
         Self {
             name: crate::intern::intern_static(""),
-            nodes: HashMap::new(),
+            nodes: HashMap::default(),
             wires: Vec::new(),
-            chips: HashMap::new(),
+            chips: HashMap::default(),
             inputs: Vec::new(),
             outputs: Vec::new(),
             scopes,

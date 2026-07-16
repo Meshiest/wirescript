@@ -414,6 +414,21 @@ export function activate(context: ExtensionContext) {
   const buildDiagnostics = languages.createDiagnosticCollection("wirescript-build");
   context.subscriptions.push(buildDiagnostics);
 
+  // A change to ANY .ws file makes the last compile's output stale as a whole
+  // (its errors can point into imported files), so drop the entire collection —
+  // the live LSP diagnostics keep reporting truth, and the next explicit
+  // compile repopulates it. Without this, fixed errors lingered as squiggles
+  // next to the fresh live diagnostics until the next compile.
+  const clearBuildDiagnostics = (doc: TextDocument) => {
+    if (doc.languageId === "wirescript") buildDiagnostics.clear();
+  };
+  context.subscriptions.push(
+    workspace.onDidChangeTextDocument((e) => {
+      if (e.contentChanges.length > 0) clearBuildDiagnostics(e.document);
+    }),
+    workspace.onDidSaveTextDocument(clearBuildDiagnostics),
+  );
+
   // Listen for compile progress from LSP
   client.onNotification("wirescript/compileProgress", (params: any) => {
     if (params.done) {
