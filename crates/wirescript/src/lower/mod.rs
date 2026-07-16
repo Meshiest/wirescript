@@ -897,7 +897,7 @@ pub fn compile_chip_template(
                 record_fields.insert(crate::intern::intern(&field.name), binding);
             }
             ctx.scope
-                .insert(inp.name.clone(), Binding::Record(record_fields));
+                .insert(&inp.name, Binding::Record(record_fields));
         } else if matches!(&inp.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
             let t = type_of_type_expr(&inp.typ);
             let is_array = matches!(&inp.typ, TypeExpr::Array { .. });
@@ -910,7 +910,7 @@ pub fn compile_chip_template(
                 ctx.builder
                     .add_input(&mut ctx.ids, &inp.name, t.clone(), chip_decl.range.clone());
             ctx.scope.insert(
-                inp.name.clone(),
+                &inp.name,
                 Binding::Var(VarRecord {
                     node_id,
                     inner_type: inner,
@@ -928,7 +928,7 @@ pub fn compile_chip_template(
                 ctx.builder
                     .add_input(&mut ctx.ids, &inp.name, t.clone(), chip_decl.range.clone());
             ctx.scope.insert(
-                inp.name.clone(),
+                &inp.name,
                 Binding::Input(NodeRecord { node_id, ty: t }),
             );
         }
@@ -941,7 +941,7 @@ pub fn compile_chip_template(
             ctx.builder
                 .add_output(&mut ctx.ids, &out.name, t.clone(), chip_decl.range.clone());
         ctx.scope.insert(
-            crate::lower::context::output_scope_key(&out.name),
+            &crate::lower::context::output_scope_key(&out.name),
             Binding::Output(NodeRecord { node_id, ty: t }),
         );
     }

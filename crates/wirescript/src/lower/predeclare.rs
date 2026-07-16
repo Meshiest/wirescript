@@ -108,7 +108,7 @@ pub(super) fn build_exec_signal_hub(ctx: &mut LowerCtx, name: &str, range: &Sour
         ..Default::default()
     });
     ctx.scope.insert(
-        name.to_string(),
+        &name,
         Binding::Local(LocalRecord {
             port: hub.port(WirePort::ExecOut),
         }),
@@ -356,7 +356,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             ..Default::default()
         });
         ctx.scope.insert(
-            d.name.clone(),
+            &d.name,
             Binding::Var(VarRecord {
                 node_id,
                 inner_type: elem_type,
@@ -399,7 +399,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         ..Default::default()
     });
     ctx.scope.insert(
-        d.name.clone(),
+        &d.name,
         Binding::Var(VarRecord {
             node_id,
             inner_type,
@@ -438,7 +438,7 @@ pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
         ..Default::default()
     });
     ctx.scope.insert(
-        d.name.clone(),
+        &d.name,
         Binding::Buffer(NodeRecord {
             node_id,
             ty: inner_type,
@@ -474,7 +474,7 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
         ..Default::default()
     });
     ctx.scope.insert(
-        d.name.clone(),
+        &d.name,
         Binding::Var(VarRecord {
             node_id,
             inner_type: elem_type,
@@ -530,7 +530,7 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
         }
     }
     ctx.scope.insert(
-        d.name.clone(),
+        &d.name,
         Binding::Input(NodeRecord { node_id, ty: t }),
     );
 }
@@ -562,7 +562,7 @@ pub(super) fn pre_declare_output(
         }
     }
     ctx.scope.insert(
-        crate::lower::context::output_scope_key(name),
+        &crate::lower::context::output_scope_key(name),
         Binding::Output(NodeRecord { node_id, ty: t }),
     );
 }

@@ -2,339 +2,336 @@
 
 ## 0.16.2 - 2026-07-15
 
-- **Fixed LSP process crash (stack overflow) compiling large programs** - the cycle-analysis SCC walk recursed once per gate along a path, so a long exec chain (a mod inlined hundreds of times → tens of thousands of gates in sequence) overflowed the default ~2 MiB thread the LSP ran compiles on, aborting the whole language server — after which nothing compiled until a restart. The SCC walk is now iterative (heap-allocated DFS frames, no depth limit), and every `compile*` entry point additionally runs on a dedicated worker thread with a 256 MiB *reserved* stack (committed only as used) to cover the remaining structure-proportional recursion in lowering/emit, so the caller's stack size no longer matters. The CLI already carried a local guard; it now lives at the source so all consumers are covered.
-- **Fixed LSP process crash on multi-byte text (hover/completion)** - the word/receiver/call scanners found a boundary with `rfind` and stepped past it with `+ 1`, which lands *inside* a multi-byte character — hovering near text like `// ── Section ──` box-drawing rules panicked at a non-char-boundary slice and killed the server. All four scan sites now step past the found character by its real width, and member-receiver lookup converts the cursor column from chars to bytes instead of indexing bytes directly.
-- **Stale compile-command errors now clear when you edit** - diagnostics returned by the on-demand Compile command stayed in the Problems panel (and as squiggles) after the code was fixed, sitting alongside the live diagnostics until the next compile attempt. Editing or saving any `.ws` file now clears the previous compile's diagnostics — one compile's errors are stale as a whole once any input changes, since they can point into imported files — and the next explicit compile repopulates them.
-- **Rename now applies to every reference find-references sees** - three fixes to `textDocument/rename`:
-  - Files already open in the editor were also picked up by the same-directory disk scan (the editor's URI spelling, `file:///c%3A/…`, never matched the server-built `file:///C:/…`), so rename emitted two identical edits per site and the editor refused to apply that file's changes — uses, definitions, and `import { … }` specifiers silently kept the old name. Open files are now matched by canonical filesystem path and the reference set is deduplicated.
-  - An import specifier was misread as a record-literal shorthand, so renaming `foo` corrupted `import { foo } from "util"` into `import { foo: bar } from "util"`; it now rewrites to `import { bar }`. The shorthand expansion itself was also backwards — `{ foo }` now becomes `{ foo: bar }` (the field keeps its name) instead of `{ bar: foo }` — and a name in *value* position (`{ x: foo }`) is no longer mangled into a bogus shorthand.
-  - Rename is now offered from any site find-references understands — a namespace-qualified use (`u.foo`), a record field in a literal — instead of only declared symbols; built-in event names refuse rename like keywords and built-in calls already did.
-- **Compiler is ~15% faster end-to-end** - profiling a large-program compile showed ~29% of wall time inside the standard library's DoS-resistant SipHash for compiler-internal tables (node maps, type maps, scope lookups — keyed by small integers and tuples). Those tables now use the rustc-style Fx hasher (`crate::collections`). Measured on two large programs: lowering −15%/−26%, cycle analysis −45%/−55%, layout −36%, world building −21%/−33%. Hash-map iteration also becomes deterministic per content instead of per-process random-seeded, so compiled output is more stable run-to-run.
+- **Fixed LSP crash (stack overflow) on large programs** - The cycle-analysis SCC walk is now iterative, and every `compile*` entry point runs on a worker thread with a 256 MiB reserved stack.
+- **Fixed LSP crash on multi-byte text** - Hover/completion word scanners now step past characters by their real width, and member-receiver lookup converts the cursor column from chars to bytes.
+- **Stale compile-command diagnostics clear on edit** - Editing or saving any `.ws` file clears the previous Compile command's diagnostics; the next explicit compile repopulates them.
+- **Rename applies to every reference find-references sees** - Three `textDocument/rename` fixes:
+  - Open files match by canonical path and references are deduplicated, so edits are no longer doubled and rejected.
+  - `import { foo }` rewrites to `import { bar }`; shorthand expands to `{ foo: bar }`, and value-position names are untouched.
+  - Rename works from any reference site (`u.foo`, record fields); built-in event names refuse rename.
+- **Compiler is ~15% faster end-to-end** - Internal tables use the Fx hasher (`crate::collections`) instead of SipHash: lowering −15%/−26%, cycle analysis −45%/−55%, layout −36%, world building −21%/−33%. Map iteration is now deterministic, so output is more stable run-to-run.
+- **~30% fewer allocations during lowering** - Chip declarations are shared via `Arc` instead of deep-cloned per call, and scope keys ride the interner; mod-heavy programs lower ~14% faster. New `count_allocs` example reports per-stage allocation counts/bytes.
 
 ## 0.16.1 - 2026-07-15
 
-- **`chip let` labels the chip with its binding name** - a `chip let x = …` (or `chip let a = 1, b = 2`) previously compiled to an unlabeled microchip; it now shows the binding name(s) as its display label so the let-chip is identifiable. An explicit `@label(...)` still overrides.
-- **Wider vertical gap between chip-pane rows** - the wall layout's row-to-row vertical gutter was widened so stacked chip planes read as more clearly separated.
-- **Fixed repeated chip-instance calls sharing wire endpoints** - calling the same `chip` more than once (`foo(0)`, `foo(1)`, …) stamped the second and later copies from a cached template whose *boundary* wires — a parent gate into a nested chip's input, or a nested chip's output into a parent consumer — were not remapped to the copy's fresh nodes. Every extra instance's boundary wires therefore converged on the **first** instance's input ports, so the game rejected the duplicates at load ("Failed to connect wire"). Template instantiation now stamps child chips before their boundary wires and remaps those wires to each instance's own nodes.
-- **Hover on a namespace member shows its signature** - hovering the member in a namespace-qualified call (`u.foo` where `u` is an `import * as u`) returned nothing even though go-to-definition worked. The member is now shown with its full signature (and exec-ness), matching a direct call's hover; the qualified `u.foo` symbol carries the real signature instead of an empty type.
-- **Unresolved namespace/method call is now a hard error (WS002)** - a call like `ns.foo(...)` whose base `ns` is not a namespace, variable, or value in scope (e.g. an `import * as ns` was removed but its calls remain) used to slip past type-checking and lower to an `_Unsupported` gate that silently did nothing at runtime. It now errors at the dangling base identifier, like a bare unknown identifier.
-- **Organize Imports preserves namespace, bare, and multi-line imports** - Alt+Shift+O previously understood only single-line `import { … } from "…"`, so an `import * as ns from "…"`, a bare `import "…"`, or a multi-line braced import that sat between other imports was destroyed by the rewrite. Every import form is now recognized and kept — namespace and bare imports are never pruned, unused named imports still are — and a namespace import sorts before a named import from the same module.
+- **`chip let` labels the chip with its binding name** - `chip let x = …` now shows the binding name(s) as its display label; an explicit `@label(...)` still overrides.
+- **Wider vertical gap between chip-pane rows** - The wall layout's row-to-row gutter was widened so stacked chip planes read as separated.
+- **Fixed repeated chip calls sharing wire endpoints** - Later instances of the same `chip` (`foo(0)`, `foo(1)`) wired their boundaries to the first instance and failed to load ("Failed to connect wire"). Boundary wires now remap to each instance's own nodes.
+- **Hover on a namespace member shows its signature** - `u.foo` (via `import * as u`) now shows the full signature and exec-ness, matching a direct call's hover.
+- **Unresolved namespace/method call is now a hard error (WS002)** - `ns.foo(...)` whose base is not in scope errors at the dangling identifier instead of lowering to a silent `_Unsupported` gate.
+- **Organize Imports preserves namespace, bare, and multi-line imports** - Alt+Shift+O now keeps every import form (namespace/bare imports are never pruned; unused named imports still are) and sorts a namespace import before a named import from the same module.
 
 ## 0.16.0 - 2026-07-14
 
-- **Fixed LSP field triggers on a local in handlers** - an `on <local>.<field>` handler (`on reader.Jump` where `reader = pl.InputReader()`) ignored the field and fired off the local's default port. It now selects the matching output port (`bPressedJump`/…), including negated (`on !reader.Jump`).
-- **Duplicate constant gates merged per chip** - a constant that survives inlining (a repeated `"PREFIX: "` string wrapper, a multi-consumer literal) is emitted once and fans out. Applies to pure gates with no wired input; `Random` and stateful detectors are never merged. Cut ~1200 gates from a large project.
-- **LSP: member completion after `receiver.` wins inside a call arg** - `Call(arg = recv.<here>` completes `recv`'s members, not the call's params; a record value completes its fields (including `on reader.<here>`). A plain `Call(<here>` still completes params.
-- **LSP: more completion contexts** —
-  - `import * as u` then `u.<here>` lists the module's members (was empty).
-  - `var pos: vector` → `pos.<here>` offers type methods + swizzle (`x`/`y`/`z`, `r`/`g`/`b`/`a`) alongside `.Value`/`.prev`; `static var` now gets `.Value`/`.prev`.
+- **Fixed field triggers on a local in handlers** - `on x.field` (and negated `on !x.field`) now fires the matching output port instead of the local's default port.
+- **Duplicate constant gates merged per chip** - A repeated constant is emitted once and fanned out. Pure gates with no wired input only; `Random`/stateful detectors are never merged; cut ~1200 gates on a large project.
+- **LSP: member completion after `receiver.` wins inside a call arg** - `Call(arg = recv.<here>` completes `recv`'s members (records complete their fields, including in `on` handlers); `Call(<here>` still completes params.
+- **LSP: more completion contexts** -
+  - `import * as u` then `u.<here>` lists the module's members.
+  - `pos.<here>` on a `var pos: vector` offers type methods + swizzle (`x`/`y`/`z`, `r`/`g`/`b`/`a`) alongside `.Value`/`.prev`; `static var` gets `.Value`/`.prev`.
   - Values typed by a `type Foo = { … }` alias complete `Foo`'s fields.
   - User `mod`/`chip`/`fn` calls complete their param names instead of the global list.
-  - All-required calls (`Vec(<here>)`) offer their params; method calls no longer offer the bound receiver param.
+  - All-required calls (`Vec(<here>)`) offer their params; method calls drop the bound receiver param.
   - `@`-annotation list adds `@label` and `@closed`.
-  - Native LSP and web playground now share these paths.
-- **Doc comments on record-type fields** - a `///` comment on a field inside a `type T = { … }` declaration used to be a parse error; it now parses and shows on hover of that field.
-- **Fixed hover on a namespace alias** - hovering `card` in `import * as card` showed `namespace card: unknown`; it now shows `namespace card` and lists the members it brings in.
-- **VS Code formatter (Prettier plugin)** - now puts a space after commas, splits too-long braced imports (fill) and binary-operation statements (one operator per line, lowest-precedence first) at 100 cols, joins a statement-form `else` onto its closing brace (`}\n else {` → `} else {`), and honors `// fmt-ignore` (standalone protects the next line; trailing protects its own). `///` doc comments auto-continue when you press Enter.
-- **Opened-plane headers space the doc off the title** - the header now puts a blank line between the size-96 title and the chip/module doc comment instead of butting them together.
-- **Warn on asset/reference values in an array initializer (WS024)** - an asset (`$Type/Name`) or prefab reference is an object reference wired in from its own brick, so it can't bake into a constant `array`/`var` initializer (it was silently dropped). Build the array with `.push(...)` in an exec handler; docs now note that all references (`entity`/`character`/`controller`/`brick`/`prefab`/assets) are object values that share the object wire and can't be inlined.
-- **Module doc comments no longer merge into the first declaration** - a `///` block at the top of a file, separated from the first declaration by a blank line (or a `//` comment), is now the module doc (the root plane header) and stays distinct from that declaration's own `///` doc. A doc block sitting directly above a declaration still documents it as before.
+  - Native LSP and web playground share these paths.
+- **Doc comments on record-type fields** - A `///` on a field inside `type T = { … }` now parses (was a parse error) and shows on hover of that field.
+- **Fixed hover on a namespace alias** - Hovering `u` in `import * as u` shows `namespace u` and lists its members (was `namespace u: unknown`).
+- **VS Code formatter (Prettier plugin)** - Adds a space after commas; splits long braced imports (fill) and binary-op statements (one operator per line, lowest precedence first) at 100 cols; joins `} else {`; honors `// fmt-ignore` (standalone guards the next line, trailing its own). `///` doc comments auto-continue on Enter.
+- **Opened-plane headers space the doc off the title** - A blank line now separates the size-96 title from the chip/module doc comment.
+- **Warn on asset/reference values in an array initializer (WS024)** - Assets (`$Type/Name`) and prefab refs can't bake into a constant `array`/`var` initializer; build with `.push(...)` in an exec handler. All reference types (`entity`/`character`/`controller`/`brick`/`prefab`/assets) share the object wire and can't be inlined.
+- **Module doc comments stay separate from the first declaration** - A top-of-file `///` block followed by a blank line (or `//` comment) is the module doc (root plane header); a block directly above a declaration still documents it.
 
 ## 0.15.0 - 2026-07-13
 
-- **Color arithmetic** - `+ - * / %` now operate RGBA channel-wise on two `color` operands, and mixing a color with a scalar broadcasts it across the channels (`c1 + c2`, `tint * 0.5`), all on the same PrimMath gate that already runs vectors and rotations.
-- **`Random` is polymorphic** on the PrimMath variant: `min`/`max` may be a `vector`, `rotator`, `quat`, or `color`, and it rolls each component independently, returning that same type (`Random(Vec(0,0,0), Vec(1,1,1))` → a random point in the unit cube). The scalar `int` form is unchanged.
-- **Fixed anonymous-record mod returns** - a `mod` returning a record literal (`-> {head, rest}` with `return { head: ..., rest: ... }`) lowered the literal to a single `_Unsupported` gate, so the caller's `f.head`/`f.rest` both read that one broken gate instead of their real sources. The record is now destructured into a field→source map (like a multi-output mod), so each field wires to its own value.
-- **Non-root chips compile open by default** - opened planes stack as a wall above the compiled microchip brick (root plane at the bottom, deeper nesting higher). The new **`@closed`** annotation collapses a chip; it keeps its wall slot. `open chip` is now a redundant no-op.
-- **New `@label("text")` annotation** - display-text override for chip labels/headers and `in`/`out` port labels (stacks with `@side` in any order); the wiring-UI port name is unchanged.
-- **Opened planes render a header** - a `<size="96">` title (the `@label` text, else the chip name) plus the chip's `///` doc comment, on an invisible brick at the plane's top edge.
+- **Color arithmetic** - `+ - * / %` operate RGBA channel-wise on two `color` operands; a scalar broadcasts across channels (`tint * 0.5`). Same PrimMath gate as vectors/rotations.
+- **`Random` is polymorphic** - `min`/`max` may be `vector`, `rotator`, `quat`, or `color`; each component rolls independently and the same type is returned (`Random(Vec(0,0,0), Vec(1,1,1))` → point in the unit cube). Scalar `int` form unchanged.
+- **Fixed anonymous-record mod returns** - A `mod` returning a record literal (`return { head: …, rest: … }`) now destructures into per-field sources, so each field wires to its own value (was one `_Unsupported` gate).
+- **Non-root chips compile open by default** - Opened planes stack as a wall above the compiled microchip (root at bottom, deeper nesting higher). New `@closed` collapses a chip but keeps its wall slot; `open chip` is now a no-op.
+- **New `@label("text")` annotation** - Display-text override for chip labels/headers and `in`/`out` port labels (stacks with `@side` in any order); the wiring-UI port name is unchanged.
+- **Opened planes render a header** - A size-96 title (the `@label` text, else the chip name) plus the chip's `///` doc comment, on an invisible brick at the plane's top edge.
 
 ## 0.14.1 - 2026-07-13
 
-- LSP: fixed a mod whose body is a single `return <expr>` being mislabeled `exec` on hover - `return` alone no longer forces the exec label; only an exec op in the returned expression (e.g. an array read) does.
-- Lowering: a module imported via BOTH a namespace (`import * as x`) and a named import no longer ships that module's top-level `let` constants twice. The namespace path carries every importable decl, so a constant already pulled in (and wired) by the named import was materialized a second time wired to nothing - a loose orphan gate. Fully-disconnected pure gates (and, after literal-inlining, orphan literals) are now pruned.
+- **LSP: fixed a `return <expr>` mod mislabeled `exec` on hover** - `return` alone no longer forces the exec label; only an exec op in the returned expression (e.g. an array read) does.
+- **Pruned duplicate constants from dual imports** - A module imported via both `import * as x` and a named import no longer ships its top-level `let` constants twice; fully-disconnected pure gates and orphan literals are pruned.
 
 ## 0.14.0 - 2026-07-12
 
-- **Port-side rerouter pins** - annotate top-level ports with `@left`/`@right`/`@top`/`@bottom` (same line or the line above) to emit a pre-wired rerouter brick flush against that side of the compiled microchip. Ports on a side keep declaration order (ins and outs interleave); each pin is labeled with its port name. Annotations inside `chip {}`/`mod` bodies are rejected with WS023.
+- **Port-side rerouter pins** - `@left`/`@right`/`@top`/`@bottom` on a top-level port (same line or the line above) emits a pre-wired rerouter brick flush against that side of the microchip. Ports keep declaration order per side (ins/outs interleave), each pin is labeled with its port name; annotations inside `chip {}`/`mod` bodies error (WS023).
 
 ## 0.13.1 - 2026-07-11
 
-- **Fixed `array.pop()` returning `0`** - the lowering only declared the gate's `Value` output, so `.IsEmpty` silently fell back to the `Value` port and the emitted `Value` wire bound to the wrong slot (reading `bIsEmpty`, `0` for a non-empty pop). Both outputs are now declared; `.Value` reads the popped element and `.IsEmpty` reads `bIsEmpty` (true once the array is empty *after* the pop).
-- **Fixed `buffer` initializers inside chip/mod/handler bodies never wiring** - the buffer gate was created but its initializer expression was silently dropped, leaving its input dangling (e.g. a NAND oscillator `buffer t: bool = !(t && e)` in a chip body never ticked).
-- **Silently-dropped `var` initializers now warn (WSP001)** - a non-constant initializer can't bake into the Variable gate, and only takes effect where an exec-context reset applies it; previously the var silently started at its type default. Now warned: a non-constant init in pure position (top level, imported module member, or a chip/mod body instantiated without exec context), a non-constant `static var` init anywhere (statics skip the per-entry reset), and an exec-context array-var init that isn't an array literal. Use a `let` for a pure computed binding, or assign the var inside an exec handler.
+- **Fixed `array.pop()` returning `0`** - Both gate outputs are now declared: `.Value` reads the popped element and `.IsEmpty` reads `bIsEmpty` (true once the array is empty after the pop).
+- **Fixed `buffer` initializers inside chip/mod/handler bodies never wiring** - The initializer expression was silently dropped, leaving the buffer's input dangling.
+- **Silently-dropped `var` initializers now warn (WSP001)** - Warns on a non-constant init in pure position, any non-constant `static var` init, and an exec-context array-var init that isn't an array literal. Use a `let` for a pure computed binding, or assign inside an exec handler.
 
 ## 0.13.0 - 2026-07-10
 
-- **~4x faster compiles on large projects** (gba: 5.9s -> 1.5s):
-  - Each chip is laid out exactly once - the pre-emit layout pass no longer recurses into children that emit re-lays-out anyway
-  - Layout: one toposort bucketed per connected component (was one full-graph sort *per* component); source-to-consumer alignment uses a prebuilt consumer map + O(1) occupancy checks
-  - Emit: gate data fields' schema classification (variant/asset/enum/str) and interned names resolved once per gate class instead of per brick; brick assets no longer clone a String per brick
-  - Lower: dead exec-union pruning is a single incremental worklist pass instead of a full graph rebuild per spliced union
-- brdb 0.8.0: unset component fields skip a linear defaults scan + two error-String allocations per field; brz index compression actually works (its size guard was dead code)
-- Fixed Inline field access on a call result dropping the call (`arr.find(x).Found` / `.Index`)
-- Fixed a standalone `chip` whose exec-bearing body ends in `return <value>` shipping without its exec output
-- Fixed `out X = X` emitting no wire when the output shares its name with a var/array
-- LSP: hovering a field on a call result (`ids.find(x).Found`) resolves its type from the call's recor
-- LSP: goto-definition on a namespaced call (`card.drawCard` with `import * as card`) resolves in the imported file instead of jumping to a same-named local decl
-- Chip exec I/O gates are labeled `exec` and the anonymous `-> type` return output is labeled `return` (previously synthesized `_exec_in`/`_exec_out`/`_` ports had no label)
-- `ControllerJoined`/`ControllerLeft` expose the player's id: `on ControllerLeft(controller, userId)` (`string`) - stable when the controller is torn down on disconnect
-- **Calling a chip/mod before it is declared is now a hard error (WS021)** in both the compiler and the LSP, instead of silently lowering to a placeholder that reads its default (`0`) at runtime
-- **`in X: T[]` array inputs are first-class** - an array-typed `in` port now supports array methods (`X.length()`, `X.push(v)`, ...) and can be passed to a mod/chip's `T[]` parameter
-- **Namespaced (`import * as ns`) module members resolve inside their own mods**. Named imports (`import { f }`) were unaffected.
-- **Chip/mod calls check their argument count (WS022)** in both the compiler and the LSP. User chips/mods have no default parameters, so a wrong positional-argument count left a param unbound (silently reading 0 / an empty value) or dropped an extra arg; it is now a hard error. An `exec =` trigger isn't counted as a parameter; a spread arg skips the check.
+- **~4x faster compiles on large projects** (5.9s → 1.5s):
+  - Each chip is laid out exactly once; the pre-emit layout pass no longer recurses into children.
+  - Layout: one toposort bucketed per connected component; prebuilt consumer map + O(1) occupancy checks.
+  - Emit: gate-data schema classification and interned names resolved once per gate class; no per-brick String clones.
+  - Lower: dead exec-union pruning is a single incremental worklist pass.
+- **brdb 0.8.0** - Unset component fields skip a defaults scan and two error-String allocations per field; brz index compression actually works (its size guard was dead code).
+- **Fixed field access on a call result dropping the call** - `arr.find(x).Found` / `.Index` now keep the call.
+- **Fixed a standalone `chip` losing its exec output** - An exec-bearing body ending in `return <value>` now ships the output.
+- **Fixed `out X = X` emitting no wire** - Applies when the output shares its name with a var/array.
+- **LSP: hover on a call-result field resolves its type** - `ids.find(x).Found` resolves from the call's record.
+- **LSP: goto-definition on a namespaced call resolves in the imported file** - `u.foo` with `import * as u` no longer jumps to a same-named local decl.
+- **Chip exec I/O gates are labeled** - Exec gates say `exec`; the anonymous `-> type` return output says `return` (synthesized ports had no label).
+- **`ControllerJoined`/`ControllerLeft` expose the player's id** - `on ControllerLeft(controller, userId)` (`string`); stable when the controller is torn down on disconnect.
+- **Calling a chip/mod before it is declared is a hard error (WS021)** - In both the compiler and the LSP (was a silent placeholder reading its default `0`).
+- **`in X: T[]` array inputs are first-class** - An array-typed `in` port supports array methods (`X.length()`, `X.push(v)`, …) and passes to a mod/chip's `T[]` parameter.
+- **Namespaced module members resolve inside their own mods** - `import * as ns` only; named imports were unaffected.
+- **Chip/mod calls check their argument count (WS022)** - Hard error in both the compiler and the LSP (a wrong count silently left a param unbound or dropped an arg). An `exec =` trigger isn't counted; a spread arg skips the check.
 
 ## 0.12.3 - 2026-07-10
 
-- Fix literal constants not reaching anonymous chips
+- **Anonymous-chip constants** - Fixed literal constants not reaching anonymous chips.
 
 ## 0.12.2 - 2026-07-09
 
-
-- Add `ReadBrickGrid()` builtin
+- **`ReadBrickGrid()`** - New builtin.
 
 ## 0.12.1 - 2026-07-09
 
-
-- **Zone events bind their `Zone` input** - `on ZoneEntered(character, zone = z)` wires the value `z` into the event gate's `Zone` input port, so an `in` port wired to a zone brick selects the watched zone instead of hand-wiring each internal gate. Covers all zone events: `ZoneEntered`/`ZoneLeft`, `EntityZoneEntered`/`Left`, `ProjectileZoneEntered`/`Left`, `BrickChanged`/`BrickRemoved`.
-- Fix false recursion flag on imported namespaced identifier conflicting with local identifier
+- **Zone events bind their `Zone` input** - `on ZoneEntered(character, zone = z)` wires `z` into the event gate's `Zone` port, so a wired `in` port selects the watched zone. Covers `ZoneEntered`/`ZoneLeft`, `EntityZoneEntered`/`Left`, `ProjectileZoneEntered`/`Left`, `BrickChanged`/`BrickRemoved`.
+- **Fixed a false recursion flag** - An imported namespaced identifier no longer triggers it when conflicting with a local identifier.
 
 ## 0.12.0 - 2026-07-09
 
 ### Language / Compiler
 
-- **Emitted saves label their elements with text decals** - the top-level chip is titled with the entry file's stem (or the `--name` override); named chips, variables/arrays, and microchip I/O gates get their names as diagonal floating labels. Synthesized `_`-prefixed ports stay unlabeled.
-- **Var/array exec gates tag their variable** - `Var_Get`/`Var_Set`/`Var_Increment` and the array-var gates carry a smaller tag naming the variable they access, traced through the gate's ref wire (works across chip boundaries for captured vars).
+- **Emitted saves label their elements with text decals** - The top-level chip is titled with the entry file's stem (or `--name`); named chips, variables/arrays, and microchip I/O gates get diagonal floating name labels. `_`-prefixed ports stay unlabeled.
+- **Var/array exec gates tag their variable** - `Var_Get`/`Var_Set`/`Var_Increment` and array-var gates carry a smaller tag naming the accessed variable, traced through the ref wire (works across chip boundaries for captured vars).
 
 ## 0.11.0 - 2026-07-08
 
 ### Language / Compiler
 
-- **Gate data mappings derive from game data** - the hand-maintained gate->data-struct table is gone; struct names and field lists come from the game-extracted pair table + schema, so new gates need no table edits. Stale entries for components the game doesn't have were dropped.
+- **Gate data mappings derive from game data** - Struct names and field lists come from the game-extracted pair table + schema, so new gates need no table edits. Stale entries for components the game lacks were dropped.
 - **Vector/Rotation literals embed into gate data** - `e.SetLocation(Vec(0.0, 0.0, 100.0))` bakes the vector into the gate instead of spawning a wired `MakeVector`. `Split*` inputs still materialize.
-- **Exhaustive gate-data write audit** - a test serializes a literal into every representable field of every game component through the real writer; a failure names the gate and field.
-- **Record literals as call args bind their fields** - passing `{ a: 1, b: 2 }` to a destructured (`f({ a, b }: P)`) or whole-record (`f(p: P)`) param now lowers the fields.
-- String constants inline as wire variants. Ports that can't hold an inline variant keep the real gate
-- **Chips capture the whole enclosing scope** - Previously `let`/`in`/event-param references were dropped. Constants additionally clone into the chip so `let K = 2` used as `arr.push(K)` bakes `2` into the gate
+- **Exhaustive gate-data write audit** - A test serializes a literal into every representable field of every game component through the real writer; a failure names the gate and field.
+- **Record literals as call args bind their fields** - `{ a: 1, b: 2 }` passed to a destructured (`f({ a, b }: P)`) or whole-record (`f(p: P)`) param now lowers the fields.
+- **String constants inline as wire variants** - Ports that can't hold an inline variant keep the real gate.
+- **Chips capture the whole enclosing scope** - `let`/`in`/event-param references now resolve; constants clone into the chip, so `let K = 2` used as `arr.push(K)` bakes `2` into the gate.
 
 ### Bug Fixes
 
-- **`min`/`max` and 14 more expression gates embed literals** - `min`, `max`, `sign`, `round`, `exp`, `ln`, the hyperbolics, `Deg2Rad`/`Rad2Deg`, `BitCount`, and `ScaleVec` share data structs that had no mapping, so literal args (`min(a, 3.0)`) were dropped.
-- **`ScaleVec` wires to the real ports** - `Input`/`Scalar`, not `InputA`/`InputB` (which don't exist on the gate).
-- Destructuring record literals now properly lowered to bindings.
-
+- **`min`/`max` and 14 more expression gates embed literals** - `min`, `max`, `sign`, `round`, `exp`, `ln`, the hyperbolics, `Deg2Rad`/`Rad2Deg`, `BitCount`, and `ScaleVec` no longer drop literal args like `min(a, 3.0)`.
+- **`ScaleVec` wires to the real ports** - `Input`/`Scalar` instead of the nonexistent `InputA`/`InputB`.
+- **Destructuring record literals** - Now properly lowered to bindings.
 
 ## 0.10.2 - 2026-07-08
 
 ### Language / Compiler
 
-- **emit/await loops with `buffer emit`** - a buffered back-edge `emit` after an `await` now forms a working loop: `buffer emit sig` (1 tick), `buffer(N)`, `buffer(0.5s)`, `buffer(myVar)`, or `buffer(delay, hold)` inserts a `Buffer(Ticks|Seconds)` gate — the tick barrier a wire-graph cycle needs. Constants bake into the gate; variables wire into the duration port.
-- **Payload ferrying** - `emit sig = value` on a local signal stores the value in hidden per-signal vars (one per record field); `let x = await sig` / `let { a, b } = await sig` reads them back, so loop state can ride the signal. Cost: one `Var_Set` per field per emit, one `Var_Get` per field at the await. Previously the value was dropped.
-- **Body-level `let x: exec` wires correctly** - signals declared inside a body got no hub, so `await x` lowered to a dead `_Unsupported` placeholder.
-- **Signals are scoped per declaration** - two mods each declaring `let loop: exec` shared one signal (keyed by bare name): the second's `await` went dead and its emits cross-wired into the first's loop. Hubs are now keyed per declaration and resolved through the scope.
-- **Handler-local array vars re-init correctly** - `var nums = [1,2,3]` in a body emitted a `Var_Set` wired from the ArrayVar's nonexistent `VarRef` port (in-game: "Wire source port VarRef does not exist in source component"); arrays now rebuild via clear + push.
-- **Layout no longer panics on multi-cycle SCCs** - one feedback edge was dropped per SCC, so two loops sharing a chain crashed layout; it now iterates until acyclic.
+- **emit/await loops with `buffer emit`** - `buffer emit sig` (1 tick), `buffer(N)`, `buffer(0.5s)`, `buffer(myVar)`, or `buffer(delay, hold)` inserts the `Buffer(Ticks|Seconds)` gate a wire-graph cycle needs. Constants bake into the gate; variables wire the duration port.
+- **Payload ferrying** - `emit sig = value` stores the value in hidden per-signal vars (one per record field); `let x = await sig` / `let { a, b } = await sig` reads it back. Cost: one `Var_Set` per field per emit, one `Var_Get` per field at the await.
+- **Body-level `let x: exec` wires correctly** - `await x` on a body-declared signal no longer lowers to a dead placeholder.
+- **Signals are scoped per declaration** - Two mods each declaring `let loop: exec` no longer share one signal; hubs are keyed per declaration and resolved through the scope.
+- **Handler-local array vars re-init correctly** - `var nums = [1,2,3]` in a body rebuilds via clear + push instead of wiring a nonexistent `VarRef` port.
+- **Layout no longer panics on multi-cycle SCCs** - Feedback-edge removal iterates until acyclic, so two loops sharing a chain lay out.
 
 ### Language / Compiler (types)
 
-- **`entity` coerces to `character`/`controller`** - an entity wire can carry a player (e.g. `Sweep`'s `HitEntity`), so character/controller receiver methods and typed params now accept entity values, wiring directly with no adapter gate — same rule as `character` ↔ `controller`.
+- **`entity` coerces to `character`/`controller`** - Character/controller receiver methods and typed params accept entity values (e.g. `Sweep`'s `HitEntity`), wiring directly with no adapter gate.
 
 ### Bug Fixes
 
-- **`CharacterDamaged` attacker is `character`-typed** - the attacker binding was `entity`, so character/controller receiver methods and typed params rejected it; attackers are always player characters. The weapon binding stays `entity` (an item, matched by entity-typed asset refs).
-- `ShowStatusMessage` and 12 more gates persist their literal args
-- **Recursive chip/mod calls error instead of crashing** - Now a `WS020` error
+- **`CharacterDamaged` attacker is `character`-typed** - Was `entity`, which receiver methods and typed params rejected. The weapon binding stays `entity`.
+- **`ShowStatusMessage` and 12 more gates** - Literal args now persist.
+- **Recursive chip/mod calls error instead of crashing** - Now a `WS020` error.
 
 ### Editor / IDE
 
-- **Named-arg hovers only fire on the arg name** - in `delay = delay`, hovering the value showed the param docs instead of the symbol; the param hover now requires arg-name position (followed by a single `=`).
-- **Method/call hovers only fire on the actual access** - hovering a variable/let/param whose name matches an array method (`var sum = 0`) or a builtin receiver-method (`var Teleport = 0`) showed the method/call hover instead of the symbol's own declaration. Array-method hovers now require a `.method` access, and builtin call/method hovers require actual call/method position (`recv.method` or `name(`); a bare identifier hovers as itself.
+- **Named-arg hovers only fire on the arg name** - In `delay = delay`, hovering the value shows the symbol, not the param docs.
+- **Method/call hovers only fire on the actual access** - Array-method hovers require a `.method` access; builtin call/method hovers require `recv.method` or `name(`. A bare identifier (e.g. `var sum = 0`) hovers as itself.
 
 ## 0.10.1 - 2026-07-07
 
 ### Language / Compiler
 
-- **Asset references are `entity`-typed and usable as values** - `$Type/Name` now has type `entity` (was `any`), so `weapon == $BRItemBase/Weapon_Pickaxe` type-checks against an entity value (e.g. a `CharacterDamaged` weapon). As a value it materializes into the matching `*Reference` gate (`ItemReference`, `AudioReference`, `EntityTypeReference`, … chosen by asset type) — which holds the asset in its class/object field and outputs it as an entity wire — since assets can't be inlined into arbitrary ports like a Compare gate's input. Previously it errored (`WS004`).
-- **`DisplayText` gained an `easing` param** - the interpolation curve for `transition` (`"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"`), a property-only enum like `justify`. Animating a slot's position now eases instead of only running linearly.
+- **Asset references are `entity`-typed and usable as values** - `$Type/Name` is `entity` (was `any`), so `weapon == $BRItemBase/Weapon_Pickaxe` type-checks instead of erroring (`WS004`). As a value it materializes into the matching `*Reference` gate (`ItemReference`, `AudioReference`, `EntityTypeReference`, ... by asset type), which outputs the asset as an entity wire.
+- **`DisplayText` gained an `easing` param** - The interpolation curve for `transition` (`"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"`), a property-only enum like `justify`.
 
 ## 0.10.0 - 2026-07-07
 
 ### Bug Fixes
 
-- **`character` and `controller` wire directly** - no longer inserts a `GetFromEntity` adapter (an admin-only gate that got blocked on paste for non-admins, breaking every wire through it); the two types connect straight into each other's ports.
-- **Gate brick colours no longer double-darkened** - they were pre-multiplied by γ=2.2 for a linear decode the game doesn't do (it renders colour bytes as sRGB), so every gate rendered too dark. Now the intended sRGB values.
-- **Multi-byte string chars survive emit** - the lexer read each byte as its own `char`, mangling chars like `█`/`é` into garbage bytes; it now reads whole UTF-8 chars.
-- **Long templates no longer drop values** - `FormatText` has only 7 substitution inputs, so a template with `>7` `${...}` values silently dropped the extras; templates now split across chained `FormatText` gates.
-- **`on <local exec signal>` fires across handlers** - `emit sig` in one handler now triggers `on sig` in another, regardless of source order (the signal's binding was created after handlers lowered, so `on sig` was silently dropped).
-- **Lexer no longer panics on stray multi-byte chars** - a non-ASCII char outside a string (e.g. `▲`) hit a mid-codepoint byte-slice and crashed the LSP; now UTF-8-safe.
-- **`FindPlayer` is an exec gate returning `character`** - it has Exec/ExecOut ports and emits the found player's character; it was mis-declared as a pure gate returning `entity`.
+- **`character` and `controller` wire directly** - No more `GetFromEntity` adapter, an admin-only gate that got blocked on paste for non-admins.
+- **Gate brick colours no longer double-darkened** - Colours emit as the intended sRGB values instead of being pre-multiplied by γ=2.2.
+- **Multi-byte string chars survive emit** - The lexer reads whole UTF-8 chars, so `█`/`é` no longer mangle.
+- **Long templates no longer drop values** - `FormatText` has only 7 substitution inputs; templates with more `${...}` values split across chained gates.
+- **`on <local exec signal>` fires across handlers** - `emit sig` in one handler triggers `on sig` in another, regardless of source order.
+- **Lexer no longer panics on stray multi-byte chars** - A non-ASCII char outside a string (e.g. `▲`) is now UTF-8-safe instead of crashing the LSP.
+- **`FindPlayer` is an exec gate returning `character`** - Has Exec/ExecOut ports and emits the found player's character; was mis-declared pure returning `entity`.
 
 ### Editor / IDE
 
-- **`$` reference highlighting + hovers** - prefab (`$./x.brz`) and asset (`$Type/Name`) refs get TextMate scopes and hovers; prefab hovers show the resolved path and (in the LSP) whether the file exists.
-- **Prefab refs are navigable** - a resolvable `$./file.brz` is a clickable link / go-to-definition target (Ctrl/Cmd-click or F12 opens it).
-- **Missing prefab files warn** - the LSP flags a `$./file.brz` that isn't on disk, or lacks the `.brz` extension.
-- **Playground uploads `.brz` prefabs** - the sandbox has a Prefabs panel (upload button + drag-drop); uploaded files are stored as browser blobs (IndexedDB), offered by `$./` completion, and embedded at compile so `$./file.brz` works in the web playground, not just the CLI.
-- **Named-arg completion + hover work in multi-line calls** - `find_enclosing_call` scanned only the current line, so a call whose args span multiple lines lost param-name completion and param-type hovers on its continuation lines; it now scans the whole call (skipping strings/comments).
-- **Enum-valued args complete their values** - a named arg backed by a schema enum (e.g. DisplayText's `justify`) completes the enum's variant names (`Left` / `Center` / `Right`), auto-quoted when no quote is open yet.
+- **`$` reference highlighting + hovers** - Prefab (`$./x.brz`) and asset (`$Type/Name`) refs get TextMate scopes and hovers; prefab hovers show the resolved path and (in the LSP) whether the file exists.
+- **Prefab refs are navigable** - A resolvable `$./file.brz` is a clickable link / go-to-definition target (Ctrl/Cmd-click or F12).
+- **Missing prefab files warn** - The LSP flags a `$./file.brz` that isn't on disk or lacks the `.brz` extension.
+- **Playground uploads `.brz` prefabs** - A Prefabs panel (upload + drag-drop) stores files as browser blobs (IndexedDB), offers them in `$./` completion, and embeds them at compile.
+- **Named-arg completion + hover work in multi-line calls** - The enclosing-call scan covers the whole call (skipping strings/comments), not just the current line.
+- **Enum-valued args complete their values** - A named arg backed by a schema enum (e.g. `justify`) completes its variants (`Left` / `Center` / `Right`), auto-quoted when no quote is open.
 
 ### Language / Compiler
 
-- **Prefab references embed a `.brz` into `SpawnPrefab`** - `$./file.brz` (relative) / `$/abs.brz` (absolute) read the archive at compile and embed it content-addressed (brdb 0.7 `add_prefab`), setting the gate's `Prefab` path. `.brz` required (`WS019`); resolution is pluggable via `EmitOptions::prefab_resolver`.
+- **Prefab references embed a `.brz` into `SpawnPrefab`** - `$./file.brz` (relative) / `$/abs.brz` (absolute) embeds the archive content-addressed (brdb 0.7 `add_prefab`) and sets the gate's `Prefab` path. `.brz` required (`WS019`); resolution pluggable via `EmitOptions::prefab_resolver`.
 
 ## 0.9.0 - 2026-07-07
 
 ### New Builtins
 
-- **Split edge/change detectors** - `Edge(bool) -> {Rising, Falling: bool}`, `EdgeExec(float) -> {Rising, Falling: exec}`, `Changed(any) -> bool`, `Change(any) -> any`
+- **Split edge/change detectors** - `Edge(bool) -> {Rising, Falling: bool}`, `EdgeExec(float) -> {Rising, Falling: exec}`, `Changed(any) -> bool`, `Change(any) -> any`.
 
 ### Bug Fixes
 
-- `SpawnPrefab` gained the gate's `velocity` param (the `SpawnVelocity` input) - previously only settable via `SetVelocity` on the returned entity.
-- `SpawnPrefab()` compiles again
+- **`SpawnPrefab` gained a `velocity` param** - The gate's `SpawnVelocity` input.
+- **`SpawnPrefab()`** - Compiles again.
 
 ### Gate Catalog / Data
 
-- Gate inventory regenerated (314 -> 316 entries: the two exec detectors)
-- Fixed the plain Edge Detector's emit data mapping key (was missing `Type` in the class name, so its component data was never written).
+- **Gate inventory regenerated** - 314 -> 316 entries (the two exec detectors).
+- **Edge Detector emit mapping key fixed** - The class name was missing `Type`, so its component data was never written.
 
 ### Language / Compiler
 
-- **`exec =` named arg on chip and mod calls** - pass a trigger when calling exec chips/mods outside an exec context (previously typechecked but lowered as dead gates). The call also returns the completion exec as an `exec` result field: `await r.exec` / `on r.exec { }`.
-- **Import dependency pulling fixed** - imported declarations now pull same-file deps referenced from record/array literals, `emit` values, `await` exprs, and buffer inits; type aliases inline into imported `let`/`var`/`out`/`buffer`/`in` annotations (previously only chip/mod params).
-- **WS013 understands `emit`** - the unassigned-output check counts `emit x (= expr)` and plain assigns anywhere in the body, per-output.
-- **Named chip bodies capture top-level state** - free references to outer vars, arrays, buffers, and record bindings inside a named chip body now resolve against the caller's scope (previously they compiled as dead references).
+- **`exec =` named arg on chip and mod calls** - Pass a trigger when calling exec chips/mods outside an exec context. The call returns the completion exec as an `exec` result field: `await r.exec` / `on r.exec { }`.
+- **Import dependency pulling fixed** - Imports pull same-file deps in record/array literals, `emit` values, `await` exprs, and buffer inits; type aliases inline into imported `let`/`var`/`out`/`buffer`/`in` annotations, not just chip/mod params.
+- **WS013 understands `emit`** - The unassigned-output check counts `emit x (= expr)` and plain assigns anywhere in the body, per-output.
+- **Named chip bodies capture top-level state** - Free references to outer vars, arrays, buffers, and record bindings resolve against the caller's scope.
 
 ### Parser
 
-- **Multi-line array literals** - newlines allowed after `[`, around commas, and before `]`, with optional trailing comma - mirroring the call-arg rules. Covers top-level `array` initializers and runtime `foo = [...]` rebuilds.
+- **Multi-line array literals** - Newlines allowed after `[`, around commas, and before `]`, with optional trailing comma - mirroring call-arg rules. Covers top-level `array` initializers and runtime `foo = [...]` rebuilds.
 
 ### Editor / IDE
 
-- **Formatter indents multi-line array literals** - both formatters (native `format_wirescript`, prettier plugin) track `[`/`]` depth like `(`/`)`; delimiter scanning stops at `//` so comments no longer skew indentation.
-- **Formatter: one indent level per line** - a line opening several groups (`f(x, {`) indents its continuation once, not once per delimiter; the closing `})` returns to the opener's level.
-- **One "Wirescript" entry in the formatter picker** - the extension keeps its prettier formatter and sends `provideFormatting: false` so the LSP doesn't register a duplicate.
-- **Prefab path completion** - typing `$./` (or `$/`) completes `.brz` prefab references: the native LSP scans the document's directory; the wasm playground offers dragged-in files (new optional `prefabs_json` registry on `wirescript_compile` / `wirescript_completions`).
+- **Formatter indents multi-line array literals** - Both formatters (native, prettier plugin) track `[`/`]` depth like `(`/`)`; delimiter scanning stops at `//` so comments don't skew indentation.
+- **Formatter: one indent level per line** - A line opening several groups (`f(x, {`) indents its continuation once, not once per delimiter; the closing `})` returns to the opener's level.
+- **One "Wirescript" entry in the formatter picker** - The extension keeps its prettier formatter and sends `provideFormatting: false` so the LSP doesn't register a duplicate.
+- **Prefab path completion** - `$./` (or `$/`) completes `.brz` refs: the native LSP scans the document's directory; the wasm playground offers dragged-in files via a new optional `prefabs_json` registry.
 
 ## 0.8.0 - 2026-07-06
 
 ### New Builtins and Methods
 
-- **Chat / messaging** - `ctrl.ShowChatMessage(msg)` (a whisper only that player sees), `ctrl.ShowMessageBox(msg, title?)` (modal popup), and global `BroadcastChatMessage(msg)` / `BroadcastStatusMessage(msg, flash?)`. The old plugin-side whisper/broadcast is now fully expressible in wires.
-- **Audio** - `entity.PlayAudioAt($BrickOneShotAudioDescriptor/..., volume?, pitch?, innerRadius?, maxDistance?, spatialized?)` plays a one-shot at an entity (characters work), and `PlayGlobalAudio(audio, volume?, pitch?)` plays for everyone. The audio descriptor is a `$` asset reference inlined into the gate's data.
-- **Entity tags** - `entity.SetTag("...")` / `entity.GetTag() -> string` attach an arbitrary string to any entity and read it back (mark players with team/slot/role state; zones can filter on tags).
-- **`FindPlayer(name)`** - pure value gate: look up a player entity by name.
-- **`Change(input)`** - any-typed companion to `Edge`: pulses the input value through when it changes.
+- **Chat / messaging** - `ctrl.ShowChatMessage(msg)` (per-player whisper), `ctrl.ShowMessageBox(msg, title?)` (modal popup), and global `BroadcastChatMessage(msg)` / `BroadcastStatusMessage(msg, flash?)`.
+- **Audio** - `entity.PlayAudioAt($BrickOneShotAudioDescriptor/..., volume?, pitch?, innerRadius?, maxDistance?, spatialized?)` plays a one-shot at an entity (characters work); `PlayGlobalAudio(audio, volume?, pitch?)` plays for everyone. The descriptor is an inlined `$` asset reference.
+- **Entity tags** - `entity.SetTag("...")` / `entity.GetTag() -> string` attach an arbitrary string to any entity and read it back; zones can filter on tags.
+- **`FindPlayer(name)`** - Pure value gate looking up a player entity by name.
+- **`Change(input)`** - Any-typed companion to `Edge`: pulses the input value through when it changes.
 - **Quaternion raw components** - `Quat(x, y, z, w)`, `q.SplitQuat() -> {X, Y, Z, W}`, `a.QuatDot(b)`.
-- **Inventory family** - `char.AddInventoryItem(item)` / `SetInventoryItem(item, slot?)`, `AddInventoryBrick(brick, size?)` / `SetInventoryBrick(...)`, `AddInventoryEntity(entityType)` / `SetInventoryEntity(...)`, and `AddInventoryItemAdv` / `SetInventoryItemAdv` with per-item overrides (`damage`, `speed`, `scale`, `itemName`, `projectile`). Asset args are `$Type/Name` references, like `GiveWeapon`.
+- **Inventory family** - `char.AddInventoryItem(item)` / `SetInventoryItem(item, slot?)`, `AddInventoryBrick(brick, size?)` / `SetInventoryBrick(...)`, `AddInventoryEntity(entityType)` / `SetInventoryEntity(...)`, and `AddInventoryItemAdv` / `SetInventoryItemAdv` with overrides (`damage`, `speed`, `scale`, `itemName`, `projectile`). Asset args are `$Type/Name` references.
 
 ### New Events
 
-- **`CharacterDamaged(character, damage, attacker, attackerWeapon, attackerWeaponName)`** - a character took damage.
-- **`EntityZoneEntered` / `EntityZoneLeft` (`entity`)** and **`ProjectileZoneEntered` / `ProjectileZoneLeft` (`character`, `projectile`, `weapon`, `weaponName`)** - zone events beyond characters; the projectile events' `character` is the shooter.
+- **`CharacterDamaged(character, damage, attacker, attackerWeapon, attackerWeaponName)`** - A character took damage.
+- **`EntityZoneEntered` / `EntityZoneLeft` (`entity`)** and **`ProjectileZoneEntered` / `ProjectileZoneLeft` (`character`, `projectile`, `weapon`, `weaponName`)** - Zone events beyond characters; the projectile events' `character` is the shooter.
 
 ### Compiler / Output
 
-- **Generic asset-field emission** - gates whose data struct has a `class`/`object` field (PlayAudioAt's `AudioDescriptor`, the inventory gates' `Item`/`EntityType`/`BrickAsset`/`ProjectileOverride`) now register an inlined `$` asset reference in the world's external-asset table automatically; `GiveWeapon`'s hand-built special case is no longer the only path. _Like GiveWeapon, the new gates' binary encoding needs in-game verification._
+- **Generic asset-field emission** - Gates with a `class`/`object` data field (`AudioDescriptor`, `Item`, `EntityType`, `BrickAsset`, `ProjectileOverride`) register inlined `$` asset references in the world's external-asset table automatically. _Binary encoding needs in-game verification._
 
 ### Gate Catalog / Data
 
-- Gate inventory regenerated (288 -> 314 entries, 26 new classes; the messaging/tag/zone-event/quaternion/inventory gates above are wired into the language).
-- brdb component `_max` schema (286 structs) and `component_db.rs` (296 type mappings) regenerated from the same build's dump. The dump world only referenced 14 external assets, so `assets/external.rs` was left at the previous full catalog.
-- Deliberately not exposed as builtins: the `*Reference` gates (`$Type/Name` syntax covers them), `Convert`/`ColorConvert` (implicit coercions cover the use cases), and `AddInventoryEntry` (opaque nested entry struct; `GiveWeapon` covers it).
+- **Gate inventory regenerated** - 288 -> 314 entries (26 new classes); the messaging/tag/zone-event/quaternion/inventory gates are wired into the language.
+- **brdb data regenerated** - Component `_max` schema (286 structs) and `component_db.rs` (296 type mappings). `assets/external.rs` kept the previous full catalog (the dump referenced only 14 assets).
+- **Deliberately not exposed as builtins** - The `*Reference` gates (`$Type/Name` covers them), `Convert`/`ColorConvert` (implicit coercions cover them), and `AddInventoryEntry` (opaque nested struct; `GiveWeapon` covers it).
 
 ## 0.7.0 - 2026-07-05
 
 ### Language Features
 
-- **Scalar var type inference** - `var foo = ""` is a string var, `var n = 0` an int var, `var f = 1.5` a float var (also bools, negatives, and interpolated strings) - no annotation needed. A non-literal initializer refines the type from its expression (`var v = Vec(1.0, 2.0, 3.0)` is a `vector` var), same as buffers. Previously an unannotated var stayed `any`: every operator use failed with WS004 "no overload", and real mistakes (assigning a vector into an int var) passed silently - both now behave like the annotated form.
-- **Everything casts to string** - all variant-able primitives (numbers, floats, bools, vectors, rotators, colors, entities, characters, controllers, bricks, prefabs) coerce to `string` wherever one is expected: `let s: string = 5` is a cast, not a WS016 warning, and `..` concat accepts any of them on either side (`"hi " .. player`). Unannotated array vars also infer constructor elements (`var pts = [Vec(1.0, 1.0, 1.0)]` is `vector[]`).
-- **`Color()` returns `color`** - was `any`; matches `ColorSRGB`/`ColorHex`/`Blend`.
+- **Scalar var type inference** - `var foo = ""` is a string var, `var n = 0` an int var, `var f = 1.5` a float var (also bools, negatives, interpolated strings). A non-literal initializer refines from its expression (`var v = Vec(1.0, 2.0, 3.0)` is `vector`), same as buffers.
+- **Everything casts to string** - All variant-able primitives (numbers, floats, bools, vectors, rotators, colors, entities, characters, controllers, bricks, prefabs) coerce to `string`: `let s: string = 5` is a cast, not a WS016 warning, and `..` accepts any of them (`"hi " .. player`). Unannotated array vars also infer constructor elements (`var pts = [Vec(1.0, 1.0, 1.0)]` is `vector[]`).
+- **`Color()` returns `color`** - Was `any`; matches `ColorSRGB`/`ColorHex`/`Blend`.
 
 ### Constant Folding
 
-- **`Vec`/`Rotation`/`Color` on literal args fold to constants** - `var v = Vec(1.0, 2.0, 3.0)` bakes the value into the Variable gate's initial value (top-level constructor initializers were previously dropped to zero), and constant constructors are legal top-level array initializer elements: `array pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]` loads pre-populated.
-- **Folded constants inline into consumers** - in expressions, a constant `Vec(...)` is a literal, not a `MakeVector` gate: it lands directly in the consuming gate's component data (`v = Vec(...)` on the Var_Set, math operands, select branches, `arr.push(Vec(...))`). Consumers that can only take wired inputs (entity `SetLocation`/`Teleport`, `.x` component splits, chip inputs) get a real `Make*` gate materialized automatically, so a constant is never silently zeroed.
-- **Vars and arrays of every wire variant** - `var`/`static var` of `rotator` (zero), `quat` (identity), and `color` (opaque white) get type-matched initial values, and `rotator[]`/`quat[]`/`color[]` arrays back onto the game's typed array variants (`WireGraphRotatorArray`/`QuatArray`/`LinearColorArray`) instead of falling back to doubles.
+- **`Vec`/`Rotation`/`Color` on literal args fold to constants** - `var v = Vec(1.0, 2.0, 3.0)` bakes into the Variable gate's initial value, and constant constructors are legal top-level array initializer elements (loads pre-populated).
+- **Folded constants inline into consumers** - A constant `Vec(...)` lands as a literal in the consuming gate's data (`Var_Set`, math operands, select branches, `arr.push`); wire-only consumers (`SetLocation`/`Teleport`, component splits, chip inputs) get a `Make*` gate materialized, never silently zeroed.
+- **Vars and arrays of every wire variant** - `rotator` (zero), `quat` (identity), and `color` (opaque white) vars get type-matched initial values; `rotator[]`/`quat[]`/`color[]` back onto the typed array variants (`WireGraphRotatorArray`/`QuatArray`/`LinearColorArray`) instead of doubles.
 
 ### Dependencies
 
-- Requires `brdb` 0.6.3 - the wire variant gained `Rotator`/`Quat`/`LinearColor` members (plus the matching typed array variants) mirroring the current game schema; only `WireGraphEnumWrapper` remains unmapped (no enum-typed vars in the language yet).
+- **Requires `brdb` 0.6.3** - The wire variant gained `Rotator`/`Quat`/`LinearColor` members plus matching typed array variants; only `WireGraphEnumWrapper` remains unmapped.
 
 ## 0.6.0 - 2026-06-30
 
-- Gate inventory (285 -> 288: new `Convert` / `FindPlayer` gates), the brdb component `_max` schema (258 structs), and `component_db.rs`.
-- **Sweep upgrade** - the raycast `Sweep(...)` gate gained per-channel detection flags: optional `detectBricks`, `detectPlayers1`–`detectPlayers4`, `detectPhysics`, `detectMap`, and `ignoreOwningGrid`.
+- **Data regenerated** - Gate inventory (285 -> 288: new `Convert` / `FindPlayer` gates), the brdb component `_max` schema (258 structs), and `component_db.rs`.
+- **Sweep upgrade** - The raycast `Sweep(...)` gate gained optional per-channel flags: `detectBricks`, `detectPlayers1`–`detectPlayers4`, `detectPhysics`, `detectMap`, and `ignoreOwningGrid`.
 
 ## 0.5.0 - 2026-06-29
 
 ### Language Features
 
-- **`quat` type + rotation/quaternion builtins** - a new `quat` primitive (quaternion, distinct from the euler `rotator`) plus concise receiver methods: `dir.ToRotation()`, `q.ToDirection()`, `v.Rotate(q)`, `q.Invert()`, `from.RotationTo(to)`, `a.AngleTo(b)`, `a.Slerp(b, alpha)`, `axis.RotationByAngle(angle)`, `q.ToAxisAngle()`, plus `Rotation(p, y, r)` / `r.ToEuler()` for the euler rotator.
-- **sRGB / hex color builtins** - `ColorSRGB(r, g, b, a)` and `ColorHex("#rrggbb")` constructors, and `c.ToSRGB()` / `c.ToHex()` / `a.Blend(b, alpha)` receivers.
-- **`Cycle(count)` / `Toggle()`** - stateful exec value gates (advance a counter / flip a bool each exec pulse).
-- **User definitions shadow builtins** - a `chip`/`mod`/`fn` named like a builtin (e.g. `chip Toggle`) now takes precedence at the call site instead of resolving to the builtin.
-- **Asset references** - `$AssetType/AssetName` (e.g. `$BRItemBase/Weapon_Pistol`) references an external asset the world embeds by name. Lexer/parser/typecheck support plus editor completion: typing `$` offers the asset types, `$Type/` offers that type's asset names (sourced from the brdb external-asset catalog). Assets register into the world's external-asset table and encode as an index on emit.
-- **`HasRole` / `GiveWeapon`** - `ctrl.HasRole("Admin") -> bool` (role is a config string); `char.GiveWeapon($BRItemBase/Weapon_Pistol, slot)` sets an inventory slot to an item asset (the first asset-consuming gate - it registers the weapon and builds the nested `EntryPlan`). _The give-weapon binary encoding needs in-game verification._
+- **`quat` type + rotation/quaternion builtins** - A `quat` primitive (distinct from the euler `rotator`) plus `dir.ToRotation()`, `q.ToDirection()`, `v.Rotate(q)`, `q.Invert()`, `from.RotationTo(to)`, `a.AngleTo(b)`, `a.Slerp(b, alpha)`, `axis.RotationByAngle(angle)`, `q.ToAxisAngle()`, and `Rotation(p, y, r)` / `r.ToEuler()` for the euler rotator.
+- **sRGB / hex color builtins** - `ColorSRGB(r, g, b, a)` and `ColorHex("#rrggbb")` constructors; `c.ToSRGB()` / `c.ToHex()` / `a.Blend(b, alpha)` receivers.
+- **`Cycle(count)` / `Toggle()`** - Stateful exec value gates (advance a counter / flip a bool each exec pulse).
+- **User definitions shadow builtins** - A `chip`/`mod`/`fn` named like a builtin (e.g. `chip Toggle`) takes precedence at the call site.
+- **Asset references** - `$AssetType/AssetName` (e.g. `$BRItemBase/Weapon_Pistol`) references an external asset embedded by name, encoded as an external-asset-table index on emit. Completion: `$` offers asset types, `$Type/` that type's names (from the brdb catalog).
+- **`HasRole` / `GiveWeapon`** - `ctrl.HasRole("Admin") -> bool` (role is a config string); `char.GiveWeapon($BRItemBase/Weapon_Pistol, slot)` sets an inventory slot to an item asset (builds the nested `EntryPlan`). _Binary encoding needs in-game verification._
 
 ### Gate Catalog / Output
 
-- Refreshed the gate inventory added 26 new gate classes; the rotation/quaternion, sRGB-color, and cycle/toggle ones above are now wired into the language. Component data structs for all of them are registered for `.brdb` output.
+- **Gate inventory refreshed** - Adds 26 new gate classes; the rotation/quaternion, sRGB-color, and cycle/toggle ones are wired into the language, with component data structs registered for `.brdb` output.
 
 ## 0.4.0 - 2026-06-28
 
 ### Language Features
 
-- **Pre-initialized arrays** - `array foo: int[] = [1, 2, -3]` declares an array with constant initial contents. At the top level every element must be a literal (numbers incl. negatives, strings, bools); the values are written straight into the array gate, so it loads pre-populated with no runtime setup. A non-literal element at the top level is now a clear error instead of being silently dropped.
-- **Inferred array-typed vars** - `var foo = [1, 2, 3]` (no annotation) infers `int[]` from the literal and lowers to the same array gate as an `array` declaration; the var indexes and iterates as a real array.
-- **Runtime array assignment + spread** - inside an exec handler, `foo = [a, 1, ...other, 5]` rebuilds an array variable's contents: it desugars to clear -> push each item -> append each `...spread`, so elements can be any runtime value and a spread splices another array in place. Spreads (`...`) are now parseable inside `[ ... ]` (`ArrayElem::Item` / `ArrayElem::Spread`).
-- **Array methods, one source of truth** - every array method now derives from a single `catalog::arrays` table: completion offers the full set on any array-typed value (incl. `var ids: string[]`), and return types are derived from each method's gate output ports. `find` returns `{ Index, Found, Value }` that auto-unwraps to the int Index; `pop`/`min`/`max` expose `.IsEmpty`, and `insert`/`swap`/`slice` expose `.OutOfBounds`.
-- **`GetAim` replaces `AimOrigin`/`AimDirection`** - a character's camera/aim is now one gate returning a record: `char.GetAim().Origin` / `.Direction`. Reading both fields shares a single GetAim gate instead of emitting two. The separate `AimOrigin`/`AimDirection` calls are removed.
-- **Chat command config** - `on ChatCommand(...)` now accepts config args that set the gate's command name and help text. String literals fill `CommandName` then `HelpText` in order (`on ChatCommand("greet", "Greets the player")`), and the description can be named (`Description = "..."`). Bare identifiers still bind the event's data outputs (`controller`, `arguments`), so config and bindings can be mixed: `on ChatCommand("greet", "Greets the player", player, args) { ... }`.
+- **Pre-initialized arrays** - `array foo: int[] = [1, 2, -3]` writes literal contents (numbers incl. negatives, strings, bools) straight into the array gate, loading pre-populated. A non-literal top-level element is a clear error.
+- **Inferred array-typed vars** - `var foo = [1, 2, 3]` infers `int[]` and lowers to the same array gate as an `array` declaration; it indexes and iterates as a real array.
+- **Runtime array assignment + spread** - In an exec handler, `foo = [a, 1, ...other, 5]` rebuilds an array var: clear -> push each item -> append each `...spread`. Elements can be any runtime value; a spread splices another array in place.
+- **Array methods, one source of truth** - Every method derives from a single `catalog::arrays` table: completion offers the full set on any array-typed value, return types come from gate output ports. `find` returns `{ Index, Found, Value }` (auto-unwraps to Index); `pop`/`min`/`max` expose `.IsEmpty`; `insert`/`swap`/`slice` expose `.OutOfBounds`.
+- **`GetAim` replaces `AimOrigin`/`AimDirection`** - A character's camera/aim is one gate returning `char.GetAim().Origin` / `.Direction`; reading both fields shares a single gate. The separate calls are removed.
+- **Chat command config** - `on ChatCommand("greet", "Greets the player", player, args)`: string literals fill `CommandName` then `HelpText` in order (or named `Description = "..."`), and bare identifiers still bind the event outputs (`controller`, `arguments`).
 
 ### Bug Fixes
 
-- **Vector components on stored values** - `.x`/`.y`/`.z` (and color `.r`/`.g`/`.b`/`.a`) now work on a vector held in a variable or `let` binding, not just an inline `Vec(...)`. Previously `let s = a + b; s.x` returned the whole vector instead of the component; the field-access lowering now falls through to the SplitVector/SplitColor gate for component names on a local.
-- **`Vec(...)` literal arguments** - constant `Vec(1.0, 2.0, 3.0)` components are no longer dropped at emit (the `MakeVector` gate was missing its component-data struct mapping, so literal X/Y/Z defaulted to `0`). Vectors built from literals now hold their real values.
+- **Vector components on stored values** - `.x`/`.y`/`.z` (and color `.r`/`.g`/`.b`/`.a`) work on a vector held in a variable or `let` binding via the SplitVector/SplitColor gates, not just an inline `Vec(...)`.
+- **`Vec(...)` literal arguments** - Constant components are no longer dropped to `0` at emit; `MakeVector` gained its component-data mapping.
 
 ### Compiler / Output
 
-- **Gate defaults resolve from component_db** - unspecified data-struct fields are no longer force-written with a schema type-zero; they're omitted so the brdb writer fills them from component_db's `STRUCT_DEFAULTS`. Fixes DisplayText emitting `FontSize = 0` / `Lifetime = 0`; they now resolve to the game defaults (`16` / `5`).
+- **Gate defaults resolve from component_db** - Unspecified data fields are omitted so the brdb writer fills them from `STRUCT_DEFAULTS`; DisplayText's `FontSize`/`Lifetime` now resolve to the game defaults (`16` / `5`) instead of `0`.
 
 ## 0.3.0 - 2026-06-27
 
 ### Language Features
 
-- **String variables** - `var`/`static var` of type `string` are now stored in a Variable gate (the WireGraphVariant gained a `str` member). The `WS018` "strings can't be stored in vars" diagnostic is gone.
-- **Native string equality** - `==` / `!=` on strings lower directly to the `CompareEqual` / `CompareNotEqual` gates, which now accept string-typed variant wires. Removed the old `contains(a,b) && length(a) == length(b)` workaround.
-- **Vector arithmetic** - `+ - * / %` operate component-wise on two `vector` operands, and mixing a vector with a scalar (`v * 2.0`, `10.0 * v`, `v / 4`) broadcasts the scalar across the components - all on the same `MathAdd`/`Subtract`/`Multiply`/`Divide`/`Modulo` gates (their inputs accept the vector, `f64` and `i64` wire variants). The dedicated `Scale` helper still works too.
-- **Any-variant variables** - a `var` can hold any WireGraphVariant member (`int`, `float`, `bool`, `string`, `vector`, and object types). Typed vars are emitted with a type-matched initial value instead of always defaulting to a number.
-- **Typed arrays** - an array's declared element type now selects the backing `WireGraphArrayVariant` member (`int` -> Int64, `float` -> Double, plus Bool/String/Vector/Object arrays), so elements keep their declared type instead of all being stored as doubles.
+- **String variables** - `var`/`static var` of type `string` store in a Variable gate (the WireGraphVariant gained a `str` member). The `WS018` "strings can't be stored in vars" diagnostic is gone.
+- **Native string equality** - `==` / `!=` on strings lower directly to the `CompareEqual` / `CompareNotEqual` gates. The `contains(a,b) && length(a) == length(b)` workaround is removed.
+- **Vector arithmetic** - `+ - * / %` operate component-wise on two vectors, and a scalar operand (`v * 2.0`, `10.0 * v`, `v / 4`) broadcasts - all on the same `MathAdd`/`Subtract`/`Multiply`/`Divide`/`Modulo` gates. The `Scale` helper still works.
+- **Any-variant variables** - A `var` can hold any WireGraphVariant member (`int`, `float`, `bool`, `string`, `vector`, object types); typed vars get a type-matched initial value instead of a number default.
+- **Typed arrays** - The declared element type selects the backing `WireGraphArrayVariant` member (`int` -> Int64, `float` -> Double, plus Bool/String/Vector/Object), so elements keep their declared type.
 
 ### Gate Catalog
 
-- **Regenerated inventory** - `data/logic_gate_inventory.simple.json` rebuilt from the latest in-game dump via a new checked-in generator (`scripts/gen_inventory.mjs`). Adds 76 gate classes (ArrayVar exec gates, new Gamemode/Controller/Character gates, string `ParseInt`/`ParseNumber`, reference gates) and gives 86 previously-`any` physical-brick ports concrete types. 175 -> 260 entries.
-- **Refreshed brdb component tables** - `brdb` `component_db.rs` regenerated from the same dump so the new gates can be written (emit registers their component types). The removed `Gamemode_EndRound` gate is gone.
+- **Regenerated inventory** - Rebuilt from the in-game dump via a new checked-in generator (`scripts/gen_inventory.mjs`): adds 76 gate classes (ArrayVar exec, Gamemode/Controller/Character, string `ParseInt`/`ParseNumber`, reference gates) and types 86 previously-`any` ports. 175 -> 260 entries.
+- **Refreshed brdb component tables** - `component_db.rs` regenerated from the same dump so the new gates emit; the removed `Gamemode_EndRound` gate is gone.
 
 ### New Builtins and Methods
 
-- **Array methods** - `insert`, `find`, `sort(desc?)`, `reverse`, `sum`, `min`, `max`, `average`, `swap`, `fill`, `resize`, `append`, `copyFrom`, `slice`, `fillFromPlayers`, `fillFromTeam` joined the existing `push`/`pop`/`length`/`remove`/`clear`/`shuffle`. Every ArrayVar gate is now reachable.
-- **Easing** - `Easing(a, b, blend, fn?, dir?)` and `Tween(target, duration, fn?, dir?)`, with easing function/direction passed as an int or an enum-name literal (`"Quad"`, `"InOut"`, ...) resolved against the engine's `EBREasingFunction`/`EBREasingDirection` enums.
-- **Timer** - `Timer(limit, restart?, pause?, resume?)` function-call instance returning `{ Time: float, Expired: exec }`; the controls are optional exec inputs and `Expired` works with `on`/`await`.
+- **Array methods** - `insert`, `find`, `sort(desc?)`, `reverse`, `sum`, `min`, `max`, `average`, `swap`, `fill`, `resize`, `append`, `copyFrom`, `slice`, `fillFromPlayers`, `fillFromTeam` join `push`/`pop`/`length`/`remove`/`clear`/`shuffle`. Every ArrayVar gate is reachable.
+- **Easing** - `Easing(a, b, blend, fn?, dir?)` and `Tween(target, duration, fn?, dir?)`; function/direction pass as an int or enum-name literal (`"Quad"`, `"InOut"`, ...) resolved against the engine's `EBREasingFunction`/`EBREasingDirection` enums.
+- **Timer** - `Timer(limit, restart?, pause?, resume?)` returns `{ Time: float, Expired: exec }`; the controls are optional exec inputs and `Expired` works with `on`/`await`.
 - **String parsing** - `ParseInt(s) -> int` and `ParseNumber(s) -> float` (also `s.ParseInt()` / `s.ParseNumber()`).
 - **Controller** - `GetUserName`, `GetUserId`, `GetDisplayName`, `IsTrusted`, `HasPermission`, `SetCanRespawn`, `SetTeamPinned`.
 - **Character** - `GetDamage`, `SetDamage`, `IncDamage`, `SetTempPermission`.
 - **Entity** - `SetFrozen`.
-- **Gamemode** - `PlayerWins` / `TeamWins` (the new way to end a round; the imperative `EndRound` gate and builtin were removed), `GetCurrentRound`, `SetTeam`, `GetTeamName`, `GetTeamLeaderboardValue` / `SetTeamLeaderboardValue` / `IncrementTeamLeaderboardValue`.
+- **Gamemode** - `PlayerWins` / `TeamWins` (replace the removed imperative `EndRound` gate and builtin), `GetCurrentRound`, `SetTeam`, `GetTeamName`, `GetTeamLeaderboardValue` / `SetTeamLeaderboardValue` / `IncrementTeamLeaderboardValue`.
 - **Misc** - `PrintToConsole`, `DeltaTime`, `ServerUptime`, `NearlyEqual`, `Dampen`.
 
 ### Compiler / Output
 
-- **Prefab output** - Compiled programs now emit a Brickadia **prefab** (`type: "Prefab"` with a `Meta/Prefab.json` carrying brick bounds computed from the microchip shell) instead of a world, so the `.brz` pastes like a native copied selection (Ctrl+V) with a correct preview.
-- **Loads on current builds** - A compiled bundle now embeds only the component data structs the program actually uses, plus their transitive schema dependencies, and writes them dependency-first (a referenced struct is always defined before the struct using it) - matching how the game writes its own bundles. This replaces embedding the full gate catalog, which recent builds reject (`While building schema: While reading struct count` -> "failed to capture thumbnail / cache prefab"). Real programs stay well within the game's per-schema struct limit and load again.
+- **Prefab output** - Compiled programs emit a Brickadia prefab (`type: "Prefab"` + `Meta/Prefab.json` with brick bounds from the microchip shell) instead of a world, so the `.brz` pastes like a native copied selection (Ctrl+V) with a correct preview.
+- **Loads on current builds** - A bundle embeds only the component structs the program uses plus transitive schema deps, written dependency-first - matching game bundles. Replaces the full-catalog embed recent builds reject; real programs stay within the per-schema struct limit.
 
-## 0.2.0 - 2026-05-15
-
+## 0.2.0
 ### Language Features
 
 - **`emit target = expr`** - Set output value and fire exec in one statement. Works in both pure and exec contexts.
@@ -388,8 +385,7 @@
 - `projects/tests/src/` - New in-game test suite: `test_await_emit.ws`, `test_variables.ws`, `test_operators.ws`, `test_control_flow.ws`, `test_chips_mods.ws`, `test_strings.ws`.
 - `crates/wirescript/tests/` - Integration tests: `await_test.rs`, `emit_value.rs`, `local_exec.rs`.
 
-## 0.1.0 - 2026-05-07
-
+## 0.1.0
 ### Language Features
 
 - **Records & tuples** - User-defined record types (`type Point = { x: int, y: int }`), record literals, destructuring (`let { x, y } = p`), spread operator (`{ ...p, y: 99 }`), tuple types and literals
@@ -429,8 +425,7 @@
 - Fix array `.length()` / `.pop()` returning `Any` type
 - Fix string wire port emits with literal variant values
 
-## 0.0.0 - 2026-04-30
-
+## 0.0.0
 ### Language Features
 
 - **Standalone chip instantiation** - Named chips with `-> (outputs)` now compile to real child microchips, one per call site. Cross-chip wires resolve automatically.

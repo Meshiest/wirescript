@@ -38,8 +38,8 @@ pub(super) enum Binding {
     Input(NodeRecord),
     Output(NodeRecord),
     EventParam(PortRef),
-    Chip(Box<ChipDecl>),
-    Namespace(HashMap<String, ChipDecl>),
+    Chip(std::sync::Arc<ChipDecl>),
+    Namespace(HashMap<String, std::sync::Arc<ChipDecl>>),
     Record(HashMap<crate::intern::Sym, Binding>),
 }
 
@@ -310,14 +310,14 @@ impl<'a> LowerCtx<'a> {
             })
     }
 
-    pub(super) fn lookup_chip(&self, name: &str) -> Option<&ChipDecl> {
+    pub(super) fn lookup_chip(&self, name: &str) -> Option<&std::sync::Arc<ChipDecl>> {
         match self.scope.get(name) {
             Some(Binding::Chip(c)) => Some(c),
             _ => None,
         }
     }
 
-    pub(super) fn lookup_ns_chip(&self, ns: &str, name: &str) -> Option<&ChipDecl> {
+    pub(super) fn lookup_ns_chip(&self, ns: &str, name: &str) -> Option<&std::sync::Arc<ChipDecl>> {
         match self.scope.get(ns) {
             Some(Binding::Namespace(members)) => members.get(name),
             _ => None,

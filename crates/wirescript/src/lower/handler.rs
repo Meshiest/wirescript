@@ -358,7 +358,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     for (i, pname) in h.params.iter().enumerate() {
         if let Some(data) = evt.data.get(i) {
             ctx.scope.insert(
-                pname.clone(),
+                &pname,
                 Binding::EventParam(port_ref(event_node, data.port)),
             );
         }

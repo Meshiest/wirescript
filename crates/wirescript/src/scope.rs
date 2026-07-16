@@ -80,8 +80,12 @@ impl<V> Scope<V> {
         None
     }
 
-    pub fn insert(&mut self, key: String, value: V) -> Option<V> {
-        let sym = crate::intern::intern(&key);
+    /// Takes `&str` deliberately: keys are interned, so an owned `String`
+    /// would be allocated (or moved) only to be dropped — hot call paths
+    /// (per-inlined-call scope setup) were paying one dead allocation per
+    /// binding.
+    pub fn insert(&mut self, key: &str, value: V) -> Option<V> {
+        let sym = crate::intern::intern(key);
         self.frames.last_mut().unwrap().entries.insert(sym, value)
     }
 
@@ -96,6 +100,12 @@ impl<V> Scope<V> {
     /// Iterate all entries across all frames (newest first).
     pub fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
         self.frames.iter().rev().flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
+    }
+
+    /// Like [`iter`], but yields the interned key — the alloc-free form for
+    /// callers that re-insert entries into another scope.
+    pub fn iter_syms(&self) -> impl Iterator<Item = (Sym, &V)> {
+        self.frames.iter().rev().flat_map(|f| f.entries.iter().map(|(k, v)| (*k, v)))
     }
 
     /// Iterate only the module-global (ROOT) frame — the outermost scope.
@@ -127,9 +137,9 @@ mod tests {
     #[test]
     fn lookup_walks_up() {
         let mut s = Scope::new();
-        s.insert("x".into(), 1);
+        s.insert("x", 1);
         s.push(ScopeTag::BLOCK);
-        s.insert("y".into(), 2);
+        s.insert("y", 2);
         assert_eq!(s.get("x"), Some(&1));
         assert_eq!(s.get("y"), Some(&2));
     }
@@ -137,9 +147,9 @@ mod tests {
     #[test]
     fn inner_shadows_outer() {
         let mut s = Scope::new();
-        s.insert("x".into(), 1);
+        s.insert("x", 1);
         s.push(ScopeTag::BLOCK);
-        s.insert("x".into(), 2);
+        s.insert("x", 2);
         assert_eq!(s.get("x"), Some(&2));
         s.pop();
         assert_eq!(s.get("x"), Some(&1));
@@ -149,7 +159,7 @@ mod tests {
     fn pop_discards() {
         let mut s = Scope::new();
         s.push(ScopeTag::BLOCK);
-        s.insert("x".into(), 1);
+        s.insert("x", 1);
         s.pop();
         assert_eq!(s.get("x"), None);
     }
@@ -157,7 +167,7 @@ mod tests {
     #[test]
     fn get_mut_modifies_parent() {
         let mut s = Scope::new();
-        s.insert("x".into(), 1);
+        s.insert("x", 1);
         s.push(ScopeTag::BLOCK);
         *s.get_mut("x").unwrap() = 99;
         s.pop();
@@ -167,11 +177,11 @@ mod tests {
     #[test]
     fn iter_within_stops_at_module() {
         let mut s: Scope<&str> = Scope::new();
-        s.insert("root_var".into(), "a");
+        s.insert("root_var", "a");
         s.push(ScopeTag::MODULE);
-        s.insert("mod_out".into(), "b");
+        s.insert("mod_out", "b");
         s.push(ScopeTag::BLOCK);
-        s.insert("block_let".into(), "c");
+        s.insert("block_let", "c");
 
         let within: Vec<_> = s.iter_within(ScopeTag::MODULE).map(|(k, _)| k).collect();
         assert!(within.contains(&"mod_out"));
@@ -182,11 +192,11 @@ mod tests {
     #[test]
     fn iter_within_union_stops_at_nearest() {
         let mut s: Scope<i32> = Scope::new();
-        s.insert("a".into(), 1);
+        s.insert("a", 1);
         s.push(ScopeTag::MODULE);
-        s.insert("b".into(), 2);
+        s.insert("b", 2);
         s.push(ScopeTag::BLOCK);
-        s.insert("c".into(), 3);
+        s.insert("c", 3);
 
         let within: Vec<_> = s.iter_within(ScopeTag::MODULE | ScopeTag::BLOCK)
             .map(|(k, _)| k).collect();

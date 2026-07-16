@@ -217,16 +217,16 @@ pub(super) fn lower_chip_call_inline(
 
     ctx.scope.push(crate::scope::ScopeTag::MODULE);
     for (name, rec) in ref_bindings {
-        ctx.scope.insert(name, Binding::Var(rec));
+        ctx.scope.insert(&name, Binding::Var(rec));
     }
     for (name, rec) in input_bindings {
-        ctx.scope.insert(name, Binding::Input(rec));
+        ctx.scope.insert(&name, Binding::Input(rec));
     }
     for (name, port, _ty) in val_bindings {
-        ctx.scope.insert(name, Binding::Local(LocalRecord { port }));
+        ctx.scope.insert(&name, Binding::Local(LocalRecord { port }));
     }
     for (name, fields) in record_bindings {
-        ctx.scope.insert(name, Binding::Record(fields));
+        ctx.scope.insert(&name, Binding::Record(fields));
     }
 
     // Apply destructuring patterns: for each param with a pattern, look up
@@ -255,7 +255,7 @@ pub(super) fn lower_chip_call_inline(
                         for (i, name) in names.iter().enumerate() {
                             if let Some(port) = outputs.get(i) {
                                 ctx.scope.insert(
-                                    name.clone(),
+                                    &name,
                                     Binding::Local(LocalRecord {
                                         port: port_ref(node.id, crate::intern::resolve(port.name)),
                                     }),
@@ -686,11 +686,11 @@ fn build_chip_module(
     // chip's own module lets `inline_orphan_literals` fold it into its consumers
     // as inline gate data (fewer gates) rather than a separate constant brick.
     let mut seen = crate::collections::HashSet::default();
-    let inherited: Vec<(String, Binding)> = ctx
+    let inherited: Vec<(crate::intern::Sym, Binding)> = ctx
         .scope
-        .iter()
-        .filter(|(name, _)| seen.insert(name.to_string()))
-        .map(|(name, b)| (name.to_string(), b.clone()))
+        .iter_syms()
+        .filter(|(name, _)| seen.insert(*name))
+        .map(|(name, b)| (name, b.clone()))
         .collect();
     for (name, binding) in inherited {
         // A chip body can't target the enclosing module's `out`s, and inheriting
@@ -714,10 +714,10 @@ fn build_chip_module(
             let new_id = child_ctx.add_gate(opts);
             child_ctx
                 .scope
-                .insert(name, Binding::Local(LocalRecord { port: new_id.port(local.port.port) }));
+                .insert_sym(name, Binding::Local(LocalRecord { port: new_id.port(local.port.port) }));
             continue;
         }
-        child_ctx.scope.insert(name, binding);
+        child_ctx.scope.insert_sym(name, binding);
     }
 
     for inp in &chip_decl.inputs {
@@ -800,11 +800,11 @@ fn build_chip_module(
             }
             child_ctx
                 .scope
-                .insert(inp.name.clone(), Binding::Record(record_fields));
+                .insert(&inp.name, Binding::Record(record_fields));
         } else if matches!(&inp.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
             if let Some(captured) = caller_captures.get(&inp.name) {
                 child_ctx.scope.insert(
-                    inp.name.clone(),
+                    &inp.name,
                     Binding::Var(VarRecord {
                         node_id: captured.node_id,
                         inner_type: captured.inner_type.clone(),
@@ -827,7 +827,7 @@ fn build_chip_module(
                     chip_decl.range.clone(),
                 );
                 child_ctx.scope.insert(
-                    inp.name.clone(),
+                    &inp.name,
                     Binding::Var(VarRecord {
                         node_id,
                         inner_type: inner,
@@ -849,7 +849,7 @@ fn build_chip_module(
                 chip_decl.range.clone(),
             );
             child_ctx.scope.insert(
-                inp.name.clone(),
+                &inp.name,
                 Binding::Input(NodeRecord { node_id, ty: t }),
             );
         }
@@ -863,7 +863,7 @@ fn build_chip_module(
             chip_decl.range.clone(),
         );
         child_ctx.scope.insert(
-            crate::lower::context::output_scope_key(&out.name),
+            &crate::lower::context::output_scope_key(&out.name),
             Binding::Output(NodeRecord { node_id, ty: t }),
         );
     }

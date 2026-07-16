@@ -93,7 +93,7 @@ impl Scope {
     }
     /// Declare in the top-most frame. Returns the prior info if any.
     pub fn declare(&mut self, name: &str, info: SymbolInfo) -> Option<SymbolInfo> {
-        self.inner.insert(name.to_string(), info)
+        self.inner.insert(name, info)
     }
     /// Mutate an already-declared symbol's type (used to refine buffer
     /// types after their RHS infers).

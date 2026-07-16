@@ -80,7 +80,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
-                        ns_decls.insert(c.name.clone(), c.clone());
+                        ns_decls.insert(c.name.clone(), std::sync::Arc::new(c.clone()));
                         // A namespaced mod's body also calls its SIBLING mods by
                         // bare name (`drawCardBg(...)`, not `card.drawCardBg`);
                         // register them so those calls resolve when the body is
@@ -89,7 +89,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                         // binding below.)
                         if ctx.scope.get(&c.name).is_none() {
                             ctx.scope
-                                .insert(c.name.clone(), Binding::Chip(Box::new(c.clone())));
+                                .insert(&c.name, Binding::Chip(std::sync::Arc::new(c.clone())));
                         }
                     }
                     // A namespaced (`import * as ns`) mod's body references its
@@ -123,7 +123,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 lower_buffer_body(ctx, b);
             }
             ctx.scope
-                .insert(ns.name.clone(), Binding::Namespace(ns_decls));
+                .insert(&ns.name, Binding::Namespace(ns_decls));
         }
     }
 }
@@ -182,13 +182,13 @@ pub(super) fn lower_chip_decl(ctx: &mut LowerCtx, d: &ChipDecl) {
         .any(|p| matches!(&p.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }));
     if d.inline || has_ref_params {
         ctx.scope
-            .insert(d.name.clone(), Binding::Chip(Box::new(d.clone())));
+            .insert(&d.name, Binding::Chip(std::sync::Arc::new(d.clone())));
         return;
     }
 
     // Standalone chips: register for instantiation at call sites.
     ctx.scope
-        .insert(d.name.clone(), Binding::Chip(Box::new(d.clone())));
+        .insert(&d.name, Binding::Chip(std::sync::Arc::new(d.clone())));
 }
 
 pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
@@ -222,7 +222,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         let record = lower_record_lit(ctx, fields);
         match &d.binding {
             LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(name.clone(), Binding::Record(record));
+                ctx.scope.insert(&name, Binding::Record(record));
                 return;
             }
             LetBinding::RecordDestruct {
@@ -245,7 +245,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     {
         match &d.binding {
             LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(name.clone(), Binding::Record(src));
+                ctx.scope.insert(&name, Binding::Record(src));
                 return;
             }
             LetBinding::RecordDestruct {
@@ -263,7 +263,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     if let Some(Binding::Record(src)) = resolve_field_chain(ctx, &d.value).cloned() {
         match &d.binding {
             LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(name.clone(), Binding::Record(src));
+                ctx.scope.insert(&name, Binding::Record(src));
                 return;
             }
             LetBinding::RecordDestruct {
@@ -287,7 +287,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     {
         match &d.binding {
             LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(name.clone(), Binding::Record(record));
+                ctx.scope.insert(&name, Binding::Record(record));
             }
             LetBinding::RecordDestruct {
                 fields: destruct_fields,
@@ -327,7 +327,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 }
                 match &d.binding {
                     LetBinding::Ident { name, .. } => {
-                        ctx.scope.insert(name.clone(), Binding::Record(record));
+                        ctx.scope.insert(&name, Binding::Record(record));
                     }
                     LetBinding::RecordDestruct {
                         fields: destruct_fields,
@@ -345,7 +345,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     match &d.binding {
         LetBinding::Ident { name, .. } => {
             ctx.scope
-                .insert(name.clone(), Binding::Local(LocalRecord { port: rhs_port }));
+                .insert(&name, Binding::Local(LocalRecord { port: rhs_port }));
         }
         LetBinding::Tuple { names, .. } | LetBinding::Record { names, .. } => {
             let source_node = ctx.builder.module.nodes.get(&rhs_port.node_id).cloned();
@@ -353,7 +353,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 for (i, name) in names.iter().enumerate() {
                     if let Some(port) = node.ports.outputs.get(i) {
                         ctx.scope.insert(
-                            name.clone(),
+                            &name,
                             Binding::Local(LocalRecord {
                                 port: port_ref(node.id, crate::intern::resolve(port.name)),
                             }),
@@ -431,12 +431,12 @@ pub(super) fn install_record_destruct(
                 let key = crate::intern::intern(name);
                 if let Some(binding) = remaining.remove(&key) {
                     let bind_name = alias.as_deref().unwrap_or(name);
-                    ctx.scope.insert(bind_name.to_string(), binding);
+                    ctx.scope.insert(&bind_name, binding);
                 }
             }
             RecordDestructField::Rest { name, .. } => {
                 ctx.scope
-                    .insert(name.clone(), Binding::Record(remaining.clone()));
+                    .insert(&name, Binding::Record(remaining.clone()));
             }
         }
     }

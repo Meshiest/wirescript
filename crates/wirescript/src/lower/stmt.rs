@@ -1220,7 +1220,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             exec_port
         };
         ctx.scope.insert(
-            binding_name.clone(),
+            &binding_name,
             Binding::Local(LocalRecord { port: val_port }),
         );
     }
@@ -1249,7 +1249,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             };
             let val_port = chain_var_get(ctx, store, ty);
             ctx.scope.insert(
-                local.clone(),
+                &local,
                 Binding::Local(LocalRecord { port: val_port }),
             );
         }
@@ -1362,7 +1362,7 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
             let ports = entries.into_iter().map(|(p, _)| p).collect();
             let exec_out = build_exec_union(ctx, ports);
             ctx.scope
-                .insert(name, Binding::Local(LocalRecord { port: exec_out }));
+                .insert(&name, Binding::Local(LocalRecord { port: exec_out }));
         }
     }
     // A hub that ended up with a single input is a pass-through: splice it out
