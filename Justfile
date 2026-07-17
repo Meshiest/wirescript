@@ -1,4 +1,4 @@
-set shell := ["pwsh", "-NoProfile", "-Command"]
+set windows-shell := ["pwsh", "-NoProfile", "-Command"]
 
 # List available recipes
 default:
@@ -37,8 +37,14 @@ check file:
     cargo run --release --bin wirescript-check -- {{file}}
 
 # Check all .ws files in a directory
+[windows]
 check-dir dir:
     Get-ChildItem -Path {{dir}} -Filter *.ws | ForEach-Object { cargo run --release --bin wirescript-check -- $_.FullName }
+
+# Check all .ws files in a directory
+[unix]
+check-dir dir:
+    for f in {{dir}}/*.ws; do cargo run --release --bin wirescript-check -- "$f"; done
 
 # Compile a .ws file to .brz
 compile file:
@@ -53,12 +59,24 @@ ir file:
     cargo run --release -p bearilog-cli -- compile {{file}} --dump-ir
 
 # Rebuild VS Code extension (compile TS + formatter)
+[windows]
 vscode:
     Set-Location editors/vscode; npm install; npm run build
 
+# Rebuild VS Code extension (compile TS + formatter)
+[unix]
+vscode:
+    cd editors/vscode && npm install && npm run build
+
 # Copy wirescript docs into playground for serving
+[windows]
 playground-docs:
     Copy-Item -Path docs/wirescript/*.md -Destination crates/wasm/playground/docs/ -Force
+
+# Copy wirescript docs into playground for serving
+[unix]
+playground-docs:
+    cp -f docs/wirescript/*.md crates/wasm/playground/docs/
 
 # Build everything (lib + lsp + cli + wasm + vscode)
 all: release wasm vscode
