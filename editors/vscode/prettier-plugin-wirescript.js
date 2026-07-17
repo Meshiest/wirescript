@@ -112,13 +112,17 @@ function formatWirescript(source, tabWidth, useTabs) {
     }
     const startsClose = leadingClosers > 0;
 
-    // `else` on its own line and a line starting with a binary operator are
-    // continuations of the previous expression — indent one extra level.
+    // `then`/`else` on their own lines and a line starting with a binary
+    // operator are continuations of the previous expression — indent one
+    // extra level.
     const isExprElse =
       !startsClose &&
       (trimmed === "else" ||
         trimmed.startsWith("else ") ||
-        trimmed.startsWith("else\t"));
+        trimmed.startsWith("else\t") ||
+        trimmed === "then" ||
+        trimmed.startsWith("then ") ||
+        trimmed.startsWith("then\t"));
     const isBinopCont = !startsClose && isBinopContinuation(trimmed);
     const extra = isExprElse || isBinopCont ? 1 : 0;
     const base = stack.filter(Boolean).length + extra;

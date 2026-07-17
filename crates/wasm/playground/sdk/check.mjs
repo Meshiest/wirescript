@@ -9,7 +9,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function loadWasm() {
   const mod = await import('./pkg/wasm.js');
-  const wirescript_diagnostics = mod.default?.wirescript_diagnostics ?? mod.wirescript_diagnostics;
+  // nodejs-target pkg exports directly; web-target pkg needs init().
+  if (typeof mod.default === 'function') {
+    const wasmBytes = readFileSync(join(__dirname, 'pkg', 'wasm_bg.wasm'));
+    await mod.default({ module_or_path: wasmBytes });
+  }
+  const wirescript_diagnostics = mod.wirescript_diagnostics ?? mod.default?.wirescript_diagnostics;
   return { wirescript_diagnostics };
 }
 

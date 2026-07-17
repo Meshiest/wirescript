@@ -189,3 +189,23 @@ fn shift_right_equals() {
     assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseShiftRight"),
         ">>= should produce a BitwiseShiftRight gate");
 }
+
+#[test]
+fn var_read_after_if_not_reused_from_branch() {
+    // A Var_Get emitted inside a branch only fires when that branch is taken. It must
+    // NOT be cached and reused for a read after the join - otherwise that later read is
+    // stale whenever the branch wasn't taken. Regression for the "gambler skip":
+    // `gamblersTotal` was first read inside an `if phase == P_SNIPER` block and re-read
+    // in a later `if phase == P_GATHER` block, coming back stale 0 and skipping the
+    // gambler phase. The post-join read must get its own Var_Get on the unconditional
+    // chain (>= 2 total, not collapsed to 1).
+    let r = compile(
+        "in go: exec\nin t: bool\n\
+         static var a: int = 0\nstatic var b: int = 0\nstatic var c: int = 0\n\
+         on go { if t { b = a }\n c = a }",
+    );
+    assert_no_errors(&r);
+    let gets = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
+    assert!(gets >= 2,
+        "post-join read of `a` must get its own Var_Get, not reuse the in-branch one (got {gets})");
+}

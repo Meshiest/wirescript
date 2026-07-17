@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 0.16.4 - 2026-07-17
+
+- **`then` may start its own line in an if expression** - `let x = if cond` followed by indented `then …` / `else …` lines now parses; the formatter indents both keywords one level as expression continuations.
+
 ## 0.16.3 - 2026-07-16
 
 - **Compiler is ~2x faster on large projects** - mimalloc in the native binaries, thin LTO, a single-pass anon-chip partition, a quadratic wire-scan fix in inline chip calls, and Arc-shared ports/templates: lowering −69%, end-to-end −42%, lowering allocations −46%.

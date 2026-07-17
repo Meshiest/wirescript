@@ -592,6 +592,10 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let else_id = ctx.alloc_scope(ScopeKind::IfElse, else_range);
     ctx.builder.current_scope_id = else_id;
     ctx.current_exec = Some(branch.port(WirePort::ExecOutB));
+    // A Var_Get emitted in the THEN branch lives on the ExecOutA chain, so it must
+    // not be reused on the ELSE chain (ExecOutB) - it never fires there, so the read
+    // would be stale. Drop the cache so the else branch takes its own fresh reads.
+    reset_var_get_caches(ctx);
     if let Some(else_b) = &s.else_block {
         lower_block(ctx, else_b);
     }
@@ -633,6 +637,12 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
         ctx.connect(e, union.port(WirePort::ExecB));
     }
     ctx.current_exec = Some(union.port(WirePort::ExecOut));
+    // Var_Gets created inside either branch only fire when that branch is taken, so
+    // they must not be reused after the join. A post-if read gets a fresh Var_Get on
+    // the (dominating) post-join chain - otherwise it reads a stale value whenever the
+    // branch that created the Var_Get wasn't taken (e.g. `gamblersTotal` first read in
+    // an `if phase == P_SNIPER` block and re-read in a later `if phase == P_GATHER`).
+    reset_var_get_caches(ctx);
 }
 
 pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {

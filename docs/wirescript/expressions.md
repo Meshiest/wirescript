@@ -214,6 +214,14 @@ let clamped = if v > max then max else if v < min then min else v
 
 Syntax: `if <condition> then <true-expr> else <false-expr>`
 
+`then` and `else` may also start their own continuation lines:
+
+```wirescript
+let intel = if playerCount <= 6
+  then "You have a teammate"
+  else "You are alone"
+```
+
 ### Block Expressions
 
 Branches can be block expressions `{ stmts...; value }` with locally-scoped `let` bindings:

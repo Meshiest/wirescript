@@ -192,3 +192,23 @@ on RoundStart {
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "var used inside block expr should compile: {:?}", r.diagnostics);
 }
+
+#[test]
+fn if_expr_then_on_continuation_line() {
+    // `then` (and `else`) may start their own lines in a pure if expression.
+    let r = compile("\
+var x: int = 5
+let result = if x > 3
+    then \"big\"
+    else \"small\"
+out y = result");
+    assert!(
+        r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "unexpected errors: {:?}",
+        r.diagnostics
+    );
+    let select_count = r.module.nodes.values()
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .count();
+    assert!(select_count >= 1, "multi-line if/then/else should lower to a Select gate");
+}

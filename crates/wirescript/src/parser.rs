@@ -2491,6 +2491,7 @@ impl<'a> Parser<'a> {
             TokenKind::Kw if t.text == "if" => {
                 self.advance();
                 let cond = self.parse_expr();
+                self.eat_newlines();
                 self.expect(TokenKind::Kw, Some("then"));
                 let then_e = self.parse_expr();
                 self.eat_newlines();
