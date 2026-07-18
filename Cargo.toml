@@ -10,10 +10,10 @@ members = [
 resolver = "3"
 
 [profile.release]
-# Thin LTO + fewer codegen units: ~cross-crate inlining for the hot
-# lower/emit/brdb paths at a modest build-time cost.
+# Thin LTO for cross-crate inlining on the hot lower/emit/brdb paths.
+# (codegen-units deliberately left at default: =1 bought ~15% on `lower`
+# but pushed every release relink past a minute.)
 lto = "thin"
-codegen-units = 1
 
 [workspace.dependencies]
 # Bearilog CLI

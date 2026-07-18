@@ -3,6 +3,7 @@
 ## 0.16.4 - 2026-07-17
 
 - **Fixed a constant shared across two chips reading 0 in one of them** - A literal used as a wired operand (e.g. `x * 4`) inside two separate `chip { … }` blocks was merged by constant-deduplication into a single gate *before* anon-chip partitioning, leaving the second chip's operand wired across the chip boundary — where emit's per-module literal inlining can't reach it, so the operand silently read its port default (0). Deduplication now groups by owning chip, keeping a shared constant once per chip.
+- **Fixed `on` handlers bound to `Change(x)`** - `Change`'s `OnChanged` output is now typed `exec` (was `any`), so `let c = Change(x)` + `on c { … }` fires on the change pulse.
 - **`then` may start its own line in an if expression** - `let x = if cond` followed by indented `then …` / `else …` lines now parses; the formatter indents both keywords one level as expression continuations.
 
 ## 0.16.3 - 2026-07-16
