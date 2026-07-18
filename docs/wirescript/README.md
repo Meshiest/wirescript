@@ -18,6 +18,8 @@ Wirescript is a high-level language that compiles to Brickadia wire graphs. It r
 
 7. **[Execution Context](exec-context.md)** -- Pure vs exec context, what requires exec, handler exec chains, exec unions after handlers, and explicit exec parameters.
 
+8. **[Best Practices](best-practices.md)** -- Gate count and scaling: why every call site is a copy (for `mod` and `chip` alike), the call-site multiplier, single-dispatch event queues, deferred flags, and bitmask state.
+
 ## Quick Example
 
 ```wirescript

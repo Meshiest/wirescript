@@ -139,6 +139,18 @@ fn is_swizzle_field(field: &str) -> bool {
     )
 }
 
+/// A scalar can never be swizzled. A chip whose output is named `x`/`y`/`z`/
+/// `r`/`g`/`b`/`a` binds its (auto-unwrapped) result to a local, and splitting
+/// that `int` as if it were a vector silently reads a garbage component instead
+/// of the chip's output. Only KNOWN scalars short-circuit the split — vector,
+/// color and unknown/`any` types keep the existing Split* behaviour.
+fn is_known_scalar(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Int | Type::Float | Type::Bool | Type::String | Type::Exec
+    )
+}
+
 pub(super) fn lower_field_access(
     ctx: &mut LowerCtx,
     obj: &Expr,
@@ -193,7 +205,10 @@ pub(super) fn lower_field_access(
             // A vector/color component (`v.x`, `c.r`) on a local doesn't name a
             // gate output port — fall through to the SplitVector / SplitColor
             // logic below, which feeds this local's value in as the split input.
-            if !is_swizzle_field(field) {
+            // Only when the local really holds a vector/color, though: a chip
+            // output named `y` binds an `int` here, and splitting it would read
+            // a garbage component instead of the chip's output.
+            if !is_swizzle_field(field) || is_known_scalar(&ctx.type_of(obj)) {
                 return local.port;
             }
         }

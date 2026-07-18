@@ -205,6 +205,23 @@ pub fn partition_anon_chips(module: &mut Module) {
         }
     }
 
+    // Map each chip-instance boundary pin (MicrochipInput/Output of a called
+    // `chip`'s module) to the anon chip its instance node is tagged to. A wire
+    // targeting such a pin belongs INSIDE that anon chip's module (one boundary
+    // from the instance). Without this it stays at the root as a wire whose
+    // endpoint is nested several grids deep — the game can route a root wire
+    // one grid in, but an exec pulse can't cross into an instance grid that
+    // sits inside another anon chip, so the called chip silently never fires.
+    let mut pin_chip: HashMap<NodeId, NodeId> = HashMap::default();
+    for (chip_node, inst) in &module.chips {
+        if let Some(&cid) = assignment.get(chip_node) {
+            for pin in inst.inputs.iter().chain(inst.outputs.iter()) {
+                pin_chip.insert(*pin, cid);
+            }
+        }
+    }
+    let chip_of = |id: &NodeId| assignment.get(id).or_else(|| pin_chip.get(id)).copied();
+
     // Partition wires in ONE pass: internal wires go to their chip's child,
     // cross-boundary wires stay in the parent as remote wires with Layout
     // edges keeping the chips inline in the DAG. (The old per-chip loop
@@ -226,8 +243,8 @@ pub fn partition_anon_chips(module: &mut Module) {
     // Dedupe of Literal nodes cloned into a chip, per (chip, literal).
     let mut literal_clones: HashMap<(NodeId, NodeId), NodeId> = HashMap::default();
     for w in std::mem::take(&mut module.wires) {
-        let src_chip = assignment.get(&w.source.node_id).copied();
-        let tgt_chip = assignment.get(&w.target.node_id).copied();
+        let src_chip = chip_of(&w.source.node_id);
+        let tgt_chip = chip_of(&w.target.node_id);
         match (src_chip, tgt_chip) {
             (Some(a), Some(b)) if a == b => {
                 children.get_mut(&a).expect("chip module").wires.push(w);

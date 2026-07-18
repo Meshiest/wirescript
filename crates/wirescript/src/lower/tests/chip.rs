@@ -285,6 +285,118 @@ fn inline_literals_folded() {
 }
 
 #[test]
+fn chip_output_named_like_a_swizzle_is_not_split() {
+    // A chip output called `x`/`y`/`z` (or `r`/`g`/`b`/`a`) collides with the
+    // vector/color component names. Reading it must wire the chip's OUTPUT
+    // through, not lower to a SplitVector that splits the (int) value as if it
+    // were a vector and silently reads a garbage component.
+    fn count_splits(m: &crate::ir::Module) -> usize {
+        m.nodes
+            .values()
+            .filter(|n| n.gate_class == crate::ir::gate_class::SPLIT_VECTOR)
+            .count()
+            + m.chips.values().map(count_splits).sum::<usize>()
+    }
+
+    let r = compile(
+        "in a: int\nchip F(n: int) -> (y: int) { out y = n * 2 + 1 }\nlet c = F(a)\nout r = c.y",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        count_splits(&r.module),
+        0,
+        "a chip output named `y` must read the output, not lower to a SplitVector"
+    );
+
+    // ...but a genuine vector swizzle must still split.
+    let v = compile("in v: vector\nlet p = v\nout ox = p.x\nout oy = p.y");
+    assert_no_errors(&v);
+    assert!(
+        count_splits(&v.module) > 0,
+        "a real vector component access must still lower to a SplitVector"
+    );
+}
+
+#[test]
+fn nested_chip_instance_exec_wire_stays_local() {
+    // A `chip` exec-called from INSIDE a nested anon chip must have its exec
+    // wire routed into that anon chip's module (one grid boundary from the
+    // instance), not left at the root spanning several grids. The game can
+    // route a wire one grid in, but an exec pulse can't cross into an instance
+    // grid nested inside another anon chip, so the called chip would silently
+    // never fire. Regression for the Secret Hitler chancellor-enact bug
+    // (applyEnact never ran; discard did).
+    let src = "\
+var x: int = 0
+var y: int = 0
+in trig: exec
+chip setX() { x = 1 }
+mod doPick() { y = 2 setX() }
+chip on trig {
+  chip {
+    doPick()
+  }
+}";
+    let r = compile(src);
+    assert_no_errors(&r);
+
+    // gate class of every node in the whole tree (pins live in child modules)
+    fn collect_classes(
+        m: &crate::ir::Module,
+        out: &mut std::collections::HashMap<crate::ir::NodeId, &'static str>,
+    ) {
+        for (id, n) in &m.nodes {
+            out.insert(*id, n.gate_class);
+        }
+        for c in m.chips.values() {
+            collect_classes(c, out);
+        }
+    }
+    let mut classes = std::collections::HashMap::new();
+    collect_classes(&r.module, &mut classes);
+    let is_pin = |id: &crate::ir::NodeId| {
+        matches!(
+            classes.get(id).copied(),
+            Some("BrickComponentType_Internal_MicrochipInput")
+                | Some("BrickComponentType_Internal_MicrochipOutput")
+        )
+    };
+
+    // In each module, a wire touching a chip-boundary pin that isn't one of the
+    // module's OWN pins must have that pin on a DIRECT child chip.
+    fn check(
+        m: &crate::ir::Module,
+        is_pin: &dyn Fn(&crate::ir::NodeId) -> bool,
+    ) {
+        let mut child_pins: std::collections::HashSet<crate::ir::NodeId> =
+            std::collections::HashSet::new();
+        for c in m.chips.values() {
+            child_pins.extend(c.inputs.iter().copied());
+            child_pins.extend(c.outputs.iter().copied());
+        }
+        for w in &m.wires {
+            if w.source.port == WirePort::Layout || w.target.port == WirePort::Layout {
+                continue;
+            }
+            for ep in [w.source.node_id, w.target.node_id] {
+                if is_pin(&ep) && !m.nodes.contains_key(&ep) {
+                    assert!(
+                        child_pins.contains(&ep),
+                        "module {:?}: wire touches boundary pin {ep} not on a direct \
+                         child chip — a multi-grid exec wire the instance can't receive",
+                        crate::intern::resolve(m.name)
+                    );
+                }
+            }
+        }
+        for c in m.chips.values() {
+            check(c, is_pin);
+        }
+    }
+    check(&r.module, &is_pin);
+}
+
+#[test]
 fn dedup_keeps_constants_within_their_chip() {
     // A constant used as a WIRED (multi-consumer) literal in two separate anon
     // chips must NOT be merged across the chip boundary. `dedup_constant_gates`
@@ -1016,6 +1128,60 @@ fn in_array_passes_to_inline_mod() {
         !r.diagnostics.iter().any(|d| d.code == "WSP001"),
         "input array passed to inline mod must bind (no placeholder); got {:?}",
         r.diagnostics
+    );
+}
+
+#[test]
+fn chip_constant_arg_folds_into_the_instance() {
+    // A constant argument used to cross the boundary as a real gate: the caller
+    // built a `_Var` holding the value and wired it into the chip's input
+    // rerouter, because a rerouter has no data struct to carry inline gate data.
+    // That made `Bump(1)` strictly more expensive than the same call written as a
+    // `mod`, which folds the constant straight onto its consumer. The constant is
+    // now cloned into the instance and the pin it fed is dropped. Instances of one
+    // chip share a template, so the hazard is every instance collapsing onto a
+    // single call's value — each must keep its own.
+    let src = "\
+var acc: int = 0
+in t: exec
+chip Bump(n: int) { acc = acc + n }
+on t { Bump(1) Bump(2) }";
+    let r = compile(src);
+    assert_no_errors(&r);
+
+    // Only the real `acc` variable is left in the caller; no constant-carrying
+    // gate remains feeding a chip boundary.
+    let parent_vars = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::PSEUDO_VAR)
+        .count();
+    assert_eq!(
+        parent_vars, 1,
+        "a constant arg should not leave a `_Var` gate in the caller"
+    );
+
+    let mut folded: Vec<i64> = Vec::new();
+    for child in r.module.chips.values() {
+        assert_eq!(
+            child.inputs.len(),
+            1,
+            "the value pin should be folded away, leaving only the exec pin"
+        );
+        for n in child.nodes.values() {
+            if n.gate_class == gc::VAR_INCREMENT
+                && let Some(Literal::Int(v)) = n.properties.get(&*sym::VALUE)
+            {
+                folded.push(*v);
+            }
+        }
+    }
+    folded.sort();
+    assert_eq!(
+        folded,
+        vec![1, 2],
+        "each instance must keep its own folded constant"
     );
 }
 

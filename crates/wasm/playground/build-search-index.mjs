@@ -23,6 +23,7 @@ const MANIFEST = {
   'chips.md': 'Chips & Mods',
   'builtins.md': 'Builtins',
   'exec-context.md': 'Exec Context',
+  'best-practices.md': 'Best Practices',
 };
 
 // ── Stop words (common English words that add no search value) ──

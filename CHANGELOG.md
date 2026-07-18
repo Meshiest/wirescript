@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+## Unreleased
+
+- **Fixed a chip output named `x`/`y`/`z`/`r`/`g`/`b`/`a` reading garbage** - Those names collide with vector/color component access, so reading one split the scalar and returned a component instead of the output. Field access now splits only when the value really is a vector or color.
+- **Fixed a `chip` called from inside a nested anon chip never firing** - Its exec trigger stayed at the root, and an exec pulse cannot cross into an instance grid nested inside another anon chip. Partition now routes boundary-pin wires into the module that directly contains the instance.
+- **A constant argument to a `chip` no longer costs a gate per instance** - `F(1)` materialized a `_Var` in the caller and wired it across the boundary. The constant now folds into the instance itself and its input pin is dropped, matching what the equivalent `mod` emits.
+- **New docs page: [Best Practices](docs/wirescript/best-practices.md)** - Gate count and scaling: why every call site is a copy (for `mod` and `chip` alike), the call-site multiplier, single-dispatch event queues, deferred flags, and bitmask state.
+
 ## 0.16.4 - 2026-07-17
 
 - **Fixed a constant shared across two chips reading 0 in one of them** - A literal used as a wired operand (e.g. `x * 4`) inside two separate `chip { ... }` blocks was merged by constant-deduplication into a single gate *before* anon-chip partitioning, leaving the second chip's operand wired across the chip boundary — where emit's per-module literal inlining can't reach it, so the operand silently read its port default (0). Deduplication now groups by owning chip, keeping a shared constant once per chip.

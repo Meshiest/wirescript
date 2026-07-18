@@ -66,6 +66,7 @@ const DOC_MANIFEST = {
   'Chips & Mods': 'docs/chips.md',
   Builtins: 'docs/builtins.md',
   'Exec Context': 'docs/exec-context.md',
+  'Best Practices': 'docs/best-practices.md',
 };
 
 // List of doc pages in display order
@@ -79,6 +80,7 @@ export const DOC_PAGES = [
   'Chips & Mods',
   'Builtins',
   'Exec Context',
+  'Best Practices',
 ];
 
 // Display names for the navigation
@@ -92,6 +94,7 @@ export const DOC_TITLES = {
   'Chips & Mods': 'Chips & Mods',
   Builtins: 'Built-in Functions',
   'Exec Context': 'Execution Context',
+  'Best Practices': 'Best Practices',
 };
 
 async function loadDoc(page) {

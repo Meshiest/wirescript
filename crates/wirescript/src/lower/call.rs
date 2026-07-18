@@ -1064,6 +1064,7 @@ pub(super) fn lower_chip_call_instance(
     ctx.builder.module.chips.insert(chip_node_id, child_module);
 
     // Wire args FIRST — this may create Var_Gets in the exec chain
+    let mut const_folds: Vec<ConstFold> = Vec::new();
     let result = wire_chip_args_and_outputs(
         ctx,
         chip_decl,
@@ -1071,6 +1072,7 @@ pub(super) fn lower_chip_call_instance(
         &caller_captures,
         &child_inputs,
         &child_outputs,
+        &mut const_folds,
     );
 
     // Wire auto-exec AFTER args so the exec chain is:
@@ -1092,7 +1094,96 @@ pub(super) fn lower_chip_call_instance(
         }
     }
 
+    // Constants live inside the instance, so instances that folded different
+    // values are no longer interchangeable. Fold the values into the template
+    // key as well, or grid dedup would hand one instance another's body; calls
+    // passing the same constants still share a key.
+    if !const_folds.is_empty() {
+        let mut key = chip_decl.name.clone();
+        for fold in &const_folds {
+            key.push_str(&format!("\u{1}{}:{:?}", fold.index, fold.value));
+        }
+        if let Some(child) = ctx.builder.module.chips.get_mut(&chip_node_id) {
+            child.template_key = Some(intern(&key));
+        }
+        for fold in &const_folds {
+            fold_const_chip_input(ctx, chip_node_id, fold);
+        }
+    }
+
     result
+}
+
+/// A constant argument to be folded into the chip instance's own module,
+/// replacing the input rerouter it would otherwise have been wired to.
+pub(super) struct ConstFold {
+    pin: NodeId,
+    /// Parameter position, so two calls that fold different params are keyed apart.
+    index: usize,
+    value: Literal,
+    ty: Type,
+}
+
+/// A literal argument that can live inside the chip instead of crossing its
+/// boundary. Only self-contained scalars qualify — anything that has to be
+/// computed still needs a real wire in.
+fn const_arg_literal(e: &Expr) -> Option<Literal> {
+    match e {
+        Expr::IntLit { value, .. } => Some(Literal::Int(*value)),
+        Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
+        Expr::BoolLit { value, .. } => Some(Literal::Bool(*value)),
+        _ => None,
+    }
+}
+
+/// Move a constant argument inside the chip instance and drop its input pin.
+///
+/// A constant that crosses the boundary costs a gate per instance, because the
+/// rerouter it feeds can't carry inline gate data. Cloning it into the chip's
+/// own module lets the literal-inlining pass fold it onto its consumer, so a
+/// `chip` call emits exactly the gates its `mod` equivalent does. This is the
+/// same trick already applied to captured constants when the body is built.
+///
+/// Safe to do per instance: every call site builds its own instance, and the
+/// shared template was cloned before any argument wiring ran.
+fn fold_const_chip_input(ctx: &mut LowerCtx, chip_node_id: NodeId, fold: &ConstFold) {
+    let Some(child) = ctx.builder.module.chips.get_mut(&chip_node_id) else {
+        return;
+    };
+    let Some(pin_node) = child.nodes.get(&fold.pin) else {
+        return;
+    };
+    let mut props = HashMap::default();
+    props.insert(*sym::VALUE, fold.value.clone());
+    let lit_id = NodeId::fresh();
+    let lit = crate::ir::Node {
+        id: lit_id,
+        kind: NodeKind::Gate,
+        gate_class: gc::LITERAL,
+        properties: std::sync::Arc::new(props),
+        ports: std::sync::Arc::new(GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec {
+                name: *sym::OUTPUT,
+                ty: fold.ty.clone(),
+            }],
+        }),
+        source_range: pin_node.source_range.clone(),
+        chip_id: pin_node.chip_id,
+        chain_id: None,
+        scope_id: pin_node.scope_id,
+        note: None,
+    };
+    child.nodes.insert(lit_id, lit);
+    // Everything the pin fed now reads the literal directly.
+    for w in &mut child.wires {
+        if w.source.node_id == fold.pin {
+            w.source = lit_id.port(WirePort::Output);
+        }
+    }
+    child.wires.retain(|w| w.target.node_id != fold.pin);
+    child.nodes.remove(&fold.pin);
+    child.inputs.retain(|p| *p != fold.pin);
 }
 
 fn wire_chip_args_and_outputs(
@@ -1102,8 +1193,8 @@ fn wire_chip_args_and_outputs(
     caller_captures: &HashMap<String, VarRecord>,
     child_inputs: &[NodeId],
     child_outputs: &[NodeId],
+    const_folds: &mut Vec<ConstFold>,
 ) -> PortRef {
-    let range = &chip_decl.range;
     let positional_args: Vec<&Expr> = args
         .iter()
         .filter_map(|a| match a {
@@ -1203,82 +1294,17 @@ fn wire_chip_args_and_outputs(
 
         let mc_input = child_inputs[input_idx];
         input_idx += 1;
-        let t = type_of_type_expr(&param.typ);
-        let val_port = match arg_expr {
-            Expr::IntLit { value, .. } => {
-                let mut props = HashMap::default();
-                props.insert(*sym::VALUE, Literal::Int(*value));
-                let nid = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::PSEUDO_VAR,
-                    source_range: range.clone(),
-                    ports: GateIO {
-                        inputs: vec![],
-                        outputs: vec![
-                            PortSpec {
-                                name: *sym::VALUE,
-                                ty: t.clone(),
-                            },
-                            PortSpec {
-                                name: *sym::VAR_REF,
-                                ty: Type::Ref(Box::new(t.clone())),
-                            },
-                        ],
-                    },
-                    properties: props,
-                    ..Default::default()
-                });
-                nid.port(WirePort::Value)
-            }
-            Expr::FloatLit { value, .. } => {
-                let mut props = HashMap::default();
-                props.insert(*sym::VALUE, Literal::Float(*value));
-                let nid = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::PSEUDO_VAR,
-                    source_range: range.clone(),
-                    ports: GateIO {
-                        inputs: vec![],
-                        outputs: vec![
-                            PortSpec {
-                                name: *sym::VALUE,
-                                ty: t.clone(),
-                            },
-                            PortSpec {
-                                name: *sym::VAR_REF,
-                                ty: Type::Ref(Box::new(t.clone())),
-                            },
-                        ],
-                    },
-                    properties: props,
-                    ..Default::default()
-                });
-                nid.port(WirePort::Value)
-            }
-            Expr::BoolLit { value, .. } => {
-                let mut props = HashMap::default();
-                props.insert(*sym::VALUE, Literal::Bool(*value));
-                let nid = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::PSEUDO_VAR,
-                    source_range: range.clone(),
-                    ports: GateIO {
-                        inputs: vec![],
-                        outputs: vec![
-                            PortSpec {
-                                name: *sym::VALUE,
-                                ty: t.clone(),
-                            },
-                            PortSpec {
-                                name: *sym::VAR_REF,
-                                ty: Type::Ref(Box::new(t.clone())),
-                            },
-                        ],
-                    },
-                    properties: props,
-                    ..Default::default()
-                });
-                nid.port(WirePort::Value)
-            }
-            _ => lower_expr(ctx, arg_expr),
-        };
+        // A `MicrochipInput` is a rerouter, and a rerouter has no data struct to
+        // hold inline gate data, so a constant wired in from the caller has to stay
+        // a real gate in every instance. Record it instead and clone it into the
+        // chip'''s own module below, where `inline_orphan_literals` folds it onto its
+        // consumer — the same gates the equivalent `mod` emits.
+        if let Some(value) = const_arg_literal(arg_expr) {
+            let ty = type_of_type_expr(&param.typ);
+            const_folds.push(ConstFold { pin: mc_input, index: input_idx - 1, value, ty });
+            continue;
+        }
+        let val_port = lower_expr(ctx, arg_expr);
         ctx.connect(val_port, mc_input.port(WirePort::RerInput));
     }
 
