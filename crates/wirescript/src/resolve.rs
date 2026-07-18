@@ -140,6 +140,11 @@ fn resolve_file(
             true
         }
     });
+    // Collect into a separate list and prepend, so this file's own decls stay
+    // after the ones it imports — chips/mods register in source order during
+    // lowering, so appending would make every call into an imported module a
+    // use-before-declaration.
+    let mut sub_decls: Vec<TopDecl> = Vec::new();
     for imp in &sub_imports {
         resolve_import(
             imp,
@@ -148,9 +153,13 @@ fn resolve_file(
             cache,
             stack,
             diagnostics,
-            &mut imported_ast.decls,
+            &mut sub_decls,
             &mut HashMap::default(),
         );
+    }
+    if !sub_decls.is_empty() {
+        sub_decls.append(&mut imported_ast.decls);
+        imported_ast.decls = sub_decls;
     }
 
     stack.remove(&canon);
@@ -915,6 +924,52 @@ mod tests {
         assert!(
             r.ast.decls.iter().any(|d| matches!(d, TopDecl::Var(v) if v.name == "cnt")),
             "var should be renamed to 'cnt'"
+        );
+    }
+
+    #[test]
+    fn transitive_import_decls_precede_importing_files_own_decls() {
+        // A file's own declarations must come AFTER the ones it imports, at
+        // every level of the import graph — chips/mods register in source
+        // order during lowering, so the reverse ordering makes a call to a
+        // transitively imported helper a use-before-declaration (WS021).
+        let loader = mem(&[
+            ("util.ws", "mod helper(x: *int) { x = x + 1 }"),
+            (
+                "game.ws",
+                "import \"util\"\nmod game_step(x: *int) { helper(x) }",
+            ),
+            ("container.ws", "import \"game\""),
+        ]);
+        let r = resolve(
+            "import \"container\"\nvar n: int = 0\nin go: exec\non go { game_step(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert!(
+            !r.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::diagnostic::Severity::Error),
+            "errors: {:?}",
+            r.diagnostics
+        );
+        let pos = |name: &str| {
+            r.ast
+                .decls
+                .iter()
+                .position(|d| decl_name(d) == Some(name))
+                .unwrap_or_else(|| panic!("'{name}' missing from resolved decls"))
+        };
+        assert!(
+            pos("helper") < pos("game_step"),
+            "'helper' must precede its caller 'game_step'; decls: {:?}",
+            r.ast.decls.iter().filter_map(decl_name).collect::<Vec<_>>()
+        );
+        let tc = crate::typecheck::typecheck(&r.ast, "main.ws");
+        assert!(
+            !tc.diagnostics.iter().any(|d| d.code == "WS021"),
+            "transitive import must not produce use-before-declaration: {:?}",
+            tc.diagnostics
         );
     }
 

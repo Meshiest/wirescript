@@ -2,9 +2,10 @@
 
 ## 0.16.4 - 2026-07-17
 
-- **Fixed a constant shared across two chips reading 0 in one of them** - A literal used as a wired operand (e.g. `x * 4`) inside two separate `chip { … }` blocks was merged by constant-deduplication into a single gate *before* anon-chip partitioning, leaving the second chip's operand wired across the chip boundary — where emit's per-module literal inlining can't reach it, so the operand silently read its port default (0). Deduplication now groups by owning chip, keeping a shared constant once per chip.
-- **Fixed `on` handlers bound to `Change(x)`** - `Change`'s `OnChanged` output is now typed `exec` (was `any`), so `let c = Change(x)` + `on c { … }` fires on the change pulse.
-- **`then` may start its own line in an if expression** - `let x = if cond` followed by indented `then …` / `else …` lines now parses; the formatter indents both keywords one level as expression continuations.
+- **Fixed a constant shared across two chips reading 0 in one of them** - A literal used as a wired operand (e.g. `x * 4`) inside two separate `chip { ... }` blocks was merged by constant-deduplication into a single gate *before* anon-chip partitioning, leaving the second chip's operand wired across the chip boundary — where emit's per-module literal inlining can't reach it, so the operand silently read its port default (0). Deduplication now groups by owning chip, keeping a shared constant once per chip.
+- **Fixed `on` handlers bound to `Change(x)`** - `Change`'s `OnChanged` output is now typed `exec` (was `any`), so `let c = Change(x)` + `on c { ... }` fires on the change pulse.
+- **`then` may start its own line in an if expression** - `let x = if cond` followed by indented `then ...` / `else ...` lines now parses; the formatter indents both keywords one level as expression continuations.
+- **Fixed transitive imports resolving in the wrong order** - When an imported file had imports of its own, its declarations were placed *before* the ones it imported, so any call into a deeper module was a use-before-declaration (WS021) or lowered against a missing declaration. This surfaced through a file that only re-exports another (`import "b"` alone in `a.ws`). Nested imports now resolve ahead of the importing file's own declarations, matching how the entry file already behaved.
 
 ## 0.16.3 - 2026-07-16
 
@@ -26,7 +27,7 @@
 
 ## 0.16.1 - 2026-07-15
 
-- **`chip let` labels the chip with its binding name** - `chip let x = …` now shows the binding name(s) as its display label; an explicit `@label(...)` still overrides.
+- **`chip let` labels the chip with its binding name** - `chip let x = ...` now shows the binding name(s) as its display label; an explicit `@label(...)` still overrides.
 - **Wider vertical gap between chip-pane rows** - The wall layout's row-to-row gutter was widened so stacked chip planes read as separated.
 - **Fixed repeated chip calls sharing wire endpoints** - Later instances of the same `chip` (`foo(0)`, `foo(1)`) wired their boundaries to the first instance and failed to load ("Failed to connect wire"). Boundary wires now remap to each instance's own nodes.
 - **Hover on a namespace member shows its signature** - `u.foo` (via `import * as u`) now shows the full signature and exec-ness, matching a direct call's hover.
@@ -41,12 +42,12 @@
 - **LSP: more completion contexts** -
   - `import * as u` then `u.<here>` lists the module's members.
   - `pos.<here>` on a `var pos: vector` offers type methods + swizzle (`x`/`y`/`z`, `r`/`g`/`b`/`a`) alongside `.Value`/`.prev`; `static var` gets `.Value`/`.prev`.
-  - Values typed by a `type Foo = { … }` alias complete `Foo`'s fields.
+  - Values typed by a `type Foo = { ... }` alias complete `Foo`'s fields.
   - User `mod`/`chip`/`fn` calls complete their param names instead of the global list.
   - All-required calls (`Vec(<here>)`) offer their params; method calls drop the bound receiver param.
   - `@`-annotation list adds `@label` and `@closed`.
   - Native LSP and web playground share these paths.
-- **Doc comments on record-type fields** - A `///` on a field inside `type T = { … }` now parses (was a parse error) and shows on hover of that field.
+- **Doc comments on record-type fields** - A `///` on a field inside `type T = { ... }` now parses (was a parse error) and shows on hover of that field.
 - **Fixed hover on a namespace alias** - Hovering `u` in `import * as u` shows `namespace u` and lists its members (was `namespace u: unknown`).
 - **VS Code formatter (Prettier plugin)** - Adds a space after commas; splits long braced imports (fill) and binary-op statements (one operator per line, lowest precedence first) at 100 cols; joins `} else {`; honors `// fmt-ignore` (standalone guards the next line, trailing its own). `///` doc comments auto-continue on Enter.
 - **Opened-plane headers space the doc off the title** - A blank line now separates the size-96 title from the chip/module doc comment.
@@ -57,7 +58,7 @@
 
 - **Color arithmetic** - `+ - * / %` operate RGBA channel-wise on two `color` operands; a scalar broadcasts across channels (`tint * 0.5`). Same PrimMath gate as vectors/rotations.
 - **`Random` is polymorphic** - `min`/`max` may be `vector`, `rotator`, `quat`, or `color`; each component rolls independently and the same type is returned (`Random(Vec(0,0,0), Vec(1,1,1))` → point in the unit cube). Scalar `int` form unchanged.
-- **Fixed anonymous-record mod returns** - A `mod` returning a record literal (`return { head: …, rest: … }`) now destructures into per-field sources, so each field wires to its own value (was one `_Unsupported` gate).
+- **Fixed anonymous-record mod returns** - A `mod` returning a record literal (`return { head: ..., rest: ... }`) now destructures into per-field sources, so each field wires to its own value (was one `_Unsupported` gate).
 - **Non-root chips compile open by default** - Opened planes stack as a wall above the compiled microchip (root at bottom, deeper nesting higher). New `@closed` collapses a chip but keeps its wall slot; `open chip` is now a no-op.
 - **New `@label("text")` annotation** - Display-text override for chip labels/headers and `in`/`out` port labels (stacks with `@side` in any order); the wiring-UI port name is unchanged.
 - **Opened planes render a header** - A size-96 title (the `@label` text, else the chip name) plus the chip's `///` doc comment, on an invisible brick at the plane's top edge.
@@ -93,7 +94,7 @@
 - **Chip exec I/O gates are labeled** - Exec gates say `exec`; the anonymous `-> type` return output says `return` (synthesized ports had no label).
 - **`ControllerJoined`/`ControllerLeft` expose the player's id** - `on ControllerLeft(controller, userId)` (`string`); stable when the controller is torn down on disconnect.
 - **Calling a chip/mod before it is declared is a hard error (WS021)** - In both the compiler and the LSP (was a silent placeholder reading its default `0`).
-- **`in X: T[]` array inputs are first-class** - An array-typed `in` port supports array methods (`X.length()`, `X.push(v)`, …) and passes to a mod/chip's `T[]` parameter.
+- **`in X: T[]` array inputs are first-class** - An array-typed `in` port supports array methods (`X.length()`, `X.push(v)`, ...) and passes to a mod/chip's `T[]` parameter.
 - **Namespaced module members resolve inside their own mods** - `import * as ns` only; named imports were unaffected.
 - **Chip/mod calls check their argument count (WS022)** - Hard error in both the compiler and the LSP (a wrong count silently left a param unbound or dropped an arg). An `exec =` trigger isn't counted; a spread arg skips the check.
 
