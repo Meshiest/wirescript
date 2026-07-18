@@ -75,6 +75,9 @@ pub mod sym {
     // Pseudo-property (not a game field): the `///` doc comment preceding the
     // chip declaration, rendered under the title on the opened plane's header.
     def!(DOC_TEXT, "_doc");
+    // Pseudo-property (not a game field): set on every node lowered from a
+    // `@nofold` declaration subtree; the fold pass must skip these nodes.
+    def!(NO_FOLD, "_nofold");
 
     // Gate classes
     def!(LITERAL, "_Literal");

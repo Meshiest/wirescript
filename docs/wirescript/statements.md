@@ -395,6 +395,23 @@ stacks with a side annotation in either order:
 @label("Fire!") @left in trigger: exec   // order doesn't matter
 ```
 
+### `@nofold` -- Suppress Constant Folding
+
+- `@nofold` — suppress constant folding/elision for everything lowered from this
+  declaration (`let`/`out`/`var`/`chip`/`on`, including captured events
+  `let e = on trigger { … }` and await bindings); legal at any nesting depth.
+  Placed at the very top of the file (after any module doc comment) and
+  separated from the first declaration by a blank line, it applies to the
+  whole module — the same blank-line rule as module doc comments. Sites where
+  it can have no effect (anonymous chips, `in` declarations) emit a warning.
+  Used by semantics-verification circuits that need real gates for known
+  values.
+- Two module-level gotchas: leave a **blank line between a module doc block and
+  a module-level `@nofold`** (a directly-adjacent pair registers as neither),
+  and a module-level `@nofold` applies only to the file compiled as the
+  **entry** — an imported library's own module-level `@nofold` does not carry
+  into the importer (annotate the individual declarations instead).
+
 ## `if` -- Conditional Statement
 
 The `if` statement executes a block conditionally. It **requires exec context** -- you can only use `if` statements inside `on` handlers or after handlers in the exec chain.

@@ -273,9 +273,12 @@ out result = v9.r
         "10 chip instances with internals should produce >= 40 nodes, got {}",
         nodes
     );
+    // 29, not 30: the first call's literal arg (`Inc(0)`) inlines as a data
+    // default on its consumer gate (same mechanism as `n + 1`), eliding that
+    // instance's input wire entirely.
     assert!(
-        wires >= 30,
-        "chained chip calls should produce >= 30 wires, got {}",
+        wires >= 29,
+        "chained chip calls should produce >= 29 wires, got {}",
         wires
     );
 }

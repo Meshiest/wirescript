@@ -107,6 +107,16 @@ pub enum Type {
     Prefab,
     Exec,
     Any,
+    /// The result of the `Opaque(...)` builtin — an intentionally-untyped
+    /// probe value used to defeat constant folding in test circuits.
+    /// Behaves exactly like `Any` everywhere (assignability, coercion,
+    /// unification, display) *except* operator resolution
+    /// (`catalog::operators::type_kind_matches`), which wildcards on
+    /// `Opaque` specifically. `Any` itself is the generic error-fallback /
+    /// unknown type produced by ~150 other sites (void array methods,
+    /// unresolved calls, dynamic-access fallbacks) and must NOT satisfy
+    /// operator overloads — only a real `Opaque(...)` probe should.
+    Opaque,
     Never,
     Ref(Box<Type>),
     Array(Box<Type>),

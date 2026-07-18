@@ -1,7 +1,9 @@
 # Wirescript Changelog
 
-## Unreleased
+## 0.17.0
 
+- **`Opaque(x)` builtin + `@nofold` annotation** - `Opaque` passes a value through a rerouter and hides it from constant folding; `@nofold` suppresses folding for a declaration, or for the whole file when placed at the top separated by a blank line. No-op placements warn. Groundwork for gate-semantics verification circuits.
+- **Gate semantics probe** - `probes/gate_semantics.ws` prints every probed gate interaction to the console on paste; `scripts/gen_semantics.mjs` turns the dump into `data/gate_semantics.json`, and `scripts/gen_verifier.mjs` generates `probes/verify_semantics.ws`, which re-asserts every recorded case in-game.
 - **Fixed a chip output named `x`/`y`/`z`/`r`/`g`/`b`/`a` reading garbage** - Those names collide with vector/color component access, so reading one split the scalar and returned a component instead of the output. Field access now splits only when the value really is a vector or color.
 - **Fixed a `chip` called from inside a nested anon chip never firing** - Its exec trigger stayed at the root, and an exec pulse cannot cross into an instance grid nested inside another anon chip. Partition now routes boundary-pin wires into the module that directly contains the instance.
 - **A constant argument to a `chip` no longer costs a gate per instance** - `F(1)` materialized a `_Var` in the caller and wired it across the boundary. The constant now folds into the instance itself and its input pin is dropped, matching what the equivalent `mod` emits.

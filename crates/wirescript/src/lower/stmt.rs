@@ -5,17 +5,19 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
         Stmt::Assign(a) => lower_assign(ctx, a),
         Stmt::If(i) => lower_if(ctx, i),
         Stmt::Emit(e) => lower_emit(ctx, e),
-        Stmt::Await(a) => lower_await(ctx, a),
-        Stmt::OutBinding(b) => lower_out_binding(ctx, &b.name, b.value.as_ref(), &b.range),
+        Stmt::Await(a) => ctx.with_nofold(a.no_fold, |ctx| lower_await(ctx, a)),
+        Stmt::OutBinding(b) => ctx.with_nofold(b.no_fold, |ctx| {
+            lower_out_binding(ctx, &b.name, b.value.as_ref(), &b.range)
+        }),
         Stmt::ExprStmt(es) => {
             lower_expr(ctx, &es.expr);
         }
-        Stmt::Handler(h) => lower_handler(ctx, h),
-        Stmt::Let(l) => lower_let_decl(ctx, l),
+        Stmt::Handler(h) => ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h)),
+        Stmt::Let(l) => ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l)),
         Stmt::AnonChip(ac) => lower_anon_chip(ctx, ac),
         Stmt::ChipDecl(c) => lower_chip_decl(ctx, c),
         Stmt::In(_) => {}
-        Stmt::Var(v) => {
+        Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| {
             if ctx.lookup_var(&v.name).is_none() {
                 pre_declare_var(ctx, v);
             }
@@ -114,7 +116,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                     ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
                 }
             } // !is_static
-        }
+        }),
         Stmt::Array(a) => {
             if ctx.lookup_var(&a.name).is_none() {
                 pre_declare_array(ctx, a);

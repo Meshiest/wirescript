@@ -151,6 +151,11 @@ pub(super) struct LowerCtx<'a> {
     /// `///` doc comments keyed by the declaration's source start offset.
     /// Consumed when stamping `DOC_TEXT` onto chip nodes.
     pub(super) doc_comments: &'a HashMap<usize, String>,
+    /// Depth of enclosing `@nofold` declaration subtrees. >0 means every gate
+    /// created by `add_gate`/`add_event` gets stamped with the `_nofold`
+    /// pseudo-property. Incremented/decremented around the lowering of each
+    /// `@nofold`-annotated `let`/`out`/`var`/`chip`/`on` declaration.
+    pub(super) nofold_depth: u32,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -229,6 +234,9 @@ impl<'a> LowerCtx<'a> {
         if opts.chip_id.is_none() {
             opts.chip_id = self.current_anon_chip;
         }
+        if self.nofold_depth > 0 {
+            opts.properties.insert(*sym::NO_FOLD, Literal::Bool(true));
+        }
         self.builder.add_gate(&mut self.ids, opts)
     }
 
@@ -236,11 +244,61 @@ impl<'a> LowerCtx<'a> {
         if opts.chip_id.is_none() {
             opts.chip_id = self.current_anon_chip;
         }
+        if self.nofold_depth > 0 {
+            opts.properties.insert(*sym::NO_FOLD, Literal::Bool(true));
+        }
         self.builder.add_event(&mut self.ids, opts)
+    }
+
+    /// Wraps `ModuleBuilder::add_input` so a chip's boundary `MicrochipInput`
+    /// rerouter node gets stamped with `_nofold` the same way `add_gate`/
+    /// `add_event` stamp regular gates — `add_input`/`add_output` live on
+    /// `ModuleBuilder`, not `LowerCtx`, so they don't see `nofold_depth`
+    /// unless called through here.
+    pub(super) fn add_input(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
+        let id = self.builder.add_input(&mut self.ids, port_name, ty, source_range);
+        if self.nofold_depth > 0
+            && let Some(node) = self.builder.module.nodes.get_mut(&id)
+        {
+            std::sync::Arc::make_mut(&mut node.properties).insert(*sym::NO_FOLD, Literal::Bool(true));
+        }
+        id
+    }
+
+    /// Wraps `ModuleBuilder::add_output` — see `add_input` above.
+    pub(super) fn add_output(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
+        let id = self.builder.add_output(&mut self.ids, port_name, ty, source_range);
+        if self.nofold_depth > 0
+            && let Some(node) = self.builder.module.nodes.get_mut(&id)
+        {
+            std::sync::Arc::make_mut(&mut node.properties).insert(*sym::NO_FOLD, Literal::Bool(true));
+        }
+        id
     }
 
     pub(super) fn connect(&mut self, src: PortRef, dst: PortRef) {
         self.builder.connect(src, dst);
+    }
+
+    /// Run `f` with `nofold_depth` incremented for its duration when `active`
+    /// is true (the enclosing declaration was `@nofold`-annotated). Every
+    /// gate/event `f` creates — directly or through nested lowering calls —
+    /// gets the `_nofold` pseudo-property stamped by `add_gate`/`add_event`.
+    /// Safe against early `return`s inside `f`: a `return` inside a closure
+    /// only unwinds the closure, so the decrement below always runs.
+    pub(super) fn with_nofold<R>(
+        &mut self,
+        active: bool,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if active {
+            self.nofold_depth += 1;
+        }
+        let r = f(self);
+        if active {
+            self.nofold_depth -= 1;
+        }
+        r
     }
 
     pub(super) fn warn(&mut self, msg: impl Into<String>, range: &SourceRange) {

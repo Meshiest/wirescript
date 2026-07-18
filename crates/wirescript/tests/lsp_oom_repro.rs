@@ -11,7 +11,7 @@
 //! Each test arms a watchdog that hard-exits the process if the stage runs
 //! away, so a regression can't take the machine down with it.
 
-use std::collections::HashMap;
+use wirescript::collections::HashMap;
 
 use wirescript::analysis::collect_estimates;
 use wirescript::resolve::{resolve, MemLoader};
@@ -368,14 +368,14 @@ out calibrated: bool = calibratedL.Value
 "#;
 
 fn mem_loader() -> MemLoader {
-    let mut files = HashMap::new();
+    let mut files = HashMap::default();
     files.insert("lib.ws".to_string(), BROKEN_LIB.to_string());
     files.insert("cursor.ws".to_string(), CURSOR_WS.to_string());
     MemLoader { files }
 }
 
 fn full_mem_loader() -> MemLoader {
-    let mut files = HashMap::new();
+    let mut files = HashMap::default();
     files.insert("lib.ws".to_string(), BROKEN_LIB.to_string());
     files.insert("cursor.ws".to_string(), ORIG_CURSOR_WS.to_string());
     files.insert("calibrate.ws".to_string(), ORIG_CALIBRATE_WS.to_string());
@@ -648,7 +648,7 @@ on RoundStart { Again(0) }
 "#;
 
 fn lower_source(src: &str, file: &str) -> wirescript::lower::LowerResult {
-    let loader = MemLoader { files: HashMap::new() };
+    let loader = MemLoader { files: HashMap::default() };
     let resolved = resolve(src, file, &loader);
     let tc = typecheck(&resolved.ast, file);
     wirescript::lower::lower(wirescript::lower::LowerInput {
@@ -696,7 +696,7 @@ fn recursive_inline_mod_lowers_with_diagnostic() {
 #[test]
 fn recursive_chip_estimates_terminate() {
     arm_watchdog(20, "collect_estimates(recursive chip)");
-    let loader = MemLoader { files: HashMap::new() };
+    let loader = MemLoader { files: HashMap::default() };
     let resolved = resolve(RECURSIVE_CHIP_WS, "rec.ws", &loader);
     let tc = typecheck(&resolved.ast, "rec.ws");
     let est = collect_estimates(&resolved.ast, &tc, "rec.ws");
@@ -707,6 +707,6 @@ fn recursive_chip_estimates_terminate() {
 #[test]
 fn recursive_chip_full_lsp_surface_terminates() {
     arm_watchdog(30, "lsp_surface(recursive chip)");
-    let loader = MemLoader { files: HashMap::new() };
+    let loader = MemLoader { files: HashMap::default() };
     lsp_surface("recursive-chip", RECURSIVE_CHIP_WS, "rec.ws", &loader, true);
 }

@@ -48,13 +48,24 @@ fn const_literal_reaches_into_anon_chip() {
         .values()
         .next()
         .expect("the `chip on` block should produce one anon chip module");
-    let lit7 = child.nodes.values().any(|n| {
+    // The 7 must reach the chip-side comparison — either as a cloned Literal
+    // gate wired in, or (since scalar-to-dataless materialization made the EQ
+    // the literal's single consumer) as an inlined InputB data default on the
+    // CompareEqual node itself. Both deliver the value in-game; what broke
+    // originally was the value arriving as NEITHER (dangling cross-boundary
+    // wire reading 0).
+    let lit7_gate = child.nodes.values().any(|n| {
         n.gate_class == crate::ir::gate_class::LITERAL
             && n.properties.get(&*crate::intern::sym::VALUE) == Some(&crate::ir::Literal::Int(7))
     });
+    let lit7_inlined = child.nodes.values().any(|n| {
+        n.gate_class.contains("CompareEqual")
+            && n.properties.get(&crate::intern::intern("InputB"))
+                == Some(&crate::ir::Literal::Int(7))
+    });
     assert!(
-        lit7,
-        "const literal `K = 7` must be cloned into the chip body so the wire stays internal"
+        lit7_gate || lit7_inlined,
+        "const `K = 7` must reach the chip body (cloned literal or inlined EQ default)"
     );
 }
 
@@ -1131,6 +1142,46 @@ fn in_array_passes_to_inline_mod() {
     );
 }
 
+// ── Namespaced (`import * as`) mods resolve their siblings ──
+
+#[test]
+fn namespaced_mod_resolves_siblings() {
+    // A namespaced mod body references sibling constants, arrays, and mods by
+    // bare name; those must resolve when the mod is inlined at a call site in
+    // the importing module (no `_Unsupported` placeholders).
+    let lib = "let K = 7.0\n\
+        array TBL: int[] = [10, 20, 30]\n\
+        mod helper(n: int) -> int { return n + 1 }\n\
+        mod draw(ctrl: controller, i: int) {\n\
+          let v = K + TBL[i]\n\
+          let h = helper(i)\n\
+          ctrl.DisplayText(\"hi\", positionX = v, fontSize = h)\n\
+        }";
+    let diags = lower_with_imports(
+        "import * as lib from \"lib\"\non ControllerJoined(c, uid) { lib.draw(c, 0) }",
+        &[("lib", lib)],
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == "WSP001"),
+        "namespaced mod's sibling refs must resolve (no placeholder); got {:?}",
+        diags
+    );
+}
+
+#[test]
+fn unknown_non_function_call_is_not_ws021() {
+    // A call to a name that is NOT a declared chip/mod (here `vec`, a builtin the
+    // lowerer doesn't implement) must keep the "unsupported placeholder" path,
+    // not be reported as a use-before-declaration.
+    let src = "let v = vec(1.0, 2.0, 3.0)\n";
+    let r = compile(src);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS021"),
+        "unimplemented builtin must NOT emit WS021; got {:?}",
+        r.diagnostics
+    );
+}
+
 #[test]
 fn chip_constant_arg_folds_into_the_instance() {
     // A constant argument used to cross the boundary as a real gate: the caller
@@ -1182,45 +1233,5 @@ on t { Bump(1) Bump(2) }";
         folded,
         vec![1, 2],
         "each instance must keep its own folded constant"
-    );
-}
-
-// ── Namespaced (`import * as`) mods resolve their siblings ──
-
-#[test]
-fn namespaced_mod_resolves_siblings() {
-    // A namespaced mod body references sibling constants, arrays, and mods by
-    // bare name; those must resolve when the mod is inlined at a call site in
-    // the importing module (no `_Unsupported` placeholders).
-    let lib = "let K = 7.0\n\
-        array TBL: int[] = [10, 20, 30]\n\
-        mod helper(n: int) -> int { return n + 1 }\n\
-        mod draw(ctrl: controller, i: int) {\n\
-          let v = K + TBL[i]\n\
-          let h = helper(i)\n\
-          ctrl.DisplayText(\"hi\", positionX = v, fontSize = h)\n\
-        }";
-    let diags = lower_with_imports(
-        "import * as lib from \"lib\"\non ControllerJoined(c, uid) { lib.draw(c, 0) }",
-        &[("lib", lib)],
-    );
-    assert!(
-        !diags.iter().any(|d| d.code == "WSP001"),
-        "namespaced mod's sibling refs must resolve (no placeholder); got {:?}",
-        diags
-    );
-}
-
-#[test]
-fn unknown_non_function_call_is_not_ws021() {
-    // A call to a name that is NOT a declared chip/mod (here `vec`, a builtin the
-    // lowerer doesn't implement) must keep the "unsupported placeholder" path,
-    // not be reported as a use-before-declaration.
-    let src = "let v = vec(1.0, 2.0, 3.0)\n";
-    let r = compile(src);
-    assert!(
-        !r.diagnostics.iter().any(|d| d.code == "WS021"),
-        "unimplemented builtin must NOT emit WS021; got {:?}",
-        r.diagnostics
     );
 }

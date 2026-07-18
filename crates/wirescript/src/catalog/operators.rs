@@ -530,6 +530,21 @@ pub fn operators() -> &'static [OpSpec] {
 }
 
 fn type_kind_matches(want: &Type, got: &Type) -> bool {
+    // `Type::Opaque` (an `Opaque(...)` probe result) is a wildcard: it
+    // matches whatever concrete type the rule expects at that operand
+    // position, so operators still resolve to a real gate instead of
+    // erroring on an operand the typechecker deliberately can't narrow.
+    //
+    // NOTE: `Type::Any` deliberately does *not* get this treatment. `Any`
+    // is the codebase's generic unknown/error-fallback type (~150
+    // producers: void array methods like `arr.clear()`, unresolved
+    // namespace calls, dynamic-access fallbacks) — treating it as an
+    // operator wildcard would silently defeat WS004 for all of them
+    // (e.g. `arr.clear() + 3` would compile into a broken circuit instead
+    // of erroring). Only the dedicated `Opaque` type gets the wildcard.
+    if matches!(want, Type::Opaque) || matches!(got, Type::Opaque) {
+        return true;
+    }
     std::mem::discriminant(want) == std::mem::discriminant(got)
 }
 

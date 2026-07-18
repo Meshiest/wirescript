@@ -154,6 +154,7 @@ struct ParsedAnnotations {
     side: Option<(PortSide, SourceRange)>,
     label: Option<(String, SourceRange)>,
     closed: Option<SourceRange>,
+    nofold: Option<SourceRange>,
 }
 
 struct Parser<'a> {
@@ -306,6 +307,15 @@ impl<'a> Parser<'a> {
         });
     }
 
+    fn warn(&mut self, message: impl Into<String>, start: Pos, end: Pos) {
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            code: "WSP001".to_string(),
+            message: message.into(),
+            range: self.make_range(start, end),
+        });
+    }
+
     fn synchronize(&mut self) {
         while self.peek().kind != TokenKind::Eof {
             let t = self.peek();
@@ -349,6 +359,7 @@ impl<'a> Parser<'a> {
         // line documents the module, not the first decl — so it doesn't merge
         // into it.
         let module_doc = self.collect_module_doc();
+        let module_no_fold = self.collect_module_nofold();
         while self.peek().kind != TokenKind::Eof {
             let doc = self.collect_doc_comment();
             let before = self.pos;
@@ -383,7 +394,31 @@ impl<'a> Parser<'a> {
             decls,
             range: self.make_range(start, end),
             module_doc,
+            no_fold: module_no_fold,
         }
+    }
+
+    /// If the file opens (after any module doc) with `@nofold` separated from
+    /// the first declaration by a blank line, consume it and mark the whole
+    /// module no-fold — same blank-line rule as module doc comments. A
+    /// `@nofold` directly above a declaration is left alone (decl-scoped).
+    fn collect_module_nofold(&mut self) -> bool {
+        let t = self.peek();
+        if t.kind != TokenKind::Annotation || t.text != "nofold" {
+            return false;
+        }
+        // Lookahead: annotation, newline, then another newline (blank) or EOF.
+        let n1 = self.peek_at(1).kind;
+        let n2 = self.peek_at(2).kind;
+        let module_level = (n1 == TokenKind::Newline
+            && (n2 == TokenKind::Newline || n2 == TokenKind::Eof))
+            || n1 == TokenKind::Eof;
+        if !module_level {
+            return false;
+        }
+        self.advance(); // @nofold
+        self.eat_newlines();
+        true
     }
 
     /// If the file opens with a `///` block that is separated from the first
@@ -441,10 +476,18 @@ impl<'a> Parser<'a> {
                 }
                 let side = anns.side.map(|(s, _)| s);
                 let label = anns.label.map(|(l, _)| l);
+                let no_fold = anns.nofold.is_some();
                 if kw("in") {
+                    if let Some(r) = &anns.nofold {
+                        self.warn(
+                            "@nofold has no effect on an 'in' declaration",
+                            r.start,
+                            r.end,
+                        );
+                    }
                     return Some(self.parse_in_decl(side, label));
                 }
-                return Some(TopDecl::Out(self.parse_out_binding(side, label)));
+                return Some(TopDecl::Out(self.parse_out_binding(side, label, no_fold)));
             }
             let next_is_open_chip = kw("open")
                 && self.peek_at(1).kind == TokenKind::Kw
@@ -459,6 +502,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 let label = anns.label.map(|(l, _)| l);
+                let no_fold = anns.nofold.is_some();
                 if next_is_open_chip {
                     if let Some(r) = &anns.closed {
                         self.error(
@@ -468,9 +512,48 @@ impl<'a> Parser<'a> {
                         );
                     }
                     self.advance(); // consume "open"
-                    return Some(self.parse_chip_decl(true, label, false));
+                    let decl = self.parse_chip_decl(true, label, false, no_fold);
+                    if let (TopDecl::AnonChip(_), Some(r)) = (&decl, &anns.nofold) {
+                        self.warn("@nofold has no effect on an anonymous chip", r.start, r.end);
+                    }
+                    return Some(decl);
                 }
-                return Some(self.parse_chip_decl(false, label, anns.closed.is_some()));
+                let decl = self.parse_chip_decl(false, label, anns.closed.is_some(), no_fold);
+                if let (TopDecl::AnonChip(_), Some(r)) = (&decl, &anns.nofold) {
+                    self.warn("@nofold has no effect on an anonymous chip", r.start, r.end);
+                }
+                return Some(decl);
+            }
+            // `@nofold` (alone — no side/label/closed) is also legal directly on
+            // `var` / `static var` / `let` / `on`, at any nesting depth. Any
+            // other annotation combined with these still falls through to the
+            // generic "must be followed by ..." error below, unchanged.
+            let is_static_var = kw("static")
+                && self.peek_at(1).kind == TokenKind::Kw
+                && self.peek_at(1).text == "var";
+            let bare_nofold = anns.nofold.is_some()
+                && anns.side.is_none()
+                && anns.label.is_none()
+                && anns.closed.is_none();
+            if bare_nofold && (kw("var") || is_static_var || kw("let") || kw("on")) {
+                if is_static_var {
+                    self.advance(); // consume "static"
+                    return Some(self.parse_var_decl(true, true));
+                }
+                if kw("var") {
+                    return Some(self.parse_var_decl(false, true));
+                }
+                if kw("let") {
+                    let mut decl = self.parse_let_decl();
+                    match &mut decl {
+                        TopDecl::Let(l) => l.no_fold = true,
+                        TopDecl::Event(e) => e.no_fold = true,
+                        TopDecl::Await(a) => a.no_fold = true,
+                        _ => {}
+                    }
+                    return Some(decl);
+                }
+                return Some(TopDecl::Handler(self.parse_handler(true)));
             }
             if kw("mod") {
                 self.error(
@@ -481,7 +564,8 @@ impl<'a> Parser<'a> {
                 return Some(self.parse_mod_decl());
             }
             self.error(
-                "an annotation must be followed by an 'in', 'out', or chip declaration"
+                "an annotation must be followed by an 'in', 'out', or chip declaration \
+                 (a bare @nofold is also allowed before 'var', 'static var', 'let', or 'on')"
                     .to_string(),
                 t.start,
                 t2.end,
@@ -493,25 +577,25 @@ impl<'a> Parser<'a> {
         }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
-                "var" => return Some(self.parse_var_decl(false)),
+                "var" => return Some(self.parse_var_decl(false, false)),
                 "static" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "var" {
                         self.advance(); // consume "static"
-                        return Some(self.parse_var_decl(true));
+                        return Some(self.parse_var_decl(true, false));
                     }
                 }
                 "buffer" => return Some(self.parse_buffer_decl()),
                 "in" => return Some(self.parse_in_decl(None, None)),
-                "out" => return Some(TopDecl::Out(self.parse_out_binding(None, None))),
+                "out" => return Some(TopDecl::Out(self.parse_out_binding(None, None, false))),
                 "let" => return Some(self.parse_let_decl()),
-                "on" => return Some(TopDecl::Handler(self.parse_handler())),
+                "on" => return Some(TopDecl::Handler(self.parse_handler(false))),
                 "array" => return Some(self.parse_array_decl()),
-                "chip" => return Some(self.parse_chip_decl(false, None, false)),
+                "chip" => return Some(self.parse_chip_decl(false, None, false, false)),
                 "mod" => return Some(self.parse_mod_decl()),
                 "open" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
                         self.advance(); // consume "open"
-                        return Some(self.parse_chip_decl(true, None, false));
+                        return Some(self.parse_chip_decl(true, None, false, false));
                     }
                 }
                 "fn" => return Some(self.parse_fn_decl()),
@@ -548,7 +632,7 @@ impl<'a> Parser<'a> {
 
     // ---------- declarations ----------
 
-    fn parse_var_decl(&mut self, is_static: bool) -> TopDecl {
+    fn parse_var_decl(&mut self, is_static: bool, no_fold: bool) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("var")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let typ = if self.match_tok(TokenKind::Colon, None).is_some() {
@@ -568,6 +652,7 @@ impl<'a> Parser<'a> {
             typ,
             init,
             is_static,
+            no_fold,
             range: self.make_range(start, end),
         })
     }
@@ -658,6 +743,13 @@ impl<'a> Parser<'a> {
                         anns.closed = Some(self.make_range(tok.start, tok.end));
                     }
                 }
+                "nofold" => {
+                    if anns.nofold.is_some() {
+                        self.error("duplicate @nofold".to_string(), tok.start, tok.end);
+                    } else {
+                        anns.nofold = Some(self.make_range(tok.start, tok.end));
+                    }
+                }
                 w => match PortSide::from_word(w) {
                     Some(side) => {
                         if anns.side.is_some() {
@@ -672,7 +764,7 @@ impl<'a> Parser<'a> {
                     }
                     None => self.error(
                         format!(
-                            "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, or @closed",
+                            "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, or @nofold",
                             w
                         ),
                         tok.start,
@@ -687,7 +779,12 @@ impl<'a> Parser<'a> {
         anns
     }
 
-    fn parse_out_binding(&mut self, side: Option<PortSide>, label: Option<String>) -> OutBinding {
+    fn parse_out_binding(
+        &mut self,
+        side: Option<PortSide>,
+        label: Option<String>,
+        no_fold: bool,
+    ) -> OutBinding {
         let start = self.expect(TokenKind::Kw, Some("out")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let typ = if self.match_tok(TokenKind::Colon, None).is_some() {
@@ -705,6 +802,7 @@ impl<'a> Parser<'a> {
                 typ,
                 side,
                 label: label.clone(),
+                no_fold,
                 range: self.make_range(start, end),
             }
         } else {
@@ -716,6 +814,7 @@ impl<'a> Parser<'a> {
                 typ,
                 side,
                 label,
+                no_fold,
                 range: self.make_range(start, end),
             }
         }
@@ -802,6 +901,7 @@ impl<'a> Parser<'a> {
                 binding,
                 typ,
                 value,
+                no_fold: false,
                 range: self.make_range(start, end),
             });
         }
@@ -846,6 +946,7 @@ impl<'a> Parser<'a> {
                 binding,
                 typ,
                 value,
+                no_fold: false,
                 range: self.make_range(start, end),
             });
         }
@@ -878,6 +979,7 @@ impl<'a> Parser<'a> {
                         text: "0".into(),
                         range: self.make_range(start, end),
                     },
+                    no_fold: false,
                     range: self.make_range(start, end),
                 });
             }
@@ -895,6 +997,7 @@ impl<'a> Parser<'a> {
                     name,
                     source,
                     captured_body,
+                    no_fold: false,
                     range: self.make_range(start, end),
                 });
             }
@@ -906,6 +1009,7 @@ impl<'a> Parser<'a> {
                 name,
                 source,
                 captured_body: None,
+                no_fold: false,
                 range: self.make_range(start, end),
             });
         }
@@ -926,6 +1030,7 @@ impl<'a> Parser<'a> {
             binding,
             typ,
             value,
+            no_fold: false,
             range: self.make_range(start, end),
         })
     }
@@ -993,7 +1098,13 @@ impl<'a> Parser<'a> {
     }
 
     // `chip Name(params) [-> outputs] { body }`
-    fn parse_chip_decl(&mut self, open: bool, label: Option<String>, closed: bool) -> TopDecl {
+    fn parse_chip_decl(
+        &mut self,
+        open: bool,
+        label: Option<String>,
+        closed: bool,
+        no_fold: bool,
+    ) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("chip")).start;
         // Shorthand: `chip let a = 1, b = 2, c = 3`
         if self.check(TokenKind::Kw, Some("let")) {
@@ -1018,6 +1129,7 @@ impl<'a> Parser<'a> {
                     binding,
                     typ,
                     value,
+                    no_fold: false,
                     range: self.make_range(ls, le),
                 }));
                 if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -1062,7 +1174,7 @@ impl<'a> Parser<'a> {
         }
         // `chip on trigger { ... }` → `chip { on trigger { ... } }`
         if self.check(TokenKind::Kw, Some("on")) {
-            let handler = self.parse_handler();
+            let handler = self.parse_handler(false);
             let end = handler.range.end;
             return TopDecl::AnonChip(AnonChipDecl {
                 open,
@@ -1105,6 +1217,7 @@ impl<'a> Parser<'a> {
             inline: false,
             label,
             closed,
+            no_fold,
         })
     }
 
@@ -1210,6 +1323,7 @@ impl<'a> Parser<'a> {
             inline: true,
             label: None,
             closed: false,
+            no_fold: false,
         })
     }
 
@@ -1466,7 +1580,7 @@ impl<'a> Parser<'a> {
     }
 
     // `event name = expr` or `event name = on Trigger { body }`
-    fn parse_handler(&mut self) -> Handler {
+    fn parse_handler(&mut self, no_fold: bool) -> Handler {
         let start = self.expect(TokenKind::Kw, Some("on")).start;
 
         // For expression triggers we build a synthetic let binding that is
@@ -1491,6 +1605,7 @@ impl<'a> Parser<'a> {
                 },
                 typ: None,
                 value: expr,
+                no_fold: false,
                 range: expr_range.clone(),
             });
 
@@ -1541,6 +1656,7 @@ impl<'a> Parser<'a> {
             params,
             config,
             body,
+            no_fold,
             range: self.make_range(start, end),
         }
     }
@@ -1817,13 +1933,21 @@ impl<'a> Parser<'a> {
                 }
                 let side = anns.side.map(|(s, _)| s);
                 let label = anns.label.map(|(l, _)| l);
+                let no_fold = anns.nofold.is_some();
                 if kw("in") {
+                    if let Some(r) = &anns.nofold {
+                        self.warn(
+                            "@nofold has no effect on an 'in' declaration",
+                            r.start,
+                            r.end,
+                        );
+                    }
                     if let TopDecl::In(i) = self.parse_in_decl(side, label) {
                         return Some(Stmt::In(i));
                     }
                     return None;
                 }
-                return Some(Stmt::OutBinding(self.parse_out_binding(side, label)));
+                return Some(Stmt::OutBinding(self.parse_out_binding(side, label, no_fold)));
             }
             let next_is_open_chip = kw("open")
                 && self.peek_at(1).kind == TokenKind::Kw
@@ -1838,6 +1962,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 let label = anns.label.map(|(l, _)| l);
+                let no_fold = anns.nofold.is_some();
                 let (open, closed) = if next_is_open_chip {
                     if let Some(r) = &anns.closed {
                         self.error(
@@ -1851,11 +1976,61 @@ impl<'a> Parser<'a> {
                 } else {
                     (false, anns.closed.is_some())
                 };
-                match self.parse_chip_decl(open, label, closed) {
-                    TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
+                match self.parse_chip_decl(open, label, closed, no_fold) {
+                    TopDecl::AnonChip(ac) => {
+                        if let Some(r) = &anns.nofold {
+                            self.warn(
+                                "@nofold has no effect on an anonymous chip",
+                                r.start,
+                                r.end,
+                            );
+                        }
+                        return Some(Stmt::AnonChip(ac));
+                    }
                     TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
                     _ => return None,
                 }
+            }
+            // `@nofold` (alone — no side/label/closed) is also legal directly on
+            // `var` / `static var` / `let` / `on`, at any nesting depth. Any
+            // other annotation combined with these still falls through to the
+            // generic "must be followed by ..." error below, unchanged.
+            let is_static_var = kw("static")
+                && self.peek_at(1).kind == TokenKind::Kw
+                && self.peek_at(1).text == "var";
+            let bare_nofold = anns.nofold.is_some()
+                && anns.side.is_none()
+                && anns.label.is_none()
+                && anns.closed.is_none();
+            if bare_nofold && (kw("var") || is_static_var || kw("let") || kw("on")) {
+                if is_static_var {
+                    self.advance(); // consume "static"
+                    if let TopDecl::Var(v) = self.parse_var_decl(true, true) {
+                        return Some(Stmt::Var(v));
+                    }
+                    return None;
+                }
+                if kw("var") {
+                    if let TopDecl::Var(v) = self.parse_var_decl(false, true) {
+                        return Some(Stmt::Var(v));
+                    }
+                    return None;
+                }
+                if kw("let") {
+                    let mut decl = self.parse_let_decl();
+                    match &mut decl {
+                        TopDecl::Let(l) => l.no_fold = true,
+                        TopDecl::Event(e) => e.no_fold = true,
+                        TopDecl::Await(a) => a.no_fold = true,
+                        _ => {}
+                    }
+                    return match decl {
+                        TopDecl::Let(v) => Some(Stmt::Let(v)),
+                        TopDecl::Await(a) => Some(Stmt::Await(a)),
+                        _ => None,
+                    };
+                }
+                return Some(Stmt::Handler(self.parse_handler(true)));
             }
             if kw("mod") {
                 self.error(
@@ -1869,7 +2044,8 @@ impl<'a> Parser<'a> {
                 return None;
             }
             self.error(
-                "an annotation must be followed by an 'in', 'out', or chip declaration"
+                "an annotation must be followed by an 'in', 'out', or chip declaration \
+                 (a bare @nofold is also allowed before 'var', 'static var', 'let', or 'on')"
                     .to_string(),
                 t.start,
                 t2.end,
@@ -1882,14 +2058,14 @@ impl<'a> Parser<'a> {
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
                 "var" => {
-                    if let TopDecl::Var(v) = self.parse_var_decl(false) {
+                    if let TopDecl::Var(v) = self.parse_var_decl(false, false) {
                         return Some(Stmt::Var(v));
                     }
                 }
                 "static" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "var" {
                         self.advance();
-                        if let TopDecl::Var(v) = self.parse_var_decl(true) {
+                        if let TopDecl::Var(v) = self.parse_var_decl(true, false) {
                             return Some(Stmt::Var(v));
                         }
                     }
@@ -1907,7 +2083,7 @@ impl<'a> Parser<'a> {
                         return Some(Stmt::Buffer(v));
                     }
                 }
-                "out" => return Some(Stmt::OutBinding(self.parse_out_binding(None, None))),
+                "out" => return Some(Stmt::OutBinding(self.parse_out_binding(None, None, false))),
                 "let" => {
                     let decl = self.parse_let_decl();
                     match decl {
@@ -1926,7 +2102,7 @@ impl<'a> Parser<'a> {
                         return Some(Stmt::In(i));
                     }
                 }
-                "on" => return Some(Stmt::Handler(self.parse_handler())),
+                "on" => return Some(Stmt::Handler(self.parse_handler(false))),
                 "emit" => return Some(self.parse_emit()),
                 "await" => return Some(self.parse_await_stmt()),
                 "return" => {
@@ -1947,7 +2123,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "if" => return Some(self.parse_if_stmt()),
-                "chip" => match self.parse_chip_decl(false, None, false) {
+                "chip" => match self.parse_chip_decl(false, None, false, false) {
                     TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
                     TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
                     _ => {}
@@ -1955,7 +2131,7 @@ impl<'a> Parser<'a> {
                 "open" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
                         self.advance();
-                        if let TopDecl::AnonChip(ac) = self.parse_chip_decl(true, None, false) {
+                        if let TopDecl::AnonChip(ac) = self.parse_chip_decl(true, None, false, false) {
                             return Some(Stmt::AnonChip(ac));
                         }
                     }
@@ -2110,6 +2286,7 @@ impl<'a> Parser<'a> {
             destructure: None,
             value_expr,
             exec_expr,
+            no_fold: false,
             range: self.make_range(start, end),
         })
     }
@@ -3280,7 +3457,7 @@ mod tests {
         assert!(
             r.diagnostics[0]
                 .message
-                .contains("expected @left, @right, @top, @bottom, @label, or @closed"),
+                .contains("expected @left, @right, @top, @bottom, @label, @closed, or @nofold"),
             "diags: {:?}",
             r.diagnostics
         );

@@ -15,10 +15,13 @@ pub struct UnifyError {
 /// flow into. Returns `None` if no rule matches.
 pub fn unify_glb(a: &Type, b: &Type) -> Option<Type> {
     use Type::*;
-    if matches!(a, Any) {
+    // `Opaque` (an `Opaque(...)` probe result) behaves exactly like `Any`
+    // here — it propagates the other side's type rather than participating
+    // in numeric-rank promotion.
+    if matches!(a, Any | Opaque) {
         return Some(b.clone());
     }
-    if matches!(b, Any) {
+    if matches!(b, Any | Opaque) {
         return Some(a.clone());
     }
     if coerce(a, b) == CoerceRule::Same {
@@ -68,6 +71,11 @@ mod tests {
     fn any_sides_propagate() {
         assert_eq!(unify_glb(&Type::Any, &Type::Int), Some(Type::Int));
         assert_eq!(unify_glb(&Type::Float, &Type::Any), Some(Type::Float));
+    }
+    #[test]
+    fn opaque_sides_propagate_like_any() {
+        assert_eq!(unify_glb(&Type::Opaque, &Type::Int), Some(Type::Int));
+        assert_eq!(unify_glb(&Type::Float, &Type::Opaque), Some(Type::Float));
     }
     #[test]
     fn unrelated_returns_none() {

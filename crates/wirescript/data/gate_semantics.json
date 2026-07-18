@@ -1,0 +1,3506 @@
+{
+  "build": "cl14860",
+  "generatedAt": "2026-07-18T21:51:01.374Z",
+  "probeVersion": 2,
+  "gates": {
+    "BrickComponentType_WireGraph_Expr_CompareEqual": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "9007199254740993"
+            },
+            {
+              "variant": "int",
+              "value": "9007199254740992"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "str",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "float",
+              "value": "-1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "A"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "NaN"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "inf"
+            },
+            {
+              "variant": "float",
+              "value": "inf"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            "unwired"
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_CompareNotEqual": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "9007199254740993"
+            },
+            {
+              "variant": "int",
+              "value": "9007199254740992"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "str",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_LogicalAND": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "2"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "0"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            "unwired"
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": [
+        {
+          "kind": "annihilator",
+          "when": {
+            "variant": "bool",
+            "value": "false"
+          },
+          "result": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ]
+    },
+    "BrickComponentType_WireGraph_Expr_LogicalOR": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "2"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        }
+      ],
+      "rules": [
+        {
+          "kind": "annihilator",
+          "when": {
+            "variant": "bool",
+            "value": "true"
+          },
+          "result": {
+            "variant": "bool",
+            "value": "true"
+          }
+        }
+      ]
+    },
+    "BrickComponentType_WireGraph_Expr_LogicalXOR": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_LogicalNOT": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_CompareLess": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "inf"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "b"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            "unwired"
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_CompareLessOrEqual": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "inf"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "b"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_CompareGreater": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "inf"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "b"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "inf"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "b"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "10"
+            },
+            {
+              "variant": "str",
+              "value": "9"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_Select": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "111"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "111"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "111"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "111"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "inf"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "111"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "111"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        },
+        {
+          "inputs": [
+            "unwired"
+          ],
+          "output": {
+            "variant": "int",
+            "value": "222"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Exec_Branch": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "inf"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        },
+        {
+          "inputs": [
+            "unwired"
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAdd": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "3"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.25"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.75"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "2"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "b"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": "x"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            "unwired"
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathSubtract": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-2"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.25"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.25"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathMultiply": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "2"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.25"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.125"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathDivide": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.25"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "2"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "2"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathModulo": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "7"
+            },
+            {
+              "variant": "int",
+              "value": "3"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.25"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0"
+            },
+            {
+              "variant": "float",
+              "value": "0"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "NaN"
+            },
+            {
+              "variant": "float",
+              "value": "1"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "true"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "bool",
+              "value": "false"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        }
+      ],
+      "rules": []
+    }
+  }
+}

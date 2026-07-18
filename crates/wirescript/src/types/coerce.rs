@@ -40,6 +40,7 @@ fn type_eq(a: &Type, b: &Type) -> bool {
         | (Prefab, Prefab)
         | (Exec, Exec)
         | (Any, Any)
+        | (Opaque, Opaque)
         | (Never, Never) => true,
         (Ref(ai), Ref(bi)) => type_eq(ai, bi),
         (Array(ai), Array(bi)) => type_eq(ai, bi),
@@ -94,8 +95,9 @@ fn formats_to_string(t: &Type) -> bool {
 
 pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     use Type::*;
-    // `any` is the universal target and source.
-    if matches!(from, Any) || matches!(to, Any) {
+    // `any` (and `Opaque`, which behaves exactly like `any` outside of
+    // operator resolution) is the universal target and source.
+    if matches!(from, Any | Opaque) || matches!(to, Any | Opaque) {
         return CoerceRule::Same;
     }
     if type_eq(from, to) {
@@ -217,6 +219,12 @@ mod tests {
     fn any_is_universal() {
         assert_eq!(coerce(&Type::Any, &Type::Int), CoerceRule::Same);
         assert_eq!(coerce(&Type::Int, &Type::Any), CoerceRule::Same);
+    }
+    #[test]
+    fn opaque_is_universal_like_any() {
+        assert_eq!(coerce(&Type::Opaque, &Type::Int), CoerceRule::Same);
+        assert_eq!(coerce(&Type::Int, &Type::Opaque), CoerceRule::Same);
+        assert_eq!(coerce(&Type::Opaque, &Type::String), CoerceRule::Same);
     }
     #[test]
     fn record_auto_unwraps_to_matching_field() {

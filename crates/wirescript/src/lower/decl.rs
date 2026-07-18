@@ -4,14 +4,16 @@ use super::*;
 
 pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
     match d {
-        TopDecl::Out(b) => lower_out_binding(ctx, &b.name, b.value.as_ref(), &b.range),
-        TopDecl::Handler(h) => lower_handler(ctx, h),
-        TopDecl::Event(e) => lower_event_decl(ctx, e),
-        TopDecl::Let(l) => lower_let_decl(ctx, l),
+        TopDecl::Out(b) => ctx.with_nofold(b.no_fold, |ctx| {
+            lower_out_binding(ctx, &b.name, b.value.as_ref(), &b.range)
+        }),
+        TopDecl::Handler(h) => ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h)),
+        TopDecl::Event(e) => ctx.with_nofold(e.no_fold, |ctx| lower_event_decl(ctx, e)),
+        TopDecl::Let(l) => ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l)),
         TopDecl::Buffer(b) => lower_buffer_body(ctx, b),
         // Gate created in pre-pass; top level is pure, so a non-constant init
         // has no exec reset to apply it — surface the drop.
-        TopDecl::Var(v) => warn_unbaked_var_init(ctx, v, true),
+        TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true)),
         TopDecl::Array(_) | TopDecl::In(_) => {} // handled in pre-pass
         TopDecl::Chip(c) => lower_chip_decl(ctx, c),
         TopDecl::AnonChip(ac) => lower_anon_chip(ctx, ac),
@@ -70,6 +72,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 inline: true,
                 label: None,
                 closed: false,
+                no_fold: false,
             };
             lower_chip_decl(ctx, &chip);
         }
@@ -100,14 +103,14 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // reference drops to an `_Unsupported` placeholder that reads
                     // 0 at runtime. (Constant `array` initializers bake straight
                     // into the ArrayVar node during pre-declaration.)
-                    TopDecl::Let(l) => lower_let_decl(ctx, l),
+                    TopDecl::Let(l) => ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l)),
                     TopDecl::Array(a) if ctx.scope.get(&a.name).is_none() => {
                         pre_declare_array(ctx, a)
                     }
                     TopDecl::Var(v) if ctx.scope.get(&v.name).is_none() => {
-                        pre_declare_var(ctx, v);
+                        ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v));
                         // Module-level = pure: a non-constant init is dropped.
-                        warn_unbaked_var_init(ctx, v, true);
+                        ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true));
                     }
                     TopDecl::Buffer(b) if ctx.scope.get(&b.name).is_none() => {
                         pre_declare_buffer(ctx, b);

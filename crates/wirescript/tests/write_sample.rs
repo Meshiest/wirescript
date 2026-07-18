@@ -2,7 +2,7 @@
 //! loaded in-game via `BR.World.LoadAdditive` for manual validation.
 //! Ignored by default — run with `cargo test --test write_sample -- --ignored`.
 
-use std::collections::HashMap;
+use wirescript::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ fn phase1_sample() {
             id,
             kind: NodeKind::Gate,
             gate_class: "Component_Internal_Rerouter",
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: ports.clone(),
             source_range: SourceRange::default(),
             chip_id: None,
@@ -57,7 +57,7 @@ fn phase1_sample() {
         },
     });
 
-    let mut placements = HashMap::new();
+    let mut placements = HashMap::default();
     placements.insert(id_a, Placement { x: 0, y: 0, z: 2 });
     placements.insert(id_b, Placement { x: 8, y: 0, z: 2 });
 

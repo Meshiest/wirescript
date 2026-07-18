@@ -119,6 +119,8 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
         is_root_module: true,
         doc_comments: input.doc_comments,
+        // Module-level `@nofold` (top of file + blank line) marks everything.
+        nofold_depth: input.ast.no_fold as u32,
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -216,7 +218,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
     let value_sym = *sym::VALUE;
     let mut make_nodes: Vec<Node> = Vec::new();
     let mut make_for: HashMap<NodeId, NodeId> = HashMap::default();
-    let mut rewires: Vec<(usize, NodeId)> = Vec::new();
+    let mut rewires: Vec<(usize, NodeId, WirePort)> = Vec::new();
 
     for (i, w) in module.wires.iter().enumerate() {
         let Some(src) = module.nodes.get(&w.source.node_id) else {
@@ -257,6 +259,116 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             _ => None,
         };
         let Some((gate_class, out_ty, fields)) = recipe else {
+            // Scalar literal (int/float/bool/string) whose target port cannot
+            // hold an inlined data default (e.g. Opaque's rerouter RER_Input —
+            // no matching data field, so emit's inline is silently dropped and
+            // the gate reads 0/empty in-game): materialize a real pure gate
+            // whose UNWIRED inputs carry the value as data defaults (the same
+            // in-game-proven mechanism as `n + 1` inlining). A Variable gate
+            // is NOT usable here: its Value output stays null until an exec
+            // write — InitialValue data alone does not drive the port.
+            let scalar = matches!(
+                src.properties.get(&value_sym),
+                Some(Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) | Literal::String(_))
+            );
+            if !scalar {
+                continue;
+            }
+            // Cross-module wires (target lives in a chip child) keep the old
+            // literal-clone path in partition_anon_chips — only same-module
+            // targets are considered here.
+            let Some(target) = module.nodes.get(&w.target.node_id) else {
+                continue;
+            };
+            let target_ok =
+                crate::emit::port_accepts_inline_variant(target.gate_class, w.target.port);
+            let target_placeholder =
+                target.gate_class == gc::LITERAL || target.gate_class == gc::UNSUPPORTED;
+            if target_ok || target_placeholder {
+                continue;
+            }
+            let lit = src.properties.get(&value_sym).unwrap().clone();
+            let no_fold = src.properties.contains_key(&*sym::NO_FOLD);
+            let (const_class, props, out_port_sym, out_port, ty): (
+                &'static str,
+                Vec<(crate::intern::Sym, Literal)>,
+                crate::intern::Sym,
+                WirePort,
+                Type,
+            ) = match &lit {
+                Literal::Int(n) => (
+                    "BrickComponentType_WireGraph_Expr_MathAdd",
+                    vec![
+                        (*sym::INPUT_A, Literal::Int(*n)),
+                        (*sym::INPUT_B, Literal::Int(0)),
+                    ],
+                    *sym::OUTPUT,
+                    WirePort::Output,
+                    Type::Int,
+                ),
+                Literal::Float(f) => (
+                    "BrickComponentType_WireGraph_Expr_MathAdd",
+                    vec![
+                        (*sym::INPUT_A, Literal::Float(*f)),
+                        (*sym::INPUT_B, Literal::Float(0.0)),
+                    ],
+                    *sym::OUTPUT,
+                    WirePort::Output,
+                    Type::Float,
+                ),
+                Literal::Bool(b) => (
+                    "BrickComponentType_WireGraph_Expr_LogicalOR",
+                    vec![
+                        (*sym::B_INPUT_A, Literal::Bool(*b)),
+                        (*sym::B_INPUT_B, Literal::Bool(false)),
+                    ],
+                    *sym::B_OUTPUT,
+                    WirePort::BOutput,
+                    Type::Bool,
+                ),
+                Literal::String(str_v) => (
+                    gc::STRING_CONCATENATE,
+                    vec![
+                        (*sym::INPUT_A, Literal::String(str_v.clone())),
+                        (*sym::INPUT_B, Literal::String(String::new())),
+                        (intern_static("Separator"), Literal::String(String::new())),
+                    ],
+                    *sym::OUTPUT,
+                    WirePort::Output,
+                    Type::String,
+                ),
+                _ => unreachable!("scalar match above"),
+            };
+            let const_id = *make_for.entry(w.source.node_id).or_insert_with(|| {
+                let id = NodeId::fresh();
+                let mut properties: HashMap<crate::intern::Sym, Literal> = HashMap::default();
+                for (k, v) in props {
+                    properties.insert(k, v);
+                }
+                if no_fold {
+                    properties.insert(*sym::NO_FOLD, Literal::Bool(true));
+                }
+                make_nodes.push(Node {
+                    id,
+                    kind: NodeKind::Gate,
+                    gate_class: const_class,
+                    properties: std::sync::Arc::new(properties),
+                    ports: std::sync::Arc::new(GateIO {
+                        inputs: vec![],
+                        outputs: vec![PortSpec {
+                            name: out_port_sym,
+                            ty: ty.clone(),
+                        }],
+                    }),
+                    source_range: src.source_range.clone(),
+                    chip_id: src.chip_id,
+                    chain_id: src.chain_id,
+                    scope_id: src.scope_id,
+                    note: Some("materialized constant (dataless target)"),
+                });
+                id
+            });
+            rewires.push((i, const_id, out_port));
             continue;
         };
         let target_ok = module
@@ -292,16 +404,16 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             });
             id
         });
-        rewires.push((i, make_id));
+        rewires.push((i, make_id, WirePort::Output));
     }
 
     for n in make_nodes {
         module.nodes.insert(n.id, n);
     }
-    for (i, make_id) in rewires {
+    for (i, make_id, port) in rewires {
         module.wires[i].source = PortRef {
             node_id: make_id,
-            port: WirePort::Output,
+            port,
         };
     }
     for child_module in module.chips.values_mut() {
@@ -354,6 +466,16 @@ fn inline_orphan_literals(module: &mut Module) {
                 continue;
             }
             let (target_id, target_port) = (target.node_id, target.port);
+            // Rerouter (`Opaque`) has no data struct — folding the literal
+            // into a node property would silently drop it at emit time
+            // instead of blocking the fold as intended. Keep it wired.
+            if module
+                .nodes
+                .get(&target_id)
+                .is_some_and(|t| t.gate_class == gc::REROUTER)
+            {
+                continue;
+            }
             let value = match module
                 .nodes
                 .get(&lit_id)
@@ -886,6 +1008,7 @@ pub fn compile_chip_template(
         known_fn_names: Arc::new(HashSet::default()),
         is_root_module: false,
         doc_comments: &empty_docs,
+        nofold_depth: 0,
     };
 
     // Create input ports
@@ -907,12 +1030,7 @@ pub fn compile_chip_template(
                 let ft = type_of_type_expr(&field.typ);
                 let is_array = matches!(&field.typ, TypeExpr::Array { .. });
                 let is_ref = matches!(&field.typ, TypeExpr::Ref { .. });
-                let node_id = ctx.builder.add_input(
-                    &mut ctx.ids,
-                    &port_name,
-                    ft.clone(),
-                    chip_decl.range.clone(),
-                );
+                let node_id = ctx.add_input(&port_name, ft.clone(), chip_decl.range.clone());
                 let binding = if is_array {
                     let inner = match &ft {
                         Type::Array(inner) => inner.as_ref().clone(),
@@ -957,9 +1075,7 @@ pub fn compile_chip_template(
                 Type::Array(inner) => inner.as_ref().clone(),
                 _ => t.clone(),
             };
-            let node_id =
-                ctx.builder
-                    .add_input(&mut ctx.ids, &inp.name, t.clone(), chip_decl.range.clone());
+            let node_id = ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
             ctx.scope.insert(
                 &inp.name,
                 Binding::Var(VarRecord {
@@ -975,9 +1091,7 @@ pub fn compile_chip_template(
             );
         } else {
             let t = type_of_type_expr(&inp.typ);
-            let node_id =
-                ctx.builder
-                    .add_input(&mut ctx.ids, &inp.name, t.clone(), chip_decl.range.clone());
+            let node_id = ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
             ctx.scope.insert(
                 &inp.name,
                 Binding::Input(NodeRecord { node_id, ty: t }),
@@ -988,9 +1102,7 @@ pub fn compile_chip_template(
     // Create output ports
     for out in &chip_decl.outputs {
         let t = type_of_type_expr(&out.typ);
-        let node_id =
-            ctx.builder
-                .add_output(&mut ctx.ids, &out.name, t.clone(), chip_decl.range.clone());
+        let node_id = ctx.add_output(&out.name, t.clone(), chip_decl.range.clone());
         ctx.scope.insert(
             &crate::lower::context::output_scope_key(&out.name),
             Binding::Output(NodeRecord { node_id, ty: t }),
@@ -1003,7 +1115,7 @@ pub fn compile_chip_template(
     for stmt in &chip_decl.body.stmts {
         match stmt {
             Stmt::In(i) => pre_declare_input(&mut ctx, i),
-            Stmt::Var(v) => pre_declare_var(&mut ctx, v),
+            Stmt::Var(v) => ctx.with_nofold(v.no_fold, |c| pre_declare_var(c, v)),
             Stmt::Buffer(b) => pre_declare_buffer(&mut ctx, b),
             Stmt::Array(a) => pre_declare_array(&mut ctx, a),
             Stmt::OutBinding(o) if !sig_output_names.contains(&o.name.as_ref()) => {

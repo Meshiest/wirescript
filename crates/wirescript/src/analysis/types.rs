@@ -17,6 +17,10 @@ pub fn type_str(t: &Type) -> String {
         Type::Exec => "exec".into(),
         Type::Color => "color".into(),
         Type::Any => "any".into(),
+        // `Opaque` (an `Opaque(...)` probe result) displays identically to
+        // `any` — it behaves like `any` everywhere except operator
+        // resolution, and that distinction isn't user-facing.
+        Type::Opaque => "any".into(),
         Type::Ref(inner) => format!("*{}", type_str(inner)),
         Type::Array(inner) => format!("{}[]", type_str(inner)),
         Type::Tuple(fields) => {

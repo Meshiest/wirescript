@@ -32,13 +32,8 @@ fn empty_module_produces_nonzero_brz_bytes() {
     let module = Module::new("phase1_empty");
     let lr = wirescript::layout::LayoutResult::default();
     let template_cache = Arc::new(TemplateCache::new());
-    let bytes = emit_brz(
-        &module,
-        &lr,
-        &EmitOptions::default(),
-        &template_cache,
-    )
-    .expect("empty module should still produce a valid brz (just the outer chip)");
+    let bytes = emit_brz(&module, &lr, &EmitOptions::default(), &template_cache)
+        .expect("empty module should still produce a valid brz (just the outer chip)");
     assert!(bytes.len() > 32, "brz bytes should be well over a header");
     // `.brz` files start with a `BRZ\0` magic then a zstd-compressed payload.
     assert_eq!(&bytes[..4], b"BRZ\0", "expected BRZ magic");
@@ -53,7 +48,7 @@ fn single_reroute_gate_inside_chip() {
         id: rer_id,
         kind: NodeKind::Gate,
         gate_class: "Component_Internal_Rerouter",
-        properties: Arc::new(HashMap::new()),
+        properties: Arc::new(HashMap::default()),
         ports: Arc::new(rerouter_ports()),
         source_range: SourceRange::default(),
         chip_id: None,
@@ -63,7 +58,7 @@ fn single_reroute_gate_inside_chip() {
     };
     module.add_node(reroute);
 
-    let mut placements = HashMap::new();
+    let mut placements = HashMap::default();
     placements.insert(rer_id, Placement { x: 0, y: 0, z: 2 });
     let lr = wirescript::layout::LayoutResult {
         placements,
@@ -71,13 +66,8 @@ fn single_reroute_gate_inside_chip() {
     };
 
     let template_cache = Arc::new(TemplateCache::new());
-    let bytes = emit_brz(
-        &module,
-        &lr,
-        &EmitOptions::default(),
-        &template_cache,
-    )
-    .expect("emit succeeds");
+    let bytes =
+        emit_brz(&module, &lr, &EmitOptions::default(), &template_cache).expect("emit succeeds");
     assert!(
         bytes.len() > 100,
         "one-gate brz should be at least a few hundred bytes, got {}",
@@ -97,7 +87,7 @@ fn wire_between_two_gates_produces_connection() {
             id,
             kind: NodeKind::Gate,
             gate_class: "Component_Internal_Rerouter",
-            properties: Arc::new(HashMap::new()),
+            properties: Arc::new(HashMap::default()),
             ports: Arc::new(rerouter_ports()),
             source_range: SourceRange::default(),
             chip_id: None,
@@ -117,7 +107,7 @@ fn wire_between_two_gates_produces_connection() {
         },
     });
 
-    let mut placements = HashMap::new();
+    let mut placements = HashMap::default();
     placements.insert(id_a, Placement { x: 0, y: 0, z: 2 });
     placements.insert(id_b, Placement { x: 8, y: 0, z: 2 });
     let lr = wirescript::layout::LayoutResult {
@@ -126,12 +116,7 @@ fn wire_between_two_gates_produces_connection() {
     };
 
     let template_cache = Arc::new(TemplateCache::new());
-    let bytes = emit_brz(
-        &module,
-        &lr,
-        &EmitOptions::default(),
-        &template_cache,
-    )
-    .expect("emit succeeds");
+    let bytes =
+        emit_brz(&module, &lr, &EmitOptions::default(), &template_cache).expect("emit succeeds");
     assert!(!bytes.is_empty());
 }

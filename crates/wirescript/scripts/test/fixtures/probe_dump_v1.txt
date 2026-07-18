@@ -1,0 +1,15 @@
+PROBE gate_semantics v2
+BEGIN eq 5
+CASE CompareEqual int:1 int:1 -> 1
+CASE CompareEqual int:1 str:1 -> 0
+CASE CompareNotEqual int:1 int:0 -> 1
+CASE CompareEqual int:9,007,199,254,740,993 int:9,007,199,254,740,992 -> 0
+CASE CompareEqual int:1 unwired -> 0
+END eq
+BEGIN bool 4
+CASE LogicalAND bool:1 bool:0 -> 0
+CASE LogicalAND int:0 bool:1 -> 0
+CASE LogicalAND bool:0 bool:1 -> 0
+CASE LogicalAND bool:false int:5 -> false
+END bool
+PROBE done

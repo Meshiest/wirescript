@@ -14,3 +14,6 @@ crates/wirescript/data/inventory_dump.ndjson
 # Fuzzer output (regenerate: cargo run --release -p wirescript --example
 # fuzz_programs -- --seed N); fixed bugs get real regression tests instead.
 fuzz_findings/
+# Raw in-game console dumps (input for scripts/gen_semantics.mjs; the
+# generated data/gate_semantics.json is the committed artifact).
+dumps/

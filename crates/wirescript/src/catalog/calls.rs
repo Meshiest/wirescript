@@ -1974,6 +1974,25 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             receiver: None,
         },
     );
+    // Opaque — identity rerouter. Blocks constant folding: its output is
+    // permanently Unknown to the (future) fold pass, and typecheck treats
+    // the result as `any`, so probe circuits can drive real gates with
+    // known values (`Opaque(2) + 3` emits a real MathAdd).
+    m.insert(
+        "Opaque",
+        CallSpec {
+            name: "Opaque",
+            gate_class: gc::REROUTER,
+            params: vec![CallParam::req("value", WirePort::RerInput, Type::Any)],
+            exec: false,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::RerOutput,
+                ty: Type::Opaque,
+            }],
+            receiver: None,
+        },
+    );
     m.insert(
         "DeltaTime",
         CallSpec {

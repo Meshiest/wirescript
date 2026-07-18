@@ -13,6 +13,10 @@ pub struct Script {
     /// declaration by a blank line — documents the module (root plane header)
     /// rather than the first declaration.
     pub module_doc: Option<String>,
+    /// A `@nofold` at the very top of the file (after any module doc),
+    /// separated from the first declaration by a blank line — marks the whole
+    /// module's lowered output `_nofold` (mirrors the module-doc rule).
+    pub no_fold: bool,
 }
 
 // ---------- top-level declarations ----------
@@ -108,6 +112,9 @@ pub struct VarDecl {
     pub typ: Option<TypeExpr>,
     pub init: Option<Expr>,
     pub is_static: bool,
+    /// `@nofold`: every IR node lowered from this declaration's subtree
+    /// carries the `_nofold` pseudo-property (the fold pass skips it).
+    pub no_fold: bool,
     pub range: SourceRange,
 }
 
@@ -182,6 +189,9 @@ pub struct ChipDecl {
     pub label: Option<String>,
     /// `@closed`: emit this chip's inner grid collapsed.
     pub closed: bool,
+    /// `@nofold`: every IR node lowered from this declaration's subtree
+    /// carries the `_nofold` pseudo-property (the fold pass skips it).
+    pub no_fold: bool,
 }
 
 /// Anonymous chip: `chip { body }` — shares parent scope, creates a
@@ -204,6 +214,9 @@ pub struct EventDecl {
     pub name: String,
     pub source: Expr,
     pub captured_body: Option<Block>,
+    /// `@nofold`: every IR node lowered from this declaration's subtree
+    /// carries the `_nofold` pseudo-property (the fold pass skips it).
+    pub no_fold: bool,
     pub range: SourceRange,
 }
 
@@ -252,6 +265,9 @@ pub struct LetDecl {
     pub binding: LetBinding,
     pub typ: Option<TypeExpr>,
     pub value: Expr,
+    /// `@nofold`: every IR node lowered from this declaration's subtree
+    /// carries the `_nofold` pseudo-property (the fold pass skips it).
+    pub no_fold: bool,
     pub range: SourceRange,
 }
 
@@ -300,6 +316,9 @@ pub struct Handler {
     /// to the gate's data-struct fields (not output bindings).
     pub config: Vec<HandlerConfigArg>,
     pub body: Block,
+    /// `@nofold`: every IR node lowered from this declaration's subtree
+    /// carries the `_nofold` pseudo-property (the fold pass skips it).
+    pub no_fold: bool,
     pub range: SourceRange,
 }
 
@@ -464,6 +483,9 @@ pub struct AwaitStmt {
     pub destructure: Option<Vec<(String, String)>>,
     pub value_expr: Option<Expr>,
     pub exec_expr: Expr,
+    /// `@nofold`: every IR node lowered from this declaration's subtree
+    /// carries the `_nofold` pseudo-property (the fold pass skips it).
+    pub no_fold: bool,
     pub range: SourceRange,
 }
 
@@ -483,6 +505,9 @@ pub struct OutBinding {
     pub side: Option<PortSide>,
     /// `@label("…")` display-text override for the port's floating label.
     pub label: Option<String>,
+    /// `@nofold`: every IR node lowered from this declaration's subtree
+    /// carries the `_nofold` pseudo-property (the fold pass skips it).
+    pub no_fold: bool,
     pub range: SourceRange,
 }
 

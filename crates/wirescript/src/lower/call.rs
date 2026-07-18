@@ -278,7 +278,7 @@ pub(super) fn lower_chip_call_inline(
     fn pre_declare_block_vars(ctx: &mut LowerCtx, block: &Block) {
         for s in &block.stmts {
             match s {
-                Stmt::Var(v) => pre_declare_var(ctx, v),
+                Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
                 Stmt::Array(a) => pre_declare_array(ctx, a),
                 Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
                 Stmt::If(i) => {
@@ -684,6 +684,12 @@ fn build_chip_module(
         known_fn_names: ctx.known_fn_names.clone(),
         is_root_module: false,
         doc_comments: ctx.doc_comments,
+        // `@nofold chip Foo(...) { ... }`: every gate lowered into this
+        // child module (the chip's own body — built once and cloned for
+        // every subsequent `template.instantiate` call) must carry
+        // `_nofold` from the start, since the body is lowered in this
+        // fresh `child_ctx`, not the caller's `ctx`.
+        nofold_depth: if chip_decl.no_fold { 1 } else { 0 },
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -770,12 +776,7 @@ fn build_chip_module(
                     continue;
                 }
 
-                let node_id = child_ctx.builder.add_input(
-                    &mut child_ctx.ids,
-                    &port_name,
-                    ft.clone(),
-                    chip_decl.range.clone(),
-                );
+                let node_id = child_ctx.add_input(&port_name, ft.clone(), chip_decl.range.clone());
                 let binding = if is_array {
                     let inner = match &ft {
                         Type::Array(inner) => inner.as_ref().clone(),
@@ -832,12 +833,7 @@ fn build_chip_module(
                     Type::Array(inner) => inner.as_ref().clone(),
                     _ => t.clone(),
                 };
-                let node_id = child_ctx.builder.add_input(
-                    &mut child_ctx.ids,
-                    &inp.name,
-                    t.clone(),
-                    chip_decl.range.clone(),
-                );
+                let node_id = child_ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
                 child_ctx.scope.insert(
                     &inp.name,
                     Binding::Var(VarRecord {
@@ -854,12 +850,7 @@ fn build_chip_module(
             }
         } else {
             let t = type_of_type_expr(&inp.typ);
-            let node_id = child_ctx.builder.add_input(
-                &mut child_ctx.ids,
-                &inp.name,
-                t.clone(),
-                chip_decl.range.clone(),
-            );
+            let node_id = child_ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
             child_ctx.scope.insert(
                 &inp.name,
                 Binding::Input(NodeRecord { node_id, ty: t }),
@@ -868,12 +859,7 @@ fn build_chip_module(
     }
     for out in &chip_decl.outputs {
         let t = type_of_type_expr(&out.typ);
-        let node_id = child_ctx.builder.add_output(
-            &mut child_ctx.ids,
-            &out.name,
-            t.clone(),
-            chip_decl.range.clone(),
-        );
+        let node_id = child_ctx.add_output(&out.name, t.clone(), chip_decl.range.clone());
         child_ctx.scope.insert(
             &crate::lower::context::output_scope_key(&out.name),
             Binding::Output(NodeRecord { node_id, ty: t }),
@@ -891,12 +877,7 @@ fn build_chip_module(
         .unwrap_or(false);
     let auto_exec = (ctx.current_exec.is_some() || force_exec_boundary) && !first_param_is_exec;
     if auto_exec {
-        let exec_in = child_ctx.builder.add_input(
-            &mut child_ctx.ids,
-            "_exec_in",
-            Type::Exec,
-            chip_decl.range.clone(),
-        );
+        let exec_in = child_ctx.add_input("_exec_in", Type::Exec, chip_decl.range.clone());
         child_ctx.current_exec = Some(exec_in.port(WirePort::RerOutput));
     }
 
@@ -905,19 +886,21 @@ fn build_chip_module(
     for stmt in &chip_decl.body.stmts {
         match stmt {
             Stmt::In(i) => pre_declare_input(&mut child_ctx, i),
-            Stmt::Var(v) => pre_declare_var(&mut child_ctx, v),
+            Stmt::Var(v) => child_ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
             Stmt::Buffer(b) => pre_declare_buffer(&mut child_ctx, b),
             Stmt::Array(a) => pre_declare_array(&mut child_ctx, a),
             Stmt::OutBinding(o) if !sig_output_names.contains(o.name.as_str()) => {
-                pre_declare_output(
-                    &mut child_ctx,
-                    &o.name,
-                    o.value.as_ref(),
-                    o.typ.as_ref(),
-                    o.side,
-                    o.label.as_deref(),
-                    &o.range,
-                );
+                child_ctx.with_nofold(o.no_fold, |ctx| {
+                    pre_declare_output(
+                        ctx,
+                        &o.name,
+                        o.value.as_ref(),
+                        o.typ.as_ref(),
+                        o.side,
+                        o.label.as_deref(),
+                        &o.range,
+                    )
+                });
             }
             _ => {}
         }
@@ -965,12 +948,7 @@ fn build_chip_module(
             child_ctx.current_exec = Some(merged);
         }
         if let Some(tail_exec) = child_ctx.current_exec {
-            let exec_out = child_ctx.builder.add_output(
-                &mut child_ctx.ids,
-                "_exec_out",
-                Type::Exec,
-                chip_decl.range.clone(),
-            );
+            let exec_out = child_ctx.add_output("_exec_out", Type::Exec, chip_decl.range.clone());
             child_ctx.connect(tail_exec, exec_out.port(WirePort::RerInput));
         }
     }
@@ -1413,13 +1391,18 @@ pub(super) fn lower_builtin_call(
             // inline when the gate's data field is a wire variant; other
             // gates (entity Set*, Split*) need a wired Make* gate, which
             // the fallthrough + materialize pass provides.
-            let inlinable = !matches!(
-                lit,
-                Literal::Vector { .. }
-                    | Literal::Rotator { .. }
-                    | Literal::Quat { .. }
-                    | Literal::LinearColor { .. }
-            ) || crate::emit::port_accepts_inline_variant(spec.gate_class, p.port);
+            //
+            // Rerouter (`Opaque`) has no data struct at all — an inlined
+            // property would just be silently dropped at emit time, so it
+            // must always keep a real wired literal source instead.
+            let inlinable = spec.gate_class != gc::REROUTER
+                && (!matches!(
+                    lit,
+                    Literal::Vector { .. }
+                        | Literal::Rotator { .. }
+                        | Literal::Quat { .. }
+                        | Literal::LinearColor { .. }
+                ) || crate::emit::port_accepts_inline_variant(spec.gate_class, p.port));
             if inlinable {
                 properties.insert(intern(p.port.as_str()), lit);
                 continue;

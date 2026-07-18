@@ -10,6 +10,7 @@ mod chip;
 mod compound;
 mod fusion;
 mod imports;
+mod opaque;
 mod port_side;
 mod purity;
 mod records;

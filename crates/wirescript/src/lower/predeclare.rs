@@ -4,19 +4,23 @@ use super::*;
 
 pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
     match d {
-        TopDecl::Var(v) => pre_declare_var(ctx, v),
+        // Var/buffer gates are created HERE (pass 1), not in lower_decl's
+        // with_nofold wrap — honor the decl's @nofold during registration.
+        TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
         TopDecl::Array(a) => pre_declare_array(ctx, a),
         TopDecl::Buffer(b) => pre_declare_buffer(ctx, b),
         TopDecl::In(i) => pre_declare_input(ctx, i),
-        TopDecl::Out(o) => pre_declare_output(
-            ctx,
-            &o.name,
-            o.value.as_ref(),
-            o.typ.as_ref(),
-            o.side,
-            o.label.as_deref(),
-            &o.range,
-        ),
+        TopDecl::Out(o) => ctx.with_nofold(o.no_fold, |ctx| {
+            pre_declare_output(
+                ctx,
+                &o.name,
+                o.value.as_ref(),
+                o.typ.as_ref(),
+                o.side,
+                o.label.as_deref(),
+                &o.range,
+            )
+        }),
         TopDecl::Let(l) => pre_declare_exec_signal(ctx, l),
         TopDecl::AnonChip(ac) => {
             let chip_node_id = ctx.add_gate(AddNodeOpts {
@@ -43,7 +47,7 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             ctx.current_anon_chip = Some(chip_node_id);
             for s in &ac.body.stmts {
                 match s {
-                    Stmt::Var(v) => pre_declare_var(ctx, v),
+                    Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
                     Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
                     Stmt::Array(a) => pre_declare_array(ctx, a),
                     Stmt::In(i) => pre_declare_input(ctx, i),
@@ -519,9 +523,7 @@ fn apply_port_side(
 
 pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
     let t = type_of_type_expr(&d.typ);
-    let node_id = ctx
-        .builder
-        .add_input(&mut ctx.ids, &d.name, t.clone(), d.range.clone());
+    let node_id = ctx.add_input(&d.name, t.clone(), d.range.clone());
     apply_port_side(ctx, node_id, d.side, &d.range);
     if let Some(label) = &d.label {
         if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
@@ -551,9 +553,7 @@ pub(super) fn pre_declare_output(
     } else {
         Type::Any
     };
-    let node_id = ctx
-        .builder
-        .add_output(&mut ctx.ids, name, t.clone(), range.clone());
+    let node_id = ctx.add_output(name, t.clone(), range.clone());
     apply_port_side(ctx, node_id, side, range);
     if let Some(label) = label {
         if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {

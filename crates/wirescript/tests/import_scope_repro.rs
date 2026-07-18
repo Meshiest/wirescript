@@ -45,7 +45,7 @@ in x: int
 let t = Triple(x)
 out y: int = t.r
 "#;
-    let mut files = std::collections::HashMap::new();
+    let mut files = wirescript::collections::HashMap::default();
     files.insert("lib.ws".to_string(), lib.to_string());
     let loader = MemLoader { files };
 
@@ -80,7 +80,7 @@ in x: int
 let t = Triple(x)
 out y: int = t.r
 "#;
-    let mut files = std::collections::HashMap::new();
+    let mut files = wirescript::collections::HashMap::default();
     files.insert("lib.ws".to_string(), lib.to_string());
     let loader = MemLoader { files };
     let resolved = resolve(main, "main.ws", &loader);
@@ -135,7 +135,7 @@ in x: int
 let t = Triple(x)
 out y: int = t.r
 "#;
-    let mut files = std::collections::HashMap::new();
+    let mut files = wirescript::collections::HashMap::default();
     files.insert("lib.ws".to_string(), lib.to_string());
     let loader = MemLoader { files };
 
