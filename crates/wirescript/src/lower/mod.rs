@@ -496,13 +496,22 @@ fn dedup_constant_gates(root: &mut Module) {
             .filter(|w| w.target.port != WirePort::Layout)
             .map(|w| w.target.node_id)
             .collect();
-        let mut groups: HashMap<String, Vec<NodeId>> = HashMap::default();
+        // Key by (owning anon-chip, const_key): this pass runs BEFORE
+        // `partition_anon_chips` splits each `chip_id`-tagged group into its own
+        // emit module, so merging across `chip_id` tags would redirect a
+        // consumer's wire to a keeper that lands in a DIFFERENT chip. Partition
+        // keeps such a cross-chip data wire in the parent without cloning the
+        // literal into the child (only parent→chip literals are cloned), so
+        // emit can't inline it and the operand silently reads its port default
+        // (0). Deduping within a chip_id group keeps every keeper in the same
+        // future module as its consumers.
+        let mut groups: HashMap<(Option<NodeId>, String), Vec<NodeId>> = HashMap::default();
         for (id, n) in &module.nodes {
             let is_pure = n.gate_class == gc::LITERAL
                 || n.gate_class
                     .starts_with("BrickComponentType_WireGraph_Expr_");
             if n.kind == NodeKind::Gate && is_pure && !has_incoming.contains(id) {
-                groups.entry(const_key(n)).or_default().push(*id);
+                groups.entry((n.chip_id, const_key(n))).or_default().push(*id);
             }
         }
         for mut group in groups.into_values() {

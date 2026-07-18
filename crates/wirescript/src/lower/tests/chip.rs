@@ -285,6 +285,83 @@ fn inline_literals_folded() {
 }
 
 #[test]
+fn dedup_keeps_constants_within_their_chip() {
+    // A constant used as a WIRED (multi-consumer) literal in two separate anon
+    // chips must NOT be merged across the chip boundary. `dedup_constant_gates`
+    // runs before `partition_anon_chips`, so merging to a keeper in a different
+    // chip leaves the other chip's consumer with a cross-chip literal data wire;
+    // partition keeps that wire in the parent without cloning the literal, and
+    // emit (which inlines _Literal sources per-module) can't reach it, so the
+    // operand silently reads its port default (0). This manifested as seat
+    // indices 7/9 folding to 0 in the Secret Hitler input queue. `i` is used
+    // twice so the arg literal stays wired (single-use args inline earlier and
+    // never reach dedup).
+    let src = "\
+array q: int[]
+in trig: exec
+mod enc(i: int) { q.push(i * 4) q.push(i) }
+on trig {
+  chip { enc(6) enc(7) }
+  chip { enc(7) enc(9) }
+}";
+    let r = compile(src);
+    assert_no_errors(&r);
+
+    // Assign every node a module tag and record which nodes are `_Literal`.
+    // A `_Literal` feeding an operand port (InputA/InputB) must live in the
+    // SAME module as its consumer, or emit's per-module inlining can't reach it.
+    let mut module_of: std::collections::HashMap<crate::ir::NodeId, usize> =
+        std::collections::HashMap::new();
+    let mut is_literal: std::collections::HashSet<crate::ir::NodeId> =
+        std::collections::HashSet::new();
+    fn index(
+        m: &crate::ir::Module,
+        tag: &mut usize,
+        module_of: &mut std::collections::HashMap<crate::ir::NodeId, usize>,
+        is_literal: &mut std::collections::HashSet<crate::ir::NodeId>,
+    ) {
+        let my = *tag;
+        *tag += 1;
+        for (id, n) in &m.nodes {
+            module_of.insert(*id, my);
+            if n.gate_class == "_Literal" {
+                is_literal.insert(*id);
+            }
+        }
+        for child in m.chips.values() {
+            index(child, tag, module_of, is_literal);
+        }
+    }
+    let mut tag = 0;
+    index(&r.module, &mut tag, &mut module_of, &mut is_literal);
+
+    fn check_wires(
+        m: &crate::ir::Module,
+        module_of: &std::collections::HashMap<crate::ir::NodeId, usize>,
+        is_literal: &std::collections::HashSet<crate::ir::NodeId>,
+    ) {
+        for w in &m.wires {
+            let is_operand = matches!(w.target.port, WirePort::InputA | WirePort::InputB);
+            if is_operand && is_literal.contains(&w.source.node_id) {
+                assert_eq!(
+                    module_of.get(&w.source.node_id),
+                    module_of.get(&w.target.node_id),
+                    "constant operand wire crosses a chip boundary (source {:?} -> \
+                     {:?}.{:?}); emit can't inline it and the operand reads 0",
+                    w.source.node_id,
+                    w.target.node_id,
+                    w.target.port
+                );
+            }
+        }
+        for child in m.chips.values() {
+            check_wires(child, module_of, is_literal);
+        }
+    }
+    check_wires(&r.module, &module_of, &is_literal);
+}
+
+#[test]
 fn chip_decls_shared_across_instances() {
     let src = "\
 chip Add(a: int, b: int) -> (result: int) { out result = a + b }

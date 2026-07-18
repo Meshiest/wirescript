@@ -2375,7 +2375,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHANGE_DETECTOR_EXEC,
             vec![CallParam::req("input", WirePort::Input, Type::Any)],
             WirePort::OnChanged,
-            Type::Any,
+            Type::Exec,
         ),
     );
     m.insert(
