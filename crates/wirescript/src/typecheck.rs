@@ -596,11 +596,31 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
+                        // Carry the outputs across as the member's result type.
+                        // Without them a namespaced `mod f() -> int` types as
+                        // `Any`, so `Ns.f(x) + 1` finds no operator overload and
+                        // the whole expression drops to an unsupported gate.
+                        let return_type = match c.outputs.len() {
+                            0 => None,
+                            1 => Some(c.outputs[0].typ.clone()),
+                            _ => Some(TypeExpr::Record {
+                                fields: c
+                                    .outputs
+                                    .iter()
+                                    .map(|o| RecordTypeField {
+                                        name: o.name.clone(),
+                                        typ: o.typ.clone(),
+                                        range: o.range.clone(),
+                                    })
+                                    .collect(),
+                                range: c.range.clone(),
+                            }),
+                        };
                         ns_map.insert(
                             c.name.clone(),
                             NsDeclInfo {
                                 kind: SymbolKind::Chip,
-                                return_type: None,
+                                return_type,
                             },
                         );
                     }
@@ -1423,6 +1443,21 @@ fn target_name(e: &Expr) -> Option<String> {
     }
 }
 
+/// The element types of `t` viewed as a tuple. A tuple literal desugars to a
+/// record keyed by element index, so `Record([("0", T0), ("1", T1)])` describes
+/// the same shape as `Tuple([T0, T1])` and destructures the same way.
+fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
+    match t {
+        Type::Tuple(fields) => Some(fields.clone()),
+        Type::Record(fields) => fields
+            .iter()
+            .enumerate()
+            .map(|(i, (key, ft))| (*key == i.to_string()).then(|| ft.clone()))
+            .collect(),
+        _ => None,
+    }
+}
+
 fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
     match b {
         LetBinding::Ident { name, range } => {
@@ -1439,7 +1474,7 @@ fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
             );
         }
         LetBinding::Tuple { names, range, .. } => {
-            if let Type::Tuple(fields) = t
+            if let Some(fields) = as_tuple_fields(t)
                 && fields.len() == names.len()
             {
                 for (n, ft) in names.iter().zip(fields.iter()) {
@@ -2027,7 +2062,6 @@ fn infer_expr_inner(
                     .and_then(|ns_map| ns_map.get(field.as_str()))
                     .map(|info| (info.kind, info.return_type.clone()));
                 match ns_lookup {
-                    Some((SymbolKind::Chip, _)) => return Type::Any,
                     Some((_, Some(ret))) => return resolve_type_expr(ctx, &ret),
                     Some((_, None)) => return Type::Any,
                     None => {

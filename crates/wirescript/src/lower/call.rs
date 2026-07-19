@@ -251,7 +251,13 @@ pub(super) fn lower_chip_call_inline(
                     install_record_destruct(ctx, &src, fields);
                 }
             }
-            crate::ast::ParamPattern::Tuple { names, .. } => {
+            crate::ast::ParamPattern::Tuple { names, rest } => {
+                // A tuple literal argument (or a `let` bound to one) arrives as
+                // a record keyed by element index, so read the names out of it.
+                if let Some(Binding::Record(src)) = &base_binding {
+                    let src = src.clone();
+                    install_tuple_destruct(ctx, &src, names, rest.as_ref());
+                }
                 // For tuple patterns, extract by index from the local binding.
                 if let Some(Binding::Local(local)) = &base_binding {
                     let source_node = ctx.builder.module.nodes.get(&local.port.node_id).cloned();

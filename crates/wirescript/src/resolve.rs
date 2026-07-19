@@ -103,6 +103,7 @@ fn decl_name(d: &TopDecl) -> Option<&str> {
         TopDecl::In(i) => Some(&i.name),
         TopDecl::Out(o) => Some(&o.name),
         TopDecl::TypeAlias(t) => Some(&t.name),
+        TopDecl::Namespace(n) => Some(&n.name),
         _ => None,
     }
 }
@@ -208,6 +209,16 @@ fn resolve_import(
         .decls
         .iter()
         .filter(|d| is_importable(d))
+        .cloned()
+        .collect();
+    // The imported file's own `import * as Ns` bindings. These are not
+    // importable by name, but a declaration we pull in may call through one
+    // (`Ns.helper()`), so they travel with it — see the closure pass below.
+    let source_namespaces: Vec<TopDecl> = parsed
+        .ast
+        .decls
+        .iter()
+        .filter(|d| matches!(d, TopDecl::Namespace(_)))
         .cloned()
         .collect();
 
@@ -321,6 +332,33 @@ fn resolve_import(
             }));
         }
     }
+
+    // Carry along any namespace the pulled-in declarations call through.
+    // Without this an imported `mod` whose body says `Ns.helper()` loses `Ns`
+    // entirely: the call resolves to nothing and silently lowers to an
+    // `_Unsupported` placeholder that does nothing at runtime. Only referenced
+    // namespaces travel, so importing a file does not leak its every import.
+    if !source_namespaces.is_empty() {
+        loop {
+            let used = collect_runtime_idents_in_decls(target_decls);
+            let mut added = false;
+            for ns in &source_namespaces {
+                if let Some(name) = decl_name(ns)
+                    && used.contains(name)
+                    && !already_has(target_decls, name)
+                {
+                    // Prepend: lowering registers declarations in source order,
+                    // so a namespace appended after its caller would read as a
+                    // use before declaration and resolve to nothing.
+                    target_decls.insert(0, ns.clone());
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+    }
 }
 
 fn rename_decl(d: &mut TopDecl, new_name: &str) {
@@ -431,6 +469,13 @@ fn collect_runtime_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
         TopDecl::Let(l) => collect_idents_in_expr(&l.value, idents),
         TopDecl::Out(o) => {
             if let Some(e) = &o.value { collect_idents_in_expr(e, idents); }
+        }
+        // A namespace's own declarations can call through a second namespace,
+        // so its body counts as a use site for the closure pass.
+        TopDecl::Namespace(n) => {
+            for d in &n.decls {
+                collect_runtime_idents_in_decl(d, idents);
+            }
         }
         _ => {}
     }

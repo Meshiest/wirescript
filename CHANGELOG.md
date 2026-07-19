@@ -7,6 +7,13 @@
 - **Fixed a chip output named `x`/`y`/`z`/`r`/`g`/`b`/`a` reading garbage** - Those names collide with vector/color component access, so reading one split the scalar and returned a component instead of the output. Field access now splits only when the value really is a vector or color.
 - **Fixed a `chip` called from inside a nested anon chip never firing** - Its exec trigger stayed at the root, and an exec pulse cannot cross into an instance grid nested inside another anon chip. Partition now routes boundary-pin wires into the module that directly contains the instance.
 - **A constant argument to a `chip` no longer costs a gate per instance** - `F(1)` materialized a `_Var` in the caller and wired it across the boundary. The constant now folds into the instance itself and its input pin is dropped, matching what the equivalent `mod` emits.
+- **Fixed a tuple-destructured `mod` parameter binding nothing** - `mod f((a, b): (int, int))` left every name unbound, so the body silently computed on zeros.
+- **Fixed `let (a, b) = t` on a tuple value** - Both names bound nothing, and the shape was rejected as a non-tuple (WS010).
+- **`out f(x)` is now a parse error** - The trailing call was dropped and re-parsed as a separate declaration, leaving a bare port.
+- **Fixed a namespace import lost through a re-export** - `Ns` didn't travel with the imported declarations calling through it, so every `Ns.f(...)` silently did nothing at runtime.
+- **Fixed a namespaced call losing its return type** - `Ns.f(x)` typed as `any`, so `Ns.f(x) + 1` failed operator resolution (WS004) and dropped the expression.
+- **New tree-sitter grammar** - `editors/tree-sitter-wirescript/`, with highlight/locals/indent queries.
+- **Docs: dropped `match` expressions** - Reserved keyword, but the parser has no expression form for it.
 - **New docs page: [Best Practices](docs/wirescript/best-practices.md)** - Gate count and scaling: why every call site is a copy (for `mod` and `chip` alike), the call-site multiplier, single-dispatch event queues, deferred flags, and bitmask state.
 
 ## 0.16.4 - 2026-07-17

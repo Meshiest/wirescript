@@ -235,8 +235,12 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 install_record_destruct(ctx, &record, destruct_fields);
                 return;
             }
+            LetBinding::Tuple { names, rest, .. } => {
+                install_tuple_destruct(ctx, &record, names, rest.as_ref());
+                return;
+            }
             _ => {
-                // Tuple/Record name destructuring on a record lit — fall through
+                // Record name destructuring on a record lit — fall through
                 // to normal handling (unlikely but safe).
             }
         }
@@ -258,6 +262,10 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 install_record_destruct(ctx, &src, destruct_fields);
                 return;
             }
+            LetBinding::Tuple { names, rest, .. } => {
+                install_tuple_destruct(ctx, &src, names, rest.as_ref());
+                return;
+            }
             _ => {}
         }
     }
@@ -274,6 +282,10 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 ..
             } => {
                 install_record_destruct(ctx, &src, destruct_fields);
+                return;
+            }
+            LetBinding::Tuple { names, rest, .. } => {
+                install_tuple_destruct(ctx, &src, names, rest.as_ref());
                 return;
             }
             _ => {}
@@ -442,5 +454,31 @@ pub(super) fn install_record_destruct(
                     .insert(&name, Binding::Record(remaining.clone()));
             }
         }
+    }
+}
+
+/// Bind a tuple pattern's names against a record source. Tuple literals lower
+/// to a `Binding::Record` keyed by the element index (`"0"`, `"1"`, ...), so
+/// positional names read straight out of that map. `rest` collects the tail,
+/// re-indexed from zero so it stays a well-formed tuple.
+pub(super) fn install_tuple_destruct(
+    ctx: &mut LowerCtx,
+    src: &HashMap<crate::intern::Sym, Binding>,
+    names: &[String],
+    rest: Option<&String>,
+) {
+    for (i, name) in names.iter().enumerate() {
+        if let Some(binding) = src.get(&crate::intern::intern(&i.to_string())).cloned() {
+            ctx.scope.insert(name, binding);
+        }
+    }
+    if let Some(rest_name) = rest {
+        let mut tail: HashMap<crate::intern::Sym, Binding> = HashMap::default();
+        for (i, key) in (names.len()..src.len()).enumerate() {
+            if let Some(binding) = src.get(&crate::intern::intern(&key.to_string())).cloned() {
+                tail.insert(crate::intern::intern(&i.to_string()), binding);
+            }
+        }
+        ctx.scope.insert(rest_name, Binding::Record(tail));
     }
 }

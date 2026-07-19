@@ -583,6 +583,85 @@ out result = sum",
     );
 }
 
+/// Regression: a tuple-destructured mod parameter must bind its names to the
+/// argument tuple's elements. A tuple arg arrives as a `Binding::Record` with
+/// numeric keys, which the pattern install previously ignored, leaving every
+/// name unbound and each use an `_Unsupported` placeholder.
+#[test]
+fn tuple_param_pattern_binds_from_tuple_arg() {
+    let r = compile(
+        "\
+let pair = (100, 200)
+mod add2((a, b): (int, int)) -> int {
+  return a + b
+}
+out result = add2(pair)",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "tuple param names must bind; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    let add = find_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd");
+    let out = find_gate(&r, "BrickComponentType_Internal_MicrochipOutput");
+    assert!(wired_reachable(&r, add, out), "sum must reach the output");
+    // The elements must reach the gate as its actual operands, not as the
+    // zero-valued unwired inputs an `_Unsupported` placeholder left behind.
+    let props: Vec<String> = r.module.nodes[&add]
+        .properties
+        .values()
+        .map(|l| format!("{l:?}"))
+        .collect();
+    assert!(
+        props.iter().any(|p| p.contains("100")) && props.iter().any(|p| p.contains("200")),
+        "tuple elements must be inlined as the add operands, got {props:?}"
+    );
+}
+
+/// The same binding path for an inline tuple literal argument.
+#[test]
+fn tuple_param_pattern_binds_from_tuple_literal_arg() {
+    let r = compile(
+        "\
+mod add2((a, b): (int, int)) -> int {
+  return a + b
+}
+out result = add2((100, 200))",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "tuple literal arg must destructure into the pattern names"
+    );
+}
+
+/// Regression: `let (a, b) = pair` on a tuple binding must bind both names.
+/// The tuple `LetBinding` only handled multi-output nodes, so a tuple built
+/// from a literal (a `Binding::Record`) bound nothing.
+#[test]
+fn let_tuple_destructure_from_tuple_binding() {
+    let r = compile(
+        "\
+let pair = (100, 200)
+let (a, b) = pair
+out result = a + b",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "let tuple destructure must bind both names"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        "a + b should produce a MathAdd gate"
+    );
+}
+
 /// `let x = var` should capture a snapshot (Var_Get), not alias the var.
 #[test]
 fn let_snapshot_captures_value() {

@@ -91,3 +91,62 @@ on player { let y = x * 2 + 1 }",
         "unused `let y = x * 2 + 1` should keep its MathMultiply (not DCE'd)"
     );
 }
+
+/// A namespace import inside an imported module must travel with the
+/// declarations that call through it. `main` imports `useFoo` from `second`,
+/// whose body calls `Foo.blah(...)` from a third file — without the namespace
+/// the call resolved to nothing and silently lowered to an `_Unsupported`
+/// placeholder that does nothing at runtime, with no diagnostic.
+#[test]
+fn namespace_import_travels_two_modules_deep() {
+    let r = compile_multi(
+        "import { useFoo } from \"second\"\nout result = useFoo(5)",
+        &[
+            (
+                "second",
+                "import * as Foo from \"third\"\n\
+                 mod useFoo(n: int) -> int {\n\
+                   return Foo.blah(n) + 1\n\
+                 }",
+            ),
+            ("third", "mod blah(n: int) -> int {\n  return n * 2\n}"),
+        ],
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "the nested namespace call must resolve; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    // `n * 2` from the third module and the `+ 1` from the second must both
+    // survive — a dropped namespace loses the multiply entirely.
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathMultiply"),
+        "the third module's body must be inlined"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        "the second module's arithmetic must survive"
+    );
+}
+
+/// A namespaced `mod` must expose its declared return type. Typing the call as
+/// `Any` made any arithmetic on the result fail operator resolution, dropping
+/// the whole expression to an unsupported gate.
+#[test]
+fn namespaced_mod_call_keeps_its_return_type() {
+    let r = compile_multi(
+        "import * as Foo from \"third\"\nout result = Foo.blah(5) + 1",
+        &[("third", "mod blah(n: int) -> int {\n  return n * 2\n}")],
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "a namespaced mod's return type must resolve the '+' overload"
+    );
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"));
+}

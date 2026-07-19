@@ -807,6 +807,25 @@ impl<'a> Parser<'a> {
             }
         } else {
             let end = self.peek().start;
+            // `out NAME` declares a port driven by `emit`. Anything else on the
+            // line — most often `out f(x)`, which reads like an anonymous output
+            // of a call — is not a value binding, and letting it fall through
+            // silently re-parsed the remainder as its own declaration.
+            let t = self.peek().clone();
+            if !matches!(
+                t.kind,
+                TokenKind::Newline | TokenKind::Semi | TokenKind::Eof | TokenKind::RBrace
+            ) {
+                self.error(
+                    format!(
+                        "unexpected `{}` after output port `{name}` — write `out {name} = <expr>` \
+                         to bind a value, or `out {name}` to declare a port driven by `emit`",
+                        t.text
+                    ),
+                    t.start,
+                    t.end,
+                );
+            }
             self.eat_stmt_end();
             OutBinding {
                 name,
@@ -2951,6 +2970,28 @@ mod tests {
     fn empty_source_parses() {
         let s = parse_ok("");
         assert!(s.decls.is_empty());
+    }
+
+    #[test]
+    fn out_binding_rejects_trailing_tokens() {
+        // `out aw(wa)` reads like an anonymous output of a call, but an output
+        // port is always `out NAME` / `out NAME = expr`. The trailing `(wa)`
+        // used to be silently dropped and re-parsed as its own declaration.
+        let r = parse("let wa = (1, 2)\nout aw(wa)", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("out")),
+            "trailing tokens after an output port name must be reported: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn out_binding_forms_still_parse() {
+        parse_ok("out foo");
+        parse_ok("out foo: int");
+        parse_ok("out foo = 1 + 2");
+        parse_ok("out foo: int = 3");
+        parse_ok("chip {\n  out foo = 1\n}");
     }
 
     #[test]
