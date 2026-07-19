@@ -257,16 +257,6 @@ let score = baseScore + (if hasBonus then 100 else 0)
 chip let emptyCount = (if c0 == 0 then 1 else 0) + (if c1 == 0 then 1 else 0)
 ```
 
-## Match Expressions
-
-Match expressions branch on an event or value, selecting one of several arms. Each arm names an event and optionally binds its data to a variable:
-
-```wirescript
-// Syntax: match <scrutinee> { EventName(binding) => expr, ... }
-```
-
-Match arms use `=>` to separate the pattern from the body. The body can be an expression or a block.
-
 ## Record Literals
 
 Record literals construct values of a named record type. Fields are specified as `name: expr` pairs inside braces:

@@ -8,7 +8,7 @@ Wirescript is a high-level language that compiles to Brickadia wire graphs. It r
 
 2. **[Types](types.md)** -- The type system: primitives (`int`, `float`, `bool`, `string`, `entity`, `controller`, `character`, `vector`, `rotator`, `color`, `exec`, `brick`, `prefab`), compound types (`ref T`, `T[]`, tuples, unions, records), and type coercion rules.
 
-3. **[Expressions](expressions.md)** -- Operators (arithmetic, comparison, logical, bitwise, string concatenation), operator precedence, string interpolation, conditional expressions, match expressions, field access, index access, and function calls.
+3. **[Expressions](expressions.md)** -- Operators (arithmetic, comparison, logical, bitwise, string concatenation), operator precedence, string interpolation, conditional expressions, field access, index access, and function calls.
 
 4. **[Statements](statements.md)** -- `var`, `let`, `buffer`, `array`, `in`, `out`, `if`, `on` (handlers), `event`, `emit`, assignment, and expression statements.
 

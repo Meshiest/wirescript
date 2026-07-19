@@ -161,7 +161,7 @@ The following words are reserved and cannot be used as identifiers:
 | `if` | Conditional (statement or expression) |
 | `else` | Else branch |
 | `then` | Used in `if-then-else` expressions |
-| `match` | Pattern matching expression |
+| `match` | Reserved; no expression form is implemented |
 | `return` | Early return from handler |
 | `import` | Import declarations from another file |
 | `from` | Used with `import { } from "path"` |
