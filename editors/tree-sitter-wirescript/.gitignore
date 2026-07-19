@@ -1,0 +1,22 @@
+node_modules/
+build/
+target/
+*.log
+
+# `tree-sitter generate` output (parser.c is ~700KB and rewritten on every
+# grammar edit). Regenerate with `just treesitter` from the repo root.
+src/
+
+# CLI-generated language bindings (not used by this checkout; regenerate with
+# `tree-sitter generate` if you need them).
+bindings/
+Cargo.toml
+Cargo.lock
+Makefile
+CMakeLists.txt
+Package.swift
+pyproject.toml
+setup.py
+go.mod
+go.sum
+binding.gyp

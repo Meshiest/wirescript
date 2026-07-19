@@ -1,0 +1,234 @@
+================================================================================
+primitive types
+================================================================================
+
+var a: int
+var b: float
+var c: bool
+var d: string
+var e: vector
+var f: rotator
+var g: color
+var h: entity
+var i: controller
+var j: character
+var k: exec
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (type_identifier)))
+
+================================================================================
+array types
+================================================================================
+
+var a: int[]
+var b: string[]
+var c: int[][]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (identifier)
+    (array_type
+      (type_identifier)))
+  (var_declaration
+    (identifier)
+    (array_type
+      (type_identifier)))
+  (var_declaration
+    (identifier)
+    (array_type
+      (array_type
+        (type_identifier)))))
+
+================================================================================
+reference types in both spellings
+================================================================================
+
+var a: ref int
+var b: *int
+var c: ref int[]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (identifier)
+    (ref_type
+      (type_identifier)))
+  (var_declaration
+    (identifier)
+    (ref_type
+      (type_identifier)))
+  (var_declaration
+    (identifier)
+    (ref_type
+      (array_type
+        (type_identifier)))))
+
+================================================================================
+tuple types
+================================================================================
+
+type Pair = (int, float)
+type Triple = (int, int, int)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_alias_declaration
+    (identifier)
+    (tuple_type
+      (type_identifier)
+      (type_identifier)))
+  (type_alias_declaration
+    (identifier)
+    (tuple_type
+      (type_identifier)
+      (type_identifier)
+      (type_identifier))))
+
+================================================================================
+union types
+================================================================================
+
+type Num = int | float
+type Many = int | float | bool
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_alias_declaration
+    (identifier)
+    (union_type
+      (type_identifier)
+      (type_identifier)))
+  (type_alias_declaration
+    (identifier)
+    (union_type
+      (type_identifier)
+      (type_identifier)
+      (type_identifier))))
+
+================================================================================
+record types
+================================================================================
+
+type Point = { x: int, y: int }
+type State = { counter: *int, label: string }
+type Nested = { p: Point, tags: string[] }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_alias_declaration
+    (identifier)
+    (record_type
+      (record_type_field
+        (identifier)
+        (type_identifier))
+      (record_type_field
+        (identifier)
+        (type_identifier))))
+  (type_alias_declaration
+    (identifier)
+    (record_type
+      (record_type_field
+        (identifier)
+        (ref_type
+          (type_identifier)))
+      (record_type_field
+        (identifier)
+        (type_identifier))))
+  (type_alias_declaration
+    (identifier)
+    (record_type
+      (record_type_field
+        (identifier)
+        (type_identifier))
+      (record_type_field
+        (identifier)
+        (array_type
+          (type_identifier))))))
+
+================================================================================
+record type with trailing comma and newlines
+================================================================================
+
+type Config = {
+  width: int,
+  height: int,
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_alias_declaration
+    (identifier)
+    (record_type
+      (record_type_field
+        (identifier)
+        (type_identifier))
+      (record_type_field
+        (identifier)
+        (type_identifier)))))
+
+================================================================================
+chip type name as a type
+================================================================================
+
+var a: Counter
+mod f(c: Cpu, mem: int[]) { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier))
+      (parameter
+        (identifier)
+        (array_type
+          (type_identifier))))
+    (block)))

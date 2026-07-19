@@ -68,6 +68,16 @@ vscode:
 vscode:
     cd editors/vscode && npm install && npm run build
 
+# Regenerate the tree-sitter parser from grammar.js and run its corpus
+[windows]
+treesitter:
+    Set-Location editors/tree-sitter-wirescript; npm install; npx tree-sitter generate; npx tree-sitter test
+
+# Regenerate the tree-sitter parser from grammar.js and run its corpus
+[unix]
+treesitter:
+    cd editors/tree-sitter-wirescript && npm install && npx tree-sitter generate && npx tree-sitter test
+
 # Copy wirescript docs into playground for serving
 [windows]
 playground-docs:

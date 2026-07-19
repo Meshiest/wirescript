@@ -1,0 +1,483 @@
+================================================================================
+assignment
+================================================================================
+
+on go {
+  x = 1
+  scores[i] = newScore
+  obj.field = 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (index_expression
+          (identifier)
+          (identifier))
+        (identifier))
+      (assignment_statement
+        (field_expression
+          (identifier)
+          (identifier))
+        (integer)))))
+
+================================================================================
+compound assignment
+================================================================================
+
+on go {
+  counter += 1
+  counter -= 1
+  counter *= 2
+  counter /= 2
+  counter %= 4
+  flags &= mask
+  flags |= 1
+  flags ^= mask
+  bits <<= 2
+  bits >>= 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (identifier))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (identifier))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (integer)))))
+
+================================================================================
+if else chains
+================================================================================
+
+on go {
+  if a { x = 1 }
+  if a { x = 1 } else { x = 2 }
+  if a { x = 1 } else if b { x = 2 } else { x = 3 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (if_statement
+        (identifier)
+        (block
+          (assignment_statement
+            (identifier)
+            (integer))))
+      (if_statement
+        (identifier)
+        (block
+          (assignment_statement
+            (identifier)
+            (integer)))
+        (block
+          (assignment_statement
+            (identifier)
+            (integer))))
+      (if_statement
+        (identifier)
+        (block
+          (assignment_statement
+            (identifier)
+            (integer)))
+        (if_statement
+          (identifier)
+          (block
+            (assignment_statement
+              (identifier)
+              (integer)))
+          (block
+            (assignment_statement
+              (identifier)
+              (integer))))))))
+
+================================================================================
+return
+================================================================================
+
+mod f(x: int) -> int {
+  if x < 0 { return }
+  return x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (type_identifier)
+    (block
+      (if_statement
+        (binary_expression
+          (identifier)
+          (integer))
+        (block
+          (return_statement)))
+      (return_statement
+        (identifier)))))
+
+================================================================================
+emit
+================================================================================
+
+on go {
+  emit done
+  emit result = computed
+  emit payload = { sum: 0, index: 0 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (emit_statement
+        (identifier))
+      (emit_statement
+        (identifier)
+        (identifier))
+      (emit_statement
+        (identifier)
+        (record_literal
+          (record_field
+            (identifier)
+            (integer))
+          (record_field
+            (identifier)
+            (integer)))))))
+
+================================================================================
+buffered emit
+================================================================================
+
+on go {
+  buffer emit loop
+  buffer(3) emit loop
+  buffer(0.5s) emit loop
+  buffer(d) emit loop
+  buffer(0, 1s) emit sig
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (emit_statement
+        (buffer_modifier)
+        (identifier))
+      (emit_statement
+        (buffer_modifier
+          (duration
+            (integer)))
+        (identifier))
+      (emit_statement
+        (buffer_modifier
+          (duration
+            (float)
+            (time_unit)))
+        (identifier))
+      (emit_statement
+        (buffer_modifier
+          (duration
+            (identifier)))
+        (identifier))
+      (emit_statement
+        (buffer_modifier
+          (duration
+            (integer))
+          (duration
+            (integer)
+            (time_unit)))
+        (identifier)))))
+
+================================================================================
+await
+================================================================================
+
+on go {
+  await signal
+  await a || b
+  await SleepTicks(_, delay = 60)
+  await hit.Hit
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (await_expression
+        (identifier))
+      (await_expression
+        (binary_expression
+          (identifier)
+          (identifier)))
+      (await_expression
+        (call_expression
+          (identifier)
+          (argument_list
+            (identifier)
+            (named_argument
+              (identifier)
+              (integer)))))
+      (await_expression
+        (field_expression
+          (identifier)
+          (identifier))))))
+
+================================================================================
+await with capture
+================================================================================
+
+on go {
+  let val = await signal
+  let cap = await value on done
+  let { sum, index } = await loop
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (let_declaration
+        (identifier)
+        (await_expression
+          (identifier)))
+      (let_declaration
+        (identifier)
+        (await_expression
+          (identifier)
+          (identifier)))
+      (let_declaration
+        (record_pattern
+          (field_pattern
+            (identifier))
+          (field_pattern
+            (identifier)))
+        (await_expression
+          (identifier))))))
+
+================================================================================
+semicolon terminators
+================================================================================
+
+on go {
+  pc = 0x200; regs[5] = 0x42
+  let a = e.GetTag();
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (index_expression
+          (identifier)
+          (integer))
+        (integer))
+      (let_declaration
+        (identifier)
+        (call_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (argument_list))))))
+
+================================================================================
+juxtaposed statements without separators
+================================================================================
+
+on go {
+  vVoteYes = 0 vVoteNo = 0 vIsHitler = 0
+  revealRolesAt(0) revealRolesAt(1)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (expression_statement
+        (call_expression
+          (identifier)
+          (argument_list
+            (integer))))
+      (expression_statement
+        (call_expression
+          (identifier)
+          (argument_list
+            (integer)))))))
+
+================================================================================
+declarations inside a handler body
+================================================================================
+
+on go {
+  var local: int = 0
+  let sig: exec
+  buffer prev = local
+  array tmp: int[]
+  in extra: int
+  out done: exec
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (var_declaration
+        (identifier)
+        (type_identifier)
+        (integer))
+      (let_declaration
+        (identifier)
+        (type_identifier))
+      (buffer_declaration
+        (identifier)
+        (identifier))
+      (array_declaration
+        (identifier)
+        (array_type
+          (type_identifier)))
+      (in_declaration
+        (identifier)
+        (type_identifier))
+      (out_declaration
+        (identifier)
+        (type_identifier)))))
+
+================================================================================
+nested handler inside a handler
+================================================================================
+
+on trigger {
+  let r = Sweep(origin, dir)
+  on r.Hit { hits = hits + 1 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (let_declaration
+        (identifier)
+        (call_expression
+          (identifier)
+          (argument_list
+            (identifier)
+            (identifier))))
+      (handler
+        (field_expression
+          (identifier)
+          (identifier))
+        (block
+          (assignment_statement
+            (identifier)
+            (binary_expression
+              (identifier)
+              (integer))))))))
+
+================================================================================
+out binding as a statement
+================================================================================
+
+mod DisplayBasis(w: float, h: float) -> (width: float, height: float) {
+  out width = w
+  out height = h
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier))
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (output_list
+      (named_output
+        (identifier)
+        (type_identifier))
+      (named_output
+        (identifier)
+        (type_identifier)))
+    (block
+      (out_declaration
+        (identifier)
+        (identifier))
+      (out_declaration
+        (identifier)
+        (identifier)))))

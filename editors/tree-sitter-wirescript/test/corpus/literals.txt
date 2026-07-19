@@ -1,0 +1,253 @@
+================================================================================
+integer literals
+================================================================================
+
+let a = 42
+let b = 1_000_000
+let c = 0xff
+let d = 0b1010
+let e = 0o77
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (integer))
+  (let_declaration
+    (identifier)
+    (integer))
+  (let_declaration
+    (identifier)
+    (integer))
+  (let_declaration
+    (identifier)
+    (integer))
+  (let_declaration
+    (identifier)
+    (integer)))
+
+================================================================================
+float literals
+================================================================================
+
+let a = 3.14
+let b = 1e10
+let c = 2.5e-3
+let d = 1_000.0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (float))
+  (let_declaration
+    (identifier)
+    (float))
+  (let_declaration
+    (identifier)
+    (float))
+  (let_declaration
+    (identifier)
+    (float)))
+
+================================================================================
+negative literals
+================================================================================
+
+let a = -42
+let b = -3.14
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (unary_expression
+      (integer)))
+  (let_declaration
+    (identifier)
+    (unary_expression
+      (float))))
+
+================================================================================
+booleans
+================================================================================
+
+let a = true
+let b = false
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (boolean))
+  (let_declaration
+    (identifier)
+    (boolean)))
+
+================================================================================
+strings in both quote styles
+================================================================================
+
+let a = "double"
+let b = 'single'
+let c = ""
+let d = ''
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)))
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)))
+  (let_declaration
+    (identifier)
+    (string))
+  (let_declaration
+    (identifier)
+    (string)))
+
+================================================================================
+escape sequences
+================================================================================
+
+let a = "line\nbreak"
+let b = "quote\"inside"
+let c = "dollar\$sign"
+let d = 'apostrophe\'inside'
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (escape_sequence)
+      (string_fragment)))
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (escape_sequence)
+      (string_fragment)))
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (escape_sequence)
+      (string_fragment)))
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (escape_sequence)
+      (string_fragment))))
+
+================================================================================
+string interpolation
+================================================================================
+
+let a = "Hello, ${name}!"
+let b = 'pos=(${p.x}, ${p.y})'
+let c = "sum=${2 + 3}"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (interpolation
+        (identifier))
+      (string_fragment)))
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (interpolation
+        (field_expression
+          (identifier)
+          (identifier)))
+      (string_fragment)
+      (interpolation
+        (field_expression
+          (identifier)
+          (identifier)))
+      (string_fragment)))
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (interpolation
+        (binary_expression
+          (integer)
+          (integer))))))
+
+================================================================================
+nested interpolation
+================================================================================
+
+let a = "Health: ${if hp > 50 then "OK" else "LOW"}"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (interpolation
+        (if_expression
+          (binary_expression
+            (identifier)
+            (integer))
+          (string
+            (string_fragment))
+          (string
+            (string_fragment)))))))
+
+================================================================================
+lone dollar is literal text
+================================================================================
+
+let a = "costs $5"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (string
+      (string_fragment)
+      (string_fragment)
+      (string_fragment))))
+
+================================================================================
+comments
+================================================================================
+
+// line comment
+/// doc comment
+/* block comment */
+let a = 1 // trailing
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (doc_comment)
+  (block_comment)
+  (let_declaration
+    (identifier)
+    (integer))
+  (line_comment))

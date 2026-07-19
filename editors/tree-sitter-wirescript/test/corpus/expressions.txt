@@ -1,0 +1,539 @@
+================================================================================
+additive binds looser than multiplicative
+================================================================================
+
+let x = a + b * c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (binary_expression
+        (identifier)
+        (identifier)))))
+
+================================================================================
+power is right associative
+================================================================================
+
+let x = 2 ** 3 ** 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (integer)
+      (binary_expression
+        (integer)
+        (integer)))))
+
+================================================================================
+bitwise or binds tighter than logical and
+================================================================================
+
+let x = a && b | c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (binary_expression
+        (identifier)
+        (identifier)))))
+
+================================================================================
+comparison binds tighter than equality
+================================================================================
+
+let x = a < b == c > d
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (binary_expression
+        (identifier)
+        (identifier)))))
+
+================================================================================
+additive binds tighter than shift
+================================================================================
+
+let x = a + b << c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (identifier))))
+
+================================================================================
+concat shares precedence with additive
+================================================================================
+
+let x = "a" .. "b" .. "c"
+let y = 1 .. 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (string
+          (string_fragment))
+        (string
+          (string_fragment)))
+      (string
+        (string_fragment))))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (integer)
+      (integer))))
+
+================================================================================
+full operator sweep
+================================================================================
+
+let a = x || y
+let b = x ^^ y
+let c = x && y
+let d = x ^ y
+let e = x & y
+let f = x != y
+let g = x <= y
+let h = x >> y
+let i = x % y
+let j = x / y
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier))))
+
+================================================================================
+unary operators
+================================================================================
+
+let a = -x
+let b = !x
+let c = ~x
+let d = *ptr
+let e = &value
+let f = ref value
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (unary_expression
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (unary_expression
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (unary_expression
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (dereference_expression
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (reference_expression
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (reference_expression
+      (identifier))))
+
+================================================================================
+postfix binds tighter than prefix
+================================================================================
+
+let x = -a.b[0]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (unary_expression
+      (index_expression
+        (field_expression
+          (identifier)
+          (identifier))
+        (integer)))))
+
+================================================================================
+postfix chains
+================================================================================
+
+let a = obj.field
+let b = arr[i]
+let c = pair.0
+let d = f(x)
+let e = a.b(c)[d].e
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (field_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (index_expression
+      (identifier)
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (tuple_index_expression
+      (identifier)
+      (integer)))
+  (let_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (argument_list
+        (identifier))))
+  (let_declaration
+    (identifier)
+    (field_expression
+      (index_expression
+        (call_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (argument_list
+            (identifier)))
+        (identifier))
+      (identifier))))
+
+================================================================================
+call arguments
+================================================================================
+
+let a = f(x, y)
+let b = f(x, name = val)
+let c = f(...args)
+let d = ctrl.DisplayText("hi", fontSize = 40)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (argument_list
+        (identifier)
+        (identifier))))
+  (let_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (argument_list
+        (identifier)
+        (named_argument
+          (identifier)
+          (identifier)))))
+  (let_declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (argument_list
+        (spread_argument
+          (identifier)))))
+  (let_declaration
+    (identifier)
+    (call_expression
+      (field_expression
+        (identifier)
+        (identifier))
+      (argument_list
+        (string
+          (string_fragment))
+        (named_argument
+          (identifier)
+          (integer))))))
+
+================================================================================
+if expression
+================================================================================
+
+let x = if c then a else b
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (if_expression
+      (identifier)
+      (identifier)
+      (identifier))))
+
+================================================================================
+chained if expression
+================================================================================
+
+let x = if a then 1 else if b then 2 else 3
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (if_expression
+      (identifier)
+      (integer)
+      (if_expression
+        (identifier)
+        (integer)
+        (integer)))))
+
+================================================================================
+record literals
+================================================================================
+
+let a = { x: 1, y: 2 }
+let b = { x, y }
+let c = { ...base, y: 99 }
+let d = {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (record_literal
+      (record_field
+        (identifier)
+        (integer))
+      (record_field
+        (identifier)
+        (integer))))
+  (let_declaration
+    (identifier)
+    (record_literal
+      (shorthand_field
+        (identifier))
+      (shorthand_field
+        (identifier))))
+  (let_declaration
+    (identifier)
+    (record_literal
+      (spread_field
+        (identifier))
+      (record_field
+        (identifier)
+        (integer))))
+  (let_declaration
+    (identifier)
+    (record_literal)))
+
+================================================================================
+brace with a computed value is a block expression
+================================================================================
+
+let a = { x + 1 }
+let b = { let d = x * 2  d }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (block_expression
+      (binary_expression
+        (identifier)
+        (integer))))
+  (let_declaration
+    (identifier)
+    (block_expression
+      (let_declaration
+        (identifier)
+        (binary_expression
+          (identifier)
+          (integer)))
+      (identifier))))
+
+================================================================================
+array literals
+================================================================================
+
+let a = [1, 2, 3]
+let b = [n, 1, ...base, 5]
+let c = []
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (array_literal
+      (integer)
+      (integer)
+      (integer)))
+  (let_declaration
+    (identifier)
+    (array_literal
+      (identifier)
+      (integer)
+      (spread_element
+        (identifier))
+      (integer)))
+  (let_declaration
+    (identifier)
+    (array_literal)))
+
+================================================================================
+tuple and parenthesized expressions
+================================================================================
+
+let a = (1, 2)
+let b = (true, 3.14, "hi")
+let c = (a + b) * c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (tuple_expression
+      (integer)
+      (integer)))
+  (let_declaration
+    (identifier)
+    (tuple_expression
+      (boolean)
+      (float)
+      (string
+        (string_fragment))))
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (parenthesized_expression
+        (binary_expression
+          (identifier)
+          (identifier)))
+      (identifier))))
+
+================================================================================
+asset and prefab references
+================================================================================
+
+let a = $BRItemBase/Weapon_Pistol
+let b = $BrickFontDescriptor/IosevkaTerm
+let c = $./turret.brz
+let d = $/abs/path/file.brz
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (asset_reference))
+  (let_declaration
+    (identifier)
+    (asset_reference))
+  (let_declaration
+    (identifier)
+    (prefab_reference))
+  (let_declaration
+    (identifier)
+    (prefab_reference)))
+
+================================================================================
+line continuation after a binary operator
+================================================================================
+
+let total = a +
+  b +
+  c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (identifier))))

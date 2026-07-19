@@ -1,0 +1,30 @@
+{
+  "name": "tree-sitter-wirescript",
+  "version": "0.1.0",
+  "description": "Wirescript grammar for tree-sitter",
+  "main": "bindings/node",
+  "keywords": ["parser", "lexer", "wirescript", "brickadia"],
+  "license": "MIT",
+  "files": [
+    "grammar.js",
+    "queries/*",
+    "src/**",
+    "tree-sitter.json"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.wirescript",
+      "file-types": ["ws"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^(ws|wirescript)$"
+    }
+  ]
+}

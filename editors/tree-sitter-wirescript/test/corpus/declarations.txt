@@ -1,0 +1,341 @@
+================================================================================
+var declarations
+================================================================================
+
+var count: int = 0
+var bare: int
+var inferred = 0
+static var total: int = 0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (identifier)
+    (type_identifier)
+    (integer))
+  (var_declaration
+    (identifier)
+    (type_identifier))
+  (var_declaration
+    (identifier)
+    (integer))
+  (var_declaration
+    (identifier)
+    (type_identifier)
+    (integer)))
+
+================================================================================
+buffer and array declarations
+================================================================================
+
+buffer prev = score
+buffer delayed: int = count
+array scores: int[]
+array seeded: int[] = [100, 50, -10]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (buffer_declaration
+    (identifier)
+    (identifier))
+  (buffer_declaration
+    (identifier)
+    (type_identifier)
+    (identifier))
+  (array_declaration
+    (identifier)
+    (array_type
+      (type_identifier)))
+  (array_declaration
+    (identifier)
+    (array_type
+      (type_identifier))
+    (array_literal
+      (integer)
+      (integer)
+      (unary_expression
+        (integer)))))
+
+================================================================================
+let bindings
+================================================================================
+
+let doubled = count * 2
+let typed: int = 42
+let sig: exec
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (integer)))
+  (let_declaration
+    (identifier)
+    (type_identifier)
+    (integer))
+  (let_declaration
+    (identifier)
+    (type_identifier)))
+
+================================================================================
+let destructuring
+================================================================================
+
+let { x, y } = p
+let { x, y: alias, ...rest } = p
+let (first, second) = tup
+let (head, ...tail) = tup
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (record_pattern
+      (field_pattern
+        (identifier))
+      (field_pattern
+        (identifier)))
+    (identifier))
+  (let_declaration
+    (record_pattern
+      (field_pattern
+        (identifier))
+      (field_pattern
+        (identifier)
+        (identifier))
+      (rest_pattern
+        (identifier)))
+    (identifier))
+  (let_declaration
+    (tuple_pattern
+      (identifier)
+      (identifier))
+    (identifier))
+  (let_declaration
+    (tuple_pattern
+      (identifier)
+      (rest_pattern
+        (identifier)))
+    (identifier)))
+
+================================================================================
+ports
+================================================================================
+
+in trigger: exec
+out score = count
+out typed: int = count
+out done: exec
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (in_declaration
+    (identifier)
+    (type_identifier))
+  (out_declaration
+    (identifier)
+    (identifier))
+  (out_declaration
+    (identifier)
+    (type_identifier)
+    (identifier))
+  (out_declaration
+    (identifier)
+    (type_identifier)))
+
+================================================================================
+port side annotations
+================================================================================
+
+@left in go: exec
+@right out done: exec
+@top out readings: float[]
+@bottom in slot: int
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (in_declaration
+    (annotation
+      (annotation_name))
+    (identifier)
+    (type_identifier))
+  (out_declaration
+    (annotation
+      (annotation_name))
+    (identifier)
+    (type_identifier))
+  (out_declaration
+    (annotation
+      (annotation_name))
+    (identifier)
+    (array_type
+      (type_identifier)))
+  (in_declaration
+    (annotation
+      (annotation_name))
+    (identifier)
+    (type_identifier)))
+
+================================================================================
+stacked annotations
+================================================================================
+
+@left @label("Fire!") in trigger: exec
+
+@label("Zone Handlers")
+@closed
+chip { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (in_declaration
+    (annotation
+      (annotation_name))
+    (annotation
+      (annotation_name)
+      (string
+        (string_fragment)))
+    (identifier)
+    (type_identifier))
+  (chip_declaration
+    (annotation
+      (annotation_name)
+      (string
+        (string_fragment)))
+    (annotation
+      (annotation_name))
+    (block)))
+
+================================================================================
+nofold annotations
+================================================================================
+
+@nofold let x = 1
+@nofold static var total: int = 0
+@nofold on trigger { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (annotation
+      (annotation_name))
+    (identifier)
+    (integer))
+  (var_declaration
+    (annotation
+      (annotation_name))
+    (identifier)
+    (type_identifier)
+    (integer))
+  (handler
+    (annotation
+      (annotation_name))
+    (identifier)
+    (block)))
+
+================================================================================
+imports
+================================================================================
+
+import "utils"
+import { clamp, swap as exchange } from "utils"
+import * as u from "utils"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_declaration
+    (string
+      (string_fragment)))
+  (import_declaration
+    (named_imports
+      (import_specifier
+        (identifier))
+      (import_specifier
+        (identifier)
+        (identifier)))
+    (string
+      (string_fragment)))
+  (import_declaration
+    (namespace_import
+      (identifier))
+    (string
+      (string_fragment))))
+
+================================================================================
+type aliases
+================================================================================
+
+type Point = { x: int, y: int }
+type State = { counter: *int, label: string }
+type Pair = (int, int)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_alias_declaration
+    (identifier)
+    (record_type
+      (record_type_field
+        (identifier)
+        (type_identifier))
+      (record_type_field
+        (identifier)
+        (type_identifier))))
+  (type_alias_declaration
+    (identifier)
+    (record_type
+      (record_type_field
+        (identifier)
+        (ref_type
+          (type_identifier)))
+      (record_type_field
+        (identifier)
+        (type_identifier))))
+  (type_alias_declaration
+    (identifier)
+    (tuple_type
+      (type_identifier)
+      (type_identifier))))
+
+================================================================================
+expression bodied fn
+================================================================================
+
+fn double(x: int) -> int = x * 2
+fn add(a: int, b: int) = a + b
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (type_identifier)
+    (binary_expression
+      (identifier)
+      (integer)))
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier))
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (binary_expression
+      (identifier)
+      (identifier))))

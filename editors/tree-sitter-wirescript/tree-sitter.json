@@ -1,0 +1,21 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "wirescript",
+      "camelcase": "Wirescript",
+      "scope": "source.wirescript",
+      "path": ".",
+      "file-types": ["ws"],
+      "highlights": ["queries/highlights.scm"],
+      "locals": ["queries/locals.scm"],
+      "injection-regex": "^(ws|wirescript)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Wirescript grammar for tree-sitter",
+    "authors": [{ "name": "bearilog" }]
+  }
+}

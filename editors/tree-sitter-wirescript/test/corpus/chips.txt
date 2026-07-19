@@ -1,0 +1,490 @@
+================================================================================
+named chip with outputs
+================================================================================
+
+chip Counter(bump: exec) -> (value: int, done: exec) {
+  var n: int = 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (output_list
+      (named_output
+        (identifier)
+        (type_identifier))
+      (named_output
+        (identifier)
+        (type_identifier)))
+    (block
+      (var_declaration
+        (identifier)
+        (type_identifier)
+        (integer)))))
+
+================================================================================
+chip with single anonymous output
+================================================================================
+
+chip Double(x: int) -> int {
+  out _ = x * 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (type_identifier)
+    (block
+      (out_declaration
+        (identifier)
+        (binary_expression
+          (identifier)
+          (integer))))))
+
+================================================================================
+chip without outputs
+================================================================================
+
+chip Increment(counter: ref int, amount: int) {
+  counter = counter + amount
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (ref_type
+          (type_identifier)))
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (block
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (identifier)
+          (identifier))))))
+
+================================================================================
+anonymous and open chips
+================================================================================
+
+chip {
+  var x: int = 0
+}
+
+open chip {
+  var y: int = 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (block
+      (var_declaration
+        (identifier)
+        (type_identifier)
+        (integer))))
+  (chip_declaration
+    (block
+      (var_declaration
+        (identifier)
+        (type_identifier)
+        (integer)))))
+
+================================================================================
+chip let shorthand
+================================================================================
+
+chip let score = c0 + c1
+
+chip let a = 1, b = 2, c = 3
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (chip_let_binding
+      (identifier)
+      (binary_expression
+        (identifier)
+        (identifier))))
+  (chip_declaration
+    (chip_let_binding
+      (identifier)
+      (integer))
+    (chip_let_binding
+      (identifier)
+      (integer))
+    (chip_let_binding
+      (identifier)
+      (integer))))
+
+================================================================================
+chip on shorthand
+================================================================================
+
+chip on tick {
+  n = n + 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (handler
+      (identifier)
+      (block
+        (assignment_statement
+          (identifier)
+          (binary_expression
+            (identifier)
+            (integer)))))))
+
+================================================================================
+labelled and closed chips
+================================================================================
+
+@label("Score Tracker") chip { }
+
+@closed chip Counter(bump: exec) -> (value: int) { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (annotation
+      (annotation_name)
+      (string
+        (string_fragment)))
+    (block))
+  (chip_declaration
+    (annotation
+      (annotation_name))
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (output_list
+      (named_output
+        (identifier)
+        (type_identifier)))
+    (block)))
+
+================================================================================
+nested chips
+================================================================================
+
+@label("Tick") chip on tick {
+  @label("Input Reading") chip {
+    var reading: int = 0
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (chip_declaration
+    (annotation
+      (annotation_name)
+      (string
+        (string_fragment)))
+    (handler
+      (identifier)
+      (block
+        (chip_declaration
+          (annotation
+            (annotation_name)
+            (string
+              (string_fragment)))
+          (block
+            (var_declaration
+              (identifier)
+              (type_identifier)
+              (integer))))))))
+
+================================================================================
+mod declarations
+================================================================================
+
+mod inc(v: *int) {
+  v = v + 1
+}
+
+mod clamped(v: int, lo: int, hi: int) -> (result: int) {
+  if v < lo { return lo }
+  return v
+}
+
+mod Double(x: int) -> int { return x * 2 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (ref_type
+          (type_identifier))))
+    (block
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (identifier)
+          (integer)))))
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier))
+      (parameter
+        (identifier)
+        (type_identifier))
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (output_list
+      (named_output
+        (identifier)
+        (type_identifier)))
+    (block
+      (if_statement
+        (binary_expression
+          (identifier)
+          (identifier))
+        (block
+          (return_statement
+            (identifier))))
+      (return_statement
+        (identifier))))
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (type_identifier)
+    (block
+      (return_statement
+        (binary_expression
+          (identifier)
+          (integer))))))
+
+================================================================================
+mod with destructured parameters
+================================================================================
+
+mod distance({ x, y }: Point) -> int {
+  return x + y
+}
+
+mod process({ data, ...opts }: Config) { }
+
+mod sum((a, b): (int, int)) -> int {
+  return a + b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (record_pattern
+          (field_pattern
+            (identifier))
+          (field_pattern
+            (identifier)))
+        (type_identifier)))
+    (type_identifier)
+    (block
+      (return_statement
+        (binary_expression
+          (identifier)
+          (identifier)))))
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (record_pattern
+          (field_pattern
+            (identifier))
+          (rest_pattern
+            (identifier)))
+        (type_identifier)))
+    (block))
+  (mod_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (tuple_pattern
+          (identifier)
+          (identifier))
+        (tuple_type
+          (type_identifier)
+          (type_identifier))))
+    (type_identifier)
+    (block
+      (return_statement
+        (binary_expression
+          (identifier)
+          (identifier))))))
+
+================================================================================
+handlers
+================================================================================
+
+on RoundStart { }
+on CharacterDied(character) { }
+on obj.field { }
+on !running { }
+on eventA | eventB { }
+on reset || start { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block))
+  (handler
+    (call_expression
+      (identifier)
+      (argument_list
+        (identifier)))
+    (block))
+  (handler
+    (field_expression
+      (identifier)
+      (identifier))
+    (block))
+  (handler
+    (unary_expression
+      (identifier))
+    (block))
+  (handler
+    (binary_expression
+      (identifier)
+      (identifier))
+    (block))
+  (handler
+    (binary_expression
+      (identifier)
+      (identifier))
+    (block)))
+
+================================================================================
+handler config arguments
+================================================================================
+
+on ChatCommand("wave", Description = "Wave at everyone") { }
+on ZoneEntered(character, zone = room) { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (call_expression
+      (identifier)
+      (argument_list
+        (string
+          (string_fragment))
+        (named_argument
+          (identifier)
+          (string
+            (string_fragment)))))
+    (block))
+  (handler
+    (call_expression
+      (identifier)
+      (argument_list
+        (identifier)
+        (named_argument
+          (identifier)
+          (identifier))))
+    (block)))
+
+================================================================================
+if expression as handler trigger
+================================================================================
+
+on if running then tick else 0 {
+  n = n + 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (if_expression)
+    (if_expression
+      (identifier))
+    (if_expression)
+    (if_expression
+      (identifier))
+    (if_expression)
+    (if_expression
+      (integer))
+    (block
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (identifier)
+          (integer))))))
+
+================================================================================
+captured events
+================================================================================
+
+let died = on CharacterDied
+let bumped = on Bumped { n = n + 1 }
+let combo = on !a | b.c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (event_source
+      (identifier)))
+  (let_declaration
+    (identifier)
+    (event_source
+      (identifier)
+      (block
+        (assignment_statement
+          (identifier)
+          (binary_expression
+            (identifier)
+            (integer))))))
+  (let_declaration
+    (identifier)
+    (event_source
+      (trigger_union
+        (trigger_not
+          (identifier))
+        (trigger_field
+          (identifier)
+          (identifier))))))
