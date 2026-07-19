@@ -52,6 +52,7 @@ use call::*;
 mod access;
 use access::*;
 
+
 // ---------- result ----------
 
 pub struct LowerResult {
@@ -219,6 +220,9 @@ fn materialize_unfoldable_constants(module: &mut Module) {
     let mut make_nodes: Vec<Node> = Vec::new();
     let mut make_for: HashMap<NodeId, NodeId> = HashMap::default();
     let mut rewires: Vec<(usize, NodeId, WirePort)> = Vec::new();
+    // (wire index, target node, target port, value) for constants bound to a
+    // port that carries data but takes no wire — written as data, wire dropped.
+    let mut inlines: Vec<(usize, NodeId, WirePort, Literal)> = Vec::new();
 
     for (i, w) in module.wires.iter().enumerate() {
         let Some(src) = module.nodes.get(&w.source.node_id) else {
@@ -288,6 +292,15 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                 continue;
             }
             let lit = src.properties.get(&value_sym).unwrap().clone();
+            // A settable-but-unwireable port (a data field with no input port,
+            // e.g. DisplayText.FontSize) cannot take a wire at all: emitting one
+            // fails the brdb port lookup. Materializing a gate here would just
+            // produce a different unwireable wire, so write the value into the
+            // target's data and drop the wire instead.
+            if !crate::catalog::is_wire_input(target.gate_class, w.target.port.as_str()) {
+                inlines.push((i, w.target.node_id, w.target.port, lit));
+                continue;
+            }
             let no_fold = src.properties.contains_key(&*sym::NO_FOLD);
             let (const_class, props, out_port_sym, out_port, ty): (
                 &'static str,
@@ -415,6 +428,20 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             node_id: make_id,
             port,
         };
+    }
+    // Write data-only port values onto their targets, then drop the wires that
+    // carried them (highest index first, so earlier indices stay valid).
+    let mut drop_wires: Vec<usize> = Vec::with_capacity(inlines.len());
+    for (i, target_id, port, lit) in inlines {
+        if let Some(target) = module.nodes.get_mut(&target_id) {
+            std::sync::Arc::make_mut(&mut target.properties).insert(intern(port.as_str()), lit);
+        }
+        drop_wires.push(i);
+    }
+    drop_wires.sort_unstable();
+    drop_wires.dedup();
+    for i in drop_wires.into_iter().rev() {
+        module.wires.remove(i);
     }
     for child_module in module.chips.values_mut() {
         materialize_unfoldable_constants(child_module);

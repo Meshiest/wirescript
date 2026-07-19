@@ -2615,4 +2615,67 @@ mod tests {
     fn unknown_call_returns_none() {
         assert!(find_call("doesNotExist").is_none());
     }
+
+    /// Params that name a settable field the gate does not expose as a wire
+    /// input. These only ever work as constants — lowering writes them into the
+    /// component's data and drops the wire; a computed value has nowhere to go.
+    ///
+    /// This list pins what the current inventory reports. It should shrink, not
+    /// grow: a new entry means either a mistyped port or a gate whose ports
+    /// changed in a game update.
+    const DATA_ONLY_PARAMS: &[&str] = &[
+        "DisplayText.easing -> Easing",
+        "DisplayText.fontSize -> FontSize",
+        "DisplayText.justify -> Justification",
+        "Easing.direction -> Direction",
+        "Easing.function -> Function",
+        "GiveWeapon.weapon -> ItemTypeIfItem",
+        "HasPermission.permission -> PermissionName",
+        "HasRole.role -> RoleName",
+        "PlayAudioAt.audio -> AudioDescriptor",
+        "PlayGlobalAudio.audio -> AudioDescriptor",
+        "SetTempPermission.permission -> PermissionTagStr",
+        "ShowHint.text -> HintText",
+        "ShowHint.title -> HintTitle",
+        "SpawnPrefab.prefab -> Prefab",
+    ];
+
+    /// Every catalog param must name a real wire input on its gate, or be a
+    /// known data-only field. A param pointing at a field the gate has no input
+    /// port for wires to a slot the game does not have.
+    #[test]
+    fn every_call_param_targets_a_real_wire_input() {
+        let mut found: Vec<String> = Vec::new();
+        for (name, spec) in calls().iter() {
+            // Pseudo/internal gates are absent from the inventory dump.
+            if crate::catalog::default_catalog()
+                .find_by_class(spec.gate_class)
+                .is_none()
+            {
+                continue;
+            }
+            for p in &spec.params {
+                if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str()) {
+                    found.push(format!("{name}.{} -> {}", p.name, p.port.as_str()));
+                }
+            }
+        }
+        found.sort();
+        let expected: Vec<String> = DATA_ONLY_PARAMS.iter().map(|s| s.to_string()).collect();
+        let new: Vec<&String> = found.iter().filter(|f| !expected.contains(f)).collect();
+        assert!(new.is_empty(), "params bound to non-wire ports: {new:#?}");
+        let gone: Vec<&String> = expected.iter().filter(|e| !found.contains(e)).collect();
+        assert!(
+            gone.is_empty(),
+            "these are wireable now — drop them from DATA_ONLY_PARAMS: {gone:#?}"
+        );
+    }
+
+    #[test]
+    fn font_size_is_not_a_wire_input() {
+        let g = gc::CONTROLLER_DISPLAY_TEXT;
+        assert!(!crate::catalog::is_wire_input(g, "FontSize"));
+        assert!(crate::catalog::is_wire_input(g, "Text"));
+        assert!(crate::catalog::is_wire_input(g, "PositionX"));
+    }
 }

@@ -867,3 +867,56 @@ on tick {
         get_count
     );
 }
+
+/// Destructuring a builtin multi-output gate must bind each name to that
+/// gate's own output port. No chip owns those outputs, so the chip lookup
+/// finds nothing; the destructure used to bind nothing at all and every use
+/// became an `_Unsupported` placeholder wired to no source.
+#[test]
+fn builtin_multi_output_destructure_binds_gate_ports() {
+    let r = compile(
+        "on CharacterSpawned(player) {\n\
+           let { Forward, Right, Jump } = player.InputReader()\n\
+           PrintToConsole(\"${Forward} ${Right} ${Jump}\")\n\
+         }",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "destructured fields must bind to the gate's outputs; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class)
+            .collect::<Vec<_>>()
+    );
+    // Each field reads its own port on the splitter, not a shared default.
+    let splitter = find_gate(&r, "Component_Internal_InputSplitter");
+    let ports: Vec<String> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.node_id == splitter)
+        .map(|w| w.source.port.as_str().to_string())
+        .collect();
+    for p in ["InputForward", "InputRight", "bPressedJump"] {
+        assert!(ports.contains(&p.to_string()), "expected a wire from {p}, got {ports:?}");
+    }
+}
+
+/// Field names are case-sensitive. A name that matches nothing bound silently,
+/// leaving dangling placeholders — it now errors and points at the real field.
+#[test]
+fn destructuring_an_unknown_field_errors_with_a_suggestion() {
+    let r = compile(
+        "on CharacterSpawned(player) {\n\
+           let { forward } = player.InputReader()\n\
+           PrintToConsole(\"${forward}\")\n\
+         }",
+    );
+    let msgs: Vec<&str> = r.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("no field `forward`") && m.contains("`Forward`")),
+        "expected a suggestion naming the real field, got {msgs:?}"
+    );
+}

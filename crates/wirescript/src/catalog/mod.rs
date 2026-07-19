@@ -189,6 +189,27 @@ impl Catalog {
     pub fn entries(&self) -> &[GateSpec] {
         &self.entries
     }
+
+    /// Is `port` a wire input on `gate_class`, per the game's own dump?
+    ///
+    /// A gate can carry settable values that are *not* wireable — e.g.
+    /// `DisplayText.FontSize` is a data field with a default but has no input
+    /// port. Wiring one produces a file the game rejects at load, so a constant
+    /// bound to such a port has to be written as data instead.
+    ///
+    /// Unknown classes (pseudo gates, internals) answer `true`: they are not in
+    /// the inventory, and treating them as wireable keeps existing behavior.
+    pub fn is_wire_input(&self, gate_class: &str, port: &str) -> bool {
+        match self.find_by_class(gate_class) {
+            Some(spec) => spec.component.inputs.iter().any(|p| p.name == port),
+            None => true,
+        }
+    }
+}
+
+/// [`Catalog::is_wire_input`] against the bundled inventory.
+pub fn is_wire_input(gate_class: &str, port: &str) -> bool {
+    default_catalog().is_wire_input(gate_class, port)
 }
 
 /// The default catalog, parsed from the bundled inventory JSON on first

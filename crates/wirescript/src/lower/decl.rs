@@ -354,6 +354,39 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 }
                 return;
             }
+            // A builtin multi-output gate (e.g. `character.InputReader()`) owns
+            // its outputs directly — no chip wraps them, so the lookup above
+            // finds nothing. Bind each declared field to the gate's matching
+            // output port, the same mapping `r.Forward` resolves through.
+            // Without this a destructure bound nothing and every use became an
+            // `_Unsupported` placeholder wired to no source.
+            let record: HashMap<crate::intern::Sym, Binding> = fields
+                .iter()
+                .filter_map(|(field_name, _ty)| {
+                    let port =
+                        resolve_output_field_port(ctx, rhs_port.node_id, field_name)?;
+                    Some((
+                        crate::intern::intern(field_name),
+                        Binding::Local(LocalRecord { port }),
+                    ))
+                })
+                .collect();
+            if !record.is_empty() {
+                match &d.binding {
+                    LetBinding::Ident { name, .. } => {
+                        ctx.scope.insert(&name, Binding::Record(record));
+                        return;
+                    }
+                    LetBinding::RecordDestruct {
+                        fields: destruct_fields,
+                        ..
+                    } => {
+                        install_record_destruct(ctx, &record, destruct_fields);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -442,11 +475,36 @@ pub(super) fn install_record_destruct(
     let mut remaining = src.clone();
     for field in destruct_fields {
         match field {
-            RecordDestructField::Named { name, alias, .. } => {
+            RecordDestructField::Named {
+                name, alias, range, ..
+            } => {
                 let key = crate::intern::intern(name);
                 if let Some(binding) = remaining.remove(&key) {
                     let bind_name = alias.as_deref().unwrap_or(name);
                     ctx.scope.insert(&bind_name, binding);
+                } else {
+                    // Binding nothing would leave every use of the name an
+                    // `_Unsupported` placeholder wired to no source — a circuit
+                    // that silently reads 0. Field names are case-sensitive, so
+                    // point at a differently-cased field when there is one.
+                    let available: Vec<String> = src
+                        .keys()
+                        .map(|k| crate::intern::resolve(*k).to_string())
+                        .collect();
+                    let suggestion = available
+                        .iter()
+                        .find(|f| f.eq_ignore_ascii_case(name))
+                        .map(|f| format!(" — did you mean `{f}`?"))
+                        .unwrap_or_else(|| {
+                            let mut names = available.clone();
+                            names.sort();
+                            format!(" — available fields: {}", names.join(", "))
+                        });
+                    ctx.diagnostics.push(Diagnostic::error(
+                        "WS002",
+                        format!("no field `{name}` on this value{suggestion}"),
+                        range.clone(),
+                    ));
                 }
             }
             RecordDestructField::Rest { name, .. } => {

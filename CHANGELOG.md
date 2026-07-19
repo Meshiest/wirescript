@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 0.17.1
+
+- **Fixed a constant on a data-only port failing the build** - `DisplayText.fontSize` and 13 other params name settable fields with no wire input; binding one emitted a wire emit rejects. Now written as data, with a test pinning the list.
+- **Fixed destructuring a builtin multi-output call binding nothing** - `let { Forward, Right } = c.InputReader()` left every name an unwired placeholder. Fields now bind to the gate's ports, and an unknown field errors with a suggestion instead of binding silently.
+
 ## 0.17.0
 
 - **`Opaque(x)` builtin + `@nofold` annotation** - `Opaque` passes a value through a rerouter and hides it from constant folding; `@nofold` suppresses folding for a declaration, or for the whole file when placed at the top separated by a blank line. No-op placements warn. Groundwork for gate-semantics verification circuits.
