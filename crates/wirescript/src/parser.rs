@@ -1886,11 +1886,24 @@ impl<'a> Parser<'a> {
                 range: self.make_range(start, end),
             };
         }
-        // Plain identifier type name (int, bool, controller, chipTypeName, …)
+        // Plain identifier type name (int, bool, controller, chipTypeName, …),
+        // or one qualified by a namespace alias (`T.Point` after
+        // `import * as T`). The qualified form is kept as a dotted name and
+        // resolved against that namespace's type aliases.
         let name_tok = self.expect(TokenKind::Ident, None);
+        let mut name = name_tok.text;
+        let mut end = name_tok.end;
+        while self.check(TokenKind::Dot, None)
+            && self.peek_at(1).kind == TokenKind::Ident
+        {
+            self.advance(); // consume `.`
+            let member = self.expect(TokenKind::Ident, None);
+            name = format!("{name}.{}", member.text);
+            end = member.end;
+        }
         TypeExpr::Name {
-            name: name_tok.text,
-            range: self.make_range(name_tok.start, name_tok.end),
+            name,
+            range: self.make_range(name_tok.start, end),
         }
     }
 

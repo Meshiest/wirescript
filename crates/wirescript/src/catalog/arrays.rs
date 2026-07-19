@@ -34,6 +34,7 @@ pub static ARRAY_METHODS: &[ArrayMethod] = &[
     ArrayMethod { name: "remove", gate: gc::ARRAY_REMOVE_AT_INDEX, signature: "(index)", doc: "Remove the element at the given index" },
     ArrayMethod { name: "insert", gate: gc::ARRAY_INSERT, signature: "(index, value)", doc: "Insert an element at the given index" },
     ArrayMethod { name: "clear", gate: gc::ARRAY_CLEAR, signature: "()", doc: "Remove all elements from the array" },
+    ArrayMethod { name: "get", gate: gc::ARRAY_GET, signature: "(index)", doc: "Read the element at index; gives its Value (default) and OutOfBounds" },
     ArrayMethod { name: "find", gate: gc::ARRAY_FIND, signature: "(value)", doc: "Find the first matching element; gives its Index (default, -1 if absent), Found, and Value" },
     ArrayMethod { name: "sort", gate: gc::ARRAY_SORT, signature: "(descending?)", doc: "Sort the array in place" },
     ArrayMethod { name: "reverse", gate: gc::ARRAY_REVERSE, signature: "()", doc: "Reverse the element order in place" },

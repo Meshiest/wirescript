@@ -38,6 +38,34 @@ pub fn member_receiver_at(source: &str, line: usize, col: usize) -> Option<Strin
     }
     // The receiver is the identifier directly before the dot (no whitespace).
     let recv = &before[..frag_start - 1];
+    // An indexed read (`arr[i].`) is a receiver too: its members are the array
+    // get gate's outputs, not the array's methods. Skip the bracketed index and
+    // report the base as `name[]` so the caller can tell the two apart.
+    if recv.ends_with(']') {
+        let mut depth = 0i32;
+        let mut open = None;
+        for (i, c) in recv.char_indices().rev() {
+            match c {
+                ']' => depth += 1,
+                '[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let open = open?;
+        let base = &recv[..open];
+        let base_start = base
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| after_char(base, i))
+            .unwrap_or(0);
+        let name = &base[base_start..];
+        return (!name.is_empty()).then(|| format!("{name}[]"));
+    }
     let recv_start = recv
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|i| after_char(recv, i))

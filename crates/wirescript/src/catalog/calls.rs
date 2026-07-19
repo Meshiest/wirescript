@@ -170,6 +170,20 @@ fn vec_recv(
     }
 }
 
+/// The value types a math-variant port accepts, matching the game's
+/// `WireGraphPrimMathVariant` (`f64, i64, Vector, Rotator, Quat, LinearColor`).
+/// `Blend`/`lerp`/`Tween` interpolate any of these, not just floats.
+fn blend_variant() -> Type {
+    Type::Union(vec![
+        Type::Float,
+        Type::Int,
+        Type::Vector,
+        Type::Rotator,
+        Type::Quat,
+        Type::Color,
+    ])
+}
+
 /// Pure (non-exec) expression gate whose first param is the method receiver.
 fn expr_recv(
     name: &'static str,
@@ -766,10 +780,28 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             Type::String,
         ),
     );
+    // `Blend` is the math blend gate — an alias for `lerp`, taking any of the
+    // math variants. `ColorBlend` below is a DIFFERENT gate (it carries a
+    // colour-space selection), so both stay reachable.
     m.insert(
         "Blend",
         expr_recv(
             "Blend",
+            gc::MATH_BLEND,
+            blend_variant(),
+            vec![
+                CallParam::req("a", WirePort::InputA, blend_variant()),
+                CallParam::req("b", WirePort::InputB, blend_variant()),
+                CallParam::req("alpha", WirePort::Blend, Type::Float),
+            ],
+            WirePort::Output,
+            blend_variant(),
+        ),
+    );
+    m.insert(
+        "ColorBlend",
+        expr_recv(
+            "ColorBlend",
             gc::COLOR_BLEND,
             Type::Color,
             vec![
@@ -1516,12 +1548,12 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             "lerp",
             gc::MATH_BLEND,
             vec![
-                CallParam::req("a", WirePort::InputA, Type::Float),
-                CallParam::req("b", WirePort::InputB, Type::Float),
+                CallParam::req("a", WirePort::InputA, blend_variant()),
+                CallParam::req("b", WirePort::InputB, blend_variant()),
                 CallParam::req("t", WirePort::Blend, Type::Float),
             ],
             WirePort::Output,
-            Type::Float,
+            blend_variant(),
         ),
     );
     m.insert(
@@ -2107,7 +2139,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             name: "Tween",
             gate_class: gc::PSEUDO_TWEEN,
             params: vec![
-                CallParam::req("target", WirePort::Target, Type::Float),
+                CallParam::req("target", WirePort::Target, blend_variant()),
                 CallParam::req("duration", WirePort::Duration, Type::Float),
                 CallParam::opt("function", WirePort::Function, Type::Any),
                 CallParam::opt("direction", WirePort::Direction, Type::Any),
@@ -2116,7 +2148,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Value,
-                ty: Type::Float,
+                ty: blend_variant(),
             }],
             receiver: None,
         },

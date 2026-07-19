@@ -280,6 +280,77 @@ impl Backend {
         diags
     }
 
+    /// Lowering and emit diagnostics for one document.
+    ///
+    /// `analyze()` stops at typecheck — lowering on every keystroke is the
+    /// blowup this server is built to avoid — so a whole class of problem
+    /// (a destructured field that binds nothing, a wire to a port the gate
+    /// does not have) never reached the editor at all. Running the full
+    /// pipeline on save is cheap enough and catches those where the author
+    /// will see them, instead of at the next explicit Compile.
+    ///
+    /// Runs on a blocking task: `compile` reserves its own big stack, and the
+    /// server must stay responsive while it works.
+    async fn lowering_diagnostics(&self, uri: &Url, source: &str) -> Vec<Diagnostic> {
+        let file = uri_to_file_string(uri);
+        let src_owned = source.to_string();
+        let file_owned = file.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            wirescript::compile(wirescript::CompileInput {
+                source: &src_owned,
+                file: &file_owned,
+                module_name: None,
+                no_fold: false,
+            })
+        })
+        .await;
+
+        // A panic in the compile must not take diagnostics (or the server) down.
+        let result = match result {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        let (diags, emit_error) = match result {
+            Ok(r) => (r.diagnostics, None),
+            Err(wirescript::CompileError::HasErrors(d)) => (d, None),
+            Err(wirescript::CompileError::Emit(e)) => (Vec::new(), Some(format!("{e:?}"))),
+        };
+
+        let mut out: Vec<Diagnostic> = diags
+            .iter()
+            .filter(|d| &*d.range.file == file.as_str() || d.range.file.is_empty())
+            .map(|d| Diagnostic {
+                range: range_to_lsp(&d.range),
+                severity: Some(match d.severity {
+                    wirescript::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
+                    wirescript::diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
+                    _ => DiagnosticSeverity::INFORMATION,
+                }),
+                code: Some(NumberOrString::String(d.code.clone())),
+                source: Some("wirescript".into()),
+                message: d.message.clone(),
+                ..Default::default()
+            })
+            .collect();
+
+        // Emit failures carry no source range (they name a wire and a brick, not
+        // a line). Surface one at the top of the file rather than dropping it —
+        // it is the difference between a build that fails and a build that fails
+        // for no visible reason.
+        if let Some(msg) = emit_error {
+            out.push(Diagnostic {
+                range: tower_lsp::lsp_types::Range::default(),
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String("WS-EMIT".into())),
+                source: Some("wirescript".into()),
+                message: format!("emit failed: {msg}"),
+                ..Default::default()
+            });
+        }
+        out
+    }
+
     async fn reanalyze_other_docs(&self, changed_uri: &Url) {
         let others: Vec<(Url, String)> = {
             let docs = match self.docs.lock() {
@@ -413,6 +484,30 @@ impl LanguageServer for Backend {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         self.reanalyze_other_docs(&params.text_document.uri).await;
+
+        let uri = params.text_document.uri.clone();
+        let source = match self.docs.lock() {
+            Ok(docs) => match docs.get(&uri) {
+                Some(doc) => doc.source.clone(),
+                None => return,
+            },
+            Err(_) => return,
+        };
+
+        // Republish the typecheck set together with the lowering set, so the
+        // save-only diagnostics do not wipe the live ones (a publish replaces
+        // everything for the file).
+        let mut diags = self.analyze(&uri, &source);
+        for d in self.lowering_diagnostics(&uri, &source).await {
+            // compile re-runs parse/typecheck, so its output overlaps analyze's.
+            let dup = diags
+                .iter()
+                .any(|e| e.range == d.range && e.message == d.message);
+            if !dup {
+                diags.push(d);
+            }
+        }
+        self.client.publish_diagnostics(uri, diags, None).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -751,6 +846,7 @@ impl LanguageServer for Backend {
                     source: &src_owned,
                     file: &file_owned,
                     module_name: None,
+                    no_fold: false,
                 },
                 wirescript::EmitOptions::default(),
                 progress_cb,
@@ -911,6 +1007,32 @@ async fn main() {
 /// keyword/function list, so e.g. a `string` receiver shows only string methods.
 fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionItem> {
     let mut items = Vec::new();
+
+    // `arr[i].` — an indexed read, not the array itself. Its members are the
+    // array-get gate's outputs (the element `Value` and the `OutOfBounds`
+    // flag), never the array's methods.
+    if let Some(base) = var_name.strip_suffix("[]") {
+        let sym = symbols.iter().find(|s| s.name == base);
+        let elem = sym
+            .and_then(|s| s.ty.as_deref())
+            .and_then(|t| t.strip_suffix("[]"))
+            .unwrap_or("");
+        for (name, ty) in [("Value", elem), ("OutOfBounds", "bool")] {
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(if ty.is_empty() {
+                    "field".to_string()
+                } else {
+                    format!("{name}: {ty}")
+                }),
+                insert_text: Some(name.to_string()),
+                ..Default::default()
+            });
+        }
+        return items;
+    }
+
     let sym = symbols.iter().find(|s| s.name == var_name);
 
     // Field name (record field / swizzle component) completion item.

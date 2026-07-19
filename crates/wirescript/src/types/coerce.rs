@@ -104,6 +104,22 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Same;
     }
 
+    // A union target accepts anything one of its options accepts. Used for the
+    // variant gates (`Blend`, `lerp`, `Tween`), whose ports take any of the
+    // math variants rather than a single concrete type. Prefer an exact option
+    // over one needing a conversion, so `int` into `float|int` stays an int.
+    if let Union(opts) = to {
+        let mut best = CoerceRule::Mismatch;
+        for opt in opts {
+            match coerce(from, opt) {
+                CoerceRule::Same => return CoerceRule::Same,
+                r if !matches!(r, CoerceRule::Mismatch) => best = r,
+                _ => {}
+            }
+        }
+        return best;
+    }
+
     // Ref invariance — no coercion through ref types.
     if let (Ref(fi), Ref(ti)) = (from, to) {
         return if type_eq(fi, ti) {

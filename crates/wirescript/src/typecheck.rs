@@ -633,6 +633,24 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             },
                         );
                     }
+                    // Declare the module's type aliases under their qualified
+                    // name so `let p: Ns.Point` resolves through the ordinary
+                    // type lookup. The bare name stays private to the module.
+                    TopDecl::TypeAlias(t) => {
+                        let resolved = resolve_type_expr(ctx, &t.typ);
+                        let qualified = format!("{}.{}", ns.name, t.name);
+                        ctx.scope.declare(
+                            &qualified,
+                            SymbolInfo {
+                                kind: SymbolKind::Type,
+                                name: qualified.clone(),
+                                ty: resolved,
+                                decl_range: t.range.clone(),
+                                signature: None,
+                                event_data: None,
+                            },
+                        );
+                    }
                     _ => {}
                 }
             }
@@ -1446,6 +1464,38 @@ fn target_name(e: &Expr) -> Option<String> {
 /// The element types of `t` viewed as a tuple. A tuple literal desugars to a
 /// record keyed by element index, so `Record([("0", T0), ("1", T1)])` describes
 /// the same shape as `Tuple([T0, T1])` and destructures the same way.
+/// The result type of a call whose declared output is a union.
+///
+/// The math-variant gates (`Blend`/`lerp`/`Tween`) carry whichever variant
+/// their inputs do, so a union output resolves to the type of the first
+/// positional argument bound to a union-typed param. Left as the union, the
+/// result would satisfy no operator overload and every use of it would fail.
+/// Any other output type is returned unchanged.
+fn union_output_type(
+    ctx: &mut TypeCheckCtx,
+    c: &crate::catalog::calls::CallSpec,
+    args: &[CallArg],
+    out_index: usize,
+    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
+    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
+) -> Type {
+    let declared = c.outputs[out_index].ty.clone();
+    if !matches!(declared, Type::Union(_)) {
+        return declared;
+    }
+    for (i, p) in c.params.iter().enumerate() {
+        if matches!(p.ty, Type::Union(_))
+            && let Some(CallArg::Positional(e)) = args.get(i)
+        {
+            let t = unwrap_ref(&infer_expr(ctx, e, tmap, omap));
+            if !matches!(t, Type::Any) {
+                return t;
+            }
+        }
+    }
+    declared
+}
+
 fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
     match t {
         Type::Tuple(fields) => Some(fields.clone()),
@@ -1844,7 +1894,11 @@ fn infer_expr_inner(
             {
                 return inner.as_ref().clone();
             }
-            if field == "value" || field == "Value" {
+            // `x.Value` on a var/ref reads through to the inner type. A record
+            // with its own `Value` field (a multi-output gate result such as
+            // `a.pop()` → `{ Value, IsEmpty }`) must project that field instead,
+            // or `.Value` yields the whole record and every use of it mistypes.
+            if (field == "value" || field == "Value") && !matches!(ot, Type::Record(_)) {
                 return unwrap_ref(&ot);
             }
             if let Type::Record(fields) = &ot {
@@ -1951,7 +2005,7 @@ fn infer_expr_inner(
                     }
                     check_call_args(ctx, c, args, range, tmap, omap);
                     if c.outputs.len() == 1 {
-                        return c.outputs[0].ty.clone();
+                        return union_output_type(ctx, c, args, 0, tmap, omap);
                     }
                     if c.outputs.len() > 1 {
                         return Type::Record(
@@ -2107,7 +2161,7 @@ fn infer_expr_inner(
                 recv_args.extend(args.iter().cloned());
                 check_call_args(ctx, c, &recv_args, fa_range, tmap, omap);
                 if c.outputs.len() == 1 {
-                    return c.outputs[0].ty.clone();
+                    return union_output_type(ctx, c, &recv_args, 0, tmap, omap);
                 }
                 if c.outputs.len() > 1 {
                     return Type::Record(

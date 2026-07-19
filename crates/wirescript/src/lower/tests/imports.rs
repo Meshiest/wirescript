@@ -99,8 +99,11 @@ on player { let y = x * 2 + 1 }",
 /// placeholder that does nothing at runtime, with no diagnostic.
 #[test]
 fn namespace_import_travels_two_modules_deep() {
+    // `n` comes from an input so constant folding cannot erase the arithmetic
+    // this asserts on — a folded `useFoo(5)` would collapse to a literal and
+    // stop proving the imported bodies were inlined at all.
     let r = compile_multi(
-        "import { useFoo } from \"second\"\nout result = useFoo(5)",
+        "import { useFoo } from \"second\"\nin n: int\nout result = useFoo(n)",
         &[
             (
                 "second",

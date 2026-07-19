@@ -371,21 +371,19 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                     ))
                 })
                 .collect();
-            if !record.is_empty() {
-                match &d.binding {
-                    LetBinding::Ident { name, .. } => {
-                        ctx.scope.insert(&name, Binding::Record(record));
-                        return;
-                    }
-                    LetBinding::RecordDestruct {
-                        fields: destruct_fields,
-                        ..
-                    } => {
-                        install_record_destruct(ctx, &record, destruct_fields);
-                        return;
-                    }
-                    _ => {}
-                }
+            // Only destructuring needs this. Binding the whole call to a name
+            // must stay a `Local` on the gate's default output: field access
+            // already resolves siblings through the node's ports, and making it
+            // a record would break bare use of the result (`let p = a.pop()`
+            // reads the popped element, not a record).
+            if !record.is_empty()
+                && let LetBinding::RecordDestruct {
+                    fields: destruct_fields,
+                    ..
+                } = &d.binding
+            {
+                install_record_destruct(ctx, &record, destruct_fields);
+                return;
             }
         }
     }

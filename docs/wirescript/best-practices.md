@@ -46,7 +46,7 @@ let c3 = F(a)
 | Extra gates | None | One rerouter per boundary port, plus the container |
 | Pure (no exec) | Yes | Yes |
 | Named multi-outputs | Via a returned record | Yes (`-> (a: int, b: int)`) |
-| `ref`/`*` params | Yes | Allowed, but they force it to inline (it stops being a microchip) |
+| `ref`/`*` params | Yes | Yes |
 
 **Constant arguments are free.** `F(1)` folds the `1` into the instance itself and drops
 the input pin it would have crossed, so the constant lands as inline gate data on whatever
@@ -57,8 +57,9 @@ Captured outer variables work normally through the boundary -- a chip that write
 `var` wires to that one real variable gate, it does not get a private copy per instance.
 
 **Choose between them on organization, never on gate count.** A `chip` buys you a visible
-microchip boundary in-game and named outputs; a `mod` keeps the gates in the parent grid
-and supports `ref`/`*` params. Neither one shares logic between call sites.
+microchip boundary in-game and named outputs; a `mod` keeps the gates in the parent grid.
+Both support `ref`/`*` params, and a ref crosses a chip boundary as a direct wire to the
+one real variable gate. Neither one shares logic between call sites.
 
 That means there is no keyword that rescues you from a gate explosion. The only lever is
 **reducing the number of call sites** -- which is what the rest of this page is about.
@@ -236,8 +237,9 @@ mod allowed(i: int, mask: int, blocked: int) -> bool {
   possibly-out-of-bounds array reads with a statement-`if`, never a ternary.
 - **A `mod`-local `static var` is per-copy, not shared** -- each inlined instance gets its
   own. Hoist shared state to a root `var`.
-- **`.brz` file size is a good proxy for gate count** while iterating; you don't need to
-  count gates to see whether a refactor helped.
+- **Hover a `mod`, `chip`, `on`, or `if` for its gate count.** The estimate covers the
+  whole construct (following its calls), and a `mod` reports that it is inlined per call
+  site -- so you can see what a refactor costs without compiling.
 - **Don't optimize prematurely.** Gate count only matters once something is instantiated
   many times. A leaf helper called twice is fine as a `mod`.
 

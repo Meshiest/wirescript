@@ -323,9 +323,27 @@ fn resolve_import(
                     .cloned()
             });
 
+            // Inline the module's own type aliases into its declarations, as a
+            // named import already does. A namespaced `mod f() -> MyType` is
+            // used from the importing module, where `MyType` is not in scope —
+            // leaving the name unexpanded fails there with "unknown type".
+            let mut decls = importable;
+            let type_aliases: HashMap<String, TypeExpr> = decls
+                .iter()
+                .filter_map(|d| match d {
+                    TopDecl::TypeAlias(t) => Some((t.name.clone(), t.typ.clone())),
+                    _ => None,
+                })
+                .collect();
+            if !type_aliases.is_empty() {
+                for d in decls.iter_mut() {
+                    expand_type_aliases_in_decl(d, &type_aliases);
+                }
+            }
+
             target_decls.push(TopDecl::Namespace(NamespaceDecl {
                 name: ns_name.clone(),
-                decls: importable,
+                decls,
                 source_path: imp.path.clone(),
                 module_doc,
                 range: imp.range.clone(),

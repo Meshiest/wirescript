@@ -550,6 +550,28 @@ pub(super) fn lower_array_method(
             ],
             WirePort::Value,
         ),
+        // `arr[i]` gives the element and drops the bounds flag. `get` exposes
+        // both as a record { Value, OutOfBounds }, so a read can be checked
+        // rather than silently reading 0 past the end. Bare use is the element,
+        // matching `pop`.
+        "get" => {
+            let index = match args.first() {
+                Some(CallArg::Positional(v)) => lower_expr(ctx, v),
+                _ => return synthesise_unsupported(ctx, e),
+            };
+            array_exec_op(
+                ctx,
+                range,
+                array_ref,
+                gc::ARRAY_GET,
+                vec![(WirePort::Index, Type::Int, index)],
+                vec![
+                    (WirePort::Value, elem_ty.clone()),
+                    (WirePort::BOutOfBounds, Type::Bool),
+                ],
+                WirePort::Value,
+            )
+        }
         "clear" | "shuffle" => {
             let exec_in = ctx.current_exec.unwrap_or(current_exec);
             let gate_class = if method == "clear" {

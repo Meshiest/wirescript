@@ -932,7 +932,7 @@ fn every_canonical_array_method_lowers() {
     // to an `_Unsupported` gate and fail here.
     let src = "array a: int[]\narray b: int[]\nvar ent: entity\nin t: exec\non t {\n  \
         a.push(1)\n  let p = a.pop()\n  let n = a.length()\n  a.remove(0)\n  a.insert(0, 9)\n  \
-        a.clear()\n  let i = a.find(3)\n  a.sort()\n  a.reverse()\n  a.shuffle()\n  a.swap(0, 1)\n  \
+        a.clear()\n  let i = a.find(3)\n  let g = a.get(0)\n  a.sort()\n  a.reverse()\n  a.shuffle()\n  a.swap(0, 1)\n  \
         a.fill(3)\n  a.resize(4, 0)\n  let s = a.sum()\n  let lo = a.min()\n  let hi = a.max()\n  \
         let av = a.average()\n  b.append(a)\n  b.copyFrom(a)\n  b.slice(a, 0, 2)\n  \
         a.fillFromPlayers()\n  a.fillFromTeam(ent)\n}";
@@ -1325,7 +1325,7 @@ fn rotation_quat_color_receivers_lower_to_their_gates() {
         let rot = Rotation(0.0, 90.0, 0.0)\n  let e = rot.ToEuler()\n  \
         let c = ColorSRGB(255, 128, 0, 255)\n  let h = c.ToHex()\n  \
         let c2 = ColorHex(\"#ff8800\")\n  let s = c.ToSRGB()\n  \
-        let bl = c.Blend(c2, 0.5)\n  \
+        let bl = c.ColorBlend(c2, 0.5)\n  let bm = c.Blend(c2, 0.5)\n  \
         p.DisplayText(\"${ang} ${h}\")\n}";
     let r = compile(src);
     assert_no_errors(&r);
@@ -1345,7 +1345,11 @@ fn rotation_quat_color_receivers_lower_to_their_gates() {
         "BrickComponentType_WireGraph_Expr_MakeColorHex",
         "BrickComponentType_WireGraph_Expr_SplitColorSRGB",
         "BrickComponentType_WireGraph_Expr_ColorToHex",
+        // `ColorBlend` is the colour-space blend gate; `Blend` is the math
+        // blend gate (an alias for `lerp`), which takes colours as one of its
+        // variants. Both are reachable and lower to different gates.
         "BrickComponentType_WireGraph_Expr_ColorBlend",
+        "BrickComponentType_WireGraph_Expr_MathBlend",
     ] {
         assert!(has_gate(&r, class), "missing gate {class}");
     }
