@@ -56,7 +56,7 @@ All trig functions take and return `float`. Angles are in **radians** unless con
 | `min(a, b)` | `(a: float, b: float) -> float` | Minimum of two values |
 | `max(a, b)` | `(a: float, b: float) -> float` | Maximum of two values |
 | `log(x, base)` | `(x: float, base: float) -> float` | Logarithm with arbitrary base |
-| `lerp(a, b, t)` | `(a: float, b: float, t: float) -> float` | Linear interpolation |
+| `lerp(a, b, t)` | `(a: T, b: T, t: float) -> T` | Linear interpolation; `T` is any math variant (see Easing/Tween) |
 | `fmod(a, b)` | `(a: float, b: float) -> float` | Floored modulo |
 | `Deg2Rad(x)` | `(x: float) -> float` | Degrees to radians |
 | `Rad2Deg(x)` | `(x: float) -> float` | Radians to degrees |
@@ -162,16 +162,19 @@ let yaw = r.ToEuler().Yaw
 | `c.SplitColor()` | `(c: color) -> {r, g, b, a: float}` | Decompose into linear components |
 | `c.ToSRGB()` | `(color) -> {R, G, B, A: int}` | Decompose into sRGB bytes |
 | `c.ToHex()` | `(color) -> string` | Hex string |
-| `a.Blend(b, alpha)` | `(color, color, float) -> color` | Blend two colors |
+| `a.ColorBlend(b, alpha)` | `(color, color, float) -> color` | Blend two colors (colour-space aware) |
 
-`SplitColor`, `ToSRGB`, `ToHex`, and `Blend` support receiver syntax on `color`.
+`SplitColor`, `ToSRGB`, `ToHex`, and `ColorBlend` support receiver syntax on `color`.
+
+`Blend` is a different gate -- the math blend (an alias for `lerp`), which takes colours
+as one of its variants but has no colour-space selection.
 
 ```wirescript
 let red = Color(1.0, 0.0, 0.0)
 let orange = ColorSRGB(255, 128, 0, 255)
 let hex = orange.ToHex()
 let parts = red.SplitColor()  // parts.r = 1.0, parts.g = 0.0, ...
-let mixed = red.Blend(orange, 0.5)
+let mixed = red.ColorBlend(orange, 0.5)
 ```
 
 ## Stateful Exec Values
@@ -865,9 +868,12 @@ components can also filter on tags. Receiver on `entity`.
 | `ReadBrickGrid()` | `() -> entity` | The brick grid this gate's microchip is on, as an entity |
 | `NearlyEqual(a, b, tolerance)` | `(a: float, b: float, tolerance: float) -> bool` | Approximate float equality |
 | `Dampen(target, smoothTime)` | `(target: float, smoothTime: float) -> float` | Critically-damped smoothing toward a target |
-| `Easing(a, b, blend, fn?, dir?)` | `(a: float, b: float, blend: float, fn?: any, dir?: any) -> float` | Ease from `a` to `b` by `blend` |
-| `Tween(target, duration, fn?, dir?)` | `(target: float, duration: float, fn?: any, dir?: any) -> float` | Stateful eased value toward `target` |
+| `Easing(a, b, blend, fn?, dir?)` | `(a: T, b: T, blend: float, fn?: any, dir?: any) -> T` | Ease from `a` to `b` by `blend` |
+| `Tween(target, duration, fn?, dir?)` | `(target: T, duration: float, fn?: any, dir?: any) -> T` | Stateful eased value toward `target` |
 | `Timer(limit, restart?, pause?, resume?)` | `(limit: float, restart?/pause?/resume?: exec) -> {Time: float, Expired: exec}` | Stateful countdown timer |
+
+`Blend`/`lerp`/`Easing`/`Tween` interpolate any one math variant `T`: float|int|vector|rotator|quat|color.
+The result is whatever `T` the inputs carry.
 
 `Easing`/`Tween` take an easing `fn` and `dir`: either an int or an enum-name
 literal. Functions: `Linear`, `Sine`, `Quad`, `Cubic`, `Quart`, `Quint`,

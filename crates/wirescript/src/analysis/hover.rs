@@ -245,6 +245,27 @@ fn word_is_call_or_method(source: &str, line: usize, col: usize) -> bool {
 }
 
 /// Built-in function/gate calls like `Sleep`, `SetLocation`, etc.
+/// Title and description for a builtin whose *gate* documentation does not
+/// describe what the builtin is for. `Opaque` is the plain Rerouter gate, so
+/// the catalog blurb ("a node wires can be routed through") says nothing about
+/// the fold and type behaviour that is the entire point of calling it.
+fn call_doc_override(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "Opaque" => Some((
+            "Opaque",
+            "Passes `value` through a rerouter unchanged. Two effects, both deliberate:\n\n\
+             - **Hidden from constant folding** — the value stays a live wire, so a probe \
+             circuit measures the gate's real behaviour instead of a folded constant.\n\
+             - **Type erased for operator resolution** — `Opaque(a) + Opaque(b)` type-checks \
+             for combinations that are otherwise rejected (`string + int`), which is how the \
+             gate-semantics probes record what the hardware actually does.\n\n\
+             The result is untyped, so use the plain value wherever you do not need those two \
+             effects.",
+        )),
+        _ => None,
+    }
+}
+
 fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
     if !word_is_call_or_method(source, line, col) {
         return None;
@@ -252,7 +273,11 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
     let spec = calls().get(word)?;
     let gdocs = gate_docs();
     let gate_doc = gdocs.get(spec.gate_class);
-    let title = gate_doc.map(|g| g.display_name.as_str()).unwrap_or(spec.name);
+    let override_doc = call_doc_override(spec.name);
+    let title = override_doc
+        .map(|(t, _)| t)
+        .or_else(|| gate_doc.map(|g| g.display_name.as_str()))
+        .unwrap_or(spec.name);
 
     let mut params: Vec<String> = Vec::new();
     if spec.exec { params.push("exec".into()); }
@@ -267,6 +292,10 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
     };
 
     let mut parts = vec![format!("### {}\n```wirescript\n{}({}){}\n```", title, spec.name, params.join(", "), out)];
+    if let Some((_, doc)) = override_doc {
+        parts.push(doc.to_string());
+        return Some(parts.join("\n\n"));
+    }
     if let Some(g) = gate_doc {
         if !g.description.is_empty() { parts.push(g.description.clone()); }
         let param_docs: Vec<String> = spec.params.iter().filter_map(|p| {
@@ -1022,6 +1051,26 @@ let v = p.x";
             "got: {h}"
         );
     }
+    #[test]
+    fn array_read_out_of_bounds_field_is_bool() {
+        // `arr[i]` is typed as the bare element, so once it is bound to a `let`
+        // the bounds flag has no record to resolve against and used to fall
+        // through to Any - which is universal, so nothing downstream complained.
+        let src = "array names: string[]
+in go: exec
+on go {
+  let n = names[0]
+  let b = n.OutOfBounds
+}";
+        let line4 = src.lines().nth(4).unwrap();
+        let col = line4.find("OutOfBounds").unwrap();
+        let h = hover_for(src, 4, col).expect("hover on .OutOfBounds should return something");
+        assert!(
+            h.contains("bool"),
+            "array-read bounds flag should type as bool, got: {h}"
+        );
+    }
+
     #[test]
     fn call_result_field_access_hover_shows_field_type() {
         // `arr.find(x).Found` - the object is a call result, not an

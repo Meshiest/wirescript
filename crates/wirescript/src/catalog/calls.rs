@@ -2117,8 +2117,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             name: "Easing",
             gate_class: gc::MATH_EASING,
             params: vec![
-                CallParam::req("a", WirePort::InputA, Type::Float),
-                CallParam::req("b", WirePort::InputB, Type::Float),
+                CallParam::req("a", WirePort::InputA, blend_variant()),
+                CallParam::req("b", WirePort::InputB, blend_variant()),
                 CallParam::req("blend", WirePort::Blend, Type::Float),
                 CallParam::opt("function", WirePort::Function, Type::Any),
                 CallParam::opt("direction", WirePort::Direction, Type::Any),
@@ -2127,7 +2127,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Output,
-                ty: Type::Float,
+                ty: blend_variant(),
             }],
             receiver: None,
         },

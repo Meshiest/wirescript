@@ -6,7 +6,8 @@
 - **Fixed destructuring a builtin multi-output call binding nothing** - `let { Forward, Right } = c.InputReader()` left every name an unwired placeholder. Fields now bind to the gate's ports, and an unknown field errors with a suggestion instead of binding silently.
 - **LSP reports lowering and emit errors on save** - Live analysis stays typecheck-only, so lowering problems only surfaced on an explicit Compile. Saving now runs the full pipeline and publishes its diagnostics.
 - **New `arr.get(index)`** - A checked read giving `{ Value, OutOfBounds }`; used bare it is the element. Completion now offers those fields on `arr[i].` too.
-- **`Blend` is the math blend gate** - An alias for `lerp`, accepting any math variant (float/int/vector/rotator/quat/color), as do `lerp` and `Tween`. The colour-space gate is now `ColorBlend`.
+- **`Blend` is the math blend gate** - An alias for `lerp`, accepting any math variant (float/int/vector/rotator/quat/color), as do `lerp`, `Easing`, and `Tween`. The colour-space gate is now `ColorBlend`.
+- **`Opaque` hovers with its own docs** - It showed the Rerouter gate's blurb, which says nothing about the fold-hiding and type-erasing behaviour it exists for.
 - **Fixed `.Value` on a multi-output result** - `a.pop().Value` typed as the whole record, so every use of it mismatched.
 - **Fixed a type alias not resolving through a namespace import** - `import * as T` with `mod f() -> MyType` failed with "unknown type". Aliases now inline as they do for a named import, and `T.MyType` parses as a qualified type.
 
