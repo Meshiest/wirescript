@@ -83,6 +83,8 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
             ports: BINARY_PORTS,
         },
         // bool → int promotion (engine coerces bool wires to 0/1 on int ports).
+        // Both operands promote, so bool⊕bool is int-valued too — matching the
+        // mixed forms below and the bitwise ops, which already allow it.
         OpRule {
             operands: &[Type::Int, Type::Bool],
             result: Type::Int,
@@ -91,6 +93,12 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
         },
         OpRule {
             operands: &[Type::Bool, Type::Int],
+            result: Type::Int,
+            gate_class: class_math,
+            ports: BINARY_PORTS,
+        },
+        OpRule {
+            operands: &[Type::Bool, Type::Bool],
             result: Type::Int,
             gate_class: class_math,
             ports: BINARY_PORTS,
@@ -581,6 +589,17 @@ mod tests {
         let r = resolve_op("+", &[Type::Int, Type::Int]).unwrap();
         assert!(matches!(r.result, Type::Int));
         assert_eq!(r.gate_class, "BrickComponentType_WireGraph_Expr_MathAdd");
+    }
+
+    #[test]
+    fn add_bool_bool_promotes_to_int() {
+        // bool coerces to 0/1 on int ports, so bool⊕bool is int-valued -- same
+        // as bool⊕int and the bitwise ops. Covers `(a && b) + (c && d)`.
+        for op in ["+", "-", "*", "/", "%"] {
+            let r = resolve_op(op, &[Type::Bool, Type::Bool])
+                .unwrap_or_else(|| panic!("no rule for bool {op} bool"));
+            assert!(matches!(r.result, Type::Int), "{op} bool/bool should be int");
+        }
     }
 
     #[test]

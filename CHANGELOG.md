@@ -10,6 +10,8 @@
 - **`Opaque` hovers with its own docs** - It showed the Rerouter gate's blurb, which says nothing about the fold-hiding and type-erasing behaviour it exists for.
 - **Fixed `.Value` on a multi-output result** - `a.pop().Value` typed as the whole record, so every use of it mismatched.
 - **Fixed a type alias not resolving through a namespace import** - `import * as T` with `mod f() -> MyType` failed with "unknown type". Aliases now inline as they do for a named import, and `T.MyType` parses as a qualified type.
+- **`GetLeaderboard` returns `int`** - It was typed `any`, so arithmetic on its result had no operator overload.
+- **`bool` arithmetic with two bools** - `bool + bool` (and `- * / %`) now promotes to `int`, matching `bool`/`int` mixes and the bitwise ops; `(a && b) + (c && d)` compiles.
 
 ## 0.17.0
 

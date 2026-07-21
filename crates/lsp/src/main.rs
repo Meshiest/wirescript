@@ -300,7 +300,6 @@ impl Backend {
                 source: &src_owned,
                 file: &file_owned,
                 module_name: None,
-                no_fold: false,
             })
         })
         .await;
@@ -846,7 +845,6 @@ impl LanguageServer for Backend {
                     source: &src_owned,
                     file: &file_owned,
                     module_name: None,
-                    no_fold: false,
                 },
                 wirescript::EmitOptions::default(),
                 progress_cb,

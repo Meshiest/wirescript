@@ -1315,7 +1315,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             vec![CallOutput {
             field: None,
                 port: WirePort::Value,
-                ty: Type::Any,
+                ty: Type::Int,
             }],
         ),
     );
@@ -2646,6 +2646,21 @@ mod tests {
     #[test]
     fn unknown_call_returns_none() {
         assert!(find_call("doesNotExist").is_none());
+    }
+
+    #[test]
+    fn leaderboard_getters_return_int() {
+        // The inventory dump types both leaderboard `Value` outputs as `int`;
+        // `GetLeaderboard` was declared `Any`, so arithmetic on its result had
+        // no operator overload.
+        for name in ["GetLeaderboard", "GetTeamLeaderboardValue"] {
+            let c = find_call(name).unwrap();
+            assert!(
+                matches!(c.outputs[0].ty, Type::Int),
+                "{name} should return int, got {:?}",
+                c.outputs[0].ty
+            );
+        }
     }
 
     /// Params that name a settable field the gate does not expose as a wire

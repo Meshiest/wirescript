@@ -1916,6 +1916,12 @@ fn infer_expr_inner(
                 (Type::Vector, "x" | "X" | "y" | "Y" | "z" | "Z") => Type::Float,
                 (Type::Color, "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A") => Type::Float,
                 (Type::Rotator, "pitch" | "yaw" | "roll") => Type::Float,
+                // An array read yields the element plus a bounds flag, but it is
+                // typed as the bare element (see IndexAccess), so by the time the
+                // flag is projected - directly or through a `let` - the object is
+                // the element type and this would fall through to Any. Lowering
+                // already maps these names to the gate's bOutOfBounds port.
+                (_, "OutOfBounds" | "bOutOfBounds") => Type::Bool,
                 _ => Type::Any,
             }
         }
