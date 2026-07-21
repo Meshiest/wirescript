@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use wirescript::ir::{Module, NodeId};
-use wirescript::lower::{LowerInput, lower};
+use wirescript::lower::{FoldMode, LowerInput, lower};
 use wirescript::parser::parse;
 use wirescript::template_cache::TemplateCache;
 use wirescript::typecheck::typecheck;
@@ -42,6 +42,8 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         name,
         tc.diagnostics
     );
+    // Unfolded: goldens under tests/fixtures/*.layout.snap predate the
+    // certified fold pass and encode the pre-fold gate shape.
     let lr = lower(LowerInput {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
@@ -50,6 +52,7 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
+        fold_mode: FoldMode::ForceOff,
     });
     lr.module
 }

@@ -58,6 +58,7 @@ fn main() {
         module_name: None,
         template_cache: cache.clone(),
         doc_comments: &resolved.doc_comments,
+        fold_mode: wirescript::lower::FoldMode::Auto,
     });
     let lr = wirescript::layout::layout(&lowered.module);
     let mut opts = wirescript::EmitOptions::default();

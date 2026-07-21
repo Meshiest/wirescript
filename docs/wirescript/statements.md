@@ -411,6 +411,35 @@ stacks with a side annotation in either order:
   and a module-level `@nofold` applies only to the file compiled as the
   **entry** — an imported library's own module-level `@nofold` does not carry
   into the importer (annotate the individual declarations instead).
+- A module-level `@nofold` disables the entire constant-fold pass for that
+  compile — the same effect as `--no-fold` on the CLI.
+- `@nofold` also preserves literal-condition `if` branches. Normally an `if`
+  whose condition is a literal `true`/`false` has its dead side stripped
+  during lowering as a shortcut, ahead of the fold pass proper — but under
+  `@nofold` (including a module-level one) that shortcut is suppressed too,
+  so both branches stay real gates. See [Constant Folding](folding.md) for
+  the full pass.
+
+### `@fold` -- Opt Into Constant Folding
+
+- The fold pass is currently opt-in: `@fold` at the very top of the **entry**
+  file (after any module doc comment), separated from the first declaration
+  by a blank line, enables the whole pass for that compile — the same
+  blank-line rule as a module-level `@nofold` above, and module-level only
+  (there's no decl-scoped `@fold`).
+- Entry-file-only, same as module-level `@nofold`: an `@fold` at the top of
+  an *imported* file does not carry into the importer and has no effect.
+- If both a module-level `@fold` and `@nofold` are present, `@nofold` wins
+  and the parser warns that the two conflict. A module-level `@nofold` also
+  overrides `--fold` on the CLI.
+- Two module-level gotchas: leave a **blank line between a module doc block and
+  a module-level `@fold`** (a directly-adjacent pair registers as neither,
+  and now produces a module-level-only error), and a module-level `@fold`
+  applies only to the file compiled as the **entry** — an imported library's
+  own module-level `@fold` does not carry into the importer.
+- `--fold` on the CLI has the same effect as a module-level `@fold`, without
+  editing the source; `--no-fold` overrides either. See
+  [Constant Folding](folding.md) for the full enable/disable story.
 
 ## `if` -- Conditional Statement
 

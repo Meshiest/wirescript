@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use wirescript::compile::{CompileInput, compile};
 use wirescript::ir::Module;
-use wirescript::lower::{LowerInput, lower};
+use wirescript::lower::{FoldMode, LowerInput, lower};
 use wirescript::resolve::{FsLoader, resolve};
 use wirescript::template_cache::TemplateCache;
 use wirescript::typecheck::typecheck;
@@ -21,11 +21,14 @@ use wirescript::typecheck::typecheck;
 /// Uses `compile` for the BRZ bytes and `lower` for the IR stats.
 /// Chip counts and node/wire counts recurse through all nested chips.
 fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
+    // Structural node/wire/chip counts below are exact-ish baselines predating
+    // the certified fold pass — keep both halves unfolded so they still hold.
     // --- BRZ via compile ---
     let input = CompileInput {
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     let result = compile(input).expect("should compile");
     let brz_size = result.brz.len();
@@ -41,6 +44,7 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
+        fold_mode: FoldMode::ForceOff,
     });
 
     fn count_recursive(module: &Module) -> (usize, usize, usize) {
@@ -96,6 +100,7 @@ out total = w1 + w2
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     compile(input).expect("nested chip calls should compile");
 }
@@ -146,6 +151,7 @@ on tick {
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     compile(input).expect("forward reference to array in mod should compile");
 }
@@ -164,6 +170,7 @@ out changed = if current != prev_val then true else false
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     compile(input).expect("buffer capture in pure context should compile");
 }
@@ -193,6 +200,7 @@ out sum = a + b
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     compile(input).expect("exec chain in mods should compile");
 }
@@ -241,6 +249,7 @@ let result = add_vec(p, q)
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     compile(input).expect("record param chip should compile");
 }
@@ -301,6 +310,7 @@ out total = score
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     compile(input).expect("grandparent var capture in mod should compile");
 }
@@ -328,6 +338,7 @@ out count = counter
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::ForceOff,
     };
     compile(input).expect("mod chain with capture should compile");
 }

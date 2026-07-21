@@ -4,7 +4,7 @@
 //! reference — not silently drop it to a null object.
 
 use wirescript::emit::EmitOptions;
-use wirescript::{compile_to_world, CompileInput};
+use wirescript::{compile_to_world, CompileInput, FoldMode};
 
 #[test]
 fn asset_compare_registers_asset() {
@@ -13,7 +13,7 @@ fn asset_compare_registers_asset() {
                }\n\
                }";
     let r = match compile_to_world(
-        CompileInput { source: src, file: "t", module_name: Some("m") },
+        CompileInput { source: src, file: "t", module_name: Some("m"), fold_mode: FoldMode::Auto },
         EmitOptions::default(),
     ) {
         Ok(r) => r,

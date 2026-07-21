@@ -1,5 +1,15 @@
 # Wirescript Changelog
 
+## 0.18.0
+
+- **Certified constant folding** - pure gates whose inputs are known constants are
+  evaluated at compile time against the in-game-certified semantics table,
+  constant-selector `Select`s short-circuit, constant-condition branches
+  truncate their dead side (including across chip boundaries), all before
+  layout. `Opaque(...)` and `@nofold` exempt code. The pass is opt-in while it
+  stabilizes: enable it with a module-level `@fold` (or `--fold`); `--no-fold`
+  (or a module-level `@nofold`) disables it and always wins over `@fold`.
+
 ## 0.17.1
 
 - **Fixed a constant on a data-only port failing the build** - `DisplayText.fontSize` and 13 other params name settable fields with no wire input; binding one emitted a wire emit rejects. Now written as data, with a test pinning the list.

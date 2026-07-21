@@ -10,10 +10,14 @@ use crate::resolve::{FsLoader, resolve};
 use crate::template_cache::TemplateCache;
 use crate::typecheck::typecheck;
 
+pub use crate::lower::FoldMode;
+
 pub struct CompileInput<'a> {
     pub source: &'a str,
     pub file: &'a str,
     pub module_name: Option<&'a str>,
+    /// Whether the certified constant-fold pass runs — see [`FoldMode`].
+    pub fold_mode: FoldMode,
 }
 
 pub struct CompileResult {
@@ -183,6 +187,7 @@ fn compile_with_opts_inner(
         module_name,
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
+        fold_mode: input.fold_mode,
     });
 
     // Every wire-graph cycle must cross a tick barrier (Buffer/Queue) — an
@@ -283,6 +288,7 @@ fn compile_to_world_inner(
         module_name,
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
+        fold_mode: input.fold_mode,
     });
 
     // Unbarriered wire-graph cycles error (WS005) — see compile_with_opts.
@@ -353,6 +359,7 @@ mod tests {
                     source: &src,
                     file: "small_stack_test",
                     module_name: None,
+                    fold_mode: FoldMode::Auto,
                 })
                 .map(|r| r.brz.len())
             })

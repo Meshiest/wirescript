@@ -862,7 +862,7 @@ components can also filter on tags. Receiver on `entity`.
 |----------|-----------|-------------|
 | `FindPlayer(query)` | `(query: string) -> character` (exec) | Look up a player by name; emits their character |
 | `PrintToConsole(text)` | `(text: any) -> ()` (exec) | Print a value to the game console (debugging) |
-| `Opaque(value)` | `(value: any) -> any` (pure) | Identity rerouter; blocks constant folding so the wrapped value stays a runtime wire (probe/test circuits) |
+| `Opaque(value)` | `(value: any) -> any` (pure) | Identity rerouter; the permanent constant-fold barrier — the wrapped value always stays a real runtime wire, never folded or seen through (probe/test circuits; see [Constant Folding](folding.md)) |
 | `DeltaTime()` | `() -> float` | Seconds elapsed since the previous tick |
 | `ServerUptime()` | `() -> float` | Seconds the server has been running |
 | `ReadBrickGrid()` | `() -> entity` | The brick grid this gate's microchip is on, as an entity |

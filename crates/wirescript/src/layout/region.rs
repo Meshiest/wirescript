@@ -142,6 +142,7 @@ mod tests {
             module_name: None,
             template_cache: Arc::new(TemplateCache::new()),
             doc_comments: &parsed.doc_comments,
+            fold_mode: crate::lower::FoldMode::Auto,
         });
         r.module
     }

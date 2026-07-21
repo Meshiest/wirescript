@@ -2,7 +2,7 @@
 //! top-level chip, named chips, variables/arrays, and microchip I/O gates.
 
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, compile_to_world};
+use wirescript::{CompileInput, FoldMode, compile_to_world};
 
 fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
     c.component_type()
@@ -24,6 +24,7 @@ fn labels_attach_to_chip_var_and_io_bricks() {
             source: SRC,
             file: "labels.ws",
             module_name: None,
+            fold_mode: FoldMode::Auto,
         },
         EmitOptions::default(),
     )
@@ -87,6 +88,7 @@ fn labels_serialize_with_style() {
         source: SRC,
         file: "labels.ws",
         module_name: None,
+        fold_mode: FoldMode::Auto,
     })
     .expect("should compile to brz");
     let path = std::env::temp_dir().join("ws_text_labels_test.brz");
@@ -183,6 +185,7 @@ fn doc_comment_renders_under_the_title() {
         source: src,
         file: "docs.ws",
         module_name: None,
+        fold_mode: FoldMode::Auto,
     })
     .expect("should compile");
     let path = std::env::temp_dir().join("ws_header_doc_test.brz");

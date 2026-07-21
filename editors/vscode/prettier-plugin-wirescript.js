@@ -187,6 +187,45 @@ function isBinopContinuation(trimmed) {
   });
 }
 
+// Length of a `${ ... }` interpolation starting at `i` (i.e. `code[i]` is `$`
+// and `code[i+1]` is `{`), counting both delimiters; 0 when `i` doesn't start
+// one. Nested braces AND nested string literals inside the interpolation are
+// consumed as part of it — that is the whole point. A string like
+//   "${if armed then "<b>W</> toggle" else "..."}"
+// contains quotes inside its interpolation; without this, those quotes flip the
+// enclosing string's open/closed state and the remaining string CONTENT gets
+// scanned as code, so its `<`, `>`, `/`, `-` look like top-level operators and
+// the line splitter breaks lines inside the literal, corrupting the string.
+// An unterminated interpolation consumes the rest of the line.
+function interpLen(code, i) {
+  if (code[i] !== "$" || code[i + 1] !== "{") return 0;
+  let depth = 1;
+  let quote = "";
+  let esc = false;
+  for (let j = i + 2; j < code.length; j++) {
+    const c = code[j];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (c === "\\") {
+      esc = true;
+      continue;
+    }
+    if (quote) {
+      if (c === quote) quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return j - i + 1;
+  }
+  return code.length - i;
+}
+
 // Push/pop `{}`/`()`/`[]` found outside string literals onto the depth
 // stack, skipping the first `leading` characters (already popped by the
 // caller). An open adds an indent contribution only while the line's net
@@ -205,6 +244,13 @@ function scanDelims(code, leading, stack) {
     if (ch === "\\") {
       escaped = true;
       continue;
+    }
+    if (inStr) {
+      const n = interpLen(code, i);
+      if (n) {
+        i += n - 1;
+        continue;
+      }
     }
     if (!inStr && (ch === '"' || ch === "'")) {
       inStr = true;
@@ -242,6 +288,13 @@ function stripLineComment(line) {
       escaped = true;
       continue;
     }
+    if (inStr) {
+      const n = interpLen(line, i);
+      if (n) {
+        i += n - 1;
+        continue;
+      }
+    }
     if (!inStr && (ch === '"' || ch === "'")) {
       inStr = true;
       strChar = ch;
@@ -264,7 +317,8 @@ function blankStrings(code) {
   let inStr = false,
     strChar = "",
     escaped = false;
-  for (const ch of code) {
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
     if (escaped) {
       out += " ";
       escaped = false;
@@ -276,6 +330,14 @@ function blankStrings(code) {
       continue;
     }
     if (inStr) {
+      // Blank the whole `${...}` as string content, preserving length so the
+      // caller's offsets still line up with the original line.
+      const n = interpLen(code, i);
+      if (n) {
+        out += " ".repeat(n);
+        i += n - 1;
+        continue;
+      }
       if (ch === strChar) inStr = false;
       out += " ";
       continue;
@@ -312,6 +374,16 @@ function formatSpacing(line) {
       out += ch;
       escaped = true;
       continue;
+    }
+    if (inStr) {
+      // Copy the whole `${...}` verbatim - no spacing normalization inside a
+      // string literal, and its nested quotes must not close the literal.
+      const n = interpLen(line, i);
+      if (n) {
+        out += line.slice(i, i + n);
+        i += n - 1;
+        continue;
+      }
     }
     if (!inStr && (ch === '"' || ch === "'")) {
       inStr = true;
@@ -435,6 +507,14 @@ function topLevelBinops(code) {
       continue;
     }
     if (inStr) {
+      // A `${...}` is string content: skip it whole so its nested string
+      // literals can't close the enclosing literal and expose the rest of the
+      // string's text as operator-bearing code.
+      const n = interpLen(code, i);
+      if (n) {
+        i += n;
+        continue;
+      }
       if (ch === strChar) {
         inStr = false;
         prevSig = ch;

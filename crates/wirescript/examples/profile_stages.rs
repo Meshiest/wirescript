@@ -3,7 +3,7 @@
 use std::time::Instant;
 use wirescript::emit::{EmitOptions, emit_brz};
 use wirescript::layout::layout;
-use wirescript::lower::{LowerInput, lower};
+use wirescript::lower::{FoldMode, LowerInput, lower};
 use wirescript::resolve::{FsLoader, resolve};
 use wirescript::template_cache::TemplateCache;
 use wirescript::typecheck::typecheck;
@@ -33,6 +33,7 @@ fn main() {
         module_name: None,
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
+        fold_mode: FoldMode::Auto,
     });
     eprintln!("lower:                       {:>8.2?}", t.elapsed());
     eprintln!(

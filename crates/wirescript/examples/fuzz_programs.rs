@@ -11,6 +11,12 @@
 //!                       be silent on known-good programs; used to tune the
 //!                       wire-validity checks)
 //!   --selftest-only     run the oracle plumbing sanity checks and exit
+//!   --fold-diff <iters> differential fuzz mode hunting fold-pass WIRING bugs
+//!                       (wrong rewire, dropped wire, folded-through-barrier):
+//!                       generates constant-heavy programs, lowers each with
+//!                       `FoldMode::ForceOff`/`ForceOn`, independently predicts the
+//!                       unfolded module's certified-foldable outputs, and
+//!                       checks the folded module actually delivers them.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap as StdMap};
@@ -20,13 +26,22 @@ use std::sync::Arc;
 
 use wirescript::analyze::analyze_cycles;
 use wirescript::diagnostic::Severity;
+use wirescript::intern::{intern, resolve as sym_resolve, sym};
 use wirescript::ir::port_registry::WirePort;
-use wirescript::ir::{Module, NodeId, gate_class as gc};
+use wirescript::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc};
 use wirescript::layout::layout;
-use wirescript::lower::{LowerInput, lower};
-use wirescript::resolve::{FsLoader, resolve};
+// `fold::eval` is the `#[doc(hidden)] pub` surface Task 6 opened up
+// specifically for this harness (see the visibility note on `pub mod fold`
+// in `src/lower/mod.rs`) — the differential predictor calls the crate's own
+// certified evaluator instead of re-implementing the value laws. NOTE:
+// `eval::eval` is a pure lookup against a probed truth table (a match over
+// gate-class strings), NOT a dynamic/JS-style code-execution `eval` — no
+// user input, code, or expression string ever reaches it.
+use wirescript::lower::fold::eval::{self, Value as FoldValue};
+use wirescript::lower::{FoldMode, LowerInput, lower};
+use wirescript::resolve::{FsLoader, ResolveResult, resolve};
 use wirescript::template_cache::TemplateCache;
-use wirescript::typecheck::typecheck;
+use wirescript::typecheck::{TypeCheckResult, typecheck};
 use wirescript::{EmitOptions, build_world};
 
 // ─────────────────────────── PRNG (xorshift64*) ───────────────────────────
@@ -371,6 +386,11 @@ fn run_pipeline_inner(src: &str) -> Outcome {
             module_name: None,
             template_cache: cache2,
             doc_comments: &resolved.doc_comments,
+            // Unfolded on purpose: the general fuzz mode hunts crashes in
+            // resolve/typecheck/lower itself; `--fold-diff` below is the
+            // dedicated differential mode that exercises fold on/off
+            // agreement.
+            fold_mode: FoldMode::ForceOff,
         })
     })) {
         Ok(r) => r,
@@ -2355,6 +2375,743 @@ fn calibrate(dir: &str) {
     eprintln!("[calibrate] {n} files, {hits} with oracle hits");
 }
 
+// ─────────────────────────── fold-diff mode ───────────────────────────
+//
+// Differential fuzzer for the certified constant-fold pass (Task 6):
+// compiles the SAME source twice — once with `FoldMode::ForceOff` (U, the
+// "unfolded" module) and once with `FoldMode::ForceOn` (F, the "folded"
+// module) — then:
+//
+//   1. `predict()` independently walks U's wire graph (seeding `_Literal`
+//      nodes, passing values through MicrochipInput/Output chip-boundary
+//      rerouters, and evaluating any other single-output gate via the
+//      crate's own `fold::eval::eval` once its data inputs are known) to
+//      predict which of U's root-level `out` ports the REAL fold pass
+//      should be able to fold to a known value.
+//   2. For every prediction, `trace_delivered()` walks F's wire graph from
+//      the SAME `out` port (matched across the two independent compiles by
+//      its declared name, since NodeIds are fresh per `lower()` call) to
+//      determine what value F actually delivers there — a live `_Literal`
+//      source, or a value inlined directly onto a boundary node's own
+//      property (`inline_orphan_literals`), chasing through as many chip
+//      hops as it takes.
+//   3. Mismatch (or "delivers nothing") between the prediction and F's
+//      actual delivery is a FINDING — the fold pass shorted a wire wrong,
+//      dropped one, or folded through a barrier it shouldn't have.
+//   4. Structural invariants on F: the existing `check_wires` oracle, plus
+//      folded (nodes, wires) <= unfolded (nodes, wires) componentwise (the
+//      fold pass may only ever remove/replace structure, never add it).
+//
+// `predict()` deliberately never re-implements the certified value laws —
+// every arithmetic/comparison/logical result comes from `eval::eval` itself
+// (the crate's own evaluator), so a refusal there is always "no prediction",
+// never a wrong one. Only the WIRE-PROPAGATION walk (which nodes are
+// literals, which pass through chip boundaries, which are fully resolved)
+// is independently re-derived here — that walk is exactly what this test is
+// trying to catch bugs in, so of course it can't be borrowed from the pass
+// under test.
+
+/// Recursively collect every node in `module` and its nested chips, keyed by
+/// id — wires and chip-boundary hops can cross module boundaries, so both
+/// the predictor and the delivery-tracer need a flat, tree-wide view.
+fn collect_all_nodes<'a>(module: &'a Module, into: &mut StdMap<NodeId, &'a Node>) {
+    for (id, n) in &module.nodes {
+        into.insert(*id, n);
+    }
+    for child in module.chips.values() {
+        collect_all_nodes(child, into);
+    }
+}
+
+fn collect_all_wires(module: &Module, into: &mut Vec<Wire>) {
+    into.extend(module.wires.iter().copied());
+    for child in module.chips.values() {
+        collect_all_wires(child, into);
+    }
+}
+
+/// Total (nodes, wires) across `module` and every nested chip.
+fn tree_counts(module: &Module) -> (usize, usize) {
+    let mut nodes = 0usize;
+    let mut wires = 0usize;
+    walk_modules(module, &mut |m| {
+        nodes += m.nodes.len();
+        wires += m.wires.len();
+    });
+    (nodes, wires)
+}
+
+const MICROCHIP_INPUT: &str = "BrickComponentType_Internal_MicrochipInput";
+const MICROCHIP_OUTPUT: &str = "BrickComponentType_Internal_MicrochipOutput";
+
+/// Recognizes the "materialized/synthesized constant carrier" node shape the
+/// ALWAYS-ON (not `no_fold`-gated) post-lowering passes use in place of a
+/// bare `_Literal` wire whenever the consumer has no data struct to bake a
+/// property into (`lower/expr.rs::literal_node`'s string special-case, and
+/// `lower/mod.rs::materialize_unfoldable_constants`'s "dataless target"
+/// path, e.g. `Opaque`'s Rerouter — or, just as often, a chip's own
+/// MicrochipInput/Output: a plain literal crossing a chip boundary is
+/// represented this way too, so `predict()`'s boundary pass-through and
+/// `trace_delivered()`'s delivery trace both need to recognize it): a gate
+/// with NO declared input ports at all (every "operand" is a baked
+/// property — there is no port to wire) whose properties match one of the
+/// three fixed identity recipes those passes hard-code (`N+0`, `B||false`,
+/// `S..""`). None of these three shapes is a "certified operator" result —
+/// `eval::eval` never sees a zero-input call, and `..` string concatenation
+/// isn't in the certified set at all — so without this, the constant they
+/// carry would be invisible to both the predictor and the delivery tracer.
+fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
+    if !n.ports.inputs.is_empty() || n.ports.outputs.len() != 1 {
+        return None;
+    }
+    if n.gate_class.ends_with("MathAdd") {
+        return match (n.properties.get(&*sym::INPUT_A), n.properties.get(&*sym::INPUT_B)) {
+            (Some(Literal::Int(a)), Some(Literal::Int(b))) if *b == 0 => Some(FoldValue::Int(*a)),
+            (Some(Literal::Float(a)), Some(Literal::Float(b))) if *b == 0.0 => {
+                Some(FoldValue::Float(*a))
+            }
+            _ => None,
+        };
+    }
+    if n.gate_class.ends_with("LogicalOR") {
+        return match (n.properties.get(&*sym::B_INPUT_A), n.properties.get(&*sym::B_INPUT_B)) {
+            (Some(Literal::Bool(a)), Some(Literal::Bool(false))) => Some(FoldValue::Bool(*a)),
+            _ => None,
+        };
+    }
+    if n.gate_class == gc::STRING_CONCATENATE {
+        let empty_or_absent = |lit: Option<&Literal>| match lit {
+            None => true,
+            Some(Literal::String(s)) => s.is_empty(),
+            _ => false,
+        };
+        if empty_or_absent(n.properties.get(&*sym::INPUT_B))
+            && empty_or_absent(n.properties.get(&intern("Separator")))
+            && let Some(Literal::String(s)) = n.properties.get(&*sym::INPUT_A)
+        {
+            return Some(FoldValue::Str(s.clone()));
+        }
+        return None;
+    }
+    None
+}
+
+/// Step 1: independently predict which nodes of the UNFOLDED module `root`
+/// carry a fully-known certified value. A bounded fixpoint (not a real
+/// topo-sort — simpler, and these generated programs are small and the pure
+/// subgraph is acyclic by construction): each round, resolve every
+/// not-yet-known node whose classification allows it; stop when a round
+/// resolves nothing new.
+///
+/// Classification (deliberately the "stop there" minimal predictor from the
+/// design — Select/Branch/vars/etc. are never predicted through):
+///   - `_Literal`: seed from its `Value` property.
+///   - a "materialized constant carrier" (see `literal_carrier_value`):
+///     seed from the recipe it hard-codes.
+///   - MicrochipInput/Output (chip boundary): pass through its single known
+///     wire source, if it has exactly one.
+///   - any other single-output node: gather its non-`Exec` data inputs in
+///     declared port order. A port can be known two ways — wired to a
+///     single already-known source, or (this is the load-bearing case:
+///     `data/gate_semantics.json`-certified operator gates bake a literal
+///     OPERAND directly onto their own consuming gate's properties at
+///     lowering time — see `lower_binop`/`literal_for_property_port` —
+///     rather than wiring a sibling `_Literal` node, so this is the common
+///     case, not the exception) unwired but with a matching baked property.
+///     Genuinely unwired-and-unbaked = `None`; fan-in = permanently
+///     unresolvable. Once every input is resolved, hand them to
+///     `eval::eval` — the SAME certified evaluator the real fold pass uses.
+///     A non-finite float result is discarded here too, mirroring the real
+///     pass's belt-and-suspenders guard (it never bakes a NaN/inf literal
+///     either).
+fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
+    let mut nodes: StdMap<NodeId, &Node> = StdMap::new();
+    collect_all_nodes(root, &mut nodes);
+    let mut wires: Vec<Wire> = Vec::new();
+    collect_all_wires(root, &mut wires);
+
+    let mut in_wires: StdMap<(NodeId, WirePort), Vec<PortRef>> = StdMap::new();
+    for w in &wires {
+        in_wires.entry((w.target.node_id, w.target.port)).or_default().push(w.source);
+    }
+
+    let mut known: StdMap<NodeId, FoldValue> = StdMap::new();
+    let mut ids: Vec<NodeId> = nodes.keys().copied().collect();
+    ids.sort_unstable();
+
+    // +4 headroom over a strict topo-depth bound costs nothing on these
+    // small generated graphs and avoids an off-by-one against chip-boundary
+    // hops (each hop is its own round).
+    let max_rounds = ids.len() + 4;
+    for _ in 0..max_rounds {
+        let mut changed = false;
+        for &id in &ids {
+            if known.contains_key(&id) {
+                continue;
+            }
+            let n = nodes[&id];
+
+            if n.gate_class == gc::LITERAL {
+                if let Some(v) = n.properties.get(&*sym::VALUE).and_then(FoldValue::from_literal) {
+                    known.insert(id, v);
+                    changed = true;
+                }
+                continue;
+            }
+
+            if let Some(v) = literal_carrier_value(n) {
+                known.insert(id, v);
+                changed = true;
+                continue;
+            }
+
+            if n.gate_class == MICROCHIP_INPUT || n.gate_class == MICROCHIP_OUTPUT {
+                if let Some(srcs) = in_wires.get(&(id, WirePort::RerInput))
+                    && srcs.len() == 1
+                    && let Some(v) = known.get(&srcs[0].node_id)
+                {
+                    known.insert(id, v.clone());
+                    changed = true;
+                }
+                continue;
+            }
+
+            if n.kind != NodeKind::Gate || n.ports.outputs.len() != 1 {
+                continue;
+            }
+
+            let data_ports: Vec<WirePort> = n
+                .ports
+                .inputs
+                .iter()
+                .filter(|p| p.ty != Type::Exec)
+                .map(|p| WirePort::from_name(sym_resolve(p.name)))
+                .collect();
+            let mut inputs: Vec<Option<FoldValue>> = Vec::with_capacity(data_ports.len());
+            let mut blocked = false;
+            for port in &data_ports {
+                let wire_srcs = in_wires.get(&(id, *port)).filter(|s| !s.is_empty());
+                match wire_srcs {
+                    None => {
+                        // Unwired — but the operand may still be a baked
+                        // property (see the doc comment above): a literal
+                        // operand of a certified operator gate is inlined
+                        // directly onto the CONSUMING gate at lowering time,
+                        // not wired from a sibling `_Literal`.
+                        let baked = n
+                            .properties
+                            .get(&intern(port.as_str()))
+                            .and_then(FoldValue::from_literal);
+                        inputs.push(baked);
+                    }
+                    Some(srcs) if srcs.len() > 1 => {
+                        blocked = true; // fan-in: never certified-foldable
+                        break;
+                    }
+                    Some(srcs) => match known.get(&srcs[0].node_id) {
+                        Some(v) => inputs.push(Some(v.clone())),
+                        None => {
+                            blocked = true; // source not resolved (yet, or never)
+                            break;
+                        }
+                    },
+                }
+            }
+            if blocked {
+                continue;
+            }
+            if let Some(v) = eval::eval(n.gate_class, &inputs) {
+                if matches!(&v, FoldValue::Float(f) if !f.is_finite()) {
+                    continue; // mirrors fold/mod.rs's non-finite refusal
+                }
+                known.insert(id, v);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    known
+}
+
+/// `module`'s ROOT-level (not nested-chip) `out` ports, keyed by declared
+/// name (`PortLabel`) — the only thing stable across two independent
+/// `lower()` calls on the same source, since NodeIds are a fresh
+/// process-global counter per call.
+fn root_out_labels(module: &Module) -> StdMap<String, NodeId> {
+    let mut map = StdMap::new();
+    for id in &module.outputs {
+        let Some(n) = module.nodes.get(id) else { continue };
+        if let Some(Literal::String(label)) = n.properties.get(&*sym::PORT_LABEL) {
+            map.insert(label.clone(), *id);
+        }
+    }
+    map
+}
+
+/// Step 2: what value (if any) does `node_id` in the FOLDED tree actually
+/// deliver? Chases through as many MicrochipInput/Output chip-boundary hops
+/// as it takes (the same boundary a folded constant crosses on its way out
+/// of a named chip), stopping at whichever of the pipeline's legitimate
+/// "this port now IS the constant" shapes it finds first:
+///   (a) a live wire whose source is a `_Literal` node — read its `Value`.
+///   (b) a live wire whose source is a "materialized constant carrier" (see
+///       `literal_carrier_value`) — the common shape for a literal crossing
+///       a chip boundary, since MicrochipInput/Output has no data struct to
+///       bake a property into either (same as `Opaque`'s Rerouter).
+///   (c) no incoming wire, but the node's OWN `RER_Input`-keyed property is
+///       set — `inline_orphan_literals` (or, for a Vector/Color/Rotation,
+///       `materialize_unfoldable_constants`) baked the constant in place
+///       and dropped the wire.
+/// Anything else (a live non-literal, non-carrier, non-boundary source;
+/// fan-in) means nothing legitimately delivers the value at this port —
+/// `None`.
+fn trace_delivered(
+    wires: &[Wire],
+    nodes: &StdMap<NodeId, &Node>,
+    node_id: NodeId,
+    depth: u32,
+) -> Option<FoldValue> {
+    if depth > 64 {
+        return None; // guard only; no legitimate chain is anywhere near this deep
+    }
+    let node = *nodes.get(&node_id)?;
+
+    if node.gate_class == gc::LITERAL {
+        return node.properties.get(&*sym::VALUE).and_then(FoldValue::from_literal);
+    }
+    if let Some(v) = literal_carrier_value(node) {
+        return Some(v);
+    }
+
+    let incoming: Vec<&Wire> = wires
+        .iter()
+        .filter(|w| w.target.node_id == node_id && w.target.port == WirePort::RerInput)
+        .collect();
+    match incoming.len() {
+        0 => node.properties.get(&*sym::RER_INPUT).and_then(FoldValue::from_literal),
+        1 => trace_delivered(wires, nodes, incoming[0].source.node_id, depth + 1),
+        _ => None, // fan-in — never a legitimate fold delivery
+    }
+}
+
+/// A short per-node/wire text dump of `module` (and nested chips) for
+/// finding reports — just enough to see what actually got wired.
+fn dump_module(module: &Module, indent: usize, out: &mut String) {
+    let pad = "  ".repeat(indent);
+    let mut ids: Vec<NodeId> = module.nodes.keys().copied().collect();
+    ids.sort_unstable();
+    for id in &ids {
+        let n = &module.nodes[id];
+        let val = if n.gate_class == gc::LITERAL {
+            n.properties
+                .get(&*sym::VALUE)
+                .map(|v| format!(" = {v:?}"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let _ = writeln!(out, "{pad}[{id}] {} kind={:?}{val}", short_class(n.gate_class), n.kind);
+    }
+    for w in &module.wires {
+        let _ = writeln!(
+            out,
+            "{pad}wire [{}].{} -> [{}].{}",
+            w.source.node_id, w.source.port, w.target.node_id, w.target.port
+        );
+    }
+    for (cid, c) in &module.chips {
+        let _ = writeln!(out, "{pad}chip [{cid}]:");
+        dump_module(c, indent + 1, out);
+    }
+}
+
+/// Compile `src` twice — `FoldMode::ForceOff` (U) and `FoldMode::ForceOn` (F) —
+/// sharing one resolve+typecheck pass (fold only touches `lower()`, so U/F
+/// always see identical diagnostics up to that point). Panics in any stage
+/// are caught, mirroring `run_pipeline`; a plain diagnostic error on either
+/// side means "reject the program" (the generator is a tight, certified-only
+/// grammar, so this should essentially never happen) rather than a finding.
+struct DiffPrep {
+    pair: Option<(Module, Module)>,
+    panic: Option<String>,
+}
+
+fn prepare_diff(src: &str) -> DiffPrep {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024 * 1024)
+            .spawn_scoped(s, || prepare_diff_inner(src))
+            .expect("spawn worker")
+            .join()
+            .unwrap_or(DiffPrep { pair: None, panic: Some("harness: worker thread panicked".into()) })
+    })
+}
+
+fn lower_variant(
+    resolved: &ResolveResult,
+    tc: &TypeCheckResult,
+    file: &str,
+    fold_mode: FoldMode,
+) -> Result<Module, String> {
+    let cache = Arc::new(TemplateCache::new());
+    match catch_unwind(AssertUnwindSafe(|| {
+        lower(LowerInput {
+            ast: &resolved.ast,
+            type_of_expr: &tc.type_of_expr,
+            op_resolutions: &tc.op_resolutions,
+            file,
+            module_name: None,
+            template_cache: cache,
+            doc_comments: &resolved.doc_comments,
+            fold_mode,
+        })
+    })) {
+        Ok(r) => {
+            let errs: Vec<&str> = r
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .map(|d| d.message.as_str())
+                .collect();
+            if errs.is_empty() {
+                Ok(r.module)
+            } else {
+                Err(format!("lower(fold_mode={fold_mode:?}) diagnostics: {errs:?}"))
+            }
+        }
+        Err(p) => Err(format!("PANIC lower(fold_mode={fold_mode:?}): {}", panic_msg(p))),
+    }
+}
+
+fn prepare_diff_inner(src: &str) -> DiffPrep {
+    let file = "fold_diff.ws";
+
+    let resolved = match catch_unwind(AssertUnwindSafe(|| resolve(src, file, &FsLoader))) {
+        Ok(r) => r,
+        Err(p) => return DiffPrep { pair: None, panic: Some(format!("PANIC resolve: {}", panic_msg(p))) },
+    };
+    if resolved.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return DiffPrep { pair: None, panic: None };
+    }
+
+    let tc = match catch_unwind(AssertUnwindSafe(|| typecheck(&resolved.ast, file))) {
+        Ok(r) => r,
+        Err(p) => return DiffPrep { pair: None, panic: Some(format!("PANIC typecheck: {}", panic_msg(p))) },
+    };
+    if tc.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return DiffPrep { pair: None, panic: None };
+    }
+
+    let u = lower_variant(&resolved, &tc, file, FoldMode::ForceOff);
+    let f = lower_variant(&resolved, &tc, file, FoldMode::ForceOn);
+    match (u, f) {
+        (Ok(um), Ok(fm)) => DiffPrep { pair: Some((um, fm)), panic: None },
+        (u, f) => {
+            let mut msgs = Vec::new();
+            if let Err(e) = &u {
+                msgs.push(e.clone());
+            }
+            if let Err(e) = &f {
+                msgs.push(e.clone());
+            }
+            let joined = msgs.join("; ");
+            let is_panic = joined.contains("PANIC");
+            DiffPrep { pair: None, panic: is_panic.then_some(joined) }
+        }
+    }
+}
+
+fn run_fold_diff(count: usize, seed: u64) {
+    let mut n_total_outs = 0usize;
+    let mut n_predicted_outs = 0usize;
+    let mut n_rejected = 0usize;
+    let mut n_crashes = 0usize;
+    let mut findings: Vec<String> = Vec::new();
+    let t0 = std::time::Instant::now();
+
+    for idx in 0..count {
+        let pseed = (seed
+            .wrapping_mul(1_000_003)
+            .wrapping_add(idx as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15))
+            ^ 0xF01D_0000_0000_0000;
+        let src = gen_fold_diff_program(pseed);
+
+        let prep = prepare_diff(&src);
+        let Some((u_mod, f_mod)) = prep.pair else {
+            if let Some(msg) = prep.panic {
+                n_crashes += 1;
+                findings.push(format!(
+                    "seed={pseed} idx={idx}: CRASH {msg}\n--- program ---\n{src}\n"
+                ));
+            } else {
+                n_rejected += 1;
+            }
+            continue;
+        };
+
+        let predicted = predict(&u_mod);
+        let u_labels = root_out_labels(&u_mod);
+        let f_labels = root_out_labels(&f_mod);
+
+        let mut f_nodes: StdMap<NodeId, &Node> = StdMap::new();
+        collect_all_nodes(&f_mod, &mut f_nodes);
+        let mut f_wires: Vec<Wire> = Vec::new();
+        collect_all_wires(&f_mod, &mut f_wires);
+
+        let mut sorted_labels: Vec<&String> = u_labels.keys().collect();
+        sorted_labels.sort();
+        for label in sorted_labels {
+            let u_id = u_labels[label];
+            n_total_outs += 1;
+            let Some(pred_v) = predicted.get(&u_id) else { continue };
+            n_predicted_outs += 1;
+
+            let delivered = match f_labels.get(label) {
+                Some(&f_id) => trace_delivered(&f_wires, &f_nodes, f_id, 0),
+                None => None,
+            };
+            if delivered.as_ref() != Some(pred_v) {
+                let mut report = String::new();
+                let _ = writeln!(
+                    report,
+                    "seed={pseed} idx={idx}: out `{label}` predicted {pred_v:?} on the \
+                     unfolded module but the folded module delivers {delivered:?}"
+                );
+                let _ = writeln!(report, "--- program ---\n{src}");
+                let _ = writeln!(report, "--- unfolded IR ---");
+                dump_module(&u_mod, 0, &mut report);
+                let _ = writeln!(report, "--- folded IR ---");
+                dump_module(&f_mod, 0, &mut report);
+                findings.push(report);
+            }
+        }
+
+        // Structural invariants on the folded module.
+        let mut wire_out = Outcome::default();
+        check_wires(&f_mod, &mut wire_out);
+        if !wire_out.wire_issues.is_empty() {
+            let mut report = String::new();
+            let _ = writeln!(
+                report,
+                "seed={pseed} idx={idx}: folded module has wire-validity issues: {:?}",
+                wire_out.wire_issues
+            );
+            let _ = writeln!(report, "--- program ---\n{src}");
+            let _ = writeln!(report, "--- folded IR ---");
+            dump_module(&f_mod, 0, &mut report);
+            findings.push(report);
+        }
+
+        let (un, uw) = tree_counts(&u_mod);
+        let (fn_, fw) = tree_counts(&f_mod);
+        if fn_ > un || fw > uw {
+            let mut report = String::new();
+            let _ = writeln!(
+                report,
+                "seed={pseed} idx={idx}: folded module GREW — nodes {un}->{fn_}, wires {uw}->{fw}"
+            );
+            let _ = writeln!(report, "--- program ---\n{src}");
+            findings.push(report);
+        }
+
+        if (idx + 1) % 100 == 0 {
+            eprintln!(
+                "[fold-diff] {}/{count}; {}/{} outs predicted; {} findings; {:.1}s",
+                idx + 1,
+                n_predicted_outs,
+                n_total_outs,
+                findings.len(),
+                t0.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    let rate = if n_total_outs > 0 {
+        100.0 * n_predicted_outs as f64 / n_total_outs as f64
+    } else {
+        0.0
+    };
+    println!(
+        "[fold-diff] {count} programs ({n_rejected} rejected, {n_crashes} crashes); \
+         {n_predicted_outs}/{n_total_outs} outs predicted ({rate:.1}%); {} findings",
+        findings.len()
+    );
+
+    if !findings.is_empty() {
+        std::fs::create_dir_all("fuzz_findings").ok();
+        let joined = findings.join("\n════════════════════════════════════\n");
+        std::fs::write("fuzz_findings/fold_diff_findings.txt", &joined)
+            .expect("write fold-diff findings");
+        for f in findings.iter().take(20) {
+            println!("{f}");
+        }
+        println!("[fold-diff] findings written to fuzz_findings/fold_diff_findings.txt");
+        std::process::exit(1);
+    }
+}
+
+// ─────────────────────────── fold-diff program generator ───────────────────────────
+//
+// A small, DEDICATED generator (not the general `Gen::expr` grammar used by
+// the main fuzz mode, which reaches far outside the certified operator set —
+// bitwise ops, vectors, records, math builtins, string concatenation, ... —
+// none of which `predict()` can ever resolve). Reuses `Gen`'s existing
+// literal/name-freshening utilities (`Gen::lit`, `Gen::fresh`, its `Rng`) so
+// literal syntax (escaping, negative numbers, ...) matches the rest of the
+// harness, but restricts every operator to the certified set the brief
+// calls out: `+ - * / % == != < <= > >= && || ^^ !`.
+
+/// A leaf: 80% a plain literal, 20% `Opaque(<literal>)` — a genuine wired
+/// value the fold pass (and `predict()`, matching it) must never propagate
+/// through, since `Opaque`'s gate class carries no certified-table entry.
+fn fold_leaf(g: &mut Gen, ty: Ty) -> String {
+    let l = g.lit(ty);
+    if g.rng.chance(1, 5) { format!("Opaque({l})") } else { l }
+}
+
+/// An expression of type `ty`, depth <= `depth`, built only from the
+/// certified operator set over homogeneous-typed operands (equality is the
+/// only operator exercised across all four scalar types; ordered compares
+/// and logical combinators keep to the types the certified table actually
+/// probed those signatures at).
+fn fold_expr(g: &mut Gen, ty: Ty, depth: u32) -> String {
+    // A higher early-exit chance than the main fuzzer's general `Gen::expr`
+    // (which uses 1/4): with 20% of LEAVES independently `Opaque`-wrapped
+    // (a permanent, by-design prediction barrier), a full-width depth-4
+    // tree accumulates enough leaves that almost every root `out` ends up
+    // blocked, tanking the predictor's measured coverage even though the
+    // predictor itself is sound. Depth stays capped at <= 4 (the ceiling
+    // the design calls for; deep chains still happen, just less often) —
+    // only the AVERAGE leaf count drops, which is the generator-side lever
+    // the brief calls for tuning (not the predictor).
+    if depth == 0 || g.rng.chance(1, 2) {
+        return fold_leaf(g, ty);
+    }
+    match ty {
+        Ty::Int | Ty::Float => {
+            let op = *g.rng.pick(&["+", "-", "*", "/", "%"]);
+            let a = fold_expr(g, ty, depth - 1);
+            let b = fold_expr(g, ty, depth - 1);
+            format!("({a} {op} {b})")
+        }
+        Ty::Bool => match g.rng.below(4) {
+            0 => {
+                let t = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]);
+                let op = *g.rng.pick(&["==", "!="]);
+                let a = fold_expr(g, t, depth - 1);
+                let b = fold_expr(g, t, depth - 1);
+                format!("({a} {op} {b})")
+            }
+            1 => {
+                let t = *g.rng.pick(&[Ty::Int, Ty::Float]);
+                let op = *g.rng.pick(&["<", "<=", ">", ">="]);
+                let a = fold_expr(g, t, depth - 1);
+                let b = fold_expr(g, t, depth - 1);
+                format!("({a} {op} {b})")
+            }
+            2 => {
+                let op = *g.rng.pick(&["&&", "||", "^^"]);
+                let a = fold_expr(g, Ty::Bool, depth - 1);
+                let b = fold_expr(g, Ty::Bool, depth - 1);
+                format!("({a} {op} {b})")
+            }
+            _ => {
+                let a = fold_expr(g, Ty::Bool, depth - 1);
+                format!("!({a})")
+            }
+        },
+        // No certified string COMBINATOR exists (`..` concatenation isn't in
+        // the certified set) — a Str-typed expression is always a leaf.
+        Ty::Str => fold_leaf(g, ty),
+        Ty::Vec3 => unreachable!("fold-diff generator never requests Vec3"),
+    }
+}
+
+/// Like `fold_expr`, but the top operator combines the chip's own parameter
+/// `pname` (read bare, unwrapped) with a certified-const subexpression — so
+/// the chip body actually depends on its argument, exercising the
+/// MicrochipInput -> ... -> MicrochipOutput propagation path.
+fn fold_expr_with_param(g: &mut Gen, ty: Ty, pname: &str, depth: u32) -> String {
+    match ty {
+        Ty::Int | Ty::Float => {
+            let op = *g.rng.pick(&["+", "-", "*"]);
+            let b = fold_expr(g, ty, depth);
+            format!("({pname} {op} {b})")
+        }
+        Ty::Bool => {
+            let op = *g.rng.pick(&["&&", "||", "^^"]);
+            let b = fold_expr(g, ty, depth);
+            format!("({pname} {op} {b})")
+        }
+        Ty::Str => {
+            let op = *g.rng.pick(&["==", "!="]);
+            let b = fold_expr(g, ty, depth);
+            format!("({pname} {op} {b})")
+        }
+        Ty::Vec3 => unreachable!("fold-diff generator never requests Vec3"),
+    }
+}
+
+/// One constant-heavy fold-diff program: 1-3 `out` declarations of random
+/// scalar types (each a depth-<=4 certified expression), with a 30% chance
+/// one of them is routed through a named chip call (`chip F(x: T) -> (r: T)`
+/// called with a constant — exercises chip-boundary propagation) and a 20%
+/// chance of an unrelated `on t { if <const-expr> { .. } else { .. } }`
+/// wrapper (exercises Branch-truncation structural cleanup; deliberately
+/// NOT value-checked — `predict()` never resolves through Branch).
+fn gen_fold_diff_program(seed: u64) -> String {
+    let mut g = Gen::new(seed);
+    let mut blocks: Vec<String> = Vec::new();
+
+    let n_outs = g.rng.range(1, 3);
+    let out_types: Vec<Ty> = (0..n_outs)
+        .map(|_| *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]))
+        .collect();
+    let chip_wrap_idx = if !out_types.is_empty() && g.rng.chance(3, 10) {
+        Some(g.rng.below(out_types.len()))
+    } else {
+        None
+    };
+
+    for (i, ty) in out_types.iter().enumerate() {
+        let oname = g.fresh("fo");
+        if Some(i) == chip_wrap_idx {
+            let cname = g.fresh("Fc");
+            let body = fold_expr_with_param(&mut g, *ty, "p0", 3);
+            blocks.push(format!(
+                "chip {cname}(p0: {t}) -> (r: {t}) {{\n  out r = {body}\n}}",
+                t = ty.name()
+            ));
+            let arg = fold_expr(&mut g, *ty, 2);
+            let cvar = g.fresh("fc");
+            blocks.push(format!("let {cvar} = {cname}({arg})"));
+            blocks.push(format!("out {oname} = {cvar}"));
+        } else {
+            let e = fold_expr(&mut g, *ty, 4);
+            blocks.push(format!("out {oname} = {e}"));
+        }
+    }
+
+    if g.rng.chance(1, 5) {
+        let t = g.fresh("ft");
+        let a = g.fresh("fa");
+        let oa = g.fresh("foa");
+        let cond = fold_expr(&mut g, Ty::Bool, 3);
+        blocks.push(format!("in {t}: exec"));
+        blocks.push(format!("var {a}: int = 0"));
+        blocks.push(format!(
+            "on {t} {{\n  if {cond} {{\n    {a} = 1\n  }} else {{\n    {a} = 2\n  }}\n}}"
+        ));
+        blocks.push(format!("out {oa} = {a}"));
+    }
+
+    blocks.join("\n")
+}
+
 // ─────────────────────────── main ───────────────────────────
 
 fn main() {
@@ -2364,6 +3121,7 @@ fn main() {
     let mut calibrate_dir: Option<String> = None;
     let mut selftest_only = false;
     let mut probe_file: Option<String> = None;
+    let mut fold_diff_count: Option<usize> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -2389,6 +3147,10 @@ fn main() {
             "--probe" => {
                 i += 1;
                 probe_file = Some(args[i].clone());
+            }
+            "--fold-diff" => {
+                i += 1;
+                fold_diff_count = Some(args[i].parse().expect("--fold-diff N"));
             }
             other => {
                 eprintln!("unknown arg: {other}");
@@ -2442,6 +3204,10 @@ fn main() {
     }
     if let Some(d) = calibrate_dir {
         calibrate(&d);
+        return;
+    }
+    if let Some(n) = fold_diff_count {
+        run_fold_diff(n, seed);
         return;
     }
 

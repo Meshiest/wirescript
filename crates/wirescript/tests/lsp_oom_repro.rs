@@ -659,6 +659,7 @@ fn lower_source(src: &str, file: &str) -> wirescript::lower::LowerResult {
         module_name: None,
         template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
+        fold_mode: wirescript::lower::FoldMode::Auto,
     })
 }
 

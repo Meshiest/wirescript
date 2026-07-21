@@ -52,6 +52,16 @@ enum Command {
         /// Dump the lowered IR to stderr before emitting.
         #[arg(long)]
         dump_ir: bool,
+
+        /// Force-disable the certified constant-fold pass, overriding a
+        /// module-level `@fold`.
+        #[arg(long, conflicts_with = "fold")]
+        no_fold: bool,
+
+        /// Force-enable the certified constant-fold pass without requiring a
+        /// module-level `@fold` (a module-level `@nofold` still wins).
+        #[arg(long, conflicts_with = "no_fold")]
+        fold: bool,
     },
 
     /// Legacy bearilog gate-language (kept for backward-compat).
@@ -100,7 +110,17 @@ fn run() -> Result<(), Box<dyn Error>> {
             z,
             open,
             dump_ir,
-        } => run_wirescript(source, output, name, verbose, x, y, z, open, dump_ir),
+            no_fold,
+            fold,
+        } => {
+            let fold_mode = match (fold, no_fold) {
+                (true, true) => unreachable!("clap conflicts_with rules out --fold --no-fold"),
+                (true, false) => wirescript::FoldMode::ForceOn,
+                (false, true) => wirescript::FoldMode::ForceOff,
+                (false, false) => wirescript::FoldMode::Auto,
+            };
+            run_wirescript(source, output, name, verbose, x, y, z, open, dump_ir, fold_mode)
+        }
         Command::Bearilog {
             file,
             module,
@@ -135,6 +155,7 @@ fn run_wirescript(
     z: i32,
     open: bool,
     dump_ir: bool,
+    fold_mode: wirescript::FoldMode,
 ) -> Result<(), Box<dyn Error>> {
     let src = std::fs::read_to_string(&source)
         .map_err(|e| format!("cannot read {}: {e}", source.display()))?;
@@ -151,6 +172,7 @@ fn run_wirescript(
             module_name: module_name.as_deref(),
             template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
             doc_comments: &resolved.doc_comments,
+            fold_mode,
         });
         wirescript::ir::dump_module_with_source(&lowered.module, 0, Some(&src));
     }
@@ -168,6 +190,7 @@ fn run_wirescript(
         source: &src,
         file: &file,
         module_name: module_name.as_deref(),
+        fold_mode,
     };
 
     if is_brdb {

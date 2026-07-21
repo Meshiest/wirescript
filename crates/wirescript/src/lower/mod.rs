@@ -52,6 +52,15 @@ use call::*;
 mod access;
 use access::*;
 
+// Certified constant-fold pass. Exposed as `#[doc(hidden)] pub` rather than
+// `pub(crate)` so the `--fold-diff` differential fuzz harness
+// (examples/fuzz_programs.rs — an `examples/` binary, which compiles as an
+// external crate and cannot see `pub(crate)` items) can reach
+// `fold::eval::{eval, Value}` to predict certified-fold outcomes without
+// reimplementing the evaluator itself. This is the ONLY surface widened:
+// `fold::table` and the propagation/apply internals stay `pub(crate)`.
+#[doc(hidden)]
+pub mod fold;
 
 // ---------- result ----------
 
@@ -68,6 +77,22 @@ pub struct LowerInput<'a> {
     pub module_name: Option<&'a str>,
     pub template_cache: Arc<TemplateCache>,
     pub doc_comments: &'a HashMap<usize, String>,
+    /// Whether the certified constant-fold pass runs — see [`FoldMode`]. A
+    /// module-level `@nofold` (`input.ast.no_fold`) always disables it on
+    /// top of this, regardless of mode.
+    pub fold_mode: FoldMode,
+}
+
+/// Whether the certified constant-fold pass runs. `Auto` (production
+/// default): fold only when the entry file opts in with a module-level
+/// `@fold`. The pass is opt-in while it stabilizes; `Auto`'s meaning is
+/// the single place to change when it becomes on-by-default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FoldMode {
+    #[default]
+    Auto,
+    ForceOn,
+    ForceOff,
 }
 
 pub fn lower(input: LowerInput<'_>) -> LowerResult {
@@ -151,6 +176,20 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // constant duplicated by a namespace + named import of the same module) are
     // pruned — not a user's connected-but-unused `let y = x * 2`.
     prune_dead_pure_gates(&mut module, false);
+    // Certified constant folding — table-gated. `FoldMode::Auto` (the
+    // production default) only folds when the entry file opts in with a
+    // module-level `@fold`; `ForceOn`/`ForceOff` are the CLI `--fold`/
+    // `--no-fold` overrides. A module-level `@nofold` always disables it on
+    // top of the mode — even `ForceOn` respects it ("don't require @fold",
+    // not "ignore @nofold").
+    let run_fold = match input.fold_mode {
+        FoldMode::ForceOff => false,
+        FoldMode::ForceOn => !input.ast.no_fold,
+        FoldMode::Auto => input.ast.fold && !input.ast.no_fold,
+    };
+    if run_fold {
+        fold::fold_certified_constants(&mut module);
+    }
     materialize_unfoldable_constants(&mut module);
     inline_orphan_literals(&mut module);
     // Folding an operand into its consumer can leave a bare `_Literal` wired to
@@ -278,17 +317,43 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             if !scalar {
                 continue;
             }
-            // Cross-module wires (target lives in a chip child) keep the old
-            // literal-clone path in partition_anon_chips — only same-module
-            // targets are considered here.
-            let Some(target) = module.nodes.get(&w.target.node_id) else {
-                continue;
+            // The target lives either in this module or inside an
+            // already-built chip child (a named chip instance's
+            // `MicrochipInput` pin fed by a parent-side constant — a folded
+            // `P(2 + 2)` argument, or the fold-independent `let k = 4` /
+            // `P(k)` alias). Nothing delivers a literal across modules at
+            // emit: each module's literal-inline scan walks only its OWN
+            // wires, and `partition_anon_chips`' literal-clone arm only
+            // covers nodes being moved into ANON chips — so a parent-literal
+            // → child-pin wire survives to emit, where its literal source
+            // makes it skipped, and the pin silently reads 0. Materialize
+            // the carrier for cross-module targets too: a real parent-side
+            // gate wired cross-grid into the pin, the same shape the
+            // unfolded program emits for a computed argument.
+            let (target, cross_module) = match module.nodes.get(&w.target.node_id) {
+                Some(t) => (t, false),
+                None => match find_node_in_chips(module, &w.target.node_id) {
+                    Some(t) => (t, true),
+                    // Dangling wire — nothing anywhere to deliver to.
+                    None => continue,
+                },
             };
-            let target_ok =
-                crate::emit::port_accepts_inline_variant(target.gate_class, w.target.port);
+            // Inlining into the target's data only works same-module (see
+            // above), so a cross-module target needs the carrier even when
+            // its port could hold an inline value.
+            let target_ok = !cross_module
+                && crate::emit::port_accepts_inline_variant(target.gate_class, w.target.port);
             let target_placeholder =
                 target.gate_class == gc::LITERAL || target.gate_class == gc::UNSUPPORTED;
             if target_ok || target_placeholder {
+                continue;
+            }
+            // A cross-module data-only port can neither take a wire nor be
+            // written from this module's pass — leave the wire alone (the
+            // child's own recursive pass owns its same-module literals).
+            if cross_module
+                && !crate::catalog::is_wire_input(target.gate_class, w.target.port.as_str())
+            {
                 continue;
             }
             let lit = src.properties.get(&value_sym).unwrap().clone();
@@ -448,6 +513,25 @@ fn materialize_unfoldable_constants(module: &mut Module) {
     }
 }
 
+/// Depth-first lookup of a node id across `module.chips` child modules
+/// (named chip instances exist as populated child modules throughout
+/// lowering, before `partition_anon_chips` runs). Node ids are globally
+/// unique, so map iteration order cannot affect the result.
+fn find_node_in_chips<'m>(
+    module: &'m Module,
+    id: &crate::ir::NodeId,
+) -> Option<&'m crate::ir::Node> {
+    for child in module.chips.values() {
+        if let Some(n) = child.nodes.get(id) {
+            return Some(n);
+        }
+        if let Some(n) = find_node_in_chips(child, id) {
+            return Some(n);
+        }
+    }
+    None
+}
+
 /// Fold standalone `_Literal` bricks whose value is only used once into a
 /// property on the consumer gate, then delete the literal. Avoids having
 /// rows of constant-value bricks cluttering the chip for things like
@@ -493,6 +577,18 @@ fn inline_orphan_literals(module: &mut Module) {
                 continue;
             }
             let (target_id, target_port) = (target.node_id, target.port);
+            // Cross-module wire (e.g. a chip's `MicrochipInput` fed by a
+            // parent-side literal): `module.nodes` only holds THIS module's
+            // own nodes, so a same-module presence check is required here —
+            // mirrors the guard in `materialize_unfoldable_constants` (~line
+            // 294). Without it, `module.nodes.get_mut(&target_id)` below
+            // silently no-ops (target lives in a different module) while the
+            // literal AND its cross-module wire still get deleted, leaving
+            // the boundary port to read its zero/empty default at runtime
+            // with no diagnostic. Leave the literal + wire alone instead.
+            if !module.nodes.contains_key(&target_id) {
+                continue;
+            }
             // Rerouter (`Opaque`) has no data struct — folding the literal
             // into a node property would silently drop it at emit time
             // instead of blocking the fold as intended. Keep it wired.
@@ -803,7 +899,7 @@ fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
 ///   whatever it fed keeps its other sources only.
 /// - **Exactly one incoming wire** (pass-through): splice it out, rewiring its
 ///   consumers straight to the single source.
-fn prune_dead_exec_unions(module: &mut Module) {
+pub(super) fn prune_dead_exec_unions(module: &mut Module) {
     /// Chase a source through spliced unions to the node actually carrying
     /// its wires now. Returns `None` for a pure splice cycle (unions feeding
     /// only each other — dead code whose wires all drop).

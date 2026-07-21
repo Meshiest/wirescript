@@ -67,6 +67,7 @@ const DOC_MANIFEST = {
   Builtins: 'docs/builtins.md',
   'Exec Context': 'docs/exec-context.md',
   'Best Practices': 'docs/best-practices.md',
+  'Constant Folding': 'docs/folding.md',
 };
 
 // List of doc pages in display order
@@ -81,6 +82,7 @@ export const DOC_PAGES = [
   'Builtins',
   'Exec Context',
   'Best Practices',
+  'Constant Folding',
 ];
 
 // Display names for the navigation
@@ -95,6 +97,7 @@ export const DOC_TITLES = {
   Builtins: 'Built-in Functions',
   'Exec Context': 'Execution Context',
   'Best Practices': 'Best Practices',
+  'Constant Folding': 'Constant Folding',
 };
 
 async function loadDoc(page) {

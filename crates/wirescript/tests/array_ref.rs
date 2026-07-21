@@ -1,7 +1,7 @@
-use wirescript::{compile, CompileInput};
+use wirescript::{compile, CompileInput, FoldMode};
 
 fn compiles(src: &str) -> bool {
-    compile(CompileInput { source: src, file: "test", module_name: None }).is_ok()
+    compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto }).is_ok()
 }
 
 #[test]
@@ -45,6 +45,6 @@ array framebuf: int[]
 out display: int[] = framebuf
 in player: character
 on player { framebuf.push(42) }";
-    let r = compile(CompileInput { source: src, file: "test", module_name: None });
+    let r = compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto });
     assert!(r.is_ok(), "out array should compile: {:?}", r.err());
 }

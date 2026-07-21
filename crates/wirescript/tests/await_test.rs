@@ -1,6 +1,6 @@
 use wirescript::resolve::{resolve, FsLoader};
 use wirescript::typecheck::typecheck;
-use wirescript::{compile, CompileInput};
+use wirescript::{compile, CompileInput, FoldMode};
 
 fn diag_codes(src: &str) -> Vec<String> {
     let resolved = resolve(src, "test", &FsLoader);
@@ -9,7 +9,7 @@ fn diag_codes(src: &str) -> Vec<String> {
 }
 
 fn compiles(src: &str) -> bool {
-    compile(CompileInput { source: src, file: "test", module_name: None }).is_ok()
+    compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto }).is_ok()
 }
 
 // --- parse ---

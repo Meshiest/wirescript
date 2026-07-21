@@ -19,6 +19,7 @@ fn lower_src(src: &str) -> crate::ir::Module {
         module_name: None,
         template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
+        fold_mode: crate::lower::FoldMode::Auto,
     });
     assert!(
         r.diagnostics

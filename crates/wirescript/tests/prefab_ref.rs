@@ -3,7 +3,7 @@
 
 use brdb::IntoReader;
 use std::sync::Arc;
-use wirescript::{CompileInput, EmitOptions, PrefabResolver, compile_to_world};
+use wirescript::{CompileInput, EmitOptions, FoldMode, PrefabResolver, compile_to_world};
 
 /// Build a trivial single-brick prefab's `.brz` bytes to stand in for a
 /// dragged-in / on-disk prefab file.
@@ -39,7 +39,7 @@ on start {
         ..Default::default()
     };
     let result = compile_to_world(
-        CompileInput { source: src, file: "test.ws", module_name: None },
+        CompileInput { source: src, file: "test.ws", module_name: None, fold_mode: FoldMode::Auto },
         opts,
     )
     .expect("compile should succeed");
@@ -79,7 +79,7 @@ on start {
         ..Default::default()
     };
     let msg = match compile_to_world(
-        CompileInput { source: src, file: "test.ws", module_name: None },
+        CompileInput { source: src, file: "test.ws", module_name: None, fold_mode: FoldMode::Auto },
         opts,
     ) {
         Ok(_) => panic!("missing .brz extension should fail"),
@@ -99,7 +99,7 @@ on start {
     // Default (disk) resolver against a nonexistent file: emit fails with a
     // clear error rather than silently dropping the reference.
     let msg = match compile_to_world(
-        CompileInput { source: src, file: "nonexistent.ws", module_name: None },
+        CompileInput { source: src, file: "nonexistent.ws", module_name: None, fold_mode: FoldMode::Auto },
         EmitOptions::default(),
     ) {
         Ok(_) => panic!("missing prefab file should fail"),

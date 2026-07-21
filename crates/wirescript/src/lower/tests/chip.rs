@@ -23,6 +23,7 @@ fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diag
         module_name: None,
         template_cache: std::sync::Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
+        fold_mode: FoldMode::Auto,
     });
     let mut diags = resolved.diagnostics;
     diags.extend(tc.diagnostics);
@@ -530,6 +531,7 @@ fn namespace_chip_call_resolves() {
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
+        fold_mode: FoldMode::Auto,
     });
     assert!(
         lr.diagnostics

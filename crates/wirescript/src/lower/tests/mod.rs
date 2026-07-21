@@ -8,6 +8,7 @@ mod basic;
 mod block_expr;
 mod chip;
 mod compound;
+mod fold;
 mod fusion;
 mod imports;
 mod opaque;
@@ -28,6 +29,11 @@ pub(super) fn compile(src: &str) -> LowerResult {
         parsed.diagnostics
     );
     let tc = typecheck(&parsed.ast, "test");
+    // Unfolded: existing lowering tests are structural microscopes that
+    // assert on real gates, not on what the certified fold pass would leave
+    // behind. `compile_folded` below is the fold-behavior twin. ForceOff
+    // (not Auto) so this stays unfolded regardless of whether `src` happens
+    // to carry a module-level `@fold`.
     let mut r = lower(LowerInput {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
@@ -36,6 +42,65 @@ pub(super) fn compile(src: &str) -> LowerResult {
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
+        fold_mode: FoldMode::ForceOff,
+    });
+    r.diagnostics.extend(
+        tc.diagnostics
+            .into_iter()
+            .filter(|d| d.severity == crate::diagnostic::Severity::Warning),
+    );
+    r
+}
+
+/// Like `compile`, but with the certified fold pass enabled (ForceOn — not
+/// gated on a module-level `@fold`, since these are the fold-behavior tests
+/// themselves). Use for fold-behavior tests; `compile` stays unfolded so
+/// structural lowering tests keep asserting on real gates.
+pub(super) fn compile_folded(src: &str) -> LowerResult {
+    let parsed = parse(src, "test");
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse diags: {:?}",
+        parsed.diagnostics
+    );
+    let tc = typecheck(&parsed.ast, "test");
+    let mut r = lower(LowerInput {
+        ast: &parsed.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file: "test",
+        module_name: None,
+        template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &parsed.doc_comments,
+        fold_mode: FoldMode::ForceOn,
+    });
+    r.diagnostics.extend(
+        tc.diagnostics
+            .into_iter()
+            .filter(|d| d.severity == crate::diagnostic::Severity::Warning),
+    );
+    r
+}
+
+/// Like `compile`, but with `fold_mode: FoldMode::Auto` (the production
+/// default) — folds only if `src` opts in with a module-level `@fold`.
+pub(super) fn compile_auto(src: &str) -> LowerResult {
+    let parsed = parse(src, "test");
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse diags: {:?}",
+        parsed.diagnostics
+    );
+    let tc = typecheck(&parsed.ast, "test");
+    let mut r = lower(LowerInput {
+        ast: &parsed.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file: "test",
+        module_name: None,
+        template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &parsed.doc_comments,
+        fold_mode: FoldMode::Auto,
     });
     r.diagnostics.extend(
         tc.diagnostics
@@ -47,6 +112,10 @@ pub(super) fn compile(src: &str) -> LowerResult {
 
 /// Compile `entry_src` as the root file, resolving its `import`s against the
 /// in-memory `deps` (each `(name, source)` is loaded as `name.ws`).
+/// `fold_mode: Auto` — none of the current cross-file tests depend on
+/// folding (they either use a runtime input to keep arithmetic real, or
+/// don't assert on gate shape at all), so this doubles as the harness for
+/// `imported_module_fold_is_inert`-style entry-vs-import annotation tests.
 pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResult {
     use crate::resolve::{MemLoader, resolve};
     let loader = MemLoader {
@@ -65,6 +134,7 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
+        fold_mode: FoldMode::Auto,
     })
 }
 

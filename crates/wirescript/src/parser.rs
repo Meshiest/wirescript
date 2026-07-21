@@ -157,6 +157,14 @@ struct ParsedAnnotations {
     nofold: Option<SourceRange>,
 }
 
+/// Result of [`Parser::collect_module_annotations`] — which module-level
+/// fold annotations (if any) opened the file.
+#[derive(Default)]
+struct ModuleAnnotations {
+    no_fold: bool,
+    fold: bool,
+}
+
 struct Parser<'a> {
     tokens: Vec<Token>,
     file: &'a str,
@@ -359,7 +367,7 @@ impl<'a> Parser<'a> {
         // line documents the module, not the first decl — so it doesn't merge
         // into it.
         let module_doc = self.collect_module_doc();
-        let module_no_fold = self.collect_module_nofold();
+        let module_anns = self.collect_module_annotations();
         while self.peek().kind != TokenKind::Eof {
             let doc = self.collect_doc_comment();
             let before = self.pos;
@@ -394,31 +402,89 @@ impl<'a> Parser<'a> {
             decls,
             range: self.make_range(start, end),
             module_doc,
-            no_fold: module_no_fold,
+            no_fold: module_anns.no_fold,
+            fold: module_anns.fold,
         }
     }
 
-    /// If the file opens (after any module doc) with `@nofold` separated from
-    /// the first declaration by a blank line, consume it and mark the whole
-    /// module no-fold — same blank-line rule as module doc comments. A
-    /// `@nofold` directly above a declaration is left alone (decl-scoped).
-    fn collect_module_nofold(&mut self) -> bool {
-        let t = self.peek();
-        if t.kind != TokenKind::Annotation || t.text != "nofold" {
-            return false;
+    /// If the file opens (after any module doc) with a run of `@nofold`/
+    /// `@fold` annotations — each alone on its own line — separated from the
+    /// first declaration by a blank line, consume them and mark the whole
+    /// module accordingly — same blank-line rule as module doc comments. A
+    /// `@nofold`/`@fold` directly above a declaration (no blank line
+    /// separating it from the rest of the file) is left alone: for
+    /// `@nofold` that's the pre-existing decl-scoped mechanism; `@fold` has
+    /// no decl-scoped meaning and falls through to `parse_annotations`'s
+    /// "unknown annotation" error. If both `@fold` and `@nofold` are present,
+    /// `@nofold` wins and a warning notes the conflict.
+    fn collect_module_annotations(&mut self) -> ModuleAnnotations {
+        let mut spans: Vec<(bool, Pos, Pos)> = Vec::new(); // (is_fold, start, end)
+        let mut cursor = 0usize;
+        loop {
+            let t = self.peek_at(cursor);
+            if t.kind != TokenKind::Annotation || (t.text != "nofold" && t.text != "fold") {
+                break;
+            }
+            let (t_start, t_end) = (t.start, t.end);
+            let is_fold = t.text == "fold";
+            let after = self.peek_at(cursor + 1).kind;
+            if after == TokenKind::Eof {
+                // The annotation is the very last token in the file.
+                spans.push((is_fold, t_start, t_end));
+                return self.finish_module_annotations(spans, cursor + 1);
+            }
+            if after != TokenKind::Newline {
+                // Not alone on its own line — decl-scoped, leave the whole
+                // run untouched (nothing consumed).
+                return ModuleAnnotations::default();
+            }
+            spans.push((is_fold, t_start, t_end));
+            let after2 = self.peek_at(cursor + 2).kind;
+            if after2 == TokenKind::Newline || after2 == TokenKind::Eof {
+                // Blank line (or EOF) follows this annotation's line — the
+                // run ends here and is module-level.
+                return self.finish_module_annotations(spans, cursor + 2);
+            }
+            // Otherwise another annotation may follow directly on the next
+            // line — keep scanning (the next loop iteration checks it).
+            cursor += 2;
         }
-        // Lookahead: annotation, newline, then another newline (blank) or EOF.
-        let n1 = self.peek_at(1).kind;
-        let n2 = self.peek_at(2).kind;
-        let module_level = (n1 == TokenKind::Newline
-            && (n2 == TokenKind::Newline || n2 == TokenKind::Eof))
-            || n1 == TokenKind::Eof;
-        if !module_level {
-            return false;
+        ModuleAnnotations::default()
+    }
+
+    /// Consume the `consumed` tokens making up a module-level `@nofold`/
+    /// `@fold` run, eat the trailing blank line(s), and fold `spans` into a
+    /// [`ModuleAnnotations`], warning if both annotations were present.
+    fn finish_module_annotations(
+        &mut self,
+        spans: Vec<(bool, Pos, Pos)>,
+        consumed: usize,
+    ) -> ModuleAnnotations {
+        for _ in 0..consumed {
+            self.advance();
         }
-        self.advance(); // @nofold
         self.eat_newlines();
-        true
+        let mut result = ModuleAnnotations::default();
+        let (mut first_start, mut last_end) = (None, None);
+        for (is_fold, start, end) in spans {
+            if first_start.is_none() {
+                first_start = Some(start);
+            }
+            last_end = Some(end);
+            if is_fold {
+                result.fold = true;
+            } else {
+                result.no_fold = true;
+            }
+        }
+        if result.fold && result.no_fold {
+            self.warn(
+                "module-level @fold and @nofold conflict; @nofold wins",
+                first_start.unwrap(),
+                last_end.unwrap(),
+            );
+        }
+        result
     }
 
     /// If the file opens with a `///` block that is separated from the first
@@ -762,14 +828,17 @@ impl<'a> Parser<'a> {
                             anns.side = Some((side, self.make_range(tok.start, tok.end)));
                         }
                     }
-                    None => self.error(
-                        format!(
-                            "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, or @nofold",
-                            w
-                        ),
-                        tok.start,
-                        tok.end,
-                    ),
+                    None => {
+                        let msg = if w == "fold" {
+                            "'@fold' is module-level only — put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)".to_string()
+                        } else {
+                            format!(
+                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, or @nofold",
+                                w
+                            )
+                        };
+                        self.error(msg, tok.start, tok.end);
+                    },
                 },
             }
             while self.check(TokenKind::Newline, None) {

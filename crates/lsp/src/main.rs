@@ -22,6 +22,7 @@ use wirescript::catalog::events::events;
 use wirescript::lexer::KEYWORDS;
 use wirescript::resolve::{resolve, FsLoader};
 use wirescript::typecheck::typecheck;
+use wirescript::FoldMode;
 
 struct CompileProgressNotification;
 impl tower_lsp::lsp_types::notification::Notification for CompileProgressNotification {
@@ -300,6 +301,7 @@ impl Backend {
                 source: &src_owned,
                 file: &file_owned,
                 module_name: None,
+                fold_mode: FoldMode::Auto,
             })
         })
         .await;
@@ -845,6 +847,7 @@ impl LanguageServer for Backend {
                     source: &src_owned,
                     file: &file_owned,
                     module_name: None,
+                    fold_mode: FoldMode::Auto,
                 },
                 wirescript::EmitOptions::default(),
                 progress_cb,

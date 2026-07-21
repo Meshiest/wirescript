@@ -458,9 +458,12 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
             decls,
             range: parsed.ast.range,
             module_doc: parsed.ast.module_doc.clone(),
-            // Module-level @nofold applies to the ENTRY file's compilation
-            // (imported decls lower as part of it and are covered too).
+            // Module-level @nofold/@fold apply to the ENTRY file's
+            // compilation (imported decls lower as part of it and are
+            // covered too) — an @fold/@nofold in an IMPORTED file is never
+            // consulted here, so it's inert.
             no_fold: parsed.ast.no_fold,
+            fold: parsed.ast.fold,
         },
         diagnostics,
         doc_comments,

@@ -99,6 +99,7 @@ pub fn wirescript_compile(source: String, module_name: Option<String>, files_jso
         module_name: module_name.as_deref(),
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
+        fold_mode: wirescript::FoldMode::Auto,
     });
 
     let errors: Vec<String> = resolved

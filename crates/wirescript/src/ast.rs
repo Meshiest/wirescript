@@ -17,6 +17,12 @@ pub struct Script {
     /// separated from the first declaration by a blank line — marks the whole
     /// module's lowered output `_nofold` (mirrors the module-doc rule).
     pub no_fold: bool,
+    /// A `@fold` at the very top of the file (after any module doc),
+    /// separated from the first declaration by a blank line — opts the whole
+    /// module into the certified constant-fold pass under `FoldMode::Auto`
+    /// (mirrors the module-doc rule; same mechanics as `no_fold` above). If
+    /// both `@fold` and `@nofold` are present, `no_fold` wins.
+    pub fold: bool,
 }
 
 // ---------- top-level declarations ----------

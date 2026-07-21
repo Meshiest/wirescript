@@ -14,12 +14,13 @@ out result = f.r\n";
 fn label_overrides_reach_the_serialized_labels() {
     use brdb::IntoReader;
     use brdb::schema::BrdbValue;
-    use wirescript::CompileInput;
+    use wirescript::{CompileInput, FoldMode};
 
     let cr = wirescript::compile::compile(CompileInput {
         source: SRC,
         file: "open_chips.ws",
         module_name: None,
+        fold_mode: FoldMode::Auto,
     })
     .expect("should compile to brz");
     let path = std::env::temp_dir().join("ws_open_chips_test.brz");

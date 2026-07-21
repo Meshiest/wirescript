@@ -54,6 +54,7 @@ wire_ports! {
     BDetectPhysics = "bDetectPhysics",
     BDetectMap = "bDetectMap",
     BIgnoreOwningGrid = "bIgnoreOwningGrid",
+    AdditionalIgnoredEntities = "AdditionalIgnoredEntities",
     IndexA = "IndexA",
     IndexB = "IndexB",
     Size = "Size",

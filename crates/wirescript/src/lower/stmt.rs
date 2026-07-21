@@ -489,8 +489,13 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     }
 
     // Constant-fold: if the condition is a literal bool, skip the Branch
-    // gate entirely and just emit the taken branch.
-    if let Expr::BoolLit { value, .. } = &s.cond {
+    // gate entirely and just emit the taken branch. Only when NOT under
+    // `@nofold` — that annotation promises "nothing folded or elided", so a
+    // `@nofold`-scoped `if true {...}` must still lower a real Branch (fall
+    // through to the general path below).
+    if ctx.nofold_depth == 0
+        && let Expr::BoolLit { value, .. } = &s.cond
+    {
         ctx.scope.push(crate::scope::ScopeTag::BLOCK);
         if *value {
             lower_block(ctx, &s.then_block);
@@ -500,8 +505,10 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
         ctx.scope.pop();
         return;
     }
-    // Also fold idents bound to literal bools (e.g. inline mod params)
-    if let Expr::Ident { name, .. } = &s.cond
+    // Also fold idents bound to literal bools (e.g. inline mod params) —
+    // same `@nofold` guard as above.
+    if ctx.nofold_depth == 0
+        && let Expr::Ident { name, .. } = &s.cond
         && let Some(Binding::Local(local)) = ctx.scope.get(name).cloned()
         && let Some(node) = ctx.builder.module.nodes.get(&local.port.node_id)
         && node.gate_class == gc::LITERAL

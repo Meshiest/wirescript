@@ -27,6 +27,7 @@ fn main() {
             module_name: None,
             template_cache: cache.clone(),
             doc_comments: &resolved.doc_comments,
+            fold_mode: wirescript::lower::FoldMode::Auto,
         });
         drop(_profiler);
         eprintln!("lowered: {} nodes", lowered.module.nodes.len());

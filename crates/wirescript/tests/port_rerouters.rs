@@ -3,7 +3,7 @@
 //! wirescript SDK docs/superpowers/specs/2026-07-12-port-side-rerouters-design.md).
 
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, compile_to_world};
+use wirescript::{CompileInput, FoldMode, compile_to_world};
 
 fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
     c.component_type()
@@ -29,6 +29,7 @@ fn world() -> brdb::World {
             source: SRC,
             file: "pins.ws",
             module_name: None,
+            fold_mode: FoldMode::Auto,
         },
         EmitOptions::default(),
     )
@@ -150,6 +151,7 @@ fn unannotated_ports_add_no_outer_bricks() {
             source: "in go: exec\nout score = 1\n",
             file: "plain.ws",
             module_name: None,
+            fold_mode: FoldMode::Auto,
         },
         EmitOptions::default(),
     )
@@ -170,7 +172,7 @@ const BOTTOM_SRC: &str = "@bottom in reset: exec\n\
 
 fn bottom_world() -> brdb::World {
     compile_to_world(
-        CompileInput { source: BOTTOM_SRC, file: "bottom.ws", module_name: None },
+        CompileInput { source: BOTTOM_SRC, file: "bottom.ws", module_name: None, fold_mode: FoldMode::Auto },
         EmitOptions::default(),
     )
     .expect("should compile")

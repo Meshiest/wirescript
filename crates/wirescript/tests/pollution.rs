@@ -15,7 +15,7 @@ use wirescript::{
     emit::{emit_brz, EmitOptions},
     ir::{Module, NodeId},
     layout::layout,
-    lower::{lower, LowerInput},
+    lower::{lower, FoldMode, LowerInput},
     resolve::{FsLoader, resolve as ws_resolve},
     template_cache::TemplateCache,
     typecheck::typecheck,
@@ -49,6 +49,7 @@ fn lower_source(src: &str) -> wirescript::lower::LowerResult {
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
+        fold_mode: FoldMode::Auto,
     })
 }
 
@@ -280,6 +281,7 @@ out total = r1 + r2 + r3 + r4 + r5
         source: src,
         file: "test.ws",
         module_name: None,
+        fold_mode: FoldMode::Auto,
     });
     match result {
         Ok(cr) => {

@@ -2,7 +2,7 @@
 //! the wall layout instead of hovering above its shell brick.
 
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, compile_to_world};
+use wirescript::{CompileInput, FoldMode, compile_to_world};
 
 const SRC: &str = "\
 in tick: exec\n\
@@ -22,6 +22,7 @@ fn grids_are_upright_and_stacked() {
             source: SRC,
             file: "wall.ws",
             module_name: None,
+            fold_mode: FoldMode::Auto,
         },
         EmitOptions::default(),
     )
@@ -74,6 +75,7 @@ out total = a.n\n";
             source: src,
             file: "wall.ws",
             module_name: None,
+            fold_mode: FoldMode::Auto,
         },
         EmitOptions::default(),
     )
