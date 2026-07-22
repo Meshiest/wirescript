@@ -140,10 +140,27 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                 // inline-mod call binds the caller's record from this (see
                 // `pending_return_record`) rather than from a single value port.
                 ctx.pending_return_record = Some(lower_record_lit(ctx, fields));
+            } else if let Some(expr) = value
+                && let Some(Binding::Record(fields)) = resolve_field_chain(ctx, expr).cloned()
+            {
+                // `return r` / `return r.sub` where the value is a record
+                // binding: forward its field map — a record has no single
+                // value port to wire to the output node.
+                ctx.pending_return_record = Some(fields);
             } else if let Some(expr) = value {
+                // Clear any leftover inline-mod record so only THIS
+                // expression's call can set it.
+                ctx.pending_inline_record = None;
                 let val_port = lower_expr(ctx, expr);
-                let ret_var = ctx.mod_return_var.clone();
-                if let Some(ref var_rec) = ret_var {
+                if matches!(expr, Expr::Call { .. })
+                    && let Some(record) = ctx.pending_inline_record.take()
+                {
+                    // `return make(x)` where `make` returns a record: the call
+                    // stashed a field→source map (its value "port" is a
+                    // placeholder, not a real node). Forward the record to the
+                    // caller instead of wiring the placeholder.
+                    ctx.pending_return_record = Some(record);
+                } else if let Some(ref var_rec) = ctx.mod_return_var.clone() {
                     // Multi-return: Var_Set to the return var
                     if let Some(exec) = ctx.current_exec {
                         let inner = var_rec.inner_type.clone();

@@ -920,3 +920,97 @@ fn destructuring_an_unknown_field_errors_with_a_suggestion() {
         "expected a suggestion naming the real field, got {msgs:?}"
     );
 }
+
+/// A mod that returns another mod's record-typed call result must forward the
+/// record fields to its caller. The bug: `return make(x)` fell into the scalar
+/// return path, whose value port for a record-returning call is the
+/// `NodeId(0)` placeholder — the caller ended up wired to a phantom node that
+/// emit later dropped (`UnknownWireNode("n0")`).
+#[test]
+fn mod_returning_record_call_forwards_fields() {
+    let src = "type Pair = { a: float, b: float }\n\
+               mod make(x: float) -> Pair {\n\
+               let a = x\n\
+               let b = x\n\
+               return { a, b }\n\
+               }\n\
+               mod wrap(x: float) -> Pair {\n\
+               return make(x)\n\
+               }\n\
+               in v: float\n\
+               let r = wrap(v)\n\
+               out ra = r.a\n\
+               out rb = r.b";
+    let r = compile(src);
+    assert_no_errors(&r);
+    for w in &r.module.wires {
+        assert!(
+            r.module.nodes.contains_key(&w.source.node_id),
+            "wire source references a nonexistent node: {:?} -> {:?}",
+            w.source,
+            w.target
+        );
+        assert!(
+            r.module.nodes.contains_key(&w.target.node_id),
+            "wire target references a nonexistent node: {:?} -> {:?}",
+            w.source,
+            w.target
+        );
+    }
+    // Both outputs must trace back to the module input, same as calling
+    // `make` directly would.
+    let input = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    for out_id in &r.module.outputs {
+        let driven_by_input = r
+            .module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == *out_id && w.source.node_id == input);
+        assert!(
+            driven_by_input,
+            "output {out_id} must be driven by the input port"
+        );
+    }
+}
+
+/// Same pass-through, but via a local: `let r = make(x); return r`. The
+/// record binding must survive the return, not degrade to a phantom port.
+#[test]
+fn mod_returning_record_local_forwards_fields() {
+    let src = "type Pair = { a: float, b: float }\n\
+               mod make(x: float) -> Pair {\n\
+               let a = x\n\
+               let b = x\n\
+               return { a, b }\n\
+               }\n\
+               mod wrap(x: float) -> Pair {\n\
+               let r = make(x)\n\
+               return r\n\
+               }\n\
+               in v: float\n\
+               let r = wrap(v)\n\
+               out ra = r.a\n\
+               out rb = r.b";
+    let r = compile(src);
+    assert_no_errors(&r);
+    for w in &r.module.wires {
+        assert!(
+            r.module.nodes.contains_key(&w.source.node_id),
+            "wire source references a nonexistent node: {:?} -> {:?}",
+            w.source,
+            w.target
+        );
+    }
+    let input = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    for out_id in &r.module.outputs {
+        let driven_by_input = r
+            .module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == *out_id && w.source.node_id == input);
+        assert!(
+            driven_by_input,
+            "output {out_id} must be driven by the input port"
+        );
+    }
+}

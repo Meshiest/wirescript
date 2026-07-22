@@ -9,6 +9,7 @@
   layout. `Opaque(...)` and `@nofold` exempt code. The pass is opt-in while it
   stabilizes: enable it with a module-level `@fold` (or `--fold`); `--no-fold`
   (or a module-level `@nofold`) disables it and always wins over `@fold`.
+- **Fixed returning a record through another `mod`** - `return f(x)` or `return r` with a record value wired the caller to a phantom node whose wires were silently dropped at emit. The record's fields now forward to the caller.
 
 ## 0.17.1
 
