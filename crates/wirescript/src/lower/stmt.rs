@@ -691,6 +691,12 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
         if let Some(out) = ctx.lookup_output(&s.name).cloned() {
             let value_port = lower_expr(ctx, value_expr);
             ctx.connect(value_port, out.node_id.port(WirePort::RerInput));
+            // A value output's RerInput carries the value, and the value update is
+            // itself the signal -- do NOT also queue the exec onto that same
+            // RerInput (double-driving it is a load-time wire fan-in). Lowering the
+            // value above already advanced current_exec, so following statements
+            // (e.g. a subsequent `emit`) are unaffected.
+            return;
         } else if let Some(ref key) = sig_key
             && ctx.current_exec.is_some()
         {

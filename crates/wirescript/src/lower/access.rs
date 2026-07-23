@@ -486,6 +486,21 @@ pub(super) fn lower_array_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
+    // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
+    // of the surrounding exec chain, so a read like `lut.get(i, exec = i + 1)`
+    // works in a PURE context (e.g. an output binding). The get self-fires
+    // whenever the index changes (i + 1 is never the no-fire value 0). The op is a
+    // leaf in that case, so restore the caller's exec context afterward rather than
+    // advancing it.
+    let exec_arg: Option<&Expr> = args.iter().find_map(|a| match a {
+        CallArg::Named { name, value } if name == "exec" => Some(value),
+        _ => None,
+    });
+    let saved_exec = ctx.current_exec;
+    if let Some(exec_expr) = exec_arg {
+        let src = lower_expr(ctx, exec_expr);
+        ctx.current_exec = Some(src);
+    }
     let current_exec = match ctx.current_exec {
         Some(e) => e,
         None => return synthesise_unsupported(ctx, e),
@@ -493,7 +508,7 @@ pub(super) fn lower_array_method(
     // Every method handled here must also appear in the canonical
     // `catalog::arrays::ARRAY_METHODS` table (which drives editor completion /
     // hover); the `every_canonical_array_method_lowers` test enforces it.
-    match method {
+    let method_result = match method {
         "push" => {
             let val = match args.first() {
                 Some(CallArg::Positional(v)) => lower_expr(ctx, v),
@@ -889,7 +904,13 @@ pub(super) fn lower_array_method(
             )
         }
         _ => synthesise_unsupported(ctx, e),
+    };
+    // An explicit `exec =` trigger makes this op a leaf: restore the caller's exec
+    // context so the surrounding (possibly pure) lowering is unaffected.
+    if exec_arg.is_some() {
+        ctx.current_exec = saved_exec;
     }
+    method_result
 }
 
 pub(super) fn lower_array_set(

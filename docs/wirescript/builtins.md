@@ -310,6 +310,16 @@ exec gates), so call them inside `on` handlers / mods. Declare arrays with
 Element access uses bracket syntax: `arr[i]` reads (with `.value` / `.bOutOfBounds`),
 `arr[i] = x` writes.
 
+**`exec =`.** Any exec-gate call — an array method, a builtin, or a mod/chip call —
+accepts an `exec = <trigger>` argument that drives its exec input, firing the gate each
+time the trigger's value changes. A per-index, always-nonzero trigger like `index + 1`
+turns an array into a single-gate lookup table read straight from a pure binding:
+
+```wirescript
+array lut: color[] = [ /* ...constant entries... */ ]
+out c: color = lut.get(i, exec = i + 1).Value
+```
+
 ```wirescript
 array scores: int[]
 on RoundEnd {

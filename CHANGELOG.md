@@ -2,6 +2,8 @@
 
 ## 0.18.0
 
+- **`exec =` on any exec call** - an exec-gate call (array method, builtin, mod/chip) can run off an explicit `exec = <trigger>`, e.g. an array read in a pure binding: `lut.get(i, exec = i + 1)`.
+- **Fixed `emit output = value` fan-in** - it wired both the value and the exec to the output's input pin, failing to load; now just the value.
 - **Certified constant folding** - pure gates whose inputs are known constants are
   evaluated at compile time against the in-game-certified semantics table,
   constant-selector `Select`s short-circuit, constant-condition branches
