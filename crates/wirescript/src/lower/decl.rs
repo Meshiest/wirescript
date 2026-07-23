@@ -143,8 +143,10 @@ pub(super) fn lower_buffer_body(ctx: &mut LowerCtx, d: &BufferDecl) {
         node.chain_id = Some(chain);
     }
     let rhs_port = lower_expr(ctx, &d.init);
-    ctx.builder
-        .connect(rhs_port, rec.node_id.port(WirePort::Input));
+    // Through `ctx.connect` (not `builder.connect`) so the string → bool
+    // coercion choke point sees this wire — `buffer buf: bool = s` must get
+    // its `!= ""` compare like every other bool-typed destination.
+    ctx.connect(rhs_port, rec.node_id.port(WirePort::Input));
     ctx.builder.current_chain_id = saved_chain;
 }
 

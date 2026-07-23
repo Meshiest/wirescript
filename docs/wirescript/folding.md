@@ -64,6 +64,76 @@ either side certified `true` folds to `true` -- even when the other side is unkn
 compile time. This is the only case where a non-constant operand still lets a gate
 fold, and it draws solely from the table's whitelisted rules (nothing derived).
 
+## Strings and composite values (wave 2)
+
+Folding now also covers `string` operators/methods and `vector`/`rotator`/`color`/`quat`
+math and constructors -- certified the same way as everything else: an in-game probe
+records the real output, and only a (gate class, input-variant) pair the probe actually
+observed is eligible to fold.
+
+**Strings.** `..` concatenation, `Length`/`Contains`/`StartsWith`/`EndsWith`/`ToLower`/
+`ToUpper`/`Trim`/`Substring`/`Find`/`Replace`/`ParseInt`/`ParseNumber`, and
+`${...}`-interpolated templates (`FormatText`) all fold when every operand is a known
+constant.
+
+```wirescript
+let s = "hello".ToUpper() .. "!"     // folds to the literal "HELLO!"
+let n = "  42  ".Trim().Length()     // folds to the literal 2
+```
+
+Interpolation folding is held to a **render-exactness guarantee**: the folded literal
+text must be byte-identical to what `FormatText` would print in-game for the same
+values, not just numerically equivalent. The certified render law: ints comma-group
+every 3 digits from `1,000` up; floats round to 3 decimals (ties to even), comma-group
+their integer part, and trim trailing fractional zeros (and a bare trailing `.`); bools
+print `1`/`0`; vectors print `X=%.3f Y=%.3f Z=%.3f`. `..` concatenation's own operand
+stringification differs on one point -- a bool operand prints `true`/`false`, not `1`/`0`
+-- matching the game's generic to-string conversion there instead of `FormatText`'s.
+
+**Vector/rotation/color/quaternion math.** `Vec(...)` construction, component-wise and
+scalar-broadcast `+ - * /` on vectors, `.Scale()`/`.Dot()`/`.Cross()`, and `Quat(...)`
+construction all fold when every component is known.
+
+```wirescript
+let v = Vec(1.0, 2.0, 0.0) + Vec(0.0, 0.0, 3.0) * 2.0   // folds to Vec(1.0, 2.0, 6.0)
+```
+
+`Quat(...)` and the 3-argument (RGB, no alpha) form of `Color(...)` fold too, but their
+own certification is **transitive**, not direct: a quaternion or an RGB color never
+renders through `FormatText` (its probe case prints blank), so nothing directly proves
+the constructor packs its fields correctly. Instead, each is certified through a
+*different*, value-bearing gate that consumes it and produces an observable result --
+`RotateVector` and a quaternion dot product for `Quat(...)`, hex-string conversion for
+3-argument `Color(...)`. A wrong field order or a transposed component would visibly
+diverge those gates' certified outputs, so their exact replay certifies the constructor
+by proxy. The 4-argument (alpha-carrying) form of `Color(...)` has no such transitive
+proof -- alpha never survives into any value-bearing consumer the probe covers -- and
+does not fold.
+
+**Refusals specific to this family:**
+
+- Any **non-ASCII** string operand or result -- the certified behavior was only ever
+  probed with ASCII text, so it never folds regardless of which model (character count
+  vs. UTF-16 code units) the game actually uses.
+- A string result longer than **8,192 characters**.
+- Any float operand whose magnitude exceeds **`1e15`** in a string/interpolation
+  context -- the game cannot print a float that large at all (the console line is
+  silently dropped), so folding refuses past that bound rather than bake unreproducible
+  text. `1e15` itself is certified to print fine; the bound is exclusive.
+- A handful of composite-constructor gates whose *only* table evidence is a blank
+  render and that have no transitive proof either (unlike `Quat(...)`/3-argument
+  `Color(...)` above): a bare rotator constructor, the sRGB-byte and hex-string color
+  constructors, and rotation inversion. These hard-refuse regardless of how determined
+  their inputs are, until a future probe wave chains them through a value-bearing gate.
+- A fixed list of gates the probe recorded but deliberately never folds: vector
+  magnitude/normalize/distance, spherical interpolation, axis-angle construction,
+  angle- and rotation-between queries, direction/rotation conversions, and color
+  blending. Their math is meaningfully harder to reproduce exactly (square roots,
+  trig, arbitrary-axis construction) and wasn't certified for folding.
+
+Per-build recertification is unchanged from the workflow below -- these families ride
+the same probe/table/replay/verifier loop as everything else.
+
 ## What never folds (barriers)
 
 These are always treated as unknown, and folding never elides or sees through them:

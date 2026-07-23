@@ -924,15 +924,28 @@ pub(super) fn lower_array_set(
         Some(e) => e,
         None => return,
     };
-    let (array_ref, var_name) = if let Expr::Ident { name, .. } = obj {
+    // Element type rides along so the `Value` port below is declared with
+    // it (a `VarRecord.inner_type` for arrays IS the element type) — a
+    // `Type::Any` Value port would hide the string → bool coercion from the
+    // `ctx.connect` choke point, silently writing a raw String into a
+    // `bool[]` slot.
+    let (array_ref, var_name, elem_ty) = if let Expr::Ident { name, .. } = obj {
         if let Some(var_rec) = ctx.lookup_var(name).cloned() {
             if var_rec.storage == VarStorage::Array {
-                (var_rec.node_id.port(WirePort::ArrayVarRef), name.clone())
+                (
+                    var_rec.node_id.port(WirePort::ArrayVarRef),
+                    name.clone(),
+                    var_rec.inner_type.clone(),
+                )
             } else {
                 return;
             }
         } else if let Some(inp) = ctx.lookup_input(name).cloned() {
-            (inp.node_id.port(WirePort::RerOutput), name.clone())
+            let elem = match &inp.ty {
+                Type::Array(e) => e.as_ref().clone(),
+                _ => Type::Any,
+            };
+            (inp.node_id.port(WirePort::RerOutput), name.clone(), elem)
         } else {
             return;
         }
@@ -940,7 +953,11 @@ pub(super) fn lower_array_set(
         // obj is a record field chain resolving to an array var
         if let Binding::Var(var_rec) = &binding {
             if var_rec.storage == VarStorage::Array {
-                (var_rec.node_id.port(WirePort::ArrayVarRef), "rec_arr".to_string())
+                (
+                    var_rec.node_id.port(WirePort::ArrayVarRef),
+                    "rec_arr".to_string(),
+                    var_rec.inner_type.clone(),
+                )
             } else {
                 return;
             }
@@ -972,7 +989,7 @@ pub(super) fn lower_array_set(
                 },
                 PortSpec {
                     name: *sym::VALUE,
-                    ty: Type::Any,
+                    ty: elem_ty,
                 },
             ],
             outputs: vec![

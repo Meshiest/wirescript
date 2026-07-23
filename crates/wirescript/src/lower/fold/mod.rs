@@ -23,10 +23,13 @@ pub(crate) mod table;
 use std::sync::Arc;
 
 use crate::collections::{HashMap, HashSet};
-use crate::intern::{resolve, sym};
+use crate::diagnostic::SourceRange;
+use crate::intern::{intern_static, resolve, sym};
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
-use crate::ir::{GateIO, Literal, Module, NodeId, NodeKind, PortRef, PortSpec, Type, Wire};
+use crate::ir::{
+    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, ScopeId, Type, Wire,
+};
 use eval::Value;
 use table::{AnnihilatorKind, CertifiedTable, InVariant};
 
@@ -38,10 +41,29 @@ struct Info {
     /// `properties` carries the `_nofold` pseudo-property — a barrier both
     /// to folding this node AND to propagating a known value through it.
     nofold: bool,
-    /// The node's own constant value, when it's already a `_Literal` (and
-    /// that literal is a certified scalar variant — vector/array/etc. are
-    /// never propagated by this pass).
+    /// The node's own constant value, when it's already a `_Literal` (any
+    /// certified variant, scalar or composite — `Value::from_literal`
+    /// handles Vector/Rotator/Quat/Color/LinearColor uniformly, so a
+    /// composite `_Literal` produced by AST-level `Vec(...)`-on-literals
+    /// folding, OR by THIS pass's own `BecomeLiteral` action on a prior
+    /// fixpoint round, seeds `known` exactly like a scalar one).
     lit: Option<Value>,
+    /// `STRING_FORMAT_TEXT`'s `FormatString` property (the template text) —
+    /// `None` for every other gate class, and also `None` for a FormatText
+    /// node whose "format" argument was itself non-literal (wired as a real
+    /// port instead of inlined as a property — never foldable, see
+    /// `try_resolve_format_text`).
+    format_string: Option<String>,
+    /// The node's own raw properties — needed by `resolve_data_input` to
+    /// read a call-argument literal that `lower/call.rs::
+    /// literal_for_property_port` baked directly onto THIS node instead of
+    /// wiring a separate `_Literal`/`Make*` source (the common shape for a
+    /// composite, and some scalar, argument to a builtin CALL like
+    /// `Dot(...)`/`ScaleVec(...)` — never used by `lower_binop`, which
+    /// always wires a real literal source, so ordinary `a + b` expressions
+    /// don't need this). An `Arc` clone, not a copy — cheap, mirrors
+    /// `Node.properties`'s own representation.
+    properties: Arc<crate::collections::HashMap<crate::intern::Sym, Literal>>,
     /// Data (non-`Exec`) input ports, in `ports.inputs` declaration order —
     /// exactly the slice `eval` expects.
     data_inputs: Vec<WirePort>,
@@ -49,6 +71,15 @@ struct Info {
     /// boundary) always has exactly one output port; anything else (Branch,
     /// Swap, multi-output gates) is left alone by this pass.
     single_output: bool,
+    /// Placement metadata `cleanup_boundary_feeds`'s Rule B needs when it
+    /// mints a fresh `_Literal` for a rewired boundary consumer: the new
+    /// node is placed like the CONSUMER it feeds (same chip/row/scope), not
+    /// like the boundary node it replaces as a source, so it renders where
+    /// it's read rather than off in the chip the value originated from.
+    chip_id: Option<NodeId>,
+    chain_id: Option<u32>,
+    scope_id: ScopeId,
+    source_range: SourceRange,
 }
 
 /// Resolution state of one data input port, from a single read-only pass
@@ -163,12 +194,38 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
         }
     }
 
-    if plan.is_empty() {
+    // `plan` alone under-counts "did anything resolve": a chip boundary
+    // node's pass-through resolution (`try_resolve`'s MICROCHIP_INPUT/
+    // MICROCHIP_OUTPUT case) and an already-existing `_Literal`/portless-
+    // string-literal's own resolution (`info.lit.clone()`) both populate
+    // `known` WITHOUT ever touching `plan` — e.g. `chip Inc(v: int) -> (r:
+    // int) { out r = v }` called as `Inc(4)` (a bare-literal argument, no
+    // arithmetic anywhere) resolves `v` and `r` end to end without a single
+    // `BecomeLiteral`/`ShortCircuit`/`Truncate` action. `cleanup_boundary_feeds`
+    // below needs exactly that case (a Known boundary node whose feed is
+    // otherwise unreachable through `plan`), so the early-out must cover
+    // both maps, not just `plan`.
+    if plan.is_empty() && known.is_empty() {
         return;
     }
 
     // ---------------- apply ----------------
     apply(root, &plan);
+
+    // ---------------- boundary-delivery cleanup ----------------
+    // Two structural rules over chip-instance boundary nodes
+    // (`MicrochipInput`/`MicrochipOutput`) that neither the fixpoint above
+    // nor the sweeps below ever clean up on their own, because a boundary
+    // node is NEVER itself a planned node — it's the chip's visual port
+    // marker, kept in place even once a Known value has propagated straight
+    // through it (see the MICROCHIP_INPUT/MICROCHIP_OUTPUT case in
+    // `try_resolve`). Run before the sweeps (not after) so whatever either
+    // rule orphans is still there to be collected by `sweep_dead_pure`/
+    // `sweep_dead_exec` in the SAME pass, instead of surviving all the way
+    // to `materialize_unfoldable_constants` (a separate call, made later in
+    // `lower/mod.rs`, well outside this function) as a pointless
+    // `MathAdd(n, 0)`-style carrier feeding a boundary port nobody reads.
+    cleanup_boundary_feeds(root, &known, &infos);
 
     // ---------------- cleanup sweeps ----------------
     // Order matters: a truncated Branch can strand its untaken side (exec
@@ -208,6 +265,18 @@ fn collect_infos(module: &Module, infos: &mut HashMap<NodeId, Info>) {
         } else {
             None
         };
+        // `STRING_FORMAT_TEXT`'s template lives in the `FormatString`
+        // property (`lower/ops.rs::build_format_text` / the `Fmt(...)`
+        // builtin's literal-argument inlining — both use the same property
+        // name), never as a wire input port — see `try_resolve_format_text`.
+        let format_string = if n.gate_class == gc::STRING_FORMAT_TEXT {
+            match n.properties.get(&intern_static("FormatString")) {
+                Some(Literal::String(s)) => Some(s.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let data_inputs: Vec<WirePort> = n
             .ports
             .inputs
@@ -223,8 +292,14 @@ fn collect_infos(module: &Module, infos: &mut HashMap<NodeId, Info>) {
                 kind: n.kind,
                 nofold,
                 lit,
+                format_string,
+                properties: n.properties.clone(),
                 data_inputs,
                 single_output,
+                chip_id: n.chip_id,
+                chain_id: n.chain_id,
+                scope_id: n.scope_id,
+                source_range: n.source_range.clone(),
             },
         );
     }
@@ -259,6 +334,49 @@ fn resolve_input(
     }
 }
 
+/// Like `resolve_input`, but for a port that may ALSO arrive as a baked,
+/// wireless node property instead of a wire: an ordinary data input, a
+/// Select/Branch condition, and a FormatText substitution slot are ALL
+/// call-argument ports subject to the exact same baking (`Select`'s `cond`
+/// and `Fmt`'s `a..g` are declared `CallParam`s exactly like any other
+/// builtin's, so a bare-literal argument to any of them inlines the same
+/// way — see `resolve_condition` and `try_resolve_format_text`, both of
+/// which route through here too). An unwired port additionally falls back
+/// to the node's own baked properties
+/// (`lower/call.rs::literal_for_property_port`'s inlining — a composite, or
+/// some scalar, CALL argument the emitted gate's data struct can carry
+/// directly, with no separate `_Literal`/`Make*` source or wire at all).
+/// Without this fallback, any certified gate reached via a CALL (as opposed
+/// to a binary operator — `lower_binop` always wires a real literal source,
+/// never bakes one) with such an argument is invisible to `known` and can
+/// never fold, no matter how determined its value actually is — confirmed
+/// via the `--fold-diff` fuzz harness (`Dot(Vec(1,0,0), Vec(0,1,0))` alone,
+/// no chip/opaque involved, reproduces it) and fixed here rather than in the
+/// harness, since the harness's OWN independent predictor (`predict()` in
+/// `examples/fuzz_programs.rs`) already implements this exact fallback —
+/// this driver was the one side actually missing it. (A follow-up review
+/// pass found `resolve_condition`/`try_resolve_format_text` still on plain
+/// `resolve_input` at the time — `Select(true, a, b)`'s baked `true` and
+/// `Fmt(...)`'s baked slot arguments were the same gap, just not yet routed
+/// through here.)
+fn resolve_data_input(
+    target: NodeId,
+    port: WirePort,
+    in_wires: &HashMap<(NodeId, WirePort), Vec<PortRef>>,
+    known: &HashMap<NodeId, Value>,
+    properties: &HashMap<crate::intern::Sym, Literal>,
+) -> Resolved {
+    match resolve_input(target, port, in_wires, known) {
+        Resolved::Unwired => {
+            match properties.get(&intern_static(port.as_str())).and_then(Value::from_literal) {
+                Some(v) => Resolved::Known(v),
+                None => Resolved::Unwired,
+            }
+        }
+        other => other,
+    }
+}
+
 /// The single wire source feeding `port` on `target`, iff there's exactly
 /// one (zero = unwired, refuse; >1 = fan-in, refuse) — used by Select to
 /// find its chosen data source without requiring that source's VALUE to be
@@ -277,16 +395,21 @@ fn single_wire_source(
 /// Certified truthiness signature check + truthy/falsy resolution shared by
 /// Select's `BSelectB` and Branch's `BCond`. Returns `None` if the condition
 /// isn't resolvable yet (retry later in the fixpoint) or its signature was
-/// never certified for this gate (permanent refusal).
+/// never certified for this gate (permanent refusal). Routes through
+/// `resolve_data_input` (not plain `resolve_input`) so a bare-literal
+/// condition argument — `Select(true, a, b)`'s `true` bakes onto `BSelectB`
+/// exactly like any other call-argument literal, see that function's doc —
+/// resolves instead of silently reading back as `Unwired`.
 fn resolve_condition(
     id: NodeId,
     cond_port: WirePort,
     gate_class: &'static str,
     in_wires: &HashMap<(NodeId, WirePort), Vec<PortRef>>,
     known: &HashMap<NodeId, Value>,
+    properties: &HashMap<crate::intern::Sym, Literal>,
     table: &CertifiedTable,
 ) -> Option<bool> {
-    let cond_val: Option<Value> = match resolve_input(id, cond_port, in_wires, known) {
+    let cond_val: Option<Value> = match resolve_data_input(id, cond_port, in_wires, known, properties) {
         Resolved::Unresolved => return None,
         Resolved::Unwired => None,
         Resolved::Known(v) => Some(v),
@@ -309,10 +432,12 @@ fn try_resolve_select(
     id: NodeId,
     in_wires: &HashMap<(NodeId, WirePort), Vec<PortRef>>,
     known: &HashMap<NodeId, Value>,
+    properties: &HashMap<crate::intern::Sym, Literal>,
     table: &CertifiedTable,
     plan: &mut HashMap<NodeId, PlanAction>,
 ) -> Option<Value> {
-    let truthy = resolve_condition(id, WirePort::BSelectB, gc::SELECT, in_wires, known, table)?;
+    let truthy =
+        resolve_condition(id, WirePort::BSelectB, gc::SELECT, in_wires, known, properties, table)?;
     let chosen_port = if truthy { WirePort::InputB } else { WirePort::InputA };
     let chosen_src = single_wire_source(id, chosen_port, in_wires)?;
     plan.insert(id, PlanAction::ShortCircuit { chosen_src });
@@ -330,16 +455,93 @@ fn try_resolve_branch(
     in_wires: &HashMap<(NodeId, WirePort), Vec<PortRef>>,
     out_wires: &HashMap<(NodeId, WirePort), Vec<PortRef>>,
     known: &HashMap<NodeId, Value>,
+    properties: &HashMap<crate::intern::Sym, Literal>,
     table: &CertifiedTable,
     plan: &mut HashMap<NodeId, PlanAction>,
 ) {
-    let Some(truthy) = resolve_condition(id, WirePort::BCond, gc::BRANCH, in_wires, known, table)
+    let Some(truthy) =
+        resolve_condition(id, WirePort::BCond, gc::BRANCH, in_wires, known, properties, table)
     else {
         return;
     };
     let taken_port = if truthy { WirePort::ExecOutA } else { WirePort::ExecOutB };
     let taken_targets = out_wires.get(&(id, taken_port)).cloned().unwrap_or_default();
     plan.insert(id, PlanAction::Truncate { taken_targets });
+}
+
+/// `FormatText`'s substitution slots, `InputA..InputG`, in template-index
+/// order (`{0}`..`{6}`) — mirrors `lower/ops.rs::FORMAT_SLOTS`.
+const FORMAT_SLOTS: [WirePort; 7] = [
+    WirePort::InputA, WirePort::InputB, WirePort::InputC,
+    WirePort::InputD, WirePort::InputE, WirePort::InputF,
+    WirePort::InputG,
+];
+
+/// `FormatText`: foldable when the node carries a `FormatString` property
+/// (always true for `${...}`-interpolation lowering; a `Fmt(...)` call whose
+/// template argument is itself non-literal wires `FormatString` as a real
+/// port instead and carries no property here — never foldable) AND every
+/// substituted slot (wired OR baked — see `resolve_data_input`'s doc: `Fmt`'s
+/// `a..g` are ordinary `CallParam`s, so a bare-literal argument bakes onto
+/// InputA..InputG with no wire at all, same as any other builtin CALL
+/// argument) resolves to a known value. A slot that's neither wired nor
+/// baked (no argument passed for it at all) does NOT block the fold —
+/// certified by the probed `fmtUnwiredSlot` case (`Fmt("{0}{1}", Opaque(1))`
+/// folds fine, rendering "0" for the unbound slot 1 — see
+/// `eval::format_text`'s own unwired/out-of-range handling), so it's passed
+/// through as `None` exactly like any other gate's unwired data input. A
+/// wired-but-not-yet-known (or fan-in) slot returns `Resolved::Unresolved`,
+/// which refuses the whole node for this round — the fixpoint retries it
+/// once that source resolves.
+///
+/// Requires at least one slot to be genuinely SUBSTITUTED — wired OR baked,
+/// not just declared (`Fmt(...)`'s optional `a..g` params are always
+/// declared ports regardless of whether an argument was passed, see
+/// `lower/call.rs::lower_builtin_call`) — before even attempting the fold. A
+/// template with NO substituted slots at all (`Fmt("literal{a}brace")`, no
+/// operands passed) is technically fully determined by the certified render
+/// law too, but is left alone here deliberately: `probes/gate_semantics.ws`'s
+/// `fmtLiteralBrace` is exactly this shape with zero `Opaque(...)` armor
+/// (every OTHER FormatText probe case wires its substitution operand(s)
+/// through `Opaque`, which never resolves — see the probe's own comment on
+/// why), so folding a zero-substituted-slot template is the one way this
+/// pass could visibly diverge `tests/fold_invariants.rs`'s structural-no-op
+/// guarantee without ever "seeing through" an `Opaque` value. A BAKED slot
+/// still satisfies this guard (unlike the zero-slot case, it means a real
+/// argument was passed and the template genuinely substitutes): with no
+/// argument at all, `fmtLiteralBrace` has neither a wire NOR a baked
+/// property for any slot, so it's unaffected by counting baked slots here.
+fn try_resolve_format_text(
+    id: NodeId,
+    info: &Info,
+    in_wires: &HashMap<(NodeId, WirePort), Vec<PortRef>>,
+    known: &HashMap<NodeId, Value>,
+    plan: &mut HashMap<NodeId, PlanAction>,
+) -> Option<Value> {
+    let template = info.format_string.as_ref()?;
+    let any_substituted = FORMAT_SLOTS.iter().any(|&port| {
+        in_wires.get(&(id, port)).is_some_and(|srcs| !srcs.is_empty())
+            || info
+                .properties
+                .get(&intern_static(port.as_str()))
+                .and_then(Value::from_literal)
+                .is_some()
+    });
+    if !any_substituted {
+        return None;
+    }
+    let mut inputs: Vec<Option<Value>> = Vec::with_capacity(FORMAT_SLOTS.len());
+    for &port in &FORMAT_SLOTS {
+        match resolve_data_input(id, port, in_wires, known, &info.properties) {
+            Resolved::Unwired => inputs.push(None),
+            Resolved::Known(v) => inputs.push(Some(v)),
+            Resolved::Unresolved => return None,
+        }
+    }
+    let out = eval::format_text(template, &inputs)?;
+    let v = Value::Str(out);
+    plan.insert(id, PlanAction::BecomeLiteral(v.clone()));
+    Some(v)
 }
 
 /// Try to resolve node `id` to a value given the `known` set so far. `_Literal`
@@ -388,12 +590,25 @@ fn try_resolve(
         };
     }
 
+    // `FormatText`'s template lives in a PROPERTY, not a wire input — the
+    // certified table's only recorded signature for this gate is the
+    // synthetic `[Tmpl]` marker (see `table::InVariant::Tmpl`'s doc
+    // comment), which no real `Value`-derived signature can ever match, so
+    // the generic `table.covers` path below would refuse this gate
+    // unconditionally regardless of how `info.data_inputs` are wired.
+    // Special-cased: resolve each substitution slot through the SAME
+    // wire-propagation machinery as any other gate's data inputs, then
+    // substitute via the certified `eval::format_text` law directly.
+    if info.gate_class == gc::STRING_FORMAT_TEXT {
+        return try_resolve_format_text(id, info, in_wires, known, plan);
+    }
+
     if info.gate_class == gc::SELECT {
-        return try_resolve_select(id, in_wires, known, table, plan);
+        return try_resolve_select(id, in_wires, known, &info.properties, table, plan);
     }
 
     if info.gate_class == gc::BRANCH {
-        try_resolve_branch(id, in_wires, out_wires, known, table, plan);
+        try_resolve_branch(id, in_wires, out_wires, known, &info.properties, table, plan);
         return None;
     }
 
@@ -405,7 +620,7 @@ fn try_resolve(
     let mut states: Vec<Resolved> = Vec::with_capacity(info.data_inputs.len());
     let mut all_resolved = true;
     for &port in &info.data_inputs {
-        let st = resolve_input(id, port, in_wires, known);
+        let st = resolve_data_input(id, port, in_wires, known, &info.properties);
         if matches!(st, Resolved::Unresolved) {
             all_resolved = false;
         }
@@ -465,6 +680,49 @@ fn try_resolve(
     None
 }
 
+/// The `(properties, ports)` a `_Literal` node carrying `value` must have —
+/// shared by `apply`'s in-place `BecomeLiteral` conversion (an EXISTING
+/// node becomes a literal) and `cleanup_boundary_feeds`'s Rule B (a BRAND
+/// NEW node is minted as a literal), so the two never drift apart.
+///
+/// Task-3 minimal deviation from that task's "table.rs + eval.rs only"
+/// scope: `Value` (fold/eval.rs) grew four composite variants (Vector/
+/// Rotator/Quat/Color) there, and this match must stay exhaustive over the
+/// FULL enum for the crate to compile at all — there is no way to add
+/// those variants without touching every exhaustive `match value` site,
+/// and this is the only one in the crate (verified via `grep -rn
+/// "Value::" src/`; `fuzz_programs.rs`'s uses are all `matches!`/tuple
+/// patterns, not exhaustive matches).
+fn literal_properties_and_ports(
+    value: &Value,
+) -> (
+    Arc<crate::collections::HashMap<crate::intern::Sym, Literal>>,
+    Arc<GateIO>,
+) {
+    let ty = match value {
+        Value::Int(_) => Type::Int,
+        Value::Float(_) => Type::Float,
+        Value::Bool(_) => Type::Bool,
+        Value::Str(_) => Type::String,
+        Value::Vector { .. } => Type::Vector,
+        Value::Rotator { .. } => Type::Rotator,
+        Value::Quat { .. } => Type::Quat,
+        Value::Color { .. } => Type::Color,
+    };
+    let mut properties = HashMap::default();
+    properties.insert(*sym::VALUE, value.to_literal());
+    (
+        Arc::new(properties),
+        Arc::new(GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec {
+                name: *sym::OUTPUT,
+                ty,
+            }],
+        }),
+    )
+}
+
 /// Mutate `module` (and every nested chip) per `plan`: convert each planned
 /// `BecomeLiteral` node in place to a `_Literal`, remove each `ShortCircuit`
 /// (`Select`) / `Truncate` (`Branch`) node outright, and fix up every wire
@@ -478,27 +736,14 @@ fn apply(module: &mut Module, plan: &HashMap<NodeId, PlanAction>) {
     for id in &ids {
         match plan.get(id) {
             Some(PlanAction::BecomeLiteral(value)) => {
-                let ty = match value {
-                    Value::Int(_) => Type::Int,
-                    Value::Float(_) => Type::Float,
-                    Value::Bool(_) => Type::Bool,
-                    Value::Str(_) => Type::String,
-                };
-                let mut properties = HashMap::default();
-                properties.insert(*sym::VALUE, value.to_literal());
+                let (properties, ports) = literal_properties_and_ports(value);
                 let node = module
                     .nodes
                     .get_mut(id)
                     .expect("node id came from module.nodes.keys()");
                 node.gate_class = gc::LITERAL;
-                node.properties = Arc::new(properties);
-                node.ports = Arc::new(GateIO {
-                    inputs: vec![],
-                    outputs: vec![PortSpec {
-                        name: *sym::OUTPUT,
-                        ty,
-                    }],
-                });
+                node.properties = properties;
+                node.ports = ports;
                 mutated = true;
             }
             Some(PlanAction::ShortCircuit { .. }) | Some(PlanAction::Truncate { .. }) => {
@@ -608,6 +853,185 @@ fn rewrite_wires(wires: Vec<Wire>, plan: &HashMap<NodeId, PlanAction>) -> Vec<Wi
         }
     }
     wires
+}
+
+/// Every `MicrochipInput`/`MicrochipOutput` id that belongs to a NAMED CHIP
+/// INSTANCE's own boundary — i.e. a `module.chips[...]` child's
+/// `inputs`/`outputs` list, recursively (a chip calling another chip nests
+/// arbitrarily deep). Deliberately does NOT include `root`'s own top-level
+/// `inputs`/`outputs`: the ROOT script's `in`/`out` declarations use the
+/// EXACT SAME node shape (same gate classes, same `add_input`/`add_output`
+/// builder calls — see `ir/build.rs`) but interface with the OUTSIDE
+/// WORLD, not a caller/callee this pass fully controls. A root-level `out`
+/// is terminal BY DESIGN (nothing in this compiled module ever wires FROM
+/// it) — so "zero outgoing wires" is the ORDINARY, expected shape for one,
+/// never evidence it's dead. Only excluding the caller's own top-level
+/// `module.inputs`/`module.outputs` (and recursing into `module.chips`
+/// instead of also collecting `module`'s own list) keeps the two shapes
+/// apart: this fires once per RECURSION STEP on the CHILD's lists, never
+/// on the `module` passed in at any given call.
+fn collect_call_boundary_ids(module: &Module, ids: &mut HashSet<NodeId>) {
+    for child in module.chips.values() {
+        ids.extend(child.inputs.iter().copied());
+        ids.extend(child.outputs.iter().copied());
+        collect_call_boundary_ids(child, ids);
+    }
+}
+
+/// Boundary-delivery cleanup: Rule B, then Rule A (order matters — Rule B
+/// routinely creates the very "zero outgoing wires" state Rule A looks
+/// for, on the `Output` side in particular; see each rule's own doc for
+/// why). Both rules act only on a chip-instance CALL boundary node — a
+/// `MicrochipInput`/`MicrochipOutput` belonging to a NAMED CHIP INSTANCE's
+/// own child module (`collect_call_boundary_ids` below) — whose id is ALSO
+/// a key in `known`; that's the SAME barrier `info.nofold` already
+/// enforces one level up (a `_nofold` node's `try_resolve` returns `None`
+/// before ever reaching the pass-through case, so it can never enter
+/// `known` in the first place — `rewire_boundary_consumers` asserts this
+/// instead of just assuming it).
+fn cleanup_boundary_feeds(root: &mut Module, known: &HashMap<NodeId, Value>, infos: &HashMap<NodeId, Info>) {
+    let mut boundary_ids: HashSet<NodeId> = HashSet::default();
+    collect_call_boundary_ids(root, &mut boundary_ids);
+    if boundary_ids.is_empty() {
+        return;
+    }
+
+    rewire_boundary_consumers(root, known, infos, &boundary_ids);
+
+    // Recomputed fresh, globally, AFTER Rule B: a wire counted here could
+    // have lived anywhere in the tree, and Rule B may just have removed the
+    // last one an `Output`-kind node had (an `Input`-kind node can also
+    // reach zero on its own, purely from the main fixpoint above — see
+    // `rewire_boundary_consumers`'s doc).
+    let mut outgoing: HashMap<NodeId, usize> = HashMap::default();
+    tally_boundary_outgoing(root, &boundary_ids, &mut outgoing);
+    let dead_feeds: HashSet<NodeId> = boundary_ids
+        .into_iter()
+        .filter(|id| known.contains_key(id) && outgoing.get(id).copied().unwrap_or(0) == 0)
+        .collect();
+    if !dead_feeds.is_empty() {
+        drop_boundary_feeds(root, &dead_feeds);
+    }
+}
+
+/// Rule B: for every wire whose SOURCE is a Known chip-boundary node,
+/// splice in a fresh `_Literal` carrying that value and re-home the wire
+/// onto it, bypassing the boundary node's rerouter wire entirely. The new
+/// literal is inserted into whichever module currently owns the wire being
+/// rewritten — the same "wherever the wire happens to live" convention
+/// `apply`'s own wire-fixup above already relies on for cross-scope wires —
+/// so it lands same-module as the wire it replaces, and typically
+/// same-module as the consumer it feeds; placement metadata (chip/row/
+/// scope) is copied from the CONSUMER (via `infos`), not the boundary node,
+/// so the new literal renders where it's read.
+///
+/// Safe for every surviving consumer, not just the "uncertified" ones this
+/// rule exists for: any wire still sourced from a Known boundary node at
+/// this point already survived the ENTIRE fixpoint above — a certified
+/// consumer whose other inputs were also known would already have folded
+/// itself there (dropping this very wire via `rewrite_wires`, same as any
+/// other `BecomeLiteral` target), so whatever's left here is either a gate
+/// `try_resolve` never attempts at all (not in the certified table — a
+/// `DisplayText` field, an entity-call argument, an array method's index,
+/// ...) or a certified gate still waiting on some OTHER not-yet-known
+/// input. Either way, handing it the value directly is behaviorally
+/// identical to the live rerouter wire it replaces — just no longer routed
+/// through a dataless boundary port that later forces
+/// `materialize_unfoldable_constants` to fabricate a carrier gate nobody
+/// upstream of it actually needed.
+fn rewire_boundary_consumers(
+    module: &mut Module,
+    known: &HashMap<NodeId, Value>,
+    infos: &HashMap<NodeId, Info>,
+    boundary_ids: &HashSet<NodeId>,
+) {
+    let mut mutated = false;
+    for w in &mut module.wires {
+        if !boundary_ids.contains(&w.source.node_id) {
+            continue;
+        }
+        let Some(value) = known.get(&w.source.node_id) else {
+            continue;
+        };
+        debug_assert!(
+            !infos.get(&w.source.node_id).is_some_and(|i| i.nofold),
+            "cleanup_boundary_feeds: a _nofold boundary node must never enter `known` \
+             (try_resolve's info.nofold check must return None before the pass-through case)"
+        );
+        let meta = infos
+            .get(&w.target.node_id)
+            .expect("wire target must have been snapshotted by collect_infos");
+        let (properties, ports) = literal_properties_and_ports(value);
+        let lit_id = NodeId::fresh();
+        module.nodes.insert(
+            lit_id,
+            Node {
+                id: lit_id,
+                kind: NodeKind::Gate,
+                gate_class: gc::LITERAL,
+                properties,
+                ports,
+                source_range: meta.source_range.clone(),
+                chip_id: meta.chip_id,
+                chain_id: meta.chain_id,
+                scope_id: meta.scope_id,
+                note: Some("boundary-delivery cleanup literal"),
+            },
+        );
+        w.source = PortRef {
+            node_id: lit_id,
+            port: WirePort::Output,
+        };
+        mutated = true;
+    }
+    if mutated {
+        module.template_key = None;
+    }
+    for child in module.chips.values_mut() {
+        rewire_boundary_consumers(child, known, infos, boundary_ids);
+    }
+}
+
+fn tally_boundary_outgoing(
+    module: &Module,
+    boundary_ids: &HashSet<NodeId>,
+    out: &mut HashMap<NodeId, usize>,
+) {
+    for w in &module.wires {
+        if boundary_ids.contains(&w.source.node_id) {
+            *out.entry(w.source.node_id).or_default() += 1;
+        }
+    }
+    for child in module.chips.values() {
+        tally_boundary_outgoing(child, boundary_ids, out);
+    }
+}
+
+/// Rule A: a boundary node with zero remaining outgoing wires anywhere in
+/// the tree has nothing left to deliver to — drop its own incoming feed
+/// wire(s) too, wherever THEY live, so the now-orphaned source (a literal,
+/// or the real gate chain that produced one via `BecomeLiteral`) demand-
+/// sweeps via the ordinary `sweep_dead_pure`/`sweep_dead_exec` passes right
+/// after `cleanup_boundary_feeds` returns, instead of surviving all the way
+/// to `materialize_unfoldable_constants` as a `MathAdd(n, 0)`-style carrier
+/// feeding a port nobody reads. Applies uniformly to `MicrochipInput` (an
+/// argument the callee's body never ends up reading once folded) and
+/// `MicrochipOutput` (a result nothing outside the chip ends up reading —
+/// typically only zero-outgoing as a RESULT of Rule B above, since an
+/// `Output` node's exterior consumers are what Rule B just finished
+/// rewiring away). The boundary node ITSELF is never removed — it's the
+/// chip's visual port marker; only its feed wire goes.
+fn drop_boundary_feeds(module: &mut Module, dead_feeds: &HashSet<NodeId>) {
+    let before = module.wires.len();
+    module.wires.retain(|w| {
+        !(dead_feeds.contains(&w.target.node_id) && w.target.port == WirePort::RerInput)
+    });
+    if module.wires.len() != before {
+        module.template_key = None;
+    }
+    for child in module.chips.values_mut() {
+        drop_boundary_feeds(child, dead_feeds);
+    }
 }
 
 /// Exec-reachability cleanup: repeat to a fixpoint — a `NodeKind::Gate` node

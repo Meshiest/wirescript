@@ -336,10 +336,30 @@ pub(super) fn lower_if_expr(
     node_id.port(WirePort::Output)
 }
 
-pub(super) fn literal_for_property_port(e: &Expr, _port_ty: &Type) -> Option<Literal> {
-    // Return the literal as-is without type promotion. The emit layer
-    // handles the native type (i32/f64/str) based on the data struct schema.
-    expr_to_literal(e)
+/// Compile-time arm of the string → bool coercion: a String literal baked
+/// into a Bool destination converts to `Literal::Bool(!s.is_empty())`.
+/// CONSISTENCY LAW: this must equal the runtime semantics of the
+/// `CompareNotEqual(s, "")` gate that `LowerCtx::wrap_string_to_bool`
+/// inserts on the WIRE path — both are exactly `s != ""` (empty false,
+/// everything else — including "0" and "false" — true). A String literal
+/// left raw on a Bool destination would either miscompile (a Bool
+/// `InitialValue` read through the gate's NATIVE content-aware truthiness,
+/// where "0"/"false" are falsy) or crash emit (UnimplementedCast on a Bool
+/// data field). Non-(String → Bool) pairs pass through untouched.
+pub(super) fn bake_string_bool(lit: Literal, ty: &Type) -> Literal {
+    match (&lit, ty) {
+        (Literal::String(s), Type::Bool) => Literal::Bool(!s.is_empty()),
+        _ => lit,
+    }
+}
+
+pub(super) fn literal_for_property_port(e: &Expr, port_ty: &Type) -> Option<Literal> {
+    // Return the literal without type promotion — the emit layer handles the
+    // native type (i32/f64/str) from the data struct schema — EXCEPT the
+    // string → bool coercion, which must apply its `!= ""` law at compile
+    // time here (see `bake_string_bool`): emit has no String→bool cast, and
+    // a raw String on a Bool data field is an UnimplementedCast crash.
+    expr_to_literal(e).map(|lit| bake_string_bool(lit, port_ty))
 }
 
 pub(super) fn synthesise_unsupported(ctx: &mut LowerCtx, e: &Expr) -> PortRef {

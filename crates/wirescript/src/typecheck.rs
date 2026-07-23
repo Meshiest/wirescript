@@ -294,7 +294,15 @@ fn primitive_name(name: &str) -> Option<Type> {
         "brick" => Type::Brick,
         "prefab" => Type::Prefab,
         "exec" => Type::Exec,
-        "any" => Type::Any,
+        // `any` (in annotation position) maps onto the *wildcard* type
+        // (`Type::Opaque`, the same type `Opaque(...)` produces) rather than
+        // the internal `Type::Any` error-fallback: an `any`-typed value must
+        // resolve operator overloads (`catalog::operators::type_kind_matches`
+        // wildcards `Opaque`) and act as a permanent fold barrier, which only
+        // `Opaque` does. See `reject_any_storage` below for the flip side —
+        // `any` can flow through ports/lets/params but can't back a
+        // var/array/buffer's storage gate.
+        "any" => Type::Opaque,
         "never" => Type::Never,
         _ => return None,
     })
@@ -379,6 +387,36 @@ fn var_storable(t: &Type) -> bool {
     )
 }
 
+fn type_expr_range(t: &TypeExpr) -> SourceRange {
+    match t {
+        TypeExpr::Name { range, .. }
+        | TypeExpr::Ref { range, .. }
+        | TypeExpr::Array { range, .. }
+        | TypeExpr::Tuple { range, .. }
+        | TypeExpr::Union { range, .. }
+        | TypeExpr::Record { range, .. } => range.clone(),
+    }
+}
+
+/// `any` (`Type::Opaque`) is fine anywhere a value just flows through a wire
+/// (ports, `let`s, mod/chip params) — but a var/array/buffer's storage gate
+/// needs a concrete wire variant to hold, so an explicit `any` annotation
+/// there is rejected (WS025). Only fires on an *explicit* annotation: an
+/// unannotated declaration's inferred placeholder is `Type::Any`, never
+/// `Type::Opaque`, so it never reaches this check.
+fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRange, what: &str) {
+    if matches!(resolved, Type::Opaque) {
+        ctx.emit(
+            "WS025",
+            format!(
+                "'any' cannot be stored: {what} needs a concrete wire type \
+                 (int/float/bool/string/vector/...)"
+            ),
+            range,
+        );
+    }
+}
+
 fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
     match d {
         TopDecl::Var(v) => {
@@ -402,6 +440,9 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     None => None,
                 })
                 .unwrap_or(Type::Any);
+            if let Some(t) = &v.typ {
+                reject_any_storage(ctx, &inner, type_expr_range(t), "a variable gate");
+            }
             declare_or_dup(
                 ctx,
                 &v.name,
@@ -417,6 +458,12 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
         }
         TopDecl::Array(a) => {
             let inner = resolve_type_expr(ctx, &a.element_type);
+            reject_any_storage(
+                ctx,
+                &inner,
+                type_expr_range(&a.element_type),
+                "an array's element type",
+            );
             declare_or_dup(
                 ctx,
                 &a.name,
@@ -437,6 +484,9 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 .as_ref()
                 .map(|t| resolve_type_expr(ctx, t))
                 .unwrap_or(Type::Any);
+            if let Some(t) = &b.typ {
+                reject_any_storage(ctx, &placeholder, type_expr_range(t), "a buffer");
+            }
             declare_or_dup(
                 ctx,
                 &b.name,
@@ -797,9 +847,7 @@ fn check_decl(
         }
         TopDecl::Out(b) => {
             if let Some(value) = &b.value {
-                ctx.in_pure(|ctx| {
-                    infer_expr(ctx, value, tmap, omap);
-                });
+                let value_ty = ctx.in_pure(|ctx| infer_expr(ctx, value, tmap, omap));
                 // When out has ref type and value is a var, override to show "ref" in hover
                 if let Some(ref te) = b.typ {
                     let resolved = resolve_type_expr(ctx, te);
@@ -809,6 +857,18 @@ fn check_decl(
                         ctx.var_read_contexts
                             .remove(&(range.file.clone(), range.start.offset));
                     }
+                    // An annotated out must accept its value (WS003 on a
+                    // genuine mismatch; coercions — including string → bool,
+                    // which lowers to an inserted `!= ""` compare at the
+                    // port — pass). Both sides unwrap refs so `out y: *int
+                    // = x` compares int against int, the ref-ness being the
+                    // exposure mode rather than a value type.
+                    expect_coerce(
+                        ctx,
+                        &unwrap_ref(&value_ty),
+                        &unwrap_ref(&resolved),
+                        value.range(),
+                    );
                 }
                 if b.typ.is_none()
                     && let Expr::Ident { name, .. } = value
@@ -3129,5 +3189,259 @@ mod tests {
             "type Point = { x: int, y: int }\nmod add({ x, y }: Point) -> int { return x + y }\nlet p: Point = { x: 3, y: 4 }\nlet sum = add(p)",
         );
         assert_no_diags(&r);
+    }
+
+    // ---- `any` type annotation ----
+
+    #[test]
+    fn any_in_port_wildcard_operators_typecheck() {
+        // `any` on a port must resolve real operator overloads (the wildcard
+        // behavior `Type::Opaque` gives it), not fall back to the generic
+        // `Type::Any` error type that WS004 rejects for operators.
+        let r = tc("in t: any\nlet a = t & 1\nlet b = t + 1\nlet c = t == \"x\"");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn any_let_annotation_no_error() {
+        let r = tc("let x: any = 5\nlet y = x + 1");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn any_mod_param_no_error() {
+        let r = tc("mod f(v: any) { let inner = v + 1 }");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn any_chip_param_and_output_no_error() {
+        let r = tc("chip C(v: any) -> (z: any) { out z = v }\nlet c = C(1)\nlet y = c + 1");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn any_out_annotation_no_error() {
+        let r = tc("in t: any\nout y: any = t");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn var_any_is_ws025() {
+        let r = tc("var foo: any = 0");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS025"),
+            "`var foo: any` must be rejected as WS025, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn static_var_any_is_ws025() {
+        let r = tc("static var foo: any = 0");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS025"),
+            "`static var foo: any` must be rejected as WS025, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn array_any_element_is_ws025() {
+        let r = tc("array arr: any[]");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS025"),
+            "`array arr: any[]` must be rejected as WS025, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn buffer_any_is_ws025() {
+        let r = tc("buffer buf: any = 0");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS025"),
+            "`buffer buf: any = 0` must be rejected as WS025, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn var_any_inside_handler_is_ws025() {
+        // Same rejection for a statement-level `var` declared inside a
+        // handler body (a separate code path from the top-level decl).
+        let r = tc("in t: exec\non t { var foo: any = 0 }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS025"),
+            "statement-level `var foo: any` must be rejected as WS025, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn var_unannotated_is_not_ws025() {
+        // An unannotated var's placeholder type is `Type::Any` (the
+        // generic fallback), never `Type::Opaque` — it must not trip the
+        // `any`-storage rejection.
+        let r = tc("var foo = 0");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS025"),
+            "unannotated var must not emit WS025, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // ---- string → bool coercion (lowers to an inserted `!= ""` compare) ----
+
+    #[test]
+    fn if_string_condition_compiles() {
+        // No dedicated bool-condition check exists for `if` — a string
+        // condition typechecks cleanly, and lowering inserts the
+        // `CompareNotEqual(s, "")` coercion gate in front of the Branch.
+        let r = tc("in s: string\nin t: exec\nvar a: int = 0\non t { if s { a = 1 } }");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn let_bool_annotation_from_string_no_warning() {
+        // Before the `String -> Bool` coercion rule this hit the generic
+        // "let annotated as X, but expression has type Y" WS016 warning
+        // (a mismatch is a legitimate re-annotation warning elsewhere, but
+        // here it's a certified native coercion, not a type lie).
+        let r = tc("in s: string\nlet b: bool = s");
+        assert!(
+            r.diagnostics.is_empty(),
+            "`let b: bool = s` must not warn or error, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn var_bool_assign_from_string_no_error() {
+        // Assigning a string-typed value into a declared-bool var previously
+        // hit a hard WS003 "expected Bool, got String" mismatch.
+        let r = tc("in s: string\nin t: exec\nvar v: bool = false\non t { v = s }");
+        assert_no_diags(&r);
+    }
+
+    // ---- string -> bool must NOT chain transitively into numerics ----
+    //
+    // Every consumer of `coerce()` (expect_coerce, check_call_args,
+    // check_let_type_annotation, unify_glb) applies exactly ONE rule between
+    // a source and a destination type — nothing composes String -> Bool with
+    // Bool -> Int — and operator resolution (`resolve_op`) never consults
+    // coercions at all. These pins keep it that way.
+
+    #[test]
+    fn string_does_not_coerce_to_int_destination() {
+        // `let n: int = s` stays flagged (WS016 — the annotated-let mismatch
+        // warning, the same diagnostic any non-coercing annotation gets)...
+        let r = tc("in s: string\nlet n: int = s");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS016"),
+            "`let n: int = s` must still warn WS016, got {:?}",
+            r.diagnostics
+        );
+        // ...and assigning a string into a declared-int var stays a hard
+        // WS003 error (the exec-assign path).
+        let r = tc("in s: string\nin t: exec\nvar n: int = 0\non t { n = s }");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS003" && d.severity == Severity::Error),
+            "`n = s` into an int var must stay a WS003 error, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn string_math_operand_still_ws004() {
+        // Operator resolution matches explicit rule lists only (no coercion
+        // consult), and the math gates have no string operand rules — a
+        // string on either side of `+` must keep erroring, not sneak in as
+        // String -> Bool -> Int. (`..` is the string concat operator.)
+        let r = tc("in s: string\nlet a = s + 1");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS004"),
+            "`s + 1` must stay WS004, got {:?}",
+            r.diagnostics
+        );
+        let r = tc("let a = \"a\" + 1");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS004"),
+            "`\"a\" + 1` must stay WS004, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn string_into_int_builtin_param_still_errors() {
+        // A string argument into an int-typed builtin port stays WS003 —
+        // check_call_args does one coerce(String, Int) = Mismatch, with no
+        // bool hop available.
+        let r = tc("in s: string\nlet c = ColorSRGB(s, 0, 0, 255)");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS003" && d.message.contains("expected Int")),
+            "string into ColorSRGB's int param must stay WS003, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn bool_to_int_coercion_still_works() {
+        // Regression pin: the neighboring bool -> int coercion (and the
+        // annotated-let form) must be unaffected by the string-truthiness
+        // rule sitting next to it in coerce().
+        let r = tc("in f: bool\nlet n: int = f\nin t: exec\nvar m: int = 0\non t { m = f }");
+        assert_no_diags(&r);
+    }
+
+    // ---- annotated `out` value/annotation agreement ----
+
+    #[test]
+    fn annotated_out_bool_from_string_coerces() {
+        // `out y: bool = s` is the string → bool coercion (the `!= ""`
+        // compare inserts at lowering) — no diagnostic.
+        let r = tc("in s: string\nout y: bool = s");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn annotated_out_int_from_string_is_ws003() {
+        // Pre-existing hole: annotated outs never checked their value
+        // against the annotation, so `out y: int = s` passed silently and
+        // emitted a mistyped pin. Now WS003.
+        let r = tc("in s: string\nout y: int = s");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS003" && d.severity == Severity::Error),
+            "`out y: int = s` must be a WS003 error, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn annotated_out_string_from_int_formats() {
+        // Per the coercion table, int → string is `ViaString` (format
+        // gate), not a mismatch — an annotated string out accepts a
+        // numeric value without diagnostics.
+        let r = tc("in n: int\nout label: string = n");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn annotated_ref_out_still_accepts_var() {
+        // `out y: *int = x` — the ref annotation unwraps for the check
+        // (int against int), so the ref-exposure pattern stays clean.
+        let r = tc("var x: int = 0\nout y: *int = x");
+        let errors: Vec<_> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "ref out must not error: {:?}", errors);
     }
 }

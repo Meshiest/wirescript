@@ -277,7 +277,86 @@ impl<'a> LowerCtx<'a> {
     }
 
     pub(super) fn connect(&mut self, src: PortRef, dst: PortRef) {
+        // Language-level string → bool coercion: a string-typed source wired
+        // into a bool-typed destination routes through an inserted
+        // `CompareNotEqual(src, "")` gate, so the coercion means exactly
+        // `src != ""` — empty is false, EVERYTHING else (including "0" and
+        // "false") is true. The game's native bool ports would otherwise
+        // apply their content-aware truthiness ("0"/"false" falsy but "0.0"
+        // truthy — see the Branch/Select/AND chapters of
+        // `data/gate_semantics.json`), which is a footgun the language
+        // deliberately papers over. Native truthiness remains reachable by
+        // wiring through `any` (`Type::Opaque` erases the String port type,
+        // so this interception never sees it) or via the logical operators,
+        // whose string overloads are native gate behavior, not coercions.
+        if let Some(coerced) = self.wrap_string_to_bool(src, dst) {
+            self.builder.connect(coerced, dst);
+            return;
+        }
         self.builder.connect(src, dst);
+    }
+
+    /// If `src` is a string-typed output and `dst` a bool-typed input,
+    /// build the `!= ""` coercion gate (`CompareNotEqual` with `InputB`
+    /// baked to the empty string — compare inputs are wire-variant fields,
+    /// so the constant inlines as data) and return its `bOutput` for the
+    /// caller to wire into `dst`. `None` when no coercion applies (either
+    /// side untyped/not found, or any other type pair). NOTE: the inserted
+    /// gate does NOT constant-fold — `CompareNotEqual` has no certified
+    /// (str, str) signature in `data/gate_semantics.json`, so the fold pass
+    /// refuses it (correct-but-unoptimized until that signature is probed).
+    fn wrap_string_to_bool(&mut self, src: PortRef, dst: PortRef) -> Option<PortRef> {
+        // A boundary node of an already-instantiated chip lives in a nested
+        // `module.chips` entry, not the top-level node map (e.g. wiring a
+        // string call argument into a chip's bool-typed `MicrochipInput`
+        // pin), so the lookup recurses. NodeIds come from one allocator and
+        // are globally unique.
+        fn find_node(m: &crate::ir::Module, id: NodeId) -> Option<&crate::ir::Node> {
+            if let Some(n) = m.nodes.get(&id) {
+                return Some(n);
+            }
+            m.chips.values().find_map(|c| find_node(c, id))
+        }
+        let src_range = {
+            let n = find_node(&self.builder.module, src.node_id)?;
+            if n.ports.find_output(intern(src.port.as_str()))?.ty != Type::String {
+                return None;
+            }
+            n.source_range.clone()
+        };
+        {
+            let n = find_node(&self.builder.module, dst.node_id)?;
+            if n.ports.find_input(intern(dst.port.as_str()))?.ty != Type::Bool {
+                return None;
+            }
+        }
+        let mut props = HashMap::default();
+        props.insert(*sym::INPUT_B, Literal::String(String::new()));
+        let ne = self.add_gate(AddNodeOpts {
+            gate_class: gc::COMPARE_NOT_EQUAL,
+            source_range: src_range,
+            ports: GateIO {
+                inputs: vec![
+                    PortSpec {
+                        name: *sym::INPUT_A,
+                        ty: Type::String,
+                    },
+                    PortSpec {
+                        name: *sym::INPUT_B,
+                        ty: Type::String,
+                    },
+                ],
+                outputs: vec![PortSpec {
+                    name: *sym::B_OUTPUT,
+                    ty: Type::Bool,
+                }],
+            },
+            properties: props,
+            note: Some("string→bool coercion (!= \"\")"),
+            ..Default::default()
+        });
+        self.builder.connect(src, ne.port(WirePort::InputA));
+        Some(ne.port(WirePort::BOutput))
     }
 
     /// Run `f` with `nofold_depth` incremented for its duration when `active`

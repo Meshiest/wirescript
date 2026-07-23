@@ -37,8 +37,32 @@ on reset {
 
 | Type | Description |
 |------|-------------|
-| `any` | Universal type -- compatible with everything. Used internally. |
+| `any` | Universal type -- compatible with everything, but can't back a variable gate's storage. See [`any` Type](#any-type) below. |
 | `never` | Bottom type -- no value inhabits this type. Used internally. |
+
+### `any` Type
+
+`any` is a wildcard annotation for a value that flows through a wire without the checker pinning down (or caring about) its concrete type: `test & 1`, `test == "x"`, and every other operator overload still resolve against whatever operand type is on the other side, instead of erroring the way an actually-unknown type would. The tradeoff is spelled out by the name -- an `any` value works anywhere, but its side effects are on you: the checker can't warn you if the operator that ends up selected wasn't the one you meant.
+
+`any` is valid wherever a value just passes through:
+
+```wirescript
+in test: any             // input port
+let value = test & 1     // let binding
+mod f(v: any) { ... }    // mod parameter
+chip C(v: any) -> (r: any) { out r = v }  // chip parameter / output
+```
+
+It is **not** valid as a variable gate's storage type, because a Variable gate needs one concrete wire variant to hold -- `any` has none:
+
+```wirescript
+var foo: any = 0          // ERROR: 'any' cannot be stored
+static var foo: any = 0   // ERROR: same
+array foo: any[]          // ERROR: same
+buffer foo: any = 0       // ERROR: same
+```
+
+An **unannotated** `var`/`array`/`buffer` is unaffected -- its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so it never trips this rejection.
 
 ### Object references & assets
 
@@ -233,6 +257,31 @@ var pos: string = someVector   // vector -> string: formatted
 
 The following types format to string: `bool`, `int`, `float`, `string`, `vector`, `rotator`, `color`, `entity`, `character`, `controller`, `brick`, `prefab`.
 
+### String Coercion to Bool -- empty is false
+
+A `string` coerces to `bool` wherever a bool is expected -- a condition, a `bool`-typed `let`/`var`, a bool-typed port or chip/mod param. The semantics are exactly `s != ""`, and the compiler inserts a real `CompareNotEqual(s, "")` gate at every such coercion point:
+
+```wirescript
+in name: string
+
+if name {
+  // taken whenever `name` is non-empty — compiles as `if name != ""`
+}
+
+let hasName: bool = name   // also `name != ""`
+```
+
+| String value | Bool |
+|---------------|------|
+| `""` | `false` |
+| anything else (including `"0"`, `"false"`, `" "`) | `true` |
+
+String *literals* in bool positions (`var v: bool = "0"`, `array flags: bool[] = ["x", ""]`, `Select("0", a, b)`) are converted at compile time by the same `!= ""` law -- the baked value is already a bool, so `"0"` bakes as `true`.
+
+The rule is deliberately simple: **only the empty string is false**. This differs from the game's *native* bool-port behavior, which is content-aware -- a string wired manually into a bool port (e.g. via an [`any`](#any-type)-typed value, whose erased type skips the coercion, or through the logical operators' native string overloads) is read by the gate itself, where `""`, `"0"`, and `"false"` are all falsy. That native law is certified per build against the in-game gate-semantics table -- the same certification that drives constant folding of conditions, see [folding.md](folding.md). If you want the content-aware behavior, wire it manually; if you write `if someString`, you get the deterministic `!= ""`.
+
+This direction is one-way -- `bool` to `string` still goes through the format gate above and renders `"true"`/`"false"` text, not the other way around.
+
 ### Pulsing Coercion to Exec
 
 Value types that "pulse" (change over time) can trigger exec inputs. This means `bool`, `int`, `float`, `vector`, `entity`, `character`, and `controller` values can be connected to `exec` inputs -- the exec fires whenever the value changes:
@@ -277,6 +326,7 @@ var y: float = 0.0
 | `rotator` | `quat` | Coerce (interchangeable rotation values) |
 | `quat` | `rotator` | Coerce |
 | any primitive | `string` | Via format gate |
+| `string` | `bool` | Coerce (compiler inserts `!= ""` -- only empty is false) |
 | `exec` | `bool` | Coerce (true for one frame) |
 | `bool`/`int`/`float`/`vector`/`entity`/`character`/`controller` | `exec` | Pulsing coerce |
 | `ref T` | `ref U` (T != U) | **Mismatch** |

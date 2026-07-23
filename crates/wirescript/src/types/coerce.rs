@@ -172,6 +172,21 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Coerce;
     }
 
+    // String → Bool: the language-level coercion means exactly `s != ""` —
+    // lowering inserts a `CompareNotEqual(s, "")` gate wherever a
+    // string-typed source wires into a bool-typed destination (see
+    // `LowerCtx::wrap_string_to_bool` in lower/context.rs). Empty is false,
+    // EVERYTHING else is true — deliberately NOT the game's native
+    // content-aware port truthiness (where "0" and "false" are also falsy;
+    // certified in `data/gate_semantics.json`'s Branch/Select/AND chapters),
+    // which stays reachable by wiring through `any` or the logical
+    // operators' native string overloads. Unidirectional: bool → string
+    // stays the existing `ViaString` format-text path below (renders
+    // "true"/"false" text).
+    if matches!((from, to), (String, Bool)) {
+        return CoerceRule::Coerce;
+    }
+
     // Anything primitive → string via Expr_String_FormatText.
     if matches!(to, String) && formats_to_string(from) {
         return CoerceRule::ViaString;
@@ -335,5 +350,30 @@ mod tests {
     #[test]
     fn controller_pulses_to_exec() {
         assert_eq!(coerce(&Type::Controller, &Type::Exec), CoerceRule::Coerce);
+    }
+    #[test]
+    fn string_coerces_to_bool() {
+        // The coercion means exactly `s != ""` (empty false, everything
+        // else true): lowering inserts a `CompareNotEqual(s, "")` gate at
+        // every string-typed-source → bool-typed-destination wire, so this
+        // rule just tells typecheck the pair is legal.
+        assert_eq!(coerce(&Type::String, &Type::Bool), CoerceRule::Coerce);
+    }
+    #[test]
+    fn bool_to_string_stays_via_format() {
+        // The reverse direction is unaffected — bool → string still renders
+        // "true"/"false" text through the existing format-text path, not
+        // this new native-truthiness rule.
+        assert_eq!(coerce(&Type::Bool, &Type::String), CoerceRule::ViaString);
+    }
+    #[test]
+    fn string_never_coerces_to_numeric() {
+        // PIN: `String -> Bool` must not chain transitively into the numeric
+        // family (String -> Bool -> Int would let a string masquerade as a
+        // number). `coerce` is single-step by construction — it never routes
+        // through an intermediate type — so the direct queries must stay
+        // Mismatch forever.
+        assert_eq!(coerce(&Type::String, &Type::Int), CoerceRule::Mismatch);
+        assert_eq!(coerce(&Type::String, &Type::Float), CoerceRule::Mismatch);
     }
 }

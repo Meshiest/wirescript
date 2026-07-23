@@ -11,7 +11,13 @@
   layout. `Opaque(...)` and `@nofold` exempt code. The pass is opt-in while it
   stabilizes: enable it with a module-level `@fold` (or `--fold`); `--no-fold`
   (or a module-level `@nofold`) disables it and always wins over `@fold`.
+  String concatenation, string methods, and `${...}` interpolation now fold
+  too, byte-exact against the game's own text rendering, alongside vector,
+  rotation, color, and quaternion constructors and their certified math
+  operations.
 - **Fixed returning a record through another `mod`** - `return f(x)` or `return r` with a record value wired the caller to a phantom node whose wires were silently dropped at emit. The record's fields now forward to the caller.
+- **`any` type** - an `in`/`let`/mod-or-chip-param/-output can now be annotated `any`, an operator-wildcard type that resolves real overloads (`x & 1`, `x == "y"`, …) instead of erroring on an unknown type. It works anywhere, but the side effects of whichever overload gets picked are on you. A `var`/`static var`/`array`/`buffer` can't store one: a variable gate needs one concrete wire type to hold, so an explicit `any` there is now a compile error.
+- **String truthiness** - a `string` now coerces to `bool` wherever a bool is expected (an `if` condition, a bool-typed `let`/`var`, a bool port or chip param). The coercion compiles to an inserted `!= ""` compare gate, so the semantics are deterministic: empty is false, everything else — including `"0"` and `"false"` — is true. (Strings wired into bool ports manually via `any` still get the gates' native content-aware truthiness, where `"0"`/`"false"` are also falsy.)
 
 ## 0.17.1
 

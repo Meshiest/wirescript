@@ -1,7 +1,7 @@
 {
   "build": "cl14860",
-  "generatedAt": "2026-07-18T21:51:01.374Z",
-  "probeVersion": 2,
+  "generatedAt": "2026-07-21T21:54:04.300Z",
+  "probeVersion": 3,
   "gates": {
     "BrickComponentType_WireGraph_Expr_CompareEqual": {
       "cases": [
@@ -481,6 +481,134 @@
             "variant": "bool",
             "value": "false"
           }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.25)"
+            },
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.25)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.25)"
+            },
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.5)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,90.0,0.0)"
+            },
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,90.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,90.0,0.0)"
+            },
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,180.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,1.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
         }
       ],
       "rules": []
@@ -640,6 +768,134 @@
             {
               "variant": "str",
               "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.25)"
+            },
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.25)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.25)"
+            },
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.5)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,90.0,0.0)"
+            },
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,90.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,90.0,0.0)"
+            },
+            {
+              "variant": "rotator",
+              "value": "Rotation(0.0,180.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,1.0,0.0)"
             }
           ],
           "output": {
@@ -2790,6 +3046,102 @@
             "variant": "int",
             "value": "1"
           }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.750 Y=0.750 Z=0.000"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.000 Y=0.750 Z=-0.250"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.000 Y=0.750 Z=-0.250"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=2.500 Y=2.250 Z=1.250"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(NaN,1,2)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(1,1,1)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.000 Y=2.000 Z=3.000"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0,0,0)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.500 Y=0.250 Z=-0.750"
+          }
         }
       ],
       "rules": []
@@ -2955,6 +3307,70 @@
             "variant": "int",
             "value": "1"
           }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.250 Y=-0.250 Z=-1.500"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.000 Y=-0.250 Z=-1.250"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.000 Y=0.250 Z=1.250"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=-1.500 Y=-1.750 Z=-2.750"
+          }
         }
       ],
       "rules": []
@@ -3119,6 +3535,70 @@
           "output": {
             "variant": "int",
             "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.125 Y=0.125 Z=-0.562"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.250 Y=0.125 Z=-0.375"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.250 Y=0.125 Z=-0.375"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.000 Y=0.500 Z=-1.500"
           }
         }
       ],
@@ -3300,6 +3780,70 @@
           "output": {
             "variant": "int",
             "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=2.000 Y=0.500 Z=-1.000"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.000 Y=0.500 Z=-1.500"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.000 Y=2.000 Z=-0.667"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.250 Y=0.125 Z=-0.375"
           }
         }
       ],
@@ -3498,9 +4042,1774 @@
             "variant": "int",
             "value": "0"
           }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.000 Y=0.250 Z=-0.000"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.000 Y=0.250 Z=-0.250"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.000 Y=0.000 Z=0.500"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.500 Y=0.250 Z=-0.750"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_Concatenate": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": "b"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "ab"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": "x"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "x"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "a"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "7"
+            },
+            {
+              "variant": "str",
+              "value": "x"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "7x"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "x"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "x0.5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "bool",
+              "value": "true"
+            },
+            {
+              "variant": "str",
+              "value": "!"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "true!"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_FormatText": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "0str"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "hi"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "a0b"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "aXb"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "01"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "AB"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "10reorder"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "B-A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "0int"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "42"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "0float"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "0.5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "0bool"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "0str2"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "s"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "3slot"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A-B-C"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "literalbrace"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "literal0brace"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "tmpl",
+              "value": "unwiredslot"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "10"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_Length": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "AbC"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "3"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "  x  "
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "π≈3"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_ToLower": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": ""
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "a"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "AbC"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "abc"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "  x  "
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "  x  "
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "π≈3"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "π≈3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_ToUpper": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": ""
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "A"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "AbC"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "ABC"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "  x  "
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "  X  "
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "π≈3"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "π≈3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_Trim": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": ""
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "a"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "AbC"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "AbC"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "  x  "
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "x"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "π≈3"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "π≈3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_Contains": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "world"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "xyz"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "Abc"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_StartsWith": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "hello"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "xyz"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "Abc"
+            },
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_EndsWith": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "world"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "true"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "xyz"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "Abc"
+            },
+            {
+              "variant": "str",
+              "value": "C"
+            }
+          ],
+          "output": {
+            "variant": "bool",
+            "value": "false"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_Substring": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "3"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "ell"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello"
+            },
+            {
+              "variant": "int",
+              "value": "10"
+            },
+            {
+              "variant": "int",
+              "value": "3"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": ""
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello"
+            },
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "100"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "ello"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello"
+            },
+            {
+              "variant": "int",
+              "value": "-1"
+            },
+            {
+              "variant": "int",
+              "value": "3"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "o"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_Find": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "world"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "6"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "xyz"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-1"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_Replace": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "world"
+            },
+            {
+              "variant": "str",
+              "value": "there"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "hello there"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": "xyz"
+            },
+            {
+              "variant": "str",
+              "value": "there"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "hello world"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "hello world"
+            },
+            {
+              "variant": "str",
+              "value": ""
+            },
+            {
+              "variant": "str",
+              "value": "X"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "hello world"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_ParseInt": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "42"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "42"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "-7"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-7"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "1.5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "9007199254740993"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "9007199254740993"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": " 42 "
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "42"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_String_ParseNumber": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "42"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "42"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "-7"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-7"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "1.5"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.5"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "a"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": ""
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "0"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "9007199254740993"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "9007199254740992"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": " 42 "
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "42"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MakeVector": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.5"
+            },
+            {
+              "variant": "float",
+              "value": "-2.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.75"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.500 Y=-2.500 Z=0.750"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MakeRotation": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "30.0"
+            },
+            {
+              "variant": "float",
+              "value": "60.0"
+            },
+            {
+              "variant": "float",
+              "value": "90.0"
+            }
+          ],
+          "output": {
+            "variant": "rotator",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MakeQuaternion": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.0"
+            },
+            {
+              "variant": "float",
+              "value": "0.0"
+            },
+            {
+              "variant": "float",
+              "value": "0.7071067811865476"
+            },
+            {
+              "variant": "float",
+              "value": "0.7071067811865476"
+            }
+          ],
+          "output": {
+            "variant": "quat",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MakeColor": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            },
+            {
+              "variant": "float",
+              "value": "0.25"
+            },
+            {
+              "variant": "float",
+              "value": "0.75"
+            }
+          ],
+          "output": {
+            "variant": "color",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MakeColorSRGB": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "255"
+            },
+            {
+              "variant": "int",
+              "value": "128"
+            },
+            {
+              "variant": "int",
+              "value": "0"
+            },
+            {
+              "variant": "int",
+              "value": "255"
+            }
+          ],
+          "output": {
+            "variant": "color",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MakeColorHex": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "str",
+              "value": "#ff8800"
+            }
+          ],
+          "output": {
+            "variant": "color",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_ColorToHex": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "str",
+            "value": "FFBC00"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecScale": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.500 Y=0.250 Z=-0.750"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "float",
+              "value": "2.0"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=1.000 Y=0.500 Z=-1.500"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecDotProduct": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "-0.312"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecCrossProduct": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.562 Y=-0.562 Z=0.188"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecMagnitudeSquared": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.875"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecDistanceSquared": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "2.375"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_RotateVector": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(1,0,0)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=-0.000 Y=1.000 Z=0.000"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0,1,0)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,1.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.000 Y=-1.000 Z=0.000"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(1,0,0)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.3826834323650898,0.9238795325112867)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.707 Y=0.707 Z=0.000"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_InvertRotation": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            }
+          ],
+          "output": {
+            "variant": "quat",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_QuatDotProduct": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,1.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.707"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecMagnitude": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.935"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecNormalize": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=0.535 Y=0.267 Z=-0.802"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_VecDistance": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.541"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_QuatSlerp": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,1.0,0.0)"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "quat",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_QuatFromAxisAngle": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.0,0.0,1.0)"
+            },
+            {
+              "variant": "float",
+              "value": "1.5707963267948966"
+            }
+          ],
+          "output": {
+            "variant": "quat",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_QuatAngleBetween": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            },
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,1.0,0.0)"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "90"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_QuatBetween": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            },
+            {
+              "variant": "vector",
+              "value": "Vec(0.25,0.5,0.75)"
+            }
+          ],
+          "output": {
+            "variant": "quat",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_DirectionToRotation": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "vector",
+              "value": "Vec(0.5,0.25,-0.75)"
+            }
+          ],
+          "output": {
+            "variant": "rotator",
+            "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_RotationToDirection": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "quat",
+              "value": "Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)"
+            }
+          ],
+          "output": {
+            "variant": "vector",
+            "value": "X=-0.000 Y=1.000 Z=0.000"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_ColorBlend": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "color",
+              "value": "Color(1.0,0.5,0.25)"
+            },
+            {
+              "variant": "color",
+              "value": "Color(0.0,0.5,1.0)"
+            },
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "color",
+            "value": ""
+          }
         }
       ],
       "rules": []
     }
+  },
+  "render": {
+    "int:0": "0",
+    "int:7": "7",
+    "int:-7": "-7",
+    "int:999": "999",
+    "int:1000": "1,000",
+    "int:9999": "9,999",
+    "int:10000": "10,000",
+    "int:999999": "999,999",
+    "int:-1000000": "-1,000,000",
+    "int:9007199254740993": "9,007,199,254,740,993",
+    "float:1.0": "1",
+    "float:-1.0": "-1",
+    "float:0.5": "0.5",
+    "float:1.0/3.0": "0.333",
+    "float:0.1+0.2": "0.3",
+    "float:2.0/3.0": "0.667",
+    "float:123456.789": "123,456.789",
+    "float:1e-7": "0",
+    "float:-0.0": "0",
+    "float:1e15": "1,000,000,000,000,000",
+    "float:1.5e-3": "0.002",
+    "bool:true": "1",
+    "bool:false": "0",
+    "str:empty": "",
+    "str:a_b": "a b",
+    "str:multibyte": "π≈3",
+    "vector:Vec(1.0,2.0,3.0)": "X=1.000 Y=2.000 Z=3.000",
+    "vector:Vec(0.5,-1.25,1.0/3.0)": "X=0.500 Y=-1.250 Z=0.333",
+    "rotator:Rotation(0.0,90.0,45.5)": "",
+    "color:Color(1.0,0.5,0.25)": "",
+    "color:Color(1.0,0.5,0.25,0.5)": "",
+    "quat:Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)": ""
   }
 }

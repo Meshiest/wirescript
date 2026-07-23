@@ -143,7 +143,13 @@ pub(super) fn type_of_type_expr(t: &TypeExpr) -> Type {
             "brick" => Type::Brick,
             "prefab" => Type::Prefab,
             "exec" => Type::Exec,
-            "any" => Type::Any,
+            // Mirrors `typecheck::primitive_name`'s `"any" => Type::Opaque`:
+            // the `any` annotation is the operator wildcard, not the
+            // internal `Type::Any` fallback (which is what the `_` arm
+            // below still uses for genuinely unresolvable type names —
+            // typecheck has already flagged those with WS002 by the time
+            // lowering runs).
+            "any" => Type::Opaque,
             _ => Type::Any,
         },
         TypeExpr::Ref { inner, .. } => Type::Ref(Box::new(type_of_type_expr(inner))),
@@ -340,7 +346,14 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         let mut properties = HashMap::default();
         properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
         if let Some(Expr::Array { elements, .. }) = &d.init {
-            let lits: Vec<Literal> = elements.iter().filter_map(array_elem_literal).collect();
+            // Element-wise compile-time string → bool for `var v: bool[] =
+            // [..]` — same `!= ""` law as the wire path's CompareNotEqual
+            // gate (see `bake_string_bool`).
+            let lits: Vec<Literal> = elements
+                .iter()
+                .filter_map(array_elem_literal)
+                .map(|lit| bake_string_bool(lit, &elem_type))
+                .collect();
             if lits.len() == elements.len() {
                 properties.insert(intern_static("InitialValue"), Literal::Array(lits));
             }
@@ -375,6 +388,13 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         .init
         .as_ref()
         .and_then(expr_to_literal)
+        // Compile-time string → bool: `var v: bool = "x"` bakes
+        // Bool(!s.is_empty()) — the same `!= ""` law as the runtime
+        // `CompareNotEqual` gate on the wire path (see `bake_string_bool`).
+        // A raw String InitialValue on a Bool var would start under the
+        // gate's NATIVE truthiness instead ("0"/"false" falsy) — a silent
+        // divergence from the documented law.
+        .map(|lit| bake_string_bool(lit, &inner_type))
         .or_else(|| default_literal_for_var_type(&inner_type));
     let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
@@ -458,7 +478,17 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
     if !d.init.is_empty() {
-        let lits: Vec<Literal> = d.init.iter().filter_map(array_elem_literal).collect();
+        // Element-wise compile-time string → bool for `array a: bool[] =
+        // ["x", ""]` → [true, false] — same `!= ""` law as the wire path's
+        // CompareNotEqual gate (see `bake_string_bool`); a raw String
+        // element in a Bool array variant would diverge to the gate's
+        // native content-aware truthiness at load.
+        let lits: Vec<Literal> = d
+            .init
+            .iter()
+            .filter_map(array_elem_literal)
+            .map(|lit| bake_string_bool(lit, &elem_type))
+            .collect();
         if lits.len() == d.init.len() {
             properties.insert(intern_static("InitialValue"), Literal::Array(lits));
         }
@@ -546,7 +576,16 @@ pub(super) fn pre_declare_output(
     label: Option<&str>,
     range: &SourceRange,
 ) {
-    let t = if let Some(v) = value {
+    // An explicit annotation IS the port's type — the value coerces INTO it
+    // (typecheck validates the pair; the `ctx.connect` choke point inserts
+    // any adapter, e.g. the string → bool `!= ""` compare). Deriving the
+    // port type from the VALUE instead silently made `out y: bool = s` a
+    // string port. Ref annotations unwrap so `out y: *int = x` keeps the
+    // value-typed port it always had (the ref-ness lives in the AST/emit
+    // handling, not the pin type).
+    let t = if let (Some(te), Some(_)) = (typ, value) {
+        unwrap_ref(&type_of_type_expr(te))
+    } else if let Some(v) = value {
         unwrap_ref(&ctx.type_of(v))
     } else if let Some(te) = typ {
         type_of_type_expr(te)

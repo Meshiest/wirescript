@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use wirescript::analyze::analyze_cycles;
 use wirescript::diagnostic::Severity;
-use wirescript::intern::{intern, resolve as sym_resolve, sym};
+use wirescript::intern::{intern, intern_static, resolve as sym_resolve, sym};
 use wirescript::ir::port_registry::WirePort;
 use wirescript::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc};
 use wirescript::layout::layout;
@@ -2493,7 +2493,118 @@ fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
         }
         return None;
     }
+    // Composite carrier recipes (`lower/mod.rs::materialize_unfoldable_constants`'s
+    // `recipe` match + its dedicated `Quat` arm): a fully-baked Make{Vector,
+    // Rotation,Color,Quaternion} gate with ZERO declared input ports (the
+    // guard above already excludes any ORDINARY MakeVector/etc. call node,
+    // which always declares its X/Y/Z(/W) ports even when their values are
+    // baked-but-unwired — see `resolve_data_input`'s doc comment — so this
+    // arm only ever matches the materialized-carrier shape). Field baked as
+    // anything other than a plain `Literal::Float` never arises from that
+    // recipe, so a non-`Float` property (or a missing one) refuses rather
+    // than guesses.
+    let f = |field: &str| match n.properties.get(&intern(field)) {
+        Some(Literal::Float(v)) => Some(*v),
+        _ => None,
+    };
+    if n.gate_class == gc::MAKE_VECTOR {
+        return match (f("X"), f("Y"), f("Z")) {
+            (Some(x), Some(y), Some(z)) => Some(FoldValue::Vector { x, y, z }),
+            _ => None,
+        };
+    }
+    if n.gate_class == gc::MAKE_ROTATION {
+        return match (f("Pitch"), f("Yaw"), f("Roll")) {
+            (Some(pitch), Some(yaw), Some(roll)) => Some(FoldValue::Rotator { pitch, yaw, roll }),
+            _ => None,
+        };
+    }
+    if n.gate_class == gc::MAKE_COLOR {
+        return match (f("R"), f("G"), f("B"), f("A")) {
+            (Some(r), Some(g), Some(b), Some(a)) => Some(FoldValue::Color { r, g, b, a }),
+            _ => None,
+        };
+    }
+    if n.gate_class == gc::MAKE_QUATERNION {
+        return match (f("X"), f("Y"), f("Z"), f("W")) {
+            (Some(x), Some(y), Some(z), Some(w)) => Some(FoldValue::Quat { x, y, z, w }),
+            _ => None,
+        };
+    }
     None
+}
+
+/// `FormatText`'s substitution slots, `InputA..InputG`, in template-index
+/// order — mirrors `fold/mod.rs::FORMAT_SLOTS` (private to that module, so
+/// re-declared here identically).
+const PREDICT_FORMAT_SLOTS: [WirePort; 7] = [
+    WirePort::InputA, WirePort::InputB, WirePort::InputC,
+    WirePort::InputD, WirePort::InputE, WirePort::InputF,
+    WirePort::InputG,
+];
+
+/// Mirrors `fold/mod.rs::try_resolve_format_text`'s two-part law (can't call
+/// it directly — it's private to the `fold` module and threads through that
+/// module's own `Info`/`plan` types): the template lives in the
+/// `FormatString` property (never a wire input), and at least one
+/// substitution slot must be genuinely SUBSTITUTED before even attempting
+/// the fold (a slot with no operand at all renders `"0"` and does NOT block
+/// it — certified, see `eval::format_text`'s own doc comment).
+///
+/// Deliberately NOT identical to `try_resolve_format_text`, though: THAT
+/// function reads `in_wires` built from `fold_certified_constants`'s OWN
+/// pre-cleanup snapshot, where a literal `${...}` operand is still a real
+/// wired `_Literal` source (`lower/ops.rs::lower_interp` always wires every
+/// slot via `lower_expr`+`connect`, unlike a builtin CALL argument, which
+/// can bake straight onto the consuming gate — see `resolve_data_input`'s
+/// doc comment). But `predict()` here only ever sees `u_mod`, the module
+/// `lower()` already returned — and the ALWAYS-ON (FoldMode-independent)
+/// `inline_orphan_literals` lowering cleanup has, by then, already deleted
+/// that wire+`_Literal` node and baked the value directly onto THIS node's
+/// own property whenever `port_accepts_inline_variant` allows it (exactly
+/// like a Math* gate's literal operand). So an unwired slot here ALSO needs
+/// the baked-property fallback (`--fold-diff`-fuzzer-discovered:
+/// `Length("v${Length(\"a\")}-${26}")`'s `${26}` slot mispredicted as
+/// unsubstituted without it, even though production folds the whole
+/// expression correctly — production's OWN driver never has this problem,
+/// since it runs before that cleanup pass, so this fallback is needed HERE
+/// only, not ported back to `try_resolve_format_text`).
+fn predict_format_text(
+    n: &Node,
+    id: NodeId,
+    in_wires: &StdMap<(NodeId, WirePort), Vec<PortRef>>,
+    known: &StdMap<NodeId, FoldValue>,
+) -> Option<FoldValue> {
+    let template = match n.properties.get(&intern_static("FormatString")) {
+        Some(Literal::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let mut inputs: Vec<Option<FoldValue>> = Vec::with_capacity(PREDICT_FORMAT_SLOTS.len());
+    let mut any_substituted = false;
+    for &port in &PREDICT_FORMAT_SLOTS {
+        match in_wires.get(&(id, port)) {
+            Some(srcs) if srcs.len() > 1 => return None, // fan-in: never folds
+            Some(srcs) if !srcs.is_empty() => match known.get(&srcs[0].node_id) {
+                Some(v) => {
+                    inputs.push(Some(v.clone()));
+                    any_substituted = true;
+                }
+                None => return None, // source not resolved (yet, or never)
+            },
+            _ => {
+                let baked = n
+                    .properties
+                    .get(&intern_static(port.as_str()))
+                    .and_then(FoldValue::from_literal);
+                any_substituted |= baked.is_some();
+                inputs.push(baked);
+            }
+        }
+    }
+    if !any_substituted {
+        return None;
+    }
+    eval::format_text(&template, &inputs).map(FoldValue::Str)
 }
 
 /// Step 1: independently predict which nodes of the UNFOLDED module `root`
@@ -2571,6 +2682,21 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
                     && let Some(v) = known.get(&srcs[0].node_id)
                 {
                     known.insert(id, v.clone());
+                    changed = true;
+                }
+                continue;
+            }
+
+            // `FormatText`'s certified signature is a synthetic `[Tmpl]`
+            // marker no real `Value` can ever match (see `eval.rs`'s own
+            // comment on this), so it's unreachable through the generic gate
+            // path below — special-cased here exactly the way production
+            // folding special-cases it in `fold/mod.rs::try_resolve_format_text`,
+            // otherwise `${...}`-interpolation would be permanently
+            // unpredictable and this pool addition would test nothing.
+            if n.gate_class == gc::STRING_FORMAT_TEXT {
+                if let Some(v) = predict_format_text(n, id, &in_wires, &known) {
+                    known.insert(id, v);
                     changed = true;
                 }
                 continue;
@@ -2973,11 +3099,146 @@ fn fold_leaf(g: &mut Gen, ty: Ty) -> String {
     if g.rng.chance(1, 5) { format!("Opaque({l})") } else { l }
 }
 
+/// An ASCII string, <=32 chars — dedicated to the certified STRING op pool
+/// (`..`/`${...}`/`Length`/`Contains`/`StartsWith`/`ToLower`/`ToUpper`/
+/// `Trim`): unlike `Gen::lit(Ty::Str)` (which occasionally emits a
+/// multibyte `"héllo wörld"` literal for the GENERAL fuzzer), every
+/// certified string law in `eval.rs` refuses non-ASCII operands outright
+/// (`string_operands_foldable`), so a non-ASCII leaf here would just be a
+/// permanent, uninteresting refusal instead of exercising the pool below.
+fn fold_str_ascii_lit(g: &mut Gen) -> String {
+    const WORDS: &[&str] = &[
+        "", "a", "ab", "hello", "world", "Hello World", "  spaced  ",
+        "MixedCase", "123abc", "the quick brown fox jumps over",
+    ];
+    format!("\"{}\"", g.rng.pick(WORDS))
+}
+
+/// Like `fold_leaf`, but for `fold_str_ascii_lit` — 20% `Opaque`-wrapped.
+fn fold_str_leaf(g: &mut Gen) -> String {
+    let s = fold_str_ascii_lit(g);
+    if g.rng.chance(1, 5) { format!("Opaque({s})") } else { s }
+}
+
+/// An EXACTLY-representable (as f64) decimal float literal — mirrors the
+/// certified probe's own `compositeMath`/`compositeOps` operand set (halves
+/// and quarters, e.g. `MakeVector(1.5,-2.5,0.75)`) — dedicated to the
+/// composite pool (`Vec`/`Quat` leaves) per the task brief's
+/// "exact-representable components" instruction, unlike `Gen::lit(Ty::Float)`
+/// (which can produce an arbitrary, not-exactly-representable decimal like
+/// `"23.7"` for the GENERAL fuzzer).
+fn fold_exact_float_lit(g: &mut Gen) -> String {
+    const VALUES: &[&str] = &[
+        "0.0", "1.0", "-1.0", "0.5", "-0.5", "0.25", "-0.25",
+        "1.5", "-1.5", "2.0", "-2.0", "0.75", "-0.75", "3.0", "4.0",
+    ];
+    (*g.rng.pick(VALUES)).to_string()
+}
+
+/// A `Ty::Vec3` leaf: `Vec(x, y, z)` over three independent
+/// exact-representable float components (`fold_exact_float_lit`), 20%
+/// `Opaque`-wrapped as a whole — mirrors `fold_leaf`'s convention.
+fn fold_vec_leaf(g: &mut Gen) -> String {
+    let v = format!(
+        "Vec({}, {}, {})",
+        fold_exact_float_lit(g), fold_exact_float_lit(g), fold_exact_float_lit(g)
+    );
+    if g.rng.chance(1, 5) { format!("Opaque({v})") } else { v }
+}
+
+/// A `Ty::Vec3` expression, depth <= `depth`: leaf, component-wise/broadcast
+/// `+ - * /` (certified `compositeMath`), or `Cross`/`ScaleVec` (certified
+/// `compositeOps`) — `Dot` is float-typed and lives in `fold_expr`'s
+/// `Ty::Float` arm instead.
+fn fold_vec_expr(g: &mut Gen, depth: u32) -> String {
+    if depth == 0 || g.rng.chance(1, 2) {
+        return fold_vec_leaf(g);
+    }
+    match g.rng.below(4) {
+        0 => {
+            let op = *g.rng.pick(&["+", "-", "*", "/"]);
+            let a = fold_vec_expr(g, depth - 1);
+            let b = fold_vec_expr(g, depth - 1);
+            format!("({a} {op} {b})")
+        }
+        1 => {
+            // scalar broadcast — certified on either side.
+            let op = *g.rng.pick(&["+", "-", "*", "/"]);
+            let v = fold_vec_expr(g, depth - 1);
+            let s = fold_exact_float_lit(g);
+            if g.rng.chance(1, 2) { format!("({v} {op} {s})") } else { format!("({s} {op} {v})") }
+        }
+        2 => {
+            let a = fold_vec_expr(g, depth - 1);
+            let b = fold_vec_expr(g, depth - 1);
+            format!("Cross({a}, {b})")
+        }
+        _ => {
+            let v = fold_vec_expr(g, depth - 1);
+            let s = fold_exact_float_lit(g);
+            format!("ScaleVec({v}, {s})")
+        }
+    }
+}
+
+/// A `Ty::Str` expression, depth <= `depth`: an ASCII leaf
+/// (`fold_str_leaf` — dedicated so a non-ASCII `Gen::lit` pick never lands
+/// here and silently tanks this pool's coverage with refusals), `..`
+/// concatenation of two (possibly differently-typed) scalar sub-expressions,
+/// `ToLower`/`ToUpper`/`Trim` of a Str sub-expression, or a
+/// `${...}`-interpolated leaf (`fold_interp_leaf`) — the certified `strings`
+/// chapter's own operator set (`eval.rs`).
+fn fold_str_expr(g: &mut Gen, depth: u32) -> String {
+    if depth == 0 || g.rng.chance(1, 2) {
+        return fold_str_leaf(g);
+    }
+    match g.rng.below(5) {
+        0 => {
+            let ta = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]);
+            let tb = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]);
+            let a = if ta == Ty::Str { fold_str_expr(g, depth - 1) } else { fold_expr(g, ta, depth - 1) };
+            let b = if tb == Ty::Str { fold_str_expr(g, depth - 1) } else { fold_expr(g, tb, depth - 1) };
+            format!("({a} .. {b})")
+        }
+        1 => format!("ToLower({})", fold_str_expr(g, depth - 1)),
+        2 => format!("ToUpper({})", fold_str_expr(g, depth - 1)),
+        3 => format!("Trim({})", fold_str_expr(g, depth - 1)),
+        _ => fold_interp_leaf(g, depth - 1),
+    }
+}
+
+/// A `${...}`-interpolated Str leaf: 1-3 embedded Int/Float/Bool
+/// sub-expressions (matching `render_for_format`'s certified law for those
+/// variants — composites are deliberately excluded, matching Task 4's
+/// "scalar-only inputs" scope; nested STRING sub-expressions are also
+/// excluded, sidestepping untested quote-in-interpolation lexing) wrapped in
+/// static ASCII text, free of `"`/`\`/`$` so it can never accidentally start
+/// a second interpolation. Lowers to `String_FormatText`
+/// (`lower/ops.rs::lower_interp`) — exercises `predict_format_text`.
+fn fold_interp_leaf(g: &mut Gen, depth: u32) -> String {
+    let n = g.rng.range(1, 3);
+    let mut out = String::from("\"v");
+    for i in 0..n {
+        let t = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
+        let e = fold_expr(g, t, depth);
+        out.push_str(&format!("${{{e}}}"));
+        if i + 1 < n {
+            out.push('-');
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// An expression of type `ty`, depth <= `depth`, built only from the
 /// certified operator set over homogeneous-typed operands (equality is the
-/// only operator exercised across all four scalar types; ordered compares
-/// and logical combinators keep to the types the certified table actually
-/// probed those signatures at).
+/// only operator exercised across all five scalar/composite types; ordered
+/// compares and logical combinators keep to the types the certified table
+/// actually probed those signatures at). `Str` delegates to `fold_str_expr`
+/// and `Vec3` to `fold_vec_expr` (both certified `strings`/`compositeMath`/
+/// `compositeOps` chapter operator sets); `Ty::Float` occasionally routes
+/// through `Dot` and `Ty::Int` through `Length`, both vector/string-typed
+/// operands producing a scalar result.
 fn fold_expr(g: &mut Gen, ty: Ty, depth: u32) -> String {
     // A higher early-exit chance than the main fuzzer's general `Gen::expr`
     // (which uses 1/4): with 20% of LEAVES independently `Opaque`-wrapped
@@ -2993,12 +3254,21 @@ fn fold_expr(g: &mut Gen, ty: Ty, depth: u32) -> String {
     }
     match ty {
         Ty::Int | Ty::Float => {
+            if ty == Ty::Float && g.rng.chance(1, 6) {
+                let a = fold_vec_expr(g, depth - 1);
+                let b = fold_vec_expr(g, depth - 1);
+                return format!("Dot({a}, {b})");
+            }
+            if ty == Ty::Int && g.rng.chance(1, 6) {
+                let s = fold_str_expr(g, depth - 1);
+                return format!("Length({s})");
+            }
             let op = *g.rng.pick(&["+", "-", "*", "/", "%"]);
             let a = fold_expr(g, ty, depth - 1);
             let b = fold_expr(g, ty, depth - 1);
             format!("({a} {op} {b})")
         }
-        Ty::Bool => match g.rng.below(4) {
+        Ty::Bool => match g.rng.below(5) {
             0 => {
                 let t = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]);
                 let op = *g.rng.pick(&["==", "!="]);
@@ -3019,15 +3289,19 @@ fn fold_expr(g: &mut Gen, ty: Ty, depth: u32) -> String {
                 let b = fold_expr(g, Ty::Bool, depth - 1);
                 format!("({a} {op} {b})")
             }
-            _ => {
+            3 => {
                 let a = fold_expr(g, Ty::Bool, depth - 1);
                 format!("!({a})")
             }
+            _ => {
+                let s = fold_str_expr(g, depth - 1);
+                let needle = fold_str_expr(g, depth - 1);
+                let f = *g.rng.pick(&["Contains", "StartsWith"]);
+                format!("{f}({s}, {needle})")
+            }
         },
-        // No certified string COMBINATOR exists (`..` concatenation isn't in
-        // the certified set) — a Str-typed expression is always a leaf.
-        Ty::Str => fold_leaf(g, ty),
-        Ty::Vec3 => unreachable!("fold-diff generator never requests Vec3"),
+        Ty::Str => fold_str_expr(g, depth),
+        Ty::Vec3 => fold_vec_expr(g, depth),
     }
 }
 
@@ -3052,24 +3326,33 @@ fn fold_expr_with_param(g: &mut Gen, ty: Ty, pname: &str, depth: u32) -> String 
             let b = fold_expr(g, ty, depth);
             format!("({pname} {op} {b})")
         }
-        Ty::Vec3 => unreachable!("fold-diff generator never requests Vec3"),
+        Ty::Vec3 => {
+            let op = *g.rng.pick(&["+", "-", "*"]);
+            let b = fold_vec_expr(g, depth);
+            format!("({pname} {op} {b})")
+        }
     }
 }
 
 /// One constant-heavy fold-diff program: 1-3 `out` declarations of random
-/// scalar types (each a depth-<=4 certified expression), with a 30% chance
-/// one of them is routed through a named chip call (`chip F(x: T) -> (r: T)`
-/// called with a constant — exercises chip-boundary propagation) and a 20%
-/// chance of an unrelated `on t { if <const-expr> { .. } else { .. } }`
-/// wrapper (exercises Branch-truncation structural cleanup; deliberately
-/// NOT value-checked — `predict()` never resolves through Branch).
+/// scalar/composite types (each a depth-<=4 certified expression), with a
+/// 30% chance one of them is routed through a named chip call
+/// (`chip F(x: T) -> (r: T)` called with a constant — exercises
+/// chip-boundary propagation), a 25% chance of an extra `quat`-typed `out`
+/// (`MakeQuaternion` over 4 independent arithmetic float args — the
+/// transitively-certified recipe from `eval.rs::make_quaternion`'s doc
+/// comment, matching the Task 4 regression tests' shape so the constructor
+/// only ever folds once all four operands resolve), and a 20% chance of an
+/// unrelated `on t { if <const-expr> { .. } else { .. } }` wrapper
+/// (exercises Branch-truncation structural cleanup; deliberately NOT
+/// value-checked — `predict()` never resolves through Branch).
 fn gen_fold_diff_program(seed: u64) -> String {
     let mut g = Gen::new(seed);
     let mut blocks: Vec<String> = Vec::new();
 
     let n_outs = g.rng.range(1, 3);
     let out_types: Vec<Ty> = (0..n_outs)
-        .map(|_| *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str]))
+        .map(|_| *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3]))
         .collect();
     let chip_wrap_idx = if !out_types.is_empty() && g.rng.chance(3, 10) {
         Some(g.rng.below(out_types.len()))
@@ -3094,6 +3377,15 @@ fn gen_fold_diff_program(seed: u64) -> String {
             let e = fold_expr(&mut g, *ty, 4);
             blocks.push(format!("out {oname} = {e}"));
         }
+    }
+
+    if g.rng.chance(1, 4) {
+        let oname = g.fresh("foq");
+        let args: Vec<String> = (0..4).map(|_| fold_expr(&mut g, Ty::Float, 2)).collect();
+        blocks.push(format!(
+            "out {oname} = Quat({}, {}, {}, {})",
+            args[0], args[1], args[2], args[3]
+        ));
     }
 
     if g.rng.chance(1, 5) {

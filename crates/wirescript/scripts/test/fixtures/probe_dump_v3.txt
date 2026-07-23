@@ -1,0 +1,68 @@
+[2026.07.21-02.10.00:000][100]LogBrickadia: PROBE gate_semantics v3
+[2026.07.21-02.10.00:010][101]LogBrickadia: BEGIN eq 3
+[2026.07.21-02.10.00:020][102]LogBrickadia: CASE CompareEqual int:1 int:1 -> 1
+[2026.07.21-02.10.00:030][103]LogBrickadia: CASE CompareEqual int:1 str:1 -> 0
+[2026.07.21-02.10.00:040][104]LogChat: SomePlayer: hey
+[2026.07.21-02.10.00:050][105]LogBrickadia: CASE CompareEqual int:1 unwired -> 0
+[2026.07.21-02.10.00:060][106]LogBrickadia: END eq
+[2026.07.21-02.10.00:070][107]LogBrickadia: BEGIN bool 2
+[2026.07.21-02.10.00:080][108]LogBrickadia: CASE LogicalAND bool:true bool:false -> 0
+[2026.07.21-02.10.00:090][109]LogBrickadia: CASE LogicalOR bool:true bool:false -> 1
+[2026.07.21-02.10.00:100][110]LogBrickadia: END bool
+[2026.07.21-02.10.00:110][111]LogBrickadia: BEGIN compare 2
+[2026.07.21-02.10.00:120][112]LogBrickadia: CASE CompareLess int:1 int:2 -> 1
+[2026.07.21-02.10.00:130][113]LogBrickadia: CASE CompareGreaterEqual int:2 int:1 -> 1
+[2026.07.21-02.10.00:140][114]LogBrickadia: END compare
+[2026.07.21-02.10.00:150][115]LogBrickadia: BEGIN select 1
+[2026.07.21-02.10.00:160][116]LogBrickadia: CASE Select int:1 - -> 111
+[2026.07.21-02.10.00:170][117]LogBrickadia: END select
+[2026.07.21-02.10.00:180][118]LogBrickadia: BEGIN branch 1
+[2026.07.21-02.10.00:190][119]LogBrickadia: CASE Branch bool:true - -> A
+[2026.07.21-02.10.00:200][120]LogBrickadia: END branch
+[2026.07.21-02.10.00:210][121]LogBrickadia: BEGIN math 4
+[2026.07.21-02.10.00:220][122]LogBrickadia: CASE MathAdd int:1 int:2 -> 3
+[2026.07.21-02.10.00:230][123]LogBrickadia: CASE MathMultiply float:0.5 float:0.5 -> 0.25
+[2026.07.21-02.10.00:240][124]LogBrickadia: CASE MathDivide float:NaN float:NaN -> NaN
+[2026.07.21-02.10.00:250][125]LogBrickadia: CASE MathAdd int:1 unwired -> 1
+[2026.07.21-02.10.00:260][126]LogBrickadia: END math
+[2026.07.21-02.10.00:270][127]LogBrickadia: BEGIN render 11
+[2026.07.21-02.10.00:280][128]LogBrickadia: CASE Render int:0 -> 0
+[2026.07.21-02.10.00:290][129]LogBrickadia: CASE Render int:1000 -> 1,000
+[2026.07.21-02.10.00:300][130]LogBrickadia: CASE Render float:0.333 -> 0.333
+[2026.07.21-02.10.00:310][131]LogBrickadia: CASE Render float:tiny -> 0
+[2026.07.21-02.10.00:320][132]LogBrickadia: CASE Render bool:true -> 1
+[2026.07.21-02.10.00:330][133]LogBrickadia: CASE Render bool:false -> 0
+[2026.07.21-02.10.00:340][134]LogBrickadia: CASE Render str:hello -> 'hello world'
+[2026.07.21-02.10.00:350][135]LogBrickadia: CASE Render vector:Vec(1.0,2.0,3.0) -> (X=1.000, Y=2.000, Z=3.000)
+[2026.07.21-02.10.00:360][136]LogChat: AnotherPlayer: gg
+[2026.07.21-02.10.00:370][137]LogBrickadia: CASE Render rotator:Rotation(0.0,90.0,45.5) -> (Pitch=0.000, Yaw=90.000, Roll=45.500)
+[2026.07.21-02.10.00:380][138]LogBrickadia: CASE Render color:Color(1.0,0.5,0.25) -> (R=1.000, G=0.500, B=0.250, A=1.000)
+[2026.07.21-02.10.00:390][139]LogBrickadia: CASE Render quat:Quat(0.0,0.0,0.707,0.707) -> (X=0.000, Y=0.000, Z=0.707, W=0.707)
+[2026.07.21-02.10.00:400][140]LogBrickadia: END render
+[2026.07.21-02.10.00:410][141]LogBrickadia: BEGIN strings 7
+[2026.07.21-02.10.00:420][142]LogBrickadia: CASE String_Concatenate str:a str:b -> 'ab'
+[2026.07.21-02.10.00:430][143]LogBrickadia: CASE String_Contains str:'hello world' str:'world' -> 1
+[2026.07.21-02.10.00:440][144]LogBrickadia: CASE String_Substring str:'hello' int:1 int:3 -> 'ell'
+[2026.07.21-02.10.00:450][145]LogBrickadia: CASE String_Replace str:'hello world' str:'world' str:'there' -> 'hello there'
+[2026.07.21-02.10.00:460][146]LogBrickadia: CASE String_FormatText tmpl:0str -> 'hi'
+[2026.07.21-02.10.00:470][147]LogBrickadia: CASE String_ParseNumber str:'1.5' -> 1.5
+[2026.07.21-02.10.00:475][147]LogBrickadia: CASE String_ToLower str:'  X  ' -> '  x  '
+[2026.07.21-02.10.00:480][148]LogBrickadia: END strings
+[2026.07.21-02.10.00:490][149]LogBrickadia: BEGIN compositeMath 3
+[2026.07.21-02.10.00:500][150]LogBrickadia: CASE MathAdd vector:Vec(0.5,0.25,-0.75) vector:Vec(0.25,0.5,0.75) -> (X=0.750, Y=0.750, Z=0.000)
+[2026.07.21-02.10.00:510][151]LogBrickadia: CASE MathMultiply vector:Vec(0.5,0.25,-0.75) float:2.0 -> (X=1.000, Y=0.500, Z=-1.500)
+[2026.07.21-02.10.00:520][152]LogBrickadia: CASE MathAdd vector:Vec(NaN,1,2) vector:Vec(1,1,1) -> (X=NaN, Y=2.000, Z=3.000)
+[2026.07.21-02.10.00:530][153]LogBrickadia: END compositeMath
+[2026.07.21-02.10.00:540][154]LogBrickadia: BEGIN compositeOps 6
+[2026.07.21-02.10.00:550][155]LogBrickadia: CASE MakeVector float:1.5 float:-2.5 float:0.75 -> (X=1.500, Y=-2.500, Z=0.750)
+[2026.07.21-02.10.00:560][156]LogBrickadia: CASE VecScale vector:Vec(0.5,0.25,-0.75) float:2.0 -> (X=1.000, Y=0.500, Z=-1.500)
+[2026.07.21-02.10.00:570][157]LogBrickadia: CASE VecDotProduct vector:Vec(0.5,0.25,-0.75) vector:Vec(0.25,0.5,0.75) -> -0.3125
+[2026.07.21-02.10.00:580][158]LogBrickadia: CASE RotateVector vector:Vec(1,0,0) quat:90Z -> (X=0.000, Y=1.000, Z=0.000)
+[2026.07.21-02.10.00:590][159]LogBrickadia: CASE CompareEqual color:Color(1.0,0.5,0.25) color:Color(1.0,0.5,0.25) -> 1
+[2026.07.21-02.10.00:600][160]LogBrickadia: CASE MakeRotation float:30.0 float:60.0 float:90.0 -> garbled
+[2026.07.21-02.10.00:610][161]LogBrickadia: END compositeOps
+[2026.07.21-02.10.00:620][162]LogBrickadia: BEGIN deferredOps 2
+[2026.07.21-02.10.00:630][163]LogBrickadia: CASE VecMagnitude vector:Vec(0.5,0.25,-0.75) -> 0.935414
+[2026.07.21-02.10.00:640][164]LogBrickadia: CASE QuatSlerp quat:90Z quat:180Z float:0.5 -> (X=0.000,Y=0.000,Z=0.383,W=0.924)
+[2026.07.21-02.10.00:650][165]LogBrickadia: END deferredOps
+[2026.07.21-02.10.00:660][166]LogBrickadia: PROBE done

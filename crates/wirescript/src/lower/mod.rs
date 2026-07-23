@@ -56,9 +56,10 @@ use access::*;
 // `pub(crate)` so the `--fold-diff` differential fuzz harness
 // (examples/fuzz_programs.rs — an `examples/` binary, which compiles as an
 // external crate and cannot see `pub(crate)` items) can reach
-// `fold::eval::{eval, Value}` to predict certified-fold outcomes without
-// reimplementing the evaluator itself. This is the ONLY surface widened:
-// `fold::table` and the propagation/apply internals stay `pub(crate)`.
+// `fold::eval::{eval, Value, format_text}` to predict certified-fold
+// outcomes (incl. `${...}`-interpolation) without reimplementing the
+// evaluator itself. This is the ONLY surface widened: `fold::table` and the
+// propagation/apply internals stay `pub(crate)`.
 #[doc(hidden)]
 pub mod fold;
 
@@ -302,17 +303,22 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             _ => None,
         };
         let Some((gate_class, out_ty, fields)) = recipe else {
-            // Scalar literal (int/float/bool/string) whose target port cannot
-            // hold an inlined data default (e.g. Opaque's rerouter RER_Input —
-            // no matching data field, so emit's inline is silently dropped and
-            // the gate reads 0/empty in-game): materialize a real pure gate
-            // whose UNWIRED inputs carry the value as data defaults (the same
-            // in-game-proven mechanism as `n + 1` inlining). A Variable gate
-            // is NOT usable here: its Value output stays null until an exec
-            // write — InitialValue data alone does not drive the port.
+            // Scalar literal (int/float/bool/string) — or `Quat`, the one
+            // composite variant the `recipe` match above has no arm for
+            // (Vector/Rotator/LinearColor all short-circuit into `recipe`
+            // and never reach this branch at all) — whose target port
+            // cannot hold an inlined data default (e.g. Opaque's rerouter
+            // RER_Input — no matching data field, so emit's inline is
+            // silently dropped and the gate reads 0/empty in-game):
+            // materialize a real pure gate whose UNWIRED inputs carry the
+            // value as data defaults (the same in-game-proven mechanism as
+            // `n + 1` inlining). A Variable gate is NOT usable here: its
+            // Value output stays null until an exec write — InitialValue
+            // data alone does not drive the port.
             let scalar = matches!(
                 src.properties.get(&value_sym),
-                Some(Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) | Literal::String(_))
+                Some(Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) | Literal::String(_)
+                    | Literal::Quat { .. })
             );
             if !scalar {
                 continue;
@@ -414,6 +420,27 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                     *sym::OUTPUT,
                     WirePort::Output,
                     Type::String,
+                ),
+                // `Quat` has no compositeMath identity to piggyback on (the
+                // certified `compositeMath` chapter's `MathAdd`/`VecScale`
+                // identities are Vector-only — `fold/eval.rs::composite_math`
+                // never matches a `Value::Quat`), so this reuses the SAME
+                // proven mechanism the `recipe` match above already uses for
+                // Vector/Rotator/Color: a real `MakeQuaternion` gate whose
+                // X/Y/Z/W inputs are baked, UNWIRED data defaults (no wires
+                // at all) — the general "unwired input reads its own data
+                // default" law every carrier in this function relies on.
+                Literal::Quat { x, y, z, w } => (
+                    gc::MAKE_QUATERNION,
+                    vec![
+                        (intern_static("X"), Literal::Float(*x)),
+                        (intern_static("Y"), Literal::Float(*y)),
+                        (intern_static("Z"), Literal::Float(*z)),
+                        (intern_static("W"), Literal::Float(*w)),
+                    ],
+                    *sym::OUTPUT,
+                    WirePort::Output,
+                    Type::Quat,
                 ),
                 _ => unreachable!("scalar match above"),
             };

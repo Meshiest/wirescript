@@ -231,10 +231,111 @@ mod allowed(i: int, mask: int, blocked: int) -> bool {
 }
 ```
 
+## 7. Reduce with a native array aggregate, not an unrolled fold
+
+`arr.sum()`, `arr.max()`, `arr.min()`, and `arr.average()` are **one gate each**. An
+unrolled max/sum over `N` slots is `N` compares/adds plus the accumulator plumbing.
+
+```wirescript
+// Before: an N-way unrolled scan
+mod maxTotal(t: int[]) -> int {
+  var m = t[0]
+  if t[1] > m { m = t[1] }   // ... repeated per slot
+  return m
+}
+
+// After: one gate
+let over = totals.max().Value >= 100
+```
+
+- **Gotcha:** `.max()` / `.min()` return a record `{ IsEmpty: bool, Value: int }` -- read
+  `.Value` (and check `IsEmpty` when the array can be empty). `.sum()` / `.average()`
+  return a bare scalar.
+- If the slots you want to *exclude* already hold the identity value (`0` for a sum, or a
+  value below every real one for a max), just reduce the whole array -- no masking needed.
+
+## 8. Keep a derived array to unlock an aggregate
+
+To reduce a *computed* value over a sub-range, don't decode-and-add per element every time.
+Maintain a parallel array holding the precomputed per-element value in lockstep with the
+source, then `slice` the window into a scratch array and `sum()` it -- 2 gates instead of
+~`N`.
+
+```wirescript
+array packed: int[]   // source (e.g. state+value packed per element)
+array vals: int[]     // derived mirror: the summable value per element
+array scratch: int[]  // reusable slice target
+
+// keep the mirror in lockstep at EVERY write to `packed`
+mod setCell(i: int, v: int) { packed[i] = encode(v)  vals[i] = v }
+
+// reduce a 12-wide window in 2 gates, not 12 decodes + 11 adds
+mod windowSum(base: int) -> int {
+  scratch.slice(vals, base, 12)   // slice REPLACES scratch with vals[base..base+12]
+  return scratch.sum()
+}
+```
+
+The cost is one extra write per source mutation; it pays back at every reduction -- and
+reductions are usually called from many slots. Audit that *every* write to the source has a
+paired write to the mirror, or the aggregate silently drifts.
+
+## 9. Derive in pure output bindings, not on the exec chain
+
+Array reads are exec-only, so an `on <update>` handler that reads a buffer and *also*
+computes display values inlines the whole decode/format on the exec chain (a `Union` /
+`Branch` / `Var_Set` per step) and needs a cached-result var per output. Cache only the raw
+read; derive everything else in the **pure** output binding.
+
+```wirescript
+// Before: decode + format run on the exec chain, cached into a result var
+var vC: color = ...
+on update { vC = colorOf(buf[0]) }
+out color0: color = vC.Value
+
+// After: cache only the raw cell; the binding derives it, pure
+var vP0: int = 0
+on update { vP0 = buf[0] }                // the only exec-only step (the array read)
+out color0: color = colorOf(vP0.Value)    // pure: no exec chain, no result var
+```
+
+Requirement: a mod called from a pure binding must be **expression-`if`** (a single
+`return if ... then ... else ...`), not a statement-`if` with early `return`s.
+
+## Profiling: find the hot spots
+
+`--dump-ir` prints, to **stderr**, a node count per module and every gate with its
+`@ line:col` source anchor. Measure before you refactor -- attack the dominant gate kind or
+source line, not a guess.
+
+```bash
+# per-module node counts + the full node list (IR is on stderr)
+cargo run -p bearilog-cli -- compile foo.ws --dump-ir 2>&1 1>/dev/null
+
+# total node (gate) count
+... 2>&1 1>/dev/null | grep -cE '^\s*\[(Input|Output|Gate)\]'
+
+# which gate KINDS dominate
+... 2>&1 1>/dev/null | grep -oE 'BrickComponentType[A-Za-z_]+' | sort | uniq -c | sort -rn | head
+
+# which SOURCE LINES emit the most gates (the @ line anchor)
+... 2>&1 1>/dev/null | grep -oE '@ [0-9]+:' | grep -oE '[0-9]+' | sort -n | uniq -c | sort -rn | head
+```
+
+A dominant `MathModulo` / `MathDivide` count usually means a decode called too often; a
+large `ArrayVar_Get` count means reads that could be cached or aggregated; a single source
+line with a big share is your first refactor target.
+
 ## Gotchas worth knowing
 
 - **An expression-`if` is a `Select` gate, so BOTH arms evaluate.** Guard
   possibly-out-of-bounds array reads with a statement-`if`, never a ternary.
+- **Delete dead arithmetic.** If a value's range makes an op a no-op, drop it: `(x / 16) % 4`
+  where `x / 16` is already proven `<= 2` is just `x / 16`; a mask that can never clear a
+  set bit is nothing. Every op you remove is a gate you don't build.
+- **Don't recompute inside one expression.** Bind a repeated (possibly expensive) call to a
+  `let` once and reuse it -- each call is its own gate subtree, so `f(x) + f(x)` builds `f`
+  twice.
 - **A `mod`-local `static var` is per-copy, not shared** -- each inlined instance gets its
   own. Hoist shared state to a root `var`.
 - **Hover a `mod`, `chip`, `on`, or `if` for its gate count.** The estimate covers the
@@ -247,12 +348,16 @@ mod allowed(i: int, mask: int, blocked: int) -> bool {
 
 When a build is unexpectedly huge, walk this list:
 
+0. Profile with `--dump-ir` first -- refactor the dominant gate kind / source line, not a guess.
 1. How many call sites reach the biggest `mod`? Multiply -- that's your bill.
 2. Can many producers be funneled through one queued dispatch site?
 3. Can near-identical entry points collapse into one parameterized `mod`?
 4. Can a hot shared routine be deferred behind a dirty flag to one call per tick?
 5. Is any per-slot boolean state an array that should be a bitmask?
 6. Is anything being re-derived inside a callee that could be passed in?
+7. Is an unrolled max/sum/count really a one-gate `.max()` / `.sum()` / `.average()`?
+8. Would a derived parallel array turn a per-element decode-and-add into a `slice` + `sum`?
+9. Is display/derived logic running on the exec chain when it could be a pure output binding?
 
 ## See also
 
