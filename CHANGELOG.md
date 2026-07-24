@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 0.19.0
+
+- **Fixed a playground rename clobbering another file** - renaming the active file left the active-file pointer on the alphabetically-first other file, so the next autosave silently overwrote that file with the renamed file's content.
+
 ## 0.18.0
 
 - **`exec =` on any exec call** - an exec-gate call (array method, builtin, mod/chip) can run off an explicit `exec = <trigger>`, e.g. an array read in a pure binding: `lut.get(i, exec = i + 1)`.

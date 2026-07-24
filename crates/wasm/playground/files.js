@@ -91,10 +91,15 @@ export function renameFile(oldName, newName) {
   const files = ensureDefault();
   if (files[oldName] === undefined) return false;
   if (files[newName] !== undefined) return false; // target exists
+  // Read the raw pointer BEFORE writing: getActiveFile() self-heals a stale
+  // pointer, and mid-rename oldName is already gone — it would stamp the
+  // alphabetically-first file as active and never match oldName, leaving the
+  // active pointer on another file for the next autosave to clobber.
+  const wasActive = localStorage.getItem(STORAGE_ACTIVE) === oldName;
   files[newName] = files[oldName];
   delete files[oldName];
   setFilesObject(files);
-  if (getActiveFile() === oldName) {
+  if (wasActive) {
     setActiveFile(newName);
   }
   return true;
