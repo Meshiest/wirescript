@@ -619,7 +619,7 @@ fn resolve_caller_captures(
     captures
 }
 
-fn compute_scope_captures(module: &Module) -> Vec<NodeId> {
+pub(crate) fn compute_scope_captures(module: &Module) -> Vec<NodeId> {
     let internal: HashSet<NodeId> = module.nodes.keys().cloned().collect();
     let mut external = Vec::new();
     for w in &module.wires {
@@ -688,6 +688,7 @@ fn build_chip_module(
         pending_return_record: None,
         chip_call_stack: ctx.chip_call_stack.clone(),
         known_fn_names: ctx.known_fn_names.clone(),
+        const_env: ctx.const_env.clone(),
         is_root_module: false,
         doc_comments: ctx.doc_comments,
         // `@nofold chip Foo(...) { ... }`: every gate lowered into this

@@ -2,6 +2,9 @@
 
 ## 0.19.0
 
+- **Constant expressions in `var` / `array` initializers** - an initializer may now name a top-level `let` constant and compute with it (`array mask: int[] = [1 << C_FLAG, WIDTH * HEIGHT]`) instead of restating the number. Named constants resolve through chains and in any declaration order; integer, float, bool and string operators fold with the gates' own semantics (64-bit wrapping, divide-by-zero as 0, a non-finite float as 0). Anything that isn't a compile-time constant — a runtime value, a shift past 64, a reference cycle — is still rejected. The richer folding is scoped to initializers: everywhere else a value still bakes only if it is constant on its face, so `Rotation(0.0 + 0.0, ...)` keeps emitting its real gate rather than collapsing to a literal.
+- **A named import now carries the constants an imported array is built from** - importing a mod that reads `array teams: int[] = [T_RED, T_BLUE]` pulled in the array but not `T_RED`/`T_BLUE`, so the merged program failed with "unknown identifier" at the initializer. The dependency closure now walks array initializers, and everything an import contributes is emitted in the provider's own declaration order — a dependency discovered through an initializer used to land *after* the declaration needing it, and a top-level `let` is declared as it is checked, so it read as undeclared.
+- **Fixed a spurious "unused import" on a constant used only by an array initializer** - the usage scan skipped array initializers, so the import was reported unused (WS014) and Organize Imports would delete it, silently breaking the table it fed.
 - **Fixed a playground rename clobbering another file** - renaming the active file left the active-file pointer on the alphabetically-first other file, so the next autosave silently overwrote that file with the renamed file's content.
 
 ## 0.18.0

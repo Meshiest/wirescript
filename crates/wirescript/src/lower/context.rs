@@ -145,6 +145,10 @@ pub(super) struct LowerCtx<'a> {
     /// (e.g. an unimplemented builtin → placeholder) needs the full name set.
     /// Shared (Arc) so child contexts clone it cheaply.
     pub(super) known_fn_names: std::sync::Arc<crate::collections::HashSet<String>>,
+    /// Top-level `let` constants of the (import-merged) program, so a `var` /
+    /// `array` initializer can name one (`1 << C_FLAG`) instead of restating its
+    /// value. Shared (Arc) so child contexts clone it cheaply.
+    pub(super) const_env: std::sync::Arc<super::predeclare::ConstEnv>,
     /// True only for the compiled entry file's root LowerCtx. `@side` port
     /// annotations are legal only there (WS023 elsewhere).
     pub(super) is_root_module: bool,

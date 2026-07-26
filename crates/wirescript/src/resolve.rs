@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::collections::{HashMap, HashSet};
 
 use crate::ast::*;
@@ -70,6 +72,11 @@ pub struct ResolveResult {
     pub ast: Script,
     pub diagnostics: Vec<Diagnostic>,
     pub doc_comments: HashMap<usize, String>,
+    /// The ENTRY file's source map. Imported files contribute declarations
+    /// but no line geometry — same rule as `@layout("code")` itself, which
+    /// is only read off the entry file. Shared behind an `Arc` because the
+    /// layout options that carry it are cloned per chip.
+    pub source_map: Arc<SourceMap>,
 }
 
 fn is_importable(d: &TopDecl) -> bool {
@@ -245,6 +252,10 @@ fn resolve_import(
         }
         ImportKind::Named(bindings) => {
             let binding_names: HashSet<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+            // Everything this import contributes goes after here; the closure
+            // pass below pulls dependencies in discovery order, which is not
+            // declaration order, so the block is re-sorted at the end.
+            let import_start = target_decls.len();
             for b in bindings {
                 let effective_name = b.alias.as_deref().unwrap_or(&b.name);
                 if already_has(target_decls, effective_name) {
@@ -296,6 +307,22 @@ fn resolve_import(
                     break;
                 }
             }
+            // Restore the provider's own declaration order across everything
+            // this import contributed. The closure pass appends dependencies
+            // AFTER the declaration that needed them, but a top-level `let` is
+            // declared as it is checked — so a constant discovered via an array
+            // initializer would land after the array and read as undeclared.
+            // The source file already orders constants before their users.
+            let order: HashMap<&str, usize> = importable
+                .iter()
+                .enumerate()
+                .filter_map(|(i, d)| decl_name(d).map(|n| (n, i)))
+                .collect();
+            target_decls[import_start..].sort_by_key(|d| {
+                decl_name(d)
+                    .and_then(|n| order.get(n).copied())
+                    .unwrap_or(usize::MAX)
+            });
 
             // Inline-expand type aliases in imported declarations' params
             // so the TypeAlias doesn't need to be in the importing scope.
@@ -464,9 +491,13 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
             // consulted here, so it's inert.
             no_fold: parsed.ast.no_fold,
             fold: parsed.ast.fold,
+            // Same rule as @fold/@nofold above: only the entry file's
+            // @layout("code") is consulted; an imported file's is inert.
+            layout_code: parsed.ast.layout_code,
         },
         diagnostics,
         doc_comments,
+        source_map: Arc::new(parsed.source_map),
     }
 }
 
@@ -488,6 +519,15 @@ fn collect_runtime_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
             if let Some(e) = &v.init { collect_idents_in_expr(e, idents); }
         }
         TopDecl::Let(l) => collect_idents_in_expr(&l.value, idents),
+        // An array's initializer may name top-level constants
+        // (`array teams: int[] = [T_RED, T_BLUE]`). Those constants have to
+        // travel with the array through a named import, or the importing file
+        // sees the array but not the values it is built from.
+        TopDecl::Array(a) => {
+            for el in &a.init {
+                collect_idents_in_expr(el.expr(), idents);
+            }
+        }
         TopDecl::Out(o) => {
             if let Some(e) = &o.value { collect_idents_in_expr(e, idents); }
         }
@@ -589,6 +629,13 @@ fn collect_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
         }
         TopDecl::Array(a) => {
             collect_idents_in_type_expr(&a.element_type, idents);
+            // The initializer counts too: an element may name a top-level `let`
+            // constant (`array mask: int[] = [1 << C_FLAG]`). Missing these
+            // would report the import unused — and Organize Imports would then
+            // delete it, silently breaking the table it feeds.
+            for el in &a.init {
+                collect_idents_in_expr(el.expr(), idents);
+            }
         }
         TopDecl::Buffer(b) => {
             if let Some(t) = &b.typ {

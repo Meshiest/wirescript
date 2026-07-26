@@ -28,7 +28,7 @@ mod context;
 use context::*;
 
 mod predeclare;
-pub use predeclare::expr_to_literal;
+pub use predeclare::{ConstEnv, build_const_env, expr_to_literal, expr_to_literal_in};
 use predeclare::*;
 
 mod decl;
@@ -51,6 +51,8 @@ use call::*;
 
 mod access;
 use access::*;
+
+pub(crate) mod boundary_pins;
 
 // Certified constant-fold pass. Exposed as `#[doc(hidden)] pub` rather than
 // `pub(crate)` so the `--fold-diff` differential fuzz harness
@@ -144,6 +146,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         pending_return_record: None,
         chip_call_stack: Vec::new(),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
+        const_env: Arc::new(predeclare::build_const_env(&input.ast.decls)),
         is_root_module: true,
         doc_comments: input.doc_comments,
         // Module-level `@nofold` (top of file + blank line) marks everything.
@@ -202,6 +205,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // constant is emitted once and fans out, per chip.
     dedup_constant_gates(&mut module);
     crate::emit::partition_anon_chips(&mut module);
+    boundary_pins::synthesize_boundary_pins(&mut module);
     LowerResult {
         module,
         diagnostics: ctx.diagnostics,
@@ -1156,6 +1160,7 @@ pub fn compile_chip_template(
             vec![chip_decl.range.clone()]
         },
         known_fn_names: Arc::new(HashSet::default()),
+        const_env: Arc::new(ConstEnv::default()),
         is_root_module: false,
         doc_comments: &empty_docs,
         nofold_depth: 0,

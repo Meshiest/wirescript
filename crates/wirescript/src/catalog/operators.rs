@@ -12,6 +12,46 @@ use crate::ir::Type;
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 
+/// The operator spellings, named.
+///
+/// Match on `op::SHL` rather than `"<<"`: a mistyped string literal is a match
+/// arm that silently never fires, while a mistyped constant does not compile.
+/// Prefer the qualified `op::NAME` form in patterns — a bare imported name in
+/// pattern position reads as a binding if it ever falls out of scope, which
+/// would turn one arm into an irrefutable catch-all.
+pub mod op {
+    // Arithmetic
+    pub const ADD: &str = "+";
+    pub const SUB: &str = "-";
+    pub const MUL: &str = "*";
+    pub const DIV: &str = "/";
+    pub const REM: &str = "%";
+    pub const POW: &str = "**";
+    /// Unary negation — the same spelling as [`SUB`], distinguished by arity.
+    pub const NEG: &str = "-";
+    /// String concatenation.
+    pub const CONCAT: &str = "..";
+    // Bitwise
+    pub const BIT_AND: &str = "&";
+    pub const BIT_OR: &str = "|";
+    pub const BIT_XOR: &str = "^";
+    pub const SHL: &str = "<<";
+    pub const SHR: &str = ">>";
+    pub const BIT_NOT: &str = "~";
+    // Logical
+    pub const AND: &str = "&&";
+    pub const OR: &str = "||";
+    pub const XOR: &str = "^^";
+    pub const NOT: &str = "!";
+    // Comparison
+    pub const EQ: &str = "==";
+    pub const NE: &str = "!=";
+    pub const LT: &str = "<";
+    pub const LE: &str = "<=";
+    pub const GT: &str = ">";
+    pub const GE: &str = ">=";
+}
+
 /// Port-name layout for a lowered operator gate.
 #[derive(Copy, Clone, Debug)]
 pub struct OpPorts {

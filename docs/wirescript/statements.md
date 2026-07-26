@@ -174,14 +174,30 @@ being stored as doubles.
 
 An array can be given **constant initial contents** with an `= [ ... ]`
 initializer. At the top level (outside an exec handler) the contents are baked
-straight into the array gate, so **every element must be a literal** (numbers —
-including negatives — strings, and bools). The array loads pre-populated with no
-runtime setup:
+straight into the array gate, so **every element must be a compile-time
+constant**. The array loads pre-populated with no runtime setup:
 
 ```wirescript
 array scores: int[] = [100, 50, -10]
 array names: string[] = ["alice", "bob"]
 ```
+
+A constant is a literal (numbers — including negatives — strings, and bools), or
+any expression built from literals and top-level `let` constants. So a table can
+name its constants instead of restating their values:
+
+```wirescript
+let C_FROZEN = 3
+let WIDTH = 8
+
+array masks: int[] = [1 << C_FROZEN, 1 << C_FROZEN | 1]
+array cells: int[] = [WIDTH * WIDTH, WIDTH - 1]
+```
+
+Constants resolve through chains (`let B = A + 1`) and in any declaration order.
+Arithmetic, bitwise, shift, comparison, logical and `..` string concatenation all
+fold, using the same semantics as the gates they would otherwise have compiled to
+— 64-bit wrapping integers, divide-by-zero as `0`, and a non-finite float as `0`.
 
 Initializers may span multiple lines — newlines are allowed after `[`, around
 commas, and before `]`, with an optional trailing comma:
@@ -193,9 +209,10 @@ array names: string[] = [
 ]
 ```
 
-A non-literal element at the top level (an identifier, a call, or a `...spread`)
-is an error — there is no exec context in which to populate it. Build the array
-from runtime values inside a handler instead (see below).
+An element that is **not** a compile-time constant — a runtime value such as an
+`in` port, a call, or a `...spread` — is an error at the top level, because there
+is no exec context in which to populate it. Build the array from runtime values
+inside a handler instead (see below).
 
 ### Array-typed `var` and inferred element type
 

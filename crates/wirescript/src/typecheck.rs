@@ -135,6 +135,11 @@ pub struct TypeCheckCtx {
     /// Ferried payload type per local exec signal, recorded from
     /// `emit sig = <value>` so `let { a, b } = await sig` can type its fields.
     pub signal_payload_types: HashMap<String, Type>,
+    /// Top-level `let` constants, so a `var` / `array` initializer may name one
+    /// (`1 << C_FLAG`) rather than restating its value. Populated before decl
+    /// checking; must stay in step with lowering's own environment so both
+    /// agree on exactly which initializers are constant.
+    pub const_env: crate::lower::ConstEnv,
 }
 
 impl TypeCheckCtx {
@@ -148,6 +153,7 @@ impl TypeCheckCtx {
             if_contexts: HashMap::default(),
             var_read_contexts: HashMap::default(),
             signal_payload_types: HashMap::default(),
+            const_env: crate::lower::ConstEnv::default(),
         }
     }
     pub fn exec_mode(&self) -> ExecMode {
@@ -200,6 +206,10 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
     for d in &script.decls {
         register_decl(&mut ctx, d);
     }
+    // Constant `let`s, resolved before any decl is checked so a `var` / `array`
+    // initializer may name one. Built from the same function lowering uses, so
+    // the two can't disagree about what counts as a compile-time constant.
+    ctx.const_env = crate::lower::build_const_env(&script.decls);
     let mut saw_handler = false;
     // Named chip/mod bodies are checked AFTER everything else: top-level
     // `let` types are only inferred (and thus declared) during this pass, so
@@ -739,7 +749,7 @@ fn check_top_level_array_init(
                 "spread `...` in an array initializer is only allowed when building the array inside an exec handler",
                 e.range().clone(),
             );
-        } else if let Some(lit) = crate::lower::expr_to_literal(e) {
+        } else if let Some(lit) = crate::lower::expr_to_literal_in(e, &ctx.const_env) {
             // Asset / prefab references are object references — they lower to
             // their own reference gate (e.g. AudioReference) whose output must be
             // WIRED into the array, so they can't be baked into the initializer's

@@ -223,21 +223,201 @@ pub(super) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
     }
 }
 
+/// Compile-time constant environment: every top-level `let` whose initializer is
+/// itself constant, by name. Lets an initializer name a constant (`1 << C_FLAG`)
+/// instead of restating its value.
+pub type ConstEnv = crate::collections::HashMap<String, Literal>;
+
+/// Collect the constant top-level `let` bindings of a script.
+///
+/// Iterates to a fixpoint so a constant may be defined in terms of an earlier
+/// one (`let A = 1` then `let B = A + 1`) regardless of declaration order — once
+/// imports are merged, order is not dependency order. A binding that never
+/// resolves (it needs a runtime value, or it is part of a reference cycle) is
+/// simply absent, so callers fall back to their existing "not a constant" path.
+pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
+    let mut env = ConstEnv::default();
+    loop {
+        let mut changed = false;
+        for d in decls {
+            let TopDecl::Let(l) = d else { continue };
+            let LetBinding::Ident { name, .. } = &l.binding else {
+                continue;
+            };
+            if env.contains_key(name) {
+                continue;
+            }
+            if let Some(lit) = expr_to_literal_in(&l.value, &env) {
+                env.insert(name.clone(), lit);
+                changed = true;
+            }
+        }
+        if !changed {
+            return env;
+        }
+    }
+}
+
+/// Evaluate a constant unary operator. `None` = not foldable, which preserves
+/// whatever error the caller would already have reported.
+fn eval_const_unop(operator: &str, v: Literal) -> Option<Literal> {
+    use crate::catalog::operators::op;
+    match (operator, v) {
+        (op::NEG, Literal::Int(n)) => Some(Literal::Int(n.wrapping_neg())),
+        (op::NEG, Literal::Float(f)) => Some(Literal::Float(-f)),
+        (op::NOT, Literal::Bool(b)) => Some(Literal::Bool(!b)),
+        (op::BIT_NOT, Literal::Int(n)) => Some(Literal::Int(!n)),
+        _ => None,
+    }
+}
+
+/// Evaluate a constant binary operator, matching the gates' certified
+/// semantics: 64-bit integer maths, and division / modulo by zero yielding 0
+/// rather than trapping. Anything outside this set — or any operand pair whose
+/// result would be ambiguous — returns `None` and stays an error, so this can
+/// only ever turn a rejected program into a working one, never change the
+/// meaning of one that already compiles.
+fn eval_const_binop(operator: &str, l: Literal, r: Literal) -> Option<Literal> {
+    use Literal::{Bool, Float, Int, String as Str};
+    use crate::catalog::operators::op;
+
+    // String concatenation is the one non-numeric binary fold.
+    if let (Str(a), Str(b)) = (&l, &r) {
+        return match operator {
+            op::CONCAT => Some(Str(format!("{a}{b}"))),
+            op::EQ => Some(Bool(a == b)),
+            op::NE => Some(Bool(a != b)),
+            _ => None,
+        };
+    }
+    if let (Bool(a), Bool(b)) = (&l, &r) {
+        let (a, b) = (*a, *b);
+        return match operator {
+            op::AND => Some(Bool(a && b)),
+            op::OR => Some(Bool(a || b)),
+            op::XOR => Some(Bool(a != b)),
+            op::EQ => Some(Bool(a == b)),
+            op::NE => Some(Bool(a != b)),
+            _ => None,
+        };
+    }
+    // Two ints stay integral (bitwise and shifts are int-only); any float
+    // operand promotes the pair to float, mirroring the operator overloads.
+    if let (Int(a), Int(b)) = (&l, &r) {
+        let (a, b) = (*a, *b);
+        return match operator {
+            op::ADD => Some(Int(a.wrapping_add(b))),
+            op::SUB => Some(Int(a.wrapping_sub(b))),
+            op::MUL => Some(Int(a.wrapping_mul(b))),
+            op::DIV => Some(Int(if b == 0 { 0 } else { a.wrapping_div(b) })),
+            op::REM => Some(Int(if b == 0 { 0 } else { a.wrapping_rem(b) })),
+            op::BIT_AND => Some(Int(a & b)),
+            op::BIT_OR => Some(Int(a | b)),
+            op::BIT_XOR => Some(Int(a ^ b)),
+            // A shift distance outside 0..64 is left unfolded rather than guessed.
+            op::SHL => (0..64).contains(&b).then(|| Int(a << b)),
+            op::SHR => (0..64).contains(&b).then(|| Int(a >> b)),
+            op::EQ => Some(Bool(a == b)),
+            op::NE => Some(Bool(a != b)),
+            op::LT => Some(Bool(a < b)),
+            op::LE => Some(Bool(a <= b)),
+            op::GT => Some(Bool(a > b)),
+            op::GE => Some(Bool(a >= b)),
+            _ => None,
+        };
+    }
+    let num = |v: &Literal| match v {
+        Int(n) => Some(*n as f64),
+        Float(f) => Some(*f),
+        _ => None,
+    };
+    let (a, b) = (num(&l)?, num(&r)?);
+    // Match the gates: a non-finite result reads as 0.
+    let fin = |f: f64| Float(if f.is_finite() { f } else { 0.0 });
+    match operator {
+        op::ADD => Some(fin(a + b)),
+        op::SUB => Some(fin(a - b)),
+        op::MUL => Some(fin(a * b)),
+        op::DIV => Some(if b == 0.0 { Float(0.0) } else { fin(a / b) }),
+        op::REM => Some(if b == 0.0 { Float(0.0) } else { fin(a % b) }),
+        op::EQ => Some(Bool(a == b)),
+        op::NE => Some(Bool(a != b)),
+        op::LT => Some(Bool(a < b)),
+        op::LE => Some(Bool(a <= b)),
+        op::GT => Some(Bool(a > b)),
+        op::GE => Some(Bool(a >= b)),
+        _ => None,
+    }
+}
+
 /// Fold a constant-literal expression to a [`Literal`] (used for var/array
 /// initial values). Returns `None` for anything that isn't a compile-time
 /// constant. Shared with the type checker so both agree on what's a literal.
+///
+/// This is the environment-free form. It folds only what is constant on its
+/// face — literals, a negated literal, and literal-argument constructors — and
+/// deliberately does NOT resolve names or evaluate operators.
+///
+/// That restraint is load-bearing. This function decides whether a value bakes
+/// into a gate's data or gets a real wired gate, and it is used well beyond
+/// initializers (port values, buffer delays, handler fields). Folding `a + b`
+/// here would silently delete gates from programs that already compile — e.g.
+/// `Rotation(0.0 + 0.0, ...)` would collapse to a `_Literal(Rotator)` instead of
+/// emitting the `MakeRotation` gate it must. Use [`expr_to_literal_in`] for the
+/// initializer paths, where richer constants are wanted.
 pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
+    expr_to_literal_impl(e, None)
+}
+
+/// [`expr_to_literal`], plus named top-level constants and operators over them —
+/// so an initializer can read `1 << C_FLAG` or `WIDTH * HEIGHT` instead of a
+/// magic number. Only the `var` / `array` initializer paths pass an environment;
+/// everywhere else keeps the narrower behaviour above.
+pub fn expr_to_literal_in(e: &Expr, env: &ConstEnv) -> Option<Literal> {
+    expr_to_literal_impl(e, Some(env))
+}
+
+/// `env == None` reproduces the original syntactic folding exactly; `Some`
+/// additionally resolves named constants and evaluates operators.
+fn expr_to_literal_impl(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
+    let expr_to_literal = |e: &Expr| expr_to_literal_impl(e, env);
     match e {
+        // -- Constant-environment forms: initializers only. --
+        // With no environment these fall through to `_ => None`, exactly as
+        // before this was added.
+        Expr::Ident { name, .. } => env?.get(name).cloned(),
+        Expr::BinOp {
+            op, left, right, ..
+        } if env.is_some() => {
+            eval_const_binop(op, expr_to_literal(left)?, expr_to_literal(right)?)
+        }
+        Expr::UnOp { op, operand, .. }
+            if env.is_some() && op != crate::catalog::operators::op::NEG =>
+        {
+            eval_const_unop(op, expr_to_literal(operand)?)
+        }
+        // -- Always-constant forms (unchanged). --
         Expr::IntLit { value, .. } => Some(Literal::Int(*value)),
         Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
         Expr::BoolLit { value, .. } => Some(Literal::Bool(*value)),
         Expr::StringLit { value, .. } => Some(Literal::String(value.clone())),
         // Negative numeric literals: `-5`, `-1.0`.
-        Expr::UnOp { op, operand, .. } if op == "-" => match expr_to_literal(operand)? {
-            Literal::Int(n) => Some(Literal::Int(-n)),
-            Literal::Float(f) => Some(Literal::Float(-f)),
-            _ => None,
-        },
+        Expr::UnOp { op, operand, .. } if op == crate::catalog::operators::op::NEG => {
+            match expr_to_literal(operand)? {
+                Literal::Int(n) => Some(Literal::Int(n.wrapping_neg())),
+                Literal::Float(f) => Some(Literal::Float(-f)),
+                _ => None,
+            }
+        }
+        _ => expr_to_literal_lit(e, env),
+    }
+}
+
+/// The constructor / reference cases, split out to keep the dispatch above
+/// readable.
+fn expr_to_literal_lit(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
+    let expr_to_literal = |e: &Expr| expr_to_literal_impl(e, env);
+    match e {
         // Constructor calls on constant numeric args fold to literals, so
         // `var v = Vec(1.0, 2.0, 3.0)` (and Rotation/Color) bakes into the
         // gate's initial value instead of being dropped.
@@ -285,20 +465,22 @@ pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
 /// no constant form (they're only valid in exec-context assignments), so they
 /// fold to `None` — which makes the all-literal length check fail and the
 /// initializer is left empty (the type checker has already reported the error).
-fn array_elem_literal(el: &ArrayElem) -> Option<Literal> {
+fn array_elem_literal(el: &ArrayElem, env: &ConstEnv) -> Option<Literal> {
     match el {
-        ArrayElem::Item(e) => expr_to_literal(e),
+        ArrayElem::Item(e) => expr_to_literal_in(e, env),
         ArrayElem::Spread(_) => None,
     }
 }
 
 /// A `var` initializer that can't bake into the gate as a constant: returns it
 /// for diagnosis. `None` = no initializer, or it bakes fine.
-fn var_init_unbaked(v: &VarDecl) -> Option<&Expr> {
+fn var_init_unbaked<'a>(v: &'a VarDecl, env: &ConstEnv) -> Option<&'a Expr> {
     let init = v.init.as_ref()?;
     let unbaked = match init {
-        Expr::Array { elements, .. } => elements.iter().any(|el| array_elem_literal(el).is_none()),
-        e => expr_to_literal(e).is_none(),
+        Expr::Array { elements, .. } => elements
+            .iter()
+            .any(|el| array_elem_literal(el, env).is_none()),
+        e => expr_to_literal_in(e, env).is_none(),
     };
     unbaked.then_some(init)
 }
@@ -310,7 +492,7 @@ fn var_init_unbaked(v: &VarDecl) -> Option<&Expr> {
 /// double-reporting top-level array literals the type checker already errors
 /// on.
 pub(super) fn warn_unbaked_var_init(ctx: &mut LowerCtx, v: &VarDecl, skip_array_inits: bool) {
-    let Some(init) = var_init_unbaked(v) else {
+    let Some(init) = var_init_unbaked(v, &ctx.const_env.clone()) else {
         return;
     };
     if skip_array_inits && matches!(init, Expr::Array { .. }) {
@@ -351,7 +533,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             // gate (see `bake_string_bool`).
             let lits: Vec<Literal> = elements
                 .iter()
-                .filter_map(array_elem_literal)
+                .filter_map(|el| array_elem_literal(el, &ctx.const_env))
                 .map(|lit| bake_string_bool(lit, &elem_type))
                 .collect();
             if lits.len() == elements.len() {
@@ -486,7 +668,7 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
         let lits: Vec<Literal> = d
             .init
             .iter()
-            .filter_map(array_elem_literal)
+            .filter_map(|el| array_elem_literal(el, &ctx.const_env))
             .map(|lit| bake_string_bool(lit, &elem_type))
             .collect();
         if lits.len() == d.init.len() {
