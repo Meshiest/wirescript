@@ -1321,7 +1321,7 @@ impl Gen {
                         format!("{o}.SetLocation({v})")
                     }
                     Obj::Character => {
-                        // char↔controller coercion probe
+                        // char<->controller coercion probe
                         let msg = self.expr(sc, Ty::Str, 0);
                         format!("{o}.DisplayText({msg}, fontSize = 24)")
                     }

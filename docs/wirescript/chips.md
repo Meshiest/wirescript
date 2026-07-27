@@ -1,6 +1,6 @@
 # Chips
 
-Chips are Wirescript's primary mechanism for organizing and reusing wire graph logic. They map to physical microchip bricks in Brickadia -- a separate grid of gates contained within a single brick.
+Chips are Wirescript's primary mechanism for organizing and reusing wire graph logic. They map to physical microchip bricks in Brickadia -- a separate grid of gates contained within a single brick. (A module-level [`@flat`](#compiling-without-microchips-flat) compiles the same program onto one grid instead, with no microchip bricks at all.)
 
 ## Anonymous Chips
 
@@ -353,6 +353,25 @@ place:
 redundant no-op; combining `@closed` with `open` on the same chip is an
 error.
 
+## Compiling Without Microchips (`@flat`)
+
+A module-level `@flat` at the top of the entry file inlines every chip body
+into the module that instantiates it. The program then emits **no microchip
+bricks and no nested grids** -- every gate lands on one grid, and a wire that
+would have crossed a chip wall becomes an ordinary same-grid wire instead of a
+pair of wires through a boundary pin.
+
+Nothing about the program's behavior changes. A chip is not a scoping or timing
+boundary, so a flattened program computes exactly what the nested one did; what
+goes away is the tree of planes to open and the per-crossing pin.
+
+Because the microchip brick and its plane no longer exist, `@closed` and
+`@label` have nothing to describe under `@flat`. They are inert rather than an
+error, so a file can be compiled both ways without editing its chips.
+
+See [Statements](statements.md) for `@flat`'s placement rules and how it
+composes with `@layout(...)`.
+
 ## Chip Labels and Headers
 
 `@label("text")` overrides the display text on a chip's shell-brick label
@@ -450,6 +469,16 @@ mod slide(a: *int, b: *int, c: *int, d: *int) {
 | Reusable | Yes (separate instance per call) | Yes (expanded per call) |
 
 `mod` declarations do not support output declarations with `->`. Instead, their effect is through mutating `ref` parameters.
+
+## Boundary Pins
+
+Every wire that crosses a chip wall -- a value, an exec trigger, or a
+variable reference alike -- routes through a labeled `MicrochipInput` or
+`MicrochipOutput` rerouter at that wall, one pin per external source, even
+if the source isn't a declared parameter. Multiple consumers inside the
+chip fan out from the same pin rather than each getting their own. A
+constant argument is the one exception -- it's inlined directly into the
+gate that uses it rather than wired in, so it never costs a pin.
 
 ## Nested Chips
 

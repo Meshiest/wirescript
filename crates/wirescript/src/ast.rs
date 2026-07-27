@@ -23,6 +23,87 @@ pub struct Script {
     /// (mirrors the module-doc rule; same mechanics as `no_fold` above). If
     /// both `@fold` and `@nofold` are present, `no_fold` wins.
     pub fold: bool,
+    /// A `@layout("…")` at the very top of the file (same placement rule as
+    /// `fold` above) — names the placement engine to use. `None` leaves the
+    /// choice to the compiler.
+    pub layout: Option<LayoutName>,
+    /// A `@flat` at the very top of the file (same placement rule as `fold`
+    /// above) — every chip body is inlined into the module that instantiates
+    /// it, so the program emits no microchip bricks and no child brick grids.
+    /// Independent of `layout`; the two compose.
+    pub flat: bool,
+}
+
+/// The engine a `@layout("…")` annotation names, spelled as the source spells
+/// it. Distinct from [`crate::layout::LayoutMode`], which is the set of
+/// engines: the default engine has no annotation spelling, and an engine the
+/// compiler may pick on its own is not necessarily one a file may ask for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LayoutName {
+    /// `@layout("code")` — row per source line, indent per source column.
+    Code,
+    /// `@layout("cube")` — the compact 3D grid arrangement the compiler
+    /// otherwise reaches for only on very large modules.
+    Cube,
+}
+
+impl LayoutName {
+    /// The spellings accepted inside `@layout(…)`, in the order a diagnostic
+    /// should offer them.
+    pub const ALL: [(&'static str, LayoutName); 2] =
+        [("code", LayoutName::Code), ("cube", LayoutName::Cube)];
+
+    pub fn parse(name: &str) -> Option<LayoutName> {
+        Self::ALL.iter().find(|(s, _)| *s == name).map(|(_, m)| *m)
+    }
+}
+
+/// Lexical facts about one source file that survive parsing: how far each
+/// line is indented, and where its `//` comments are. The code-shaped
+/// layout reproduces the source's own shape, so it needs the text's
+/// geometry rather than the AST's.
+#[derive(Clone, Debug, Default)]
+pub struct SourceMap {
+    /// The file this map describes, spelled the way
+    /// [`SourceRange::file`] spells it. Every line number below is in this
+    /// file's numbering, so a consumer holding nodes from another file must
+    /// compare `file` before indexing anything here.
+    pub file: std::sync::Arc<str>,
+    /// Per line (0-based index): the 0-based column of the line's first
+    /// non-whitespace character. Blank and whitespace-only lines hold 0.
+    /// A 1-based [`crate::diagnostic::Pos`] line indexes this as `line - 1`.
+    pub line_indent: Vec<u32>,
+    /// `//` line comments in source order.
+    pub comments: Vec<SourceComment>,
+}
+
+/// One `//` line comment. `line`/`col` are 1-based like
+/// [`crate::diagnostic::Pos`] and point at the leading `/`.
+#[derive(Clone, Debug)]
+pub struct SourceComment {
+    pub line: u32,
+    pub col: u32,
+    /// Comment body with the `//`, one optional following space, and any
+    /// trailing whitespace removed.
+    pub text: String,
+    /// True when the comment is the only thing on its line.
+    pub own_line: bool,
+    /// True when the comment sits inside an unclosed `[` — an array literal
+    /// or a multi-line data table. These are the repetitive ones: a note per
+    /// row of a table costs a brick per row and says the same thing each
+    /// time, so the code layout leaves them out of the plane.
+    pub in_array: bool,
+}
+
+impl SourceMap {
+    /// Build the source map for `source` as if it were `file`, by running
+    /// the lexer and keeping only its map. Compilation gets its map from
+    /// the parse it already ran ([`crate::parser::ParseResult::source_map`],
+    /// carried on through [`crate::resolve::ResolveResult`]); this is the
+    /// shortcut for callers holding text and no parse, and it re-lexes.
+    pub fn from_source(source: &str, file: &str) -> SourceMap {
+        crate::lexer::lex(source, file).source_map
+    }
 }
 
 // ---------- top-level declarations ----------

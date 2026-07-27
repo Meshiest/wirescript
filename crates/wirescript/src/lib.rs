@@ -31,7 +31,7 @@ pub use emit::{build_world, emit_brz, field_enum_values, EmitError, EmitOptions,
 #[cfg(feature = "brdb-full")]
 pub use emit::emit_brdb;
 pub use ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, Type, Wire};
-pub use layout::{layout, layout_with_opts, ChipLayoutMode, LayoutOptions, LayoutResult};
+pub use layout::{layout, layout_options_for, layout_with_opts, ChipLayoutMode, LayoutMode, LayoutOptions, LayoutResult};
 pub use lexer::{lex, LexResult, Token, TokenKind};
 pub use parser::{parse, ParseResult};
 pub use resolve::{resolve, FsLoader, MemLoader, ResolveResult};

@@ -54,7 +54,7 @@ fn rerouter_bricks_sit_flush_per_side_in_source_order() {
         .collect();
     positions.sort();
     // chip at (0,0,0), half-extent 5; rerouter half-extent 1 → edge offset 6,
-    // z −1 (bottom-aligned). World↔screen (pinned in-game): +X = up, +Y = right,
+    // z −1 (bottom-aligned). World<->screen (pinned in-game): +X = up, +Y = right,
     // so left = −Y edge, right = +Y edge, top = +X edge, bottom = −X edge.
     // Pins anchor at the top/left corner (run_start 4) and step in by pitch 2.
     // Left n=2 → first-declared `go` at the top (x=4), `done` below (x=2);

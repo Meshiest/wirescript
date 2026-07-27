@@ -707,8 +707,10 @@ on tick { foo(v, true) }",
     );
 }
 
-/// Record params: ref/array fields are scope-captured (no MicrochipInput),
-/// value fields still use MicrochipInput boundary ports.
+/// Record params: ref/array fields are NOT declared MicrochipInput ports
+/// under their record-field name (no `s_val`/`s_arr` labels); the crossing
+/// each dissolved field leaves behind is resolved by the boundary-pins pass
+/// into its own synthesized pin, leaving no raw external capture.
 #[test]
 fn chip_record_param_dissolves_to_ports() {
     let r = compile(
@@ -754,8 +756,17 @@ let r = Foo(s)",
         input_labels
     );
     assert!(
-        !chip.scope_captures.is_empty(),
-        "chip should have scope captures for ref/array fields"
+        chip.scope_captures.is_empty(),
+        "ref/array field crossings are resolved through boundary pins, leaving no raw capture"
+    );
+    let boundary_pin_count = chip
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::MICROCHIP_INPUT && n.note == Some("boundary_pin"))
+        .count();
+    assert_eq!(
+        boundary_pin_count, 2,
+        "the val and arr fields each get their own synthesized boundary pin"
     );
 }
 
@@ -810,12 +821,18 @@ on start {
     let r = compile(src);
     assert_no_errors(&r);
 
-    // Find the Add chip's child module (has 2+ value inputs for a, b)
+    // Find the Add chip's child module (uniquely has a MathAdd body gate).
     let (add_chip_id, add_child) = r
         .module
         .chips
         .iter()
-        .find(|(_, child)| child.outputs.len() >= 1 && child.inputs.len() >= 2)
+        .find(|(_, child)| {
+            child.outputs.len() >= 1
+                && child
+                    .nodes
+                    .values()
+                    .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        })
         .expect("should find Add chip");
 
     // Exec goes to child's _exec_in MicrochipInput (last input)
@@ -1219,8 +1236,8 @@ on t { Bump(1) Bump(2) }";
     for child in r.module.chips.values() {
         assert_eq!(
             child.inputs.len(),
-            1,
-            "the value pin should be folded away, leaving only the exec pin"
+            2,
+            "the value pin should be folded away, leaving the exec pin plus the acc VarRef boundary pin"
         );
         for n in child.nodes.values() {
             if n.gate_class == gc::VAR_INCREMENT

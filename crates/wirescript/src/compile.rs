@@ -4,7 +4,7 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::emit::Placement;
 use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world, emit_brz};
 use crate::ir::NodeId;
-use crate::layout::layout;
+use crate::layout::{layout_options_for, layout_with_opts};
 use crate::lower::{LowerInput, lower};
 use crate::resolve::{FsLoader, resolve};
 use crate::template_cache::TemplateCache;
@@ -213,7 +213,8 @@ fn compile_with_opts_inner(
     }
 
     report(&progress);
-    let lr = layout(&lowered.module);
+    let lopts = layout_options_for(&resolved.ast, Some(resolved.source_map.clone()));
+    let lr = layout_with_opts(&lowered.module, &lopts);
 
     if opts.description.is_empty() {
         opts.description = format!(
@@ -311,7 +312,8 @@ fn compile_to_world_inner(
         return Err(CompileError::HasErrors(errors));
     }
 
-    let lr = layout(&lowered.module);
+    let lopts = layout_options_for(&resolved.ast, Some(resolved.source_map.clone()));
+    let lr = layout_with_opts(&lowered.module, &lopts);
 
     if opts.description.is_empty() {
         opts.description = format!(

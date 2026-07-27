@@ -492,8 +492,11 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
             no_fold: parsed.ast.no_fold,
             fold: parsed.ast.fold,
             // Same rule as @fold/@nofold above: only the entry file's
-            // @layout("code") is consulted; an imported file's is inert.
-            layout_code: parsed.ast.layout_code,
+            // @layout is consulted; an imported file's is inert.
+            layout: parsed.ast.layout,
+            // Same rule again — the entry file decides whether the whole
+            // program flattens; an imported file's @flat is inert.
+            flat: parsed.ast.flat,
         },
         diagnostics,
         doc_comments,

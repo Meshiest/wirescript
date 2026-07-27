@@ -60,7 +60,10 @@ fn main() {
         doc_comments: &resolved.doc_comments,
         fold_mode: wirescript::lower::FoldMode::Auto,
     });
-    let lr = wirescript::layout::layout(&lowered.module);
+    let lr = wirescript::layout::layout_with_opts(
+        &lowered.module,
+        &wirescript::layout_options_for(&resolved.ast, Some(resolved.source_map.clone())),
+    );
     let mut opts = wirescript::EmitOptions::default();
     opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file));
     let world = wirescript::build_world(&lowered.module, &lr, &opts, &cache).expect("emit");

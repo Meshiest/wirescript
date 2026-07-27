@@ -458,6 +458,147 @@ stacks with a side annotation in either order:
   editing the source; `--no-fold` overrides either. See
   [Constant Folding](folding.md) for the full enable/disable story.
 
+### `@layout("code")` -- Source-Shaped Gate Layout
+
+- By default, gates are placed with a flat topological layout: nodes are
+  ordered by dependency depth into columns, with no relationship to where
+  they appear in the source. `@layout("code")` at the very top of the
+  **entry** file (after any module doc comment), separated from the first
+  declaration by a blank line, switches the whole compile to a source-shaped
+  layout instead: each occupied source line becomes a row (earlier lines sit
+  higher), and a node's horizontal position follows its source column, so
+  indentation is visible in the placed gates. Same blank-line rule as
+  module-level `@fold`/`@nofold`, and it participates in the same top-of-file
+  annotation run -- `@fold` and `@layout("code")` can appear together.
+- Entry-file-only, same as module-level `@fold`/`@nofold`: an
+  `@layout("code")` at the top of an *imported* file does not carry into the
+  importer and has no effect.
+- Nodes with no real position in the entry file (values from an imported
+  file, or synthetic nodes the compiler generates without a source range)
+  adopt the row of whichever node consumes or produces them; a node with no
+  such neighbor lands on an overflow row below the last source line.
+- Three wrapping tiers keep large modules inside their placement budgets: a
+  line wider than the line-width budget soft-wraps into an indented
+  continuation row; lines stack into vertical bands capped at a height
+  budget; a band that would push a page past its width budget starts a new
+  page, stacked above the previous one. Each page is centered and flipped
+  independently, so it reads top-down on its own.
+- Nested chips inherit the mode from their parent, so a chip's interior also
+  renders source-shaped when the entry file has `@layout("code")`.
+- **Values that many rows read run down a gutter bus** rather than fanning out
+  as one long diagonal wire per reader. Such a value -- a variable, an input
+  port, a value handed into or read back out of a chip -- gets a *lane*: a
+  column of rerouter bricks standing in the gutter between the input pins and
+  the code body, chained downward from beside the value's own producer. At
+  every row that reads the value the lane branches off sideways and runs
+  straight across into that row's gates, so a read reads as a right angle
+  instead of a diagonal. Lanes are packed so a value only holds a column for
+  as long as it is read, and the longest-lived, most-read values take the
+  outermost columns. A value read on a single row keeps its direct wire unless
+  it is stored state, a port, or crosses a chip wall. An exec chain running
+  from one statement to the next stays a direct wire either way -- it belongs
+  on the spine of its own rows, not out in the gutter.
+- **Own-line `//` comments render into the plane** as floating text, on a row
+  of their own between the surrounding code rows and left-aligned at the
+  comment's own indentation -- so the notes read where they sit in the source.
+  A comment lands on exactly one plane: the innermost chip whose own rows
+  bracket its line, or the outermost plane for a comment no chip's rows
+  bracket (a file's leading or closing notes). Only entry-file comments
+  render, and only on planes whose own rows come from the entry file -- an
+  imported chip's interior numbers its rows against its own file, so it
+  carries no comments and takes its indentation from its nodes' columns.
+  **Trailing comments** -- code and then `//` on the same line -- are **not**
+  rendered; the code already occupies that row. Doc comments (`///`) are
+  unaffected: they keep rendering on the plane header of what they document.
+- There is no CLI-flag equivalent (unlike `@fold`/`--fold`) -- `@layout` is a
+  source annotation only.
+- `"code"` and `"cube"` are the accepted arguments; an unknown name
+  (`@layout("grid")`) or a missing/malformed argument (`@layout`,
+  `@layout(5)`) is a compile error. Naming a layout twice warns and the last
+  one wins.
+
+```wirescript
+@layout("code")
+
+var total: int = 0
+in tick: exec
+
+// This note gets a row of its own in the plane.
+on tick {
+  total = total + 1 // ...but this one is not rendered.
+}
+```
+
+### `@layout("cube")` -- Compact 3D Packing
+
+`@layout("cube")` packs gates into a cube -- rows of bricks, stacked into
+layers along the plane's depth axis -- without analysing the wire graph at
+all. The compiler already falls back to this arrangement on modules too large
+for the default layout to place economically; the annotation asks for it at
+any size.
+
+It is the opposite trade from `@layout("code")`: wires are ignored entirely,
+so nothing about the picture tells you how signals flow, but the brick mass is
+as small as it can be and placement cost does not grow with the number of
+wires. Reach for it when a module is too big to read anyway and you want it to
+occupy as little space as possible.
+
+Same placement rules as the other module annotations: at the very top of the
+entry file, separated from the first declaration by a blank line, and inert in
+an imported file. It applies to nested chip interiors too.
+
+```wirescript
+@layout("cube")
+
+var total: int = 0
+in tick: exec
+
+on tick {
+  total = total + 1
+}
+```
+
+### `@flat` -- Inline Every Chip
+
+`@flat` compiles the program onto a single grid. Every gate that would have
+lived inside a chip is placed alongside the rest, and every wire that would
+have crossed a chip wall becomes an ordinary same-grid wire. The result has no
+microchip bricks and no nested planes to open.
+
+This is a placement decision, not a semantic one. Chips have never been a
+scoping boundary -- wire references cross them freely either way -- so a
+flattened program computes exactly what the nested one computed. What changes
+is that you get one plane to look at instead of a tree of them, and the
+per-boundary rerouter pins a crossing would otherwise need are gone.
+
+It is independent of `@layout(...)` and composes with it. `@flat` with
+`@layout("cube")` is the natural pairing: one plane, packed as tightly as the
+gates allow. `@flat` on its own, or with `@layout("code")`, works too.
+
+Because the chip bricks no longer exist, `@label` and `@closed` on a chip have
+nothing to apply to under `@flat`. They are not an error -- they simply have
+no effect.
+
+Same placement rules as the other module annotations: at the very top of the
+entry file, separated from the first declaration by a blank line, and inert in
+an imported file.
+
+```wirescript
+@flat
+@layout("cube")
+
+chip Step(a: int) -> (r: int) {
+  return a * 2
+}
+
+var total: int = 0
+in tick: exec
+
+on tick {
+  total = Step(total)
+}
+```
+
 ## `if` -- Conditional Statement
 
 The `if` statement executes a block conditionally. It **requires exec context** -- you can only use `if` statements inside `on` handlers or after handlers in the exec chain.

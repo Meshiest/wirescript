@@ -1369,7 +1369,8 @@ fn build_completions(
         });
     }
 
-    // Annotations: `@side` port pins plus the chip annotations.
+    // Annotations: `@side` port pins, the chip annotations, and the
+    // module-level run that opens a file.
     for (ann, detail) in [
         ("@left", "outer rerouter pin"),
         ("@right", "outer rerouter pin"),
@@ -1377,6 +1378,10 @@ fn build_completions(
         ("@bottom", "outer rerouter pin"),
         ("@label", "display-text override"),
         ("@closed", "compile chip collapsed"),
+        ("@fold", "module-level: fold constant expressions"),
+        ("@nofold", "module-level: never fold"),
+        ("@layout", "module-level: placement engine (code/cube)"),
+        ("@flat", "module-level: inline every chip onto one grid"),
     ] {
         items.push(CompletionItem {
             label: ann.to_string(),
@@ -1699,6 +1704,17 @@ mod tests {
         let ls = labels("", 0, 0);
         for a in ["@left", "@label", "@closed"] {
             assert!(ls.iter().any(|l| l == a), "annotation {a} missing: {ls:?}");
+        }
+    }
+
+    /// The module-level run that opens a file is offered too. These are the
+    /// annotations a reader is least likely to already know exist, so leaving
+    /// them out of completion is what kept them invisible.
+    #[test]
+    fn annotation_completions_include_the_module_level_run() {
+        let ls = labels("", 0, 0);
+        for a in ["@fold", "@nofold", "@layout", "@flat"] {
+            assert!(ls.iter().any(|l| l == a), "module annotation {a} missing: {ls:?}");
         }
     }
 

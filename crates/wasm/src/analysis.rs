@@ -435,7 +435,8 @@ pub fn completions(
             insert_text: None,
         });
     }
-    // Annotations: `@side` port pins plus the chip annotations.
+    // Annotations: `@side` port pins, the chip annotations, and the
+    // module-level run that opens a file.
     for (ann, detail) in [
         ("@left", "outer rerouter pin"),
         ("@right", "outer rerouter pin"),
@@ -443,6 +444,10 @@ pub fn completions(
         ("@bottom", "outer rerouter pin"),
         ("@label", "display-text override"),
         ("@closed", "compile chip collapsed"),
+        ("@fold", "module-level: fold constant expressions"),
+        ("@nofold", "module-level: never fold"),
+        ("@layout", "module-level: placement engine (code/cube)"),
+        ("@flat", "module-level: inline every chip onto one grid"),
     ] {
         items.push(CompletionOut {
             label: ann.to_string(),

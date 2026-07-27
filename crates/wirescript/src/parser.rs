@@ -72,6 +72,8 @@ pub struct ParseResult {
     pub diagnostics: Vec<Diagnostic>,
     /// Doc comments keyed by the start offset of the declaration they precede.
     pub doc_comments: HashMap<usize, String>,
+    /// Line indentation and `//` comments of this file's source.
+    pub source_map: SourceMap,
 }
 
 pub fn parse(source: &str, file: &str) -> ParseResult {
@@ -82,6 +84,7 @@ pub fn parse(source: &str, file: &str) -> ParseResult {
         ast: script,
         diagnostics: p.diagnostics,
         doc_comments: p.doc_comments,
+        source_map: lexed.source_map,
     }
 }
 
@@ -163,6 +166,38 @@ struct ParsedAnnotations {
 struct ModuleAnnotations {
     no_fold: bool,
     fold: bool,
+    layout: Option<crate::ast::LayoutName>,
+    flat: bool,
+}
+
+#[derive(Copy, Clone)]
+enum ModuleAnnKind {
+    Fold,
+    NoFold,
+    Layout(crate::ast::LayoutName),
+    Flat,
+}
+
+/// Every annotation word the module-level run accepts. Both the run's opening
+/// test and its same-line continuation test read this one list, so a new
+/// module annotation cannot be recognized at the start of a run and then
+/// dropped mid-run (which parses as a decl-scoped annotation and reports a
+/// misleading "module-level only" error).
+const MODULE_ANN_WORDS: &[&str] = &["nofold", "fold", "layout", "flat"];
+
+fn is_module_ann_word(word: &str) -> bool {
+    MODULE_ANN_WORDS.contains(&word)
+}
+
+/// The accepted `@layout` spellings, rendered for a diagnostic. Reads off
+/// [`crate::ast::LayoutName::ALL`] so a new engine cannot be added without the
+/// error message learning about it.
+fn layout_choices() -> String {
+    crate::ast::LayoutName::ALL
+        .iter()
+        .map(|(name, _)| format!("@layout(\"{name}\")"))
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 struct Parser<'a> {
@@ -404,46 +439,133 @@ impl<'a> Parser<'a> {
             module_doc,
             no_fold: module_anns.no_fold,
             fold: module_anns.fold,
+            layout: module_anns.layout,
+            flat: module_anns.flat,
         }
     }
 
-    /// If the file opens (after any module doc) with a run of `@nofold`/
-    /// `@fold` annotations — each alone on its own line — separated from the
-    /// first declaration by a blank line, consume them and mark the whole
-    /// module accordingly — same blank-line rule as module doc comments. A
-    /// `@nofold`/`@fold` directly above a declaration (no blank line
-    /// separating it from the rest of the file) is left alone: for
-    /// `@nofold` that's the pre-existing decl-scoped mechanism; `@fold` has
-    /// no decl-scoped meaning and falls through to `parse_annotations`'s
-    /// "unknown annotation" error. If both `@fold` and `@nofold` are present,
-    /// `@nofold` wins and a warning notes the conflict.
+    /// If the file opens (after any module doc) with a run of module-level
+    /// annotations ([`MODULE_ANN_WORDS`]) — one per line or several
+    /// sharing a line — separated from the first declaration by a blank
+    /// line, consume them and mark the whole module accordingly — same
+    /// blank-line rule as module doc comments. A `@nofold`/`@fold` directly
+    /// above a declaration (no blank line separating it from the rest of
+    /// the file) is left alone: for `@nofold` that's the pre-existing
+    /// decl-scoped mechanism; `@fold` has no decl-scoped meaning and falls
+    /// through to `parse_annotations`'s "unknown annotation" error. If both
+    /// `@fold` and `@nofold` are present, `@nofold` wins and a warning notes
+    /// the conflict. `@layout("code")` participates in the same run under
+    /// the same placement rules; a bad layout argument is reported here
+    /// (once) when the run is module-level, with the malformed tokens
+    /// consumed along with it.
     fn collect_module_annotations(&mut self) -> ModuleAnnotations {
-        let mut spans: Vec<(bool, Pos, Pos)> = Vec::new(); // (is_fold, start, end)
+        let mut spans: Vec<(ModuleAnnKind, Pos, Pos)> = Vec::new();
+        // Errors found while scanning a `@layout` argument are held here and
+        // only reported if the run turns out to be module-level (i.e. it is
+        // consumed via `finish_module_annotations`). On the bail-out paths
+        // the tokens are left for the declaration loop, which reports its
+        // own diagnostic for them.
+        let mut errors: Vec<(String, Pos, Pos)> = Vec::new();
         let mut cursor = 0usize;
         loop {
             let t = self.peek_at(cursor);
-            if t.kind != TokenKind::Annotation || (t.text != "nofold" && t.text != "fold") {
+            if t.kind != TokenKind::Annotation || !is_module_ann_word(t.text.as_str()) {
                 break;
             }
-            let (t_start, t_end) = (t.start, t.end);
-            let is_fold = t.text == "fold";
-            let after = self.peek_at(cursor + 1).kind;
+            let (t_start, mut t_end) = (t.start, t.end);
+            let kind = match t.text.as_str() {
+                "fold" => Some(ModuleAnnKind::Fold),
+                "nofold" => Some(ModuleAnnKind::NoFold),
+                "flat" => Some(ModuleAnnKind::Flat),
+                _ => {
+                    // @layout("<name>") — the `(` Str `)` tokens follow directly.
+                    if self.peek_at(cursor + 1).kind == TokenKind::LParen
+                        && self.peek_at(cursor + 2).kind == TokenKind::Str
+                        && self.peek_at(cursor + 3).kind == TokenKind::RParen
+                    {
+                        let s_tok = self.peek_at(cursor + 2);
+                        let name = match &s_tok.value {
+                            Some(TokenValue::Str(s)) => s.clone(),
+                            _ => s_tok.text.clone(),
+                        };
+                        t_end = self.peek_at(cursor + 3).end;
+                        cursor += 3;
+                        if let Some(choice) = crate::ast::LayoutName::parse(&name) {
+                            Some(ModuleAnnKind::Layout(choice))
+                        } else {
+                            errors.push((
+                                format!("unknown layout \"{name}\"; expected {}", layout_choices()),
+                                t_start,
+                                t_end,
+                            ));
+                            None // consumed but invalid — keeps later decls parsing clean
+                        }
+                    } else {
+                        // Missing or malformed argument. Swallow any `( … )`
+                        // (or an unclosed `( …` cut off by the line end) so
+                        // the run keeps scanning and the argument tokens are
+                        // consumed along with it.
+                        if self.peek_at(cursor + 1).kind == TokenKind::LParen {
+                            let mut depth = 0usize;
+                            loop {
+                                let k = self.peek_at(cursor + 1).kind;
+                                if k == TokenKind::Newline || k == TokenKind::Eof {
+                                    break;
+                                }
+                                cursor += 1;
+                                t_end = self.peek_at(cursor).end;
+                                match k {
+                                    TokenKind::LParen => depth += 1,
+                                    TokenKind::RParen => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        errors.push((
+                            format!("@layout requires a string argument: {}", layout_choices()),
+                            t_start,
+                            t_end,
+                        ));
+                        None
+                    }
+                }
+            };
+            let after_tok = self.peek_at(cursor + 1);
+            let after = after_tok.kind;
             if after == TokenKind::Eof {
                 // The annotation is the very last token in the file.
-                spans.push((is_fold, t_start, t_end));
-                return self.finish_module_annotations(spans, cursor + 1);
+                if let Some(k) = kind {
+                    spans.push((k, t_start, t_end));
+                }
+                return self.finish_module_annotations(spans, errors, cursor + 1);
             }
-            if after != TokenKind::Newline {
-                // Not alone on its own line — decl-scoped, leave the whole
-                // run untouched (nothing consumed).
+            let same_line_next =
+                after == TokenKind::Annotation && is_module_ann_word(after_tok.text.as_str());
+            if after != TokenKind::Newline && !same_line_next {
+                // Not alone on its own line, and not continued by another
+                // module annotation on the same line — decl-scoped, leave
+                // the whole run untouched (nothing consumed).
                 return ModuleAnnotations::default();
             }
-            spans.push((is_fold, t_start, t_end));
+            if let Some(k) = kind {
+                spans.push((k, t_start, t_end));
+            }
+            if same_line_next {
+                // Another module annotation follows directly on the same
+                // line — keep scanning (the next loop iteration checks it).
+                cursor += 1;
+                continue;
+            }
             let after2 = self.peek_at(cursor + 2).kind;
             if after2 == TokenKind::Newline || after2 == TokenKind::Eof {
                 // Blank line (or EOF) follows this annotation's line — the
                 // run ends here and is module-level.
-                return self.finish_module_annotations(spans, cursor + 2);
+                return self.finish_module_annotations(spans, errors, cursor + 2);
             }
             // Otherwise another annotation may follow directly on the next
             // line — keep scanning (the next loop iteration checks it).
@@ -452,29 +574,42 @@ impl<'a> Parser<'a> {
         ModuleAnnotations::default()
     }
 
-    /// Consume the `consumed` tokens making up a module-level `@nofold`/
-    /// `@fold` run, eat the trailing blank line(s), and fold `spans` into a
-    /// [`ModuleAnnotations`], warning if both annotations were present.
+    /// Consume the `consumed` tokens making up a module-level annotation run,
+    /// report any `errors` the scan buffered for it, eat the trailing blank
+    /// line(s), and fold `spans` into a [`ModuleAnnotations`], warning if
+    /// both fold annotations were present.
     fn finish_module_annotations(
         &mut self,
-        spans: Vec<(bool, Pos, Pos)>,
+        spans: Vec<(ModuleAnnKind, Pos, Pos)>,
+        errors: Vec<(String, Pos, Pos)>,
         consumed: usize,
     ) -> ModuleAnnotations {
+        for (message, start, end) in errors {
+            self.error(message, start, end);
+        }
         for _ in 0..consumed {
             self.advance();
         }
         self.eat_newlines();
         let mut result = ModuleAnnotations::default();
         let (mut first_start, mut last_end) = (None, None);
-        for (is_fold, start, end) in spans {
+        for (kind, start, end) in spans {
             if first_start.is_none() {
                 first_start = Some(start);
             }
             last_end = Some(end);
-            if is_fold {
-                result.fold = true;
-            } else {
-                result.no_fold = true;
+            match kind {
+                ModuleAnnKind::Fold => result.fold = true,
+                ModuleAnnKind::NoFold => result.no_fold = true,
+                ModuleAnnKind::Flat => result.flat = true,
+                ModuleAnnKind::Layout(choice) => {
+                    // No engine outranks another, so the last spelling wins and
+                    // the file is told its earlier one was discarded.
+                    if result.layout.is_some_and(|prev| prev != choice) {
+                        self.warn("module-level @layout is set twice; the last one wins", start, end);
+                    }
+                    result.layout = Some(choice);
+                }
             }
         }
         if result.fold && result.no_fold {
@@ -816,6 +951,30 @@ impl<'a> Parser<'a> {
                         anns.nofold = Some(self.make_range(tok.start, tok.end));
                     }
                 }
+                "layout" => {
+                    if self.match_tok(TokenKind::LParen, None).is_some() {
+                        // Consume through the matching `)` (stopping at the
+                        // line end) so a malformed argument list doesn't leak
+                        // stray tokens into the declaration parser.
+                        let mut depth = 1usize;
+                        while depth > 0 {
+                            let k = self.peek().kind;
+                            if k == TokenKind::Newline || k == TokenKind::Eof {
+                                break;
+                            }
+                            match self.advance().kind {
+                                TokenKind::LParen => depth += 1,
+                                TokenKind::RParen => depth -= 1,
+                                _ => {}
+                            }
+                        }
+                    }
+                    self.error(
+                        "'@layout' is module-level only — put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)".to_string(),
+                        tok.start,
+                        tok.end,
+                    );
+                }
                 w => match PortSide::from_word(w) {
                     Some(side) => {
                         if anns.side.is_some() {
@@ -829,8 +988,10 @@ impl<'a> Parser<'a> {
                         }
                     }
                     None => {
-                        let msg = if w == "fold" {
-                            "'@fold' is module-level only — put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)".to_string()
+                        let msg = if w == "fold" || w == "flat" {
+                            format!(
+                                "'@{w}' is module-level only — put it at the very top of the file with a blank line before the first declaration (and after any module doc comment)"
+                            )
                         } else {
                             format!(
                                 "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, or @nofold",
@@ -3604,5 +3765,213 @@ mod tests {
             panic!("stmt: {:?}", c.body.stmts[0])
         };
         assert!(ac.closed);
+    }
+
+    #[test]
+    fn module_layout_annotation_sets_flag() {
+        let p = crate::parser::parse("@layout(\"code\")\n\nvar x: int = 0\n", "t");
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Code));
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn module_layout_annotation_mixes_with_fold_run() {
+        let p = crate::parser::parse("@fold\n@layout(\"code\")\n\nvar x: int = 0\n", "t");
+        assert!(p.ast.fold);
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Code));
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn module_layout_annotation_selects_the_cube() {
+        let p = crate::parser::parse("@layout(\"cube\")\n\nvar x: int = 0\n", "t");
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Cube));
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    /// No engine outranks another, so the file is told which one survived
+    /// rather than silently getting whichever the fold order happened to keep.
+    #[test]
+    fn two_layout_annotations_warn_and_the_last_wins() {
+        let p =
+            crate::parser::parse("@layout(\"code\")\n@layout(\"cube\")\n\nvar x: int = 0\n", "t");
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Cube));
+        assert_eq!(
+            p.diagnostics.iter().filter(|d| d.message.contains("set twice")).count(),
+            1,
+            "{:?}",
+            p.diagnostics
+        );
+    }
+
+    #[test]
+    fn repeating_one_layout_annotation_is_not_a_conflict() {
+        let p =
+            crate::parser::parse("@layout(\"cube\")\n@layout(\"cube\")\n\nvar x: int = 0\n", "t");
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Cube));
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    /// The diagnostic is generated from the accepted spellings, so a new
+    /// engine cannot ship with an error message that omits it.
+    #[test]
+    fn unknown_layout_error_offers_every_accepted_name() {
+        let p = crate::parser::parse("@layout(\"spiral\")\n\nvar x: int = 0\n", "t");
+        let msg = &p.diagnostics[0].message;
+        for (name, _) in crate::ast::LayoutName::ALL {
+            assert!(msg.contains(name), "{name} missing from {msg:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_layout_name_errors() {
+        let p = crate::parser::parse("@layout(\"grid\")\n\nvar x: int = 0\n", "t");
+        assert!(p.ast.layout.is_none());
+        assert!(p.diagnostics.iter().any(|d| d.message.contains("unknown layout")));
+        assert_eq!(p.diagnostics.len(), 1, "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn layout_without_argument_errors() {
+        let p = crate::parser::parse("@layout\n\nvar x: int = 0\n", "t");
+        assert!(p.ast.layout.is_none());
+        assert!(p.diagnostics.iter().any(|d| d.message.contains("requires a string argument")));
+        assert_eq!(p.diagnostics.len(), 1, "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn malformed_layout_argument_reports_one_diagnostic() {
+        for src in [
+            "@layout(\n\nvar x: int = 0\n",
+            "@layout(5)\n\nvar x: int = 0\n",
+            "@layout(\"code\"\n\nvar x: int = 0\n",
+        ] {
+            let p = crate::parser::parse(src, "t");
+            assert!(p.ast.layout.is_none(), "{src:?}");
+            assert_eq!(p.diagnostics.len(), 1, "{src:?} -> {:?}", p.diagnostics);
+            assert!(
+                p.diagnostics[0].message.contains("requires a string argument"),
+                "{src:?} -> {:?}",
+                p.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn decl_scoped_malformed_layout_argument_is_fully_consumed() {
+        let p = crate::parser::parse("@layout(5)\nvar x: int = 0\n", "t");
+        assert!(p.ast.layout.is_none());
+        assert!(
+            p.diagnostics.iter().any(|d| d.message.contains("module-level only")),
+            "{:?}",
+            p.diagnostics
+        );
+        assert!(
+            p.diagnostics.iter().all(|d| !d.message.contains("unexpected token")),
+            "argument tokens must not leak into the declaration parser: {:?}",
+            p.diagnostics
+        );
+    }
+
+    #[test]
+    fn decl_scoped_layout_errors() {
+        let p = crate::parser::parse("@layout(\"code\")\nvar x: int = 0\n", "t");
+        // No blank line → decl-scoped → module-level-only error.
+        assert!(p.ast.layout.is_none());
+        assert!(p.diagnostics.iter().any(|d| d.message.contains("module-level only")));
+    }
+
+    #[test]
+    fn module_annotations_may_share_one_line() {
+        let p = crate::parser::parse("@layout(\"code\") @fold\n\nvar x: int = 0\n", "t");
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Code));
+        assert!(p.ast.fold);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn module_annotations_same_line_reverse_order() {
+        let p = crate::parser::parse("@fold @layout(\"code\")\n\nvar x: int = 0\n", "t");
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Code));
+        assert!(p.ast.fold);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn module_flat_annotation_sets_flag() {
+        let p = crate::parser::parse("@flat\n\nvar x: int = 0\n", "t");
+        assert!(p.ast.flat);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    /// `@flat` is independent of the layout choice — both spellings, both
+    /// orders, and on one line or two.
+    #[test]
+    fn module_flat_composes_with_layout_and_fold() {
+        for src in [
+            "@flat\n@layout(\"cube\")\n\nvar x: int = 0\n",
+            "@layout(\"cube\")\n@flat\n\nvar x: int = 0\n",
+            "@flat @layout(\"cube\")\n\nvar x: int = 0\n",
+            "@layout(\"cube\") @flat\n\nvar x: int = 0\n",
+        ] {
+            let p = crate::parser::parse(src, "t");
+            assert!(p.ast.flat, "{src:?}");
+            assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Cube), "{src:?}");
+            assert!(p.diagnostics.is_empty(), "{src:?} -> {:?}", p.diagnostics);
+        }
+        let p = crate::parser::parse("@fold @flat\n\nvar x: int = 0\n", "t");
+        assert!(p.ast.flat && p.ast.fold);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    /// The run's opening test and its same-line continuation test read one
+    /// allowlist. If `@flat` were only in the first, the run would stop at it
+    /// and everything after it on the line would parse as decl-scoped.
+    #[test]
+    fn a_module_annotation_after_flat_on_one_line_stays_module_level() {
+        let p = crate::parser::parse("@flat @nofold\n\nvar x: int = 0\n", "t");
+        assert!(p.ast.flat);
+        assert!(p.ast.no_fold);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn repeating_flat_is_not_a_conflict() {
+        let p = crate::parser::parse("@flat\n@flat\n\nvar x: int = 0\n", "t");
+        assert!(p.ast.flat);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    #[test]
+    fn decl_scoped_flat_errors() {
+        // No blank line → decl-scoped → module-level-only error.
+        let p = crate::parser::parse("@flat\nvar x: int = 0\n", "t");
+        assert!(!p.ast.flat);
+        assert!(
+            p.diagnostics.iter().any(|d| {
+                d.message.contains("'@flat'") && d.message.contains("module-level only")
+            }),
+            "{:?}",
+            p.diagnostics
+        );
+    }
+
+    #[test]
+    fn mixed_same_and_separate_lines() {
+        let p = crate::parser::parse("@fold @layout(\"code\")\n@nofold\n\nvar x: int = 0\n", "t");
+        assert_eq!(p.ast.layout, Some(crate::ast::LayoutName::Code));
+        assert!(p.ast.no_fold);
+        // @fold + @nofold still conflict-warn, exactly once.
+        assert_eq!(
+            p.diagnostics.iter().filter(|d| d.message.contains("conflict")).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn same_line_decl_scoped_annotations_still_hand_off() {
+        // No blank line before the declaration → decl-scoped, module flags unset.
+        let p = crate::parser::parse("@nofold @left\nin x: exec\n", "t");
+        assert!(!p.ast.no_fold);
     }
 }

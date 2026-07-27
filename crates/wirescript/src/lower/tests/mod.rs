@@ -10,6 +10,7 @@ mod boundary_pins;
 mod chip;
 mod compound;
 mod const_init;
+mod flatten;
 mod fold;
 mod fusion;
 mod imports;

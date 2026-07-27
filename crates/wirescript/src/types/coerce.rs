@@ -148,18 +148,18 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     if matches!((from, to), (Controller, Entity)) {
         return CoerceRule::Coerce;
     }
-    // Character ↔ Controller: bidirectional coercion (auto ControllerOf / CharacterOf).
+    // Character <-> Controller: bidirectional coercion (auto ControllerOf / CharacterOf).
     if matches!((from, to), (Character, Controller) | (Controller, Character)) {
         return CoerceRule::Coerce;
     }
     // Entity → Character/Controller: wires carry plain object refs and an
     // entity can be a player (e.g. Sweep's HitEntity), so the downcast is
-    // implicit — it wires directly, like character ↔ controller (no adapter).
+    // implicit — it wires directly, like character <-> controller (no adapter).
     if matches!((from, to), (Entity, Character) | (Entity, Controller)) {
         return CoerceRule::Coerce;
     }
 
-    // Rotator ↔ Quat: a rotation and a quaternion are interchangeable rotation
+    // Rotator <-> Quat: a rotation and a quaternion are interchangeable rotation
     // values at the wire level (the engine's rotation gates accept either), so a
     // rotation converts to a quat and back. Enables rotating a vector by an
     // entity's `GetRotation()` rotator, or `Rotation(p,y,r).Invert()`.
@@ -167,7 +167,7 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Coerce;
     }
 
-    // Numeric ↔ numeric (bidirectional: bool, int, float).
+    // Numeric <-> numeric (bidirectional: bool, int, float).
     if is_numeric(from) && is_numeric(to) {
         return CoerceRule::Coerce;
     }

@@ -14,11 +14,15 @@
 //! The region/compose machinery (`region.rs`, `compose.rs`) is retained
 //! for future block-aware layouts but currently unused.
 
+pub mod bus;
 #[allow(dead_code)]
 mod compose;
+pub mod code;
 mod dag;
 mod region;
 pub mod wall;
+
+pub use bus::{BusEnd, BusLayout, BusNode, BusNodeId, BusRole, BusWire};
 
 use crate::collections::HashMap;
 
@@ -64,11 +68,69 @@ fn brick_half_size(node: &Node) -> (i32, i32) {
         .unwrap_or((DEFAULT_HALF_SIZE, DEFAULT_HALF_SIZE))
 }
 
+/// A node's brick half-height. The cube layout is the only caller: it is the
+/// only engine that stacks bricks along `z`, so it is the only one that can
+/// collide along it.
+fn brick_half_height(node: &Node) -> i32 {
+    default_catalog()
+        .find_by_class(node.gate_class)
+        .map(|g| g.half_size.z)
+        .unwrap_or(DEFAULT_HALF_SIZE)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IntVec3 {
     pub x: i32,
     pub y: i32,
     pub z: i32,
+}
+
+/// A free-floating text label the layout wants on the plane, in the same
+/// coordinate space as the module's [`Placement`]s (`x`/`y` are the
+/// carrier brick's min corner). Only [`LayoutMode::Code`] produces these —
+/// one per own-line source comment.
+#[derive(Clone, Debug)]
+pub struct TextAnnotation {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub text: String,
+}
+
+/// Turns applied to a placed brick, and the axis it faces.
+///
+/// A rerouter faces what it FEEDS, so the turn is chosen from the direction
+/// the value travels next: `Deg0` faces `+Y` (screen right), `Deg90` faces
+/// down, `Deg180` faces `−Y` (screen left), `Deg270` faces up.
+///
+/// FOOTPRINT: only the QUARTER turns swap a brick's x and y half-sizes.
+/// `Deg90` and `Deg270` swap; `Deg0` and `Deg180` do not — a half turn lands
+/// the brick the way round it started. Every site that measures or reserves a
+/// cell must spell out all four arms rather than leaning on a catch-all,
+/// because which side of that split a facing falls on is exactly the mistake
+/// the overlap sweeps exist to catch.
+///
+/// `brdb::Brick::local_bounds()` does NOT account for rotation at all. Layout
+/// owns this decision precisely so it can reserve the swapped cell; emit must
+/// apply the identical swap when centering the brick. Read the footprint
+/// through [`Placement`]-space helpers rather than the raw catalog half-size
+/// whenever a node may be rotated.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum NodeRotation {
+    /// Faces `+Y` — screen right. Default gate orientation, and the gutter
+    /// bus's taps, whose runs go rightward into the body.
+    #[default]
+    Deg0,
+    /// Faces down: a line's exec spine, and the chain of a gutter lane whose
+    /// taps sit below its source. Footprint swapped.
+    Deg90,
+    /// Faces `−Y` — screen left. The mini-bus corners, whose runs go leftward
+    /// into the statement gate at their line's indent column.
+    Deg180,
+    /// Faces up: the chain of a gutter lane whose taps ALL sit above its
+    /// source, so the value really does travel upward. Footprint swapped, the
+    /// same as `Deg90`.
+    Deg270,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,6 +139,17 @@ pub struct LayoutResult {
     pub placements: HashMap<NodeId, Placement>,
     /// Per-chip sub-layouts keyed by chip node id.
     pub chip_layouts: HashMap<NodeId, LayoutResult>,
+    /// Text labels with no node of their own. Empty outside
+    /// [`LayoutMode::Code`].
+    pub annotations: Vec<TextAnnotation>,
+    /// Per-node quarter-turns. Only [`LayoutMode::Code`] populates this;
+    /// a node absent from the map is [`NodeRotation::Deg0`]. Every entry
+    /// here has already had its swapped footprint reserved by the layout,
+    /// so emit must honour it exactly.
+    pub rotations: HashMap<NodeId, NodeRotation>,
+    /// Gutter rerouter lanes carrying values to their consumers, with the
+    /// module wires they replace. Empty outside [`LayoutMode::Code`].
+    pub bus: BusLayout,
     pub bounds_min: IntVec3,
     pub bounds_max: IntVec3,
 }
@@ -97,9 +170,65 @@ pub enum ChipLayoutMode {
     AdjacentInline,
 }
 
+/// Which placement engine lays out module interiors.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum LayoutMode {
+    /// Flat topological DAG layout (the long-standing default). Modules past
+    /// [`GRID_LAYOUT_THRESHOLD`] nodes fall back to [`Self::Cube`], whose cost
+    /// does not grow with the wire graph.
+    #[default]
+    Dag,
+    /// Source-shaped layout: row = source line, indent = source column.
+    Code,
+    /// Compact 3D grid — nodes packed into a cube by brick size, skipping DAG
+    /// analysis entirely. Reached either by size or by `@layout("cube")`.
+    Cube,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LayoutOptions {
     pub chips: ChipLayoutMode,
+    pub mode: LayoutMode,
+    /// The entry file's source map, when the caller has one. Only
+    /// [`LayoutMode::Code`] reads it — for a line's true indentation.
+    /// `None` falls back to the first node's source column.
+    pub source_map: Option<std::sync::Arc<crate::ast::SourceMap>>,
+    /// Set by [`recurse_chips`] while laying out a chip's interior. Only the
+    /// outermost module takes ownership of source comments that fall outside
+    /// every row, so a file's leading notes land on one plane, not all of them.
+    pub nested: bool,
+    /// Which plane renders each own-line comment, keyed by source line; the
+    /// value names the chip node that owns it, or `None` for the outermost
+    /// module.
+    ///
+    /// Decided ONCE for the whole tree, because it cannot be decided locally:
+    /// a module's line span is a min/max envelope over rows that may be
+    /// sparse, so sibling envelopes overlap and each sibling would claim the
+    /// same comment. Built by the outermost `layout_code` and handed down.
+    pub comment_owner: Option<std::sync::Arc<HashMap<i32, Option<NodeId>>>>,
+    /// The chip node this module was reached through; `None` at the root.
+    /// Matched against [`Self::comment_owner`] to decide what this plane
+    /// renders.
+    pub self_chip: Option<NodeId>,
+}
+
+/// Derive layout options from a parsed script's module-level annotations
+/// ([`crate::ast::LayoutName`] → [`LayoutMode`]) plus the
+/// entry file's source map. Shared by every compile entry point so
+/// neither can be threaded through one path and forgotten in another.
+pub fn layout_options_for(
+    ast: &crate::ast::Script,
+    source_map: Option<std::sync::Arc<crate::ast::SourceMap>>,
+) -> LayoutOptions {
+    LayoutOptions {
+        mode: match ast.layout {
+            Some(crate::ast::LayoutName::Code) => LayoutMode::Code,
+            Some(crate::ast::LayoutName::Cube) => LayoutMode::Cube,
+            None => LayoutMode::Dag,
+        },
+        source_map,
+        ..Default::default()
+    }
 }
 
 /// Compute a layout for `module`. Recurses into each child chip.
@@ -151,7 +280,12 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
     let mut raw_max_x = 0i32;
     let mut raw_max_y = 0i32;
     let mut raw_max_z = z;
-    let z_step = 12;
+    // Layers are spaced by the tallest brick actually in the layer, floored at
+    // the nominal step. A fixed step would be silently wrong for the few bricks
+    // taller than it — and bricks that intersect are DROPPED by the game with
+    // no error, so the clearance has to come from the contents, not a constant.
+    const Z_STEP_MIN: i32 = 12;
+    let mut layer_depth = 0i32;
 
     for (id, node) in &spawnable {
         let (hsx, hsy) = brick_half_size(node);
@@ -163,6 +297,7 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
         raw_max_y = raw_max_y.max(y + fh);
         raw_max_z = raw_max_z.max(z);
         row_height = row_height.max(fh);
+        layer_depth = layer_depth.max(2 * brick_half_height(node));
         x += fw;
         col += 1;
 
@@ -176,7 +311,8 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
             if row_in_layer >= side {
                 row_in_layer = 0;
                 y = 0;
-                z += z_step;
+                z += Z_STEP_MIN.max(layer_depth);
+                layer_depth = 0;
             }
         }
     }
@@ -195,6 +331,11 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
         } else {
             HashMap::default()
         },
+        annotations: Vec::new(),
+        // Only Code mode rotates bricks.
+        rotations: HashMap::default(),
+        // Only Code mode buses values through the gutter.
+        bus: BusLayout::default(),
         bounds_min: IntVec3 {
             x: -half_x,
             y: -half_y,
@@ -216,6 +357,13 @@ pub fn layout_with_opts(module: &Module, opts: &LayoutOptions) -> LayoutResult {
 }
 
 fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutResult {
+    match opts.mode {
+        LayoutMode::Code => return code::layout_code(module, opts, recurse),
+        // Asking for the cube gets it at any size, including the empty module —
+        // the size fallback below is a ceiling on DAG cost, not the only route.
+        LayoutMode::Cube => return layout_grid_impl(module, opts, recurse),
+        LayoutMode::Dag => {}
+    }
     if module.nodes.len() > GRID_LAYOUT_THRESHOLD {
         return layout_grid_impl(module, opts, recurse);
     }
@@ -243,6 +391,11 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
             } else {
                 HashMap::default()
             },
+            annotations: Vec::new(),
+            // Only Code mode rotates bricks.
+            rotations: HashMap::default(),
+            // Only Code mode buses values through the gutter.
+            bus: BusLayout::default(),
             bounds_min: IntVec3::default(),
             bounds_max: IntVec3::default(),
         };
@@ -295,6 +448,11 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
         } else {
             HashMap::default()
         },
+        annotations: Vec::new(),
+        // Only Code mode rotates bricks.
+        rotations: HashMap::default(),
+        // Only Code mode buses values through the gutter.
+        bus: BusLayout::default(),
         bounds_min: IntVec3 {
             x: min_x,
             y: min_y,
@@ -624,8 +782,16 @@ fn resolve_variable_sizes(
 
 fn recurse_chips(module: &Module, opts: &LayoutOptions) -> HashMap<NodeId, LayoutResult> {
     let mut chip_layouts: HashMap<NodeId, LayoutResult> = HashMap::default();
+    if module.chips.is_empty() {
+        return chip_layouts;
+    }
     for (chip_id, child_module) in &module.chips {
-        chip_layouts.insert(*chip_id, layout_with_opts(child_module, opts));
+        let child_opts = LayoutOptions {
+            nested: true,
+            self_chip: Some(*chip_id),
+            ..opts.clone()
+        };
+        chip_layouts.insert(*chip_id, layout_with_opts(child_module, &child_opts));
     }
     chip_layouts
 }
@@ -668,6 +834,133 @@ mod tests {
         let m = Module::new("empty");
         let l = layout(&m);
         assert!(l.placements.is_empty());
+    }
+
+    fn cube_opts() -> LayoutOptions {
+        LayoutOptions { mode: LayoutMode::Cube, ..Default::default() }
+    }
+
+    #[test]
+    fn layout_annotation_maps_to_its_engine() {
+        let engine = |layout| {
+            layout_options_for(
+                &crate::ast::Script { layout, ..Default::default() },
+                None,
+            )
+            .mode
+        };
+        assert_eq!(engine(Some(crate::ast::LayoutName::Cube)), LayoutMode::Cube);
+        assert_eq!(engine(Some(crate::ast::LayoutName::Code)), LayoutMode::Code);
+        assert_eq!(engine(None), LayoutMode::Dag);
+    }
+
+    /// The size fallback is a ceiling on DAG cost, not the only way in: asking
+    /// for the cube gets it at eight nodes, five thousand short of the
+    /// threshold. Stacking in `z` is what tells the two engines apart — the
+    /// DAG layout is a single plane.
+    #[test]
+    fn cube_mode_is_forced_well_under_the_size_threshold() {
+        let mut m = Module::new("cube");
+        for _ in 0..8 {
+            m.add_node(gate("g"));
+        }
+        assert!(m.nodes.len() < GRID_LAYOUT_THRESHOLD);
+
+        let cube = layout_with_opts(&m, &cube_opts());
+        let levels: std::collections::BTreeSet<i32> =
+            cube.placements.values().map(|p| p.z).collect();
+        assert!(levels.len() > 1, "cube stacks in z, got levels {levels:?}");
+
+        let dag = layout_with_opts(&m, &LayoutOptions::default());
+        assert_eq!(
+            dag.placements.values().map(|p| p.z).collect::<std::collections::BTreeSet<_>>().len(),
+            1,
+            "the DAG layout is a single plane, so the check above is a real distinction"
+        );
+    }
+
+    /// The game silently DROPS overlapping bricks, so a mode a file can now
+    /// ask for at any size has to be swept with real footprints, not the
+    /// nominal cell.
+    #[test]
+    fn cube_mode_never_overlaps_two_bricks() {
+        let mut m = Module::new("cube");
+        for _ in 0..40 {
+            m.add_node(gate("g"));
+        }
+        let l = layout_with_opts(&m, &cube_opts());
+        let boxes: Vec<(i32, i32, i32, i32, i32)> = l
+            .placements
+            .iter()
+            .map(|(id, p)| {
+                let (hsx, hsy) = brick_half_size(&m.nodes[id]);
+                (p.z, p.x, p.x + 2 * hsx, p.y, p.y + 2 * hsy)
+            })
+            .collect();
+        for (i, a) in boxes.iter().enumerate() {
+            for b in &boxes[i + 1..] {
+                assert!(
+                    a.0 != b.0 || a.2 <= b.1 || b.2 <= a.1 || a.4 <= b.3 || b.4 <= a.3,
+                    "cube bricks overlap: {a:?} and {b:?}"
+                );
+            }
+        }
+    }
+
+    /// Layer spacing has to clear the bricks in the layer. Most gates are 4
+    /// tall and fit any sane fixed step, so this pins the case that does not:
+    /// a brick taller than the nominal step must still not reach the layer
+    /// above it.
+    #[test]
+    fn cube_layers_clear_the_tallest_brick_they_hold() {
+        // 80 units tall against a 12-unit nominal step, so a fixed step puts
+        // this brick through the six layers above it.
+        let class = "Component_Internal_ProjectileSpawner_Cannon";
+        let tall = default_catalog()
+            .find_by_class(class)
+            .expect("catalog must know the class this test is built on")
+            .half_size
+            .z;
+        assert!(2 * tall > 12, "brick must exceed the nominal step to pin anything");
+
+        let mut m = Module::new("cube");
+        for _ in 0..8 {
+            m.add_node(Node { gate_class: class, ..gate("g") });
+        }
+        let l = layout_with_opts(&m, &cube_opts());
+        let mut levels: Vec<i32> = l.placements.values().map(|p| p.z).collect();
+        levels.sort();
+        levels.dedup();
+        for pair in levels.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= 2 * tall,
+                "layers {} and {} are closer than the {}-tall bricks in them",
+                pair[0],
+                pair[1],
+                2 * tall
+            );
+        }
+    }
+
+    /// A chip's interior is laid by a separate call, so the mode has to travel
+    /// with the options rather than being read once at the root.
+    #[test]
+    fn cube_mode_reaches_a_chips_interior() {
+        let mut m = Module::new("outer");
+        let chip = Node { kind: NodeKind::Chip, ..gate("c") };
+        let chip_id = chip.id;
+        m.add_node(chip);
+        let mut inner = Module::new("inner");
+        for _ in 0..8 {
+            inner.add_node(gate("g"));
+        }
+        m.chips.insert(chip_id, inner);
+
+        let l = layout_with_opts(&m, &cube_opts());
+        let interior = l.chip_layouts.get(&chip_id).expect("chip interior laid");
+        let levels: std::collections::BTreeSet<i32> =
+            interior.placements.values().map(|p| p.z).collect();
+        assert!(levels.len() > 1, "chip interior is not a cube: levels {levels:?}");
     }
 
     #[test]
@@ -734,6 +1027,7 @@ mod tests {
             &parent,
             &LayoutOptions {
                 chips: ChipLayoutMode::AdjacentInline,
+                ..Default::default()
             },
         );
         assert_eq!(default_out.placements, inline_out.placements);

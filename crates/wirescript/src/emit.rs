@@ -37,8 +37,8 @@ use brdb::{
 
 use crate::intern::{Sym, intern_static, resolve, sym};
 use crate::ir::port_registry::WirePort;
-use crate::layout::LayoutResult;
 use crate::layout::wall::WallLayout;
+use crate::layout::{BusEnd, BusLayout, LayoutResult, NodeRotation};
 use crate::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc};
 
 /// Register all component type → struct name mappings and wire port names
@@ -129,6 +129,18 @@ pub enum EmitError {
     Brdb(#[from] brdb::BrError),
     #[error("prefab reference `${0}`: {1}")]
     PrefabResolve(String, String),
+    /// A gutter-bus wire whose endpoint could not be resolved to a brick port.
+    ///
+    /// Fatal, unlike the module-wire equivalent: the bus SUPPRESSED the module
+    /// wire this one replaces, so there is no second path to the consumer. A
+    /// dropped bus wire means the value never arrives, and nothing downstream
+    /// can tell — the save loads, pastes, and reads zero.
+    #[error("bus wire {from} → {to} could not be drawn: {cause}")]
+    BusWireUnresolved {
+        from: String,
+        to: String,
+        cause: String,
+    },
 }
 
 /// IR + placements → in-memory `brdb::World`. The core build step; the two
@@ -374,7 +386,7 @@ pub fn build_world(
         let label = text_label(
             &mut world,
             root_label,
-            -45.0,
+            LABEL_ROTATION_DEG,
             -0.5,
             LABEL_LINE_HEIGHT,
             0.5,
@@ -466,6 +478,24 @@ const WALL_ROT: brdb::Quat4f = brdb::Quat4f {
 const LABEL_LINE_HEIGHT: f32 = 2.4;
 /// Smaller tag on Var_Get/Set-style gates naming the variable they touch.
 const VAR_TAG_LINE_HEIGHT: f32 = 1.2;
+/// On-screen angle every name label and variable tag reads at.
+const LABEL_ROTATION_DEG: f32 = -45.0;
+
+/// The `Rotation` to write on a name label riding a brick placed at
+/// `rotation`.
+///
+/// A label's rotation is brick-local — it rides the brick's yaw — so a
+/// quarter-turned brick would read its tag a quarter-turn off from every
+/// other tag on the plane. Taking the yaw back out lands the text at the
+/// same on-screen angle regardless of how the brick under it is turned.
+fn label_rotation_deg(rotation: NodeRotation) -> f32 {
+    match rotation {
+        NodeRotation::Deg0 => LABEL_ROTATION_DEG,
+        NodeRotation::Deg90 => LABEL_ROTATION_DEG - 90.0,
+        NodeRotation::Deg180 => LABEL_ROTATION_DEG - 180.0,
+        NodeRotation::Deg270 => LABEL_ROTATION_DEG - 270.0,
+    }
+}
 
 /// Grid-unit offset from the chip brick's centre to a flush outer rerouter's
 /// centre: chip half-extent (5) + rerouter half-extent (1).
@@ -489,7 +519,7 @@ const REROUTER_LABEL_LINE_HEIGHT: f32 = 1.2;
 /// around from there. The floating text label rides the brick's yaw (its own
 /// TextDisplay rotation stays 0), giving the in/out 180° text flip for free.
 ///
-/// World↔screen mapping, confirmed in-game: +X = up, +Y = right, and `Deg90`
+/// World<->screen mapping, confirmed in-game: +X = up, +Y = right, and `Deg90`
 /// yaws toward −X — so the per-side values below point each output pin outward.
 fn rerouter_orientation(side: &str, is_input: bool) -> brdb::Rotation {
     use brdb::Rotation::*;
@@ -686,6 +716,98 @@ fn emit_plane_header(
     bricks.push(brick);
 }
 
+/// One invisible 1×1 carrier brick per layout text annotation — the source's
+/// own-line `//` comments under the code-shaped layout. Same font, outline and
+/// face treatment as a plane header, but anchored on the label's LEFT edge so
+/// the text runs rightward from the row's indent, the way the comment reads in
+/// the source. The annotation's position is the carrier's min corner, matching
+/// the gate-brick convention, so a comment sits on a row of its own.
+fn emit_annotations(
+    world: &mut World,
+    bricks: &mut Vec<brdb::Brick>,
+    annotations: &[crate::layout::TextAnnotation],
+) {
+    for ann in annotations {
+        // A 1x1F procedural default brick (10x10x4 cm -> half-extents 5,5,2).
+        let mut brick = brdb::Brick {
+            asset: brdb::BrickType::from((brdb::assets::bricks::PB_DEFAULT_BRICK, (5, 5, 2))),
+            position: brdb::Position {
+                x: ann.x + 5,
+                y: ann.y + 5,
+                z: ann.z,
+            },
+            visible: false,
+            ..Default::default()
+        };
+        brick.add_component_box(Box::new(text_label(
+            world,
+            &ann.text,
+            0.0,
+            0.5,
+            LABEL_LINE_HEIGHT,
+            0.0,
+            0.5,
+        )));
+        bricks.push(brick);
+    }
+}
+
+/// One rerouter brick per [`crate::layout::BusNode`], in `BusNodeId` order —
+/// the gutter lanes that carry a value to its consumers in place of one long
+/// diagonal wire each. Returns each lane node's brick id, indexed by
+/// `BusNodeId`, for the wire pass to address.
+///
+/// Positions are min-corner like every other brick the layout hands over, so
+/// the brick centre sits a rerouter half-extent (1) in on both axes.
+fn emit_bus(
+    bricks: &mut Vec<brdb::Brick>,
+    bus: &BusLayout,
+    module: &Module,
+    wire_target_index: &StdMap<(NodeId, WirePort), NodeId>,
+) -> Vec<usize> {
+    let mut brick_ids = Vec::with_capacity(bus.nodes.len());
+    for node in &bus.nodes {
+        let (mut brick, brick_id) = brdb::Brick {
+            asset: BrickType::from("B_1x1_Reroute_Node"),
+            position: Position {
+                x: node.x + 1,
+                y: node.y + 1,
+                z: node.z,
+            },
+            rotation: match node.rotation {
+                NodeRotation::Deg0 => brdb::Rotation::Deg0,
+                NodeRotation::Deg90 => brdb::Rotation::Deg90,
+                NodeRotation::Deg180 => brdb::Rotation::Deg180,
+                NodeRotation::Deg270 => brdb::Rotation::Deg270,
+            },
+            color: node
+                .color_of
+                .map(|id| match module.nodes.get(&id) {
+                    Some(n) => color_for_node(n, module, wire_target_index),
+                    // The allocator named a node this module doesn't own, so
+                    // the lane can't mirror its colour — say so rather than
+                    // leaving a silently default-coloured lane to explain.
+                    None => {
+                        eprintln!(
+                            "[bus] colour source {id} is not a node of module {}; using the default",
+                            resolve(module.name)
+                        );
+                        Color::default()
+                    }
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        }
+        .with_id_split();
+        // Saved worlds use the component's instance name; the rerouter's
+        // data struct is empty.
+        brick.add_component_box(Box::new(LiteralComponent::new(gc::REROUTER)));
+        bricks.push(brick);
+        brick_ids.push(brick_id);
+    }
+    brick_ids
+}
+
 /// Place one outer-grid rerouter per `@side`-annotated root port, flush
 /// against the chip brick's edge, pre-wired to the port's inner
 /// MicrochipInput/Output gate. The brdb writer serialises the cross-grid
@@ -733,7 +855,7 @@ fn emit_port_rerouters(world: &mut World, ctx: &EmitContext, module: &Module, op
             // first-declared first: `run` steps from REROUTER_RUN_START toward
             // the far end.
             let run = REROUTER_RUN_START - REROUTER_PITCH * i as i32;
-            // World↔screen pinned in-game: +X = up, +Y = right. Edges: left =
+            // World<->screen pinned in-game: +X = up, +Y = right. Edges: left =
             // −Y, right = +Y, top = +X, bottom = −X. Left/right pins run down
             // the X axis from the top (+X); top/bottom pins run along Y from the
             // left (−Y), so their `run` is negated.
@@ -845,6 +967,30 @@ struct EmitContext {
     var_labels: HashMap<NodeId, String>,
 }
 
+/// Resolve a wire source to its var/array-var label, following the source
+/// through any number of `MicrochipInput`/`MicrochipOutput` boundary pins
+/// (inserted by the boundary-pins pass for wires that cross a chip
+/// boundary) and `Rerouter` hops back to the originating
+/// `Pseudo_Var`/`Pseudo_ArrayVar` node. Without this, a global written from
+/// inside a named chip, or one reached through a rerouter, resolves only as
+/// far as the hop and loses its tag. Bus lane rerouters have no IR node, so
+/// `wire_sources` holds no entry for them and the walk ends there. Bounded
+/// so a malformed graph can't spin forever.
+fn resolve_var_label(ctx: &EmitContext, mut src: NodeId) -> Option<&String> {
+    const MAX_HOPS: usize = 64;
+    for _ in 0..MAX_HOPS {
+        if let Some(label) = ctx.var_labels.get(&src) {
+            return Some(label);
+        }
+        let class = *ctx.class_index.get(&src)?;
+        if class != gc::MICROCHIP_INPUT && class != gc::MICROCHIP_OUTPUT && class != gc::REROUTER {
+            return None;
+        }
+        src = *ctx.wire_sources.get(&(src, WirePort::RerInput))?;
+    }
+    None
+}
+
 fn emit_module(
     world: &mut World,
     ctx: &mut EmitContext,
@@ -914,9 +1060,22 @@ fn emit_module(
         // with the cell grid line at (pos.x, pos.y). This keeps every brick
         // inside its own cell regardless of size (1x1, wide DisplayText, etc.)
         // and prevents overlaps between adjacent cells of different sizes.
-        let (offset_x, offset_y) = match catalog_entry {
+        let (half_x, half_y) = match catalog_entry {
             Some(g) => (g.half_size.x, g.half_size.y),
             _ => (5, 5),
+        };
+        // A quarter-turned brick swaps its footprint, so its center sits at
+        // the swapped half-extent from the same min corner. The layout has
+        // already reserved the cell that way; `brdb::Brick::local_bounds()`
+        // is rotation-blind, so nothing downstream would catch a mismatch
+        // here — the game would just drop the overlapping bricks at load.
+        let rotation = layout.rotations.get(*id).copied().unwrap_or_default();
+        let (offset_x, offset_y) = match rotation {
+            // A half turn lands the brick the way round it started, so only
+            // the QUARTER turns swap. Deg180 measures exactly like Deg0, and
+            // Deg270 exactly like Deg90.
+            NodeRotation::Deg0 | NodeRotation::Deg180 => (half_x, half_y),
+            NodeRotation::Deg90 | NodeRotation::Deg270 => (half_y, half_x),
         };
         let inner_pos = brdb::Position {
             x: pos.x + offset_x,
@@ -926,6 +1085,12 @@ fn emit_module(
         let (mut brick, brick_id) = brdb::Brick {
             asset: BrickType::from(brick_asset),
             position: inner_pos,
+            rotation: match rotation {
+                NodeRotation::Deg0 => brdb::Rotation::Deg0,
+                NodeRotation::Deg90 => brdb::Rotation::Deg90,
+                NodeRotation::Deg180 => brdb::Rotation::Deg180,
+                NodeRotation::Deg270 => brdb::Rotation::Deg270,
+            },
             color: color_for_node(node, module, &wire_target_index),
             ..Default::default()
         }
@@ -1129,7 +1294,7 @@ fn emit_module(
                         let port = WirePort::from_name(resolve(p.name));
                         ctx.wire_sources.get(&(node.id, port))
                     })
-                    .and_then(|src| ctx.var_labels.get(src))
+                    .and_then(|src| resolve_var_label(ctx, *src))
                     .map(|s| (s.clone(), VAR_TAG_LINE_HEIGHT))
             }
             _ => None,
@@ -1138,7 +1303,7 @@ fn emit_module(
             brick.add_component_box(Box::new(text_label(
                 world,
                 &text,
-                -45.0,
+                label_rotation_deg(rotation),
                 0.5,
                 line_height,
                 0.5,
@@ -1152,6 +1317,11 @@ fn emit_module(
         // EMIT_BRICK_NS.fetch_add(_bt.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
         // EMIT_BRICK_COUNT.fetch_add(1, AtomicOrd::Relaxed);
     }
+
+    emit_annotations(world, bricks, &layout.annotations);
+    // Lane bricks now; their wires wait for pass 3, where the chip-port
+    // index a `BusEnd::Node` tap may need has been built.
+    let bus_brick_ids = emit_bus(bricks, &layout.bus, module, &wire_target_index);
 
     // ── Pass 2: recursively emit chip children ──
     for id in &sorted_ids {
@@ -1238,7 +1408,7 @@ fn emit_module(
             chip_brick.add_component_box(Box::new(text_label(
                 world,
                 &name,
-                -45.0,
+                LABEL_ROTATION_DEG,
                 -0.5,
                 LABEL_LINE_HEIGHT,
                 0.5,
@@ -1258,6 +1428,15 @@ fn emit_module(
     let port_index = build_port_index(module, &ctx.node_brick_ids);
     for w in &module.wires {
         if w.source.port == layout_port_id || w.target.port == layout_port_id {
+            continue;
+        }
+        // A bus lane already carries this value to the port; drawing the
+        // direct wire too would fan in and the game would reject one.
+        if layout
+            .bus
+            .suppressed
+            .contains(&(w.target.node_id, w.target.port))
+        {
             continue;
         }
         let src_class = ctx.class_index.get(&w.source.node_id);
@@ -1295,6 +1474,75 @@ fn emit_module(
                 );
             }
         }
+    }
+
+    // ── Pass 3b: the bus lanes' own wires ──
+    // A lane hop reads a rerouter's `RER_Output` and drives the next one's
+    // `RER_Input`; a `BusEnd::Node` end resolves exactly like a module wire
+    // end, so a tap on a chip port goes through the same remap.
+    let bus_end = |e: BusEnd, as_source: bool| -> Result<BrdbWirePort, EmitError> {
+        match e {
+            BusEnd::Bus(i) => {
+                let brick_id = *bus_brick_ids
+                    .get(i)
+                    .ok_or_else(|| EmitError::UnknownWireNode(format!("bus node {i}")))?;
+                Ok(BrdbWirePort {
+                    brick_id,
+                    component_type: BString::Static(gc::REROUTER),
+                    port_name: BString::Static(if as_source {
+                        "RER_Output"
+                    } else {
+                        "RER_Input"
+                    }),
+                })
+            }
+            BusEnd::Node(p) => resolve_wire_end(
+                p.node_id,
+                p.port,
+                &ctx.node_brick_ids,
+                &ctx.class_index,
+                &port_index,
+            ),
+        }
+    };
+    // Name an end the way a reader can act on: a lane brick by its index,
+    // rotation and cell, a real end by its node and port.
+    let describe = |e: BusEnd, as_source: bool| -> String {
+        match e {
+            BusEnd::Bus(i) => match layout.bus.nodes.get(i) {
+                Some(n) => format!(
+                    "bus node {i} .{} ({:?} at {},{},{})",
+                    if as_source { "RER_Output" } else { "RER_Input" },
+                    n.rotation,
+                    n.x,
+                    n.y,
+                    n.z
+                ),
+                None => format!("bus node {i} (out of range)"),
+            },
+            BusEnd::Node(p) => format!("{} .{}", p.node_id, p.port.as_str()),
+        }
+    };
+    for bw in &layout.bus.wires {
+        // Unlike pass 3, an unresolvable end here is FATAL. Pass 3's wire was
+        // going to be drawn anyway, so dropping it loses a wire the reader can
+        // see missing; a bus wire's original was suppressed and will never be
+        // redrawn, so dropping it silently strands the consumer forever.
+        let (source, target) = match (bus_end(bw.source, true), bus_end(bw.target, false)) {
+            (Ok(s), Ok(t)) => (s, t),
+            (src, tgt) => {
+                let cause = src.err().or(tgt.err());
+                return Err(EmitError::BusWireUnresolved {
+                    from: describe(bw.source, true),
+                    to: describe(bw.target, false),
+                    cause: match cause {
+                        Some(e) => e.to_string(),
+                        None => "unknown".to_string(),
+                    },
+                });
+            }
+        };
+        world.add_wire(WireConnection { source, target });
     }
 
     Ok(())
@@ -1961,43 +2209,58 @@ fn is_spawnable(kind: NodeKind, gate_class: &str) -> bool {
     )
 }
 
+/// Resolve one wire end — an IR node plus the port on it — to the emitted
+/// brick port, applying the chip-port remap in `port_index` when the node is
+/// a chip and the port one of its declared pins.
+fn resolve_wire_end(
+    node_id: NodeId,
+    port_idx: WirePort,
+    node_brick_ids: &HashMap<NodeId, usize>,
+    class_index: &HashMap<NodeId, &'static str>,
+    port_index: &HashMap<(NodeId, &'static str), (usize, &'static str, &'static str)>,
+) -> Result<BrdbWirePort, EmitError> {
+    let port_str: &'static str = port_idx.as_str();
+    if let Some(&(brick_id, cls, remapped)) = port_index.get(&(node_id, port_str)) {
+        return Ok(BrdbWirePort {
+            brick_id,
+            component_type: BString::Static(cls),
+            port_name: BString::Static(remapped),
+        });
+    }
+    let brick_id = *node_brick_ids
+        .get(&node_id)
+        .ok_or_else(|| EmitError::UnknownWireNode(node_id.to_string()))?;
+    let cls = *class_index
+        .get(&node_id)
+        .ok_or_else(|| EmitError::UnknownWireNode(node_id.to_string()))?;
+    Ok(BrdbWirePort {
+        brick_id,
+        component_type: BString::Static(cls),
+        port_name: BString::Static(port_str),
+    })
+}
+
 fn wire_to_connection_indexed(
     w: &Wire,
     node_brick_ids: &HashMap<NodeId, usize>,
     class_index: &HashMap<NodeId, &'static str>,
     port_index: &HashMap<(NodeId, &'static str), (usize, &'static str, &'static str)>,
 ) -> Result<WireConnection, EmitError> {
-    let resolve_end = |node_id: NodeId,
-                       port_idx: WirePort|
-     -> Result<(usize, &'static str, &'static str), EmitError> {
-        let port_str: &'static str = port_idx.as_str();
-        let key = (node_id, port_str);
-        if let Some(&(bid, cls, port)) = port_index.get(&key) {
-            return Ok((bid, cls, port));
-        }
-        let bid = *node_brick_ids
-            .get(&node_id)
-            .ok_or_else(|| EmitError::UnknownWireNode(node_id.to_string()))?;
-        let cls = *class_index
-            .get(&node_id)
-            .ok_or_else(|| EmitError::UnknownWireNode(node_id.to_string()))?;
-        Ok((bid, cls, port_str))
-    };
-
-    let (src_brick, src_class, src_port) = resolve_end(w.source.node_id, w.source.port)?;
-    let (tgt_brick, tgt_class, tgt_port) = resolve_end(w.target.node_id, w.target.port)?;
-
     Ok(WireConnection {
-        source: BrdbWirePort {
-            brick_id: src_brick,
-            component_type: BString::Static(src_class),
-            port_name: BString::Static(src_port),
-        },
-        target: BrdbWirePort {
-            brick_id: tgt_brick,
-            component_type: BString::Static(tgt_class),
-            port_name: BString::Static(tgt_port),
-        },
+        source: resolve_wire_end(
+            w.source.node_id,
+            w.source.port,
+            node_brick_ids,
+            class_index,
+            port_index,
+        )?,
+        target: resolve_wire_end(
+            w.target.node_id,
+            w.target.port,
+            node_brick_ids,
+            class_index,
+            port_index,
+        )?,
     })
 }
 
@@ -2298,6 +2561,43 @@ mod tests {
     use super::*;
 
     const DISPLAY_TEXT: &str = "BrickComponentData_WireGraph_Exec_Controller_DisplayText";
+
+    fn empty_ctx() -> EmitContext {
+        EmitContext {
+            node_brick_ids: HashMap::default(),
+            class_index: HashMap::default(),
+            prefab_resolver: None,
+            wire_sources: HashMap::default(),
+            var_labels: HashMap::default(),
+        }
+    }
+
+    /// A gate reading a var through a rerouter must still resolve the var's
+    /// name for its tag, and a rerouter with nothing upstream (a bus lane
+    /// node, which has no IR node and so no `wire_sources` entry) must end
+    /// the walk rather than spin.
+    #[test]
+    fn var_label_walk_follows_rerouter_hops() {
+        let var = NodeId::fresh();
+        let hop = NodeId::fresh();
+        let second_hop = NodeId::fresh();
+        let mut ctx = empty_ctx();
+        ctx.var_labels.insert(var, "count".to_string());
+        ctx.class_index.insert(hop, gc::REROUTER);
+        ctx.class_index.insert(second_hop, gc::REROUTER);
+        ctx.wire_sources.insert((hop, WirePort::RerInput), var);
+        ctx.wire_sources
+            .insert((second_hop, WirePort::RerInput), hop);
+
+        assert_eq!(
+            resolve_var_label(&ctx, second_hop).map(String::as_str),
+            Some("count")
+        );
+
+        let dangling = NodeId::fresh();
+        ctx.class_index.insert(dangling, gc::REROUTER);
+        assert_eq!(resolve_var_label(&ctx, dangling), None);
+    }
 
     #[test]
     fn var_values_cover_all_variant_members() {

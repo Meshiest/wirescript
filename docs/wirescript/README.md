@@ -10,11 +10,11 @@ Wirescript is a high-level language that compiles to Brickadia wire graphs. It r
 
 3. **[Expressions](expressions.md)** -- Operators (arithmetic, comparison, logical, bitwise, string concatenation), operator precedence, string interpolation, conditional expressions, field access, index access, and function calls.
 
-4. **[Statements](statements.md)** -- `var`, `let`, `buffer`, `array`, `in`, `out`, `if`, `on` (handlers), `event`, `emit`, assignment, and expression statements.
+4. **[Statements](statements.md)** -- `var`, `let`, `buffer`, `array`, `in`, `out`, `if`, `on` (handlers), `event`, `emit`, assignment, and expression statements; plus the module-level annotations a file opens with (`@fold`/`@nofold`, `@layout("code")`/`@layout("cube")`, `@flat`).
 
 5. **[Builtin Functions](builtins.md)** -- All built-in functions grouped by category: math/trig, vector, entity, controller/character, display, gamemode, raycasting, random, string formatting, and color.
 
-6. **[Chips](chips.md)** -- Anonymous chips (`chip {}`), `chip let`, `chip on`, named chips with parameters, `mod` (inline expansion), `ref`/`*` params, nested chips, and the `open` modifier.
+6. **[Chips](chips.md)** -- Anonymous chips (`chip {}`), `chip let`, `chip on`, named chips with parameters, `mod` (inline expansion), `ref`/`*` params, nested chips, the `open` modifier, and compiling without microchips (`@flat`).
 
 7. **[Execution Context](exec-context.md)** -- Pure vs exec context, what requires exec, handler exec chains, exec unions after handlers, and explicit exec parameters.
 

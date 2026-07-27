@@ -1,12 +1,14 @@
 //! `src/wirescript/parser/lexer.ts`.
 //!
 //! Newlines are tokens (significant for statement termination in the
-//! parser). Horizontal whitespace is skipped. Block and line comments are
-//! discarded; block comments may nest.
+//! parser). Horizontal whitespace is skipped. Block comments are
+//! discarded and may nest; `//` line comments produce no token but are
+//! recorded in the [`SourceMap`] alongside every line's indentation.
 
 use crate::collections::HashSet;
 use std::sync::OnceLock;
 
+use crate::ast::{SourceComment, SourceMap};
 use crate::diagnostic::{Diagnostic, Pos, SourceRange};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,10 +97,32 @@ const SINGLE_CHAR_OPS: &[char] = &[
 pub struct LexResult {
     pub tokens: Vec<Token>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Per-line indentation and the `//` comments dropped from `tokens`.
+    pub source_map: SourceMap,
 }
 
 pub fn lex(source: &str, file: &str) -> LexResult {
     Lexer::new(source, file).run()
+}
+
+/// The 0-based column of each line's first non-whitespace character;
+/// blank and whitespace-only lines get 0. Columns count bytes the way
+/// [`Pos::col`] advances, less its 1-based origin.
+fn line_indents(source: &str) -> Vec<u32> {
+    source
+        .split('\n')
+        .map(|line| {
+            let indent = line
+                .bytes()
+                .take_while(|b| matches!(b, b' ' | b'\t'))
+                .count();
+            if line[indent..].trim().is_empty() {
+                0
+            } else {
+                indent as u32
+            }
+        })
+        .collect()
 }
 
 struct Lexer<'a> {
@@ -110,6 +134,11 @@ struct Lexer<'a> {
     col: u32,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
+    comments: Vec<SourceComment>,
+    /// Unclosed `[` seen so far. A comment inside one is inside an array
+    /// literal or a data table; `emit` is the single funnel every token
+    /// passes through, so counting there cannot miss one.
+    bracket_depth: i32,
 }
 
 impl<'a> Lexer<'a> {
@@ -123,6 +152,8 @@ impl<'a> Lexer<'a> {
             col: 1,
             tokens: Vec::new(),
             diagnostics: Vec::new(),
+            comments: Vec::new(),
+            bracket_depth: 0,
         }
     }
 
@@ -148,9 +179,29 @@ impl<'a> Lexer<'a> {
                     self.emit(TokenKind::DocComment, text, start, end, None);
                     continue;
                 }
+                // Plain line comment: no token, but the text is kept.
+                let own_line = self.source[..start.offset]
+                    .rsplit('\n')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty();
+                self.advance();
+                self.advance(); // skip //
+                if self.pos < self.bytes.len() && self.bytes[self.pos] == b' ' {
+                    self.advance(); // skip optional leading space
+                }
+                let content_start = self.pos;
                 while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
                     self.advance();
                 }
+                self.comments.push(SourceComment {
+                    line: start.line,
+                    col: start.col,
+                    text: self.source[content_start..self.pos].trim_end().to_string(),
+                    own_line,
+                    in_array: self.bracket_depth > 0,
+                });
                 continue;
             }
             // block comment (nestable)
@@ -234,9 +285,15 @@ impl<'a> Lexer<'a> {
             end: p,
             value: None,
         });
+        let source_map = SourceMap {
+            file: self.file.as_str().into(),
+            line_indent: line_indents(self.source),
+            comments: self.comments,
+        };
         LexResult {
             tokens: self.tokens,
             diagnostics: self.diagnostics,
+            source_map,
         }
     }
 
@@ -272,6 +329,11 @@ impl<'a> Lexer<'a> {
         end: Pos,
         value: Option<TokenValue>,
     ) {
+        match kind {
+            TokenKind::LBracket => self.bracket_depth += 1,
+            TokenKind::RBracket => self.bracket_depth = (self.bracket_depth - 1).max(0),
+            _ => {}
+        }
         self.tokens.push(Token {
             kind,
             text: text.into(),
@@ -926,6 +988,62 @@ mod tests {
         let kinds: Vec<TokenKind> = r.tokens.iter().map(|t| t.kind).collect();
         use TokenKind::*;
         assert_eq!(kinds, vec![Ident, Ident, Eof]);
+    }
+
+    #[test]
+    fn line_comments_are_captured_with_position_and_ownership() {
+        let r = lex("// header\nvar a: int = 0 // trailing\n", "t");
+        let c = &r.source_map.comments;
+        assert_eq!(c.len(), 2);
+        assert_eq!((c[0].line, c[0].col), (1, 1));
+        assert_eq!(c[0].text, "header");
+        assert!(c[0].own_line);
+        assert_eq!((c[1].line, c[1].col), (2, 16));
+        assert_eq!(c[1].text, "trailing");
+        assert!(!c[1].own_line);
+        // Comments produce no tokens.
+        let kinds: Vec<TokenKind> = r.tokens.iter().map(|t| t.kind).collect();
+        use TokenKind::*;
+        assert_eq!(
+            kinds,
+            vec![Newline, Kw, Ident, Colon, Ident, Op, Int, Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn a_slash_slash_inside_a_string_is_not_a_comment() {
+        let r = lex("let s = \"a // b\"\n", "t");
+        assert!(r.source_map.comments.is_empty());
+    }
+
+    #[test]
+    fn doc_comments_stay_tokens_and_are_not_captured() {
+        let r = lex("/// doc\nvar a: int = 0\n", "t");
+        assert!(r.source_map.comments.is_empty());
+        assert_eq!(r.tokens[0].kind, TokenKind::DocComment);
+        assert_eq!(r.tokens[0].text, "doc");
+    }
+
+    #[test]
+    fn line_indent_counts_leading_whitespace_zero_based() {
+        let r = lex("a\n  b\n\t\tc\n\nd\n   \n", "t");
+        assert_eq!(r.source_map.line_indent[0], 0);
+        assert_eq!(r.source_map.line_indent[1], 2);
+        assert_eq!(r.source_map.line_indent[2], 2);
+        // blank and whitespace-only lines report no indent
+        assert_eq!(r.source_map.line_indent[3], 0);
+        assert_eq!(r.source_map.line_indent[4], 0);
+        assert_eq!(r.source_map.line_indent[5], 0);
+        // `Pos::col` is 1-based, so an indent of N is column N+1
+        let b = r.tokens.iter().find(|t| t.text == "b").unwrap();
+        assert_eq!(b.start.col, r.source_map.line_indent[1] + 1);
+    }
+
+    #[test]
+    fn crlf_line_endings_leave_no_carriage_return_in_a_comment() {
+        let r = lex("// hi\r\nvar a: int = 0\r\n", "t");
+        assert_eq!(r.source_map.comments[0].text, "hi");
+        assert_eq!(r.source_map.line_indent[1], 0);
     }
 
     #[test]

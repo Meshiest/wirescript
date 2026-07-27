@@ -53,6 +53,7 @@ mod access;
 use access::*;
 
 pub(crate) mod boundary_pins;
+pub(crate) mod flatten;
 
 // Certified constant-fold pass. Exposed as `#[doc(hidden)] pub` rather than
 // `pub(crate)` so the `--fold-diff` differential fuzz harness
@@ -204,7 +205,16 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // wrapper repeated per use, a multi-consumer literal) so an identical
     // constant is emitted once and fans out, per chip.
     dedup_constant_gates(&mut module);
-    crate::emit::partition_anon_chips(&mut module);
+    // `@flat` inlines every chip body onto one grid. It stands in for the
+    // anon-chip partition rather than following it — that pass moves nodes
+    // INTO child modules, which is what flattening undoes (see
+    // `flatten`'s module docs). Afterwards there is a single module, so
+    // `synthesize_boundary_pins` finds no cross-module wire and adds no pins.
+    if input.ast.flat {
+        flatten::flatten_chips(&mut module);
+    } else {
+        crate::emit::partition_anon_chips(&mut module);
+    }
     boundary_pins::synthesize_boundary_pins(&mut module);
     LowerResult {
         module,

@@ -169,6 +169,70 @@ fn labels_serialize_with_style() {
     assert_eq!(texts, expected, "serialized label texts + sizes");
 }
 
+/// A global var/array written from inside a NAMED chip must keep its
+/// on-brick name tag. The always-on boundary-pins pass rewires the write
+/// through a MicrochipInput pin, so the tag lookup must follow that pin
+/// back to the originating var node instead of stopping at the pin.
+#[test]
+fn var_tag_survives_boundary_pins_inside_named_chip() {
+    use brdb::IntoReader;
+    use brdb::schema::BrdbValue;
+
+    let src = "array names: string[]\n\
+               var count: int = 0\n\
+               chip Init() -> (code: int) {\n  \
+                 names.push(\"a\")\n  \
+                 count = count + 1\n  \
+                 emit code = 7\n\
+               }\n\
+               in s: exec\n\
+               let r = Init(exec = s)\n\
+               out v = r.code\n";
+    let cr = wirescript::compile::compile(CompileInput {
+        source: src,
+        file: "boundary_var_tag.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    })
+    .expect("should compile to brz");
+    let path = std::env::temp_dir().join("ws_boundary_var_tag_test.brz");
+    std::fs::write(&path, &cr.brz).expect("write brz");
+    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
+
+    let mut tags: Vec<(String, f32)> = Vec::new();
+    for gid in 1..32 {
+        let chunks = match reader.brick_chunk_index(gid) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        for chunk in chunks {
+            if chunk.num_components == 0 {
+                continue;
+            }
+            let (_soa, comps) = reader
+                .component_chunk_soa(gid, chunk.index)
+                .expect("read components");
+            for c in comps {
+                let (Some(BrdbValue::String(text)), Some(BrdbValue::F32(line_height))) =
+                    (c.get("Text"), c.get("LineHeight"))
+                else {
+                    continue;
+                };
+                tags.push((text.clone(), *line_height));
+            }
+        }
+    }
+
+    assert!(
+        tags.contains(&("count".to_string(), 1.2)),
+        "Var_Set gate inside the named chip should keep its \"count\" tag; got {tags:?}"
+    );
+    assert!(
+        tags.contains(&("names".to_string(), 1.2)),
+        "ArrayVar_Push gate inside the named chip should keep its \"names\" tag; got {tags:?}"
+    );
+}
+
 /// A chip's `///` doc comment renders on the header, below the `<size="96">`
 /// title line.
 #[test]

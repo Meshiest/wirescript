@@ -41,18 +41,23 @@ fn grids_are_upright_and_stacked() {
         );
     }
 
-    // Root grid is pushed first; children sit strictly above it.
-    let root_z = r.world.grids[0].0.location.z;
+    // Root grid is pushed first; children sit strictly to its RIGHT.
+    //
+    // Depth used to stack upward in world Z, and this asserted that. It grows
+    // along world Y now so a chip's interior can open level with the brick
+    // that opens it — the claim is the same (a child never covers its parent),
+    // on the axis that now carries depth.
+    let root_y = r.world.grids[0].0.location.y;
     for (entity, _) in &r.world.grids[1..] {
         assert!(
-            entity.location.z > root_z,
-            "child plane ({}) should sit above the root plane ({root_z})",
-            entity.location.z
+            entity.location.y > root_y,
+            "child plane ({}) should sit right of the root plane ({root_y})",
+            entity.location.y
         );
     }
 
     // All planes sit in the wall's plane: they share the chip brick's X
-    // (0 by default) — the wall faces −X and rows run along world Y.
+    // (0 by default) — the wall faces −X and the board runs along world Y.
     for (entity, _) in &r.world.grids {
         assert_eq!(entity.location.x, 0.0);
     }
