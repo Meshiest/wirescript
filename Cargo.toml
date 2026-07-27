@@ -1,7 +1,5 @@
 [workspace]
 members = [
-  "crates/bearilog",
-  "crates/builder",
   "crates/cli",
   "crates/lsp",
   "crates/wasm",
@@ -16,18 +14,12 @@ resolver = "3"
 lto = "thin"
 
 [workspace.dependencies]
-# Bearilog CLI
+# CLI
 clap = { version = "4.5.40", features = ["derive"] }
-# Bearilog CLI
-clap-stdin = "0.6.0"
-lalrpop = "0.22.2"
-lalrpop-util = { version = "0.21.0", features = ["lexer", "unicode"] }
 thiserror = "2.0.12"
 
-bearilog = { path = "crates/bearilog" }
 # Pull brdb from the sibling checkout so the microchip + schema work in brdb
 # flows straight through without a crates.io publish cycle.
 # brdb = { path = "../brdb/crates/brdb", default-features = false }
 brdb = { version = "0.9.1", default-features = false }
-builder = { path = "crates/builder" }
 wirescript = { path = "crates/wirescript" }

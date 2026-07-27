@@ -310,7 +310,7 @@ source line, not a guess.
 
 ```bash
 # per-module node counts + the full node list (IR is on stderr)
-cargo run -p bearilog-cli -- compile foo.ws --dump-ir 2>&1 1>/dev/null
+cargo run -p wirescript-cli -- compile foo.ws --dump-ir 2>&1 1>/dev/null
 
 # total node (gate) count
 ... 2>&1 1>/dev/null | grep -cE '^\s*\[(Input|Output|Gate)\]'

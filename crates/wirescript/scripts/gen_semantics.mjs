@@ -8,7 +8,7 @@ import { dirname, join } from 'path';
 
 // Defaults are anchored to this script's own directory (crates/wirescript/),
 // not process.cwd() — the pipeline is documented to be invoked from either
-// the bearilog repo root (`node crates/wirescript/scripts/gen_semantics.mjs
+// the repo root (`node crates/wirescript/scripts/gen_semantics.mjs
 // ...`) or from within crates/wirescript itself, and both must resolve to
 // the same data/gate_semantics.json.
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));

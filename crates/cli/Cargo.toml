@@ -1,15 +1,16 @@
 [package]
-name = "bearilog-cli"
+name = "wirescript-cli"
 version = "0.1.0"
 edition = "2024"
 
+# The package keeps the `-cli` suffix because the library crate already owns
+# the `wirescript` name; the binary users type is just `wirescript`.
+[[bin]]
+name = "wirescript"
+path = "src/main.rs"
 
 [dependencies]
 mimalloc = "0.1"
 clap.workspace = true
-clap-stdin.workspace = true
 brdb = { workspace = true, features = ["brz", "brdb"] }
 wirescript.workspace = true
-# Legacy bearilog deps kept until we delete the old crates.
-builder.workspace = true
-bearilog.workspace = true

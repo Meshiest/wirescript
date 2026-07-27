@@ -18,7 +18,7 @@ build:
 
 # Build everything release
 release:
-    cargo build --release -p wirescript -p wirescript-lsp -p bearilog-cli
+    cargo build --release -p wirescript -p wirescript-lsp -p wirescript-cli
 
 # Build LSP server (release)
 lsp:
@@ -48,15 +48,15 @@ check-dir dir:
 
 # Compile a .ws file to .brz
 compile file:
-    cargo run --release -p bearilog-cli -- compile {{file}}
+    cargo run --release -p wirescript-cli -- compile {{file}}
 
 # Compile a .ws file to .brdb (SQLite, for BR.World.LoadAdditive)
 compile-brdb file:
-    cargo run --release -p bearilog-cli -- compile {{file}} -o {{without_extension(file)}}.brdb
+    cargo run --release -p wirescript-cli -- compile {{file}} -o {{without_extension(file)}}.brdb
 
 # Dump the lowered IR for a .ws file
 ir file:
-    cargo run --release -p bearilog-cli -- compile {{file}} --dump-ir
+    cargo run --release -p wirescript-cli -- compile {{file}} --dump-ir
 
 # Rebuild VS Code extension (compile TS + formatter)
 [windows]

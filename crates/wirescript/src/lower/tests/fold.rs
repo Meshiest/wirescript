@@ -829,7 +829,7 @@ fn vector_math_folds() {
 /// well-determined its value actually was. Fixed by `resolve_data_input`
 /// (added in fold/mod.rs), which falls back to the node's own baked
 /// property whenever a data port comes back `Unwired`. `Dot(Vec, Vec)` was
-/// the exact minimal repro (`cargo run -p bearilog-cli -- compile --fold
+/// the exact minimal repro (`cargo run -p wirescript-cli -- compile --fold
 /// --dump-ir` on a single `out y = Dot(Vec(1,0,0), Vec(0,1,0))` line kept
 /// the `VecDotProduct` gate alive before the fix, folded it away after).
 #[test]
@@ -1116,7 +1116,7 @@ fn select_baked_true_condition_shorts_to_truthy_side() {
     // Rerouter (`Opaque`) nodes are NEVER elided by the demand sweep (see
     // `demand_sweep_removes_orphaned_feeders`'s "Opaque never elided" note),
     // so BOTH sides' Rerouter nodes stay in the module — confirmed via
-    // `cargo run -p bearilog-cli -- compile --fold --dump-ir` on this exact
+    // `cargo run -p wirescript-cli -- compile --fold --dump-ir` on this exact
     // source before the fix, which shows `n3`=`Opaque(1000)` AND
     // `n5`=`Opaque(2000)` both still present, with only `n3` (the wrong side)
     // actually wired to `out y`. A survivor-count assertion can't tell "chose

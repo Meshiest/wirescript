@@ -16,6 +16,6 @@
     "version": "0.1.0",
     "license": "MIT",
     "description": "Wirescript grammar for tree-sitter",
-    "authors": [{ "name": "bearilog" }]
+    "authors": [{ "name": "wirescript" }]
   }
 }

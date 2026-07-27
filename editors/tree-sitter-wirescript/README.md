@@ -53,7 +53,7 @@ npx tree-sitter parse -q --stat $(find ../../../wirescript/projects -name '*.ws'
 ```lua
 require('nvim-treesitter.parsers').get_parser_configs().wirescript = {
   install_info = {
-    url = '/path/to/bearilog/editors/tree-sitter-wirescript',
+    url = '/path/to/wirescript/editors/tree-sitter-wirescript',
     files = { 'src/parser.c' },
     branch = 'master',
   },
@@ -80,7 +80,7 @@ indent = { tab-width = 2, unit = "  " }
 
 [[grammar]]
 name = "wirescript"
-source = { path = "/path/to/bearilog/editors/tree-sitter-wirescript" }
+source = { path = "/path/to/wirescript/editors/tree-sitter-wirescript" }
 ```
 
 Then `hx --grammar build` and copy `queries/` to
@@ -90,7 +90,7 @@ Then `hx --grammar build` and copy `queries/` to
 
 - `tree-sitter test` — **75/75 corpus tests pass**.
 - `tree-sitter parse` over every `.ws` file in `wirescript/projects/` and
-  `bearilog/examples/` — **162/162 parse with zero `ERROR` nodes**.
+  `examples/` — **162/162 parse with zero `ERROR` nodes**.
 - Operator precedence, associativity and the postfix/prefix ordering were
   checked against `infix_prec()` by inspecting parse trees, not just by
   confirming the absence of errors.

@@ -63,24 +63,6 @@ enum Command {
         #[arg(long, conflicts_with = "no_fold")]
         fold: bool,
     },
-
-    /// Legacy bearilog gate-language (kept for backward-compat).
-    Bearilog {
-        file: clap_stdin::FileOrStdin,
-        module: String,
-        #[arg(short, long)]
-        inline: bool,
-        #[arg(short, long, group = "display")]
-        graph: bool,
-        #[arg(short, long, value_name = "FILE", group = "display")]
-        output: Option<PathBuf>,
-        #[arg(short, long, default_value = "layout")]
-        layout: builder::options::LayoutMode,
-        #[clap(flatten)]
-        layout_options: builder::options::LayoutOptions,
-        #[clap(flatten)]
-        grid_options: builder::options::GridOptions,
-    },
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -121,25 +103,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
             run_wirescript(source, output, name, verbose, x, y, z, open, dump_ir, fold_mode)
         }
-        Command::Bearilog {
-            file,
-            module,
-            inline,
-            graph,
-            output,
-            layout,
-            layout_options,
-            grid_options,
-        } => run_bearilog(
-            file,
-            module,
-            inline,
-            graph,
-            output,
-            layout,
-            layout_options,
-            grid_options,
-        ),
     }
 }
 
@@ -214,44 +177,5 @@ fn run_wirescript(
     }
 
     eprintln!("wrote {}", out_path.display());
-    Ok(())
-}
-
-// ---------- legacy bearilog ----------
-
-fn run_bearilog(
-    file: clap_stdin::FileOrStdin,
-    module: String,
-    inline: bool,
-    graph: bool,
-    output: Option<PathBuf>,
-    layout: builder::options::LayoutMode,
-    layout_options: builder::options::LayoutOptions,
-    grid_options: builder::options::GridOptions,
-) -> Result<(), Box<dyn Error>> {
-    let source = file.contents()?;
-    let res = match bearilog::parse_and_compile(&source, &module, inline) {
-        Ok(res) => res,
-        Err(e) => {
-            eprintln!("{e}");
-            return Err(e.into());
-        }
-    };
-    if graph {
-        println!("{}", bearilog::graphviz::render(&res)?);
-    } else if let Some(path) = output {
-        let world = match layout {
-            builder::options::LayoutMode::Layout => {
-                builder::layout_module_to_world(res, layout_options)?
-            }
-            builder::options::LayoutMode::Grid => builder::build_grid(res, grid_options),
-        };
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-        world.write_brz(path)?;
-    } else {
-        println!("{res}");
-    }
     Ok(())
 }

@@ -159,29 +159,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bearilog"
-version = "0.1.0"
-dependencies = [
- "brdb",
- "lalrpop",
- "lalrpop-util 0.21.0",
- "thiserror",
-]
-
-[[package]]
-name = "bearilog-cli"
-version = "0.1.0"
-dependencies = [
- "bearilog",
- "brdb",
- "builder",
- "clap",
- "clap-stdin",
- "mimalloc",
- "wirescript",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -251,18 +228,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "builder"
-version = "0.1.0"
-dependencies = [
- "bearilog",
- "brdb",
- "clap",
- "lalrpop",
- "lalrpop-util 0.21.0",
- "thiserror",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -305,15 +270,6 @@ checksum = "40b6887a1d8685cebccf115538db5c0efe625ccac9696ad45c409d96566e910f"
 dependencies = [
  "clap_builder",
  "clap_derive",
-]
-
-[[package]]
-name = "clap-stdin"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1101d998d15574d862ee282bcb93e0cf2d192c2fb12338dec35daa91425769a9"
-dependencies = [
- "thiserror",
 ]
 
 [[package]]
@@ -1793,6 +1749,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "wirescript-cli"
+version = "0.1.0"
+dependencies = [
+ "brdb",
+ "clap",
+ "mimalloc",
+ "wirescript",
 ]
 
 [[package]]
