@@ -48,6 +48,12 @@ pub fn definition_at(
         return Some(loc);
     }
 
+    // Cursor on a `SendCustomEvent("name", …)` channel-name string → jump to the
+    // matching `on CustomEvent("name", …)` receiver in this file.
+    if let Some(loc) = custom_event_send_definition(pre_resolve_ast, source, line, col) {
+        return Some(loc);
+    }
+
     let word = word_at(source, line, col)?;
 
     if is_field_access(source, line, col) {
@@ -276,6 +282,325 @@ fn resolve_field_definition(
     Some(source_range_to_location(&type_sym.range, file))
 }
 
+// ---------- custom-event send-site → receiver navigation ----------
+
+/// Byte offset of the cursor, matching the lexer's source-offset convention
+/// (the same one `analysis::text` uses for other cursor queries).
+fn cursor_byte_offset(source: &str, line: usize, col: usize) -> usize {
+    let line_start: usize = source.lines().take(line).map(|l| l.len() + 1).sum();
+    let line_str = source.lines().nth(line).unwrap_or("");
+    let bc = line_str
+        .char_indices()
+        .nth(col)
+        .map(|(b, _)| b)
+        .unwrap_or(line_str.len());
+    line_start + bc
+}
+
+/// If `call` is `SendCustomEvent(...)` and `off` sits on its channel-name string
+/// literal, return that channel name.
+fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<&'a str> {
+    let Expr::Call { callee, args, .. } = call else {
+        return None;
+    };
+    if !matches!(callee.as_ref(), Expr::Ident { name, .. } if name == "SendCustomEvent") {
+        return None;
+    }
+    // The channel name is a named `eventName = …`, else the first positional arg.
+    let name_expr = args
+        .iter()
+        .find_map(|a| match a {
+            CallArg::Named { name, value } if name == "eventName" => Some(value),
+            _ => None,
+        })
+        .or_else(|| {
+            args.iter().find_map(|a| match a {
+                CallArg::Positional(e) => Some(e),
+                _ => None,
+            })
+        })?;
+    match name_expr {
+        Expr::StringLit { value, range }
+            if range.start.offset <= off && off <= range.end.offset =>
+        {
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
+/// The channel-name string-literal range of a handler that is a `CustomEvent`
+/// receiver for `name`, if it is one.
+fn receiver_name_range(h: &Handler, name: &str) -> Option<SourceRange> {
+    if !matches!(&h.trigger, Trigger::Ident { name: n, .. } if n == "CustomEvent") {
+        return None;
+    }
+    h.config.iter().find_map(|c| match c {
+        HandlerConfigArg::Positional(Expr::StringLit { value, range }) if value == name => {
+            Some(range.clone())
+        }
+        _ => None,
+    })
+}
+
+fn custom_event_send_definition(
+    ast: &Script,
+    source: &str,
+    line: usize,
+    col: usize,
+) -> Option<Location> {
+    let off = cursor_byte_offset(source, line, col);
+    // 1. Resolve the channel name under the cursor (must be a SendCustomEvent
+    //    channel-name string).
+    let mut name: Option<String> = None;
+    visit_ast(
+        ast,
+        &mut |_h| {},
+        &mut |call| {
+            if name.is_none()
+                && let Some(n) = send_event_name_at(call, off)
+            {
+                name = Some(n.to_string());
+            }
+        },
+    );
+    let name = name?;
+    // 2. Find the matching receiver handler in this file.
+    let mut target: Option<SourceRange> = None;
+    visit_ast(
+        ast,
+        &mut |h| {
+            if target.is_none()
+                && let Some(r) = receiver_name_range(h, &name)
+            {
+                target = Some(r);
+            }
+        },
+        &mut |_c| {},
+    );
+    target.map(|r| source_range_to_location(&r, None))
+}
+
+/// Visit every handler and every call expression in the AST. Handlers drive the
+/// receiver lookup; calls drive send-site detection.
+fn visit_ast<'a>(
+    ast: &'a Script,
+    on_handler: &mut dyn FnMut(&'a Handler),
+    on_call: &mut dyn FnMut(&'a Expr),
+) {
+    for d in &ast.decls {
+        visit_decl(d, on_handler, on_call);
+    }
+}
+
+fn visit_decl<'a>(
+    d: &'a TopDecl,
+    on_handler: &mut dyn FnMut(&'a Handler),
+    on_call: &mut dyn FnMut(&'a Expr),
+) {
+    match d {
+        TopDecl::Handler(h) => {
+            on_handler(h);
+            visit_block(&h.body, on_handler, on_call);
+        }
+        TopDecl::Chip(c) => visit_block(&c.body, on_handler, on_call),
+        TopDecl::AnonChip(ac) => visit_block(&ac.body, on_handler, on_call),
+        TopDecl::Namespace(ns) => {
+            for d in &ns.decls {
+                visit_decl(d, on_handler, on_call);
+            }
+        }
+        TopDecl::Fn(f) => visit_expr(&f.body, on_call),
+        TopDecl::Let(l) => visit_expr(&l.value, on_call),
+        TopDecl::Var(v) => {
+            if let Some(e) = &v.init {
+                visit_expr(e, on_call);
+            }
+        }
+        TopDecl::Buffer(b) => visit_expr(&b.init, on_call),
+        TopDecl::Out(o) => {
+            if let Some(e) = &o.value {
+                visit_expr(e, on_call);
+            }
+        }
+        TopDecl::Assign(a) => {
+            visit_expr(&a.target, on_call);
+            visit_expr(&a.value, on_call);
+        }
+        TopDecl::If(i) => visit_if(i, on_handler, on_call),
+        TopDecl::ExprStmt(es) => visit_expr(&es.expr, on_call),
+        _ => {}
+    }
+}
+
+fn visit_block<'a>(
+    b: &'a Block,
+    on_handler: &mut dyn FnMut(&'a Handler),
+    on_call: &mut dyn FnMut(&'a Expr),
+) {
+    for s in &b.stmts {
+        visit_stmt(s, on_handler, on_call);
+    }
+}
+
+fn visit_stmt<'a>(
+    s: &'a Stmt,
+    on_handler: &mut dyn FnMut(&'a Handler),
+    on_call: &mut dyn FnMut(&'a Expr),
+) {
+    match s {
+        Stmt::Handler(h) => {
+            on_handler(h);
+            visit_block(&h.body, on_handler, on_call);
+        }
+        Stmt::AnonChip(ac) => visit_block(&ac.body, on_handler, on_call),
+        Stmt::ChipDecl(c) => visit_block(&c.body, on_handler, on_call),
+        Stmt::If(i) => visit_if(i, on_handler, on_call),
+        Stmt::Let(l) => visit_expr(&l.value, on_call),
+        Stmt::Assign(a) => {
+            visit_expr(&a.target, on_call);
+            visit_expr(&a.value, on_call);
+        }
+        Stmt::ExprStmt(es) => visit_expr(&es.expr, on_call),
+        Stmt::Var(v) => {
+            if let Some(e) = &v.init {
+                visit_expr(e, on_call);
+            }
+        }
+        Stmt::Buffer(b) => visit_expr(&b.init, on_call),
+        Stmt::OutBinding(ob) => {
+            if let Some(e) = &ob.value {
+                visit_expr(e, on_call);
+            }
+        }
+        Stmt::Emit(e) => {
+            if let Some(v) = &e.value {
+                visit_expr(v, on_call);
+            }
+        }
+        Stmt::Await(a) => {
+            if let Some(e) = &a.value_expr {
+                visit_expr(e, on_call);
+            }
+            visit_expr(&a.exec_expr, on_call);
+        }
+        Stmt::Return { value, .. } => {
+            if let Some(e) = value {
+                visit_expr(e, on_call);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn visit_if<'a>(
+    i: &'a If,
+    on_handler: &mut dyn FnMut(&'a Handler),
+    on_call: &mut dyn FnMut(&'a Expr),
+) {
+    visit_expr(&i.cond, on_call);
+    visit_block(&i.then_block, on_handler, on_call);
+    if let Some(eb) = &i.else_block {
+        visit_block(eb, on_handler, on_call);
+    }
+}
+
+fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
+    match e {
+        Expr::Call { callee, args, .. } => {
+            on_call(e);
+            visit_expr(callee, on_call);
+            for a in args {
+                match a {
+                    CallArg::Positional(x) | CallArg::Spread(x) => visit_expr(x, on_call),
+                    CallArg::Named { value, .. } => visit_expr(value, on_call),
+                }
+            }
+        }
+        Expr::BinOp { left, right, .. } => {
+            visit_expr(left, on_call);
+            visit_expr(right, on_call);
+        }
+        Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
+            visit_expr(operand, on_call)
+        }
+        Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => visit_expr(obj, on_call),
+        Expr::IndexAccess { obj, index, .. } => {
+            visit_expr(obj, on_call);
+            visit_expr(index, on_call);
+        }
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            visit_expr(cond, on_call);
+            visit_expr(then_branch, on_call);
+            visit_expr(else_branch, on_call);
+        }
+        Expr::BlockExpr { stmts, value, .. } => {
+            // Statements here can host a SendCustomEvent; handlers cannot, so a
+            // no-op handler sink suffices.
+            let mut no_handler = |_: &Handler| {};
+            for s in stmts {
+                visit_stmt(s, &mut no_handler, on_call);
+            }
+            visit_expr(value, on_call);
+        }
+        Expr::InterpLit { parts, .. } => {
+            for p in parts {
+                if let InterpPart::Expr(x) = p {
+                    visit_expr(x, on_call);
+                }
+            }
+        }
+        Expr::RecordLit { fields, .. } => {
+            for f in fields {
+                match f {
+                    RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
+                        visit_expr(value, on_call)
+                    }
+                    RecordLitField::Shorthand { .. } => {}
+                }
+            }
+        }
+        Expr::MatchExpr {
+            scrutinee, arms, ..
+        } => {
+            visit_expr(scrutinee, on_call);
+            for arm in arms {
+                match &arm.body {
+                    MatchBody::Expr(x) => visit_expr(x, on_call),
+                    MatchBody::Block(b) => {
+                        let mut no_handler = |_: &Handler| {};
+                        visit_block(b, &mut no_handler, on_call);
+                    }
+                }
+            }
+        }
+        Expr::Array { elements, .. } => {
+            for el in elements {
+                visit_expr(el.expr(), on_call);
+            }
+        }
+        Expr::MapLit { entries, .. } => {
+            for en in entries {
+                visit_expr(&en.key, on_call);
+                visit_expr(&en.value, on_call);
+            }
+        }
+        Expr::IntLit { .. }
+        | Expr::AtomLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::AssetRef { .. }
+        | Expr::PrefabRef { .. }
+        | Expr::Ident { .. } => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +633,35 @@ mod tests {
             "qualified name must resolve in the imported file, got {loc:?}"
         );
         assert_eq!(loc.start_line, 0, "display.ws drawCard is on its line 0");
+    }
+
+    #[test]
+    fn send_custom_event_name_jumps_to_receiver() {
+        // Cursor on the channel-name string of a `SendCustomEvent(...)` jumps to
+        // the matching `on CustomEvent(...)` receiver in the same file.
+        let main = "on CustomEvent(\"dmg\", amount: int) {\n  let x = amount\n}\nin go: exec\non go {\n  SendCustomEvent(\"dmg\", 5)\n}\n";
+        let send_line = 5; // the SendCustomEvent line (0-based)
+        let line_str = main.lines().nth(send_line).unwrap();
+        let col = line_str.find("dmg").unwrap() + 1; // inside the "dmg" string
+        let loc = goto(main, "", send_line, col).expect("should jump to the receiver");
+        assert_eq!(loc.file, None, "receiver is in the same file: {loc:?}");
+        assert_eq!(
+            loc.start_line, 0,
+            "receiver `on CustomEvent(\"dmg\", …)` is on line 0, got {loc:?}"
+        );
+    }
+
+    #[test]
+    fn send_custom_event_name_without_receiver_does_not_jump() {
+        // No matching receiver — the send-site string yields no navigation.
+        let main = "in go: exec\non go {\n  SendCustomEvent(\"nope\", 5)\n}\n";
+        let send_line = 2;
+        let line_str = main.lines().nth(send_line).unwrap();
+        let col = line_str.find("nope").unwrap() + 1;
+        assert!(
+            goto(main, "", send_line, col).is_none(),
+            "unmatched channel name should not navigate"
+        );
     }
 
     #[test]

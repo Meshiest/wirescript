@@ -28,8 +28,9 @@ mod context;
 use context::*;
 
 mod predeclare;
-pub use predeclare::{ConstEnv, build_const_env, expr_to_literal, expr_to_literal_in};
 use predeclare::*;
+pub use predeclare::{ConstEnv, build_const_env, expr_to_literal, expr_to_literal_in};
+pub(crate) use predeclare::{fold_ammo_override, fold_mesh_colors};
 
 mod decl;
 use decl::*;
@@ -331,8 +332,13 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             // data alone does not drive the port.
             let scalar = matches!(
                 src.properties.get(&value_sym),
-                Some(Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) | Literal::String(_)
-                    | Literal::Quat { .. })
+                Some(
+                    Literal::Int(_)
+                        | Literal::Float(_)
+                        | Literal::Bool(_)
+                        | Literal::String(_)
+                        | Literal::Quat { .. }
+                )
             );
             if !scalar {
                 continue;
@@ -797,7 +803,10 @@ fn dedup_constant_gates(root: &mut Module) {
                 || n.gate_class
                     .starts_with("BrickComponentType_WireGraph_Expr_");
             if n.kind == NodeKind::Gate && is_pure && !has_incoming.contains(id) {
-                groups.entry((n.chip_id, const_key(n))).or_default().push(*id);
+                groups
+                    .entry((n.chip_id, const_key(n)))
+                    .or_default()
+                    .push(*id);
             }
         }
         for mut group in groups.into_values() {
@@ -1230,8 +1239,7 @@ pub fn compile_chip_template(
                 };
                 record_fields.insert(crate::intern::intern(&field.name), binding);
             }
-            ctx.scope
-                .insert(&inp.name, Binding::Record(record_fields));
+            ctx.scope.insert(&inp.name, Binding::Record(record_fields));
         } else if matches!(&inp.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
             let t = type_of_type_expr(&inp.typ);
             let is_array = matches!(&inp.typ, TypeExpr::Array { .. });
@@ -1257,10 +1265,8 @@ pub fn compile_chip_template(
         } else {
             let t = type_of_type_expr(&inp.typ);
             let node_id = ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
-            ctx.scope.insert(
-                &inp.name,
-                Binding::Input(NodeRecord { node_id, ty: t }),
-            );
+            ctx.scope
+                .insert(&inp.name, Binding::Input(NodeRecord { node_id, ty: t }));
         }
     }
 
@@ -1283,6 +1289,7 @@ pub fn compile_chip_template(
             Stmt::Var(v) => ctx.with_nofold(v.no_fold, |c| pre_declare_var(c, v)),
             Stmt::Buffer(b) => pre_declare_buffer(&mut ctx, b),
             Stmt::Array(a) => pre_declare_array(&mut ctx, a),
+            Stmt::Map(m) => pre_declare_map(&mut ctx, m),
             Stmt::OutBinding(o) if !sig_output_names.contains(&o.name.as_ref()) => {
                 pre_declare_output(
                     &mut ctx,

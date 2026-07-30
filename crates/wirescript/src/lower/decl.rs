@@ -14,7 +14,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         // Gate created in pre-pass; top level is pure, so a non-constant init
         // has no exec reset to apply it — surface the drop.
         TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true)),
-        TopDecl::Array(_) | TopDecl::In(_) => {} // handled in pre-pass
+        TopDecl::Array(_) | TopDecl::Map(_) | TopDecl::In(_) => {} // handled in pre-pass
         TopDecl::Chip(c) => lower_chip_decl(ctx, c),
         TopDecl::AnonChip(ac) => lower_anon_chip(ctx, ac),
         TopDecl::Assign(a) => lower_assign(ctx, a),
@@ -106,6 +106,9 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     TopDecl::Let(l) => ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l)),
                     TopDecl::Array(a) if ctx.scope.get(&a.name).is_none() => {
                         pre_declare_array(ctx, a)
+                    }
+                    TopDecl::Map(m) if ctx.scope.get(&m.name).is_none() => {
+                        pre_declare_map(ctx, m)
                     }
                     TopDecl::Var(v) if ctx.scope.get(&v.name).is_none() => {
                         ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v));

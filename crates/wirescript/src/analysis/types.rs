@@ -2,48 +2,11 @@ use crate::ast::TypeExpr;
 use crate::ir::Type;
 use super::TypeMap;
 
+/// The source-language spelling of a type (`*int`, `int[]`, `Map<string, int>`,
+/// …). A thin alias over the `Display` impl on [`Type`] (in `crate::ir`), kept
+/// as a named helper for the many call sites that read better than `.to_string()`.
 pub fn type_str(t: &Type) -> String {
-    match t {
-        Type::Int => "int".into(),
-        Type::Float => "float".into(),
-        Type::Bool => "bool".into(),
-        Type::String => "string".into(),
-        Type::Entity => "entity".into(),
-        Type::Controller => "controller".into(),
-        Type::Character => "character".into(),
-        Type::Vector => "vector".into(),
-        Type::Rotator => "rotator".into(),
-        Type::Quat => "quat".into(),
-        Type::Exec => "exec".into(),
-        Type::Color => "color".into(),
-        Type::Any => "any".into(),
-        // `Opaque` (an `Opaque(...)` probe result) displays identically to
-        // `any` — it behaves like `any` everywhere except operator
-        // resolution, and that distinction isn't user-facing.
-        Type::Opaque => "any".into(),
-        Type::Ref(inner) => format!("*{}", type_str(inner)),
-        Type::Array(inner) => format!("{}[]", type_str(inner)),
-        Type::Tuple(fields) => {
-            let f: Vec<String> = fields.iter().map(type_str).collect();
-            format!("({})", f.join(", "))
-        }
-        Type::Record(fields) => {
-            let is_tuple = !fields.is_empty()
-                && fields.iter().enumerate().all(|(i, (n, _))| n == &i.to_string());
-            if is_tuple {
-                let f: Vec<String> = fields.iter().map(|(_, t)| type_str(t)).collect();
-                format!("({})", f.join(", "))
-            } else {
-                let f: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, type_str(t))).collect();
-                format!("{{{}}}", f.join(", "))
-            }
-        }
-        Type::Union(opts) => {
-            let f: Vec<String> = opts.iter().map(type_str).collect();
-            f.join(" | ")
-        }
-        _ => "unknown".into(),
-    }
+    t.to_string()
 }
 
 pub fn type_expr_str(t: &TypeExpr) -> String {
@@ -65,6 +28,10 @@ pub fn type_expr_str(t: &TypeExpr) -> String {
                 .map(|f| format!("{}: {}", f.name, type_expr_str(&f.typ)))
                 .collect();
             format!("{{{}}}", f.join(", "))
+        }
+        TypeExpr::Generic { name, args, .. } => {
+            let a: Vec<String> = args.iter().map(type_expr_str).collect();
+            format!("{}<{}>", name, a.join(", "))
         }
     }
 }
@@ -91,6 +58,8 @@ pub fn type_from_name(s: &str) -> Option<Type> {
         "color" => Type::Color,
         "brick" => Type::Brick,
         "prefab" => Type::Prefab,
+        "zone" => Type::Zone,
+        "teleport" => Type::Teleport,
         "exec" => Type::Exec,
         _ => return None,
     })

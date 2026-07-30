@@ -1,5 +1,18 @@
 use super::*;
 
+/// Resolve a handler param's type annotation to a wire `Type` (for typing an
+/// event's data-output ports — Custom Event). Primitives + array/ref only;
+/// user/generic types (which event data doesn't use) fall back to `any`.
+fn type_expr_to_type(te: &crate::ast::TypeExpr) -> Type {
+    use crate::ast::TypeExpr;
+    match te {
+        TypeExpr::Name { name, .. } => crate::typecheck::primitive_name(name).unwrap_or(Type::Any),
+        TypeExpr::Array { inner, .. } => Type::Array(Box::new(type_expr_to_type(inner))),
+        TypeExpr::Ref { inner, .. } => Type::Ref(Box::new(type_expr_to_type(inner))),
+        _ => Type::Any,
+    }
+}
+
 pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     let body = match &d.captured_body {
         Some(b) => b,
@@ -307,21 +320,21 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     };
 
     // Named args that wire a value into a gate INPUT port (e.g. `zone = zoneA`).
-    let mut input_wires: Vec<(&'static str, &Expr)> = Vec::new();
-    for (surf, port) in &evt.input_named {
+    let mut input_wires: Vec<(&'static str, &Type, &Expr)> = Vec::new();
+    for (surf, port, ty) in &evt.input_named {
         for arg in &h.config {
             if let HandlerConfigArg::Named { name, value } = arg {
                 if name.eq_ignore_ascii_case(surf) {
-                    input_wires.push((port, value));
+                    input_wires.push((port, ty, value));
                 }
             }
         }
     }
     let event_inputs: Vec<PortSpec> = input_wires
         .iter()
-        .map(|&(port, _)| PortSpec {
+        .map(|&(port, ty, _)| PortSpec {
             name: intern(port),
-            ty: Type::Any,
+            ty: ty.clone(),
         })
         .collect();
 
@@ -329,10 +342,22 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         name: intern(evt.exec_out),
         ty: Type::Exec,
     }];
-    for d in &evt.data {
+    // Custom Event types its data-output ports from the handler's annotations
+    // (`on CustomEvent("x", a: int, b: float)`); unused slots default to float.
+    // Other events keep their fixed declared data types.
+    let is_custom_event = evt.gate_class == crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
+    for (i, d) in evt.data.iter().enumerate() {
+        let ty = match h.params.get(i) {
+            Some(p) => match &p.ty {
+                Some(te) => type_expr_to_type(te),
+                None => d.ty.clone(),
+            },
+            None if is_custom_event => Type::Float,
+            None => d.ty.clone(),
+        };
         event_outputs.push(PortSpec {
             name: intern(d.port),
-            ty: d.ty.clone(),
+            ty,
         });
     }
     let event_node = ctx.add_event(AddNodeOpts {
@@ -349,7 +374,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     // Wire each input value into the gate's named input port. Lowered here (in
     // the enclosing scope, before the handler body scope is pushed) so top-level
     // `in` ports like `zoneA` resolve.
-    for &(port, value_expr) in &input_wires {
+    for &(port, _ty, value_expr) in &input_wires {
         let src = lower_expr(ctx, value_expr);
         ctx.connect(src, port_ref(event_node, port));
     }
@@ -358,7 +383,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     for (i, pname) in h.params.iter().enumerate() {
         if let Some(data) = evt.data.get(i) {
             ctx.scope.insert(
-                &pname,
+                &pname.name,
                 Binding::EventParam(port_ref(event_node, data.port)),
             );
         }

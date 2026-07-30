@@ -4,7 +4,7 @@
 //
 // Sources (merge):
 //   1. data/inventory_dump.ndjson  — the rich Lua dump (lua/inventory_dump.lua
-//      in re4ss-mcp): brick/component metadata, display names, categories, and
+//      in brickadia-zoo): brick/component metadata, display names, categories, and
 //      per-port UE property types + display names. This is the primary source.
 //   2. data/inventory_brdb.json    — authoritative wire-port lists + component
 //      schemas extracted from a placed-components .brdb save (brdb example
@@ -193,6 +193,38 @@ function buildPorts(portDict, curatedByName) {
   return out;
 }
 
+// Config (settings-menu) properties: fields the game exposes on a gate that
+// aren't wire pins. Map the raw FProperty class to a simple type category.
+function configType(ue) {
+  if (ue === "EnumProperty") return "enum";
+  const scalar = ueScalar(ue);
+  if (scalar) return scalar; // bool / int / float / string
+  switch (ue) {
+    case "StructProperty":
+      return "struct";
+    case "ArrayProperty":
+    case "SetProperty":
+      return "array";
+    case "ObjectProperty":
+    case "ClassProperty":
+    case "WeakObjectProperty":
+      return "object";
+    default:
+      return "any";
+  }
+}
+
+function buildConfig(dict) {
+  return Object.entries(dict)
+    .filter(([name]) => !name.includes(".")) // skip composite sub-fields
+    .map(([name, meta]) => ({
+      name,
+      displayName: meta.displayName || name,
+      type: configType(meta.type),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -231,11 +263,13 @@ for (const r of records) {
       class: cls,
       displayName: comp.componentDisplayName ?? "",
       description: comp.componentDescription ?? "",
+      searchTags: comp.componentSearchTags ?? "",
       kind: deriveKind(cls),
       // Reuse curated family for known classes; derive for new ones.
       family: cur ? cur.component.family : deriveFamily(cls),
       inputs: buildPorts(comp.wireInputPorts ?? {}, curIn),
       outputs: buildPorts(comp.wireOutputPorts ?? {}, curOut),
+      config: buildConfig(comp.configProperties ?? {}),
     },
   });
 }

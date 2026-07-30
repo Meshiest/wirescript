@@ -17,7 +17,7 @@ pub type TypeMap = HashMap<(std::sync::Arc<str>, usize, usize), Type>;
 pub type IfContextMap = HashMap<(std::sync::Arc<str>, usize), bool>;
 pub type VarReadContextMap = HashMap<(std::sync::Arc<str>, usize), bool>;
 
-pub use assets::{asset_exists, asset_names, asset_type_exists, asset_types};
+pub use assets::{asset_exists, asset_names, asset_type_exists, asset_type_for_port, asset_types};
 pub use symbols::SymbolDef;
 pub use types::{type_str, type_expr_str, infer_expr_type, type_from_name, receiver_methods};
 pub use text::{word_at, find_enclosing_call, named_arg_value, find_asset_refs, asset_ref_at, member_receiver_at, record_field_names, param_names, swizzle_fields, AssetRef};

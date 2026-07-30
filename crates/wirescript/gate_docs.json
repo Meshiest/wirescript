@@ -2139,33 +2139,53 @@
     }
   },
   "BrickComponentType_WireGraph_Exec_Sweep": {
-    "displayName": "Sweep",
-    "description": "",
+    "displayName": "Sweep/Raycast (Advanced)",
+    "description": "Traces a ray or sphere from a configurable world or local origin, with collision and ignore filters; use it for advanced targeting and sensors.",
     "category": "Gameplay",
     "inputs": {
-      "Origin.Y": {
-        "displayName": "Origin.Y",
-        "tooltip": "The Y axis position."
-      },
-      "Radius": {
-        "displayName": "Radius",
+      "AdditionalIgnoredEntities": {
+        "displayName": "Additional Ignored Entities",
         "tooltip": ""
       },
-      "Origin": {
-        "displayName": "Origin",
+      "bDetectBricks": {
+        "displayName": "Detect Bricks",
         "tooltip": ""
       },
-      "Direction.X": {
-        "displayName": "Direction.X",
-        "tooltip": "The X axis position."
+      "bDetectMap": {
+        "displayName": "Detect Map",
+        "tooltip": ""
+      },
+      "bDetectPhysics": {
+        "displayName": "Detect Physics",
+        "tooltip": ""
+      },
+      "bDetectPlayers1": {
+        "displayName": "Detect Players1",
+        "tooltip": ""
+      },
+      "bDetectPlayers2": {
+        "displayName": "Detect Players2",
+        "tooltip": ""
+      },
+      "bDetectPlayers3": {
+        "displayName": "Detect Players3",
+        "tooltip": ""
+      },
+      "bDetectPlayers4": {
+        "displayName": "Detect Players4",
+        "tooltip": ""
+      },
+      "bIgnoreOwningGrid": {
+        "displayName": "Ignore Owning Grid",
+        "tooltip": ""
       },
       "bRelative": {
         "displayName": "Relative",
         "tooltip": ""
       },
-      "Origin.X": {
-        "displayName": "Origin.X",
-        "tooltip": "The X axis position."
+      "CollisionChannel": {
+        "displayName": "Collision Channel",
+        "tooltip": ""
       },
       "Direction": {
         "displayName": "Direction",
@@ -2179,42 +2199,38 @@
         "displayName": "Exec",
         "tooltip": ""
       },
-      "Direction.Z": {
-        "displayName": "Direction.Z",
-        "tooltip": "The Z axis position."
-      },
       "IgnoreEntity": {
         "displayName": "Ignore Entity",
         "tooltip": ""
       },
-      "Direction.Y": {
-        "displayName": "Direction.Y",
-        "tooltip": "The Y axis position."
+      "Origin": {
+        "displayName": "Origin",
+        "tooltip": ""
       },
-      "Origin.Z": {
-        "displayName": "Origin.Z",
-        "tooltip": "The Z axis position."
+      "Radius": {
+        "displayName": "Radius",
+        "tooltip": ""
       }
     },
     "outputs": {
-      "HitDistance": {
-        "displayName": "Hit Distance",
-        "tooltip": ""
-      },
       "ExecOut": {
         "displayName": "Exec Out",
         "tooltip": ""
       },
-      "HitEntity": {
-        "displayName": "Hit Entity",
-        "tooltip": ""
-      },
-      "Miss": {
-        "displayName": "Miss",
-        "tooltip": ""
-      },
       "Hit": {
         "displayName": "Hit",
+        "tooltip": ""
+      },
+      "HitColor": {
+        "displayName": "Hit Color",
+        "tooltip": ""
+      },
+      "HitDistance": {
+        "displayName": "Hit Distance",
+        "tooltip": ""
+      },
+      "HitEntity": {
+        "displayName": "Hit Entity",
         "tooltip": ""
       },
       "HitLocation": {
@@ -2223,6 +2239,10 @@
       },
       "HitNormal": {
         "displayName": "Hit Normal",
+        "tooltip": ""
+      },
+      "Miss": {
+        "displayName": "Miss",
         "tooltip": ""
       }
     }
@@ -4299,32 +4319,48 @@
   },
   "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent": {
     "displayName": "Player Joined Event",
-    "description": "",
+    "description": "Pulses when a user joins and outputs their persistent player reference, user ID, and user name; use it to initialize player data or greet them.",
     "category": "Default Minigame Events",
     "inputs": {},
     "outputs": {
-      "Controller": {
-        "displayName": "Player (Persistent)",
-        "tooltip": ""
-      },
       "ExecOut": {
         "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "PlayerState": {
+        "displayName": "Player State",
+        "tooltip": ""
+      },
+      "UserId": {
+        "displayName": "User Id",
+        "tooltip": ""
+      },
+      "UserName": {
+        "displayName": "User Name",
         "tooltip": ""
       }
     }
   },
   "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent": {
     "displayName": "Player Left Event",
-    "description": "",
+    "description": "Pulses when a user leaves and outputs their captured user ID and user name; use it for cleanup or logging.",
     "category": "Default Minigame Events",
     "inputs": {},
     "outputs": {
-      "Controller": {
-        "displayName": "Player (Persistent)",
-        "tooltip": ""
-      },
       "ExecOut": {
         "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "PlayerState": {
+        "displayName": "Player State",
+        "tooltip": ""
+      },
+      "UserId": {
+        "displayName": "User Id",
+        "tooltip": ""
+      },
+      "UserName": {
+        "displayName": "User Name",
         "tooltip": ""
       }
     }
@@ -4766,6 +4802,270 @@
     "outputs": {
       "ThisDestination": {
         "displayName": "Teleport Destination",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Entity_IsFrozen": {
+    "displayName": "Is Frozen",
+    "description": "Returns whether an entity or brick grid is frozen. Non-physics and global grids return true, while rigid-jointed children use their outermost welded or kinematic parent's state.",
+    "inputs": {
+      "Entity": {
+        "displayName": "Entity",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "bFrozen": {
+        "displayName": "Frozen",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_SweepSimple": {
+    "displayName": "Sweep/Raycast",
+    "description": "Traces a ray or sphere outward from this brick in a chosen local direction, with optional spread; use it for simple buttons, weapons, or sensors.",
+    "inputs": {
+      "CollisionChannel": {
+        "displayName": "Collision Channel",
+        "tooltip": ""
+      },
+      "Distance": {
+        "displayName": "Distance",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Radius": {
+        "displayName": "Radius",
+        "tooltip": ""
+      },
+      "SpreadConeAngle": {
+        "displayName": "Spread Cone Angle",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      },
+      "Hit": {
+        "displayName": "Hit",
+        "tooltip": ""
+      },
+      "HitColor": {
+        "displayName": "Hit Color",
+        "tooltip": ""
+      },
+      "HitDistance": {
+        "displayName": "Hit Distance",
+        "tooltip": ""
+      },
+      "HitEntity": {
+        "displayName": "Hit Entity",
+        "tooltip": ""
+      },
+      "HitLocation": {
+        "displayName": "Hit Location",
+        "tooltip": ""
+      },
+      "HitNormal": {
+        "displayName": "Hit Normal",
+        "tooltip": ""
+      },
+      "Miss": {
+        "displayName": "Miss",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_SpawnExplosion": {
+    "displayName": "Spawn Explosion",
+    "description": "Spawns the selected projectile type's normal impact explosion at this gate with an optional local offset, scale, damage multiplier, and character instigator.",
+    "inputs": {
+      "DamageMultiplier": {
+        "displayName": "Damage Multiplier",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Instigator": {
+        "displayName": "Instigator",
+        "tooltip": ""
+      },
+      "ProjectileType": {
+        "displayName": "Projectile Type",
+        "tooltip": ""
+      },
+      "ScaleMultiplier": {
+        "displayName": "Scale Multiplier",
+        "tooltip": ""
+      },
+      "SpawnOffset": {
+        "displayName": "Spawn Offset",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_SendCustomEvent": {
+    "displayName": "Send Custom Event",
+    "description": "Triggers every Custom Event gate with the same name and passes through up to eight data values.",
+    "inputs": {
+      "DataIn1": {
+        "displayName": "Data In1",
+        "tooltip": ""
+      },
+      "DataIn2": {
+        "displayName": "Data In2",
+        "tooltip": ""
+      },
+      "DataIn3": {
+        "displayName": "Data In3",
+        "tooltip": ""
+      },
+      "DataIn4": {
+        "displayName": "Data In4",
+        "tooltip": ""
+      },
+      "DataIn5": {
+        "displayName": "Data In5",
+        "tooltip": ""
+      },
+      "DataIn6": {
+        "displayName": "Data In6",
+        "tooltip": ""
+      },
+      "DataIn7": {
+        "displayName": "Data In7",
+        "tooltip": ""
+      },
+      "DataIn8": {
+        "displayName": "Data In8",
+        "tooltip": ""
+      },
+      "EventName": {
+        "displayName": "Event Name",
+        "tooltip": ""
+      },
+      "ExecIn": {
+        "displayName": "Exec In",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraphPseudo_CustomEvent": {
+    "displayName": "Custom Event",
+    "description": "Pulses when a Send Custom Event gate uses the same name, preserving each event and its data in order.",
+    "inputs": {
+      "EventName": {
+        "displayName": "Event Name",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "DataOut1": {
+        "displayName": "Data Out1",
+        "tooltip": ""
+      },
+      "DataOut2": {
+        "displayName": "Data Out2",
+        "tooltip": ""
+      },
+      "DataOut3": {
+        "displayName": "Data Out3",
+        "tooltip": ""
+      },
+      "DataOut4": {
+        "displayName": "Data Out4",
+        "tooltip": ""
+      },
+      "DataOut5": {
+        "displayName": "Data Out5",
+        "tooltip": ""
+      },
+      "DataOut6": {
+        "displayName": "Data Out6",
+        "tooltip": ""
+      },
+      "DataOut7": {
+        "displayName": "Data Out7",
+        "tooltip": ""
+      },
+      "DataOut8": {
+        "displayName": "Data Out8",
+        "tooltip": ""
+      },
+      "ExecOut": {
+        "displayName": "Exec Out",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_Clock": {
+    "displayName": "Clock",
+    "description": "Automatically emits an execution pulse at the configured interval forever. Use it for repeating actions such as timers, animation steps, or periodic checks.",
+    "inputs": {
+      "bEnabled": {
+        "displayName": "Enabled",
+        "tooltip": ""
+      },
+      "IntervalSeconds": {
+        "displayName": "Interval Seconds",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "Pulse": {
+        "displayName": "Pulse",
+        "tooltip": ""
+      }
+    }
+  },
+  "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry": {
+    "displayName": "Set Character Inventory Entry",
+    "description": "Replaces a specific inventory slot with a configured item, brick, or entity entry; use it to build fixed loadouts.",
+    "inputs": {
+      "Character": {
+        "displayName": "Character",
+        "tooltip": ""
+      },
+      "Exec": {
+        "displayName": "Exec",
+        "tooltip": ""
+      },
+      "Slot": {
+        "displayName": "Slot",
+        "tooltip": ""
+      }
+    },
+    "outputs": {
+      "ExecOut": {
+        "displayName": "Exec Out",
         "tooltip": ""
       }
     }

@@ -5,6 +5,7 @@ use super::*;
 pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     match e {
         Expr::IntLit { value, .. } => literal_node(ctx, e, Type::Int, Literal::Int(*value)),
+        Expr::AtomLit { value, .. } => literal_node(ctx, e, Type::Int, Literal::Int(*value)),
         Expr::FloatLit { value, .. } => literal_node(ctx, e, Type::Float, Literal::Float(*value)),
         Expr::BoolLit { value, .. } => literal_node(ctx, e, Type::Bool, Literal::Bool(*value)),
         Expr::StringLit { value, .. } => {
@@ -151,6 +152,10 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             // Record literals are handled in lower_let_decl, not as standalone expressions.
             synthesise_unsupported_range(ctx, range)
         }
+        // A map literal reaching the generic expression lowerer is in an
+        // unsupported position (not a `map` initializer). Task 8 intercepts
+        // `MapLit` in the assignment/initializer path before it reaches here.
+        Expr::MapLit { range, .. } => synthesise_unsupported_range(ctx, range),
         _ => synthesise_unsupported(ctx, e),
     }
 }

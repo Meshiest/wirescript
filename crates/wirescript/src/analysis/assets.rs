@@ -28,3 +28,38 @@ pub fn asset_type_exists(asset_type: &str) -> bool {
 pub fn asset_exists(asset_type: &str, asset_name: &str) -> bool {
     asset_names(asset_type).iter().any(|n| *n == asset_name)
 }
+
+/// The external asset type an asset-ref config param expects, keyed by the gate
+/// PORT the param wires into — so `font = <here>` / `weapon = <here>` can
+/// complete the correct `$Type/Name` refs without the author knowing the type
+/// name. Only ports whose asset type is present in the catalog are mapped.
+pub fn asset_type_for_port(port: &str) -> Option<&'static str> {
+    Some(match port {
+        "Font" => "BrickFontDescriptor",
+        "ItemType" | "ItemTypeIfItem" | "Item" => "BRItemBase",
+        "ProjectileOverride" => "BRWeaponProjectile",
+        "AudioDescriptor" => "BrickOneShotAudioDescriptor",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asset_type_for_port_maps_known_asset_params() {
+        assert_eq!(asset_type_for_port("Font"), Some("BrickFontDescriptor"));
+        assert_eq!(asset_type_for_port("ItemTypeIfItem"), Some("BRItemBase"));
+        assert_eq!(asset_type_for_port("ProjectileOverride"), Some("BRWeaponProjectile"));
+        // Wire-input / non-asset ports have no mapping.
+        assert_eq!(asset_type_for_port("IgnoreEntity"), None);
+        assert_eq!(asset_type_for_port("Team"), None);
+        // Every mapped type is actually present in the catalog.
+        for port in ["Font", "ItemType", "ProjectileOverride", "AudioDescriptor"] {
+            let ty = asset_type_for_port(port).unwrap();
+            assert!(asset_type_exists(ty), "{ty} not in catalog");
+            assert!(!asset_names(ty).is_empty(), "{ty} has no names");
+        }
+    }
+}

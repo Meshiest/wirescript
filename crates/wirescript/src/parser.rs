@@ -63,6 +63,12 @@ fn shift_expr_offsets(expr: &mut Expr, origin: Pos) {
                 shift_expr_offsets(el.expr_mut(), origin);
             }
         }
+        Expr::MapLit { entries, .. } => {
+            for e in entries.iter_mut() {
+                shift_expr_offsets(&mut e.key, origin);
+                shift_expr_offsets(&mut e.value, origin);
+            }
+        }
         _ => {}
     }
 }
@@ -791,6 +797,7 @@ impl<'a> Parser<'a> {
                 "let" => return Some(self.parse_let_decl()),
                 "on" => return Some(TopDecl::Handler(self.parse_handler(false))),
                 "array" => return Some(self.parse_array_decl()),
+                "map" => return Some(self.parse_map_decl()),
                 "chip" => return Some(self.parse_chip_decl(false, None, false, false)),
                 "mod" => return Some(self.parse_mod_decl()),
                 "open" => {
@@ -1308,14 +1315,7 @@ impl<'a> Parser<'a> {
         let element_type = match full_type {
             TypeExpr::Array { inner, .. } => *inner,
             other => {
-                let r = match &other {
-                    TypeExpr::Name { range, .. }
-                    | TypeExpr::Ref { range, .. }
-                    | TypeExpr::Array { range, .. }
-                    | TypeExpr::Tuple { range, .. }
-                    | TypeExpr::Union { range, .. }
-                    | TypeExpr::Record { range, .. } => range,
-                };
+                let r = other.range();
                 self.error(
                     String::from("array element type must end with `[]`"),
                     r.start,
@@ -1341,6 +1341,48 @@ impl<'a> Parser<'a> {
         TopDecl::Array(ArrayDecl {
             name,
             element_type,
+            init,
+            range: self.make_range(start, end),
+        })
+    }
+
+    // `map name: Map<K, V>`
+    fn parse_map_decl(&mut self) -> TopDecl {
+        let start = self.expect(TokenKind::Kw, Some("map")).start;
+        let name = self.expect(TokenKind::Ident, None).text;
+        self.expect(TokenKind::Colon, None);
+        let full_type = self.parse_type();
+        let (key_type, value_type) = match full_type {
+            TypeExpr::Generic { name: gname, mut args, .. }
+                if gname == "Map" && args.len() == 2 =>
+            {
+                let value_type = args.pop().unwrap();
+                let key_type = args.pop().unwrap();
+                (key_type, value_type)
+            }
+            other => {
+                let r = other.range();
+                self.error(
+                    String::from("map type must be `Map<KeyType, ValueType>`"),
+                    r.start,
+                    r.end,
+                );
+                // Recover with `any` key/value so parsing continues.
+                let anyt = |r: SourceRange| TypeExpr::Name { name: "any".into(), range: r };
+                (anyt(other.range().clone()), anyt(other.range().clone()))
+            }
+        };
+        let init = if self.match_tok(TokenKind::Op, Some("=")).is_some() {
+            Some(self.parse_expr())
+        } else {
+            None
+        };
+        let end = self.peek().start;
+        self.eat_stmt_end();
+        TopDecl::Map(MapDecl {
+            name,
+            key_type,
+            value_type,
             init,
             range: self.make_range(start, end),
         })
@@ -1869,17 +1911,23 @@ impl<'a> Parser<'a> {
         // Trigger args: bare identifiers bind the event's data outputs;
         // string/number literals and `name = value` pairs configure the event
         // gate (e.g. `on ChatCommand("greet", Description = "Greets you")`).
-        let mut params: Vec<String> = Vec::new();
+        let mut params: Vec<HandlerParam> = Vec::new();
         let mut config: Vec<HandlerConfigArg> = Vec::new();
         if self.match_tok(TokenKind::LParen, None).is_some() {
             while !self.check(TokenKind::RParen, None) {
                 if self.check(TokenKind::Ident, None) {
-                    let name = self.expect(TokenKind::Ident, None).text;
+                    let tok = self.expect(TokenKind::Ident, None);
+                    let prange = self.make_range(tok.start, tok.end);
+                    let name = tok.text;
                     if self.match_tok(TokenKind::Op, Some("=")).is_some() {
                         let value = self.parse_expr();
                         config.push(HandlerConfigArg::Named { name, value });
+                    } else if self.match_tok(TokenKind::Colon, None).is_some() {
+                        // Typed data param: `on CustomEvent(a: int, b: float)`.
+                        let typ = self.parse_type();
+                        params.push(HandlerParam { name, ty: Some(typ), range: prange });
                     } else {
-                        params.push(name);
+                        params.push(HandlerParam { name, ty: None, range: prange });
                     }
                 } else {
                     let value = self.parse_expr();
@@ -1998,22 +2046,8 @@ impl<'a> Parser<'a> {
             while self.match_tok(TokenKind::Op, Some("|")).is_some() {
                 options.push(self.parse_type_postfix());
             }
-            let start = match &options[0] {
-                TypeExpr::Name { range, .. }
-                | TypeExpr::Ref { range, .. }
-                | TypeExpr::Array { range, .. }
-                | TypeExpr::Tuple { range, .. }
-                | TypeExpr::Union { range, .. }
-                | TypeExpr::Record { range, .. } => range.start,
-            };
-            let end = match options.last().unwrap() {
-                TypeExpr::Name { range, .. }
-                | TypeExpr::Ref { range, .. }
-                | TypeExpr::Array { range, .. }
-                | TypeExpr::Tuple { range, .. }
-                | TypeExpr::Union { range, .. }
-                | TypeExpr::Record { range, .. } => range.end,
-            };
+            let start = options[0].range().start;
+            let end = options.last().unwrap().range().end;
             first = TypeExpr::Union {
                 options,
                 range: self.make_range(start, end),
@@ -2028,14 +2062,7 @@ impl<'a> Parser<'a> {
         while self.match_tok(TokenKind::LBracket, None).is_some() {
             self.expect(TokenKind::RBracket, None);
             let end = self.peek().start;
-            let start = match &t {
-                TypeExpr::Name { range, .. }
-                | TypeExpr::Ref { range, .. }
-                | TypeExpr::Array { range, .. }
-                | TypeExpr::Tuple { range, .. }
-                | TypeExpr::Union { range, .. }
-                | TypeExpr::Record { range, .. } => range.start,
-            };
+            let start = t.range().start;
             t = TypeExpr::Array {
                 inner: Box::new(t),
                 range: self.make_range(start, end),
@@ -2051,14 +2078,7 @@ impl<'a> Parser<'a> {
         {
             let start = self.advance().start;
             let inner = self.parse_type_postfix();
-            let end = match &inner {
-                TypeExpr::Name { range, .. }
-                | TypeExpr::Ref { range, .. }
-                | TypeExpr::Array { range, .. }
-                | TypeExpr::Tuple { range, .. }
-                | TypeExpr::Union { range, .. }
-                | TypeExpr::Record { range, .. } => range.end,
-            };
+            let end = inner.range().end;
             return TypeExpr::Ref {
                 inner: Box::new(inner),
                 range: self.make_range(start, end),
@@ -2130,6 +2150,35 @@ impl<'a> Parser<'a> {
             let member = self.expect(TokenKind::Ident, None);
             name = format!("{name}.{}", member.text);
             end = member.end;
+        }
+        // Generic application `Name<Arg, ...>` (e.g. `Map<string, int>`,
+        // `Array<int>`, `Ref<Point>`). `Array`/`Ref` desugar straight to the
+        // existing postfix forms so downstream code sees no new shape.
+        if self.check(TokenKind::Op, Some("<")) {
+            self.advance(); // consume `<`
+            let mut args: Vec<TypeExpr> = Vec::new();
+            while !self.check(TokenKind::Op, Some(">")) && self.peek().kind != TokenKind::Eof {
+                args.push(self.parse_type());
+                if self.match_tok(TokenKind::Comma, None).is_none() {
+                    break;
+                }
+            }
+            let close = self.expect(TokenKind::Op, Some(">"));
+            end = close.end;
+            let range = self.make_range(name_tok.start, end);
+            if name == "Array" && args.len() == 1 {
+                return TypeExpr::Array {
+                    inner: Box::new(args.into_iter().next().unwrap()),
+                    range,
+                };
+            }
+            if name == "Ref" && args.len() == 1 {
+                return TypeExpr::Ref {
+                    inner: Box::new(args.into_iter().next().unwrap()),
+                    range,
+                };
+            }
+            return TypeExpr::Generic { name, args, range };
         }
         TypeExpr::Name {
             name,
@@ -2357,6 +2406,11 @@ impl<'a> Parser<'a> {
                 "array" => {
                     if let TopDecl::Array(a) = self.parse_array_decl() {
                         return Some(Stmt::Array(a));
+                    }
+                }
+                "map" => {
+                    if let TopDecl::Map(m) = self.parse_map_decl() {
+                        return Some(Stmt::Map(m));
                     }
                 }
                 "in" => {
@@ -2944,6 +2998,19 @@ impl<'a> Parser<'a> {
                     range: self.make_range(t.start, end),
                 }
             }
+            TokenKind::Atom => {
+                self.advance();
+                let name = match t.value {
+                    Some(TokenValue::Str(s)) => s,
+                    _ => String::new(),
+                };
+                let value = crate::hash::atom_hash(&name);
+                Expr::AtomLit {
+                    name,
+                    value,
+                    range: self.make_range(t.start, t.end),
+                }
+            }
             TokenKind::Ident => {
                 self.advance();
                 Expr::Ident {
@@ -2990,7 +3057,9 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::LBrace => {
-                if self.looks_like_record_lit() {
+                if self.looks_like_map_lit() {
+                    self.parse_map_lit()
+                } else if self.looks_like_record_lit() {
                     self.parse_record_lit()
                 } else {
                     self.parse_block_expr()
@@ -3008,6 +3077,112 @@ impl<'a> Parser<'a> {
                     range: self.make_range(t.start, t.end),
                 }
             }
+        }
+    }
+
+    /// A `{ … }` is a map literal when it has a top-level `=>`, or a first key
+    /// that is a string / atom / int literal followed by `:`, or a bracketed
+    /// `[ … ]:` computed key.
+    fn looks_like_map_lit(&self) -> bool {
+        let get = |idx: usize| -> &Token {
+            self.tokens.get(idx).unwrap_or_else(|| self.tokens.last().unwrap())
+        };
+        let mut i = self.pos + 1; // after `{`
+        while get(i).kind == TokenKind::Newline {
+            i += 1;
+        }
+        // Scan to the matching `}` at brace depth 0; a top-level `=>` ⇒ map.
+        let mut depth = 1i32;
+        let mut j = i;
+        while j < self.tokens.len() {
+            match get(j).kind {
+                TokenKind::LBrace => depth += 1,
+                TokenKind::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                TokenKind::FatArrow if depth == 1 => return true,
+                TokenKind::Eof => break,
+                _ => {}
+            }
+            j += 1;
+        }
+        // Colon literal-key form: first token is a str/atom/int then `:`.
+        let first = get(i);
+        if matches!(first.kind, TokenKind::Str | TokenKind::StrInterp | TokenKind::Atom | TokenKind::Int) {
+            let mut k = i + 1;
+            while get(k).kind == TokenKind::Newline {
+                k += 1;
+            }
+            if get(k).kind == TokenKind::Colon {
+                return true;
+            }
+        }
+        // Computed-key form: `[ … ] :`.
+        if first.kind == TokenKind::LBracket {
+            let mut d = 1i32;
+            let mut k = i + 1;
+            while k < self.tokens.len() {
+                match get(k).kind {
+                    TokenKind::LBracket => d += 1,
+                    TokenKind::RBracket => {
+                        d -= 1;
+                        if d == 0 {
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => return false,
+                    _ => {}
+                }
+                k += 1;
+            }
+            k += 1;
+            while get(k).kind == TokenKind::Newline {
+                k += 1;
+            }
+            if get(k).kind == TokenKind::Colon {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Parse a map literal. Entries are `key => value`, or (for str/atom/int
+    /// literal keys and `[expr]` computed keys) `key : value`.
+    fn parse_map_lit(&mut self) -> Expr {
+        let start = self.expect(TokenKind::LBrace, None).start;
+        let mut entries: Vec<MapLitEntry> = Vec::new();
+        self.eat_newlines();
+        while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+            // `[expr]` computed key, else a normal expression key.
+            let key = if self.check(TokenKind::LBracket, None) {
+                self.advance(); // '['
+                let k = self.parse_expr();
+                self.expect(TokenKind::RBracket, None);
+                k
+            } else {
+                self.parse_expr()
+            };
+            // Separator: `=>` or `:`.
+            if self.match_tok(TokenKind::FatArrow, None).is_none() {
+                self.expect(TokenKind::Colon, None);
+            }
+            let value = self.parse_expr();
+            let range = self.make_range(key.range().start, value.range().end);
+            entries.push(MapLitEntry { key, value, range });
+            self.eat_newlines();
+            if self.match_tok(TokenKind::Comma, None).is_none() {
+                self.eat_newlines();
+                break;
+            }
+            self.eat_newlines();
+        }
+        let end = self.expect(TokenKind::RBrace, None).end;
+        Expr::MapLit {
+            entries,
+            range: self.make_range(start, end),
         }
     }
 
@@ -3352,7 +3527,7 @@ mod tests {
         match &s.decls[0] {
             TopDecl::Handler(h) => {
                 assert_eq!(h.params.len(), 1);
-                assert_eq!(h.params[0], "char");
+                assert_eq!(h.params[0].name, "char");
                 match &h.trigger {
                     Trigger::Ident { name, .. } => assert_eq!(name, "CharacterDied"),
                     _ => panic!("expected TrigIdent"),

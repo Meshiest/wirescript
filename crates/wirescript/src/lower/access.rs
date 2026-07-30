@@ -106,7 +106,11 @@ pub(super) fn alias_output_field(field: &str) -> &str {
     match field {
         "Forward" => "InputForward",
         "Right" => "InputRight",
-        "Jump" => "bPressedJump",
+        "Up" => "InputUp",
+        "Pitch" => "InputPitch",
+        "Yaw" => "InputYaw",
+        "Roll" => "InputRoll",
+        "MouseWheel" => "InputMouseWheel",
         other => other,
     }
 }
@@ -475,6 +479,203 @@ fn resolve_array_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRe
         }
     }
     None
+}
+
+/// Resolve a positional argument that names another map variable to its
+/// `MapVarRef` port (for `copyFrom`).
+fn resolve_map_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
+    if let Some(CallArg::Positional(Expr::Ident { name, .. })) = arg {
+        let vr = ctx.lookup_var(name)?;
+        if vr.storage == VarStorage::Map {
+            return Some(vr.node_id.port(WirePort::MapVarRef));
+        }
+    }
+    None
+}
+
+/// A `MapVar_*` exec op: wires the current exec + the map's `MapVarRef` plus
+/// `extra_in`, exposes `extra_out`, advances exec, and returns the `ret` port.
+/// The map analogue of [`array_exec_op`].
+fn map_exec_op(
+    ctx: &mut LowerCtx,
+    range: &SourceRange,
+    map_ref: PortRef,
+    gate_class: &'static str,
+    extra_in: Vec<(WirePort, Type, PortRef)>,
+    extra_out: Vec<(WirePort, Type)>,
+    ret: WirePort,
+) -> PortRef {
+    let exec_in = match ctx.current_exec {
+        Some(e) => e,
+        None => return map_ref,
+    };
+    let mut inputs = vec![
+        PortSpec { name: *sym::EXEC, ty: Type::Exec },
+        PortSpec { name: *sym::MAP_VAR_REF, ty: Type::Ref(Box::new(Type::Any)) },
+    ];
+    for (port, ty, _) in &extra_in {
+        inputs.push(PortSpec { name: intern(port.as_str()), ty: ty.clone() });
+    }
+    let mut outputs = vec![PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec }];
+    for (port, ty) in &extra_out {
+        outputs.push(PortSpec { name: intern(port.as_str()), ty: ty.clone() });
+    }
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class,
+        source_range: range.clone(),
+        ports: GateIO { inputs, outputs },
+        ..Default::default()
+    });
+    ctx.connect(exec_in, node_id.port(WirePort::Exec));
+    ctx.connect(map_ref, node_id.port(WirePort::MapVarRef));
+    for (port, _, src) in extra_in {
+        ctx.connect(src, node_id.port(port));
+    }
+    ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
+    node_id.port(ret)
+}
+
+/// Assign a whole map literal to a map var at runtime: clear it, then `set`
+/// each entry in order. Mirrors `lower_array_literal_assign` — there's no
+/// single "set map" gate, so the contents are rebuilt via Clear + one Set per
+/// entry on the current exec chain. No-op outside exec context (a constant
+/// initializer bakes instead; see `bake_map_init`).
+pub(super) fn lower_map_literal_assign(
+    ctx: &mut LowerCtx,
+    map_ref: PortRef,
+    entries: &[crate::ast::MapLitEntry],
+    range: &SourceRange,
+) {
+    if ctx.current_exec.is_none() {
+        return;
+    }
+    map_exec_op(ctx, range, map_ref, gc::MAP_CLEAR, vec![], vec![], WirePort::ExecOut);
+    for e in entries {
+        let key = lower_expr(ctx, &e.key);
+        let val = lower_expr(ctx, &e.value);
+        map_exec_op(
+            ctx,
+            range,
+            map_ref,
+            gc::MAP_SET,
+            vec![
+                (WirePort::Key, Type::Any, key),
+                (WirePort::Value, Type::Any, val),
+            ],
+            vec![],
+            WirePort::ExecOut,
+        );
+    }
+}
+
+/// Lower `m.<method>(...)` for a `map` value. `map_type` is the whole
+/// `Type::Map(K, V)`. Mirrors [`lower_array_method`]; every method in
+/// [`crate::catalog::maps::MAP_METHODS`] must be handled here.
+pub(super) fn lower_map_method(
+    ctx: &mut LowerCtx,
+    map_ref: PortRef,
+    map_type: Type,
+    method: &str,
+    args: &[CallArg],
+    range: &SourceRange,
+    e: &Expr,
+) -> PortRef {
+    let value_ty = match &map_type {
+        Type::Map(_, v) => v.as_ref().clone(),
+        _ => Type::Any,
+    };
+    let first_key = |ctx: &mut LowerCtx| match args.first() {
+        Some(CallArg::Positional(k)) => Some(lower_expr(ctx, k)),
+        _ => None,
+    };
+    match method {
+        "get" => {
+            let Some(key) = first_key(ctx) else {
+                return synthesise_unsupported(ctx, e);
+            };
+            map_exec_op(
+                ctx,
+                range,
+                map_ref,
+                gc::MAP_GET,
+                vec![(WirePort::Key, Type::Any, key)],
+                vec![(WirePort::Value, value_ty), (WirePort::BFound, Type::Bool)],
+                WirePort::Value,
+            )
+        }
+        "set" => {
+            let (key, val) = match (args.first(), args.get(1)) {
+                (Some(CallArg::Positional(k)), Some(CallArg::Positional(v))) => {
+                    (lower_expr(ctx, k), lower_expr(ctx, v))
+                }
+                _ => return synthesise_unsupported(ctx, e),
+            };
+            map_exec_op(
+                ctx,
+                range,
+                map_ref,
+                gc::MAP_SET,
+                vec![(WirePort::Key, Type::Any, key), (WirePort::Value, Type::Any, val)],
+                vec![],
+                WirePort::ExecOut,
+            )
+        }
+        "has" | "remove" => {
+            let Some(key) = first_key(ctx) else {
+                return synthesise_unsupported(ctx, e);
+            };
+            let gate = if method == "has" { gc::MAP_HAS } else { gc::MAP_REMOVE };
+            map_exec_op(
+                ctx,
+                range,
+                map_ref,
+                gate,
+                vec![(WirePort::Key, Type::Any, key)],
+                vec![(WirePort::BFound, Type::Bool)],
+                WirePort::BFound,
+            )
+        }
+        "clear" => map_exec_op(ctx, range, map_ref, gc::MAP_CLEAR, vec![], vec![], WirePort::ExecOut),
+        "length" => map_exec_op(
+            ctx,
+            range,
+            map_ref,
+            gc::MAP_GET_LENGTH,
+            vec![],
+            vec![(WirePort::Length, Type::Int)],
+            WirePort::Length,
+        ),
+        "copyFrom" => {
+            let Some(src) = resolve_map_ref_arg(ctx, args.first()) else {
+                return synthesise_unsupported(ctx, e);
+            };
+            map_exec_op(
+                ctx,
+                range,
+                map_ref,
+                gc::MAP_COPY_FROM,
+                vec![(WirePort::SourceRef, Type::Ref(Box::new(Type::Any)), src)],
+                vec![],
+                WirePort::ExecOut,
+            )
+        }
+        "keys" | "values" => {
+            let Some(dest) = resolve_array_ref_arg(ctx, args.first()) else {
+                return synthesise_unsupported(ctx, e);
+            };
+            let gate = if method == "keys" { gc::MAP_GET_KEYS } else { gc::MAP_GET_VALUES };
+            map_exec_op(
+                ctx,
+                range,
+                map_ref,
+                gate,
+                vec![(WirePort::ArrayVarRef, Type::Array(Box::new(Type::Any)), dest)],
+                vec![],
+                WirePort::ExecOut,
+            )
+        }
+        _ => synthesise_unsupported(ctx, e),
+    }
 }
 
 pub(super) fn lower_array_method(
@@ -900,6 +1101,84 @@ pub(super) fn lower_array_method(
                     (WirePort::SourceRef, Type::Array(Box::new(Type::Any)), src),
                 ],
                 vec![(WirePort::BOutOfBounds, Type::Bool)],
+                WirePort::ExecOut,
+            )
+        }
+        "fillFromZoneEntities" | "fillFromZonePlayers" => {
+            let gate = if method == "fillFromZoneEntities" {
+                gc::ZONE_GET_ENTITIES
+            } else {
+                gc::ZONE_GET_PLAYERS
+            };
+            let zone = match args.first() {
+                Some(CallArg::Positional(z)) => lower_expr(ctx, z),
+                _ => return synthesise_unsupported(ctx, e),
+            };
+            let mut extra = vec![(WirePort::Zone, Type::Entity, zone)];
+            // Optional tag filter: `tagFilter = <v>` or a second positional arg.
+            let tag = args
+                .iter()
+                .find_map(|a| match a {
+                    CallArg::Named { name, value } if name == "tagFilter" => Some(value),
+                    _ => None,
+                })
+                .or_else(|| match args.get(1) {
+                    Some(CallArg::Positional(t)) => Some(t),
+                    _ => None,
+                });
+            if let Some(t) = tag {
+                let tp = lower_expr(ctx, t);
+                extra.push((WirePort::TagFilter, Type::Any, tp));
+            }
+            array_exec_op(ctx, range, array_ref, gate, extra, vec![], WirePort::ExecOut)
+        }
+        "sortMultiple" => {
+            // Parallel arrays fill ArrayVarRef2..8 (this array is the sort key);
+            // a `descending` bool (named or a trailing non-array positional) sets
+            // bDescending.
+            const REFS: [WirePort; 7] = [
+                WirePort::ArrayVarRef2,
+                WirePort::ArrayVarRef3,
+                WirePort::ArrayVarRef4,
+                WirePort::ArrayVarRef5,
+                WirePort::ArrayVarRef6,
+                WirePort::ArrayVarRef7,
+                WirePort::ArrayVarRef8,
+            ];
+            let mut extra: Vec<(WirePort, Type, PortRef)> = Vec::new();
+            let mut descending: Option<&Expr> = None;
+            for a in args {
+                match a {
+                    CallArg::Named { name, value } if name == "descending" => {
+                        descending = Some(value);
+                    }
+                    CallArg::Positional(expr) => {
+                        if let Some(port) = resolve_array_ref_arg(ctx, Some(a)) {
+                            if extra.len() < REFS.len() {
+                                extra.push((
+                                    REFS[extra.len()],
+                                    Type::Array(Box::new(Type::Any)),
+                                    port,
+                                ));
+                            }
+                        } else {
+                            descending = Some(expr);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(d) = descending {
+                let dp = lower_expr(ctx, d);
+                extra.push((WirePort::BDescending, Type::Bool, dp));
+            }
+            array_exec_op(
+                ctx,
+                range,
+                array_ref,
+                gc::ARRAY_SORT_MULTIPLE,
+                extra,
+                vec![(WirePort::BSuccess, Type::Bool)],
                 WirePort::ExecOut,
             )
         }

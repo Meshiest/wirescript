@@ -32,7 +32,10 @@ use brdb::{
     AsBrdbValue, BString, BrickType, Color, IntVector, Position, Vector3f, WireConnection,
     WirePort as BrdbWirePort, World,
     assets::LiteralComponent,
-    schema::{WireArrayVariant, WireVariant},
+    schema::{
+        WireArrayVariant, WireMapKey, WireMapKeyData, WireMapValue, WireMapValueData,
+        WireMapVariant, WireVariant,
+    },
 };
 
 use crate::intern::{Sym, intern_static, resolve, sym};
@@ -1112,7 +1115,22 @@ fn emit_module(
 
         let effective_class_str = node.gate_class;
         let port_label_sym = *sym::PORT_LABEL;
-        let comp = match effective_class_str {
+        // The advanced-inventory gates carry composite (array/struct) config
+        // (`MeshColors: Color[]`, `WeaponAmmoOverride`) that a `LiteralComponent`
+        // can't serialize — build them with an array-capable `NativeStruct`.
+        let comp_boxed: Box<dyn brdb::BrdbComponent> = if effective_class_str
+            == gc::CHARACTER_ADD_INVENTORY_ITEM_ADV
+            || effective_class_str == gc::CHARACTER_SET_INVENTORY_ITEM_ADV
+        {
+            Box::new(build_adv_inventory_component(
+                effective_class_str,
+                &node.ports,
+                &gate_inlined,
+                world,
+                ctx.prefab_resolver.as_ref(),
+            )?)
+        } else {
+            Box::new(match effective_class_str {
             // Pseudo_Var: WireGraphVariant typed by the Value port.
             "BrickComponentType_WireGraphPseudo_Var" => {
                 let value_ty = node
@@ -1152,6 +1170,31 @@ fn emit_module(
                 };
                 let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
                 data.insert("Value".into(), Box::new(av));
+                LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
+            }
+            // Pseudo_MapVar: WireGraphMapVariant, key/value kinds chosen from the
+            // declared `Map<K, V>` on the MapVarRef port. A constant initializer
+            // is carried as an `InitialValue` map literal and populates the
+            // variant's `entries`; otherwise the map starts empty (runtime
+            // `set`s populate it).
+            "BrickComponentType_WireGraphPseudo_MapVar" => {
+                let kinds = node
+                    .ports
+                    .outputs
+                    .iter()
+                    .find(|p| resolve(p.name) == "MapVarRef")
+                    .map(|p| map_variant_from_type(&p.ty))
+                    .unwrap_or(WireMapVariant {
+                        key: WireMapKey::Int64,
+                        value: WireMapValue::Number,
+                        entries: vec![],
+                    });
+                let mv = match node.properties.get(&intern_static("InitialValue")) {
+                    Some(Literal::Map(entries)) => wire_map_variant_from_literals(kinds, entries),
+                    _ => kinds,
+                };
+                let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
+                data.insert("Value".into(), Box::new(mv));
                 LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
             }
             // MicrochipInput/Output: PortLabel string.
@@ -1237,8 +1280,14 @@ fn emit_module(
                         Box::new(BrdbValue::Asset(item_idx)) as Box<dyn AsBrdbValue>,
                     ),
                 ]);
-                let entry = LiteralComponent::new("BRInventoryEntryConfig")
-                    .with_data([("Item", Box::new(()) as Box<dyn AsBrdbValue>)]);
+                // `Item` is a BRInventoryEntryVariant (the entry's current
+                // contents); a freshly-planned entry is `Nothing` (an empty
+                // member struct → just its variant tag).
+                let entry = LiteralComponent::new("BRInventoryEntryConfig").with_data([(
+                    "Item",
+                    Box::new(LiteralComponent::new("BRInventoryEntryNothing"))
+                        as Box<dyn AsBrdbValue>,
+                )]);
                 let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
                 data.insert("Slot".into(), Box::new(slot));
                 data.insert("Entry".into(), Box::new(entry));
@@ -1252,9 +1301,10 @@ fn emit_module(
                 world,
                 ctx.prefab_resolver.as_ref(),
             )?,
+            })
         };
         // EMIT_COMP_NS.fetch_add(_ct.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
-        brick.add_component_box(Box::new(comp));
+        brick.add_component_box(comp_boxed);
 
         // Second component: floating name label on I/O gates and variables.
         // (Chip bricks get theirs in pass 2 / build_world.)
@@ -1608,15 +1658,41 @@ fn build_gate_component(
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
 ) -> Result<LiteralComponent, EmitError> {
+    match build_gate_data_map(gate_class, ports, inlined, world, prefab_resolver)? {
+        Some(data) => Ok(LiteralComponent::new_from_data(
+            gate_class,
+            std::sync::Arc::new(data),
+        )),
+        // Default: dataless component stub — registers component type only,
+        // no struct data (engine uses the default from the brick type).
+        None => Ok(LiteralComponent::new(gate_class)),
+    }
+}
+
+/// Build the component data map (schema field name → serializable value) for a
+/// gate that has a data struct, or `None` for a dataless gate. Each field is
+/// classified once via [`gate_field_meta`] and serialized from its inlined
+/// literal, falling back to typed wire-variant defaults / STRUCT_DEFAULTS for
+/// unset fields. Shared by [`build_gate_component`] and the advanced-inventory
+/// composite builder.
+fn build_gate_data_map(
+    gate_class: &'static str,
+    ports: &crate::ir::GateIO,
+    inlined: &StdMap<Sym, &Literal>,
+    world: &mut World,
+    prefab_resolver: Option<&PrefabResolver>,
+) -> Result<Option<StdMap<BString, Box<dyn AsBrdbValue>>>, EmitError> {
     // For gates whose component data struct carries wire_graph_variant fields,
     // look up the struct schema and build the component with embedded values.
     // Non-inlined fields get a default (Int(0)) so the struct is always complete.
     // Always write the data struct when the gate type has one — even if no
     // fields are inlined. This ensures ALL instances of the same component
     // type have matching data, preventing reader misalignment.
-    if let Some(fields) = gate_field_meta(gate_class) {
-        let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
-        for fm in fields {
+    let Some(fields) = gate_field_meta(gate_class) else {
+        return Ok(None);
+    };
+    let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
+    for fm in fields {
             let field = fm.name;
             let is_variant = matches!(fm.kind, FieldKind::WireVariant | FieldKind::PrimMathVariant);
             let val: Box<dyn AsBrdbValue> = match inlined.get(&fm.sym) {
@@ -1709,15 +1785,269 @@ fn build_gate_component(
             };
             data.insert(BString::Static(field), val);
         }
-        return Ok(LiteralComponent::new_from_data(
-            gate_class,
-            std::sync::Arc::new(data),
-        ));
+    Ok(Some(data))
+}
+
+// --- Advanced-inventory composite config (MeshColors, WeaponAmmoOverride) ---
+//
+// brdb's `LiteralComponent` deliberately errors when an *array*-typed struct
+// field has a stored value ("literal gate data only carries scalars"). The two
+// advanced-inventory gates need real native composites — `MeshColors: Color[]`
+// and the `WeaponAmmoOverride` struct (a bool + a `Resources` array of structs)
+// — so they use the two small `AsBrdbValue` helpers below, which provide the
+// array + struct serialization the schema writer drives, without touching brdb.
+
+/// A native (non-wire-variant) array field value. When the containing
+/// [`NativeStruct`] delegates an array-prop request to it, it yields its boxed
+/// elements (it only ever backs one field, so the prop name is irrelevant).
+struct NativeArray(Vec<Box<dyn AsBrdbValue>>);
+
+impl AsBrdbValue for NativeArray {
+    fn as_brdb_struct_prop_array(
+        &self,
+        _schema: &brdb::schema::BrdbSchema,
+        _struct_name: brdb::schema::BrdbInterned,
+        _prop_name: brdb::schema::BrdbInterned,
+    ) -> Result<brdb::schema::as_brdb::BrdbArrayIter<'_>, brdb::BrdbSchemaError> {
+        Ok(Box::new(self.0.iter().map(|v| v.as_ref() as &dyn AsBrdbValue)))
+    }
+}
+
+/// A map-backed struct/component value that DOES serialize array-typed fields
+/// (unlike brdb's `LiteralComponent`). Used as the top-level component for the
+/// advanced-inventory gates and for their nested `Color` /
+/// `BRInventoryEntryWeaponAmmoOverride` / `BRInventoryEntryWeaponResourceAmounts`
+/// structs. Scalar fields behave exactly like `LiteralComponent`; array fields
+/// delegate to the stored [`NativeArray`].
+#[derive(Clone)]
+struct NativeStruct {
+    name: &'static str,
+    data: std::sync::Arc<StdMap<BString, Box<dyn AsBrdbValue>>>,
+}
+
+impl NativeStruct {
+    fn new(name: &'static str, data: StdMap<BString, Box<dyn AsBrdbValue>>) -> Self {
+        Self {
+            name,
+            data: std::sync::Arc::new(data),
+        }
+    }
+}
+
+impl AsBrdbValue for NativeStruct {
+    fn has_brdb_struct_prop(
+        &self,
+        schema: &brdb::schema::BrdbSchema,
+        _struct_name: brdb::schema::BrdbInterned,
+        prop_name: brdb::schema::BrdbInterned,
+    ) -> bool {
+        prop_name
+            .get(schema)
+            .is_some_and(|name| self.data.contains_key(name))
     }
 
-    // Default: dataless component stub — registers component type only,
-    // no struct data (engine uses the default from the brick type).
-    Ok(LiteralComponent::new(gate_class))
+    fn as_brdb_struct_prop_value(
+        &self,
+        schema: &brdb::schema::BrdbSchema,
+        _struct_name: brdb::schema::BrdbInterned,
+        prop_name: brdb::schema::BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        let name = prop_name.get(schema).unwrap();
+        self.data.get(name).map(|v| v.as_ref()).ok_or_else(|| {
+            brdb::BrdbSchemaError::MissingStructField(self.name.to_string(), name.to_string())
+        })
+    }
+
+    fn as_brdb_struct_prop_array(
+        &self,
+        schema: &brdb::schema::BrdbSchema,
+        struct_name: brdb::schema::BrdbInterned,
+        prop_name: brdb::schema::BrdbInterned,
+    ) -> Result<brdb::schema::as_brdb::BrdbArrayIter<'_>, brdb::BrdbSchemaError> {
+        let name = prop_name.get(schema).unwrap();
+        match self.data.get(name) {
+            Some(v) => v.as_brdb_struct_prop_array(schema, struct_name, prop_name),
+            None => Err(brdb::BrdbSchemaError::MissingStructField(
+                self.name.to_string(),
+                name.to_string(),
+            )),
+        }
+    }
+}
+
+impl brdb::BrdbComponent for NativeStruct {
+    fn component_type(&self) -> Option<BString> {
+        Some(BString::Static(self.name))
+    }
+}
+
+/// The schema `Color { B, G, R, A: u8 }` value for one `MeshColors` element.
+/// `Literal::Color` is semantic RGBA; the struct is BGRA, and Brickadia stores
+/// brick colours sRGB-direct — so the bytes map straight across, no gamma.
+fn color_bgra_struct(r: u8, g: u8, b: u8, a: u8) -> NativeStruct {
+    let mut m: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
+    m.insert("B".into(), Box::new(b));
+    m.insert("G".into(), Box::new(g));
+    m.insert("R".into(), Box::new(r));
+    m.insert("A".into(), Box::new(a));
+    NativeStruct::new("Color", m)
+}
+
+/// Decode a folded `ammoOverride` literal (the `Array[Bool, Array[Array[Int,
+/// Int], …]]` shape produced by `predeclare::fold_ammo_override`) into the
+/// `BRInventoryEntryWeaponAmmoOverride` struct value.
+/// The engine reflects `BRInventoryEntryWeaponAmmoOverride::Resources` as a
+/// fixed-size array (a `TStaticArray`), even though the text schema flattens it
+/// to a dynamic `[]`. Writing any other element count fails the game load with
+/// `FixedArraySizeInvalid: … does not match expected length of 8`, so the field
+/// must ALWAYS carry exactly this many entries — including when the user omits
+/// `ammoOverride` entirely (see [`build_adv_inventory_component`]). Unspecified
+/// slots are padded with a zero `{ Loaded, Reserve }` resource.
+const WEAPON_AMMO_RESOURCE_SLOTS: usize = 8;
+
+/// One `BRInventoryEntryWeaponResourceAmounts` struct.
+fn weapon_resource_struct(loaded: i32, reserve: i32) -> NativeStruct {
+    let mut m: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
+    m.insert("Loaded".into(), Box::new(loaded));
+    m.insert("Reserve".into(), Box::new(reserve));
+    NativeStruct::new("BRInventoryEntryWeaponResourceAmounts", m)
+}
+
+/// A `Resources` value of exactly [`WEAPON_AMMO_RESOURCE_SLOTS`] entries: the
+/// supplied resources (capped) followed by zero-padding.
+fn weapon_resource_array(resources: &[(i32, i32)]) -> NativeArray {
+    let mut res_elems: Vec<Box<dyn AsBrdbValue>> =
+        Vec::with_capacity(WEAPON_AMMO_RESOURCE_SLOTS);
+    for &(loaded, reserve) in resources.iter().take(WEAPON_AMMO_RESOURCE_SLOTS) {
+        res_elems.push(Box::new(weapon_resource_struct(loaded, reserve)));
+    }
+    while res_elems.len() < WEAPON_AMMO_RESOURCE_SLOTS {
+        res_elems.push(Box::new(weapon_resource_struct(0, 0)));
+    }
+    NativeArray(res_elems)
+}
+
+/// The no-op default written whenever the user omits `ammoOverride`: overriding
+/// off, with the fixed-count zero-padded `Resources` the game load requires.
+fn default_weapon_ammo_override() -> NativeStruct {
+    let mut m: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
+    m.insert("bOverrideStartingAmmo".into(), Box::new(false));
+    m.insert("Resources".into(), Box::new(weapon_resource_array(&[])));
+    NativeStruct::new("BRInventoryEntryWeaponAmmoOverride", m)
+}
+
+/// `MeshColors` is likewise a fixed-size array the game rejects at any other
+/// length (`FixedArraySizeInvalid … expected length of 8`). Always emit exactly
+/// this many colours, padding unspecified slots with white (`bOverrideColors`
+/// gates whether they apply at all, and a mesh with fewer material slots ignores
+/// the extras).
+const MESH_COLOR_SLOTS: usize = 8;
+
+/// A `MeshColors` value of exactly [`MESH_COLOR_SLOTS`] entries: the supplied
+/// colours (capped) followed by white padding.
+fn mesh_colors_array(colors: &[Literal]) -> NativeArray {
+    let mut elems: Vec<Box<dyn AsBrdbValue>> = Vec::with_capacity(MESH_COLOR_SLOTS);
+    for c in colors.iter().take(MESH_COLOR_SLOTS) {
+        if let Literal::Color { r, g, b, a } = c {
+            elems.push(Box::new(color_bgra_struct(*r, *g, *b, *a)));
+        }
+    }
+    while elems.len() < MESH_COLOR_SLOTS {
+        elems.push(Box::new(color_bgra_struct(255, 255, 255, 255)));
+    }
+    NativeArray(elems)
+}
+
+fn build_weapon_ammo_override(lit: &Literal) -> Option<NativeStruct> {
+    let Literal::Array(parts) = lit else {
+        return None;
+    };
+    let [Literal::Bool(override_starting), Literal::Array(resources)] = parts.as_slice() else {
+        return None;
+    };
+    let mut pairs: Vec<(i32, i32)> = Vec::with_capacity(resources.len());
+    for r in resources {
+        let Literal::Array(pair) = r else {
+            return None;
+        };
+        let [Literal::Int(loaded), Literal::Int(reserve)] = pair.as_slice() else {
+            return None;
+        };
+        pairs.push((*loaded as i32, *reserve as i32));
+    }
+    let mut m: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
+    m.insert("bOverrideStartingAmmo".into(), Box::new(*override_starting));
+    m.insert("Resources".into(), Box::new(weapon_resource_array(&pairs)));
+    Some(NativeStruct::new("BRInventoryEntryWeaponAmmoOverride", m))
+}
+
+/// Build the component for `AddInventoryItemAdv` / `SetInventoryItemAdv`. Scalar
+/// fields reuse the shared [`build_gate_data_map`] path; the composite
+/// `MeshColors: Color[]` and `WeaponAmmoOverride` struct fields are overwritten
+/// with native array/struct values the schema writer can serialize.
+fn build_adv_inventory_component(
+    gate_class: &'static str,
+    ports: &crate::ir::GateIO,
+    inlined: &StdMap<Sym, &Literal>,
+    world: &mut World,
+    prefab_resolver: Option<&PrefabResolver>,
+) -> Result<NativeStruct, EmitError> {
+    let mut data = build_gate_data_map(gate_class, ports, inlined, world, prefab_resolver)?
+        .unwrap_or_default();
+
+    // MeshColors: a fixed-size Color[] (like WeaponAmmoOverride.Resources).
+    // Always written with exactly MESH_COLOR_SLOTS entries — the user's colours
+    // padded with white — even when omitted, or the game load fails.
+    let colors: &[Literal] = match inlined.get(&intern_static("MeshColors")).copied() {
+        Some(Literal::Array(cs)) => cs.as_slice(),
+        _ => &[],
+    };
+    data.insert("MeshColors".into(), Box::new(mesh_colors_array(colors)));
+
+    // WeaponAmmoOverride: bOverrideStartingAmmo + a fixed-count Resources array.
+    // Always written — its Resources is a fixed-size array the game rejects at
+    // any other length, so even when the user omits `ammoOverride` we must emit
+    // the zero-padded no-op default rather than let the schema writer fall back
+    // to an empty (length-0) array.
+    let ammo = inlined
+        .get(&intern_static("WeaponAmmoOverride"))
+        .copied()
+        .and_then(build_weapon_ammo_override)
+        .unwrap_or_else(default_weapon_ammo_override);
+    data.insert("WeaponAmmoOverride".into(), Box::new(ammo));
+
+    Ok(NativeStruct::new(gate_class, data))
+}
+
+/// Test-only: build the advanced-inventory component for `node` and round-trip
+/// its data struct through the live max schema — the exact `write_brdb` path
+/// emit uses for component data — returning the decoded struct so tests can
+/// assert on the serialized bytes (not just the IR properties).
+#[cfg(test)]
+pub(crate) fn roundtrip_adv_inventory_component(node: &Node) -> brdb::schema::BrdbValue {
+    use brdb::schema::ReadBrdbSchema;
+    let mut world = World::new();
+    let mut inlined: StdMap<Sym, &Literal> = StdMap::new();
+    for (k, v) in node.properties.as_ref() {
+        inlined.insert(*k, v);
+    }
+    let comp =
+        build_adv_inventory_component(node.gate_class, &node.ports, &inlined, &mut world, None)
+            .expect("build advanced-inventory component");
+    let schema = brdb::schemas::bricks_components_schema_max();
+    let struct_name = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
+        .iter()
+        .find(|(c, _)| *c == node.gate_class)
+        .map(|(_, s)| *s)
+        .expect("gate class has a data struct");
+    let bytes = schema
+        .write_brdb(struct_name, &comp)
+        .expect("serialize component data");
+    let schema_arc = std::sync::Arc::new(schema.clone());
+    let mut cursor = &bytes[..];
+    cursor
+        .read_brdb(&schema_arc, struct_name)
+        .expect("read component data back")
 }
 
 /// Returns `(struct_name, field_names, use_wire_variant)` for gates whose
@@ -1889,6 +2219,108 @@ fn array_element_type(ty: &crate::ir::Type) -> Option<&crate::ir::Type> {
     match inner {
         Type::Array(elem) => Some(elem.as_ref()),
         _ => None,
+    }
+}
+
+/// The `WireMapVariant` (empty map) an empty `MapVar` brick serializes, chosen
+/// from the declared `Map<K, V>` type on its `MapVarRef` output port. Keys are
+/// int/string/object; values cover the wire-storable scalars. Defaults to
+/// `int -> float` for an unknown/degenerate type.
+fn map_variant_from_type(ty: &crate::ir::Type) -> WireMapVariant {
+    use crate::ir::Type;
+    let inner = match ty {
+        Type::Ref(inner) => inner.as_ref(),
+        other => other,
+    };
+    let (k, v) = match inner {
+        Type::Map(k, v) => (k.as_ref(), v.as_ref()),
+        _ => return WireMapVariant { key: WireMapKey::Int64, value: WireMapValue::Number, entries: vec![] },
+    };
+    let key = match k {
+        Type::Int | Type::Bool => WireMapKey::Int64,
+        Type::String => WireMapKey::Str,
+        // Entity-family references are weak-object keys.
+        _ => WireMapKey::Object,
+    };
+    let value = match v {
+        Type::Int => WireMapValue::Int64,
+        Type::Float => WireMapValue::Number,
+        Type::Bool => WireMapValue::Bool,
+        Type::String => WireMapValue::Str,
+        Type::Vector => WireMapValue::Vector,
+        Type::Rotator => WireMapValue::Rotator,
+        Type::Quat => WireMapValue::Quat,
+        Type::Color => WireMapValue::LinearColor,
+        Type::Entity | Type::Character | Type::Controller | Type::Brick | Type::Prefab => {
+            WireMapValue::Object
+        }
+        _ => WireMapValue::Number,
+    };
+    WireMapVariant { key, value, entries: vec![] }
+}
+
+/// Build a populated `WireMapVariant` from a map's constant entries. `kinds`
+/// gives the key/value member kinds (from [`map_variant_from_type`] on the
+/// declared `Map<K, V>` port type); each literal is read in that kind.
+fn wire_map_variant_from_literals(
+    kinds: WireMapVariant,
+    entries: &[(Literal, Literal)],
+) -> WireMapVariant {
+    // Numeric key/value arms read across literal kinds (like arrays'
+    // `as_i64`/`as_f64`) so a raw literal that ever reaches emit still bakes
+    // correctly instead of hitting the zero fallback — defense in depth
+    // behind the fold-time coercion in `bake_map_init`/`coerce_literal_to_type`.
+    let key_of = |l: &Literal| match (kinds.key, l) {
+        (WireMapKey::Int64, Literal::Int(n)) => WireMapKeyData::Int64(*n),
+        (WireMapKey::Int64, Literal::Float(f)) => WireMapKeyData::Int64(*f as i64),
+        (WireMapKey::Int64, Literal::Bool(b)) => WireMapKeyData::Int64(*b as i64),
+        (WireMapKey::Str, Literal::String(s)) => WireMapKeyData::Str(s.clone()),
+        (WireMapKey::Object, _) => WireMapKeyData::Object(None),
+        (WireMapKey::Int64, _) => WireMapKeyData::Int64(0),
+        (WireMapKey::Str, _) => WireMapKeyData::Str(String::new()),
+    };
+    let val_of = |l: &Literal| match (kinds.value, l) {
+        (WireMapValue::Number, Literal::Float(f)) => WireMapValueData::Number(*f),
+        (WireMapValue::Number, Literal::Int(n)) => WireMapValueData::Number(*n as f64),
+        (WireMapValue::Number, Literal::Bool(b)) => WireMapValueData::Number(*b as i64 as f64),
+        (WireMapValue::Int64, Literal::Int(n)) => WireMapValueData::Int64(*n),
+        (WireMapValue::Int64, Literal::Float(f)) => WireMapValueData::Int64(*f as i64),
+        (WireMapValue::Int64, Literal::Bool(b)) => WireMapValueData::Int64(*b as i64),
+        (WireMapValue::Bool, Literal::Bool(b)) => WireMapValueData::Bool(*b),
+        (WireMapValue::Bool, Literal::Int(n)) => WireMapValueData::Bool(*n != 0),
+        (WireMapValue::Str, Literal::String(s)) => WireMapValueData::Str(s.clone()),
+        (WireMapValue::Vector, Literal::Vector { x, y, z }) => WireMapValueData::Vector(Vector3f {
+            x: *x as f32,
+            y: *y as f32,
+            z: *z as f32,
+        }),
+        (WireMapValue::Rotator, Literal::Rotator { pitch, yaw, roll }) => {
+            WireMapValueData::Rotator(*pitch, *yaw, *roll)
+        }
+        (WireMapValue::Quat, Literal::Quat { x, y, z, w }) => {
+            WireMapValueData::Quat(*x, *y, *z, *w)
+        }
+        (WireMapValue::LinearColor, Literal::LinearColor { r, g, b, a }) => {
+            WireMapValueData::LinearColor(*r as f32, *g as f32, *b as f32, *a as f32)
+        }
+        (WireMapValue::Object, _) => WireMapValueData::Object(None),
+        (WireMapValue::Number, _) => WireMapValueData::Number(0.0),
+        (WireMapValue::Int64, _) => WireMapValueData::Int64(0),
+        (WireMapValue::Bool, _) => WireMapValueData::Bool(false),
+        (WireMapValue::Str, _) => WireMapValueData::Str(String::new()),
+        (WireMapValue::Vector, _) => WireMapValueData::Vector(Vector3f {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        (WireMapValue::Rotator, _) => WireMapValueData::Rotator(0.0, 0.0, 0.0),
+        (WireMapValue::Quat, _) => WireMapValueData::Quat(0.0, 0.0, 0.0, 1.0),
+        (WireMapValue::LinearColor, _) => WireMapValueData::LinearColor(0.0, 0.0, 0.0, 1.0),
+    };
+    WireMapVariant {
+        key: kinds.key,
+        value: kinds.value,
+        entries: entries.iter().map(|(k, v)| (key_of(k), val_of(v))).collect(),
     }
 }
 
@@ -2167,7 +2599,9 @@ fn literal_to_wire_variant(lit: &Literal) -> Option<WireVariant> {
             b: *b as f32 / 255.0,
             a: *a as f32 / 255.0,
         }),
-        Literal::Array(_) | Literal::Asset { .. } | Literal::PrefabRef { .. } => None,
+        Literal::Array(_) | Literal::Map(_) | Literal::Asset { .. } | Literal::PrefabRef { .. } => {
+            None
+        }
     }
 }
 
@@ -2463,17 +2897,17 @@ fn schema_field_type_str(struct_name: &str, field: &str) -> Option<String> {
 /// Names are returned bare (the `EnumType::` prefix stripped). Used by the
 /// editor to complete enum-valued named args like `justify = Center`.
 pub fn field_enum_values(gate_class: &str, field: &str) -> Option<Vec<String>> {
-    let (struct_name, _, _) = data_struct_for_gate(gate_class)?;
-    let schema = brdb::schemas::bricks_components_schema_max();
-    let type_name = schema_field_type_str(struct_name, field)?;
-    let enum_def = schema.get_enum(&type_name)?;
-    let mut out: Vec<String> = enum_def
-        .keys()
-        .filter_map(|k| schema.intern.lookup_ref(*k))
-        .map(|name| name.rsplit("::").next().unwrap_or(name).to_string())
-        .collect();
-    out.dedup();
-    if out.is_empty() { None } else { Some(out) }
+    // Delegate to the catalog's schema-backed enum helpers, which drop the
+    // trailing `<Enum>_MAX` / bare `MAX` sentinel (not a selectable member).
+    let members = crate::catalog::enum_member_names(field_enum_type(gate_class, field)?);
+    if members.is_empty() { None } else { Some(members) }
+}
+
+/// The schema enum type name of a gate's data field, if it is an enum (e.g.
+/// `ColorBlend.BlendSpace` → `EBRColorSpace`). Used to name the enum in
+/// completions/hover for a config param that is surfaced as a plain int.
+pub fn field_enum_type(gate_class: &str, field: &str) -> Option<&'static str> {
+    crate::catalog::config_field_enum_type(gate_class, field)
 }
 
 /// True if the field's schema type is the prim-math wire variant, which the
@@ -2560,7 +2994,7 @@ fn resolve_enum_value(type_name: &str, lit: &Literal) -> Option<u8> {
 mod tests {
     use super::*;
 
-    const DISPLAY_TEXT: &str = "BrickComponentData_WireGraph_Exec_Controller_DisplayText";
+    const DISPLAY_TEXT: &str = "BrickComponentData_WireGraph_Exec_PlayerState_DisplayText";
 
     fn empty_ctx() -> EmitContext {
         EmitContext {
@@ -2939,11 +3373,11 @@ mod tests {
         // Regression: the entry existed but with an empty field list, so the
         // inlined message of `ShowStatusMessage(ctrl, "hi")` was dropped at
         // emit — the gate pasted with an empty internal Message and no wire.
-        let entry = data_struct_for_gate(crate::ir::gate_class::CONTROLLER_SHOW_STATUS);
+        let entry = data_struct_for_gate(crate::ir::gate_class::PLAYERSTATE_SHOW_STATUS);
         assert_eq!(
             entry,
             Some((
-                "BrickComponentData_WireGraph_Exec_Controller_ShowStatusMessage",
+                "BrickComponentData_WireGraph_Exec_PlayerState_ShowStatusMessage",
                 ["Message"].as_slice(),
                 false,
             )),
@@ -2953,7 +3387,7 @@ mod tests {
     #[test]
     fn field_enum_values_lists_justification() {
         let vals = field_enum_values(
-            "BrickComponentType_WireGraph_Exec_Controller_DisplayText",
+            "BrickComponentType_WireGraph_Exec_PlayerState_DisplayText",
             "Justification",
         )
         .expect("justify maps to an enum field");

@@ -51,6 +51,9 @@ pub static ARRAY_METHODS: &[ArrayMethod] = &[
     ArrayMethod { name: "slice", gate: gc::ARRAY_SLICE, signature: "(source, start, count)", doc: "Copy source[start..start+count] into this array" },
     ArrayMethod { name: "fillFromPlayers", gate: gc::GAMEMODE_FILL_FROM_PLAYERS, signature: "()", doc: "Fill this array with all current players" },
     ArrayMethod { name: "fillFromTeam", gate: gc::GAMEMODE_FILL_FROM_TEAM, signature: "(team)", doc: "Fill this array with the members of a team" },
+    ArrayMethod { name: "fillFromZoneEntities", gate: gc::ZONE_GET_ENTITIES, signature: "(zone, tagFilter?)", doc: "Fill this array with the entities inside a zone" },
+    ArrayMethod { name: "fillFromZonePlayers", gate: gc::ZONE_GET_PLAYERS, signature: "(zone, tagFilter?)", doc: "Fill this array with the players inside a zone" },
+    ArrayMethod { name: "sortMultiple", gate: gc::ARRAY_SORT_MULTIPLE, signature: "(other, ..., descending?)", doc: "Sort this array and up to 7 parallel arrays together, by this array's order" },
 ];
 
 /// All array methods.

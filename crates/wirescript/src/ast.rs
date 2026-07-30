@@ -145,6 +145,7 @@ pub enum TopDecl {
     Namespace(NamespaceDecl),
     Var(VarDecl),
     Array(ArrayDecl),
+    Map(MapDecl),
     Buffer(BufferDecl),
     Fn(FnDecl),
     Chip(ChipDecl),
@@ -168,6 +169,7 @@ impl TopDecl {
             TopDecl::Namespace(d) => &d.range,
             TopDecl::Var(d) => &d.range,
             TopDecl::Array(d) => &d.range,
+            TopDecl::Map(d) => &d.range,
             TopDecl::Buffer(d) => &d.range,
             TopDecl::Fn(d) => &d.range,
             TopDecl::Chip(d) => &d.range,
@@ -213,6 +215,17 @@ pub struct ArrayDecl {
     /// initializer is given. At top level every element must be a literal
     /// (`Item` with a literal expr); spreads / non-literals are rejected.
     pub init: Vec<ArrayElem>,
+    pub range: SourceRange,
+}
+
+/// `map name: Map<K, V>` — a keyed variable collection (parallels `ArrayDecl`).
+#[derive(Clone, Debug)]
+pub struct MapDecl {
+    pub name: String,
+    pub key_type: TypeExpr,
+    pub value_type: TypeExpr,
+    /// Optional literal initializer: `map m: Map<int, int> = { 1 => 2 }`.
+    pub init: Option<Expr>,
     pub range: SourceRange,
 }
 
@@ -393,11 +406,23 @@ pub enum RecordDestructField {
 }
 
 #[derive(Clone, Debug)]
+pub struct HandlerParam {
+    pub name: String,
+    /// Optional type annotation (`a: int`). Events whose data-output types are
+    /// declared by the handler — Custom Event — use it to type their output
+    /// ports; `None` for events with fixed data types (RoundStart, etc.).
+    pub ty: Option<TypeExpr>,
+    /// Range of the param name (for diagnostics).
+    pub range: SourceRange,
+}
+
+#[derive(Clone, Debug)]
 pub struct Handler {
     pub trigger: Trigger,
-    /// `on Event(a, b) { ... }` — identifier params that bind the event's
-    /// data outputs (e.g. `controller`, `arguments`).
-    pub params: Vec<String>,
+    /// `on Event(a, b) { ... }` — params that bind the event's data outputs
+    /// (e.g. `controller`, `arguments`), optionally typed (`on CustomEvent(a:
+    /// int, b: float)`).
+    pub params: Vec<HandlerParam>,
     /// Literal/named config args that configure the event gate itself, e.g.
     /// `on ChatCommand("greet", Description = "Greets you") { ... }`. These map
     /// to the gate's data-struct fields (not output bindings).
@@ -469,6 +494,29 @@ pub enum TypeExpr {
         fields: Vec<RecordTypeField>,
         range: SourceRange,
     },
+    /// A generic application `Name<Arg, ...>` (e.g. `Map<string, int>`).
+    /// `Array<V>` / `Ref<V>` are desugared to `Array` / `Ref` at parse time, so
+    /// this carries the remaining generics (currently `Map`) resolved by
+    /// `type_of_type_expr`.
+    Generic {
+        name: String,
+        args: Vec<TypeExpr>,
+        range: SourceRange,
+    },
+}
+
+impl TypeExpr {
+    pub fn range(&self) -> &SourceRange {
+        match self {
+            TypeExpr::Name { range, .. }
+            | TypeExpr::Ref { range, .. }
+            | TypeExpr::Array { range, .. }
+            | TypeExpr::Tuple { range, .. }
+            | TypeExpr::Union { range, .. }
+            | TypeExpr::Record { range, .. }
+            | TypeExpr::Generic { range, .. } => range,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -499,6 +547,7 @@ pub enum Stmt {
     Var(VarDecl),
     Buffer(BufferDecl),
     Array(ArrayDecl),
+    Map(MapDecl),
     Handler(Handler),
     AnonChip(AnonChipDecl),
     ChipDecl(ChipDecl),
@@ -522,6 +571,7 @@ impl Stmt {
             Stmt::Var(d) => &d.range,
             Stmt::Buffer(d) => &d.range,
             Stmt::Array(d) => &d.range,
+            Stmt::Map(d) => &d.range,
             Stmt::Handler(d) => &d.range,
             Stmt::AnonChip(d) => &d.range,
             Stmt::ChipDecl(d) => &d.range,
@@ -611,6 +661,11 @@ pub enum Expr {
     IntLit {
         value: i64,
         text: String,
+        range: SourceRange,
+    },
+    AtomLit {
+        name: String,
+        value: i64,
         range: SourceRange,
     },
     FloatLit {
@@ -718,6 +773,12 @@ pub enum Expr {
         path: String,
         range: SourceRange,
     },
+    /// Map literal `{ k => v, ... }` / `{ "k": v }` / `{ [expr]: v }`. Valid as
+    /// a constant `map` initializer (all-literal entries, baked at load).
+    MapLit {
+        entries: Vec<MapLitEntry>,
+        range: SourceRange,
+    },
 }
 
 /// An element of an array literal: a single value or a `...spread` of another
@@ -749,6 +810,7 @@ impl Expr {
     pub fn range(&self) -> &SourceRange {
         match self {
             Expr::IntLit { range, .. }
+            | Expr::AtomLit { range, .. }
             | Expr::FloatLit { range, .. }
             | Expr::StringLit { range, .. }
             | Expr::InterpLit { range, .. }
@@ -768,13 +830,15 @@ impl Expr {
             | Expr::RecordLit { range, .. }
             | Expr::Array { range, .. }
             | Expr::AssetRef { range, .. }
-            | Expr::PrefabRef { range, .. } => range,
+            | Expr::PrefabRef { range, .. }
+            | Expr::MapLit { range, .. } => range,
         }
     }
 
     pub fn range_mut(&mut self) -> &mut SourceRange {
         match self {
             Expr::IntLit { range, .. }
+            | Expr::AtomLit { range, .. }
             | Expr::FloatLit { range, .. }
             | Expr::StringLit { range, .. }
             | Expr::InterpLit { range, .. }
@@ -794,7 +858,8 @@ impl Expr {
             | Expr::RecordLit { range, .. }
             | Expr::Array { range, .. }
             | Expr::AssetRef { range, .. }
-            | Expr::PrefabRef { range, .. } => range,
+            | Expr::PrefabRef { range, .. }
+            | Expr::MapLit { range, .. } => range,
         }
     }
 }
@@ -820,6 +885,14 @@ pub enum RecordLitField {
         value: Expr,
         range: SourceRange,
     },
+}
+
+/// One `key => value` / `key: value` entry of a map literal.
+#[derive(Clone, Debug)]
+pub struct MapLitEntry {
+    pub key: Expr,
+    pub value: Expr,
+    pub range: SourceRange,
 }
 
 #[derive(Clone, Debug)]

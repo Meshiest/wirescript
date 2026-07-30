@@ -464,8 +464,15 @@ fn collect_calls_in_expr(expr: &Expr, known: &HashSet<String>, out: &mut HashSet
                 collect_calls_in_expr(e.expr(), known, out);
             }
         }
+        Expr::MapLit { entries, .. } => {
+            for e in entries {
+                collect_calls_in_expr(&e.key, known, out);
+                collect_calls_in_expr(&e.value, known, out);
+            }
+        }
         // Literals and bare identifiers have nothing to recurse into.
         Expr::IntLit { .. }
+        | Expr::AtomLit { .. }
         | Expr::FloatLit { .. }
         | Expr::StringLit { .. }
         | Expr::BoolLit { .. }

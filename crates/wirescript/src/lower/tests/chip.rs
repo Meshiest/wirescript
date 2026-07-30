@@ -218,6 +218,34 @@ fn chip_call_wires_args_to_inputs() {
 }
 
 #[test]
+fn chip_call_atom_arg_inlines_like_int_literal() {
+    // A `:atom` chip-call argument is an int at heart (typechecks as
+    // `Type::Int`) and must inline into the instance the same way a bare int
+    // literal does (`const_arg_literal`'s `AtomLit` arm) instead of wiring a
+    // real gate across the chip boundary.
+    let atom_src = "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(:red)\nout val = r.result";
+    let int_src = "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(21)\nout val = r.result";
+    for src in [atom_src, int_src] {
+        let r = compile(src);
+        assert_no_errors(&r);
+        let child = r.module.chips.values().next().unwrap();
+        let child_input_ids: std::collections::HashSet<NodeId> =
+            child.inputs.iter().cloned().collect();
+        let input_wires: Vec<_> = r
+            .module
+            .wires
+            .iter()
+            .filter(|w| child_input_ids.contains(&w.target.node_id))
+            .collect();
+        assert!(
+            input_wires.is_empty(),
+            "a constant chip-call arg must fold inside the instance, not wire across the \
+             boundary (src: {src:?}); wires: {input_wires:?}"
+        );
+    }
+}
+
+#[test]
 fn chip_call_output_wire_in_parent() {
     let src = "chip Double(x: int) -> (result: int) { out result = x * 2 }\nlet r = Double(21)\nout val = r.result";
     let r = compile(src);
@@ -893,6 +921,47 @@ on player {
 }
 
 #[test]
+fn map_var_emits_brz() {
+    // The Pseudo_MapVar brick serializes a (nested) WireGraphMapVariant; this
+    // exercises the full map pipeline through emit for several key/value kinds.
+    let src = r#"
+in t: exec
+var e: entity
+map scores: Map<string, int>
+map byId: Map<int, entity>
+map pos: Map<string, vector>
+on t {
+  scores.set("a", 1)
+  let g = scores.get("a")
+  if g.Found { PrintToConsole("${g.Value}") }
+  byId.set(1, e)
+  pos.set("spawn", Vec(0.0, 0.0, 0.0))
+}"#;
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "map methods lowered to _Unsupported");
+    let lr = crate::layout::layout(&r.module);
+    let tc = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
+    let brz = crate::emit::emit_brz(&r.module, &lr, &Default::default(), &tc);
+    assert!(brz.is_ok(), "map program should emit valid brz: {:?}", brz.err());
+}
+
+#[test]
+fn baked_map_literal_emits_brz() {
+    // A constant map literal bakes into the Pseudo_MapVar's InitialValue;
+    // this exercises the populated-variant emit path end to end.
+    let src =
+        "map scores: Map<int, int> = { :red => 10, :blue => 20 }\nin t: exec\non t { let g = scores.get(:red) }\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let lr = crate::layout::layout(&r.module);
+    let tc = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
+    let brz = crate::emit::emit_brz(&r.module, &lr, &Default::default(), &tc);
+    assert!(brz.is_ok(), "baked map literal should emit valid brz: {:?}", brz.err());
+    assert!(!brz.unwrap().is_empty(), "brz bytes should be non-empty");
+}
+
+#[test]
 fn emit_value_inside_chip_handler_assigns_outputs() {
     // Init-style chips mint values in an `on` handler and emit them into
     // their outputs. The WS013 unassigned-output check must count `emit`
@@ -946,7 +1015,7 @@ fn entity_setters_compile_to_brz() {
     // Entity Set*/Teleport gates derive their data structs (Vector/Rotator
     // and composite TeleportDestination fields) — the writer must fill
     // defaults for all of them without failing the emit.
-    let src = "in trigger: exec\nin e: entity\nin d: entity\non trigger {\n  \
+    let src = "in trigger: exec\nin e: entity\nin d: teleport\non trigger {\n  \
         e.SetLocation(Vec(1.0, 2.0, 3.0))\n  \
         e.SetRotation(Rotation(0.0, 90.0, 0.0))\n  \
         e.SetVelocity(Vec(0.0, 0.0, 10.0))\n  \

@@ -105,6 +105,16 @@ pub enum Type {
     Controller,
     Brick,
     Prefab,
+    /// Opaque reference to a Zone brick's `AttachedZone` (the `ZoneRef` output,
+    /// consumed by the `Zone` input on zone events / `fillFromZone*`). Like a
+    /// var ref, it is a *reference*, not a value: it can only be wired or
+    /// rerouted — never stored in a variable, selected, or operated on.
+    Zone,
+    /// Opaque reference to a Teleport Destination (the `TeleportDestination`
+    /// gate's `ThisDestination` output, consumed by `Teleport`/`RelativeTeleport`
+    /// destination/source ports). Reference-only, exactly like [`Type::Zone`].
+    /// Teleporting to a raw position uses `SetLocation`, not a teleport point.
+    Teleport,
     Exec,
     Any,
     /// The result of the `Opaque(...)` builtin — an intentionally-untyped
@@ -124,6 +134,92 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// Record / struct; Phase 1 keeps this untyped inner (map of name→Type).
     Record(Vec<(String, Type)>),
+    /// `Map<K, V>` — a keyed variable collection (parallels `Array`). The key
+    /// and value types are tracked for the source language; at the wire level a
+    /// map is an opaque `MapVarRef`, so both sides are `any`-compatible.
+    Map(Box<Type>, Box<Type>),
+}
+
+/// The source-language spelling of a type. Compound variants render by
+/// recursion (`*int`, `int[]`, `Map<string, int>`, …), which is exactly why
+/// this is `Display` and not `AsRef<str>`: those strings are built on the fly,
+/// so there is no `&str` inside the value to borrow. `analysis::type_str` is a
+/// thin `to_string()` alias over this.
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Bool => f.write_str("bool"),
+            Type::Int => f.write_str("int"),
+            Type::Float => f.write_str("float"),
+            Type::String => f.write_str("string"),
+            Type::Vector => f.write_str("vector"),
+            Type::Rotator => f.write_str("rotator"),
+            Type::Quat => f.write_str("quat"),
+            Type::Color => f.write_str("color"),
+            Type::Entity => f.write_str("entity"),
+            Type::Character => f.write_str("character"),
+            Type::Controller => f.write_str("controller"),
+            Type::Brick => f.write_str("brick"),
+            Type::Prefab => f.write_str("prefab"),
+            Type::Zone => f.write_str("zone"),
+            Type::Teleport => f.write_str("teleport"),
+            Type::Exec => f.write_str("exec"),
+            // `Opaque` behaves like `any` everywhere except operator resolution,
+            // and that distinction isn't user-facing.
+            Type::Any | Type::Opaque => f.write_str("any"),
+            Type::Never => f.write_str("never"),
+            Type::Ref(inner) => write!(f, "*{inner}"),
+            Type::Array(inner) => write!(f, "{inner}[]"),
+            Type::Map(k, v) => write!(f, "Map<{k}, {v}>"),
+            Type::Union(opts) => {
+                for (i, o) in opts.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" | ")?;
+                    }
+                    write!(f, "{o}")?;
+                }
+                Ok(())
+            }
+            Type::Tuple(fields) => {
+                f.write_str("(")?;
+                for (i, ft) in fields.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{ft}")?;
+                }
+                f.write_str(")")
+            }
+            // A record whose keys are 0, 1, 2, … is a tuple's field map — render
+            // it as a tuple, matching how it was written.
+            Type::Record(fields) => {
+                let is_tuple = !fields.is_empty()
+                    && fields
+                        .iter()
+                        .enumerate()
+                        .all(|(i, (n, _))| n == &i.to_string());
+                if is_tuple {
+                    f.write_str("(")?;
+                    for (i, (_, ft)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(", ")?;
+                        }
+                        write!(f, "{ft}")?;
+                    }
+                    f.write_str(")")
+                } else {
+                    f.write_str("{")?;
+                    for (i, (n, ft)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(", ")?;
+                        }
+                        write!(f, "{n}: {ft}")?;
+                    }
+                    f.write_str("}")
+                }
+            }
+        }
+    }
 }
 
 /// A literal used to initialise non-wired component properties.
@@ -171,6 +267,8 @@ pub enum Literal {
     /// A list of literals — used to carry an array's constant initial contents
     /// (`array foo: int[] = [1, 2, 3]`) to the emitter.
     Array(Vec<Literal>),
+    /// A map's constant initial entries (`map m = { :a => 1 }`) for the emitter.
+    Map(Vec<(Literal, Literal)>),
     /// External asset reference `$AssetType/AssetName`. The emitter registers it
     /// in the world's external-asset table and writes the resulting index.
     Asset {

@@ -334,21 +334,24 @@ on RoundEnd {
 
 ### InputReader
 ```
-character.InputReader() -> {Forward, Right, Jump}
-InputReader(character: character) -> {Forward, Right, Jump}
+character.InputReader() -> { Forward, Right, Up, Pitch, Yaw, Roll, MouseWheel, PressedC, PressedE, PressedQ, PressedLeftMouse, PressedRightMouse }
+InputReader(character: character) -> { ...same fields... }
 ```
 
-Read player input axes. Receiver on `character`.
+Read player input axes and pressed keys. Receiver on `character`.
 
 Returns a record with fields:
-- `Forward: float` -- Forward/backward axis (-1 to 1)
-- `Right: float` -- Left/right axis (-1 to 1)
-- `Jump: bool` -- Jump button pressed
+- `Forward: float` -- forward/backward movement axis (-1 to 1)
+- `Right: float` -- left/right movement axis (-1 to 1)
+- `Up: float` -- up/down movement axis (-1 to 1)
+- `Pitch: float` / `Yaw: float` / `Roll: float` -- look axes
+- `MouseWheel: float` -- mouse wheel delta
+- `PressedC` / `PressedE` / `PressedQ` / `PressedLeftMouse` / `PressedRightMouse: bool` -- key/button states
 
 ```wirescript
 let input = char.InputReader()
 let moving = input.Forward != 0.0 || input.Right != 0.0
-let jumping = input.Jump
+let interacting = input.PressedE
 ```
 
 ## Controller / Character Conversions (Exec)
@@ -405,11 +408,17 @@ on trigger {
 
 ### DisplayText
 ```
-target.DisplayText(text, ...)
-DisplayText(target: controller, text: any, ...)
+target.DisplayText(text, ...) -> int
+DisplayText(target: controller, text: any, ...) -> int
 ```
 
-Display HUD text to a player. Receiver on `controller`.
+Display HUD text to a player. Receiver on `controller`. Returns the resolved
+`textId` (an `int`) so a later call can update or clear the same on-screen text.
+
+The gate's position/anchor/scale are now composite (2D) properties and are not
+settable through the call form; layout is controlled in-game. The call exposes the
+scalar styling below (plus `fontSize` / `justify` / `easing`, which remain as
+constant-only data fields).
 
 #### DisplayText Parameters
 
@@ -417,40 +426,33 @@ Display HUD text to a player. Receiver on `controller`.
 |-----------|------|----------|-------------|
 | `target` | `controller` | Yes | Player to display to |
 | `text` | `any` | Yes | Text content (auto-converted to string) |
-| `positionX` | `float` | No | Horizontal position |
-| `positionY` | `float` | No | Vertical position |
-| `anchorX` | `float` | No | Horizontal anchor (0-1) |
-| `anchorY` | `float` | No | Vertical anchor (0-1) |
-| `scaleX` | `float` | No | Horizontal scale |
-| `scaleY` | `float` | No | Vertical scale |
 | `angle` | `float` | No | Rotation angle |
-| `fontSize` | `float` | No | Font size |
-| `outlineSize` | `float` | No | Text outline size |
-| `justify` | `int` | No | Text justification — `"Left"` / `"Center"` / `"Right"` (enum name) |
+| `outlineSize` | `int` | No | Text outline size |
+| `outlineColor` | `color` | No | Outline color |
+| `fontColor` | `color` | No | Font color |
+| `shadowColor` | `color` | No | Drop-shadow color |
+| `miteredOutline` | `bool` | No | Sharp (mitered) outline corners |
+| `letterSpacing` | `float` | No | Extra spacing between letters |
+| `lineHeight` | `float` | No | Line-height multiplier |
+| `wrapWidth` | `float` | No | Wrap width (0 = no wrap) |
+| `skew` | `float` | No | Italic-style skew |
+| `zOrder` | `int` | No | Draw order |
 | `lifetime` | `float` | No | Display duration (seconds) |
 | `transition` | `float` | No | Seconds to interpolate to the new state when re-emitted with the same `textId` |
-| `easing` | `int` | No | Interpolation curve for `transition` — `"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"` (enum name) |
 | `textId` | `int` | No | Unique ID for updating text in-place |
+| `fontSize` | `float` | No | Font size (constant only) |
+| `justify` | `int` | No | Justification — `"Left"` / `"Center"` / `"Right"` (constant only) |
+| `easing` | `int` | No | Transition curve — `"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"` (constant only) |
 
 ```wirescript
 on RoundStart {
-  ctrl.DisplayText("Round Start!",
-    positionX = 0.0,
-    positionY = -200.0,
-    fontSize = 48,
-    lifetime = 3.0
-  )
+  ctrl.DisplayText("Round Start!", fontSize = 48, lifetime = 3.0)
 }
 
-// Updating text in-place using textId
+// Update text in-place: capture the id, then re-display with the same textId.
 on trigger {
-  ctrl.DisplayText("Score: ${score}",
-    positionX = 100.0,
-    positionY = -50.0,
-    fontSize = 24,
-    lifetime = 10.0,
-    textId = 1
-  )
+  let id = ctrl.DisplayText("Score: ${score}", fontSize = 24, lifetime = 10.0)
+  ctrl.DisplayText("Score: ${score}", textId = id, transition = 0.25)
 }
 ```
 
@@ -730,12 +732,14 @@ on CharacterSpawned(character) {
 
 ### Damage
 ```
-character.GetDamage() -> float
+character.GetDamage() -> { Damage: float, DamageLimit: float }
 character.SetDamage(damage: float)
 character.IncDamage(amount: float)
 ```
 
 Read, set, or add to a character's accumulated damage. Receiver on `character`.
+`GetDamage()` auto-unwraps to `Damage` where a `float` is expected (e.g.
+`if char.GetDamage() > 50.0`), and `.DamageLimit` gives the death threshold.
 
 ### SetTempPermission
 ```
@@ -909,6 +913,76 @@ let grid = ReadBrickGrid()
 let origin = grid.GetLocation()
 ```
 
+## Gate config properties
+
+Some gate settings are not wire inputs — they are the checkboxes, dropdowns,
+and values in a gate's in-game **settings menu**. Wirescript sets them as
+**optional, constant-only call arguments**; a constant is baked into the gate's
+data, and anything you omit keeps the game default. (A non-constant value is a
+compile error — these can't be wired.)
+
+**Enum values are bare member names**, validated against the game's own enum
+member list at compile time. An unknown name is a `WS028` error; a raw int is
+also accepted (and range-checked).
+
+```wirescript
+let e = Easing(0.0, 1.0, t, function = Bounce, direction = InOut)
+let c = ColorBlend(a, b, t, blendSpace = Oklab, clampAlpha = true)
+p.DisplayText("hi", typeface = Bold, justify = Center, easing = EaseInOut)
+```
+
+**Every** config field is settable — not just the aliases below. In addition to
+the friendly names, each gate exposes each `bool`/`int`/`float`/`string`/`enum`
+settings-menu field under its **raw game name**, so any of the ~60 config gates
+works even without a curated alias:
+
+```wirescript
+SweepSimple(500.0, Direction = X_Negative, bOnlyHitPlayerBodyParts = true)
+p.DisplayText("hi", FontSize = 40, Typeface = Bold, Justification = Center)
+```
+
+Completion offers these raw field names, and hovering one shows its type (and
+enum members). The friendly alias and the raw name set the same field, so pick
+either; the table below lists the ergonomic aliases for the common gates.
+
+Config attributes by gate:
+
+| Gate | Config attributes |
+|------|-------------------|
+| `Sweep` | `bodyPartsOnly` |
+| `SweepSimple` | `direction` (EBrickDirection), `spreadTowardCenter`, `detectBricks`, `detectPlayers1`–`4`, `bodyPartsOnly`, `detectPhysics`, `detectMap` |
+| `Blend` | `clampAlpha` |
+| `ColorBlend` | `blendSpace` (EBRColorSpace), `clampAlpha` |
+| `Slerp` | `shortestPath`, `clampAlpha` |
+| `Easing` | `function` (EBREasingFunction), `direction` (EBREasingDirection) |
+| `ConvertColor` | `fromSpace`, `toSpace` (EBRColorSpace) |
+| `DisplayText` | `fontSize`, `justify` (EBRDisplayTextJustification), `easing` (EBRDisplayTextEasing), `typeface` (EBRTextTypeface), `font` (a `$Font/…` asset ref) |
+| `GetAim` | `localAim` |
+| `AddInventoryItemAdv` / `SetInventoryItemAdv` | `overrideColors`, `meshColors` (a color array), `ammoOverride` |
+
+Enum member names: **EBRColorSpace** `Linear Srgb Oklab Hsv`; **EBREasingFunction**
+`Linear Sine Quad Cubic Quart Quint Expo Circ Back Elastic Bounce`;
+**EBREasingDirection** `In Out InOut`; **EBRTextTypeface** `Regular Bold Italic BoldItalic`;
+**EBRDisplayTextJustification** `Left Center Right`; **EBRDisplayTextEasing**
+`Linear EaseIn EaseOut EaseInOut`; **EBrickDirection** `X_Positive X_Negative
+Y_Positive Y_Negative Z_Positive Z_Negative`.
+
+## Clock (Event)
+
+The Clock gate emits a periodic execution pulse forever; it reads as an event.
+`interval` and `enabled` are **wire inputs** — they may be constants (baked) or
+dynamic (a variable wires in), so you can toggle the clock at runtime. `pulseOn`,
+`onTime`, and `offTime` are constant-only settings-menu config. The handler body
+runs on each pulse.
+
+```wirescript
+in running: bool
+var ticks: int = 0
+on Clock(interval = 2.0, enabled = running, pulseOn = false, onTime = 0.5, offTime = 0.5) {
+  ticks = ticks + 1
+}
+```
+
 ## ChatCommand (Event)
 
 Registers a chat command. The trigger takes both **config args** (the command
@@ -937,6 +1011,61 @@ on ChatCommand("wave", Description = "Wave at everyone") {
   // no bindings needed
 }
 ```
+
+## Custom Events
+
+A named, cross-gate event channel that carries up to **8 data values**. A
+`SendCustomEvent` pulses every `CustomEvent` receiver listening on the same name.
+
+### SendCustomEvent (Exec)
+
+`SendCustomEvent(name, data1, … data8)` — `name` is the channel (a string; a
+constant literal is baked, a variable wires in), followed by up to 8 optional
+data values of any type. Fires all matching receivers.
+
+```wirescript
+on hit {
+  SendCustomEvent("damage", 7, attacker)   // send an int + a character
+}
+```
+
+### on CustomEvent (Event)
+
+The receiver's first argument is the channel name (positional), and the
+remaining params are the **typed data outputs**. The type annotations are
+**required** — the game stores each data slot as a typed value, not `any`, so a
+receiver param without a type is a **`WS029`** lint. Unused slots default to
+`float`. `sameOwner` (the `bOnlyReceiveFromSameOwner` config) restricts it to
+sends from the same owner.
+
+```wirescript
+var lastDamage: int = 0   // a top-level var is already persistent — no `static`
+
+on CustomEvent("damage", amount: int, attacker: character) {
+  lastDamage = amount
+  attacker.ShowStatusMessage("You took ${amount} damage")
+}
+```
+
+> **One-tick delay.** A `CustomEvent` receiver fires on the **tick after** the
+> `SendCustomEvent` runs — the pulse is delivered on the next frame, not
+> synchronously within the sender's exec chain. Anything that must observe the
+> event's effect immediately has to account for that one-tick latency (and a
+> send → receive → send round trip costs a tick each hop).
+
+> **Signature checking (`WS030`).** When a `SendCustomEvent` targets a **constant**
+> channel name, the compiler compares each data value's wire type against the matching
+> `on CustomEvent("name", …)` receiver's declared param types and warns (`WS030`) on a
+> mismatch — e.g. sending a `float` where the receiver declared `int`. Types that share a
+> wire variant are interchangeable and never flagged (any two entity kinds —
+> `character`/`entity`/`controller`/… — are all the same `Object` variant). A **dynamic**
+> channel name (a variable rather than a literal) can reach any receiver, so those sends
+> are not checked. In the editor, **go-to-definition** on a send's channel-name string
+> jumps to the receiver.
+>
+> A *non-constant* data value is still typed as `float` on the wire at emit rather than
+> from the value's real type — full end-to-end typing waits on generics. For now the
+> receiver's annotations are the source of truth, and constant sends carry their type.
 
 ## Prefab Spawning (Exec)
 
@@ -987,6 +1116,24 @@ output bundle (content-addressed at `Prefabs/Uploads/<hash>.brz`), so the
 compiled program carries its prefab. See
 [Prefab References](expressions.md#prefab-references).
 
+### SpawnExplosion
+
+Spawns an explosion of a given projectile/explosion class.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectileType` | class ref | Yes | The explosion/projectile class — a `$…` asset reference (or a wired value) |
+| `instigator` | `entity` | No | The character/entity that caused it (kill credit, etc.) |
+| `offset` | `vector` | No | Spawn position offset |
+| `scale` | `float` | No | Explosion scale multiplier |
+| `damage` | `float` | No | Damage multiplier |
+
+```wirescript
+on hit {
+  SpawnExplosion($BRWeaponProjectile/Grenade, instigator = attacker, scale = 2.0, damage = 1.5)
+}
+```
+
 ## Raycasting (Exec)
 
 ### Sweep
@@ -999,7 +1146,9 @@ compiled program carries its prefab. See
 | `radius` | `float` | No | Sphere radius (0 = line trace) |
 | `relative` | `bool` | No | Interpret `origin`/`direction` in the owning grid's local frame |
 | `ignore` | `entity` | No | A single entity to exclude from hits |
+| `ignoreList` | `entity[]` | No | An array var of additional entities to exclude (on top of `ignore`) |
 | `ignoreOwningGrid` | `bool` | No | Exclude the grid this gate sits on (prevents self-hits) |
+| `collisionChannel` | `int` | No | Collision channel to sweep on (`EBRSweepCollisionChannel`: 0 Physics, 1 Weapon, 2 Interaction, 3 Tool, 4–7 Player1–4, 8 NoAdditionalRestriction) |
 | `detectBricks` | `bool` | No | Detect brick grids, including spawned prefabs — **default false** |
 | `detectMap` | `bool` | No | Detect the static world / environment — **default false** |
 | `detectPhysics` | `bool` | No | Detect physics-simulating objects — **default false** |
@@ -1091,3 +1240,147 @@ let r = Random(0, 10, exec = someTrigger)
 ```
 
 This wires `someTrigger` as the exec input of the gate, bypassing the requirement for an enclosing handler context.
+
+## Newer builtins
+
+Player-reference gates (`DisplayText`, `ShowChatMessage`, `HasRole`, leaderboard and
+team setters, the join/left/chat events, `ControllerOf`/`CharacterOf`) target the
+persistent player-state on the current build. The `controller` type is unchanged and
+still wires straight into them — existing scripts keep working.
+
+### Entity (Exec)
+```
+entity.GetSpeed() -> float                    // scalar speed
+entity.GetVelocityAtPoint(point: vector) -> vector
+entity.GetEntityTeam() -> entity              // team of any entity (grid/prefab)
+entity.SetEntityTeam(team: entity)
+entity.IsFrozen() -> bool                     // whether the entity / brick grid is frozen
+entity.DestroySpawned()                       // despawn a spawned entity
+entity.DestroySpawnedPrefab()                 // despawn a spawned prefab
+```
+
+### Character ammo (Exec)
+```
+character.GetAmmo(resource: entity) -> int
+character.GrantAmmo(resource: entity, amount: int)
+character.SetAmmo(resource: entity, amount: int)
+character.GetInventoryEntry(slot: int) -> { Item, BrickAsset, EntityType }
+character.GetCurrentInventorySlot() -> int
+character.GetWeaponChamberAmmo(resource: entity, slot: int) -> int
+character.IncWeaponChamberAmmo(resource: entity, slot: int, amount: int)
+character.SetWeaponChamberAmmo(resource: entity, slot: int, amount: int)
+```
+
+The `CharacterFiredWeapon(character, direction, start)` event fires when a player
+fires a weapon (`direction`/`start` are vectors). `Sweep`/`SweepSimple` results also
+carry a `HitColor` field (the color of the surface hit).
+
+### Date / time (Pure)
+```
+GetUnixTime() -> int
+FormatDate(unixTime: int, format: string, useUTC?: bool) -> { Output: string, Success: bool }
+```
+
+### Value conversions (Pure)
+```
+Remap(value, inMin, inMax, outMin, outMax) -> float   // rescale a value between ranges
+LogicalShiftRight(a: int, b: int) -> int              // logical (unsigned) >>
+EnumToInteger(value) -> int
+IntegerToEnum(value: int, wrap?: bool)
+ItemToPickup(item: entity) -> entity                  // pickup asset for an item
+color.ConvertColor(fromSpace?: int, toSpace?: int) -> color
+"A".ToCharCode() -> { Codepoint: int, Success: bool }
+FromCharCode(codepoint: int) -> { Character: string, Success: bool }
+```
+
+`ParseInt` / `ParseNumber` likewise now expose a `Success` flag: they auto-unwrap to
+their parsed `Value` in arithmetic/comparisons (`ParseInt(s) == 5`), and `.Success` is
+`false` when the string wasn't a valid number.
+
+### Self transform + simple raycast (Exec)
+```
+GetOwnTransform() -> { Location: vector, Rotation: rotator }
+SweepSimple(distance: float, radius?: float, spreadConeAngle?: float)
+  -> { HitDistance, HitEntity, HitLocation, HitNormal, Hit, Miss }
+```
+
+### Zone array fills (Exec) — array methods
+```
+arr.fillFromZoneEntities(zone, tagFilter?)   // entities inside a zone
+arr.fillFromZonePlayers(zone, tagFilter?)    // players inside a zone
+arr.sortMultiple(other, ..., descending?)    // sort this + up to 7 parallel arrays together
+```
+
+The character/entity zone enter/leave events also accept a `tagFilter =` argument
+(alongside `zone =`) to restrict them to tagged entities.
+
+## Generic type syntax
+
+Types may be written in generic form:
+
+```wirescript
+array nums: Array<int> = [1, 2, 3]   // same as int[]
+mod inc(v: Ref<int>) { v = v + 1 }   // same as *int
+```
+
+`Array<V>` and `Ref<V>` are exact aliases of `V[]` and `*V`.
+
+## Maps (`map`)
+
+A `map` is a keyed variable collection (the `MapVar` gate family), declared with the
+generic `Map<K, V>` type. Keys are `int`, `string`, or an entity/object reference;
+values may be any wire-storable scalar (int/float/bool/string/vector/rotator/quat/
+color/object). Maps always start empty and are populated at runtime.
+
+Either keyword works — `map m: Map<K, V>` or `var m: Map<K, V>` are equivalent (just as
+`array a: T[]` and `var a: T[]` are).
+
+```wirescript
+map scores: Map<string, int>
+array names: string[]
+
+on tick {
+  scores.set("alice", 10)                 // insert / overwrite
+  let g = scores.get("alice")             // { Value, Found } — auto-unwraps to Value
+  if g.Found { PrintToConsole("${g.Value}") }
+  if scores.has("bob") { ... }
+  scores.remove("bob")                    // -> bool (was present)
+  let n = scores.length()
+  scores.keys(names)                      // fill an array with the keys
+  scores.clear()
+}
+```
+
+Methods (exec context, like array methods): `set(key, value)`, `get(key)`,
+`has(key)`, `remove(key)`, `clear()`, `copyFrom(otherMap)`, `length()`,
+`keys(destArray)`, `values(destArray)`.
+
+### Map literals
+
+A `map`/`var` of `Map<K, V>` type can be given literal contents with `{ ... }`.
+Entries use `=>` for any key expression, or `:` for a string / atom / int
+*literal* key (or a bracketed `[expr]` computed key):
+
+```wirescript
+map m: Map<int, int>    = { :red => 10, 7 => 0 }    // arrow -- any key
+map s: Map<string, int> = { "red": 1, "blue": 2 }    // colon -- string literal key
+map a: Map<int, int>    = { :red: 1, :blue: 2 }      // colon -- atom literal key
+on tick { m = { [runtimeKey] => x } }                // computed key -- desugars
+```
+
+A **constant** map literal (every key and value a compile-time constant) in a
+`map`/`var` initializer bakes straight into the map at rest -- no runtime
+gates, the map loads pre-populated. An initializer with any non-constant
+entry doesn't bake -- its entries are dropped (with a compiler warning) and
+the map loads empty; build it at runtime instead. Inside an exec handler,
+`m = { ... }` (or a literal with runtime keys/values) desugars to `clear()`
+followed by one `set(key, value)` per entry, in source order -- the same
+clear-then-populate shape as [array literal assignment](statements.md).
+
+`{ foo: 1 }` with a **bare identifier** key is a record literal, not a map --
+`:` only introduces a map key for a string/atom/int literal or a `[expr]`
+computed key. Use `foo => 1` or `[foo]: 1` to key a map by an identifier's
+value.
+
+Assigning a whole map from another map variable (`m = m2`) is not supported
+-- there is no whole-map-copy gate. Use `m.copyFrom(m2)` instead.

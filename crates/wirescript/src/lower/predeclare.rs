@@ -8,6 +8,7 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         // with_nofold wrap — honor the decl's @nofold during registration.
         TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
         TopDecl::Array(a) => pre_declare_array(ctx, a),
+        TopDecl::Map(m) => pre_declare_map(ctx, m),
         TopDecl::Buffer(b) => pre_declare_buffer(ctx, b),
         TopDecl::In(i) => pre_declare_input(ctx, i),
         TopDecl::Out(o) => ctx.with_nofold(o.no_fold, |ctx| {
@@ -50,6 +51,7 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
                     Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
                     Stmt::Array(a) => pre_declare_array(ctx, a),
+                    Stmt::Map(m) => pre_declare_map(ctx, m),
                     Stmt::In(i) => pre_declare_input(ctx, i),
                     Stmt::OutBinding(o) if o.side.is_some() => {
                         report_non_root_side(ctx, &o.range);
@@ -166,6 +168,17 @@ pub(super) fn type_of_type_expr(t: &TypeExpr) -> Type {
                 .map(|f| (f.name.clone(), type_of_type_expr(&f.typ)))
                 .collect(),
         ),
+        TypeExpr::Generic { name, args, .. } => match (name.as_str(), args.as_slice()) {
+            // `Array<V>` / `Ref<V>` are desugared in the parser; these remain as
+            // an alternate spelling in case a Generic reaches here directly.
+            ("Array", [v]) => Type::Array(Box::new(type_of_type_expr(v))),
+            ("Ref", [v]) => Type::Ref(Box::new(type_of_type_expr(v))),
+            ("Map", [k, v]) => Type::Map(
+                Box::new(type_of_type_expr(k)),
+                Box::new(type_of_type_expr(v)),
+            ),
+            _ => Type::Any,
+        },
     }
 }
 
@@ -278,8 +291,8 @@ fn eval_const_unop(operator: &str, v: Literal) -> Option<Literal> {
 /// only ever turn a rejected program into a working one, never change the
 /// meaning of one that already compiles.
 fn eval_const_binop(operator: &str, l: Literal, r: Literal) -> Option<Literal> {
-    use Literal::{Bool, Float, Int, String as Str};
     use crate::catalog::operators::op;
+    use Literal::{Bool, Float, Int, String as Str};
 
     // String concatenation is the one non-numeric binary fold.
     if let (Str(a), Str(b)) = (&l, &r) {
@@ -388,9 +401,7 @@ fn expr_to_literal_impl(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
         Expr::Ident { name, .. } => env?.get(name).cloned(),
         Expr::BinOp {
             op, left, right, ..
-        } if env.is_some() => {
-            eval_const_binop(op, expr_to_literal(left)?, expr_to_literal(right)?)
-        }
+        } if env.is_some() => eval_const_binop(op, expr_to_literal(left)?, expr_to_literal(right)?),
         Expr::UnOp { op, operand, .. }
             if env.is_some() && op != crate::catalog::operators::op::NEG =>
         {
@@ -398,6 +409,7 @@ fn expr_to_literal_impl(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
         }
         // -- Always-constant forms (unchanged). --
         Expr::IntLit { value, .. } => Some(Literal::Int(*value)),
+        Expr::AtomLit { value, .. } => Some(Literal::Int(*value)),
         Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
         Expr::BoolLit { value, .. } => Some(Literal::Bool(*value)),
         Expr::StringLit { value, .. } => Some(Literal::String(value.clone())),
@@ -469,6 +481,248 @@ fn array_elem_literal(el: &ArrayElem, env: &ConstEnv) -> Option<Literal> {
     match el {
         ArrayElem::Item(e) => expr_to_literal_in(e, env),
         ArrayElem::Spread(_) => None,
+    }
+}
+
+/// Fold a constant `ColorSRGB(r, g, b, a)` call to a `Literal::Color` — sRGB u8
+/// with NO gamma re-encoding (Brickadia brick colours are stored sRGB-direct).
+/// Only the four-arg `ColorSRGB` form (0–255 ints, the natural sRGB source) is
+/// accepted; anything else — including the linear `Color(..)` constructor,
+/// whose 0–1 components would need an ambiguous gamma conversion — folds to
+/// `None`, so the caller reports a clean error instead of guessing bytes.
+pub(crate) fn fold_srgb_color(e: &Expr) -> Option<Literal> {
+    let Expr::Call { callee, args, .. } = e else {
+        return None;
+    };
+    let Expr::Ident { name, .. } = callee.as_ref() else {
+        return None;
+    };
+    if name != "ColorSRGB" {
+        return None;
+    }
+    let mut nums: Vec<i64> = Vec::with_capacity(args.len());
+    for a in args {
+        let CallArg::Positional(arg) = a else {
+            return None;
+        };
+        match expr_to_literal(arg)? {
+            Literal::Int(n) => nums.push(n),
+            Literal::Float(f) => nums.push(f as i64),
+            _ => return None,
+        }
+    }
+    let [r, g, b, a] = nums.as_slice() else {
+        return None;
+    };
+    let clamp_u8 = |n: i64| n.clamp(0, 255) as u8;
+    Some(Literal::Color {
+        r: clamp_u8(*r),
+        g: clamp_u8(*g),
+        b: clamp_u8(*b),
+        a: clamp_u8(*a),
+    })
+}
+
+/// Fold a `meshColors` argument — an array literal of constant `ColorSRGB`
+/// colours — to `Literal::Array(Literal::Color…)` for a gate's `MeshColors:
+/// Color[]` data field. Returns `None` (a clean call-site error) if any element
+/// is non-constant or not a `ColorSRGB(..)`; spreads never fold.
+pub(crate) fn fold_mesh_colors(e: &Expr) -> Option<Literal> {
+    let Expr::Array { elements, .. } = e else {
+        return None;
+    };
+    let mut colors = Vec::with_capacity(elements.len());
+    for el in elements {
+        let ArrayElem::Item(item) = el else {
+            return None;
+        };
+        colors.push(fold_srgb_color(item)?);
+    }
+    Some(Literal::Array(colors))
+}
+
+/// Fold an `ammoOverride` argument — a record literal `{ overrideStartingAmmo:
+/// bool, resources: [{ loaded: int, reserve: int }] }` — for a gate's
+/// `WeaponAmmoOverride` nested-struct data field. Encoded in existing `Literal`
+/// variants (no new variant is introduced):
+/// `Array[ Bool(overrideStartingAmmo), Array[ Array[Int(loaded), Int(reserve)],
+/// … ] ]`; the emitter decodes this exact shape. Returns `None` on any
+/// non-constant value or unexpected field.
+pub(crate) fn fold_ammo_override(e: &Expr) -> Option<Literal> {
+    let Expr::RecordLit { fields, .. } = e else {
+        return None;
+    };
+    let mut override_starting = None;
+    let mut resources: Option<Vec<Literal>> = None;
+    for f in fields {
+        let crate::ast::RecordLitField::Named { name, value, .. } = f else {
+            return None;
+        };
+        match name.as_str() {
+            "overrideStartingAmmo" => {
+                let Literal::Bool(b) = expr_to_literal(value)? else {
+                    return None;
+                };
+                override_starting = Some(b);
+            }
+            "resources" => {
+                let Expr::Array { elements, .. } = value else {
+                    return None;
+                };
+                let mut rs = Vec::with_capacity(elements.len());
+                for el in elements {
+                    let ArrayElem::Item(item) = el else {
+                        return None;
+                    };
+                    rs.push(fold_resource_amount(item)?);
+                }
+                resources = Some(rs);
+            }
+            _ => return None,
+        }
+    }
+    // Both fields are required. A missing one is a user mistake — reject it (the
+    // caller reports WS028 with the expected shape) rather than silently
+    // defaulting `overrideStartingAmmo` to false / `resources` to empty. An
+    // explicit `resources: []` is still accepted (the key is present).
+    Some(Literal::Array(vec![
+        Literal::Bool(override_starting?),
+        Literal::Array(resources?),
+    ]))
+}
+
+/// One `{ loaded, reserve }` resource of `ammoOverride.resources`, folded to
+/// `Array[Int(loaded), Int(reserve)]` (see [`fold_ammo_override`]).
+fn fold_resource_amount(e: &Expr) -> Option<Literal> {
+    let Expr::RecordLit { fields, .. } = e else {
+        return None;
+    };
+    let mut loaded = None;
+    let mut reserve = None;
+    for f in fields {
+        let crate::ast::RecordLitField::Named { name, value, .. } = f else {
+            return None;
+        };
+        let Literal::Int(n) = expr_to_literal(value)? else {
+            return None;
+        };
+        match name.as_str() {
+            "loaded" => loaded = Some(n),
+            "reserve" => reserve = Some(n),
+            _ => return None,
+        }
+    }
+    // Both fields are required — a missing `loaded`/`reserve` is rejected (WS028)
+    // rather than silently baked as 0.
+    Some(Literal::Array(vec![
+        Literal::Int(loaded?),
+        Literal::Int(reserve?),
+    ]))
+}
+
+/// Coerce a constant literal to a declared scalar type, matching the gate
+/// coercion laws the array bake path uses (string→bool via `!= ""`, and
+/// numeric int/float/bool normalization). Identity for anything already the
+/// right kind or with no defined coercion.
+///
+/// Without this, a coercion-mixed map entry (e.g. `Map<int, bool> = { 1 =>
+/// "on" }`) would bake its RAW folded literal (`String("on")`), which emit's
+/// `wire_map_variant_from_literals` then can't match against the declared
+/// value kind and silently zero-falls-back to `false` — a typechecked
+/// program baking the wrong data.
+fn coerce_literal_to_type(lit: Literal, ty: &Type) -> Literal {
+    match ty {
+        Type::Int => match lit {
+            Literal::Int(n) => Literal::Int(n),
+            Literal::Float(f) => Literal::Int(f as i64),
+            Literal::Bool(b) => Literal::Int(b as i64),
+            other => other,
+        },
+        Type::Float => match lit {
+            Literal::Float(f) => Literal::Float(f),
+            Literal::Int(n) => Literal::Float(n as f64),
+            Literal::Bool(b) => Literal::Float(b as i64 as f64),
+            other => other,
+        },
+        Type::Bool => match lit {
+            Literal::Bool(b) => Literal::Bool(b),
+            Literal::Int(n) => Literal::Bool(n != 0),
+            Literal::String(s) => Literal::Bool(!s.is_empty()), // the `!= ""` law
+            other => other,
+        },
+        // string / vector / rotator / quat / color / object: no cross-coercion here.
+        _ => lit,
+    }
+}
+
+/// Fold a map-literal entry to a `(key, value)` literal pair coerced to the
+/// declared `key_ty`/`val_ty`, or `None` if either side isn't a compile-time
+/// constant.
+fn map_entry_literal(
+    e: &crate::ast::MapLitEntry,
+    env: &ConstEnv,
+    key_ty: &Type,
+    val_ty: &Type,
+) -> Option<(Literal, Literal)> {
+    Some((
+        coerce_literal_to_type(expr_to_literal_in(&e.key, env)?, key_ty),
+        coerce_literal_to_type(expr_to_literal_in(&e.value, env)?, val_ty),
+    ))
+}
+
+/// Bake a constant map-literal initializer (`map m = {...}` / `var m:
+/// Map<K,V> = {...}`) into `properties` as an `InitialValue` (`Literal::Map`)
+/// — zero runtime gates, exactly like the array path bakes `Literal::Array`.
+/// Shared by [`pre_declare_map`] and the `Map<K, V>` branch of
+/// [`pre_declare_var`] since both bake the same way. Non-constant entries
+/// can't bake at a (pure) decl: the map starts empty and a warning is
+/// raised (Task 8 handles the exec-context desugar for `m = {…}`).
+///
+/// `key_ty`/`val_ty` are the declared `Map<K, V>` types — every entry is
+/// coerced to them at fold time (see [`coerce_literal_to_type`]) so the baked
+/// `Literal::Map` is already correct, not a raw literal emit has to guess at.
+fn bake_map_init(
+    ctx: &mut LowerCtx,
+    properties: &mut HashMap<crate::intern::Sym, Literal>,
+    name: &str,
+    init: &Option<Expr>,
+    key_ty: &Type,
+    val_ty: &Type,
+) {
+    let Some(Expr::MapLit { entries, .. }) = init else {
+        return;
+    };
+    // Object/asset-family keys have no literal representation — `key_of`
+    // bakes every one as `Object(None)`, so two or more entries would
+    // collapse onto the same null key (a corrupt map with duplicate keys).
+    // Fall to the non-constant path instead: warn + start empty.
+    if matches!(
+        key_ty,
+        Type::Entity | Type::Character | Type::Controller | Type::Brick | Type::Prefab
+    ) {
+        ctx.warn(
+            format!(
+                "'{name}' initializer has object/asset-typed keys, which can't bake as literals — it starts empty; assign entries inside an exec handler"
+            ),
+            init.as_ref().unwrap().range(),
+        );
+        return;
+    }
+    let pairs: Vec<(Literal, Literal)> = entries
+        .iter()
+        .filter_map(|en| map_entry_literal(en, &ctx.const_env, key_ty, val_ty))
+        .collect();
+    if pairs.len() == entries.len() {
+        properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
+    } else {
+        // Non-constant entries can't bake at a (pure) decl; the map starts
+        // empty. (Task 8 handles the exec-context desugar for `m = {…}`.)
+        ctx.warn(
+            format!(
+                "'{name}' initializer has non-constant entries — they are dropped here; assign them inside an exec handler"
+            ),
+            init.as_ref().unwrap().range(),
+        );
     }
 }
 
@@ -566,6 +820,40 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         return;
     }
 
+    // `var m: Map<K, V>` is a map — desugar to a MapVar gate (same as a
+    // `map m: Map<K, V>` declaration) so the map methods work. A constant
+    // `= {...}` initializer bakes via `bake_map_init`, same as `map`.
+    if let Type::Map(key_ty, value_ty) = &inner_type {
+        let (key_ty, value_ty) = (key_ty.as_ref().clone(), value_ty.as_ref().clone());
+        let mut properties = HashMap::default();
+        properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
+        bake_map_init(ctx, &mut properties, &d.name, &d.init, &key_ty, &value_ty);
+        let node_id = ctx.add_gate(AddNodeOpts {
+            gate_class: gc::PSEUDO_MAP_VAR,
+            source_range: d.range.clone(),
+            ports: GateIO {
+                inputs: vec![],
+                outputs: vec![PortSpec {
+                    name: *sym::MAP_VAR_REF,
+                    ty: Type::Ref(Box::new(inner_type.clone())),
+                }],
+            },
+            properties,
+            note: None,
+            ..Default::default()
+        });
+        ctx.scope.insert(
+            &d.name,
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type,
+                get_node_for_handler: None,
+                storage: VarStorage::Map,
+            }),
+        );
+        return;
+    }
+
     let init_lit = d
         .init
         .as_ref()
@@ -639,7 +927,9 @@ pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
                 ty: inner_type.clone(),
             }],
         },
-        properties: [(*sym::TICKS_TO_WAIT, Literal::Int(1))].into_iter().collect(),
+        properties: [(*sym::TICKS_TO_WAIT, Literal::Int(1))]
+            .into_iter()
+            .collect(),
         note: None,
         ..Default::default()
     });
@@ -700,6 +990,48 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     );
 }
 
+/// `map name: Map<K, V>` — create the backing `Pseudo_MapVar` gate (exposing a
+/// `MapVarRef`) and bind the name as a `VarStorage::Map` whose `inner_type`
+/// carries the whole `Type::Map(K, V)`. Mirrors [`pre_declare_array`].
+pub(super) fn pre_declare_map(ctx: &mut LowerCtx, d: &crate::ast::MapDecl) {
+    let key_type = type_of_type_expr(&d.key_type);
+    let value_type = type_of_type_expr(&d.value_type);
+    let map_type = Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone()));
+    let mut properties = HashMap::default();
+    properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
+    bake_map_init(
+        ctx,
+        &mut properties,
+        &d.name,
+        &d.init,
+        &key_type,
+        &value_type,
+    );
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::PSEUDO_MAP_VAR,
+        source_range: d.range.clone(),
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec {
+                name: *sym::MAP_VAR_REF,
+                ty: Type::Ref(Box::new(map_type.clone())),
+            }],
+        },
+        properties,
+        note: None,
+        ..Default::default()
+    });
+    ctx.scope.insert(
+        &d.name,
+        Binding::Var(VarRecord {
+            node_id,
+            inner_type: map_type,
+            get_node_for_handler: None,
+            storage: VarStorage::Map,
+        }),
+    );
+}
+
 /// Push the WS023 "annotation on a non-root port" diagnostic. Shared so the
 /// message text has a single source (apply_port_side and the anon-chip output
 /// path both use it).
@@ -743,10 +1075,8 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
                 .insert(*sym::NAME_LABEL, Literal::String(label.clone()));
         }
     }
-    ctx.scope.insert(
-        &d.name,
-        Binding::Input(NodeRecord { node_id, ty: t }),
-    );
+    ctx.scope
+        .insert(&d.name, Binding::Input(NodeRecord { node_id, ty: t }));
 }
 
 pub(super) fn pre_declare_output(

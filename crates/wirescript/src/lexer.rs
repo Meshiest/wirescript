@@ -20,6 +20,8 @@ pub enum TokenKind {
     /// the raw contents; the parser re-tokenises the embedded expressions.
     StrInterp,
     Ident,
+    /// `:name` atom literal. `value = Str(name)` (without the leading `:`).
+    Atom,
     Kw,
     LParen,
     RParen,
@@ -75,7 +77,7 @@ pub enum InterpPart {
 }
 
 pub const KEYWORDS: &[&str] = &[
-    "var", "array", "buffer", "chip", "fn", "on", "in", "out", "emit", "let", "if", "else",
+    "var", "array", "map", "buffer", "chip", "fn", "on", "in", "out", "emit", "let", "if", "else",
     "then", "match", "return", "true", "false", "ref", "open", "mod", "import", "from", "as",
     "static", "type", "await",
 ];
@@ -262,6 +264,16 @@ impl<'a> Lexer<'a> {
                 self.emit(TokenKind::Annotation, text, start, end, None);
                 continue;
             }
+            // `:name` atom — only in value position. A `:` that follows a
+            // value-completing token (an annotation / record-field / map-key
+            // separator) stays a plain Colon.
+            if c == ':'
+                && self.peek_char(1).is_some_and(is_ident_start)
+                && !self.prev_tok_completes_value()
+            {
+                self.read_atom();
+                continue;
+            }
             if self.read_punct() {
                 continue;
             }
@@ -374,6 +386,44 @@ impl<'a> Lexer<'a> {
         let end = self.snapshot();
         let text = self.source[start.offset..end.offset].to_string();
         self.emit(TokenKind::AssetRef, text, start, end, Some(TokenValue::Str(path)));
+    }
+
+    /// True when the previously emitted token completes a value, so a following
+    /// `:` is an annotation / field / map-key separator rather than an atom.
+    fn prev_tok_completes_value(&self) -> bool {
+        match self.tokens.last() {
+            Some(t) => matches!(
+                t.kind,
+                TokenKind::Ident
+                    | TokenKind::Str
+                    | TokenKind::StrInterp
+                    | TokenKind::Int
+                    | TokenKind::Float
+                    | TokenKind::Atom
+                    | TokenKind::RParen
+                    | TokenKind::RBracket
+                    | TokenKind::RBrace
+            ) || (t.kind == TokenKind::Kw && matches!(t.text.as_str(), "true" | "false")),
+            None => false,
+        }
+    }
+
+    fn read_atom(&mut self) {
+        let start = self.snapshot();
+        self.advance(); // ':'
+        let name_start = self.pos;
+        while self.pos < self.bytes.len() {
+            let c = self.bytes[self.pos] as char;
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let name = self.source[name_start..self.pos].to_string();
+        let end = self.snapshot();
+        let text = self.source[start.offset..end.offset].to_string();
+        self.emit(TokenKind::Atom, text, start, end, Some(TokenValue::Str(name)));
     }
 
     fn read_block_comment(&mut self) {
@@ -1091,5 +1141,44 @@ mod tests {
             "got: {}",
             r.diagnostics[0].message
         );
+    }
+
+    #[test]
+    fn atom_in_value_position_lexes() {
+        use TokenKind::*;
+        // After `=`, `(`, `,`, `[`, `=>` an ident-colon is an atom.
+        let r = lex("let x = :red", "t");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let a = r.tokens.iter().find(|t| t.kind == Atom).expect("atom token");
+        assert_eq!(a.text, ":red");
+        match &a.value {
+            Some(TokenValue::Str(s)) => assert_eq!(s, "red"),
+            other => panic!("expected atom name, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn atom_allows_hyphens() {
+        let r = lex("f(:my-text)", "t");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let a = r.tokens.iter().find(|t| t.kind == TokenKind::Atom).unwrap();
+        assert_eq!(a.text, ":my-text");
+    }
+
+    #[test]
+    fn colon_after_value_stays_a_colon() {
+        use TokenKind::*;
+        // Type annotation, record field, and map string/atom key separators must
+        // NOT become atoms.
+        for src in ["var x:int = 0", "{ foo:1 }", "{ \"k\":v }", "{ :red:1 }"] {
+            let r = lex(src, "t");
+            assert!(
+                r.tokens.iter().any(|t| t.kind == Colon),
+                "`{src}` should keep a Colon token"
+            );
+        }
+        // `var x:int` produces NO atom.
+        let r = lex("var x:int = 0", "t");
+        assert!(!r.tokens.iter().any(|t| t.kind == TokenKind::Atom));
     }
 }

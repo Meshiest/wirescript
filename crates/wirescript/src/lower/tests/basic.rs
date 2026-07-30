@@ -935,7 +935,8 @@ fn every_canonical_array_method_lowers() {
         a.clear()\n  let i = a.find(3)\n  let g = a.get(0)\n  a.sort()\n  a.reverse()\n  a.shuffle()\n  a.swap(0, 1)\n  \
         a.fill(3)\n  a.resize(4, 0)\n  let s = a.sum()\n  let lo = a.min()\n  let hi = a.max()\n  \
         let av = a.average()\n  b.append(a)\n  b.copyFrom(a)\n  b.slice(a, 0, 2)\n  \
-        a.fillFromPlayers()\n  a.fillFromTeam(ent)\n}";
+        a.fillFromPlayers()\n  a.fillFromTeam(ent)\n  a.fillFromZoneEntities(ent)\n  \
+        a.fillFromZonePlayers(ent)\n  a.sortMultiple(b)\n}";
     let r = compile(src);
     assert_no_errors(&r);
     assert!(
@@ -951,6 +952,266 @@ fn every_canonical_array_method_lowers() {
             m.name
         );
     }
+}
+
+#[test]
+fn every_canonical_map_method_lowers() {
+    // Exercises every method in MAP_METHODS; a table entry the dispatch can't
+    // handle would lower to `_Unsupported` and fail here.
+    let src = "map m: Map<string, int>\nmap m2: Map<string, int>\narray keys: string[]\n\
+        array vals: int[]\nin t: exec\non t {\n  \
+        m.set(\"a\", 1)\n  let g = m.get(\"a\")\n  let h = m.has(\"a\")\n  let rm = m.remove(\"a\")\n  \
+        let n = m.length()\n  m.copyFrom(m2)\n  m.keys(keys)\n  m.values(vals)\n  m.clear()\n}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "a map method lowered to _Unsupported");
+    for m in crate::catalog::maps::MAP_METHODS {
+        assert!(
+            src.contains(&format!(".{}(", m.name)),
+            "map method `{}` is in MAP_METHODS but not covered by this test",
+            m.name
+        );
+    }
+}
+
+#[test]
+fn var_declared_map_lowers_like_map_keyword() {
+    // `var m: Map<K, V>` desugars to a MapVar, exactly like `map m: Map<K, V>`
+    // (mirrors how `var x: T[]` desugars to an ArrayVar).
+    let r = compile(
+        "var m: Map<string, int>\nin t: exec\non t {\n  m.set(\"a\", 1)\n  let g = m.get(\"a\")\n}",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "var-map methods must lower, not drop");
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        "a var-declared map must create a Pseudo_MapVar"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        "m.set must lower to MapVar_Set"
+    );
+}
+
+#[test]
+fn constant_map_literal_bakes_no_set_gates() {
+    // A constant map literal in a `map`/`var` initializer bakes into the
+    // Pseudo_MapVar's InitialValue at rest — zero runtime gates — exactly
+    // like `array a = [1,2,3]` bakes a `Literal::Array`.
+    let r = compile("map scores: Map<int, int> = { :red => 10, :blue => 20 }\n");
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        "must create a Pseudo_MapVar"
+    );
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        "a constant map literal must bake, not emit MapVar_Set gates"
+    );
+    // The entries are baked as a Literal::Map on the gate.
+    let baked = r.module.nodes.values().find_map(|n| {
+        match n.properties.get(&crate::intern::intern("InitialValue")) {
+            Some(crate::ir::Literal::Map(es)) => Some(es.len()),
+            _ => None,
+        }
+    });
+    assert_eq!(baked, Some(2), "two entries should bake");
+}
+
+#[test]
+fn map_literal_coerces_mixed_entry_literals() {
+    // A coercion-mixed constant map entry (key/value literal kind doesn't
+    // match the declared K/V) must bake through the SAME coercion laws as
+    // the array path — string->bool `!= ""`, bool<->int, and int<->float
+    // truncation/widening — not the emit-side zero fallback.
+    let cases = [
+        ("map m: Map<int, bool> = { 1 => \"on\" }\n", crate::ir::Literal::Bool(true)),
+        ("map m: Map<int, int>  = { 1 => true }\n", crate::ir::Literal::Int(1)),
+        ("map m: Map<int, int>  = { 1 => 2.9 }\n", crate::ir::Literal::Int(2)),
+        ("map m: Map<int, float> = { 1 => true }\n", crate::ir::Literal::Float(1.0)),
+    ];
+    for (src, want_val) in cases {
+        let r = compile(src);
+        assert_no_errors(&r);
+        let baked = r.module.nodes.values().find_map(|n| {
+            match n.properties.get(&crate::intern::intern("InitialValue")) {
+                Some(crate::ir::Literal::Map(es)) => es.first().map(|(_, v)| v.clone()),
+                _ => None,
+            }
+        });
+        assert_eq!(baked.as_ref(), Some(&want_val), "wrong baked value for {src:?}");
+    }
+}
+
+#[test]
+fn map_literal_object_family_keys_do_not_bake() {
+    // `Prefab` is object-family but (unlike Entity/Character/Controller/Brick)
+    // DOES have a compile-time literal form (`$./file.brz` -> Literal::PrefabRef),
+    // so this is the case that would actually reach `bake_map_init`'s pairs
+    // loop. `key_of`'s `(WireMapKey::Object, _) => Object(None)` bakes every
+    // such key as null, so two entries would silently collapse onto the same
+    // duplicate-null key. The guard must refuse to bake at all here (warn +
+    // start empty), not just for the object-family types with no literal form.
+    let r = compile("map m: Map<prefab, int> = { $./a.brz => 1, $./b.brz => 2 }\n");
+    assert_no_errors(&r);
+    let baked = r
+        .module
+        .nodes
+        .values()
+        .find_map(|n| n.properties.get(&crate::intern::intern("InitialValue")).cloned());
+    assert!(
+        baked.is_none(),
+        "object-family map keys must not bake an InitialValue: {baked:?}"
+    );
+}
+
+#[test]
+fn map_literal_typechecks_against_declared_map() {
+    // A map literal in a VALID slot (a `map`/`var` initializer or an assignment
+    // RHS to a map var) must NOT trip the WS026 position guard. Check typecheck
+    // DIRECTLY — the lower `compile()` helper silently drops typecheck errors
+    // (it merges only Warning-severity diags) and lowering never visits a map
+    // initializer, so `compile()` + `assert_no_errors` would pass even if WS026
+    // wrongly fired here. This test genuinely fails if the guard misfires on a
+    // valid slot.
+    let valid = |src: &str| {
+        let parsed = parse(src, "test");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags for {src:?}: {:?}",
+            parsed.diagnostics
+        );
+        let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+        let errs: Vec<_> = tc
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+            .collect();
+        assert!(
+            errs.is_empty(),
+            "map literal in a valid slot must typecheck clean, got errors for {src:?}: {:?}",
+            errs
+        );
+    };
+    // 1. top-level `map`-keyword initializer (atom keys)
+    valid("map m: Map<int, int> = { :red => 1, :blue => 2 }\n");
+    // 2. top-level `var`-with-Map-annotation initializer
+    valid("var m: Map<string, int> = { \"a\" => 1 }\n");
+    // 3. in-handler assignment RHS to a `map`-declared var
+    valid("map m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
+    // 4. in-handler assignment RHS to a `var`-declared map
+    valid("var m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
+}
+
+#[test]
+fn map_literal_outside_map_context_errors() {
+    // A map literal that doesn't initialize/assign a Map is rejected, not
+    // silently dropped. The lower test `compile()` helper drops typecheck
+    // errors, so check typecheck directly (see
+    // `top_level_array_with_non_literal_or_spread_errors` above).
+    let parsed = parse("let x = { 1 => 2 }\n", "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    assert!(
+        tc.diagnostics
+            .iter()
+            .any(|d| d.severity == crate::diagnostic::Severity::Error),
+        "a free-floating map literal must be an error"
+    );
+}
+
+#[test]
+fn runtime_map_literal_desugars_to_clear_and_sets() {
+    // A map literal with a runtime key (`[k]`) — or any `m = {…}` assignment
+    // inside an exec handler — can't bake. It desugars to MapVar_Clear then
+    // one MapVar_Set per entry, on the current exec chain. Mirrors the array
+    // literal assign path (clear + push per element).
+    let r = compile(
+        "map m: Map<int, int>\nin k: int\nin t: exec\non t {\n  m = { [k] => 1, :fixed => 2 }\n}\n",
+    );
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Clear"),
+        "a runtime map-literal assign clears first"
+    );
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        2,
+        "one Set per entry"
+    );
+}
+
+#[test]
+fn in_handler_var_map_literal_init_desugars_to_clear_and_sets() {
+    // `var m: Map<K, V> = {…}` declared INSIDE a handler (non-static) must
+    // re-run the same Clear + Set reset on every invocation, exactly like the
+    // array counterpart (`var a: T[] = […]` inside a handler) — a plain
+    // Var_Set reset is impossible since Pseudo_MapVar has no `VarRef` port.
+    let r = compile(
+        "in k: int\nin t: exec\non t {\n  var m: Map<int, int> = { [k] => 1, :fixed => 2 }\n}\n",
+    );
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Clear"),
+        "in-handler map-literal var init clears first"
+    );
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        2,
+        "one Set per entry"
+    );
+}
+
+#[test]
+fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
+    // Task 6 made `m = <any Map expr>` typecheck (mirroring arrays), but only
+    // a MapLit RHS is lowered by the desugar (Task 8). Investigation: a
+    // non-literal map RHS (`m = m2`) falls through toward the generic
+    // Var_Set/Var_Get reset path, which wires a `VarRef` port that
+    // Pseudo_MapVar's gate never declares (it only exposes `MapVarRef`) —
+    // the exact hazard already called out for arrays in `lower_stmt`. Left
+    // unguarded this produces a wire referencing a nonexistent source port:
+    // a silent miscompile that only surfaces as a load failure in-game, not
+    // as a compiler error. `m = <non-literal map>` is UNCONDITIONALLY
+    // unsatisfiable (no whole-map-copy-by-assignment gate exists), so
+    // `lower_assign` rejects it with a hard ERROR (WS027) — a droppable
+    // warning would be missed by error-gated checks and ship a silent no-op.
+    let r = compile(
+        "map m: Map<int, int>\nmap m2: Map<int, int>\nin t: exec\non t {\n  m = m2\n}\n",
+    );
+    // Must be an ERROR-severity diagnostic (not a warning), pointing at the
+    // supported `.copyFrom` alternative. If the guard is ever downgraded to a
+    // warning this assertion fails.
+    assert!(
+        r.diagnostics.iter().any(|d| {
+            d.severity == crate::diagnostic::Severity::Error && d.message.contains("copyFrom")
+        }),
+        "a non-literal whole-map assign must be a hard ERROR pointing at .copyFrom, got: {:?}",
+        r.diagnostics
+    );
+    // No MapVar_Set/Clear gate should appear (the guard returns before any
+    // lowering of the RHS or reset gate).
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        "a rejected non-literal map assign must not emit a Set gate"
+    );
+    // The real regression check: no wire may claim to originate from a
+    // `VarRef` port on either map's Pseudo_MapVar node — that port doesn't
+    // exist on the gate, so such a wire is exactly the silent miscompile
+    // this guard exists to prevent.
+    let map_node_ids: Vec<_> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraphPseudo_MapVar")
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        !r.module.wires.iter().any(|w| {
+            map_node_ids.contains(&w.source.node_id) && w.source.port == WirePort::VarRef
+        }),
+        "no wire may source a nonexistent VarRef port off a Pseudo_MapVar node; wires: {:?}",
+        r.module.wires
+    );
 }
 
 #[test]
@@ -1155,8 +1416,8 @@ fn messaging_builtins_lower_to_their_gates() {
     );
     assert_no_errors(&r);
     for class in [
-        "BrickComponentType_WireGraph_Exec_Controller_ShowChatMessage",
-        "BrickComponentType_WireGraph_Exec_Controller_ShowMessageBox",
+        "BrickComponentType_WireGraph_Exec_PlayerState_ShowChatMessage",
+        "BrickComponentType_WireGraph_Exec_PlayerState_ShowMessageBox",
         "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
         "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage",
     ] {
@@ -1305,7 +1566,7 @@ fn has_role_lowers_with_config_role_name() {
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_Controller_HasRole"),
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_PlayerState_HasRole"),
         "expected a HasRole gate"
     );
 }
@@ -1747,19 +2008,19 @@ fn exec_array_var_nonliteral_init_warns() {
 
 #[test]
 fn on_input_splitter_field_trigger_selects_named_port() {
-    // `on split.Jump` where `split = pl.InputReader()` must trigger from the
-    // splitter's `bPressedJump` output — not its default `InputForward` port.
+    // `on split.PressedE` where `split = pl.InputReader()` must trigger from the
+    // splitter's `bPressedE` output — not its default `InputForward` port.
     // Regression: the local-trigger branch ignored the trigger field, so every
     // `on split.*` handler wired to whichever port the local pointed at.
     let src = "in pl: character\n\
                let split = pl.InputReader()\n\
-               on split.Jump { pl.ShowStatusMessage(\"jump\") }";
+               on split.PressedE { pl.ShowStatusMessage(\"e\") }";
     let r = compile(src);
     assert_no_errors(&r);
     let splitter = find_gate(&r, "Component_Internal_InputSplitter");
     let show = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage",
+        "BrickComponentType_WireGraph_Exec_PlayerState_ShowStatusMessage",
     );
     let trig = r
         .module
@@ -1769,8 +2030,40 @@ fn on_input_splitter_field_trigger_selects_named_port() {
         .expect("splitter must drive the handler body");
     assert_eq!(
         trig.source.port.as_str(),
-        "bPressedJump",
-        "on split.Jump must trigger from bPressedJump, got {}",
+        "bPressedE",
+        "on split.PressedE must trigger from bPressedE, got {}",
         trig.source.port.as_str()
     );
+}
+
+#[test]
+fn atom_literal_bakes_as_its_hash_int() {
+    // `:red` is an int constant == atom_hash("red"); baked into the var's
+    // InitialValue exactly like a plain int literal.
+    let r = compile("static var team: int = :red\n");
+    assert_no_errors(&r);
+    let want = crate::hash::atom_hash("red");
+    let baked = r.module.nodes.values().find_map(|n| {
+        n.properties
+            .get(&crate::intern::intern("InitialValue"))
+            .and_then(|l| match l {
+                crate::ir::Literal::Int(v) => Some(*v),
+                _ => None,
+            })
+    });
+    assert_eq!(baked, Some(want), "atom must bake as its hash int");
+}
+
+#[test]
+fn map_and_record_literals_disambiguate() {
+    // A `=>` or a non-bare-ident key makes it a map; `{ ident: v }` stays a record.
+    let arrow = parse("map m: Map<int,int> = { 1 => 2, 3 => 4 }\n", "test");
+    assert!(arrow.diagnostics.is_empty(), "{:?}", arrow.diagnostics);
+    let colon = parse("map m: Map<string,int> = { \"a\": 1 }\n", "test");
+    assert!(colon.diagnostics.is_empty(), "{:?}", colon.diagnostics);
+    let computed = parse("in k: int\nmap m: Map<int,int> = { [k]: 9 }\n", "test");
+    assert!(computed.diagnostics.is_empty(), "{:?}", computed.diagnostics);
+    // A record literal is unaffected.
+    let rec = parse("type P = { x: int }\nlet p: P = { x: 1 }\n", "test");
+    assert!(rec.diagnostics.is_empty(), "{:?}", rec.diagnostics);
 }

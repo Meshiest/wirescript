@@ -13,6 +13,7 @@ mod const_init;
 mod flatten;
 mod fold;
 mod fusion;
+mod gate_config;
 mod imports;
 mod opaque;
 mod port_side;

@@ -668,6 +668,9 @@ fn collect_idents_in_type_expr(t: &TypeExpr, idents: &mut HashSet<String>) {
         TypeExpr::Union { options, .. } => {
             for o in options { collect_idents_in_type_expr(o, idents); }
         }
+        TypeExpr::Generic { args, .. } => {
+            for a in args { collect_idents_in_type_expr(a, idents); }
+        }
     }
 }
 
@@ -718,6 +721,9 @@ fn expand_type_aliases_in_type_expr(t: &mut TypeExpr, aliases: &HashMap<String, 
         }
         TypeExpr::Union { options, .. } => {
             for o in options { expand_type_aliases_in_type_expr(o, aliases); }
+        }
+        TypeExpr::Generic { args, .. } => {
+            for a in args { expand_type_aliases_in_type_expr(a, aliases); }
         }
     }
 }
@@ -838,6 +844,12 @@ fn collect_idents_in_expr(e: &Expr, idents: &mut HashSet<String>) {
             };
             collect_idents_in_block(&tmp_block, idents);
             collect_idents_in_expr(value, idents);
+        }
+        Expr::MapLit { entries, .. } => {
+            for e in entries {
+                collect_idents_in_expr(&e.key, idents);
+                collect_idents_in_expr(&e.value, idents);
+            }
         }
         _ => {}
     }

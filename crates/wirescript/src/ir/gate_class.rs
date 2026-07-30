@@ -13,6 +13,16 @@ pub const INPUT_SPLITTER: &str = "Component_Internal_InputSplitter";
 // Variables
 pub const PSEUDO_VAR: &str = "BrickComponentType_WireGraphPseudo_Var";
 pub const PSEUDO_ARRAY_VAR: &str = "BrickComponentType_WireGraphPseudo_ArrayVar";
+pub const PSEUDO_MAP_VAR: &str = "BrickComponentType_WireGraphPseudo_MapVar";
+pub const MAP_GET: &str = "BrickComponentType_WireGraph_Exec_MapVar_Get";
+pub const MAP_SET: &str = "BrickComponentType_WireGraph_Exec_MapVar_Set";
+pub const MAP_HAS: &str = "BrickComponentType_WireGraph_Exec_MapVar_Has";
+pub const MAP_REMOVE: &str = "BrickComponentType_WireGraph_Exec_MapVar_Remove";
+pub const MAP_CLEAR: &str = "BrickComponentType_WireGraph_Exec_MapVar_Clear";
+pub const MAP_COPY_FROM: &str = "BrickComponentType_WireGraph_Exec_MapVar_CopyFrom";
+pub const MAP_GET_LENGTH: &str = "BrickComponentType_WireGraph_Exec_MapVar_GetLength";
+pub const MAP_GET_KEYS: &str = "BrickComponentType_WireGraph_Exec_MapVar_GetKeys";
+pub const MAP_GET_VALUES: &str = "BrickComponentType_WireGraph_Exec_MapVar_GetValues";
 pub const BUFFER_TICKS: &str = "BrickComponentType_WireGraphPseudo_BufferTicks";
 pub const BUFFER_SECONDS: &str = "BrickComponentType_WireGraphPseudo_BufferSeconds";
 pub const VARIABLE: &str = "BrickComponentType_Internal_Variable";
@@ -154,8 +164,11 @@ pub const MAKE_COLOR_HEX: &str = "BrickComponentType_WireGraph_Expr_MakeColorHex
 pub const COLOR_TO_HEX: &str = "BrickComponentType_WireGraph_Expr_ColorToHex";
 pub const COLOR_BLEND: &str = "BrickComponentType_WireGraph_Expr_ColorBlend";
 
-// Controller role check (cl14428+)
-pub const CONTROLLER_HAS_ROLE: &str = "BrickComponentType_WireGraph_Exec_Controller_HasRole";
+// PlayerState role check. The game replaced the old `Exec_Controller_*` gate
+// family with `Exec_PlayerState_*` (the player is now referenced by its
+// persistent PlayerState). The Wirescript `controller` type still wires
+// straight into these gates' entity-typed `PlayerState` ports.
+pub const PLAYERSTATE_HAS_ROLE: &str = "BrickComponentType_WireGraph_Exec_PlayerState_HasRole";
 
 // Character inventory (cl14428+)
 pub const CHARACTER_SET_INVENTORY_ENTRY: &str =
@@ -174,21 +187,26 @@ pub const NEARLY_EQUAL: &str = "BrickComponentType_WireGraph_Expr_NearlyEqual";
 pub const PSEUDO_DAMPEN: &str = "BrickComponentType_WireGraphPseudo_Dampen";
 pub const PSEUDO_TWEEN: &str = "BrickComponentType_WireGraphPseudo_Tween";
 pub const PSEUDO_TIMER: &str = "BrickComponentType_WireGraphPseudo_Timer";
+pub const PSEUDO_SEND_CUSTOM_EVENT: &str = "BrickComponentType_WireGraphPseudo_SendCustomEvent";
+pub const PSEUDO_CUSTOM_EVENT: &str = "BrickComponentType_WireGraphPseudo_CustomEvent";
 pub const MATH_EASING: &str = "BrickComponentType_WireGraph_Expr_MathEasing";
 pub const GAMEMODE_FILL_FROM_PLAYERS: &str = "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromPlayers";
 pub const GAMEMODE_FILL_FROM_TEAM: &str = "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers";
 pub const GAMEMODE_INC_TEAM_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_IncrementTeamLeaderboardValue";
 
-// Controller / Character / Entity
-pub const CONTROLLER_DISPLAY_TEXT: &str = "BrickComponentType_WireGraph_Exec_Controller_DisplayText";
-pub const CONTROLLER_SHOW_STATUS: &str = "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage";
-pub const CONTROLLER_GET_FROM_ENTITY: &str = "BrickComponentType_WireGraph_Exec_Controller_GetFromEntity";
-pub const CONTROLLER_GET_USER_NAME: &str = "BrickComponentType_WireGraph_Exec_Controller_GetUserName";
-pub const CONTROLLER_GET_USER_ID: &str = "BrickComponentType_WireGraph_Exec_Controller_GetUserId";
-pub const CONTROLLER_GET_DISPLAY_NAME: &str = "BrickComponentType_WireGraph_Exec_Controller_GetDisplayName";
-pub const CONTROLLER_HAS_PERMISSION: &str = "BrickComponentType_WireGraph_Exec_Controller_HasPermission";
-pub const CONTROLLER_IS_TRUSTED: &str = "BrickComponentType_WireGraph_Exec_Controller_IsTrustedByBrickOwner";
-pub const CONTROLLER_SET_CAN_RESPAWN: &str = "BrickComponentType_WireGraph_Exec_Controller_SetCanRespawn";
+// PlayerState / Character / Entity. The old `Exec_Controller_*` family was
+// replaced 1:1 by `Exec_PlayerState_*`; each gate's player port is now the
+// entity-typed `PlayerState` (a `controller` value wires straight in).
+pub const PLAYERSTATE_DISPLAY_TEXT: &str = "BrickComponentType_WireGraph_Exec_PlayerState_DisplayText";
+pub const PLAYERSTATE_SHOW_STATUS: &str = "BrickComponentType_WireGraph_Exec_PlayerState_ShowStatusMessage";
+pub const PLAYERSTATE_GET_FROM_ENTITY: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetFromEntity";
+pub const PLAYERSTATE_GET_USER_NAME: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetUserName";
+pub const PLAYERSTATE_GET_USER_ID: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetUserId";
+pub const PLAYERSTATE_GET_DISPLAY_NAME: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetDisplayName";
+pub const PLAYERSTATE_HAS_PERMISSION: &str = "BrickComponentType_WireGraph_Exec_PlayerState_HasPermission";
+pub const PLAYERSTATE_IS_TRUSTED: &str = "BrickComponentType_WireGraph_Exec_PlayerState_IsTrustedByBrickOwner";
+pub const PLAYERSTATE_SET_CAN_RESPAWN: &str = "BrickComponentType_WireGraph_Exec_PlayerState_SetCanRespawn";
+pub const PLAYERSTATE_FORCE_RESPAWN: &str = "BrickComponentType_WireGraph_Exec_PlayerState_ForceRespawn";
 pub const CHARACTER_GET_FROM_CONTROLLER: &str = "BrickComponentType_WireGraph_Exec_Character_GetFromController";
 pub const CHARACTER_GET_AIM: &str = "BrickComponentType_WireGraph_Exec_Character_GetAim";
 pub const CHARACTER_SHOW_HINT: &str = "BrickComponentType_WireGraph_Exec_Character_ShowHint";
@@ -232,13 +250,14 @@ pub const GAMEMODE_SET_TEAM_LEADERBOARD: &str = "BrickComponentType_WireGraph_Ex
 
 // Prefab / Sweep
 pub const PREFAB_SPAWNER: &str = "BrickComponentType_WireGraph_Exec_PrefabSpawner";
+pub const EXEC_SPAWN_EXPLOSION: &str = "BrickComponentType_WireGraph_Exec_SpawnExplosion";
 pub const SWEEP: &str = "BrickComponentType_WireGraph_Exec_Sweep";
 
 // Messaging
-pub const CONTROLLER_SHOW_CHAT: &str =
-    "BrickComponentType_WireGraph_Exec_Controller_ShowChatMessage";
-pub const CONTROLLER_SHOW_MESSAGE_BOX: &str =
-    "BrickComponentType_WireGraph_Exec_Controller_ShowMessageBox";
+pub const PLAYERSTATE_SHOW_CHAT: &str =
+    "BrickComponentType_WireGraph_Exec_PlayerState_ShowChatMessage";
+pub const PLAYERSTATE_SHOW_MESSAGE_BOX: &str =
+    "BrickComponentType_WireGraph_Exec_PlayerState_ShowMessageBox";
 pub const GAMEMODE_BROADCAST_CHAT: &str =
     "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage";
 pub const GAMEMODE_BROADCAST_STATUS: &str =
@@ -281,3 +300,47 @@ pub const CHARACTER_ADD_INVENTORY_ITEM_ADV: &str =
     "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv";
 pub const CHARACTER_SET_INVENTORY_ITEM_ADV: &str =
     "BrickComponentType_WireGraph_Exec_Character_SetInventoryItemAdv";
+
+// Newer entity / character / zone / expr gates.
+pub const ENTITY_DESTROY_SPAWNED: &str =
+    "BrickComponentType_WireGraph_Exec_Entity_DestroySpawned";
+pub const ENTITY_DESTROY_SPAWNED_PREFAB: &str =
+    "BrickComponentType_WireGraph_Exec_Entity_DestroySpawnedPrefab";
+pub const ENTITY_GET_VELOCITY_AT_POINT: &str =
+    "BrickComponentType_WireGraph_Exec_Entity_GetVelocityAtPoint";
+pub const ENTITY_GET_SPEED: &str = "BrickComponentType_WireGraph_Exec_Entity_GetSpeed";
+pub const ENTITY_GET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Entity_GetTeam";
+pub const ENTITY_SET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Entity_SetTeam";
+pub const ENTITY_IS_FROZEN: &str = "BrickComponentType_WireGraph_Exec_Entity_IsFrozen";
+pub const CHARACTER_GET_AMMO: &str = "BrickComponentType_WireGraph_Exec_Character_GetAmmo";
+pub const CHARACTER_GRANT_AMMO: &str = "BrickComponentType_WireGraph_Exec_Character_GrantAmmo";
+pub const CHARACTER_SET_AMMO: &str = "BrickComponentType_WireGraph_Exec_Character_SetAmmo";
+pub const CHARACTER_GET_INVENTORY_ENTRY: &str =
+    "BrickComponentType_WireGraph_Exec_Character_GetInventoryEntry";
+pub const EXPR_ENUM_TO_INTEGER: &str = "BrickComponentType_WireGraph_Expr_EnumToInteger";
+pub const EXPR_INTEGER_TO_ENUM: &str = "BrickComponentType_WireGraph_Expr_IntegerToEnum";
+pub const EXPR_BITWISE_SHR_LOGICAL: &str =
+    "BrickComponentType_WireGraph_Expr_BitwiseShiftRightLogical";
+pub const EXPR_REMAP: &str = "BrickComponentType_WireGraph_Expr_Remap";
+pub const EXPR_ITEM_TO_PICKUP: &str = "BrickComponentType_WireGraph_Expr_ItemToPickup";
+pub const STRING_CHAR_TO_CODEPOINT: &str =
+    "BrickComponentType_WireGraph_Expr_String_CharacterToCodepoint";
+pub const STRING_CODEPOINT_TO_CHAR: &str =
+    "BrickComponentType_WireGraph_Expr_String_CodepointToCharacter";
+pub const GET_UNIX_EPOCH: &str = "BrickComponentType_WireGraph_GetUnixEpoch";
+pub const FORMAT_DATE: &str = "BrickComponentType_WireGraph_FormatDate";
+pub const GET_OWN_TRANSFORM: &str = "BrickComponentType_WireGraph_Exec_GetOwnTransform";
+pub const SWEEP_SIMPLE: &str = "BrickComponentType_WireGraph_Exec_SweepSimple";
+pub const ZONE_GET_ENTITIES: &str = "BrickComponentType_WireGraph_Exec_Zone_GetEntities";
+pub const ZONE_GET_PLAYERS: &str = "BrickComponentType_WireGraph_Exec_Zone_GetPlayers";
+pub const ARRAY_SORT_MULTIPLE: &str =
+    "BrickComponentType_WireGraph_Exec_ArrayVar_SortMultiple";
+pub const EXPR_COLOR_CONVERT: &str = "BrickComponentType_WireGraph_Expr_ColorConvert";
+pub const CHARACTER_GET_CURRENT_INVENTORY_SLOT: &str =
+    "BrickComponentType_WireGraph_Exec_Character_GetCurrentInventorySlot";
+pub const CHARACTER_GET_WEAPON_CHAMBER_AMMO: &str =
+    "BrickComponentType_WireGraph_Exec_Character_GetWeaponChamberAmmo";
+pub const CHARACTER_INC_WEAPON_CHAMBER_AMMO: &str =
+    "BrickComponentType_WireGraph_Exec_Character_IncWeaponChamberAmmo";
+pub const CHARACTER_SET_WEAPON_CHAMBER_AMMO: &str =
+    "BrickComponentType_WireGraph_Exec_Character_SetWeaponChamberAmmo";

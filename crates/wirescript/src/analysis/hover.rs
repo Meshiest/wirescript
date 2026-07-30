@@ -65,6 +65,9 @@ pub fn hover_at(
     None
         .or_else(|| hover_if_keyword(source, file, &word, if_contexts, resource_estimates, line, col))
         .or_else(|| hover_named_param(source, &word, line, col))
+        .or_else(|| hover_event_config_param(source, &word, line, col))
+        .or_else(|| hover_data_driven_config(source, &word, line, col))
+        .or_else(|| hover_config_enum_value(source, &word, line, col))
         .or_else(|| hover_array_method(source, &word, line, col))
         .or_else(|| hover_builtin_event(&word))
         .or_else(|| hover_builtin_call(source, &word, line, col))
@@ -107,12 +110,12 @@ fn render_prefab_file_hover(path: &str, file: &str) -> String {
     out += &format!("- Reference: `${path}`\n");
     out += &format!("- Resolves to: `{}`\n", resolved.display());
     if !path.ends_with(".brz") {
-        out += "\n⚠️ Prefab references must end in `.brz` (WS019).\n";
+        out += "\nNote: prefab references must end in `.brz` (WS019).\n";
     }
     #[cfg(not(target_arch = "wasm32"))]
     match std::fs::metadata(&resolved) {
         Ok(m) => out += &format!("- On disk: {} bytes\n", m.len()),
-        Err(_) => out += "- ⚠️ Not found on disk\n",
+        Err(_) => out += "- Not found on disk\n",
     }
     out
 }
@@ -147,9 +150,9 @@ fn hover_if_keyword(
     let &is_exec = if_contexts.get(&(f, offset))?;
 
     let mut hover = if is_exec {
-        "```wirescript\nif (exec) → Branch gate\n```\nExec-context conditional. Produces an **Exec_Branch** gate that routes the exec chain to the true or false arm.".to_string()
+        "```wirescript\nif (exec) -> Branch gate\n```\nExec-context conditional. Produces an **Exec_Branch** gate that routes the exec chain to the true or false arm.".to_string()
     } else {
-        "```wirescript\nif (pure) → Select gate\n```\nPure-context conditional. Produces a **Select** gate that picks one of two values based on the condition.".to_string()
+        "```wirescript\nif (pure) -> Select gate\n```\nPure-context conditional. Produces a **Select** gate that picks one of two values based on the condition.".to_string()
     };
     if let Some(est) = resource_estimates.get(&format!("@{offset}")) {
         hover += &format!("\n\n{}", format_estimate(est, EstimateKind::Scope));
@@ -175,9 +178,23 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
     let display = port_doc.map(|pd| pd.display_name.as_str()).unwrap_or(p.name);
     let tooltip = port_doc.map(|pd| pd.tooltip.as_str()).unwrap_or("");
 
-    let mut v = format!("**{}** `{}: {}`", display, p.name, type_str(&p.ty));
+    // A config param surfaced as a plain int but backed by a schema enum shows
+    // the enum's name (and its members below) instead of `int`.
+    let config_enum = (!crate::catalog::is_wire_input(spec.gate_class, p.port.as_str()))
+        .then(|| crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str()))
+        .flatten();
+    let ty_label = config_enum
+        .map(str::to_string)
+        .unwrap_or_else(|| type_str(&p.ty));
+    let mut v = format!("**{}** `{}: {}`", display, p.name, ty_label);
     if p.optional { v += " *(optional)*"; }
     if !tooltip.is_empty() { v += &format!("\n\n{}", tooltip); }
+    if let Some(et) = config_enum {
+        let members = crate::catalog::enum_member_names(et).join(", ");
+        if !members.is_empty() {
+            v += &format!("\n\none of: {members}");
+        }
+    }
     Some(v)
 }
 
@@ -214,12 +231,120 @@ fn hover_array_method(source: &str, word: &str, line: usize, col: usize) -> Opti
     Some(format!("**array.{}**\n\n{}{} - {}", m.name, m.name, m.signature, m.doc))
 }
 
-/// Built-in event names like `RoundStart`, `CharacterSpawned`, etc.
+/// Built-in event names like `RoundStart`, `CharacterSpawned`, `Clock`, etc.
+/// Shows the destructure params (event data) when present, otherwise the wired
+/// inputs / config args that events like `Clock` / `ChatCommand` carry.
 fn hover_builtin_event(word: &str) -> Option<String> {
     let evt = find_event(word)?;
-    let params: Vec<String> = evt.data.iter().map(|d| format!("{}: {}", d.name, type_str(&d.ty))).collect();
-    let sig = if params.is_empty() { String::new() } else { format!("({})", params.join(", ")) };
-    Some(format!("```wirescript\non {}{}\n```", evt.surface_name, sig))
+    let data_parts: Vec<String> = evt
+        .data
+        .iter()
+        .map(|d| format!("{}: {}", d.name, type_str(&d.ty)))
+        .collect();
+    let sig = if !data_parts.is_empty() {
+        format!("({})", data_parts.join(", "))
+    } else {
+        // Config-only / input events (Clock, ChatCommand): show their arg names.
+        let mut surfs: Vec<&str> = evt.input_named.iter().map(|(s, _, _)| *s).collect();
+        surfs.extend(evt.config_positional.iter().copied());
+        surfs.extend(evt.config_named.iter().map(|(s, _)| *s));
+        if surfs.is_empty() {
+            String::new()
+        } else {
+            format!("({})", surfs.join(", "))
+        }
+    };
+    let mut out = format!("```wirescript\non {}{}\n```", evt.surface_name, sig);
+    if !evt.input_named.is_empty() {
+        let wired: Vec<&str> = evt.input_named.iter().map(|(s, _, _)| *s).collect();
+        out += &format!("\n\n**Wired input:** {}", wired.join(", "));
+    }
+    if !evt.config_named.is_empty() {
+        let cfg: Vec<&str> = evt.config_named.iter().map(|(s, _)| *s).collect();
+        out += &format!("\n\n**Config:** {} *(constant-only)*", cfg.join(", "));
+    }
+    Some(out)
+}
+
+/// Hover for an event handler's config-arg NAME (`enabled` in
+/// `on Clock(enabled = true)`) — the call-param hover's event counterpart.
+/// Fires only in named-arg-name position, and only when the enclosing trigger
+/// is a known event whose config/input args include `word`.
+fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    if !word_is_named_arg_name(source, line, col) {
+        return None;
+    }
+    let trigger = find_enclosing_call(source, line, col)?;
+    let evt = find_event(&trigger)?;
+    let key = word.to_ascii_lowercase();
+    if let Some((_, field)) = evt.config_named.iter().find(|(k, _)| *k == key) {
+        let enum_ty = crate::catalog::config_field_enum_type(evt.gate_class, field);
+        let ty_label = enum_ty.unwrap_or("config value");
+        let mut v = format!(
+            "**{}** `{}: {}` *(event config, constant-only)*\n\nSets `{}` on the `{}` gate.",
+            word, word, ty_label, field, evt.surface_name
+        );
+        if let Some(et) = enum_ty {
+            let members = crate::catalog::enum_member_names(et).join(", ");
+            if !members.is_empty() {
+                v += &format!("\n\none of: {members}");
+            }
+        }
+        return Some(v);
+    }
+    if evt.input_named.iter().any(|(s, _, _)| s.eq_ignore_ascii_case(word)) {
+        return Some(format!(
+            "**{}** *(wired input on the `{}` event)*",
+            word, evt.surface_name
+        ));
+    }
+    None
+}
+
+/// Hover for a data-driven config attribute NAME — a raw settings-menu field
+/// (`bOnlyHitPlayerBodyParts`, `FontSize`, `Function`) set by its inventory name
+/// rather than a declared param. Fires only in named-arg-name position for a
+/// scalar config field the enclosing gate exposes.
+fn hover_data_driven_config(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    if !word_is_named_arg_name(source, line, col) {
+        return None;
+    }
+    let callee = find_enclosing_call(source, line, col)?;
+    let spec = calls().get(callee.as_str())?;
+    // Declared params (friendly aliases) are handled by hover_named_param.
+    if spec.params.iter().any(|p| p.name == word) {
+        return None;
+    }
+    let cfg = crate::catalog::scalar_config_field(spec.gate_class, word)?;
+    let enum_ty = crate::catalog::config_field_enum_type(spec.gate_class, word);
+    let ty_label = enum_ty.unwrap_or(cfg.ty.as_str());
+    let mut v = format!("**{word}** `{word}: {ty_label}` *(gate config, constant-only)*");
+    if !cfg.display_name.is_empty() {
+        v += &format!("\n\n{}", cfg.display_name);
+    }
+    if let Some(et) = enum_ty {
+        let members = crate::catalog::enum_member_names(et).join(", ");
+        if !members.is_empty() {
+            v += &format!("\n\none of: {members}");
+        }
+    }
+    Some(v)
+}
+
+/// Hover for a config enum-member VALUE (`X_Negative` in
+/// `direction = X_Negative`, whether on a builtin call or an event): names the
+/// schema enum and lists its members.
+fn hover_config_enum_value(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    let (param, _value) = super::text::named_arg_value(source, line, col)?;
+    let callee = find_enclosing_call(source, line, col)?;
+    let et = crate::catalog::config_enum_for_named_arg(&callee, &param)?;
+    // The hovered word must actually be a member of that enum (not some other
+    // value written in the slot).
+    crate::catalog::enum_member_value(et, word)?;
+    let members = crate::catalog::enum_member_names(et).join(", ");
+    Some(format!(
+        "**{word}** — `{et}` member\n\none of: {members}"
+    ))
 }
 
 /// Is the hovered word actually being used as a call or method access — i.e.
@@ -254,9 +379,9 @@ fn call_doc_override(name: &str) -> Option<(&'static str, &'static str)> {
         "Opaque" => Some((
             "Opaque",
             "Passes `value` through a rerouter unchanged. Two effects, both deliberate:\n\n\
-             - **Hidden from constant folding** — the value stays a live wire, so a probe \
+             - **Hidden from constant folding** - the value stays a live wire, so a probe \
              circuit measures the gate's real behaviour instead of a folded constant.\n\
-             - **Type erased for operator resolution** — `Opaque(a) + Opaque(b)` type-checks \
+             - **Type erased for operator resolution** - `Opaque(a) + Opaque(b)` type-checks \
              for combinations that are otherwise rejected (`string + int`), which is how the \
              gate-semantics probes record what the hardware actually does.\n\n\
              The result is untyped, so use the plain value wherever you do not need those two \
@@ -292,8 +417,16 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
     };
 
     let mut parts = vec![format!("### {}\n```wirescript\n{}({}){}\n```", title, spec.name, params.join(", "), out)];
+    // The game's own SearchTags keywords for this gate (from the inventory dump)
+    // — surfaced so hover doubles as a "what would I search for this?" hint.
+    let tags_line = crate::catalog::default_catalog()
+        .find_by_class(spec.gate_class)
+        .map(|g| g.component.search_tags.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("*Keywords: {}*", t.split_whitespace().collect::<Vec<_>>().join(", ")));
     if let Some((_, doc)) = override_doc {
         parts.push(doc.to_string());
+        if let Some(t) = tags_line { parts.push(t); }
         return Some(parts.join("\n\n"));
     }
     if let Some(g) = gate_doc {
@@ -303,6 +436,7 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
         }).collect();
         if !param_docs.is_empty() { parts.push(format!("**Parameters:**\n{}", param_docs.join("\n"))); }
     }
+    if let Some(t) = tags_line { parts.push(t); }
     Some(parts.join("\n\n"))
 }
 
@@ -1109,4 +1243,72 @@ chip a(uid: string) -> int {
         assert!(h3.contains("bool"), "Found usage should be bool, got: {h3}");
     }
 
+    #[test]
+    fn enum_config_param_hovers_with_enum_name_and_members() {
+        // Hovering the config arg name `blendSpace` names its schema enum
+        // (EBRColorSpace) instead of `int`, and lists the member names.
+        let src = "in a: color\nin b: color\nin t: float\nlet c = ColorBlend(a, b, t, blendSpace = Oklab)";
+        let line = src.lines().nth(3).unwrap();
+        let h = hover_for(src, 3, line.find("blendSpace").unwrap())
+            .expect("hover on blendSpace");
+        assert!(h.contains("EBRColorSpace"), "should name the enum: {h}");
+        assert!(!h.contains(": int"), "should not show int: {h}");
+        assert!(h.contains("Oklab"), "should list members: {h}");
+    }
+
+    #[test]
+    fn enum_member_value_hovers_with_enum_type() {
+        // Hovering the enum member VALUE (`X_Negative`) names its enum and lists
+        // the siblings.
+        let src = "in go: exec\non go {\n  SweepSimple(500.0, direction = X_Negative)\n}";
+        let line = src.lines().nth(2).unwrap();
+        let h = hover_for(src, 2, line.find("X_Negative").unwrap())
+            .expect("hover on X_Negative");
+        assert!(h.contains("EBrickDirection"), "should name the enum: {h}");
+        assert!(h.contains("X_Positive"), "should list sibling members: {h}");
+    }
+
+    #[test]
+    fn event_name_hovers_with_config_params() {
+        // Hovering an event that carries config (`Clock`) lists its config args.
+        let src = "static var n: int = 0\non Clock(interval = 2.0, enabled = true) {\n  n = n + 1\n}";
+        let line = src.lines().nth(1).unwrap();
+        let h = hover_for(src, 1, line.find("Clock").unwrap()).expect("hover on Clock");
+        assert!(h.contains("on Clock"), "should show the event: {h}");
+        assert!(h.contains("enabled"), "should list config args: {h}");
+    }
+
+    #[test]
+    fn event_config_param_hovers() {
+        // Hovering an event config arg name (`pulseOn`) identifies it as Clock
+        // config and names the gate field it sets. (`enabled` is now a wire
+        // input, not config.)
+        let src = "static var n: int = 0\non Clock(interval = 2.0, pulseOn = false) {\n  n = n + 1\n}";
+        let line = src.lines().nth(1).unwrap();
+        let h = hover_for(src, 1, line.find("pulseOn").unwrap()).expect("hover on pulseOn");
+        assert!(h.contains("Clock"), "should mention the event: {h}");
+        assert!(h.contains("bPulseOn"), "should name the gate field: {h}");
+    }
+
+    #[test]
+    fn data_driven_config_field_name_hovers() {
+        // Hovering a raw config field name marks it as gate config with its type.
+        let src = "in go: exec\non go {\n  SweepSimple(500.0, bOnlyHitPlayerBodyParts = true)\n}";
+        let line = src.lines().nth(2).unwrap();
+        let h = hover_for(src, 2, line.find("bOnlyHitPlayerBodyParts").unwrap())
+            .expect("hover on raw config field");
+        assert!(h.contains("gate config"), "should mark as config: {h}");
+        assert!(h.contains("bool"), "should show the type: {h}");
+    }
+
+    #[test]
+    fn data_driven_enum_config_field_hovers_with_enum() {
+        // A raw enum config field names its schema enum + members.
+        let src = "in go: exec\non go {\n  SweepSimple(500.0, Direction = X_Negative)\n}";
+        let line = src.lines().nth(2).unwrap();
+        let h = hover_for(src, 2, line.find("Direction ").unwrap())
+            .expect("hover on raw enum config field");
+        assert!(h.contains("EBrickDirection"), "should name the enum: {h}");
+        assert!(h.contains("Y_Positive"), "should list members: {h}");
+    }
 }

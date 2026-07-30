@@ -53,6 +53,28 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                 }
                 return;
             }
+            // Map-typed vars have no `VarRef` port either (only `MapVarRef`),
+            // same hazard as arrays above; rebuild via the map-literal assign
+            // (clear + set per entry) each time this scope is entered.
+            if !v.is_static
+                && ctx.current_exec.is_some()
+                && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
+                && var_rec.storage == VarStorage::Map
+            {
+                if let Some(Expr::MapLit { entries, .. }) = &v.init {
+                    let map_ref = var_rec.node_id.port(WirePort::MapVarRef);
+                    lower_map_literal_assign(ctx, map_ref, entries, &v.range);
+                } else if let Some(init) = &v.init {
+                    ctx.warn(
+                        format!(
+                            "'var {}' map initializer must be a map literal — this value is dropped; build the map with methods like set/copyFrom instead",
+                            v.name
+                        ),
+                        init.range(),
+                    );
+                }
+                return;
+            }
             if !v.is_static
                 && let Some(exec) = ctx.current_exec
                 && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
@@ -120,6 +142,11 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
         Stmt::Array(a) => {
             if ctx.lookup_var(&a.name).is_none() {
                 pre_declare_array(ctx, a);
+            }
+        }
+        Stmt::Map(m) => {
+            if ctx.lookup_var(&m.name).is_none() {
+                pre_declare_map(ctx, m);
             }
         }
         Stmt::Buffer(b) => {
@@ -381,6 +408,39 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         && let Expr::Array { elements, .. } = &s.value
     {
         lower_array_literal_assign(ctx, &var_rec, elements, &s.range, &s.value);
+        return;
+    }
+
+    // `foo = { k => v, ... }` on a map var: rebuild the contents at runtime.
+    // There's no single "set map" gate, so clear it then set each entry in
+    // order (mirrors the array literal assign above). A non-literal map RHS
+    // (`m = m2`) is NOT handled here — see the guard below.
+    if var_rec.storage == VarStorage::Map
+        && let Expr::MapLit { entries, .. } = &s.value
+    {
+        let map_ref = var_rec.node_id.port(WirePort::MapVarRef);
+        lower_map_literal_assign(ctx, map_ref, entries, &s.range);
+        return;
+    }
+
+    // Assigning a whole map from a non-literal expression (`m = m2`) is
+    // UNCONDITIONALLY unsatisfiable: there is no whole-map-copy-by-assignment
+    // gate, and — unlike arrays — a bare map Ident/expr has no valid port to
+    // read either (a map var's backing gate only exposes `MapVarRef`, not
+    // `VarRef`/`Value`). Falling through to the generic Var_Set path below
+    // would wire a nonexistent source port into the gate — a silent no-op
+    // that only surfaces as a load failure in-game. Since no fallback can
+    // ever satisfy it, this is a hard ERROR (mirrors WS021's "would silently
+    // produce a placeholder → error" policy), not a droppable warning.
+    // `.copyFrom(src)` is the supported way to copy a whole map.
+    if var_rec.storage == VarStorage::Map {
+        ctx.diagnostics.push(Diagnostic::error(
+            "WS027",
+            format!(
+                "assigning a whole map from a non-literal is not supported; use {var_name}.copyFrom(src) instead"
+            ),
+            s.value.range().clone(),
+        ));
         return;
     }
 

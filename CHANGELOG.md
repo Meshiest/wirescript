@@ -1,5 +1,41 @@
 # Wirescript Changelog
 
+## 1.0.0
+
+- **Maps (`Map<K, V>`)** - a keyed variable collection paralleling arrays: `map scores: Map<string, int>`, keyed by `int`/`string`/reference and holding any wire-storable value, with exec-context methods `set`/`get`/`has`/`remove`/`clear`/`copyFrom`/`length`/`keys`/`values` (`get` gives `{ Value, Found }`, auto-unwrapping to `Value`).
+- **Map literals** - `{ k => v }` keys by any expression, `"s": v` / `:atom: v` by a string/atom/int literal, and `[expr] => v` by a computed key; a fully-constant literal bakes the map pre-populated at rest, and `m = { ... }` in a handler desugars to `clear()` plus one `set` per entry in source order.
+- **Atom literals (`:name`)** - a compile-time `int` constant (the deterministic xxHash64 hash of the name), a readable stand-in for a magic number as an `int`-map key or enum-like tag; it only ever resolves at compile time, never from a runtime string.
+- **Generic type syntax** - `Array<V>` and `Ref<V>` are exact aliases of `V[]` and `*V`.
+- **Gate config properties** - a gate's non-wire settings-menu fields (checkboxes, dropdowns, values) are now settable as optional, constant-only call args, both by friendly alias and by raw game name (`SweepSimple(Direction = X_Negative, ...)`, `p.DisplayText("hi", typeface = Bold)`); enum args take bare member names validated against the game's enum list, and an unknown name or non-constant value is a `WS028` error.
+- **Custom events** - `SendCustomEvent(name, data…)` pulses every `on CustomEvent("name", a: int, b: float, …)` receiver on that channel with up to 8 typed data values; a receiver fires the tick after the send, and an untyped receiver param warns (`WS029`).
+- **Custom-event signature check and navigation** - a `SendCustomEvent` on a constant channel whose data types disagree with the matching receiver's declared params warns (`WS030`), and go-to-definition on a send-site channel-name string jumps to the receiver.
+- **`zone` & `teleport` reference types** - rerouter-only component references (like a var ref): passable through ports and parameters but not storable in a var/array/buffer (`WS025`) or selected with if-then-else (`WS031`). Zone events' `zone` input is now `zone`-typed, and `Teleport`/`RelativeTeleport` `dest`/`source` are now `teleport`-typed - teleporting to a raw position uses `SetLocation`.
+- **`Clock` reads as an event** - `on Clock(interval = 2.0, enabled = running) { ... }` runs its body on each pulse; `interval` and `enabled` are wire inputs (constant or dynamic, so the clock toggles at runtime) and `pulseOn`/`onTime`/`offTime` are constant-only config.
+- **New entity/character builtins** - `GetSpeed`, `GetVelocityAtPoint`, `GetEntityTeam`/`SetEntityTeam`, `IsFrozen`, `DestroySpawned`/`DestroySpawnedPrefab`, a character ammo family (`GetAmmo`/`GrantAmmo`/`SetAmmo`, weapon-chamber ammo, `GetInventoryEntry`, `GetCurrentInventorySlot`), and `GetOwnTransform`.
+- **New date/time and conversion builtins** - `GetUnixTime`, `FormatDate`, `Remap`, `LogicalShiftRight`, `EnumToInteger`/`IntegerToEnum`, `ItemToPickup`, `ConvertColor`, and `ToCharCode`/`FromCharCode`; `ParseInt`/`ParseNumber` gained a `.Success` flag and auto-unwrap to their parsed value.
+- **Zone array fills** - `arr.fillFromZoneEntities(zone, tagFilter?)` / `fillFromZonePlayers(...)` populate an array from a zone, and `arr.sortMultiple(other, …)` sorts a value array plus up to seven parallel arrays together.
+- **`SpawnExplosion`** - an exec gate spawning an explosion of a given projectile/explosion class, with optional instigator, offset, scale, and damage.
+- **Expanded `InputReader`** - reads look axes and key/button states (`Up`, `Pitch`/`Yaw`/`Roll`, `MouseWheel`, `PressedC`/`E`/`Q`/`LeftMouse`/`RightMouse`) alongside `Forward`/`Right`.
+- **`DisplayText` returns a `textId`** - capture the returned `int` to update or clear the same on-screen text later, with new color/outline/shadow/spacing/wrap styling params; position/anchor/scale are now in-game composite properties, not call args.
+- **`GetDamage` gives `{ Damage, DamageLimit }`** - auto-unwraps to `Damage` where a float is expected, and `.DamageLimit` reads the death threshold.
+- **Richer event outputs** - the fired-weapon event exposes the `weapon` and its name, `CharacterDied` the killer's weapon and name, and `ControllerJoined`/`ControllerLeft` the player's user name; `Sweep`/`SweepSimple` results carry a `HitColor`.
+- **Player-reference gates target persistent player-state** - `DisplayText`, chat/leaderboard/team setters, and the join/left/chat events resolve the current build's persistent player-state; existing `controller`-typed scripts keep working unchanged.
+- **Fixed fixed-size component arrays failing to load** - weapon ammo resources and mesh colors are native fixed-length arrays; emit now pads them to their full length so a save that sets one loads instead of rejecting on size.
+- **LSP: config-aware completions and hovers** - enum sibling completion, hovers for events, enum values, `Clock`, and settings-menu config fields, and asset-type dropdown completions for `$Type/Name` config refs.
+
+### Migrating from 0.x
+
+1.0.0 tightens several call signatures and reworks a few gates, so some `.ws` that compiled under 0.x needs edits.
+
+- **Teleporting to a position** - `Teleport`/`RelativeTeleport` `dest`/`source` are now the `teleport` reference type, so `e.Teleport(Vec(x, y, z))` and `e.Teleport(other)` no longer typecheck. Use `e.SetLocation(Vec(x, y, z))` to move to a raw position, or wire a teleport point into an `in p: teleport` port and `e.Teleport(p)`.
+- **Zone events take a `zone` reference** - the events' `zone` input is now `zone`-typed (and `tagFilter` is `string`), so `zone = e` with an entity/brick value errors. Feed an `in z: zone` port from a Zone brick: `on ZoneEntered(character, zone = z) { ... }`.
+- **`zone` / `teleport` are reference-only** - like a var ref, they can't be stored in a `var`/`array`/`buffer` (WS025) or picked with an if-then-else (WS031); pass them straight through ports and parameters.
+- **`DisplayText` layout args** - the per-axis scalar args `positionX`/`positionY`/`anchorX`/`anchorY`/`scaleX`/`scaleY` are gone; pass a single `vector` via `position`/`anchor`/`scale` instead, e.g. `p.DisplayText(t, position = Vec(x, y, 0.0))`. `outlineSize`/`fontSize` are now `int`.
+- **`Swap` result fields renamed** - `Swap(cond, a, b)` returns `{ Output, OutputB }` (was `{ a, b }`); read `r.Output` / `r.OutputB` (a bare `r` still auto-unwraps to the first value).
+- **`InputReader().Jump` removed** - the movement record dropped `Jump`; read the new axis/button fields instead (`Up`, `Pitch`/`Yaw`/`Roll`, `MouseWheel`, `PressedC`/`E`/`Q`/`LeftMouse`/`RightMouse`).
+- **`BrickChanged` / `BrickRemoved` lost their brick output** - these events no longer carry a `brick` value, so `on BrickChanged(brick) { ... }` won't bind; drop the parameter (`on BrickChanged { ... }`).
+- **`RotToDir` removed** - its gate no longer exists in the build; use `q.ToDirection()` (takes a `quat`) to turn a rotation into a forward direction.
+
 ## 0.20.0
 
 - **`@layout("code")` -- source-shaped gate layout** - a row per source line, expressions left to right, widely-read values down reusable gutter lanes, and own-line `//` comments rendered onto the plane.

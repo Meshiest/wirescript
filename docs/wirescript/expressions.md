@@ -257,6 +257,30 @@ let score = baseScore + (if hasBonus then 100 else 0)
 chip let emptyCount = (if c0 == 0 then 1 else 0) + (if c1 == 0 then 1 else 0)
 ```
 
+## Atom Literals
+
+An atom literal `:name` is a compile-time `int` constant -- the deterministic
+xxHash64 (seed 0) hash of `name`. It's a readable stand-in for a hand-picked
+magic number: a key for an `int`-keyed map, or an enum-like tag.
+
+```wirescript
+map scores: Map<int, int> = { :red => 10, :blue => 20 }
+if team == :red { ... }
+```
+
+The name may contain letters, digits, `_`, and `-` (the first character must
+be a letter or `_` -- a leading digit or `-` doesn't lex as an atom start).
+`:my-text` is a single atom, not `:my` followed by a subtraction -- write
+`:a - b`, with spaces, when you mean `:a` minus `b`. Atoms only lex where a value is expected
+(after `=`, an operator, `(`, `,`, `[`, `=>`, ...); a `:` immediately after
+something that already reads as a value -- a type annotation (`x: int`), a
+record field (`{ x: 1 }`), or a map's string/atom key separator (`"red": 1`,
+`:red: 1`) -- stays a plain colon instead.
+
+There's no runtime string-to-hash gate: an atom's value is always resolved
+at compile time, so `:name` can only appear as a literal, never built from a
+runtime string.
+
 ## Record Literals
 
 Record literals construct values of a named record type. Fields are specified as `name: expr` pairs inside braces:

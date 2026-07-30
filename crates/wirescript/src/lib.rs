@@ -12,6 +12,7 @@ pub mod collections;
 pub mod compile;
 pub mod diagnostic;
 pub mod emit;
+pub mod hash;
 pub mod intern;
 pub mod ir;
 pub mod layout;
@@ -27,7 +28,7 @@ pub mod types;
 
 pub use compile::{compile, compile_with_opts, compile_with_progress, compile_to_world, disk_prefab_resolver, CompileError, CompileInput, CompileResult, CompileWorldResult, CompileProgress, FoldMode, ProgressCallback};
 pub use diagnostic::{Diagnostic, Pos, Severity, SourceRange};
-pub use emit::{build_world, emit_brz, field_enum_values, EmitError, EmitOptions, Placement, PrefabResolver};
+pub use emit::{build_world, emit_brz, field_enum_type, field_enum_values, EmitError, EmitOptions, Placement, PrefabResolver};
 #[cfg(feature = "brdb-full")]
 pub use emit::emit_brdb;
 pub use ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, Type, Wire};

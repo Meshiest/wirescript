@@ -1227,10 +1227,14 @@ fn build_completions(
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '/')
             {
                 if let Some(slash) = frag.find('/') {
+                    // filter_text = the name already typed, so ctrl-space at the
+                    // end of a complete name still lists the other assets.
+                    let typed = frag[slash + 1..].to_string();
                     for name in wirescript::analysis::asset_names(&frag[..slash]) {
                         items.push(CompletionItem {
                             label: name.to_string(),
                             kind: Some(CompletionItemKind::CONSTANT),
+                            filter_text: Some(typed.clone()),
                             ..Default::default()
                         });
                     }
@@ -1263,26 +1267,59 @@ fn build_completions(
     // Named params inside a function call: `Call(<here>)`.
     if let Some(call_name) = find_enclosing_call(source, line, col) {
         if let Some(spec) = calls().get(call_name.as_str()) {
-            // Enum-valued named arg (e.g. `justify = "Center"`): complete the
-            // enum's variant names when the cursor is in the value slot.
+            // Enum-valued named arg (e.g. `justify = Center`): complete the
+            // enum's member names when the cursor is in the value slot. Members
+            // insert bare (the idiomatic form; a quoted string also works).
             if let Some((param_name, value_so_far)) = named_arg_value(source, line, col) {
+                // Enum config value — works for both a hand-coded param
+                // (`justify = …`) and a raw config field (`Justification = …`),
+                // resolved through the unified call+event helper.
+                if let Some(et) = wirescript::catalog::config_enum_for_named_arg(
+                    call_name.as_str(),
+                    &param_name,
+                ) {
+                    // filter_text = whatever is already typed, so VS Code shows
+                    // ALL siblings even when the cursor sits at the end of a
+                    // complete member (it otherwise prefix-filters them out and
+                    // hides the no-op exact match -> empty dropdown).
+                    let filter = value_so_far.trim().to_string();
+                    for v in wirescript::catalog::enum_member_names(et) {
+                        items.push(CompletionItem {
+                            label: v.clone(),
+                            kind: Some(CompletionItemKind::ENUM_MEMBER),
+                            detail: Some(format!("{et} member")),
+                            insert_text: Some(v),
+                            filter_text: Some(filter.clone()),
+                            ..Default::default()
+                        });
+                    }
+                    if !items.is_empty() {
+                        return items;
+                    }
+                }
                 if let Some(param) = spec.params.iter().find(|p| p.name == param_name) {
-                    if let Some(values) =
-                        wirescript::field_enum_values(spec.gate_class, param.port.as_str())
-                    {
-                        let quoted = !value_so_far.contains('"');
-                        for v in values {
-                            let insert = if quoted { format!("\"{v}\"") } else { v.clone() };
-                            items.push(CompletionItem {
-                                label: v,
-                                kind: Some(CompletionItemKind::ENUM_MEMBER),
-                                detail: Some(format!("{param_name} value")),
-                                insert_text: Some(insert),
-                                ..Default::default()
-                            });
-                        }
-                        if !items.is_empty() {
-                            return items;
+                    // Asset-ref config param (`font = <here>`, `weapon = <here>`):
+                    // offer full `$Type/Name` refs for the param's asset type, so
+                    // the author needn't know the type name. (Once they type `$`,
+                    // the `$Type/` block above takes over.) Constant-only params
+                    // only — a wire-input Entity port takes a live value.
+                    if !wirescript::catalog::is_wire_input(spec.gate_class, param.port.as_str()) {
+                        if let Some(asset_ty) =
+                            wirescript::analysis::asset_type_for_port(param.port.as_str())
+                        {
+                            for name in wirescript::analysis::asset_names(asset_ty) {
+                                let full = format!("${asset_ty}/{name}");
+                                items.push(CompletionItem {
+                                    label: full.clone(),
+                                    kind: Some(CompletionItemKind::CONSTANT),
+                                    detail: Some(format!("{asset_ty} asset")),
+                                    insert_text: Some(full),
+                                    ..Default::default()
+                                });
+                            }
+                            if !items.is_empty() {
+                                return items;
+                            }
                         }
                     }
                 }
@@ -1293,11 +1330,16 @@ fn build_completions(
                 if i == 0 && spec.receiver.is_some() {
                     continue;
                 }
+                // A config param surfaced as a plain int but backed by a schema
+                // enum shows the enum's name instead of `int`.
+                let ty_label = wirescript::field_enum_type(spec.gate_class, p.port.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| type_str(&p.ty));
                 if p.optional {
                     items.push(CompletionItem {
                         label: format!("{} = ", p.name),
                         kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(format!("{} (optional)", type_str(&p.ty))),
+                        detail: Some(format!("{ty_label} (optional)")),
                         insert_text: Some(format!("{} = ", p.name)),
                         ..Default::default()
                     });
@@ -1305,10 +1347,74 @@ fn build_completions(
                     items.push(CompletionItem {
                         label: p.name.to_string(),
                         kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(format!("{} (required)", type_str(&p.ty))),
+                        detail: Some(format!("{ty_label} (required)")),
                         ..Default::default()
                     });
                 }
+            }
+            // Data-driven config attributes: the gate's raw settings-menu field
+            // names (those without a hand-coded alias param).
+            for cfg in wirescript::catalog::scalar_config_fields(spec.gate_class) {
+                if spec.params.iter().any(|p| p.name == cfg.name) {
+                    continue;
+                }
+                let ty_label = wirescript::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| cfg.ty.clone());
+                items.push(CompletionItem {
+                    label: format!("{} = ", cfg.name),
+                    kind: Some(CompletionItemKind::FIELD),
+                    detail: Some(format!("{ty_label} (config)")),
+                    insert_text: Some(format!("{} = ", cfg.name)),
+                    ..Default::default()
+                });
+            }
+            if !items.is_empty() {
+                return items;
+            }
+        } else if let Some(evt) = wirescript::catalog::events::find_event(call_name.as_str()) {
+            // Event trigger config (`on Clock(<here>)`): the call-param path has
+            // no CallSpec, so resolve names/enum values from the EventSpec.
+            if let Some((param_name, value_so_far)) = named_arg_value(source, line, col) {
+                if let Some(et) =
+                    wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), &param_name)
+                {
+                    let filter = value_so_far.trim().to_string();
+                    for v in wirescript::catalog::enum_member_names(et) {
+                        items.push(CompletionItem {
+                            label: v.clone(),
+                            kind: Some(CompletionItemKind::ENUM_MEMBER),
+                            detail: Some(format!("{et} member")),
+                            insert_text: Some(v),
+                            filter_text: Some(filter.clone()),
+                            ..Default::default()
+                        });
+                    }
+                    if !items.is_empty() {
+                        return items;
+                    }
+                }
+            }
+            for (surf, _, _) in &evt.input_named {
+                items.push(CompletionItem {
+                    label: format!("{surf} = "),
+                    kind: Some(CompletionItemKind::FIELD),
+                    detail: Some("wired input".to_string()),
+                    insert_text: Some(format!("{surf} = ")),
+                    ..Default::default()
+                });
+            }
+            for (surf, field) in &evt.config_named {
+                let ty_label = wirescript::catalog::config_field_enum_type(evt.gate_class, field)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "config".to_string());
+                items.push(CompletionItem {
+                    label: format!("{surf} = "),
+                    kind: Some(CompletionItemKind::FIELD),
+                    detail: Some(format!("{ty_label} (config)")),
+                    insert_text: Some(format!("{surf} = ")),
+                    ..Default::default()
+                });
             }
             if !items.is_empty() {
                 return items;
@@ -1576,6 +1682,73 @@ mod tests {
     }
 
     #[test]
+    fn asset_ref_config_param_completes_typed_refs() {
+        // `weapon = <here>` offers full `$BRItemBase/Name` refs (the author needn't
+        // know the type name), gated on the param being constant-only config.
+        let src = "on go { GiveWeapon(c, weapon = ) }";
+        let col = src.find("weapon = ").unwrap() + "weapon = ".len();
+        let ls = labels(src, 0, col);
+        assert!(
+            ls.iter().any(|l| l == "$BRItemBase/Weapon_Pistol"),
+            "asset-ref value completion: {ls:?}"
+        );
+        // `font = <here>` resolves to the font descriptor type.
+        let src2 = "in p: controller\non go { p.DisplayText(\"hi\", font = ) }";
+        let col2 = src2.rfind("font = ").unwrap() + "font = ".len()
+            - (src2.find('\n').unwrap() + 1); // col within line 1
+        let ls2 = labels(src2, 1, col2);
+        assert!(
+            ls2.iter().any(|l| l == "$BrickFontDescriptor/Roboto"),
+            "font asset completion: {ls2:?}"
+        );
+    }
+
+    #[test]
+    fn event_config_params_complete() {
+        // `on Clock(<here>)` offers the event's wired input + config args (the
+        // call-param path has no CallSpec for an event).
+        let src = "on Clock() { }";
+        let col = src.find("Clock(").unwrap() + "Clock(".len();
+        let ls = labels(src, 0, col);
+        assert!(ls.iter().any(|l| l == "enabled = "), "config arg missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "interval = "), "wired input missing: {ls:?}");
+    }
+
+    #[test]
+    fn enum_value_slot_completes_all_members() {
+        // `direction = <here>` on SweepSimple offers every EBrickDirection member.
+        let src = "on go { SweepSimple(500.0, direction = ) }";
+        let col = src.find("direction = ").unwrap() + "direction = ".len();
+        let ls = labels(src, 0, col);
+        assert!(ls.iter().any(|l| l == "X_Positive"), "enum member missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "Y_Negative"), "enum member missing: {ls:?}");
+        // The sentinel is never offered.
+        assert!(!ls.iter().any(|l| l == "MAX"), "sentinel leaked: {ls:?}");
+    }
+
+    #[test]
+    fn data_driven_config_completes_raw_field_names() {
+        // The gate's raw settings-menu field names are offered alongside params.
+        let src = "on go { SweepSimple(500.0, ) }";
+        let col = src.find("500.0, ").unwrap() + "500.0, ".len();
+        let ls = labels(src, 0, col);
+        assert!(
+            ls.iter().any(|l| l == "bOnlyHitPlayerBodyParts = "),
+            "raw config field missing: {ls:?}"
+        );
+        assert!(ls.iter().any(|l| l == "Direction = "), "raw enum config field missing: {ls:?}");
+    }
+
+    #[test]
+    fn data_driven_raw_enum_value_completes() {
+        // `Direction = <here>` (raw field) still offers the enum members.
+        let src = "on go { SweepSimple(500.0, Direction = ) }";
+        let col = src.find("Direction = ").unwrap() + "Direction = ".len();
+        let ls = labels(src, 0, col);
+        assert!(ls.iter().any(|l| l == "X_Positive"), "raw enum member missing: {ls:?}");
+    }
+
+    #[test]
     fn string_dot_shows_only_string_methods() {
         let src = "let foo = \"\"\nfoo.";
         let ls = labels(src, 1, 4); // cursor right after `foo.`
@@ -1721,10 +1894,11 @@ mod tests {
     #[test]
     fn input_reader_field_trigger_completes_record_fields() {
         // `on split.<here>` where `split = pl.InputReader()` completes the
-        // splitter's record fields (Forward/Right/Jump), not nothing.
+        // splitter's record fields (Forward/Right/Up), not nothing. (`Jump` was
+        // dropped in the InputSplitter rework; `Up` is its current axis.)
         let src = "in pl: character\nlet split = pl.InputReader()\non split.";
         let ls = labels(src, 2, 9); // cursor right after `on split.`
-        for f in ["Forward", "Right", "Jump"] {
+        for f in ["Forward", "Right", "Up"] {
             assert!(ls.iter().any(|l| l == f), "record field {f} missing: {ls:?}");
         }
         // Member context is isolated — no keyword/function leak.

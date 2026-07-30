@@ -80,6 +80,31 @@ on load {
 
 **References can't be inlined into an initializer.** A constant `array` / `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate. An object reference must be wired in from its own brick, so it can't sit in a constant initializer -- build the array with `.push(...)` inside an exec handler instead. Writing `array songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
 
+### `zone` & `teleport` references
+
+| Type | Description | Produced by | Consumed by |
+|------|-------------|-------------|-------------|
+| `zone` | Reference to a Zone brick | a Zone brick's output (wire it into an `in z: zone` port) | `zone = …` on the zone events; `fillFromZone*` |
+| `teleport` | Reference to a Teleport Destination (a "teleport point") | a Teleport Destination brick (wire it into an `in p: teleport` port) | `Teleport` / `RelativeTeleport` `dest`/`source` |
+
+These are **reference-only** types, exactly like a variable ref (`ref T`): a wire carries a handle to a component, not a value. They can be passed as `in` ports, mod/chip parameters, and rerouted anywhere -- but, like a var ref, they can **not** be:
+
+- **stored** in a `var` / `array` / `buffer` (`WS025`) -- a storage gate needs a concrete wire variant;
+- **selected** with an if-then-else (`WS031`) -- the Select gate routes a *value*, not a reference;
+- operated on (arithmetic, comparison, string-format).
+
+```wirescript
+in z: zone
+in e: entity
+in p: teleport
+
+on ZoneEntered(character, zone = z) {   // wire the zone into the event
+  e.Teleport(p)                         // teleport `e` to the teleport point `p`
+}
+```
+
+To teleport an entity to a raw **position** (a vector), use `SetLocation` -- the `Teleport` gates require a teleport point, not a coordinate.
+
 ## Compound Types
 
 ### Reference Types (`ref T`)

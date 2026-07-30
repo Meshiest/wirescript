@@ -4,6 +4,12 @@ use crate::ast::*;
 use crate::catalog::events::find_event;
 use crate::diagnostic::SourceRange;
 
+/// The display type string of a handler param's annotation (`a: int` -> "int"),
+/// if it has one.
+fn handler_param_type_str(p: &HandlerParam) -> Option<String> {
+    p.ty.as_ref().map(|t| type_expr_str(t))
+}
+
 pub struct SymbolDef {
     pub name: String,
     pub kind: &'static str,
@@ -380,9 +386,12 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
             if let Some(tname) = trigger_name {
                 if let Some(evt) = find_event(tname) {
                     for (i, pname) in h.params.iter().enumerate() {
-                        let ty = evt.data.get(i).map(|d| type_str(&d.ty));
+                        // A handler annotation (`a: int` on Custom Event) wins
+                        // over the event's declared data type.
+                        let ty = handler_param_type_str(pname)
+                            .or_else(|| evt.data.get(i).map(|d| type_str(&d.ty)));
                         syms.push(SymbolDef {
-                            name: pname.clone(),
+                            name: pname.name.clone(),
                             kind: "param",
                             range: h.range.clone(),
                             ty,
@@ -392,10 +401,10 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
                 } else {
                     for pname in &h.params {
                         syms.push(SymbolDef {
-                            name: pname.clone(),
+                            name: pname.name.clone(),
                             kind: "param",
                             range: h.range.clone(),
-                            ty: Some("any".into()),
+                            ty: handler_param_type_str(pname).or_else(|| Some("any".into())),
                             exec: false,
                         });
                     }

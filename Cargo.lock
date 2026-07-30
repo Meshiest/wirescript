@@ -209,9 +209,7 @@ dependencies = [
 
 [[package]]
 name = "brdb"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba1fb2b1b3c93780f00491fa89196f3be91ee60317f604d152e88eca570cc347"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "indexmap",
@@ -1737,7 +1735,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wirescript"
-version = "0.20.0"
+version = "1.0.0"
 dependencies = [
  "bitflags 2.9.1",
  "brdb",

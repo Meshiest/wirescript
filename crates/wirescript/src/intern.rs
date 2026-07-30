@@ -45,6 +45,7 @@ pub mod sym {
     def!(INPUT_B, "InputB");
     def!(INDEX, "Index");
     def!(ARRAY_VAR_REF, "ArrayVarRef");
+    def!(MAP_VAR_REF, "MapVarRef");
     def!(B_INPUT, "bInput");
     def!(B_OUTPUT, "bOutput");
     def!(B_COND, "bCond");

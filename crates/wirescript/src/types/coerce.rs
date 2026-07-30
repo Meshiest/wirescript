@@ -38,12 +38,15 @@ fn type_eq(a: &Type, b: &Type) -> bool {
         | (Controller, Controller)
         | (Brick, Brick)
         | (Prefab, Prefab)
+        | (Zone, Zone)
+        | (Teleport, Teleport)
         | (Exec, Exec)
         | (Any, Any)
         | (Opaque, Opaque)
         | (Never, Never) => true,
         (Ref(ai), Ref(bi)) => type_eq(ai, bi),
         (Array(ai), Array(bi)) => type_eq(ai, bi),
+        (Map(ak, av), Map(bk, bv)) => type_eq(ak, bk) && type_eq(av, bv),
         (Union(ax), Union(bx)) => {
             ax.len() == bx.len()
                 && ax

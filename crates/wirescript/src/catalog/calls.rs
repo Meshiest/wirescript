@@ -255,59 +255,113 @@ fn character_exec(
     }
 }
 
+/// `meshColors` config type: an array of colors (`Color[]`) for the
+/// `AddInventoryItemAdv` / `SetInventoryItemAdv` `MeshColors` data field.
+fn mesh_colors_type() -> Type {
+    Type::Array(Box::new(Type::Color))
+}
+
+/// `ammoOverride` config type: the `WeaponAmmoOverride` nested struct as a record
+/// `{ overrideStartingAmmo: bool, resources: [{ loaded: int, reserve: int }] }`.
+/// Constant-only; validated and folded at the call site.
+fn ammo_override_type() -> Type {
+    Type::Record(vec![
+        ("overrideStartingAmmo".into(), Type::Bool),
+        (
+            "resources".into(),
+            Type::Array(Box::new(Type::Record(vec![
+                ("loaded".into(), Type::Int),
+                ("reserve".into(), Type::Int),
+            ]))),
+        ),
+    ])
+}
+
 fn build_calls() -> HashMap<&'static str, CallSpec> {
     let mut m: HashMap<&'static str, CallSpec> = HashMap::default();
 
-    // ---- Controller --------------------------------------------------------
+    // ---- PlayerState (was Controller) --------------------------------------
+    // The reworked DisplayText gate drops the old scalar position/anchor/scale
+    // floats (now composite `Position`/`Anchor`/`Scale` struct ports, which the
+    // call form can't feed) and adds per-axis styling (colors, spacing, skew,
+    // wrap, z-order). `fontSize`/`justify`/`easing` survive as constant-only
+    // data fields. `target` is the entity-typed `PlayerState` port — a
+    // `controller` wires straight in.
     m.insert(
         "DisplayText",
         CallSpec {
             name: "DisplayText",
-            gate_class: gc::CONTROLLER_DISPLAY_TEXT,
+            gate_class: gc::PLAYERSTATE_DISPLAY_TEXT,
             params: vec![
-                CallParam::req("target", WirePort::Controller, Type::Controller),
+                CallParam::req("target", WirePort::PlayerState, Type::Controller),
                 CallParam::req("text", WirePort::Text, Type::Any),
-                CallParam::opt("positionX", WirePort::PositionX, Type::Float),
-                CallParam::opt("positionY", WirePort::PositionY, Type::Float),
-                CallParam::opt("anchorX", WirePort::AnchorX, Type::Float),
-                CallParam::opt("anchorY", WirePort::AnchorY, Type::Float),
-                CallParam::opt("scaleX", WirePort::ScaleX, Type::Float),
-                CallParam::opt("scaleY", WirePort::ScaleY, Type::Float),
+                // 2D layout ports (the gate takes an {X,Y}); pass a vector, whose
+                // X/Y are used.
+                CallParam::opt("position", WirePort::Position, Type::Vector),
+                CallParam::opt("anchor", WirePort::Anchor, Type::Vector),
+                CallParam::opt("scale", WirePort::Scale, Type::Vector),
+                CallParam::opt("pivot", WirePort::Pivot, Type::Vector),
+                CallParam::opt("shadowOffset", WirePort::ShadowOffset, Type::Vector),
                 CallParam::opt("angle", WirePort::Angle, Type::Float),
-                CallParam::opt("fontSize", WirePort::FontSize, Type::Float),
-                CallParam::opt("outlineSize", WirePort::OutlineSize, Type::Float),
-                CallParam::opt("justify", WirePort::Justification, Type::Int),
+                CallParam::opt("outlineSize", WirePort::OutlineSize, Type::Int),
+                CallParam::opt("outlineColor", WirePort::OutlineColor, Type::Color),
+                CallParam::opt("fontColor", WirePort::FontColor, Type::Color),
+                CallParam::opt("shadowColor", WirePort::ShadowColor, Type::Color),
+                CallParam::opt("miteredOutline", WirePort::BMiteredOutline, Type::Bool),
+                CallParam::opt("letterSpacing", WirePort::LetterSpacing, Type::Float),
+                CallParam::opt("lineHeight", WirePort::LineHeight, Type::Float),
+                CallParam::opt("wrapWidth", WirePort::WrapWidth, Type::Float),
+                CallParam::opt("skew", WirePort::Skew, Type::Float),
+                CallParam::opt("zOrder", WirePort::ZOrder, Type::Int),
                 CallParam::opt("lifetime", WirePort::Lifetime, Type::Float),
                 CallParam::opt("transition", WirePort::Transition, Type::Float),
-                CallParam::opt("easing", WirePort::Easing, Type::Int),
                 CallParam::opt("textId", WirePort::TextId, Type::Int),
+                // Constant-only data fields (not wire inputs) — see DATA_ONLY_PARAMS.
+                CallParam::opt("fontSize", WirePort::FontSize, Type::Int),
+                CallParam::opt("justify", WirePort::Justification, Type::Int),
+                CallParam::opt("easing", WirePort::Easing, Type::Int),
+                // `typeface` is an EBRTextTypeface enum member; `font` is a
+                // font asset ref (`$BrickFontDescriptor/…`) — an object reference (typed
+                // `entity`, like every asset ref).
+                CallParam::opt("typeface", WirePort::Typeface, Type::Int),
+                CallParam::opt("font", WirePort::Font, Type::Entity),
             ],
             exec: true,
-            outputs: vec![],
+            // The gate echoes the (resolved) text id, so a later call can update
+            // or clear the same on-screen text: `let id = p.DisplayText(...)`.
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::TextIdOut,
+                ty: Type::Int,
+            }],
             receiver: Some(Type::Controller),
         },
     );
 
     // ---- Character / Controller conversions ------------------------------
+    // `ControllerOf` now lowers to `PlayerState_GetFromEntity` ("Get Player
+    // (Persistent)"), whose player output is the entity-typed `PlayerState`.
     m.insert(
         "ControllerOf",
         entity_exec(
             "ControllerOf",
-            gc::CONTROLLER_GET_FROM_ENTITY,
+            gc::PLAYERSTATE_GET_FROM_ENTITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
             vec![CallOutput {
             field: None,
-                port: WirePort::Controller,
+                port: WirePort::PlayerState,
                 ty: Type::Controller,
             }],
         ),
     );
+    // `CharacterOf` keeps the `Character_GetFromController` gate, but its player
+    // input port is now the entity-typed `PlayerState`.
     m.insert(
         "CharacterOf",
         controller_exec(
             "CharacterOf",
             gc::CHARACTER_GET_FROM_CONTROLLER,
-            vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
+            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
             vec![CallOutput {
             field: None,
                 port: WirePort::Character,
@@ -324,7 +378,11 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         character_exec(
             "GetAim",
             gc::CHARACTER_GET_AIM,
-            vec![CallParam::req("character", WirePort::Character, Type::Character)],
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                // Config-only (settings menu, not a wire input).
+                CallParam::opt("localAim", WirePort::BLocalAim, Type::Bool),
+            ],
             vec![CallOutput {
             field: None,
                 port: WirePort::Origin,
@@ -345,10 +403,23 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::InputForward,
+                // The splitter's port set was reworked: the movement axes gained
+                // Up plus the look axes (Pitch/Yaw/Roll) and mouse wheel, the
+                // old `Jump` bool was dropped, and the pressed-key bools are now
+                // C/E/Q and the mouse buttons.
                 ty: Type::Record(vec![
                     ("Forward".into(), Type::Float),
                     ("Right".into(), Type::Float),
-                    ("Jump".into(), Type::Bool),
+                    ("Up".into(), Type::Float),
+                    ("Pitch".into(), Type::Float),
+                    ("Yaw".into(), Type::Float),
+                    ("Roll".into(), Type::Float),
+                    ("MouseWheel".into(), Type::Float),
+                    ("PressedC".into(), Type::Bool),
+                    ("PressedE".into(), Type::Bool),
+                    ("PressedQ".into(), Type::Bool),
+                    ("PressedLeftMouse".into(), Type::Bool),
+                    ("PressedRightMouse".into(), Type::Bool),
                 ]),
             }],
             receiver: Some(Type::Character),
@@ -366,6 +437,21 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             field: None,
                 port: WirePort::Vector,
                 ty: Type::Vector,
+            }],
+        ),
+    );
+    // Entity_IsFrozen: pure query — `entity.IsFrozen()` returns the frozen state
+    // on ExecOut (non-physics and global grids read frozen). Empty data struct.
+    m.insert(
+        "IsFrozen",
+        entity_exec(
+            "IsFrozen",
+            gc::ENTITY_IS_FROZEN,
+            vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::BFrozen,
+                ty: Type::Bool,
             }],
         ),
     );
@@ -721,6 +807,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("a", WirePort::InputA, Type::Quat),
                 CallParam::req("b", WirePort::InputB, Type::Quat),
                 CallParam::req("alpha", WirePort::Alpha, Type::Float),
+                // Config-only (settings menu, not wire inputs).
+                CallParam::opt("shortestPath", WirePort::BShortestPath, Type::Bool),
+                CallParam::opt("clampAlpha", WirePort::BClampAlpha, Type::Bool),
             ],
             WirePort::Output,
             Type::Quat,
@@ -793,6 +882,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("a", WirePort::InputA, blend_variant()),
                 CallParam::req("b", WirePort::InputB, blend_variant()),
                 CallParam::req("alpha", WirePort::Blend, Type::Float),
+                // Config-only (settings menu, not a wire input).
+                CallParam::opt("clampAlpha", WirePort::BClampAlpha, Type::Bool),
             ],
             WirePort::Output,
             blend_variant(),
@@ -808,21 +899,25 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("a", WirePort::ColorA, Type::Color),
                 CallParam::req("b", WirePort::ColorB, Type::Color),
                 CallParam::req("alpha", WirePort::Alpha, Type::Float),
+                // Config-only (settings menu, not wire inputs). `blendSpace`
+                // is an EBRColorSpace enum member.
+                CallParam::opt("blendSpace", WirePort::BlendSpace, Type::Int),
+                CallParam::opt("clampAlpha", WirePort::BClampAlpha, Type::Bool),
             ],
             WirePort::Output,
             Type::Color,
         ),
     );
 
-    // ---- Controller role check (cl14428+) -----------------------------
+    // ---- PlayerState role check -----------------------------
     // `ctrl.HasRole("Admin")` — RoleName is a config string, returns a bool.
     m.insert(
         "HasRole",
         controller_exec(
             "HasRole",
-            gc::CONTROLLER_HAS_ROLE,
+            gc::PLAYERSTATE_HAS_ROLE,
             vec![
-                CallParam::req("target", WirePort::Controller, Type::Controller),
+                CallParam::req("target", WirePort::PlayerState, Type::Controller),
                 CallParam::req("role", WirePort::RoleName, Type::String),
             ],
             vec![CallOutput {
@@ -844,7 +939,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_SET_INVENTORY_ENTRY,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("weapon", WirePort::ItemTypeIfItem, Type::Any),
+                CallParam::req("weapon", WirePort::ItemTypeIfItem, Type::Entity),
                 CallParam::opt("slot", WirePort::Slot, Type::Int),
             ],
             vec![],
@@ -1060,10 +1155,15 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("b", WirePort::InputB, Type::Any),
             ],
             exec: false,
+            // Auto-unwraps to the first (possibly swapped) value; `.OutputB` is
+            // the other one.
             outputs: vec![CallOutput {
-            field: None,
+                field: None,
                 port: WirePort::Output,
-                ty: Type::Record(vec![("a".into(), Type::Any), ("b".into(), Type::Any)]),
+                ty: Type::Record(vec![
+                    ("Output".into(), Type::Any),
+                    ("OutputB".into(), Type::Any),
+                ]),
             }],
             receiver: None,
         },
@@ -1110,16 +1210,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             Type::Float,
         ),
     );
-    m.insert(
-        "RotToDir",
-        vec_recv(
-            "RotToDir",
-            gc::VEC_ROT_TO_DIR,
-            vec![CallParam::req("rot", WirePort::Input, Type::Vector)],
-            WirePort::Output,
-            Type::Vector,
-        ),
-    );
+    // (Former `RotToDir` builtin removed: its gate `Expr_VecRotationToDirection`
+    // no longer exists in the build. Use `ToDirection` (RotationToDirection).)
 
     // ---- Entity manipulation (exec) -------------------------------------
     m.insert(
@@ -1187,7 +1279,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::ENTITY_TELEPORT,
             params: vec![
                 CallParam::req("entity", WirePort::Entity, Type::Entity),
-                CallParam::req("dest", WirePort::Destination, Type::Any),
+                // A teleport point (Teleport Destination reference). Teleporting
+                // to a raw position uses `SetLocation`, not this gate.
+                CallParam::req("dest", WirePort::Destination, Type::Teleport),
             ],
             exec: true,
             outputs: vec![],
@@ -1201,8 +1295,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::ENTITY_RELATIVE_TELEPORT,
             params: vec![
                 CallParam::req("entity", WirePort::Entity, Type::Entity),
-                CallParam::req("source", WirePort::Source, Type::Any),
-                CallParam::req("dest", WirePort::Destination, Type::Any),
+                // Source and destination are both teleport points.
+                CallParam::req("source", WirePort::Source, Type::Teleport),
+                CallParam::req("dest", WirePort::Destination, Type::Teleport),
             ],
             exec: true,
             outputs: vec![],
@@ -1283,7 +1378,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             "SetLeaderboard",
             gc::GAMEMODE_SET_LEADERBOARD,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("key", WirePort::Key, Type::String),
                 CallParam::req("value", WirePort::Value, Type::Any),
             ],
@@ -1296,7 +1391,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             "IncLeaderboard",
             gc::GAMEMODE_INC_LEADERBOARD,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("key", WirePort::Key, Type::String),
                 CallParam::req("value", WirePort::Value, Type::Any),
             ],
@@ -1309,7 +1404,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             "GetLeaderboard",
             gc::GAMEMODE_GET_LEADERBOARD,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("key", WirePort::Key, Type::String),
             ],
             vec![CallOutput {
@@ -1328,7 +1423,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             vec![CallOutput {
             field: None,
                 port: WirePort::Team,
-                ty: Type::Any,
+                ty: Type::Entity,
             }],
         ),
     );
@@ -1357,6 +1452,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![
                 CallParam::req("s", WirePort::Input, Type::String),
                 CallParam::req("search", WirePort::Search, Type::String),
+                CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
             outputs: vec![CallOutput {
@@ -1375,6 +1471,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![
                 CallParam::req("s", WirePort::Input, Type::String),
                 CallParam::req("prefix", WirePort::Prefix, Type::String),
+                CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
             outputs: vec![CallOutput {
@@ -1393,6 +1490,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![
                 CallParam::req("s", WirePort::Input, Type::String),
                 CallParam::req("suffix", WirePort::Suffix, Type::String),
+                CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
             outputs: vec![CallOutput {
@@ -1431,6 +1529,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("s", WirePort::Input, Type::String),
                 CallParam::req("search", WirePort::Search, Type::String),
                 CallParam::req("replacement", WirePort::Replacement, Type::String),
+                CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
+                CallParam::opt("maxReplacements", WirePort::MaxReplacements, Type::Int),
+                CallParam::opt("start", WirePort::Start, Type::Int),
             ],
             exec: false,
             outputs: vec![CallOutput {
@@ -1450,6 +1551,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::req("s", WirePort::Input, Type::String),
                 CallParam::req("search", WirePort::Search, Type::String),
                 CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
+                CallParam::opt("start", WirePort::Start, Type::Int),
             ],
             exec: false,
             outputs: vec![CallOutput {
@@ -1468,6 +1570,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![
                 CallParam::req("s", WirePort::Input, Type::String),
                 CallParam::req("delimiter", WirePort::Delimiter, Type::String),
+                CallParam::opt("occurrence", WirePort::Occurrence, Type::Int),
+                CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
             outputs: vec![CallOutput {
@@ -1476,6 +1580,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 ty: Type::Record(vec![
                     ("Left".into(), Type::String),
                     ("Right".into(), Type::String),
+                    ("Found".into(), Type::Bool),
                 ]),
             }],
             receiver: Some(Type::String),
@@ -1692,7 +1797,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Team,
-                ty: Type::Any,
+                ty: Type::Entity,
             }],
             receiver: None,
         },
@@ -1722,7 +1827,10 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             vec![CallOutput {
             field: None,
                 port: WirePort::Damage,
-                ty: Type::Float,
+                ty: Type::Record(vec![
+                    ("Damage".into(), Type::Float),
+                    ("DamageLimit".into(), Type::Float),
+                ]),
             }],
         ),
     );
@@ -1751,14 +1859,14 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         ),
     );
 
-    // ---- Controller (additional) -----------------------------------------
+    // ---- PlayerState (additional) -----------------------------------------
     m.insert(
         "ShowStatusMessage",
         controller_exec(
             "ShowStatusMessage",
-            gc::CONTROLLER_SHOW_STATUS,
+            gc::PLAYERSTATE_SHOW_STATUS,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("message", WirePort::Message, Type::String),
             ],
             vec![],
@@ -1768,8 +1876,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "GetUserName",
         controller_exec(
             "GetUserName",
-            gc::CONTROLLER_GET_USER_NAME,
-            vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
+            gc::PLAYERSTATE_GET_USER_NAME,
+            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
             vec![CallOutput {
             field: None,
                 port: WirePort::UserName,
@@ -1781,8 +1889,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "GetUserId",
         controller_exec(
             "GetUserId",
-            gc::CONTROLLER_GET_USER_ID,
-            vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
+            gc::PLAYERSTATE_GET_USER_ID,
+            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
             vec![CallOutput {
             field: None,
                 port: WirePort::UserId,
@@ -1794,8 +1902,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "GetDisplayName",
         controller_exec(
             "GetDisplayName",
-            gc::CONTROLLER_GET_DISPLAY_NAME,
-            vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
+            gc::PLAYERSTATE_GET_DISPLAY_NAME,
+            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
             vec![CallOutput {
             field: None,
                 port: WirePort::DisplayName,
@@ -1807,8 +1915,8 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "IsTrusted",
         controller_exec(
             "IsTrusted",
-            gc::CONTROLLER_IS_TRUSTED,
-            vec![CallParam::req("controller", WirePort::Controller, Type::Controller)],
+            gc::PLAYERSTATE_IS_TRUSTED,
+            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
             vec![CallOutput {
             field: None,
                 port: WirePort::BIsTrusted,
@@ -1820,9 +1928,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "SetCanRespawn",
         controller_exec(
             "SetCanRespawn",
-            gc::CONTROLLER_SET_CAN_RESPAWN,
+            gc::PLAYERSTATE_SET_CAN_RESPAWN,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("canRespawn", WirePort::BCanRespawn, Type::Bool),
             ],
             vec![],
@@ -1832,9 +1940,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "HasPermission",
         controller_exec(
             "HasPermission",
-            gc::CONTROLLER_HAS_PERMISSION,
+            gc::PLAYERSTATE_HAS_PERMISSION,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("permission", WirePort::PermissionName, Type::String),
             ],
             vec![CallOutput {
@@ -1863,7 +1971,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             "SetTeamPinned",
             gc::GAMEMODE_SET_TEAM_PINNED,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("pinned", WirePort::BPinned, Type::Bool),
             ],
             vec![],
@@ -1892,10 +2000,15 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::STRING_PARSE_INT,
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
+            // `.Value` (auto-unwrapped) is the parsed int; `.Success` is false
+            // when the string wasn't a valid integer.
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Value,
-                ty: Type::Int,
+                ty: Type::Record(vec![
+                    ("Value".into(), Type::Int),
+                    ("Success".into(), Type::Bool),
+                ]),
             }],
             receiver: Some(Type::String),
         },
@@ -1907,10 +2020,15 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::STRING_PARSE_NUMBER,
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
+            // `.Value` (auto-unwrapped) is the parsed float; `.Success` is false
+            // when the string wasn't a valid number.
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Value,
-                ty: Type::Float,
+                ty: Type::Record(vec![
+                    ("Value".into(), Type::Float),
+                    ("Success".into(), Type::Bool),
+                ]),
             }],
             receiver: Some(Type::String),
         },
@@ -1923,7 +2041,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             "SetTeam",
             gc::GAMEMODE_SET_TEAM,
             vec![
-                CallParam::req("controller", WirePort::Controller, Type::Controller),
+                CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("team", WirePort::Team, Type::Entity),
                 CallParam::opt("pin", WirePort::BPinPlayerToTeam, Type::Bool),
             ],
@@ -2145,10 +2263,15 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::opt("direction", WirePort::Direction, Type::Any),
             ],
             exec: false,
+            // Auto-unwraps to the interpolated `Value`; `.Arrived` pulses when it
+            // reaches the target.
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Value,
-                ty: blend_variant(),
+                ty: Type::Record(vec![
+                    ("Value".into(), blend_variant()),
+                    ("Arrived".into(), Type::Exec),
+                ]),
             }],
             receiver: None,
         },
@@ -2240,6 +2363,52 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             receiver: None,
         },
     );
+    // Spawn an explosion of a given projectile/explosion class at an offset.
+    m.insert(
+        "SpawnExplosion",
+        CallSpec {
+            name: "SpawnExplosion",
+            gate_class: gc::EXEC_SPAWN_EXPLOSION,
+            params: vec![
+                // The explosion type — a class/projectile asset reference
+                // (`$…` inlines as data; a wired value also works).
+                CallParam::req("projectileType", WirePort::ProjectileType, Type::Entity),
+                // Who caused it (wire-only input, not baked in the data struct).
+                CallParam::opt("instigator", WirePort::Instigator, Type::Entity),
+                CallParam::opt("offset", WirePort::SpawnOffset, Type::Vector),
+                CallParam::opt("scale", WirePort::ScaleMultiplier, Type::Float),
+                CallParam::opt("damage", WirePort::DamageMultiplier, Type::Float),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: None,
+        },
+    );
+
+    // Send Custom Event: pulses every `CustomEvent` gate listening on the same
+    // `eventName`, passing up to 8 data values. `eventName` is a wire input that
+    // also accepts a string literal.
+    m.insert(
+        "SendCustomEvent",
+        CallSpec {
+            name: "SendCustomEvent",
+            gate_class: gc::PSEUDO_SEND_CUSTOM_EVENT,
+            params: vec![
+                CallParam::req("eventName", WirePort::EventName, Type::String),
+                CallParam::opt("data1", WirePort::DataIn1, Type::Any),
+                CallParam::opt("data2", WirePort::DataIn2, Type::Any),
+                CallParam::opt("data3", WirePort::DataIn3, Type::Any),
+                CallParam::opt("data4", WirePort::DataIn4, Type::Any),
+                CallParam::opt("data5", WirePort::DataIn5, Type::Any),
+                CallParam::opt("data6", WirePort::DataIn6, Type::Any),
+                CallParam::opt("data7", WirePort::DataIn7, Type::Any),
+                CallParam::opt("data8", WirePort::DataIn8, Type::Any),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: None,
+        },
+    );
 
     // ---- Sweep (raycasting) ---------------------------------------------
     m.insert(
@@ -2254,6 +2423,13 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::opt("radius", WirePort::Radius, Type::Float),
                 CallParam::opt("relative", WirePort::BRelative, Type::Bool),
                 CallParam::opt("ignore", WirePort::IgnoreEntity, Type::Entity),
+                // An array var of additional entities to ignore (wired as its
+                // ArrayVarRef), on top of the single `ignore` entity.
+                CallParam::opt(
+                    "ignoreList",
+                    WirePort::AdditionalIgnoredEntities,
+                    Type::Array(Box::new(Type::Entity)),
+                ),
                 // cl14477: what the sweep detects (each defaults off in-engine).
                 CallParam::opt("detectBricks", WirePort::BDetectBricks, Type::Bool),
                 CallParam::opt("detectPlayers1", WirePort::BDetectPlayers1, Type::Bool),
@@ -2263,6 +2439,12 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::opt("detectPhysics", WirePort::BDetectPhysics, Type::Bool),
                 CallParam::opt("detectMap", WirePort::BDetectMap, Type::Bool),
                 CallParam::opt("ignoreOwningGrid", WirePort::BIgnoreOwningGrid, Type::Bool),
+                // Wire input selecting the sweep's collision channel
+                // (EBRSweepCollisionChannel: 0 Physics, 1 Weapon, 2 Interaction,
+                // 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction — int at the wire).
+                CallParam::opt("collisionChannel", WirePort::CollisionChannel, Type::Int),
+                // Config-only (settings menu, not a wire input on Sweep).
+                CallParam::opt("bodyPartsOnly", WirePort::BOnlyHitPlayerBodyParts, Type::Bool),
             ],
             exec: true,
             outputs: vec![CallOutput {
@@ -2273,6 +2455,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                     ("HitEntity".into(), Type::Entity),
                     ("HitLocation".into(), Type::Vector),
                     ("HitNormal".into(), Type::Vector),
+                    ("HitColor".into(), Type::Color),
                     ("Hit".into(), Type::Exec),
                     ("Miss".into(), Type::Exec),
                 ]),
@@ -2286,9 +2469,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "ShowChatMessage",
         controller_exec(
             "ShowChatMessage",
-            gc::CONTROLLER_SHOW_CHAT,
+            gc::PLAYERSTATE_SHOW_CHAT,
             vec![
-                CallParam::req("target", WirePort::Controller, Type::Controller),
+                CallParam::req("target", WirePort::PlayerState, Type::Controller),
                 CallParam::req("message", WirePort::Message, Type::Any),
             ],
             vec![],
@@ -2298,9 +2481,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         "ShowMessageBox",
         controller_exec(
             "ShowMessageBox",
-            gc::CONTROLLER_SHOW_MESSAGE_BOX,
+            gc::PLAYERSTATE_SHOW_MESSAGE_BOX,
             vec![
-                CallParam::req("target", WirePort::Controller, Type::Controller),
+                CallParam::req("target", WirePort::PlayerState, Type::Controller),
                 CallParam::req("message", WirePort::Message, Type::Any),
                 CallParam::opt("title", WirePort::Title, Type::Any),
             ],
@@ -2343,7 +2526,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::PLAY_AUDIO_AT,
             vec![
                 CallParam::req("entity", WirePort::Entity, Type::Entity),
-                CallParam::req("audio", WirePort::AudioDescriptor, Type::Any),
+                CallParam::req("audio", WirePort::AudioDescriptor, Type::Entity),
                 CallParam::opt("volume", WirePort::VolumeMultiplier, Type::Float),
                 CallParam::opt("pitch", WirePort::PitchMultiplier, Type::Float),
                 CallParam::opt("innerRadius", WirePort::InnerRadius, Type::Float),
@@ -2359,7 +2542,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             name: "PlayGlobalAudio",
             gate_class: gc::PLAY_GLOBAL_AUDIO,
             params: vec![
-                CallParam::req("audio", WirePort::AudioDescriptor, Type::Any),
+                CallParam::req("audio", WirePort::AudioDescriptor, Type::Entity),
                 CallParam::opt("volume", WirePort::VolumeMultiplier, Type::Float),
                 CallParam::opt("pitch", WirePort::PitchMultiplier, Type::Float),
             ],
@@ -2501,7 +2684,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_ADD_INVENTORY_ITEM,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("item", WirePort::Item, Type::Any),
+                CallParam::req("item", WirePort::Item, Type::Entity),
             ],
             vec![],
         ),
@@ -2513,7 +2696,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_SET_INVENTORY_ITEM,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("item", WirePort::Item, Type::Any),
+                CallParam::req("item", WirePort::Item, Type::Entity),
                 CallParam::opt("slot", WirePort::Slot, Type::Int),
             ],
             vec![],
@@ -2526,7 +2709,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_ADD_INVENTORY_BRICK,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("brick", WirePort::BrickAsset, Type::Any),
+                CallParam::req("brick", WirePort::BrickAsset, Type::Entity),
                 CallParam::opt("size", WirePort::ProceduralSize, Type::Vector),
             ],
             vec![],
@@ -2539,7 +2722,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_SET_INVENTORY_BRICK,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("brick", WirePort::BrickAsset, Type::Any),
+                CallParam::req("brick", WirePort::BrickAsset, Type::Entity),
                 CallParam::opt("slot", WirePort::Slot, Type::Int),
                 CallParam::opt("size", WirePort::ProceduralSize, Type::Vector),
             ],
@@ -2553,7 +2736,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_ADD_INVENTORY_ENTITY,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("entityType", WirePort::EntityType, Type::Any),
+                CallParam::req("entityType", WirePort::EntityType, Type::Entity),
             ],
             vec![],
         ),
@@ -2565,7 +2748,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_SET_INVENTORY_ENTITY,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("entityType", WirePort::EntityType, Type::Any),
+                CallParam::req("entityType", WirePort::EntityType, Type::Entity),
                 CallParam::opt("slot", WirePort::Slot, Type::Int),
             ],
             vec![],
@@ -2578,12 +2761,18 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_ADD_INVENTORY_ITEM_ADV,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("item", WirePort::ItemType, Type::Any),
+                CallParam::req("item", WirePort::ItemType, Type::Entity),
                 CallParam::opt("damage", WirePort::DamageMultiplier, Type::Float),
                 CallParam::opt("speed", WirePort::WeaponSpeedMultiplier, Type::Float),
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
-                CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Any),
+                CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
+                // Config-only (settings menu, not wire inputs). `meshColors` is
+                // a color array (`Color[]`); `ammoOverride` is the
+                // WeaponAmmoOverride nested struct — both constant-only.
+                CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
+                CallParam::opt("meshColors", WirePort::MeshColors, mesh_colors_type()),
+                CallParam::opt("ammoOverride", WirePort::WeaponAmmoOverride, ammo_override_type()),
             ],
             vec![],
         ),
@@ -2595,16 +2784,439 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::CHARACTER_SET_INVENTORY_ITEM_ADV,
             vec![
                 CallParam::req("character", WirePort::Character, Type::Character),
-                CallParam::req("item", WirePort::ItemType, Type::Any),
+                CallParam::req("item", WirePort::ItemType, Type::Entity),
                 CallParam::opt("slot", WirePort::Slot, Type::Int),
                 CallParam::opt("damage", WirePort::DamageMultiplier, Type::Float),
                 CallParam::opt("speed", WirePort::WeaponSpeedMultiplier, Type::Float),
                 CallParam::opt("scale", WirePort::ItemScale, Type::Float),
                 CallParam::opt("itemName", WirePort::ItemNameOverride, Type::String),
-                CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Any),
+                CallParam::opt("projectile", WirePort::ProjectileOverride, Type::Entity),
+                // Config-only (settings menu, not wire inputs). `meshColors` is
+                // a color array (`Color[]`); `ammoOverride` is the
+                // WeaponAmmoOverride nested struct — both constant-only.
+                CallParam::opt("overrideColors", WirePort::BOverrideColors, Type::Bool),
+                CallParam::opt("meshColors", WirePort::MeshColors, mesh_colors_type()),
+                CallParam::opt("ammoOverride", WirePort::WeaponAmmoOverride, ammo_override_type()),
             ],
             vec![],
         ),
+    );
+
+    // ---- Newer entity getters / setters ----------------------------------
+    m.insert(
+        "DestroySpawned",
+        entity_exec(
+            "DestroySpawned",
+            gc::ENTITY_DESTROY_SPAWNED,
+            vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
+            vec![],
+        ),
+    );
+    m.insert(
+        "DestroySpawnedPrefab",
+        entity_exec(
+            "DestroySpawnedPrefab",
+            gc::ENTITY_DESTROY_SPAWNED_PREFAB,
+            vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
+            vec![],
+        ),
+    );
+    m.insert(
+        "GetVelocityAtPoint",
+        entity_exec(
+            "GetVelocityAtPoint",
+            gc::ENTITY_GET_VELOCITY_AT_POINT,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("point", WirePort::Point, Type::Vector),
+            ],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::LinearVelocity,
+                ty: Type::Vector,
+            }],
+        ),
+    );
+    m.insert(
+        "GetSpeed",
+        entity_exec(
+            "GetSpeed",
+            gc::ENTITY_GET_SPEED,
+            vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::Speed,
+                ty: Type::Float,
+            }],
+        ),
+    );
+    // Entity-scoped team access. Named distinctly from the character/player
+    // `GetTeam`/`SetTeam` builtins — these operate on any entity (grid, prefab).
+    m.insert(
+        "GetEntityTeam",
+        entity_exec(
+            "GetEntityTeam",
+            gc::ENTITY_GET_TEAM,
+            vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::Team,
+                ty: Type::Entity,
+            }],
+        ),
+    );
+    m.insert(
+        "SetEntityTeam",
+        entity_exec(
+            "SetEntityTeam",
+            gc::ENTITY_SET_TEAM,
+            vec![
+                CallParam::req("entity", WirePort::Entity, Type::Entity),
+                CallParam::req("team", WirePort::Team, Type::Entity),
+            ],
+            vec![],
+        ),
+    );
+
+    // ---- Character ammo / inventory --------------------------------------
+    m.insert(
+        "GetAmmo",
+        character_exec(
+            "GetAmmo",
+            gc::CHARACTER_GET_AMMO,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("resource", WirePort::Resource, Type::Entity),
+            ],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::Amount,
+                ty: Type::Int,
+            }],
+        ),
+    );
+    m.insert(
+        "GrantAmmo",
+        character_exec(
+            "GrantAmmo",
+            gc::CHARACTER_GRANT_AMMO,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("resource", WirePort::Resource, Type::Entity),
+                CallParam::req("amount", WirePort::Amount, Type::Int),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "SetAmmo",
+        character_exec(
+            "SetAmmo",
+            gc::CHARACTER_SET_AMMO,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("resource", WirePort::Resource, Type::Entity),
+                CallParam::req("amount", WirePort::Amount, Type::Int),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "GetInventoryEntry",
+        character_exec(
+            "GetInventoryEntry",
+            gc::CHARACTER_GET_INVENTORY_ENTRY,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("slot", WirePort::Slot, Type::Int),
+            ],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::Item,
+                ty: Type::Record(vec![
+                    ("Item".into(), Type::Entity),
+                    ("BrickAsset".into(), Type::Entity),
+                    ("EntityType".into(), Type::Entity),
+                ]),
+            }],
+        ),
+    );
+    m.insert(
+        "GetCurrentInventorySlot",
+        character_exec(
+            "GetCurrentInventorySlot",
+            gc::CHARACTER_GET_CURRENT_INVENTORY_SLOT,
+            vec![CallParam::req("character", WirePort::Character, Type::Character)],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::Slot,
+                ty: Type::Int,
+            }],
+        ),
+    );
+    m.insert(
+        "GetWeaponChamberAmmo",
+        character_exec(
+            "GetWeaponChamberAmmo",
+            gc::CHARACTER_GET_WEAPON_CHAMBER_AMMO,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("resource", WirePort::Resource, Type::Entity),
+                CallParam::req("slot", WirePort::Slot, Type::Int),
+            ],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::Amount,
+                ty: Type::Int,
+            }],
+        ),
+    );
+    m.insert(
+        "IncWeaponChamberAmmo",
+        character_exec(
+            "IncWeaponChamberAmmo",
+            gc::CHARACTER_INC_WEAPON_CHAMBER_AMMO,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("resource", WirePort::Resource, Type::Entity),
+                CallParam::req("slot", WirePort::Slot, Type::Int),
+                CallParam::req("amount", WirePort::Amount, Type::Int),
+            ],
+            vec![],
+        ),
+    );
+    m.insert(
+        "SetWeaponChamberAmmo",
+        character_exec(
+            "SetWeaponChamberAmmo",
+            gc::CHARACTER_SET_WEAPON_CHAMBER_AMMO,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("resource", WirePort::Resource, Type::Entity),
+                CallParam::req("slot", WirePort::Slot, Type::Int),
+                CallParam::req("amount", WirePort::Amount, Type::Int),
+            ],
+            vec![],
+        ),
+    );
+
+    // ---- Newer pure expression gates -------------------------------------
+    m.insert(
+        "EnumToInteger",
+        CallSpec {
+            name: "EnumToInteger",
+            gate_class: gc::EXPR_ENUM_TO_INTEGER,
+            params: vec![CallParam::req("value", WirePort::Input, Type::Any)],
+            exec: false,
+            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Int }],
+            receiver: None,
+        },
+    );
+    m.insert(
+        "IntegerToEnum",
+        CallSpec {
+            name: "IntegerToEnum",
+            gate_class: gc::EXPR_INTEGER_TO_ENUM,
+            params: vec![
+                CallParam::req("value", WirePort::Input, Type::Int),
+                CallParam::opt("wrap", WirePort::BWrap, Type::Bool),
+            ],
+            exec: false,
+            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Int }],
+            receiver: None,
+        },
+    );
+    m.insert(
+        "LogicalShiftRight",
+        CallSpec {
+            name: "LogicalShiftRight",
+            gate_class: gc::EXPR_BITWISE_SHR_LOGICAL,
+            params: vec![
+                CallParam::req("a", WirePort::InputA, Type::Int),
+                CallParam::req("b", WirePort::InputB, Type::Int),
+            ],
+            exec: false,
+            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Int }],
+            receiver: None,
+        },
+    );
+    m.insert(
+        "Remap",
+        CallSpec {
+            name: "Remap",
+            gate_class: gc::EXPR_REMAP,
+            params: vec![
+                CallParam::req("value", WirePort::Value, Type::Float),
+                CallParam::req("inMin", WirePort::InputMin, Type::Float),
+                CallParam::req("inMax", WirePort::InputMax, Type::Float),
+                CallParam::req("outMin", WirePort::OutputMin, Type::Float),
+                CallParam::req("outMax", WirePort::OutputMax, Type::Float),
+            ],
+            exec: false,
+            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Float }],
+            receiver: None,
+        },
+    );
+    m.insert(
+        "ItemToPickup",
+        expr_recv(
+            "ItemToPickup",
+            gc::EXPR_ITEM_TO_PICKUP,
+            Type::Entity,
+            vec![CallParam::req("item", WirePort::Input, Type::Entity)],
+            WirePort::Output,
+            Type::Entity,
+        ),
+    );
+    // Color-space conversion: `col.ConvertColor(fromSpace, toSpace)`. The spaces
+    // are constant-only enum data fields (see DATA_ONLY_PARAMS).
+    m.insert(
+        "ConvertColor",
+        CallSpec {
+            name: "ConvertColor",
+            gate_class: gc::EXPR_COLOR_CONVERT,
+            params: vec![
+                CallParam::req("color", WirePort::Input, Type::Color),
+                CallParam::opt("fromSpace", WirePort::FromSpace, Type::Int),
+                CallParam::opt("toSpace", WirePort::ToSpace, Type::Int),
+            ],
+            exec: false,
+            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Color }],
+            receiver: Some(Type::Color),
+        },
+    );
+    // Single-character string <-> unicode codepoint.
+    m.insert(
+        "ToCharCode",
+        CallSpec {
+            name: "ToCharCode",
+            gate_class: gc::STRING_CHAR_TO_CODEPOINT,
+            params: vec![CallParam::req("character", WirePort::Character, Type::String)],
+            exec: false,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::Codepoint,
+                ty: Type::Record(vec![
+                    ("Codepoint".into(), Type::Int),
+                    ("Success".into(), Type::Bool),
+                ]),
+            }],
+            receiver: Some(Type::String),
+        },
+    );
+    m.insert(
+        "FromCharCode",
+        CallSpec {
+            name: "FromCharCode",
+            gate_class: gc::STRING_CODEPOINT_TO_CHAR,
+            params: vec![CallParam::req("codepoint", WirePort::Codepoint, Type::Int)],
+            exec: false,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::Character,
+                ty: Type::Record(vec![
+                    ("Character".into(), Type::String),
+                    ("Success".into(), Type::Bool),
+                ]),
+            }],
+            receiver: None,
+        },
+    );
+
+    // ---- Date / time -----------------------------------------------------
+    m.insert(
+        "GetUnixTime",
+        CallSpec {
+            name: "GetUnixTime",
+            gate_class: gc::GET_UNIX_EPOCH,
+            params: vec![],
+            exec: false,
+            outputs: vec![CallOutput { field: None, port: WirePort::UnixEpoch, ty: Type::Int }],
+            receiver: None,
+        },
+    );
+    m.insert(
+        "FormatDate",
+        CallSpec {
+            name: "FormatDate",
+            gate_class: gc::FORMAT_DATE,
+            params: vec![
+                CallParam::req("unixTime", WirePort::UnixEpoch, Type::Int),
+                CallParam::req("format", WirePort::Format, Type::String),
+                CallParam::opt("useUTC", WirePort::BUseUTC, Type::Bool),
+            ],
+            exec: false,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::Output,
+                ty: Type::Record(vec![
+                    ("Output".into(), Type::String),
+                    ("Success".into(), Type::Bool),
+                ]),
+            }],
+            receiver: None,
+        },
+    );
+
+    // ---- Self transform + simple sweep -----------------------------------
+    m.insert(
+        "GetOwnTransform",
+        CallSpec {
+            name: "GetOwnTransform",
+            gate_class: gc::GET_OWN_TRANSFORM,
+            params: vec![],
+            exec: true,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::Location,
+                ty: Type::Record(vec![
+                    ("Location".into(), Type::Vector),
+                    ("Rotation".into(), Type::Rotator),
+                ]),
+            }],
+            receiver: None,
+        },
+    );
+    m.insert(
+        "SweepSimple",
+        CallSpec {
+            name: "SweepSimple",
+            gate_class: gc::SWEEP_SIMPLE,
+            params: vec![
+                CallParam::req("distance", WirePort::Distance, Type::Float),
+                CallParam::opt("radius", WirePort::Radius, Type::Float),
+                CallParam::opt("spreadConeAngle", WirePort::SpreadConeAngle, Type::Float),
+                // Config-only on SweepSimple (settings menu, not wire inputs).
+                // `direction` is an EBrickDirection enum member.
+                CallParam::opt("direction", WirePort::Direction, Type::Int),
+                CallParam::opt("spreadTowardCenter", WirePort::BSpreadBiasedTowardsCenter, Type::Bool),
+                CallParam::opt("detectBricks", WirePort::BDetectBricks, Type::Bool),
+                CallParam::opt("detectPlayers1", WirePort::BDetectPlayers1, Type::Bool),
+                CallParam::opt("detectPlayers2", WirePort::BDetectPlayers2, Type::Bool),
+                CallParam::opt("detectPlayers3", WirePort::BDetectPlayers3, Type::Bool),
+                CallParam::opt("detectPlayers4", WirePort::BDetectPlayers4, Type::Bool),
+                CallParam::opt("bodyPartsOnly", WirePort::BOnlyHitPlayerBodyParts, Type::Bool),
+                CallParam::opt("detectPhysics", WirePort::BDetectPhysics, Type::Bool),
+                CallParam::opt("detectMap", WirePort::BDetectMap, Type::Bool),
+                // Wire input: collision channel (EBRSweepCollisionChannel, int).
+                CallParam::opt("collisionChannel", WirePort::CollisionChannel, Type::Int),
+            ],
+            exec: true,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::HitDistance,
+                ty: Type::Record(vec![
+                    ("HitDistance".into(), Type::Float),
+                    ("HitEntity".into(), Type::Entity),
+                    ("HitLocation".into(), Type::Vector),
+                    ("HitNormal".into(), Type::Vector),
+                    ("HitColor".into(), Type::Color),
+                    ("Hit".into(), Type::Exec),
+                    ("Miss".into(), Type::Exec),
+                ]),
+            }],
+            receiver: None,
+        },
     );
 
     m
@@ -2671,20 +3283,47 @@ mod tests {
     /// grow: a new entry means either a mistyped port or a gate whose ports
     /// changed in a game update.
     const DATA_ONLY_PARAMS: &[&str] = &[
+        "AddInventoryItemAdv.ammoOverride -> WeaponAmmoOverride",
+        "AddInventoryItemAdv.meshColors -> MeshColors",
+        "AddInventoryItemAdv.overrideColors -> bOverrideColors",
+        "Blend.clampAlpha -> bClampAlpha",
+        "ColorBlend.blendSpace -> BlendSpace",
+        "ColorBlend.clampAlpha -> bClampAlpha",
+        "ConvertColor.fromSpace -> FromSpace",
+        "ConvertColor.toSpace -> ToSpace",
         "DisplayText.easing -> Easing",
+        "DisplayText.font -> Font",
         "DisplayText.fontSize -> FontSize",
         "DisplayText.justify -> Justification",
+        "DisplayText.typeface -> Typeface",
         "Easing.direction -> Direction",
         "Easing.function -> Function",
+        "GetAim.localAim -> bLocalAim",
         "GiveWeapon.weapon -> ItemTypeIfItem",
         "HasPermission.permission -> PermissionName",
         "HasRole.role -> RoleName",
         "PlayAudioAt.audio -> AudioDescriptor",
         "PlayGlobalAudio.audio -> AudioDescriptor",
+        "SetInventoryItemAdv.ammoOverride -> WeaponAmmoOverride",
+        "SetInventoryItemAdv.meshColors -> MeshColors",
+        "SetInventoryItemAdv.overrideColors -> bOverrideColors",
         "SetTempPermission.permission -> PermissionTagStr",
         "ShowHint.text -> HintText",
         "ShowHint.title -> HintTitle",
+        "Slerp.clampAlpha -> bClampAlpha",
+        "Slerp.shortestPath -> bShortestPath",
         "SpawnPrefab.prefab -> Prefab",
+        "Sweep.bodyPartsOnly -> bOnlyHitPlayerBodyParts",
+        "SweepSimple.bodyPartsOnly -> bOnlyHitPlayerBodyParts",
+        "SweepSimple.detectBricks -> bDetectBricks",
+        "SweepSimple.detectMap -> bDetectMap",
+        "SweepSimple.detectPhysics -> bDetectPhysics",
+        "SweepSimple.detectPlayers1 -> bDetectPlayers1",
+        "SweepSimple.detectPlayers2 -> bDetectPlayers2",
+        "SweepSimple.detectPlayers3 -> bDetectPlayers3",
+        "SweepSimple.detectPlayers4 -> bDetectPlayers4",
+        "SweepSimple.direction -> Direction",
+        "SweepSimple.spreadTowardCenter -> bSpreadBiasedTowardsCenter",
     ];
 
     /// Every catalog param must name a real wire input on its gate, or be a
@@ -2719,10 +3358,77 @@ mod tests {
     }
 
     #[test]
-    fn font_size_is_not_a_wire_input() {
-        let g = gc::CONTROLLER_DISPLAY_TEXT;
-        assert!(!crate::catalog::is_wire_input(g, "FontSize"));
+    fn permission_name_is_not_a_wire_input() {
+        // HasPermission's `PermissionName` is a config string baked into the
+        // gate's data, not a wire input — the player port is wireable, it isn't.
+        let g = gc::PLAYERSTATE_HAS_PERMISSION;
+        assert!(!crate::catalog::is_wire_input(g, "PermissionName"));
+        assert!(crate::catalog::is_wire_input(g, "PlayerState"));
+    }
+
+    /// Every data-only config param on a gate that has a component data struct
+    /// must name a real field on that struct in the live brdb schema, and any
+    /// enum-typed config param must resolve to a real schema enum with members.
+    /// Guards against game-update drift (a renamed/removed config field, or a
+    /// field that changed type). Gates absent from the component→struct pair
+    /// table (pseudo/internal, or fields nested inside an emit-built sub-struct
+    /// like GiveWeapon's) have no top-level struct here and are skipped.
+    #[test]
+    fn config_params_exist_in_schema() {
+        // Config fields the emitter writes into a nested sub-struct rather than
+        // a top-level field of the gate's data struct (so they legitimately do
+        // not appear on that struct directly).
+        const NESTED_FIELDS: &[(&str, &str)] = &[("GiveWeapon", "ItemTypeIfItem")];
+        let schema = brdb::schemas::bricks_components_schema_max();
+        let struct_of: std::collections::HashMap<&str, &str> =
+            brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
+                .iter()
+                .copied()
+                .collect();
+        for (name, spec) in calls().iter() {
+            let Some(strct) = struct_of.get(spec.gate_class) else {
+                continue;
+            };
+            let Some(s) = schema.get_struct(strct) else {
+                continue;
+            };
+            let fields: std::collections::HashSet<&str> = s
+                .keys()
+                .filter_map(|k| schema.intern.lookup_ref(*k))
+                .collect();
+            for p in &spec.params {
+                let port = p.port.as_str();
+                if crate::catalog::is_wire_input(spec.gate_class, port) {
+                    continue;
+                }
+                if NESTED_FIELDS.contains(&(name, port)) {
+                    continue;
+                }
+                assert!(
+                    fields.contains(port),
+                    "{name}.{}: config field '{port}' is not on {strct}",
+                    p.name
+                );
+                if let Some(et) = crate::catalog::config_field_enum_type(spec.gate_class, port) {
+                    assert!(
+                        !crate::catalog::enum_member_names(et).is_empty(),
+                        "{name}.{}: enum {et} has no members",
+                        p.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn display_text_targets_player_state_port() {
+        // The reworked DisplayText gate takes its player on the entity-typed
+        // `PlayerState` port, and `Text` is a real wire input.
+        let g = gc::PLAYERSTATE_DISPLAY_TEXT;
+        assert!(crate::catalog::is_wire_input(g, "PlayerState"));
         assert!(crate::catalog::is_wire_input(g, "Text"));
-        assert!(crate::catalog::is_wire_input(g, "PositionX"));
+        // The old scalar layout ports are gone.
+        assert!(!crate::catalog::is_wire_input(g, "PositionX"));
+        assert!(!crate::catalog::is_wire_input(g, "FontSize"));
     }
 }

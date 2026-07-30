@@ -876,8 +876,8 @@ on tick {
 fn builtin_multi_output_destructure_binds_gate_ports() {
     let r = compile(
         "on CharacterSpawned(player) {\n\
-           let { Forward, Right, Jump } = player.InputReader()\n\
-           PrintToConsole(\"${Forward} ${Right} ${Jump}\")\n\
+           let { Forward, Right, Up } = player.InputReader()\n\
+           PrintToConsole(\"${Forward} ${Right} ${Up}\")\n\
          }",
     );
     assert_no_errors(&r);
@@ -899,7 +899,7 @@ fn builtin_multi_output_destructure_binds_gate_ports() {
         .filter(|w| w.source.node_id == splitter)
         .map(|w| w.source.port.as_str().to_string())
         .collect();
-    for p in ["InputForward", "InputRight", "bPressedJump"] {
+    for p in ["InputForward", "InputRight", "InputUp"] {
         assert!(ports.contains(&p.to_string()), "expected a wire from {p}, got {ports:?}");
     }
 }

@@ -27,9 +27,10 @@ pub struct EventSpec {
     /// data-struct field name.
     pub config_named: Vec<(&'static str, &'static str)>,
     /// Named args (`on E(name = value)`, matched case-insensitively) whose value
-    /// is WIRED into a gate INPUT port (surface name → gate input port name).
-    /// e.g. `zone = zoneBrick` on the zone events. Empty for most events.
-    pub input_named: Vec<(&'static str, &'static str)>,
+    /// is WIRED into a gate INPUT port (surface name → gate input port name →
+    /// the value's expected type). e.g. `zone = zoneBrick` on the zone events
+    /// wires a `zone` reference into the `Zone` port. Empty for most events.
+    pub input_named: Vec<(&'static str, &'static str, Type)>,
     /// The gate's exec OUTPUT port name — the port the handler body chains from.
     /// Most events use `ExecOut`; the internal zone-event gates name it `Exec`.
     pub exec_out: &'static str,
@@ -64,7 +65,27 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 data,
                 config_positional: vec![],
                 config_named: vec![],
-                input_named: vec![("zone", "Zone")],
+                input_named: vec![("zone", "Zone", Type::Zone)],
+                exec_out: "Exec",
+            },
+        )
+    };
+    // Like `mk_zone`, but the event also exposes a `tagFilter = <value>` named
+    // arg wiring into the gate's `TagFilter` input (the character/entity zone
+    // enter/leave events gained it — it restricts the event to tagged entities).
+    let mk_zone_tag = |surface: &'static str, class: &'static str, data: Vec<EventDataBinding>| {
+        (
+            surface,
+            EventSpec {
+                surface_name: surface,
+                gate_class: class,
+                data,
+                config_positional: vec![],
+                config_named: vec![],
+                input_named: vec![
+                    ("zone", "Zone", Type::Zone),
+                    ("tagFilter", "TagFilter", Type::String),
+                ],
                 exec_out: "Exec",
             },
         )
@@ -98,11 +119,6 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         port,
         ty: Type::Controller,
     };
-    let brick = |name, port| EventDataBinding {
-        name,
-        port,
-        ty: Type::Brick,
-    };
     let entity = |name, port| EventDataBinding {
         name,
         port,
@@ -122,12 +138,20 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         mk(
             "RoundStart",
             "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent",
-            vec![],
+            vec![EventDataBinding {
+                name: "roundNumber",
+                port: "RoundNumber",
+                ty: Type::Int,
+            }],
         ),
         mk(
             "RoundEnd",
             "BrickComponentType_WireGraph_Fake_Gamemode_RoundEndEvent",
-            vec![],
+            vec![EventDataBinding {
+                name: "roundNumber",
+                port: "RoundNumber",
+                ty: Type::Int,
+            }],
         ),
         mk(
             "CharacterSpawned",
@@ -137,43 +161,57 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         mk(
             "CharacterDied",
             "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDiedEvent",
-            vec![character("character", "Character")],
+            vec![
+                character("character", "Character"),
+                // The killer is a player character; the weapon is an item entity.
+                character("killer", "Killer"),
+                entity("killerWeapon", "KillerWeapon"),
+                EventDataBinding {
+                    name: "killerWeaponName",
+                    port: "KillerWeaponName",
+                    ty: Type::String,
+                },
+            ],
         ),
         mk(
             "ControllerJoined",
             "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent",
             vec![
-                controller("controller", "Controller"),
+                controller("controller", "PlayerState"),
                 string("userId", "UserId"),
+                string("userName", "UserName"),
             ],
         ),
         mk(
             "ControllerLeft",
             "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent",
             vec![
-                controller("controller", "Controller"),
+                controller("controller", "PlayerState"),
                 string("userId", "UserId"),
+                string("userName", "UserName"),
             ],
         ),
-        mk_zone(
+        mk_zone_tag(
             "ZoneEntered",
             "BrickComponentType_Internal_CharacterZoneEvent_Entered",
             vec![character("character", "Character")],
         ),
-        mk_zone(
+        mk_zone_tag(
             "ZoneLeft",
             "BrickComponentType_Internal_CharacterZoneEvent_Left",
             vec![character("character", "Character")],
         ),
+        // The brick zone events now carry no data payload — the gate exposes
+        // only its exec pulse (no `Brick` output), so there's no `brick` binding.
         mk_zone(
             "BrickChanged",
             "BrickComponentType_Internal_ZoneEvent_BrickChanged",
-            vec![brick("brick", "Brick")],
+            vec![],
         ),
         mk_zone(
             "BrickRemoved",
             "BrickComponentType_Internal_ZoneEvent_BrickRemoved",
-            vec![brick("brick", "Brick")],
+            vec![],
         ),
         mk(
             "CharacterDamaged",
@@ -196,12 +234,35 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 },
             ],
         ),
-        mk_zone(
+        mk(
+            "CharacterFiredWeapon",
+            "BrickComponentType_WireGraph_Fake_Gamemode_CharacterFiredWeaponEvent",
+            vec![
+                character("character", "Character"),
+                EventDataBinding {
+                    name: "direction",
+                    port: "Direction",
+                    ty: Type::Vector,
+                },
+                EventDataBinding {
+                    name: "start",
+                    port: "Start",
+                    ty: Type::Vector,
+                },
+                entity("weapon", "Weapon"),
+                EventDataBinding {
+                    name: "weaponName",
+                    port: "WeaponName",
+                    ty: Type::String,
+                },
+            ],
+        ),
+        mk_zone_tag(
             "EntityZoneEntered",
             "BrickComponentType_Internal_EntityZoneEvent_Entered",
             vec![entity("entity", "Entity")],
         ),
-        mk_zone(
+        mk_zone_tag(
             "EntityZoneLeft",
             "BrickComponentType_Internal_EntityZoneEvent_Left",
             vec![entity("entity", "Entity")],
@@ -238,7 +299,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "ChatCommand",
             "BrickComponentType_WireGraph_Exec_ChatCommand",
             vec![
-                controller("controller", "Controller"),
+                controller("controller", "PlayerState"),
                 EventDataBinding {
                     name: "arguments",
                     port: "Arguments",
@@ -249,6 +310,57 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             vec!["CommandName", "HelpText"],
             // `on ChatCommand("greet", Description = "Greets you")`
             vec![("description", "HelpText"), ("helptext", "HelpText")],
+        ),
+        // The Clock event auto-emits an exec pulse at a configured interval; the
+        // handler body chains from its `Pulse` output. `interval` and `enabled`
+        // wire into the gate's `IntervalSeconds` / `bEnabled` inputs (so they may
+        // be dynamic); pulseOn/onTime/offTime are settings-menu constant config.
+        (
+            "Clock",
+            EventSpec {
+                surface_name: "Clock",
+                gate_class: "BrickComponentType_Clock",
+                data: vec![],
+                config_positional: vec![],
+                config_named: vec![
+                    ("pulseon", "bPulseOn"),
+                    ("ontime", "OnTimeSeconds"),
+                    ("offtime", "OffTimeSeconds"),
+                ],
+                input_named: vec![
+                    ("interval", "IntervalSeconds", Type::Float),
+                    ("enabled", "bEnabled", Type::Bool),
+                ],
+                exec_out: "Pulse",
+            },
+        ),
+        // Custom Event: pulses when a matching `SendCustomEvent` fires, exposing
+        // the up-to-8 data values it carried. The leading positional is the
+        // channel name (baked into `EventName` when constant); the remaining
+        // params are the TYPED data outputs, whose annotations type the gate's
+        // WireGraphVariant ports (the game can't store them as `any`). Unused
+        // slots default to float. `sameOwner` is constant config.
+        // `on CustomEvent("dmg", amount: int, source: character) { last = amount }`.
+        (
+            "CustomEvent",
+            EventSpec {
+                surface_name: "CustomEvent",
+                gate_class: "BrickComponentType_WireGraphPseudo_CustomEvent",
+                data: vec![
+                    EventDataBinding { name: "data1", port: "DataOut1", ty: Type::Any },
+                    EventDataBinding { name: "data2", port: "DataOut2", ty: Type::Any },
+                    EventDataBinding { name: "data3", port: "DataOut3", ty: Type::Any },
+                    EventDataBinding { name: "data4", port: "DataOut4", ty: Type::Any },
+                    EventDataBinding { name: "data5", port: "DataOut5", ty: Type::Any },
+                    EventDataBinding { name: "data6", port: "DataOut6", ty: Type::Any },
+                    EventDataBinding { name: "data7", port: "DataOut7", ty: Type::Any },
+                    EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
+                ],
+                config_positional: vec!["EventName"],
+                config_named: vec![("sameowner", "bOnlyReceiveFromSameOwner")],
+                input_named: vec![],
+                exec_out: "ExecOut",
+            },
         ),
     ];
 
@@ -270,8 +382,10 @@ mod tests {
 
     #[test]
     fn all_events_registered() {
-        assert_eq!(events().len(), 16);
+        assert_eq!(events().len(), 19);
         assert!(find_event("RoundStart").is_some());
+        assert!(find_event("Clock").is_some());
+        assert!(find_event("CustomEvent").is_some());
         assert!(find_event("CharacterSpawned").is_some());
         assert!(find_event("ChatCommand").is_some());
         assert!(find_event("CharacterDamaged").is_some());

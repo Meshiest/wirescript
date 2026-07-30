@@ -16,6 +16,7 @@ pub(super) enum VarStorage {
     Var,
     Buffer,
     Array,
+    Map,
 }
 
 #[derive(Clone, Debug)]

@@ -62,6 +62,21 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 e,
             );
         }
+        // Map method: m.get(k), m.set(k, v), m.has(k), etc.
+        if let Expr::Ident { name, .. } = obj.as_ref()
+            && let Some(var_rec) = ctx.lookup_var(name).cloned()
+            && var_rec.storage == VarStorage::Map
+        {
+            return lower_map_method(
+                ctx,
+                var_rec.node_id.port(WirePort::MapVarRef),
+                var_rec.inner_type.clone(),
+                field,
+                args,
+                range,
+                e,
+            );
+        }
         // Array method on an `in X: T[]` input. The array ref lives at the
         // input's RER_Output (not an ArrayVarRef port), but is otherwise usable
         // exactly like a var array — inputs are first-class wherever in scope.
@@ -228,7 +243,8 @@ pub(super) fn lower_chip_call_inline(
         ctx.scope.insert(&name, Binding::Input(rec));
     }
     for (name, port, _ty) in val_bindings {
-        ctx.scope.insert(&name, Binding::Local(LocalRecord { port }));
+        ctx.scope
+            .insert(&name, Binding::Local(LocalRecord { port }));
     }
     for (name, fields) in record_bindings {
         ctx.scope.insert(&name, Binding::Record(fields));
@@ -286,6 +302,7 @@ pub(super) fn lower_chip_call_inline(
             match s {
                 Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
                 Stmt::Array(a) => pre_declare_array(ctx, a),
+                Stmt::Map(m) => pre_declare_map(ctx, m),
                 Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
                 Stmt::If(i) => {
                     pre_declare_block_vars(ctx, &i.then_block);
@@ -737,9 +754,12 @@ fn build_chip_module(
                 ..Default::default()
             };
             let new_id = child_ctx.add_gate(opts);
-            child_ctx
-                .scope
-                .insert_sym(name, Binding::Local(LocalRecord { port: new_id.port(local.port.port) }));
+            child_ctx.scope.insert_sym(
+                name,
+                Binding::Local(LocalRecord {
+                    port: new_id.port(local.port.port),
+                }),
+            );
             continue;
         }
         child_ctx.scope.insert_sym(name, binding);
@@ -858,10 +878,9 @@ fn build_chip_module(
         } else {
             let t = type_of_type_expr(&inp.typ);
             let node_id = child_ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
-            child_ctx.scope.insert(
-                &inp.name,
-                Binding::Input(NodeRecord { node_id, ty: t }),
-            );
+            child_ctx
+                .scope
+                .insert(&inp.name, Binding::Input(NodeRecord { node_id, ty: t }));
         }
     }
     for out in &chip_decl.outputs {
@@ -896,6 +915,7 @@ fn build_chip_module(
             Stmt::Var(v) => child_ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
             Stmt::Buffer(b) => pre_declare_buffer(&mut child_ctx, b),
             Stmt::Array(a) => pre_declare_array(&mut child_ctx, a),
+            Stmt::Map(m) => pre_declare_map(&mut child_ctx, m),
             Stmt::OutBinding(o) if !sig_output_names.contains(o.name.as_str()) => {
                 child_ctx.with_nofold(o.no_fold, |ctx| {
                     pre_declare_output(
@@ -1115,6 +1135,7 @@ pub(super) struct ConstFold {
 fn const_arg_literal(e: &Expr) -> Option<Literal> {
     match e {
         Expr::IntLit { value, .. } => Some(Literal::Int(*value)),
+        Expr::AtomLit { value, .. } => Some(Literal::Int(*value)),
         Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
         Expr::BoolLit { value, .. } => Some(Literal::Bool(*value)),
         _ => None,
@@ -1286,7 +1307,12 @@ fn wire_chip_args_and_outputs(
         // consumer — the same gates the equivalent `mod` emits.
         if let Some(value) = const_arg_literal(arg_expr) {
             let ty = type_of_type_expr(&param.typ);
-            const_folds.push(ConstFold { pin: mc_input, index: input_idx - 1, value, ty });
+            const_folds.push(ConstFold {
+                pin: mc_input,
+                index: input_idx - 1,
+                value,
+                ty,
+            });
             continue;
         }
         let val_port = lower_expr(ctx, arg_expr);
@@ -1390,6 +1416,37 @@ pub(super) fn lower_builtin_call(
         let Some(&arg_expr) = bound.get(p.name) else {
             continue;
         };
+        // Enum-typed config passed as a bare member name (`function = Bounce`):
+        // resolve to the enum's integer value and inline as gate data. Int and
+        // quoted-name forms fall through to the literal path below (the emitter
+        // resolves those). Typecheck (WS028) already validated membership.
+        if let Expr::Ident { name, .. } = arg_expr
+            && !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
+            && let Some(enum_type) =
+                crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
+            && let Some(v) = crate::catalog::enum_member_value(enum_type, name)
+        {
+            properties.insert(intern(p.port.as_str()), Literal::Int(v));
+            continue;
+        }
+        // Composite constant-only config (meshColors: Color[], ammoOverride:
+        // WeaponAmmoOverride nested struct). These target NON-wire data fields,
+        // so a value that can't fold to a constant must never fall through to
+        // the wire path below (a wire into a non-input port is a silent broken
+        // gate). Fold it into gate data, or drop it — typecheck (WS028) has
+        // already flagged the non-constant case.
+        if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
+            && matches!(p.port, WirePort::MeshColors | WirePort::WeaponAmmoOverride)
+        {
+            let folded = match p.port {
+                WirePort::MeshColors => fold_mesh_colors(arg_expr),
+                _ => fold_ammo_override(arg_expr),
+            };
+            if let Some(lit) = folded {
+                properties.insert(intern(p.port.as_str()), lit);
+            }
+            continue;
+        }
         // Literal check — inline constant arguments as properties so they
         // go into the data struct. With negative literal folding in the
         // parser, all constant args (positive and negative) are consistent.
@@ -1415,6 +1472,15 @@ pub(super) fn lower_builtin_call(
                 continue;
             }
         }
+        // A data-only config port (settings-menu field, not a wire input) has
+        // no pin to wire into. Reaching here means the value wasn't a foldable
+        // constant — drop it rather than emit a wire into a nonexistent pin
+        // (which loads as a silent "Failed to connect wire", with the config
+        // never applied). Typecheck (WS028) reports the non-constant value; this
+        // is the safety net that keeps the broken wire from ever being emitted.
+        if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str()) {
+            continue;
+        }
         let val_port = lower_expr(ctx, arg_expr);
         // character and controller wire directly into each other's ports in
         // Brickadia, so no adapter gate is inserted for a character passed to
@@ -1425,6 +1491,44 @@ pub(super) fn lower_builtin_call(
             port: p.port,
             val_port,
         });
+    }
+
+    // Data-driven config attributes: named args that name a settings-menu config
+    // field (`bOnlyHitPlayerBodyParts = true`) rather than a declared param. Bake
+    // each constant into the gate's data-struct field, keyed by the raw field
+    // name; enum members resolve to their int. Typecheck (WS028) already
+    // validated constant-ness / membership.
+    for a in args {
+        if let CallArg::Named { name, value } = a {
+            if spec.params.iter().any(|p| p.name == name) {
+                continue;
+            }
+            let Some(cfg) = crate::catalog::scalar_config_field(spec.gate_class, name) else {
+                continue;
+            };
+            let lit = match cfg.ty.as_str() {
+                // A bare member name or quoted name resolves to the enum's int;
+                // a raw int literal passes straight through.
+                "enum" => {
+                    let et = crate::catalog::config_field_enum_type(spec.gate_class, &cfg.name);
+                    match value {
+                        Expr::Ident { name: member, .. }
+                        | Expr::StringLit { value: member, .. } => et
+                            .and_then(|e| crate::catalog::enum_member_value(e, member))
+                            .map(Literal::Int),
+                        _ => literal_for_property_port(value, &Type::Int),
+                    }
+                }
+                "bool" => literal_for_property_port(value, &Type::Bool),
+                "int" => literal_for_property_port(value, &Type::Int),
+                "float" => literal_for_property_port(value, &Type::Float),
+                "string" => literal_for_property_port(value, &Type::String),
+                _ => None,
+            };
+            if let Some(lit) = lit {
+                properties.insert(intern(cfg.name.as_str()), lit);
+            }
+        }
     }
 
     // Build gate ports
