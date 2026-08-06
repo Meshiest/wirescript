@@ -191,6 +191,29 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 string("userName", "UserName"),
             ],
         ),
+        // Team join/leave: like ControllerJoined/Left, but fired when a player
+        // joins/leaves a team, and additionally exposing the `team` entity. The
+        // PlayerState is surfaced as an entity here (the newer object typing).
+        mk(
+            "ControllerJoinedTeam",
+            "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedTeamEvent",
+            vec![
+                entity("controller", "PlayerState"),
+                entity("team", "Team"),
+                string("userId", "UserId"),
+                string("userName", "UserName"),
+            ],
+        ),
+        mk(
+            "ControllerLeftTeam",
+            "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftTeamEvent",
+            vec![
+                entity("controller", "PlayerState"),
+                entity("team", "Team"),
+                string("userId", "UserId"),
+                string("userName", "UserName"),
+            ],
+        ),
         mk_zone_tag(
             "ZoneEntered",
             "BrickComponentType_Internal_CharacterZoneEvent_Entered",
@@ -334,12 +357,15 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 exec_out: "Pulse",
             },
         ),
-        // Custom Event: pulses when a matching `SendCustomEvent` fires, exposing
-        // the up-to-8 data values it carried. The leading positional is the
-        // channel name (baked into `EventName` when constant); the remaining
-        // params are the TYPED data outputs, whose annotations type the gate's
-        // WireGraphVariant ports (the game can't store them as `any`). Unused
-        // slots default to float. `sameOwner` is constant config.
+        // (Personal) Custom Event: pulses when a matching same-owner
+        // `SendCustomEvent` fires, exposing the up-to-8 data values it carried.
+        // The leading positional is the channel name (baked into `EventName` when
+        // constant); the remaining params are the TYPED data outputs, whose
+        // annotations type the gate's WireGraphVariant ports (the game can't store
+        // them as `any`). Unused slots default to float. `objectEvent` is constant
+        // config that scopes the event to a specific grid/object instead of firing
+        // grid-wide. Delivery is same-owner only — the ownership-agnostic
+        // counterpart is `on GlobalCustomEvent(...)`.
         // `on CustomEvent("dmg", amount: int, source: character) { last = amount }`.
         (
             "CustomEvent",
@@ -357,7 +383,32 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
                 ],
                 config_positional: vec!["EventName"],
-                config_named: vec![("sameowner", "bOnlyReceiveFromSameOwner")],
+                config_named: vec![("objectevent", "bIsObjectEvent")],
+                input_named: vec![],
+                exec_out: "ExecOut",
+            },
+        ),
+        // Global Custom Event: the ownership-agnostic counterpart of Custom Event
+        // — fires for a matching `SendGlobalCustomEvent` regardless of owner. Same
+        // shape (channel-name positional, up to 8 typed data outputs, `objectEvent`
+        // config).
+        (
+            "GlobalCustomEvent",
+            EventSpec {
+                surface_name: "GlobalCustomEvent",
+                gate_class: "BrickComponentType_WireGraphPseudo_CustomEvent_Global",
+                data: vec![
+                    EventDataBinding { name: "data1", port: "DataOut1", ty: Type::Any },
+                    EventDataBinding { name: "data2", port: "DataOut2", ty: Type::Any },
+                    EventDataBinding { name: "data3", port: "DataOut3", ty: Type::Any },
+                    EventDataBinding { name: "data4", port: "DataOut4", ty: Type::Any },
+                    EventDataBinding { name: "data5", port: "DataOut5", ty: Type::Any },
+                    EventDataBinding { name: "data6", port: "DataOut6", ty: Type::Any },
+                    EventDataBinding { name: "data7", port: "DataOut7", ty: Type::Any },
+                    EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
+                ],
+                config_positional: vec!["EventName"],
+                config_named: vec![("objectevent", "bIsObjectEvent")],
                 input_named: vec![],
                 exec_out: "ExecOut",
             },
@@ -382,9 +433,12 @@ mod tests {
 
     #[test]
     fn all_events_registered() {
-        assert_eq!(events().len(), 19);
+        assert_eq!(events().len(), 22);
         assert!(find_event("RoundStart").is_some());
         assert!(find_event("Clock").is_some());
+        assert!(find_event("GlobalCustomEvent").is_some());
+        assert!(find_event("ControllerJoinedTeam").is_some());
+        assert!(find_event("ControllerLeftTeam").is_some());
         assert!(find_event("CustomEvent").is_some());
         assert!(find_event("CharacterSpawned").is_some());
         assert!(find_event("ChatCommand").is_some());

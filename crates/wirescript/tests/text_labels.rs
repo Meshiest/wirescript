@@ -178,7 +178,7 @@ fn var_tag_survives_boundary_pins_inside_named_chip() {
     use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
-    let src = "array names: string[]\n\
+    let src = "var names: string[]\n\
                var count: int = 0\n\
                chip Init() -> (code: int) {\n  \
                  names.push(\"a\")\n  \

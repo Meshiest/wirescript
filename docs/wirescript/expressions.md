@@ -75,7 +75,7 @@ composes two rotations. Same-type operands keep their type; a `quat`/`rotator`
 mix yields a `quat` (freely coercible back to a `rotator` — see
 [types](types.md)).
 
-An **object** operand (a `controller`/`character`/`entity`/`brick`/`prefab` —
+An **object** operand (a `controller`/`character`/`entity` —
 e.g. a player) no longer coerces directly to an `int` on a math gate, so it is
 routed through `(obj || false)` first: `1 + player` lowers to
 `add(1, or(player, false))`. The `||` gate coerces the object to a value the math
@@ -108,7 +108,7 @@ All comparison operators return `bool`.
 | `>` | Greater than | (same as `==`) |
 | `>=` | Greater or equal | (same as `==`) |
 
-Comparison accepts all wire variant types (`int`, `float`, `bool`, `string`, `entity`, `controller`, `character`, `brick`, `prefab`) in any combination.
+Comparison accepts all wire variant types (`int`, `float`, `bool`, `string`, `entity`, `controller`, `character`) in any combination.
 
 ```wirescript
 let isZero = count == 0
@@ -125,7 +125,7 @@ let sameTeam = teamA == teamB
 | `^^` | Logical XOR | any wire variant pair | `bool` |
 | `!` | Logical NOT (unary) | any wire variant | `bool` |
 
-Wire variant types are: `bool`, `int`, `float`, `exec`, `string`, `entity`, `controller`, `character`, `brick`, `prefab`. The engine coerces all of these to bool on bool ports (truthy/falsy). This means `exec` values (true for one frame) work directly in logical expressions:
+Wire variant types are: `bool`, `int`, `float`, `exec`, `string`, `entity`, `controller`, `character`. The engine coerces all of these to bool on bool ports (truthy/falsy). This means `exec` values (true for one frame) work directly in logical expressions:
 
 ```wirescript
 in reset: bool
@@ -244,10 +244,24 @@ Block expressions stay pure (Select gate) as long as they only contain `let` bin
 let norm = { let len = sqrt(x*x + y*y); len }
 ```
 
-The result type is the common type of both branches. If the branches have different types, the result is a union type.
+The result type is the **widening join** of both branches -- the same rule
+that infers a [generic](types.md#generics) type parameter from its call-site
+arguments: numeric branches widen to a common numeric type (`int` widens to
+`float`), and object branches widen toward `entity`. The branches are not
+required to already match:
 
 ```wirescript
-let value = if flag then 42 else 3.14  // type: int | float
+let value = if flag then 42 else 3.14  // type: float (int widens to float)
+```
+
+If the branches have no common widening (e.g. `int` and `vector`), it's a
+compile error:
+
+```wirescript
+in v: vector
+let bad = if flag then 1 else v
+// ERROR WS003: if-then-else branch type mismatch: then is int, else is
+// vector (no common widening)
 ```
 
 Conditional expressions can be nested and used anywhere an expression is valid:
@@ -261,10 +275,10 @@ chip let emptyCount = (if c0 == 0 then 1 else 0) + (if c1 == 0 then 1 else 0)
 
 An atom literal `:name` is a compile-time `int` constant -- the deterministic
 xxHash64 (seed 0) hash of `name`. It's a readable stand-in for a hand-picked
-magic number: a key for an `int`-keyed map, or an enum-like tag.
+magic number: a key for an `int`-keyed dict, or an enum-like tag.
 
 ```wirescript
-map scores: Map<int, int> = { :red => 10, :blue => 20 }
+var scores: Dict<int, int> = { :red => 10, :blue => 20 }
 if team == :red { ... }
 ```
 
@@ -274,7 +288,7 @@ be a letter or `_` -- a leading digit or `-` doesn't lex as an atom start).
 `:a - b`, with spaces, when you mean `:a` minus `b`. Atoms only lex where a value is expected
 (after `=`, an operator, `(`, `,`, `[`, `=>`, ...); a `:` immediately after
 something that already reads as a value -- a type annotation (`x: int`), a
-record field (`{ x: 1 }`), or a map's string/atom key separator (`"red": 1`,
+record field (`{ x: 1 }`), or a dict's string/atom key separator (`"red": 1`,
 `:red: 1`) -- stays a plain colon instead.
 
 There's no runtime string-to-hash gate: an atom's value is always resolved

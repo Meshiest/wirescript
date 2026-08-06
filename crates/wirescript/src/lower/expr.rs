@@ -308,7 +308,26 @@ pub(super) fn lower_if_expr(
     let cond_port = lower_expr(ctx, cond);
     let then_port = lower_expr(ctx, then_br);
     let else_port = lower_expr(ctx, else_br);
-    let result_ty = unwrap_ref(&ctx.type_of(else_br));
+    // Widen to the branches' least upper bound (matches the typecheck result
+    // for `Expr::IfExpr`) so the Select gate's ports carry the joined type —
+    // e.g. `if c then 1 else 2.0` emits a Float Select, with the int branch's
+    // wire relying on native port-type compatibility to flow into it (no
+    // cast gate is inserted for numeric coercion). Falls back to the else
+    // branch's type if there's no common widening (typecheck already raised
+    // WS003 for that case; this just picks something to keep lowering going).
+    // Inside a generic mod body `type_of` holds the stale last-mask-member type
+    // (the per-mask-member body check overwrote it), so read the branches' ACTUAL
+    // lowered port types — the concrete monomorph — falling back to `type_of`.
+    // Non-generic lowering keeps the byte-identical `type_of` path.
+    let (then_ty, else_ty) = if ctx.mono_stack.is_empty() {
+        (unwrap_ref(&ctx.type_of(then_br)), unwrap_ref(&ctx.type_of(else_br)))
+    } else {
+        let then_ty = super::call::arg_port_type(ctx, then_port).unwrap_or_else(|| ctx.type_of(then_br));
+        let else_ty = super::call::arg_port_type(ctx, else_port).unwrap_or_else(|| ctx.type_of(else_br));
+        (unwrap_ref(&then_ty), unwrap_ref(&else_ty))
+    };
+    let result_ty =
+        crate::types::coerce::widening_join(&then_ty, &else_ty).unwrap_or(else_ty);
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::SELECT,
         source_range: range.clone(),

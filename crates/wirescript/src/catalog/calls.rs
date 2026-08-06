@@ -1428,6 +1428,39 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         ),
     );
 
+    // Team predicates (pure): `IsBuilderTeam(team)` / `team.IsBuilderTeam()` and
+    // the unaffiliated-team counterpart. Take a Team entity, return a bool.
+    m.insert(
+        "IsBuilderTeam",
+        CallSpec {
+            name: "IsBuilderTeam",
+            gate_class: gc::GAMEMODE_IS_BUILDER_TEAM,
+            params: vec![CallParam::req("team", WirePort::Team, Type::Entity)],
+            exec: false,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::BResult,
+                ty: Type::Bool,
+            }],
+            receiver: Some(Type::Entity),
+        },
+    );
+    m.insert(
+        "IsUnaffiliatedTeam",
+        CallSpec {
+            name: "IsUnaffiliatedTeam",
+            gate_class: gc::GAMEMODE_IS_UNAFFILIATED_TEAM,
+            params: vec![CallParam::req("team", WirePort::Team, Type::Entity)],
+            exec: false,
+            outputs: vec![CallOutput {
+                field: None,
+                port: WirePort::BResult,
+                ty: Type::Bool,
+            }],
+            receiver: Some(Type::Entity),
+        },
+    );
+
     // ---- String operations -----------------------------------------------
     m.insert(
         "Length",
@@ -2385,9 +2418,11 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         },
     );
 
-    // Send Custom Event: pulses every `CustomEvent` gate listening on the same
-    // `eventName`, passing up to 8 data values. `eventName` is a wire input that
-    // also accepts a string literal.
+    // Send (Personal) Custom Event: pulses every same-owner `CustomEvent` gate
+    // listening on the same `eventName`, passing up to 8 data values. `eventName`
+    // is the constant channel name, baked into the gate's data. `target` is an
+    // optional entity whose grid receives the matching object events. Delivery is
+    // same-owner only — the ownership-agnostic counterpart is SendGlobalCustomEvent.
     m.insert(
         "SendCustomEvent",
         CallSpec {
@@ -2403,6 +2438,57 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                 CallParam::opt("data6", WirePort::DataIn6, Type::Any),
                 CallParam::opt("data7", WirePort::DataIn7, Type::Any),
                 CallParam::opt("data8", WirePort::DataIn8, Type::Any),
+                CallParam::opt("target", WirePort::Target, Type::Entity),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: None,
+        },
+    );
+
+    // Send Global Custom Event: the ownership-agnostic counterpart of
+    // SendCustomEvent — delivers to every matching `GlobalCustomEvent` receiver
+    // regardless of owner. Same shape (constant `eventName`, up to 8 data values,
+    // optional `target` entity for object-scoped delivery).
+    m.insert(
+        "SendGlobalCustomEvent",
+        CallSpec {
+            name: "SendGlobalCustomEvent",
+            gate_class: gc::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL,
+            params: vec![
+                CallParam::req("eventName", WirePort::EventName, Type::String),
+                CallParam::opt("data1", WirePort::DataIn1, Type::Any),
+                CallParam::opt("data2", WirePort::DataIn2, Type::Any),
+                CallParam::opt("data3", WirePort::DataIn3, Type::Any),
+                CallParam::opt("data4", WirePort::DataIn4, Type::Any),
+                CallParam::opt("data5", WirePort::DataIn5, Type::Any),
+                CallParam::opt("data6", WirePort::DataIn6, Type::Any),
+                CallParam::opt("data7", WirePort::DataIn7, Type::Any),
+                CallParam::opt("data8", WirePort::DataIn8, Type::Any),
+                CallParam::opt("target", WirePort::Target, Type::Entity),
+            ],
+            exec: true,
+            outputs: vec![],
+            receiver: None,
+        },
+    );
+
+    // Spawn Explosion At: like SpawnExplosion but at an absolute WORLD position
+    // instead of an offset from the gate's brick.
+    m.insert(
+        "SpawnExplosionAt",
+        CallSpec {
+            name: "SpawnExplosionAt",
+            gate_class: gc::EXEC_SPAWN_EXPLOSION_AT,
+            params: vec![
+                CallParam::req("worldPosition", WirePort::WorldPosition, Type::Vector),
+                // The explosion type — a class/projectile asset reference
+                // (`$…` inlines as data; a wired value also works).
+                CallParam::req("projectileType", WirePort::ProjectileType, Type::Entity),
+                // Who caused it (wire-only input, not baked in the data struct).
+                CallParam::opt("instigator", WirePort::Instigator, Type::Entity),
+                CallParam::opt("scale", WirePort::ScaleMultiplier, Type::Float),
+                CallParam::opt("damage", WirePort::DamageMultiplier, Type::Float),
             ],
             exec: true,
             outputs: vec![],
@@ -3304,6 +3390,8 @@ mod tests {
         "HasRole.role -> RoleName",
         "PlayAudioAt.audio -> AudioDescriptor",
         "PlayGlobalAudio.audio -> AudioDescriptor",
+        "SendCustomEvent.eventName -> EventName",
+        "SendGlobalCustomEvent.eventName -> EventName",
         "SetInventoryItemAdv.ammoOverride -> WeaponAmmoOverride",
         "SetInventoryItemAdv.meshColors -> MeshColors",
         "SetInventoryItemAdv.overrideColors -> bOverrideColors",

@@ -229,14 +229,38 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 }
             };
             let label = if c.inline { "mod" } else { "chip" };
+            // Generic type parameters render before the arg list, e.g.
+            // `mod square<T>(v: T) -> T` / `mod clamp<T: Scalar>(...)`.
+            let generics = if c.type_params.is_empty() {
+                String::new()
+            } else {
+                let ps: Vec<String> = c
+                    .type_params
+                    .iter()
+                    .map(|tp| match &tp.bound {
+                        Some(b) => format!("{}: {}", tp.name, type_expr_str(b)),
+                        None => tp.name.clone(),
+                    })
+                    .collect();
+                format!("<{}>", ps.join(", "))
+            };
             syms.push(SymbolDef {
                 name: c.name.clone(),
                 kind: label,
                 range: c.range.clone(),
-                ty: Some(format!("({}){}", params.join(", "), ret_suffix)),
+                ty: Some(format!("{}({}){}", generics, params.join(", "), ret_suffix)),
                 exec: block_has_exec(&c.body),
             });
             if is_local(&c.range) {
+                for tp in &c.type_params {
+                    syms.push(SymbolDef {
+                        name: tp.name.clone(),
+                        kind: "typeparam",
+                        range: tp.range.clone(),
+                        ty: tp.bound.as_ref().map(|b| type_expr_str(b)),
+                        exec: false,
+                    });
+                }
                 collect_param_symbols(syms, &c.inputs, script);
                 for s in &c.body.stmts {
                     collect_stmt(syms, s, tmap, file, script);
@@ -541,7 +565,7 @@ mod tests {
     #[test]
     fn array_index_return_mod_is_exec() {
         // `return arr[i]` reads an array -> Exec_ArrayVar_Get -> genuinely exec.
-        let src = "array xs: int[]\nmod at(i: int) -> int {\n  return xs[i]\n}";
+        let src = "var xs: int[]\nmod at(i: int) -> int {\n  return xs[i]\n}";
         assert!(mod_exec(src, "at"), "array-index return mod should be exec");
     }
 
@@ -554,7 +578,7 @@ mod tests {
 
     #[test]
     fn if_statement_mod_is_exec() {
-        let src = "array xs: int[]\nmod g(x: int) {\n  if x > 0 { xs.push(x) }\n}";
+        let src = "var xs: int[]\nmod g(x: int) {\n  if x > 0 { xs.push(x) }\n}";
         assert!(mod_exec(src, "g"), "if-statement mod should be exec");
     }
 }

@@ -191,7 +191,20 @@ impl TopDecl {
 #[derive(Clone, Debug)]
 pub struct TypeAliasDecl {
     pub name: String,
+    /// Declaration-side generic type parameters: `type Pair<T> = { a: T, b: T }`.
+    /// Empty for non-generic aliases.
+    pub type_params: Vec<TypeParam>,
     pub typ: TypeExpr,
+    pub range: SourceRange,
+}
+
+/// A generic type parameter on a `mod`/`chip`/`type` declaration, e.g. `T` or
+/// `T: Numeric`. `bound` is the constraint TypeExpr (a named class like
+/// `Numeric`, or a union like `int | vector`); `None` = unbounded (= `Variant`).
+#[derive(Clone, Debug)]
+pub struct TypeParam {
+    pub name: String,
+    pub bound: Option<TypeExpr>,
     pub range: SourceRange,
 }
 
@@ -218,13 +231,13 @@ pub struct ArrayDecl {
     pub range: SourceRange,
 }
 
-/// `map name: Map<K, V>` — a keyed variable collection (parallels `ArrayDecl`).
+/// `map name: Dict<K, V>` — a keyed variable collection (parallels `ArrayDecl`).
 #[derive(Clone, Debug)]
 pub struct MapDecl {
     pub name: String,
     pub key_type: TypeExpr,
     pub value_type: TypeExpr,
-    /// Optional literal initializer: `map m: Map<int, int> = { 1 => 2 }`.
+    /// Optional literal initializer: `map m: Dict<int, int> = { 1 => 2 }`.
     pub init: Option<Expr>,
     pub range: SourceRange,
 }
@@ -278,6 +291,10 @@ pub struct FnDecl {
 #[derive(Clone, Debug)]
 pub struct ChipDecl {
     pub name: String,
+    /// Declaration-side generic type parameters: `mod pick<T>(...)` /
+    /// `chip Foo<T: Numeric>(...)`. Empty for non-generic decls. Covers `mod`
+    /// too (a `mod` is a `ChipDecl` with `inline: true`).
+    pub type_params: Vec<TypeParam>,
     pub inputs: Vec<Param>,
     pub outputs: Vec<NamedOutput>,
     pub body: Block,
@@ -292,6 +309,19 @@ pub struct ChipDecl {
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
+}
+
+impl ChipDecl {
+    /// True when the first parameter is the receiver marker `self`, making this
+    /// mod/chip callable with method syntax: `v.method(args)` desugars to
+    /// `method(v, args)`. `self` is otherwise an ordinary parameter of its
+    /// declared type (it is not a magic value). A destructured first parameter
+    /// (`{ … }: T`) is never a receiver.
+    pub fn is_self_receiver(&self) -> bool {
+        self.inputs
+            .first()
+            .is_some_and(|p| p.name == "self" && p.pattern.is_none())
+    }
 }
 
 /// Anonymous chip: `chip { body }` — shares parent scope, creates a
@@ -494,7 +524,7 @@ pub enum TypeExpr {
         fields: Vec<RecordTypeField>,
         range: SourceRange,
     },
-    /// A generic application `Name<Arg, ...>` (e.g. `Map<string, int>`).
+    /// A generic application `Name<Arg, ...>` (e.g. `Dict<string, int>`).
     /// `Array<V>` / `Ref<V>` are desugared to `Array` / `Ref` at parse time, so
     /// this carries the remaining generics (currently `Map`) resolved by
     /// `type_of_type_expr`.
@@ -720,6 +750,9 @@ pub enum Expr {
     Call {
         callee: Box<Expr>,
         args: Vec<CallArg>,
+        /// Explicit type arguments: `pick<int>(...)`. Empty for an
+        /// ordinary call (type params, if any, are inferred from the args).
+        type_args: Vec<TypeExpr>,
         range: SourceRange,
     },
     Deref {

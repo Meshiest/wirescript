@@ -449,7 +449,7 @@ fn dedup_keeps_constants_within_their_chip() {
     // twice so the arg literal stays wired (single-use args inline earlier and
     // never reach dedup).
     let src = "\
-array q: int[]
+var q: int[]
 in trig: exec
 mod enc(i: int) { q.push(i * 4) q.push(i) }
 on trig {
@@ -745,7 +745,7 @@ fn chip_record_param_dissolves_to_ports() {
         "\
 type State = { val: *int, arr: int[] }
 var v: int = 0
-array a: int[]
+var a: int[]
 chip Foo(s: State) -> (result: int) {
   in run: exec
   on run { s.arr.push(s.val) }
@@ -927,9 +927,9 @@ fn map_var_emits_brz() {
     let src = r#"
 in t: exec
 var e: entity
-map scores: Map<string, int>
-map byId: Map<int, entity>
-map pos: Map<string, vector>
+var scores: Dict<string, int>
+var byId: Dict<int, entity>
+var pos: Dict<string, vector>
 on t {
   scores.set("a", 1)
   let g = scores.get("a")
@@ -951,7 +951,7 @@ fn baked_map_literal_emits_brz() {
     // A constant map literal bakes into the Pseudo_MapVar's InitialValue;
     // this exercises the populated-variant emit path end to end.
     let src =
-        "map scores: Map<int, int> = { :red => 10, :blue => 20 }\nin t: exec\non t { let g = scores.get(:red) }\n";
+        "var scores: Dict<int, int> = { :red => 10, :blue => 20 }\nin t: exec\non t { let g = scores.get(:red) }\n";
     let r = compile(src);
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
@@ -989,7 +989,7 @@ fn exec_param_handler_drives_chip_body() {
     // The push gate inside the child module must be wired from the handler.
     // State comes in through a record-of-arrays param here; free top-level
     // references also work (see named_chip_body_captures_top_level_state).
-    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(init: exec, tables: Tables) -> (code: int) {\n  on init {\n    tables.names.push(\"a\")\n    emit code = 5\n  }\n}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code";
+    let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(init: exec, tables: Tables) -> (code: int) {\n  on init {\n    tables.names.push(\"a\")\n    emit code = 5\n  }\n}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
     let child = r
@@ -1090,7 +1090,7 @@ fn exec_named_arg_drives_chip_body_outside_exec_context() {
     // Outside exec contexts, exec chips take their trigger as an `exec =`
     // named arg: `let r = Init(TB, exec = s)` at top level. The body's push
     // gate must be exec-wired, not silently dead.
-    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nout v = r.code";
+    let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
     let child = r
@@ -1121,7 +1121,7 @@ fn exec_named_arg_drives_chip_body_outside_exec_context() {
 fn exec_arg_call_exposes_exec_field() {
     // A chip call with `exec =` also returns the chip's completion exec as an
     // `exec` record field: `let r = Init(TB, exec = s)` ... `on r.exec { }`.
-    let src = "array names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nvar hit: int = 0\non r.exec { hit = hit + 1 }\nout v = r.code";
+    let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nvar hit: int = 0\non r.exec { hit = hit + 1 }\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
     let child = r
@@ -1147,7 +1147,7 @@ fn named_chip_body_captures_top_level_state() {
     // Free references to top-level arrays/vars inside a named chip body
     // resolve against the caller's scope — wire refs cross chip boundaries,
     // so the body's gates connect to the outer nodes directly.
-    let src = "array names: string[]\nvar count: int = 0\nchip Init() -> (code: int) {\n  names.push(\"a\")\n  count = count + 1\n  emit code = 7\n}\nin s: exec\nlet r = Init(exec = s)\nout v = r.code";
+    let src = "var names: string[]\nvar count: int = 0\nchip Init() -> (code: int) {\n  names.push(\"a\")\n  count = count + 1\n  emit code = 7\n}\nin s: exec\nlet r = Init(exec = s)\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
     let child = r
@@ -1219,7 +1219,7 @@ fn in_array_supports_methods_and_index() {
 fn in_array_passes_to_inline_mod() {
     // Passing an `in` array to an inline mod's `int[]` param must bind it, so
     // the mod body's reads resolve to the input's ref.
-    let src = "in counts: int[]\narray dst: int[]\nin z: exec\n\
+    let src = "in counts: int[]\nvar dst: int[]\nin z: exec\n\
         mod f(a: int[], d: int[]) { d.clear()  d.push(a[0])  BroadcastChatMessage(\"${a.length()}\") }\n\
         on z { f(counts, dst) }";
     let r = compile(src);
@@ -1238,7 +1238,7 @@ fn namespaced_mod_resolves_siblings() {
     // bare name; those must resolve when the mod is inlined at a call site in
     // the importing module (no `_Unsupported` placeholders).
     let lib = "let K = 7.0\n\
-        array TBL: int[] = [10, 20, 30]\n\
+        var TBL: int[] = [10, 20, 30]\n\
         mod helper(n: int) -> int { return n + 1 }\n\
         mod draw(ctrl: controller, i: int) {\n\
           let v = K + TBL[i]\n\

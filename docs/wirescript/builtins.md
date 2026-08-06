@@ -316,12 +316,12 @@ time the trigger's value changes. A per-index, always-nonzero trigger like `inde
 turns an array into a single-gate lookup table read straight from a pure binding:
 
 ```wirescript
-array lut: color[] = [ /* ...constant entries... */ ]
+var lut: color[] = [ /* ...constant entries... */ ]
 out c: color = lut.get(i, exec = i + 1).Value
 ```
 
 ```wirescript
-array scores: int[]
+var scores: int[]
 on RoundEnd {
   scores.push(currentScore)
   scores.sort(true)          // descending
@@ -658,6 +658,18 @@ GetTeam(character: character) -> any
 ```
 
 Get a character's team. Receiver on `character`.
+
+### IsBuilderTeam / IsUnaffiliatedTeam
+```
+team.IsBuilderTeam() -> bool
+IsBuilderTeam(team: entity) -> bool
+team.IsUnaffiliatedTeam() -> bool
+IsUnaffiliatedTeam(team: entity) -> bool
+```
+
+Pure predicates over a `team` entity: `IsBuilderTeam` is true for the builder
+team, `IsUnaffiliatedTeam` for the unaffiliated (no-team) group. Receiver on the
+team entity.
 
 ### PlayerWins / TeamWins
 ```
@@ -1014,14 +1026,18 @@ on ChatCommand("wave", Description = "Wave at everyone") {
 
 ## Custom Events
 
-A named, cross-gate event channel that carries up to **8 data values**. A
-`SendCustomEvent` pulses every `CustomEvent` receiver listening on the same name.
+A named, cross-gate event channel that carries up to **8 data values**. Each comes
+in two flavours: **personal** (same-owner) and **global** (ownership-agnostic), on
+**separate** channel namespaces — a personal `"x"` and a global `"x"` never mix.
 
 ### SendCustomEvent (Exec)
 
-`SendCustomEvent(name, data1, … data8)` — `name` is the channel (a string; a
-constant literal is baked, a variable wires in), followed by up to 8 optional
-data values of any type. Fires all matching receivers.
+`SendCustomEvent(name, data1, … data8, target = …)` — `name` is the channel, a
+**constant** string baked into the gate (a variable or computed value is a `WS028`
+error), followed by up to 8 optional data values of any type. `target` is an
+optional entity whose grid receives the matching **object** events. Delivery is
+same-owner; use `SendGlobalCustomEvent` for the ownership-agnostic version. Fires
+all matching receivers.
 
 ```wirescript
 on hit {
@@ -1035,8 +1051,8 @@ The receiver's first argument is the channel name (positional), and the
 remaining params are the **typed data outputs**. The type annotations are
 **required** — the game stores each data slot as a typed value, not `any`, so a
 receiver param without a type is a **`WS029`** lint. Unused slots default to
-`float`. `sameOwner` (the `bOnlyReceiveFromSameOwner` config) restricts it to
-sends from the same owner.
+`float`. `objectEvent = true` is constant config that scopes the receiver to a
+specific grid/object (an **object event**) instead of firing grid-wide.
 
 ```wirescript
 var lastDamage: int = 0   // a top-level var is already persistent — no `static`
@@ -1047,21 +1063,38 @@ on CustomEvent("damage", amount: int, attacker: character) {
 }
 ```
 
+### Global variants — SendGlobalCustomEvent / on GlobalCustomEvent
+
+`SendGlobalCustomEvent` and `on GlobalCustomEvent` are the **ownership-agnostic**
+counterparts: delivery ignores the owner, reaching every matching global receiver.
+They have the same shape (constant channel name, up to 8 typed data values,
+optional `target` entity, `objectEvent` config), on a channel namespace that is
+**separate** from the personal one — `SendGlobalCustomEvent("x")` reaches
+`on GlobalCustomEvent("x")` but never `on CustomEvent("x")`, and vice versa.
+
+```wirescript
+var total: int = 0
+
+on GlobalCustomEvent("score", points: int) { total = total + points }
+on hit { SendGlobalCustomEvent("score", 10) }
+```
+
 > **One-tick delay.** A `CustomEvent` receiver fires on the **tick after** the
 > `SendCustomEvent` runs — the pulse is delivered on the next frame, not
 > synchronously within the sender's exec chain. Anything that must observe the
 > event's effect immediately has to account for that one-tick latency (and a
 > send → receive → send round trip costs a tick each hop).
 
-> **Signature checking (`WS030`).** When a `SendCustomEvent` targets a **constant**
-> channel name, the compiler compares each data value's wire type against the matching
-> `on CustomEvent("name", …)` receiver's declared param types and warns (`WS030`) on a
-> mismatch — e.g. sending a `float` where the receiver declared `int`. Types that share a
+> **Signature checking (`WS030`).** When a send targets a **constant** channel name,
+> the compiler compares each data value's wire type against the matching receiver's
+> declared param types and warns (`WS030`) on a mismatch — e.g. sending a `float` where
+> the receiver declared `int`. This runs for both the personal (`SendCustomEvent` /
+> `on CustomEvent`) and global (`SendGlobalCustomEvent` / `on GlobalCustomEvent`) pairs,
+> each within its own namespace. Types that share a
 > wire variant are interchangeable and never flagged (any two entity kinds —
-> `character`/`entity`/`controller`/… — are all the same `Object` variant). A **dynamic**
-> channel name (a variable rather than a literal) can reach any receiver, so those sends
-> are not checked. In the editor, **go-to-definition** on a send's channel-name string
-> jumps to the receiver.
+> `character`/`entity`/`controller`/… — are all the same `Object` variant). The channel
+> name must be a constant literal, so every send's receiver set is known at compile time.
+> In the editor, **go-to-definition** on a send's channel-name string jumps to the receiver.
 >
 > A *non-constant* data value is still typed as `float` on the wire at emit rather than
 > from the value's real type — full end-to-end typing waits on generics. For now the
@@ -1131,6 +1164,25 @@ Spawns an explosion of a given projectile/explosion class.
 ```wirescript
 on hit {
   SpawnExplosion($BRWeaponProjectile/Grenade, instigator = attacker, scale = 2.0, damage = 1.5)
+}
+```
+
+### SpawnExplosionAt
+
+Like `SpawnExplosion`, but at an absolute **world position** instead of an offset
+from the gate's brick.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `worldPosition` | `vector` | Yes | Absolute world position to spawn the explosion at |
+| `projectileType` | class ref | Yes | The explosion/projectile class — a `$…` asset reference (or a wired value) |
+| `instigator` | `entity` | No | The character/entity that caused it (kill credit, etc.) |
+| `scale` | `float` | No | Explosion scale multiplier |
+| `damage` | `float` | No | Damage multiplier |
+
+```wirescript
+on hit {
+  SpawnExplosionAt(Vec(0.0, 0.0, 200.0), $BRWeaponProjectile/Grenade, instigator = attacker)
 }
 ```
 
@@ -1319,25 +1371,24 @@ The character/entity zone enter/leave events also accept a `tagFilter =` argumen
 Types may be written in generic form:
 
 ```wirescript
-array nums: Array<int> = [1, 2, 3]   // same as int[]
+var nums: Array<int> = [1, 2, 3]   // same as int[]
 mod inc(v: Ref<int>) { v = v + 1 }   // same as *int
 ```
 
 `Array<V>` and `Ref<V>` are exact aliases of `V[]` and `*V`.
 
-## Maps (`map`)
+## Dicts (`var m: Dict<K, V>`)
 
-A `map` is a keyed variable collection (the `MapVar` gate family), declared with the
-generic `Map<K, V>` type. Keys are `int`, `string`, or an entity/object reference;
-values may be any wire-storable scalar (int/float/bool/string/vector/rotator/quat/
-color/object). Maps always start empty and are populated at runtime.
-
-Either keyword works — `map m: Map<K, V>` or `var m: Map<K, V>` are equivalent (just as
-`array a: T[]` and `var a: T[]` are).
+A dict is a keyed variable collection (the `MapVar` gate family), declared as a `var`
+of the generic `Dict<K, V>` type. Keys must be `int`, `string`, or an object reference
+(entity/character/controller) — any other key type is a **`WS039`** error; values may
+be any wire-storable scalar (int/float/bool/string/vector/rotator/quat/color/object).
+A dict starts empty unless given a constant literal initializer (`= {}` is the explicit
+empty form).
 
 ```wirescript
-map scores: Map<string, int>
-array names: string[]
+var scores: Dict<string, int>
+var names: string[]
 
 on tick {
   scores.set("alice", 10)                 // insert / overwrite
@@ -1352,35 +1403,36 @@ on tick {
 ```
 
 Methods (exec context, like array methods): `set(key, value)`, `get(key)`,
-`has(key)`, `remove(key)`, `clear()`, `copyFrom(otherMap)`, `length()`,
+`has(key)`, `remove(key)`, `clear()`, `copyFrom(otherDict)`, `length()`,
 `keys(destArray)`, `values(destArray)`.
 
-### Map literals
+### Dict literals
 
-A `map`/`var` of `Map<K, V>` type can be given literal contents with `{ ... }`.
+A `var` of `Dict<K, V>` type can be given literal contents with `{ ... }`.
 Entries use `=>` for any key expression, or `:` for a string / atom / int
 *literal* key (or a bracketed `[expr]` computed key):
 
 ```wirescript
-map m: Map<int, int>    = { :red => 10, 7 => 0 }    // arrow -- any key
-map s: Map<string, int> = { "red": 1, "blue": 2 }    // colon -- string literal key
-map a: Map<int, int>    = { :red: 1, :blue: 2 }      // colon -- atom literal key
+var m: Dict<int, int>    = { :red => 10, 7 => 0 }    // arrow -- any key
+var s: Dict<string, int> = { "red": 1, "blue": 2 }    // colon -- string literal key
+var a: Dict<int, int>    = { :red: 1, :blue: 2 }      // colon -- atom literal key
+var e: Dict<int, int>    = {}                         // explicit empty dict
 on tick { m = { [runtimeKey] => x } }                // computed key -- desugars
 ```
 
-A **constant** map literal (every key and value a compile-time constant) in a
-`map`/`var` initializer bakes straight into the map at rest -- no runtime
-gates, the map loads pre-populated. An initializer with any non-constant
+A **constant** dict literal (every key and value a compile-time constant) in a
+`var` initializer bakes straight into the dict at rest -- no runtime
+gates, the dict loads pre-populated. An initializer with any non-constant
 entry doesn't bake -- its entries are dropped (with a compiler warning) and
-the map loads empty; build it at runtime instead. Inside an exec handler,
+the dict loads empty; build it at runtime instead. Inside an exec handler,
 `m = { ... }` (or a literal with runtime keys/values) desugars to `clear()`
 followed by one `set(key, value)` per entry, in source order -- the same
 clear-then-populate shape as [array literal assignment](statements.md).
 
-`{ foo: 1 }` with a **bare identifier** key is a record literal, not a map --
-`:` only introduces a map key for a string/atom/int literal or a `[expr]`
-computed key. Use `foo => 1` or `[foo]: 1` to key a map by an identifier's
+`{ foo: 1 }` with a **bare identifier** key is a record literal, not a dict --
+`:` only introduces a dict key for a string/atom/int literal or a `[expr]`
+computed key. Use `foo => 1` or `[foo]: 1` to key a dict by an identifier's
 value.
 
-Assigning a whole map from another map variable (`m = m2`) is not supported
--- there is no whole-map-copy gate. Use `m.copyFrom(m2)` instead.
+Assigning a whole dict from another dict variable (`m = m2`) is not supported
+-- there is no whole-dict-copy gate. Use `m.copyFrom(m2)` instead.

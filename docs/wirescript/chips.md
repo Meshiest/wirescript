@@ -251,7 +251,7 @@ as one exec chain. How it gets its trigger depends on the call site:
 ```wirescript
 in reset: exec
 
-array vals: int[]
+var vals: int[]
 
 chip InitTables() -> (count: int) {
   vals.clear()

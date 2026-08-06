@@ -103,8 +103,6 @@ pub enum Type {
     Entity,
     Character,
     Controller,
-    Brick,
-    Prefab,
     /// Opaque reference to a Zone brick's `AttachedZone` (the `ZoneRef` output,
     /// consumed by the `Zone` input on zone events / `fillFromZone*`). Like a
     /// var ref, it is a *reference*, not a value: it can only be wired or
@@ -134,14 +132,17 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// Record / struct; Phase 1 keeps this untyped inner (map of name→Type).
     Record(Vec<(String, Type)>),
-    /// `Map<K, V>` — a keyed variable collection (parallels `Array`). The key
+    /// `Dict<K, V>` — a keyed variable collection (parallels `Array`). The key
     /// and value types are tracked for the source language; at the wire level a
     /// map is an opaque `MapVarRef`, so both sides are `any`-compatible.
     Map(Box<Type>, Box<Type>),
+    /// An unsubstituted generic type parameter (e.g. `T`). Substituted to a
+    /// concrete type by monomorphization; must never reach emit.
+    Param(String),
 }
 
 /// The source-language spelling of a type. Compound variants render by
-/// recursion (`*int`, `int[]`, `Map<string, int>`, …), which is exactly why
+/// recursion (`*int`, `int[]`, `Dict<string, int>`, …), which is exactly why
 /// this is `Display` and not `AsRef<str>`: those strings are built on the fly,
 /// so there is no `&str` inside the value to borrow. `analysis::type_str` is a
 /// thin `to_string()` alias over this.
@@ -159,8 +160,6 @@ impl std::fmt::Display for Type {
             Type::Entity => f.write_str("entity"),
             Type::Character => f.write_str("character"),
             Type::Controller => f.write_str("controller"),
-            Type::Brick => f.write_str("brick"),
-            Type::Prefab => f.write_str("prefab"),
             Type::Zone => f.write_str("zone"),
             Type::Teleport => f.write_str("teleport"),
             Type::Exec => f.write_str("exec"),
@@ -170,7 +169,8 @@ impl std::fmt::Display for Type {
             Type::Never => f.write_str("never"),
             Type::Ref(inner) => write!(f, "*{inner}"),
             Type::Array(inner) => write!(f, "{inner}[]"),
-            Type::Map(k, v) => write!(f, "Map<{k}, {v}>"),
+            Type::Map(k, v) => write!(f, "Dict<{k}, {v}>"),
+            Type::Param(n) => f.write_str(n),
             Type::Union(opts) => {
                 for (i, o) in opts.iter().enumerate() {
                     if i > 0 {
@@ -265,7 +265,7 @@ pub enum Literal {
     /// Null object reference — used for entity/controller/character var defaults.
     Object,
     /// A list of literals — used to carry an array's constant initial contents
-    /// (`array foo: int[] = [1, 2, 3]`) to the emitter.
+    /// (`var foo: int[] = [1, 2, 3]`) to the emitter.
     Array(Vec<Literal>),
     /// A map's constant initial entries (`map m = { :a => 1 }`) for the emitter.
     Map(Vec<(Literal, Literal)>),
@@ -528,5 +528,17 @@ pub fn dump_module_with_source(module: &Module, indent: usize, source: Option<&s
     for (chip_id, child) in &module.chips {
         eprintln!("{pad}  chip {chip_id}:");
         dump_module_with_source(child, indent + 2, source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn type_param_displays_as_its_name() {
+        assert_eq!(crate::ir::Type::Param("T".into()).to_string(), "T");
+        assert_eq!(
+            crate::ir::Type::Array(Box::new(crate::ir::Type::Param("T".into()))).to_string(),
+            "T[]"
+        );
     }
 }

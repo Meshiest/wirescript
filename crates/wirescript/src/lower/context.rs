@@ -44,6 +44,19 @@ pub(super) enum Binding {
     Record(HashMap<crate::intern::Sym, Binding>),
 }
 
+/// One active generic-mod inline: the callee's type-param names and the
+/// substitution (`Type::Param → concrete`) inferred from this call's args.
+/// Pushed on `LowerCtx::mono_stack` while the generic mod's body is lowered so
+/// that `T`-typed storage/return annotations in the body resolve to the
+/// concrete monomorph (`pick<int>` → int gates) instead of leaking `Type::Param`
+/// (or a wrong `Any`/last-combo type) to emit. Nested generic inlines push/pop;
+/// the innermost frame (`mono_stack.last()`) governs annotation resolution.
+#[derive(Clone, Debug)]
+pub(super) struct MonoFrame {
+    pub(super) params: Vec<String>,
+    pub(super) subst: crate::types::infer::Subst,
+}
+
 /// Scope key for an `Output` binding. Outputs share scope frames with value
 /// bindings (inline-mod MODULE frames must isolate them), but live under a
 /// key no identifier can collide with (`:` can't appear in an identifier) so
@@ -79,6 +92,14 @@ pub(super) struct LowerCtx<'a> {
     /// Type alias map: `Name → TypeExpr::Record { ... }` for dissolving
     /// record params at chip boundaries.
     pub(super) type_aliases: HashMap<String, crate::ast::TypeExpr>,
+    /// Generic type aliases: `Name → (params, body TypeExpr)` for
+    /// `type Pair<T> = { … }`. Instantiated by TypeExpr-level substitution
+    /// (`Pair<int>` → `{ a: int, b: int }`) so a generic-alias record
+    /// annotation dissolves into per-field sub-ports exactly like a
+    /// non-generic `type P = { … }` — without this, a generic-alias record
+    /// port/param silently degraded to a single `any` port and its field
+    /// accesses lowered to `_Unsupported`/swizzle gates.
+    pub(super) generic_type_aliases: HashMap<String, crate::types::resolve::GenericAlias>,
     /// Pending emit exec paths per output name, each tagged with the exec
     /// chain (handler) it was emitted on. Accumulated during lowering, flushed
     /// to union chains at the end so each output gets one wire. The chain tag
@@ -161,6 +182,11 @@ pub(super) struct LowerCtx<'a> {
     /// pseudo-property. Incremented/decremented around the lowering of each
     /// `@nofold`-annotated `let`/`out`/`var`/`chip`/`on` declaration.
     pub(super) nofold_depth: u32,
+    /// Stack of active generic-mod inlines (see [`MonoFrame`]). Empty at the
+    /// top level and inside every non-generic body, so `resolve_local_type`
+    /// takes the byte-identical `type_of_type_expr` fast path there — only a
+    /// generic mod's own body sees a non-empty stack.
+    pub(super) mono_stack: Vec<MonoFrame>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -227,6 +253,68 @@ impl<'a> LowerCtx<'a> {
             .get(&(r.file.clone(), r.start.offset, r.end.offset))
             .cloned()
             .unwrap_or(Type::Any)
+    }
+
+    /// Resolve a lowering-side type annotation to its `Type`, monomorphized
+    /// against the innermost active generic-mod inline. Outside any generic
+    /// body (`mono_stack` empty) this is exactly `type_of_type_expr` — so
+    /// non-generic lowering is byte-identical. Inside a generic mod's body, the
+    /// callee's type params are put in scope so a `T` annotation resolves to
+    /// `Type::Param(T)`, then the call's substitution replaces it with the
+    /// concrete monomorph (`T` → `int` / `vector`). Without this, `T` resolved
+    /// to `Any` (empty-params `type_of_type_expr`), silently emitting a wrong
+    /// (Number-defaulted) variant for every generic storage/return gate.
+    pub(super) fn resolve_local_type(&self, te: &crate::ast::TypeExpr) -> Type {
+        // Generic aliases resolve on BOTH paths (a `Pair<int>` annotation must
+        // become its record `Type`, not `Any`); non-generic name aliases stay
+        // empty here, matching `type_of_type_expr`'s long-standing behavior.
+        let empty: crate::collections::HashMap<String, Type> = crate::collections::HashMap::default();
+        let params: &[String] = self
+            .mono_stack
+            .last()
+            .map(|f| f.params.as_slice())
+            .unwrap_or(&[]);
+        let cx = crate::types::resolve::ResolveCtx {
+            params,
+            type_aliases: &empty,
+            generic_aliases: &self.generic_type_aliases,
+        };
+        let resolved = crate::types::resolve::resolve_type(te, &cx, &mut Vec::new());
+        match self.mono_stack.last() {
+            Some(frame) => crate::types::mono::substitute(&resolved, &frame.subst),
+            None => resolved,
+        }
+    }
+
+    /// Expand a record-shaped type annotation into its fields, following a
+    /// non-generic alias (`type P = { … }`) or instantiating a generic alias
+    /// (`type Pair<T> = { … }` used as `Pair<int>`, substituting the type
+    /// args). Returns `None` for a non-record type. The single source of
+    /// record-port dissolution for chip inputs, mod params, and top-level
+    /// ports — every such site routes through here so the `Generic` arm can't
+    /// be forgotten at one of them.
+    pub(super) fn record_fields_of(
+        &self,
+        te: &crate::ast::TypeExpr,
+    ) -> Option<Vec<crate::ast::RecordTypeField>> {
+        match te {
+            crate::ast::TypeExpr::Record { fields, .. } => Some(fields.clone()),
+            crate::ast::TypeExpr::Name { name, .. } => match self.type_aliases.get(name.as_str())? {
+                crate::ast::TypeExpr::Record { fields, .. } => Some(fields.clone()),
+                _ => None,
+            },
+            crate::ast::TypeExpr::Generic { name, args, .. } => {
+                match crate::types::resolve::instantiate_generic_alias(
+                    name,
+                    args,
+                    &self.generic_type_aliases,
+                )? {
+                    crate::ast::TypeExpr::Record { fields, .. } => Some(fields),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn op_for(&self, e: &Expr) -> Option<&OpRule> {

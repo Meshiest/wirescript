@@ -236,7 +236,7 @@ fn array_pop_value_and_isempty_use_distinct_ports() {
     // silently fell back to the `Value` port - `.Value` and `.IsEmpty` read the
     // same wire, and in-game the pop's `Value` output resolved to `bIsEmpty`
     // (0 for a non-empty pop), so popping always yielded 0.
-    let src = "array a: int[]\n\
+    let src = "var a: int[]\n\
                in go: exec\n\
                var v: int = 0\n\
                var e: bool = false\n\
@@ -346,8 +346,8 @@ fn same_signal_name_in_two_mods_stays_separate() {
           buffer emit loop\n\
         }\n\
       }\n\
-      array nums: int[] = [1, 2]\n\
-      array names: string[] = [\"a\", \"b\"]\n\
+      var nums: int[] = [1, 2]\n\
+      var names: string[] = [\"a\", \"b\"]\n\
       on run {\n\
         first(nums)\n\
         second(names)\n\
@@ -463,7 +463,7 @@ fn loop_mod_continuation_waits_for_return() {
           return sum\n\
         }\n\
       }\n\
-      array nums: int[] = [1, 2, 3]\n\
+      var nums: int[] = [1, 2, 3]\n\
       on run { BroadcastChatMessage(\"Sum: ${sumItems(nums)}\") }";
     let r = compile(src);
     assert_no_errors(&r);
@@ -543,7 +543,7 @@ fn vector_arithmetic_lowers_to_math_gates() {
 
 #[test]
 fn array_methods_lower_to_their_gates() {
-    let src = "array a: int[]\narray b: int[]\nin t: exec\non t {\n  \
+    let src = "var a: int[]\nvar b: int[]\nin t: exec\non t {\n  \
         a.push(1)\n  a.insert(0, 9)\n  a.sort()\n  a.reverse()\n  a.swap(0, 1)\n  \
         a.fill(3)\n  a.resize(4, 0)\n  let s = a.sum()\n  let lo = a.min()\n  \
         let hi = a.max()\n  let av = a.average()\n  let i = a.find(3)\n  \
@@ -572,9 +572,9 @@ fn array_methods_lower_to_their_gates() {
 
 #[test]
 fn array_constant_initializer_populates_node() {
-    // `array a: int[] = [1, 2, -3]` carries its literals as an InitialValue
+    // `var a: int[] = [1, 2, -3]` carries its literals as an InitialValue
     // property the emitter writes into the ArrayVar.
-    let r = compile("array a: int[] = [1, 2, -3]\n");
+    let r = compile("var a: int[] = [1, 2, -3]\n");
     assert_no_errors(&r);
     let node = r
         .module
@@ -621,7 +621,7 @@ fn var_array_desugars_to_array_var() {
 fn find_returns_record_unwrapping_to_index() {
     // `find` is a record { Index, Found, Value }: fields are accessible, and a
     // bare result auto-unwraps to the int Index (its default).
-    let src = "array a: int[]\nvar found: bool\nvar at: int\nin t: exec\n\
+    let src = "var a: int[]\nvar found: bool\nvar at: int\nin t: exec\n\
         on t {\n  let r = a.find(3)\n  at = r.Index\n  found = r.Found\n  \
         at = a.find(3)\n}";
     let r = compile(src);
@@ -639,7 +639,7 @@ fn find_result_field_access_inline_without_binding() {
     // to an `_Unsupported` placeholder that drops the whole call. Previously
     // `arr.find(x).Found` emitted nothing because `obj` (the call) was never
     // lowered when the field didn't name a swizzle/index port.
-    let src = "array a: int[]\nvar hit: bool\nin t: exec\n\
+    let src = "var a: int[]\nvar hit: bool\nin t: exec\n\
         on t {\n  hit = !a.find(3).Found\n}";
     let r = compile(src);
     assert_no_errors(&r);
@@ -776,7 +776,7 @@ fn quat_var_defaults_to_identity() {
 fn vector_array_init_folds_elements() {
     // Constant Vec(…) elements are valid array initializers and bake into
     // the ArrayVar's InitialValue list.
-    let r = compile("array pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]\n");
+    let r = compile("var pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]\n");
     assert_no_errors(&r);
     let node = r
         .module
@@ -860,7 +860,7 @@ fn constant_vec_materializes_for_split_vector() {
 fn array_literal_assignment_desugars_to_clear_push_append() {
     // `foo = [item, 1, ...base, 5]` in an exec handler rebuilds the array:
     // clear, then a push per item and an append per spread.
-    let src = "array base: int[] = [3, 4]\nvar foo: int[]\nin t: exec\n\
+    let src = "var base: int[] = [3, 4]\nvar foo: int[]\nin t: exec\n\
         on t {\n  let item = 7\n  foo = [item, 1, ...base, 5]\n}";
     let r = compile(src);
     assert_no_errors(&r);
@@ -890,8 +890,8 @@ fn multi_line_array_literals_parse() {
     // optional trailing comma — mirroring the multi-line call-arg rules. Both
     // the top-level baked initializer and the exec-context rebuild use the
     // same literal parse.
-    let src = "array names: string[] = [\n  \"a\",\n  \"b\",\n  \"c\",\n]\n\
-        array base: int[] = [1, 2]\nvar foo: int[]\nin t: exec\n\
+    let src = "var names: string[] = [\n  \"a\",\n  \"b\",\n  \"c\",\n]\n\
+        var base: int[] = [1, 2]\nvar foo: int[]\nin t: exec\n\
         on t {\n  foo = [\n    3,\n    ...base,\n    4\n  ]\n}";
     let r = compile(src);
     assert_no_errors(&r);
@@ -911,7 +911,7 @@ fn top_level_array_with_non_literal_or_spread_errors() {
     // test `compile()` helper drops typecheck errors, so check typecheck here.
     for src in [
         "var x: int = 1\nvar foo = [x, 2]\n",
-        "array base: int[] = [1, 2]\narray foo: int[] = [...base, 3]\n",
+        "var base: int[] = [1, 2]\nvar foo: int[] = [...base, 3]\n",
     ] {
         let parsed = parse(src, "test");
         let tc = typecheck(&parsed.ast, "test");
@@ -919,7 +919,7 @@ fn top_level_array_with_non_literal_or_spread_errors() {
             tc.diagnostics
                 .iter()
                 .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "expected an error for top-level non-literal/spread array init: {src:?}"
+            "expected an error for top-level non-literal/spread var init: {src:?}"
         );
     }
 }
@@ -930,7 +930,7 @@ fn every_canonical_array_method_lowers() {
     // the table (which drives editor completion/hover) to the dispatch in
     // lower_array_method: a table entry the dispatch can't handle would lower
     // to an `_Unsupported` gate and fail here.
-    let src = "array a: int[]\narray b: int[]\nvar ent: entity\nin t: exec\non t {\n  \
+    let src = "var a: int[]\nvar b: int[]\nvar ent: entity\nin t: exec\non t {\n  \
         a.push(1)\n  let p = a.pop()\n  let n = a.length()\n  a.remove(0)\n  a.insert(0, 9)\n  \
         a.clear()\n  let i = a.find(3)\n  let g = a.get(0)\n  a.sort()\n  a.reverse()\n  a.shuffle()\n  a.swap(0, 1)\n  \
         a.fill(3)\n  a.resize(4, 0)\n  let s = a.sum()\n  let lo = a.min()\n  let hi = a.max()\n  \
@@ -958,8 +958,8 @@ fn every_canonical_array_method_lowers() {
 fn every_canonical_map_method_lowers() {
     // Exercises every method in MAP_METHODS; a table entry the dispatch can't
     // handle would lower to `_Unsupported` and fail here.
-    let src = "map m: Map<string, int>\nmap m2: Map<string, int>\narray keys: string[]\n\
-        array vals: int[]\nin t: exec\non t {\n  \
+    let src = "var m: Dict<string, int>\nvar m2: Dict<string, int>\nvar keys: string[]\n\
+        var vals: int[]\nin t: exec\non t {\n  \
         m.set(\"a\", 1)\n  let g = m.get(\"a\")\n  let h = m.has(\"a\")\n  let rm = m.remove(\"a\")\n  \
         let n = m.length()\n  m.copyFrom(m2)\n  m.keys(keys)\n  m.values(vals)\n  m.clear()\n}";
     let r = compile(src);
@@ -976,10 +976,10 @@ fn every_canonical_map_method_lowers() {
 
 #[test]
 fn var_declared_map_lowers_like_map_keyword() {
-    // `var m: Map<K, V>` desugars to a MapVar, exactly like `map m: Map<K, V>`
-    // (mirrors how `var x: T[]` desugars to an ArrayVar).
+    // `var m: Dict<K, V>` desugars to a MapVar (mirrors how `var x: T[]`
+    // desugars to an ArrayVar).
     let r = compile(
-        "var m: Map<string, int>\nin t: exec\non t {\n  m.set(\"a\", 1)\n  let g = m.get(\"a\")\n}",
+        "var m: Dict<string, int>\nin t: exec\non t {\n  m.set(\"a\", 1)\n  let g = m.get(\"a\")\n}",
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "var-map methods must lower, not drop");
@@ -998,7 +998,7 @@ fn constant_map_literal_bakes_no_set_gates() {
     // A constant map literal in a `map`/`var` initializer bakes into the
     // Pseudo_MapVar's InitialValue at rest — zero runtime gates — exactly
     // like `array a = [1,2,3]` bakes a `Literal::Array`.
-    let r = compile("map scores: Map<int, int> = { :red => 10, :blue => 20 }\n");
+    let r = compile("var scores: Dict<int, int> = { :red => 10, :blue => 20 }\n");
     assert_no_errors(&r);
     assert!(
         has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
@@ -1019,16 +1019,92 @@ fn constant_map_literal_bakes_no_set_gates() {
 }
 
 #[test]
+fn empty_map_literal_initializes_an_empty_map() {
+    // `var m: Dict<K, V> = {}` is the natural spelling of an empty-map init. The
+    // parser emits `{}` as an empty RECORD (with no keys it can't tell an empty
+    // map from an empty record), so this exercises the map-init slots accepting
+    // an empty record in a Map-typed slot. Typecheck DIRECTLY — `compile()`
+    // drops Error-severity typecheck diags, so it would pass even if WS003 fired.
+    for src in [
+        "var m: Dict<string, int> = {}\n",                              // top-level Map decl
+        "static var m: Dict<int, int> = {}\nin t: exec\non t {}\n",     // static
+        "in t: exec\non t {\n  var m: Dict<int, int> = {}\n}\n",        // handler-local var
+    ] {
+        let tc = crate::typecheck::typecheck(&parse(src, "test").ast, "test");
+        let errs: Vec<_> = tc
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+            .collect();
+        assert!(errs.is_empty(), "empty map init must typecheck clean for {src:?}: {errs:?}");
+    }
+    // Lowering: an empty init produces an empty Pseudo_MapVar — no Set gates and
+    // no baked entries (same as a map var with no initializer).
+    let r = compile("var m: Dict<string, int> = {}\n");
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        "must create a Pseudo_MapVar"
+    );
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        "an empty map init must not emit MapVar_Set gates"
+    );
+    let baked_len = r.module.nodes.values().find_map(|n| {
+        match n.properties.get(&crate::intern::intern("InitialValue")) {
+            Some(crate::ir::Literal::Map(es)) => Some(es.len()),
+            _ => None,
+        }
+    });
+    assert!(
+        matches!(baked_len, None | Some(0)),
+        "empty map init must bake no entries, got {baked_len:?}"
+    );
+}
+
+#[test]
+fn dict_key_type_must_be_int_string_or_object() {
+    let errs = |src: &str| {
+        crate::typecheck::typecheck(&parse(src, "test").ast, "test")
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+            .map(|d| d.code.to_string())
+            .collect::<Vec<_>>()
+    };
+    // Valid dict key types: int, string, and object references.
+    for ok in [
+        "var d: Dict<int, int>\n",
+        "var d: Dict<string, int>\n",
+        "var d: Dict<entity, int>\n",
+        "var d: Dict<character, int>\n",
+    ] {
+        assert!(errs(ok).is_empty(), "valid dict key must typecheck clean for {ok:?}: {:?}", errs(ok));
+    }
+    // Any other key type is WS039.
+    for bad in [
+        "var d: Dict<float, int>\n",
+        "var d: Dict<bool, int>\n",
+        "var d: Dict<vector, int>\n",
+    ] {
+        assert!(
+            errs(bad).contains(&"WS039".to_string()),
+            "invalid dict key must be WS039 for {bad:?}: {:?}",
+            errs(bad)
+        );
+    }
+}
+
+#[test]
 fn map_literal_coerces_mixed_entry_literals() {
     // A coercion-mixed constant map entry (key/value literal kind doesn't
     // match the declared K/V) must bake through the SAME coercion laws as
     // the array path — string->bool `!= ""`, bool<->int, and int<->float
     // truncation/widening — not the emit-side zero fallback.
     let cases = [
-        ("map m: Map<int, bool> = { 1 => \"on\" }\n", crate::ir::Literal::Bool(true)),
-        ("map m: Map<int, int>  = { 1 => true }\n", crate::ir::Literal::Int(1)),
-        ("map m: Map<int, int>  = { 1 => 2.9 }\n", crate::ir::Literal::Int(2)),
-        ("map m: Map<int, float> = { 1 => true }\n", crate::ir::Literal::Float(1.0)),
+        ("var m: Dict<int, bool> = { 1 => \"on\" }\n", crate::ir::Literal::Bool(true)),
+        ("var m: Dict<int, int>  = { 1 => true }\n", crate::ir::Literal::Int(1)),
+        ("var m: Dict<int, int>  = { 1 => 2.9 }\n", crate::ir::Literal::Int(2)),
+        ("var m: Dict<int, float> = { 1 => true }\n", crate::ir::Literal::Float(1.0)),
     ];
     for (src, want_val) in cases {
         let r = compile(src);
@@ -1041,28 +1117,6 @@ fn map_literal_coerces_mixed_entry_literals() {
         });
         assert_eq!(baked.as_ref(), Some(&want_val), "wrong baked value for {src:?}");
     }
-}
-
-#[test]
-fn map_literal_object_family_keys_do_not_bake() {
-    // `Prefab` is object-family but (unlike Entity/Character/Controller/Brick)
-    // DOES have a compile-time literal form (`$./file.brz` -> Literal::PrefabRef),
-    // so this is the case that would actually reach `bake_map_init`'s pairs
-    // loop. `key_of`'s `(WireMapKey::Object, _) => Object(None)` bakes every
-    // such key as null, so two entries would silently collapse onto the same
-    // duplicate-null key. The guard must refuse to bake at all here (warn +
-    // start empty), not just for the object-family types with no literal form.
-    let r = compile("map m: Map<prefab, int> = { $./a.brz => 1, $./b.brz => 2 }\n");
-    assert_no_errors(&r);
-    let baked = r
-        .module
-        .nodes
-        .values()
-        .find_map(|n| n.properties.get(&crate::intern::intern("InitialValue")).cloned());
-    assert!(
-        baked.is_none(),
-        "object-family map keys must not bake an InitialValue: {baked:?}"
-    );
 }
 
 #[test]
@@ -1094,13 +1148,13 @@ fn map_literal_typechecks_against_declared_map() {
         );
     };
     // 1. top-level `map`-keyword initializer (atom keys)
-    valid("map m: Map<int, int> = { :red => 1, :blue => 2 }\n");
+    valid("var m: Dict<int, int> = { :red => 1, :blue => 2 }\n");
     // 2. top-level `var`-with-Map-annotation initializer
-    valid("var m: Map<string, int> = { \"a\" => 1 }\n");
+    valid("var m: Dict<string, int> = { \"a\" => 1 }\n");
     // 3. in-handler assignment RHS to a `map`-declared var
-    valid("map m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
+    valid("var m: Dict<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
     // 4. in-handler assignment RHS to a `var`-declared map
-    valid("var m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
+    valid("var m: Dict<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
 }
 
 #[test]
@@ -1126,7 +1180,7 @@ fn runtime_map_literal_desugars_to_clear_and_sets() {
     // one MapVar_Set per entry, on the current exec chain. Mirrors the array
     // literal assign path (clear + push per element).
     let r = compile(
-        "map m: Map<int, int>\nin k: int\nin t: exec\non t {\n  m = { [k] => 1, :fixed => 2 }\n}\n",
+        "var m: Dict<int, int>\nin k: int\nin t: exec\non t {\n  m = { [k] => 1, :fixed => 2 }\n}\n",
     );
     assert_no_errors(&r);
     assert!(
@@ -1142,12 +1196,12 @@ fn runtime_map_literal_desugars_to_clear_and_sets() {
 
 #[test]
 fn in_handler_var_map_literal_init_desugars_to_clear_and_sets() {
-    // `var m: Map<K, V> = {…}` declared INSIDE a handler (non-static) must
+    // `var m: Dict<K, V> = {…}` declared INSIDE a handler (non-static) must
     // re-run the same Clear + Set reset on every invocation, exactly like the
     // array counterpart (`var a: T[] = […]` inside a handler) — a plain
     // Var_Set reset is impossible since Pseudo_MapVar has no `VarRef` port.
     let r = compile(
-        "in k: int\nin t: exec\non t {\n  var m: Map<int, int> = { [k] => 1, :fixed => 2 }\n}\n",
+        "in k: int\nin t: exec\non t {\n  var m: Dict<int, int> = { [k] => 1, :fixed => 2 }\n}\n",
     );
     assert_no_errors(&r);
     assert!(
@@ -1176,7 +1230,7 @@ fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
     // `lower_assign` rejects it with a hard ERROR (WS027) — a droppable
     // warning would be missed by error-gated checks and ship a silent no-op.
     let r = compile(
-        "map m: Map<int, int>\nmap m2: Map<int, int>\nin t: exec\non t {\n  m = m2\n}\n",
+        "var m: Dict<int, int>\nvar m2: Dict<int, int>\nin t: exec\non t {\n  m = m2\n}\n",
     );
     // Must be an ERROR-severity diagnostic (not a warning), pointing at the
     // supported `.copyFrom` alternative. If the guard is ever downgraded to a
@@ -1678,7 +1732,7 @@ fn splitvec_record_fields_reuse_single_split() {
 
 #[test]
 fn array_decl_creates_pseudo_node() {
-    let r = compile("array items: int[]");
+    let r = compile("var items: int[]");
     let has_arr = r
         .module
         .nodes
@@ -1857,7 +1911,7 @@ fn out_binding_same_name_as_array_wires_array_ref() {
     // `out X = X` where X is also an array: the output binding must not
     // clobber the array's scope entry - the init expr reads the ArrayVar,
     // not an _Unsupported placeholder (which emit would drop the wire for).
-    let r = compile("array deckCounts: int[]\nout deckCounts: int[] = deckCounts");
+    let r = compile("var deckCounts: int[]\nout deckCounts: int[] = deckCounts");
     assert_no_errors(&r);
     assert!(
         !has_gate(&r, "_Unsupported"),
@@ -2057,11 +2111,11 @@ fn atom_literal_bakes_as_its_hash_int() {
 #[test]
 fn map_and_record_literals_disambiguate() {
     // A `=>` or a non-bare-ident key makes it a map; `{ ident: v }` stays a record.
-    let arrow = parse("map m: Map<int,int> = { 1 => 2, 3 => 4 }\n", "test");
+    let arrow = parse("var m: Dict<int,int> = { 1 => 2, 3 => 4 }\n", "test");
     assert!(arrow.diagnostics.is_empty(), "{:?}", arrow.diagnostics);
-    let colon = parse("map m: Map<string,int> = { \"a\": 1 }\n", "test");
+    let colon = parse("var m: Dict<string,int> = { \"a\": 1 }\n", "test");
     assert!(colon.diagnostics.is_empty(), "{:?}", colon.diagnostics);
-    let computed = parse("in k: int\nmap m: Map<int,int> = { [k]: 9 }\n", "test");
+    let computed = parse("in k: int\nvar m: Dict<int,int> = { [k]: 9 }\n", "test");
     assert!(computed.diagnostics.is_empty(), "{:?}", computed.diagnostics);
     // A record literal is unaffected.
     let rec = parse("type P = { x: int }\nlet p: P = { x: 1 }\n", "test");

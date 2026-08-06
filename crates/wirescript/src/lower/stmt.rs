@@ -67,7 +67,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                 } else if let Some(init) = &v.init {
                     ctx.warn(
                         format!(
-                            "'var {}' map initializer must be a map literal — this value is dropped; build the map with methods like set/copyFrom instead",
+                            "'var {}' dict initializer must be a dict literal — this value is dropped; build the dict with methods like set/copyFrom instead",
                             v.name
                         ),
                         init.range(),
@@ -401,7 +401,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         None => return,
     };
 
-    // `foo = [items, ...spreads]` on an array var: rebuild the contents at
+    // `foo = [items, ...spreads]` on an var var: rebuild the contents at
     // runtime. There's no single "set array" gate, so clear it then push each
     // item / append each spread in order.
     if var_rec.storage == VarStorage::Array
@@ -537,7 +537,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     invalidate_var_cache(ctx, &var_rec.node_id);
 }
 
-/// Lower `foo = [items, ...spreads]` on an array var: clear it, then push each
+/// Lower `foo = [items, ...spreads]` on an var var: clear it, then push each
 /// item and append each spread, in order. Reuses the array-method lowering so
 /// the gates and exec chaining match `foo.clear()` / `.push()` / `.append()`.
 fn lower_array_literal_assign(

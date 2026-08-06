@@ -191,7 +191,7 @@ fn record_array_field_push() {
     let r = compile(
         "\
 type Mem = { data: int[] }
-array arr: int[]
+var arr: int[]
 let m: Mem = { data: arr }
 on RoundStart { m.data.push(42) }",
     );
@@ -368,7 +368,7 @@ fn top_level_const_visible_inside_chip() {
         "\
 let TG = 2
 type RD = { tm: int }
-array teams: int[]
+var teams: int[]
 mod addR(next: *int, { tm }: RD) -> int {
   teams.push(tm)
   let code = next
@@ -411,7 +411,7 @@ let I = Init(exec = go)",
 #[test]
 fn const_inlines_into_chip_gate_no_boundary_wire() {
     let r = compile(
-        "let TG = 2\ntype RD = { tm: int }\narray teams: int[]\nmod addR(next: *int, { tm }: RD) -> int {\n  teams.push(tm)\n  let code = next\n  next = next + 1\n  return code\n}\nchip Init() -> (A: int) {\n  var nxt: int = 0\n  emit A = addR(nxt, { tm: TG })\n}\nin go: exec\nlet I = Init(exec = go)",
+        "let TG = 2\ntype RD = { tm: int }\nvar teams: int[]\nmod addR(next: *int, { tm }: RD) -> int {\n  teams.push(tm)\n  let code = next\n  next = next + 1\n  return code\n}\nchip Init() -> (A: int) {\n  var nxt: int = 0\n  emit A = addR(nxt, { tm: TG })\n}\nin go: exec\nlet I = Init(exec = go)",
     );
     assert_no_errors(&r);
     for chip in r.module.chips.values() {
@@ -451,7 +451,7 @@ fn top_level_input_visible_inside_chip() {
     let r = compile(
         "\
 in y: int
-array out_arr: int[]
+var out_arr: int[]
 chip C() { out_arr.push(y) }
 in go: exec
 let I = C(exec = go)",
@@ -786,7 +786,7 @@ on tick {
 fn array_set_after_record_capture() {
     let r = compile(
         "\
-array io: int[]
+var io: int[]
 in tick: exec
 on tick {
   io.push(0)

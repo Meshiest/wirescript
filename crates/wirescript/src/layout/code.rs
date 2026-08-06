@@ -4488,7 +4488,7 @@ on go { PrintToConsole(\"${table[0]}\") }
     /// gate — and the game drops overlapping bricks silently.
     #[test]
     fn a_full_band_never_overlaps_the_body() {
-        let src = "var a: int = 1\nvar b: int = 2\narray log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
+        let src = "var a: int = 1\nvar b: int = 2\nvar log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
         let m = lowered(src);
         let l = layout_code(&m, &LayoutOptions::default(), false);
         assert!(
@@ -4515,7 +4515,7 @@ on go { PrintToConsole(\"${table[0]}\") }
     /// and stays legal.
     #[test]
     fn taps_branch_off_the_lane_and_never_carry_it() {
-        let src = "var a: int = 1\nvar b: int = 2\narray log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
+        let src = "var a: int = 1\nvar b: int = 2\nvar log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
         let m = lowered(src);
         let l = layout_code(&m, &LayoutOptions::default(), false);
         assert!(
@@ -4949,7 +4949,7 @@ on go { PrintToConsole(\"${table[0]}\") }
 
     #[test]
     fn the_bus_creates_no_fan_in() {
-        let src = "var a: int = 1\narray log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}\")\n  log.push(\"y\")\n}\n";
+        let src = "var a: int = 1\nvar log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}\")\n  log.push(\"y\")\n}\n";
         let m = lowered(src);
         let l = layout_code(&m, &LayoutOptions::default(), false);
         assert_no_fan_in(&l);
@@ -5084,7 +5084,7 @@ on go { PrintToConsole(\"${table[0]}\") }
     /// chip its exec, and the chip brick a value is read back out of.
     const CHIP_PRODUCER_SRC: &str = "var score: int = 0
 var tick: int = 0
-array log: string[]
+var log: string[]
 in go: exec
 chip Scorer(run: exec, amount: int) -> (total: int) {
   on run {
@@ -5289,7 +5289,7 @@ on go {
     fn an_input_ports_lane_is_headed_beside_the_port() {
         let src = "in v: int
 in go: exec
-var b: int = 2\narray log: string[]\non go {
+var b: int = 2\nvar log: string[]\non go {
   PrintToConsole(\"${v}\")
   PrintToConsole(\"x${v}\")\n  log.push(\"p${b}\")\n  PrintToConsole(\"q${b}\")\n  b = b + 1\n  log.push(\"r${b}\")
 }
@@ -5364,7 +5364,7 @@ var b: int = 2\narray log: string[]\non go {
     #[test]
     fn values_entering_a_chip_tap_the_bus_at_the_chips_row() {
         let src = "var score: int = 0
-array log: string[]
+var log: string[]
 var tick: int = 0
 in go: exec
 chip Scorer(run: exec, amount: int) -> (total: int) {
@@ -6065,7 +6065,7 @@ on go {
     /// gate), and the two must be treated differently.
     const EXEC_DELIVERY_SRC: &str = "var score: int = 0
 var tick: int = 0
-array log: string[]
+var log: string[]
 in start: exec
 on start {
   score = 0
@@ -6230,7 +6230,7 @@ on start {
     fn values_leaving_a_chip_head_a_lane_at_the_chips_row() {
         let src = "in go: exec
 var tick: int = 0
-array log: string[]
+var log: string[]
 chip Scorer(run: exec, amount: int) -> (total: int) {
   var score: int = 0
   on run { score = score + amount }
@@ -6323,7 +6323,7 @@ on go {
     /// a lane LOOKS like has to be handed a body that builds one.
     const TWO_ROW_BUS_SRC: &str = "var a: int = 1
 var b: int = 2
-array log: string[]
+var log: string[]
 in go: exec
 on go {
   PrintToConsole(\"${a}\")
@@ -6339,7 +6339,7 @@ on go {
     /// the shape the mini-bus turns — on a body big enough to earn a bus.
     const MINI_BUS_SRC: &str = "var x: int = 0
 var y: int = 1
-array log: string[]
+var log: string[]
 in t: exec
 on t {
   x = (1 + x) * (2 + x)
@@ -6352,13 +6352,13 @@ on t {
 
     /// A body dense enough to exercise the band: two variables read across
     /// six rows, some of them twice on one row.
-    const BAND_SRC: &str = "var a: int = 1\nvar b: int = 2\narray log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
+    const BAND_SRC: &str = "var a: int = 1\nvar b: int = 2\nvar log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
 
     /// The same band with no declared input port, so nothing stacks further
     /// left than the gutter and the band itself is the plane's left edge.
     const NO_PIN_BAND_SRC: &str = "var a: int = 1
 var b: int = 2
-array log: string[]
+var log: string[]
 on ControllerJoined(who) {
   log.push(\"${a}\")
   PrintToConsole(\"${a}${b}\")
@@ -6471,7 +6471,7 @@ on ControllerJoined(who) {
     /// A big root and a tiny chip, so one tree carries both decisions.
     const MIXED_BUS_SRC: &str = "var a: int = 1
 var b: int = 2
-array log: string[]
+var log: string[]
 in go: exec
 chip Tiny(t: exec) -> (n: int) {
   var h: int = 0
@@ -6542,7 +6542,7 @@ on go {
     /// value in and hands one back, and the chip nested inside it does the
     /// same again — so every level owns a bus that carries a foreign endpoint.
     const NESTED_CHIP_SRC: &str = "var score: int = 0
-array log: string[]
+var log: string[]
 in go: exec
 on go {
   score = 0
@@ -6636,7 +6636,7 @@ on go {
     /// separate calls, and only the walk covers the second.
     #[test]
     fn chip_crossings_stay_reachable_through_the_bus() {
-        let src = "var score: int = 0\narray log: string[]\nin go: exec\nchip Scorer(run: exec, amount: int) -> (total: int) {\n  on run {\n    score = score + amount\n    log.push(\"s\")\n  }\n  out total = score\n}\nlet scored = Scorer(go, 5)\non go {\n  score = 0\n  chip {\n    score = score + 1\n    log.push(\"i\")\n  }\n  PrintToConsole(\"${scored.total}\")\n  PrintToConsole(\"x${scored.total}\")\n}\n";
+        let src = "var score: int = 0\nvar log: string[]\nin go: exec\nchip Scorer(run: exec, amount: int) -> (total: int) {\n  on run {\n    score = score + amount\n    log.push(\"s\")\n  }\n  out total = score\n}\nlet scored = Scorer(go, 5)\non go {\n  score = 0\n  chip {\n    score = score + 1\n    log.push(\"i\")\n  }\n  PrintToConsole(\"${scored.total}\")\n  PrintToConsole(\"x${scored.total}\")\n}\n";
         let m = lowered(src);
         let l = layout_code(&m, &code_opts(), true);
         assert!(
@@ -6730,7 +6730,7 @@ on go {
     /// silently drops one of the two.
     #[test]
     fn bus_nodes_never_overlap_gates_or_each_other() {
-        let src = "var a: int = 1\nvar b: int = 2\narray log: string[]\nin go: exec\non go {\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${a}\")\n  PrintToConsole(\"${b}\")\n  log.push(\"${a}${b}\")\n}\n";
+        let src = "var a: int = 1\nvar b: int = 2\nvar log: string[]\nin go: exec\non go {\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${a}\")\n  PrintToConsole(\"${b}\")\n  log.push(\"${a}${b}\")\n}\n";
         let m = lowered(src);
         let l = layout_code(&m, &LayoutOptions::default(), false);
         assert!(!l.bus.nodes.is_empty(), "fixture must build a bus");
@@ -6787,7 +6787,7 @@ on go {
     fn bands_sharing_a_page_share_their_row_keys() {
         let src = "var a: int = 1
 var b: int = 2
-array log: string[]
+var log: string[]
 in go: exec
 on go {
   PrintToConsole(\"${a}\")

@@ -10,5 +10,5 @@ on RoundStart {
   clamp(b, 0, 100)
 }
 
-out va = a
-out vb = b
+out va = a.Value
+out vb = b.Value

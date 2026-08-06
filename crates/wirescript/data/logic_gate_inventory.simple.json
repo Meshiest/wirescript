@@ -6613,7 +6613,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Clear",
-      "brickDisplayName": "Clear Map",
+      "brickDisplayName": "Clear Dict",
       "brickSummary": "Removes every key and value from the connected map. Use it to reset a score table, lookup cache, or set of per-player data.",
       "halfSize": {
         "X": 5,
@@ -6622,7 +6622,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Clear",
-        "displayName": "Clear Map",
+        "displayName": "Clear Dict",
         "description": "Removes every key and value from the connected map. Use it to reset a score table, lookup cache, or set of per-player data.",
         "searchTags": "",
         "kind": "exec",
@@ -6657,7 +6657,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_CopyFrom",
-      "brickDisplayName": "Copy Map",
+      "brickDisplayName": "Copy Dict",
       "brickSummary": "Replaces the connected destination map with every key and value from Source. Use it to restore a working lookup from a saved template or snapshot.",
       "halfSize": {
         "X": 5,
@@ -6666,7 +6666,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_CopyFrom",
-        "displayName": "Copy Map",
+        "displayName": "Copy Dict",
         "description": "Replaces the connected destination map with every key and value from Source. Use it to restore a working lookup from a saved template or snapshot.",
         "searchTags": "",
         "kind": "exec",
@@ -6708,7 +6708,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Get",
-      "brickDisplayName": "Get Map Element",
+      "brickDisplayName": "Get Dict Element",
       "brickSummary": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed, which is useful before using saved player or object data.",
       "halfSize": {
         "X": 5,
@@ -6717,7 +6717,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Get",
-        "displayName": "Get Map Element",
+        "displayName": "Get Dict Element",
         "description": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed, which is useful before using saved player or object data.",
         "searchTags": "",
         "kind": "exec",
@@ -6773,7 +6773,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_GetKeys",
-      "brickDisplayName": "Get Map Keys",
+      "brickDisplayName": "Get Dict Keys",
       "brickSummary": "Writes every key from the connected map into the connected Array Var. Use it to make a list of player names, IDs, or objects that can be processed one by one.",
       "halfSize": {
         "X": 5,
@@ -6782,7 +6782,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_GetKeys",
-        "displayName": "Get Map Keys",
+        "displayName": "Get Dict Keys",
         "description": "Writes every key from the connected map into the connected Array Var. Use it to make a list of player names, IDs, or objects that can be processed one by one.",
         "searchTags": "",
         "kind": "exec",
@@ -6824,7 +6824,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_GetLength",
-      "brickDisplayName": "Get Map Length",
+      "brickDisplayName": "Get Dict Length",
       "brickSummary": "Outputs how many key and value pairs are stored in the connected map. Use it to count tracked players, objects, settings, or records.",
       "halfSize": {
         "X": 5,
@@ -6833,7 +6833,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_GetLength",
-        "displayName": "Get Map Length",
+        "displayName": "Get Dict Length",
         "description": "Outputs how many key and value pairs are stored in the connected map. Use it to count tracked players, objects, settings, or records.",
         "searchTags": "",
         "kind": "exec",
@@ -6875,7 +6875,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_GetValues",
-      "brickDisplayName": "Get Map Values",
+      "brickDisplayName": "Get Dict Values",
       "brickSummary": "Writes every value from the connected map into the connected Array Var. Use it to collect all stored scores, settings, or object data for array operations.",
       "halfSize": {
         "X": 5,
@@ -6884,7 +6884,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_GetValues",
-        "displayName": "Get Map Values",
+        "displayName": "Get Dict Values",
         "description": "Writes every value from the connected map into the connected Array Var. Use it to collect all stored scores, settings, or object data for array operations.",
         "searchTags": "",
         "kind": "exec",
@@ -6926,7 +6926,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Has",
-      "brickDisplayName": "Has Map Element",
+      "brickDisplayName": "Has Dict Element",
       "brickSummary": "Checks whether Key exists in the connected map without changing it. Use Found to branch between creating new data and updating an existing entry.",
       "halfSize": {
         "X": 5,
@@ -6935,7 +6935,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Has",
-        "displayName": "Has Map Element",
+        "displayName": "Has Dict Element",
         "description": "Checks whether Key exists in the connected map without changing it. Use Found to branch between creating new data and updating an existing entry.",
         "searchTags": "",
         "kind": "exec",
@@ -6984,7 +6984,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Remove",
-      "brickDisplayName": "Remove Map Element",
+      "brickDisplayName": "Remove Dict Element",
       "brickSummary": "Removes Key and its value from the connected map. Found reports whether anything was removed; use it when a player leaves or tracked data is no longer needed.",
       "halfSize": {
         "X": 5,
@@ -6993,7 +6993,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Remove",
-        "displayName": "Remove Map Element",
+        "displayName": "Remove Dict Element",
         "description": "Removes Key and its value from the connected map. Found reports whether anything was removed; use it when a player leaves or tracked data is no longer needed.",
         "searchTags": "",
         "kind": "exec",
@@ -7042,7 +7042,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Set",
-      "brickDisplayName": "Set Map Element",
+      "brickDisplayName": "Set Dict Element",
       "brickSummary": "Stores Value under Key in the connected map, replacing the old value if that key already exists. Use it for data such as a score for each player name.",
       "halfSize": {
         "X": 5,
@@ -7051,7 +7051,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Set",
-        "displayName": "Set Map Element",
+        "displayName": "Set Dict Element",
         "description": "Stores Value under Key in the connected map, replacing the old value if that key already exists. Use it for data such as a score for each player name.",
         "searchTags": "",
         "kind": "exec",
@@ -8330,6 +8330,85 @@
           {
             "name": "SpawnOffset",
             "displayName": "Spawn Offset",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_SpawnExplosionAt",
+      "brickDisplayName": "Spawn Explosion At",
+      "brickSummary": "Spawns the selected projectile type's normal impact explosion at an absolute world position with scale, damage multiplier, and character instigator inputs.",
+      "halfSize": {
+        "X": 7,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_SpawnExplosionAt",
+        "displayName": "Spawn Explosion At",
+        "description": "Spawns the selected projectile type's normal impact explosion at an absolute world position with scale, damage multiplier, and character instigator inputs.",
+        "searchTags": "explode blast detonate projectile impact damage effect bomb",
+        "kind": "exec",
+        "family": "",
+        "inputs": [
+          {
+            "name": "DamageMultiplier",
+            "displayName": "Damage Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Instigator",
+            "displayName": "Instigator",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "ProjectileType",
+            "displayName": "Projectile Type",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "ScaleMultiplier",
+            "displayName": "Scale Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WorldPosition",
+            "displayName": "World Position",
             "tooltip": "",
             "type": "vector",
             "composite": {
@@ -10323,6 +10402,80 @@
             "displayName": "Output",
             "tooltip": "",
             "type": "float",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Expr_Gamemode_IsBuilderTeam",
+      "brickDisplayName": "Is Builder Team",
+      "brickSummary": "Returns whether the supplied team is the special builder team.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_Gamemode_IsBuilderTeam",
+        "displayName": "Is Builder Team",
+        "description": "Returns whether the supplied team is the special builder team.",
+        "searchTags": "",
+        "kind": "expr",
+        "family": "Gamemode",
+        "inputs": [
+          {
+            "name": "Team",
+            "displayName": "Team",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bResult",
+            "displayName": "Result",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Expr_Gamemode_IsUnaffiliatedTeam",
+      "brickDisplayName": "Is Unaffiliated Team",
+      "brickSummary": "Returns whether the supplied team is the special unaffiliated team.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Expr_Gamemode_IsUnaffiliatedTeam",
+        "displayName": "Is Unaffiliated Team",
+        "description": "Returns whether the supplied team is the special unaffiliated team.",
+        "searchTags": "",
+        "kind": "expr",
+        "family": "Gamemode",
+        "inputs": [
+          {
+            "name": "Team",
+            "displayName": "Team",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bResult",
+            "displayName": "Result",
+            "tooltip": "",
+            "type": "bool",
             "composite": null
           }
         ],
@@ -13507,7 +13660,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Concatenate",
-      "brickDisplayName": "Concatenate",
+      "brickDisplayName": "Append",
       "brickSummary": "Joins Input A and Input B with an optional separator between them, useful for names, paths, and readable labels.",
       "halfSize": {
         "X": 5,
@@ -13516,7 +13669,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Concatenate",
-        "displayName": "Concatenate",
+        "displayName": "Append",
         "description": "Joins Input A and Input B with an optional separator between them, useful for names, paths, and readable labels.",
         "searchTags": "",
         "kind": "expr",
@@ -15071,6 +15224,63 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Fake_Gamemode_ControllerJoinedTeamEvent",
+      "brickDisplayName": "Player Joined Team Event",
+      "brickSummary": "Pulses when a user joins a team and outputs the team, their persistent player reference, user ID, and user name.",
+      "halfSize": {
+        "X": 6,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedTeamEvent",
+        "displayName": "Player Joined Team Event",
+        "description": "Pulses when a user joins a team and outputs the team, their persistent player reference, user ID, and user name.",
+        "searchTags": "",
+        "kind": "fake",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "PlayerState",
+            "displayName": "Player State",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Team",
+            "displayName": "Team",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "UserId",
+            "displayName": "User Id",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "UserName",
+            "displayName": "User Name",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Fake_Gamemode_ControllerLeftEvent",
       "brickDisplayName": "Player Left Event",
       "brickSummary": "Pulses when a user leaves and outputs their captured user ID and user name; use it for cleanup or logging.",
@@ -15098,6 +15308,69 @@
           {
             "name": "PlayerState",
             "displayName": "Player State",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "UserId",
+            "displayName": "User Id",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "UserName",
+            "displayName": "User Name",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "PlayerState",
+            "displayName": "Player State",
+            "type": "any"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Fake_Gamemode_ControllerLeftTeamEvent",
+      "brickDisplayName": "Player Left Team Event",
+      "brickSummary": "Pulses when a user leaves a team and outputs the team, their captured user ID, and user name.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftTeamEvent",
+        "displayName": "Player Left Team Event",
+        "description": "Pulses when a user leaves a team and outputs the team, their captured user ID, and user name.",
+        "searchTags": "",
+        "kind": "fake",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "PlayerState",
+            "displayName": "Player State",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "Team",
+            "displayName": "Team",
             "tooltip": "",
             "type": "entity",
             "composite": null
@@ -16206,8 +16479,8 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Pseudo_CustomEvent",
-      "brickDisplayName": "Custom Event",
-      "brickSummary": "Pulses when a Send Custom Event gate uses the same name, preserving each event and its data in order.",
+      "brickDisplayName": "Personal Custom Event",
+      "brickSummary": "Pulses when a matching Send Personal Custom Event gate owned by the same player fires, preserving each event and its data in order.",
       "halfSize": {
         "X": 10,
         "Y": 5,
@@ -16215,20 +16488,12 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraphPseudo_CustomEvent",
-        "displayName": "Custom Event",
-        "description": "Pulses when a Send Custom Event gate uses the same name, preserving each event and its data in order.",
+        "displayName": "Personal Custom Event",
+        "description": "Pulses when a matching Send Personal Custom Event gate owned by the same player fires, preserving each event and its data in order.",
         "searchTags": "",
         "kind": "pseudo",
         "family": "CustomEvent",
-        "inputs": [
-          {
-            "name": "EventName",
-            "displayName": "Event Name",
-            "tooltip": "",
-            "type": "any",
-            "composite": null
-          }
-        ],
+        "inputs": [],
         "outputs": [
           {
             "name": "DataOut1",
@@ -16296,9 +16561,120 @@
         ],
         "config": [
           {
-            "name": "bOnlyReceiveFromSameOwner",
-            "displayName": "Only Receive From Same Owner",
+            "name": "bIsObjectEvent",
+            "displayName": "Is Object Event",
             "type": "bool"
+          },
+          {
+            "name": "bTypeError",
+            "displayName": "Type Error",
+            "type": "bool"
+          },
+          {
+            "name": "EventName",
+            "displayName": "Event Name",
+            "type": "struct"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Pseudo_CustomEvent_Global",
+      "brickDisplayName": "Global Custom Event",
+      "brickSummary": "Pulses when a matching Send Global Custom Event gate fires, regardless of brick ownership, preserving each event and its data in order.",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraphPseudo_CustomEvent_Global",
+        "displayName": "Global Custom Event",
+        "description": "Pulses when a matching Send Global Custom Event gate fires, regardless of brick ownership, preserving each event and its data in order.",
+        "searchTags": "",
+        "kind": "pseudo",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "DataOut1",
+            "displayName": "Data Out1",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataOut2",
+            "displayName": "Data Out2",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataOut3",
+            "displayName": "Data Out3",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataOut4",
+            "displayName": "Data Out4",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataOut5",
+            "displayName": "Data Out5",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataOut6",
+            "displayName": "Data Out6",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataOut7",
+            "displayName": "Data Out7",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataOut8",
+            "displayName": "Data Out8",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "bIsObjectEvent",
+            "displayName": "Is Object Event",
+            "type": "bool"
+          },
+          {
+            "name": "bTypeError",
+            "displayName": "Type Error",
+            "type": "bool"
+          },
+          {
+            "name": "EventName",
+            "displayName": "Event Name",
+            "type": "struct"
           }
         ]
       }
@@ -16661,8 +17037,8 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Pseudo_SendCustomEvent",
-      "brickDisplayName": "Send Custom Event",
-      "brickSummary": "Triggers every Custom Event gate with the same name and passes through up to eight data values.",
+      "brickDisplayName": "Send Personal Custom Event",
+      "brickSummary": "Triggers matching Personal Custom Event gates owned by the same player, or matching object events on the Target brick grid.",
       "halfSize": {
         "X": 10,
         "Y": 5,
@@ -16670,8 +17046,8 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraphPseudo_SendCustomEvent",
-        "displayName": "Send Custom Event",
-        "description": "Triggers every Custom Event gate with the same name and passes through up to eight data values.",
+        "displayName": "Send Personal Custom Event",
+        "description": "Triggers matching Personal Custom Event gates owned by the same player, or matching object events on the Target brick grid.",
         "searchTags": "",
         "kind": "pseudo",
         "family": "SendCustomEvent",
@@ -16733,17 +17109,17 @@
             "composite": null
           },
           {
-            "name": "EventName",
-            "displayName": "Event Name",
-            "tooltip": "",
-            "type": "any",
-            "composite": null
-          },
-          {
             "name": "ExecIn",
             "displayName": "Exec In",
             "tooltip": "",
             "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Target",
+            "displayName": "Target",
+            "tooltip": "",
+            "type": "entity",
             "composite": null
           }
         ],
@@ -16756,7 +17132,129 @@
             "composite": null
           }
         ],
-        "config": []
+        "config": [
+          {
+            "name": "bTypeError",
+            "displayName": "Type Error",
+            "type": "bool"
+          },
+          {
+            "name": "EventName",
+            "displayName": "Event Name",
+            "type": "struct"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Pseudo_SendCustomEvent_Global",
+      "brickDisplayName": "Send Global Custom Event",
+      "brickSummary": "Triggers matching Global Custom Event gates regardless of brick ownership, or matching object events on the Target brick grid.",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraphPseudo_SendCustomEvent_Global",
+        "displayName": "Send Global Custom Event",
+        "description": "Triggers matching Global Custom Event gates regardless of brick ownership, or matching object events on the Target brick grid.",
+        "searchTags": "",
+        "kind": "pseudo",
+        "family": "",
+        "inputs": [
+          {
+            "name": "DataIn1",
+            "displayName": "Data In1",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataIn2",
+            "displayName": "Data In2",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataIn3",
+            "displayName": "Data In3",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataIn4",
+            "displayName": "Data In4",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataIn5",
+            "displayName": "Data In5",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataIn6",
+            "displayName": "Data In6",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataIn7",
+            "displayName": "Data In7",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "DataIn8",
+            "displayName": "Data In8",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "ExecIn",
+            "displayName": "Exec In",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Target",
+            "displayName": "Target",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "bTypeError",
+            "displayName": "Type Error",
+            "type": "bool"
+          },
+          {
+            "name": "EventName",
+            "displayName": "Event Name",
+            "type": "struct"
+          }
+        ]
       }
     },
     {
@@ -17105,7 +17603,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Variable_Map",
-      "brickDisplayName": "Map Variable",
+      "brickDisplayName": "Dict Variable",
       "brickSummary": "Allows defining a map variable, which can be modified and read via other Map Variable gates.",
       "halfSize": {
         "X": 5,
@@ -17114,7 +17612,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraphPseudo_MapVar",
-        "displayName": "Map Var",
+        "displayName": "Dict Var",
         "description": "Stores values under unique keys and provides a Map Var Ref for map gates. Use it to associate player names, IDs, or objects with scores, settings, or other data.",
         "searchTags": "",
         "kind": "pseudo",
@@ -21375,6 +21873,227 @@
       }
     },
     {
+      "brickAsset": "BP_ZoneProjector",
+      "brickDisplayName": "Zone Projector",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 10,
+        "Z": 2
+      },
+      "component": {
+        "class": "Component_Internal_AttachedZone",
+        "displayName": "Attached Zone",
+        "description": "",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "",
+        "inputs": [
+          {
+            "name": "bDetectEntities",
+            "displayName": "Detect Entities",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers",
+            "displayName": "Detect Players",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers1",
+            "displayName": "Detect Players1",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers2",
+            "displayName": "Detect Players2",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectPlayers3",
+            "displayName": "Detect Players3",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bDetectProjectiles",
+            "displayName": "Detect Projectiles",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bIsBuildingZone",
+            "displayName": "Is Building Zone",
+            "tooltip": "Whether this zone is a place that people without permission to build outside of build zones can build.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bIsLooseZone",
+            "displayName": "Is Loose Zone",
+            "tooltip": "Whether this zone is a loose zone, meaning objects don't have to be fully inside it to be considered to be inside.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bIsShareZone",
+            "displayName": "Is Share Zone",
+            "tooltip": "Whether this zone is a share zone, meaning bricks placed inside that are on the same grid and owned by the same owner are publicly editable by anyone on the server without them needing trust from the owner.",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bWater",
+            "displayName": "Water",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "TagFilter",
+            "displayName": "Tag Filter",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "WaterAbsorption",
+            "displayName": "Water Absorption",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          },
+          {
+            "name": "WaterFogAmbientColor",
+            "displayName": "Water Fog Ambient Color",
+            "tooltip": "",
+            "type": "color",
+            "composite": {
+              "kind": "color",
+              "subPorts": [
+                "A",
+                "B",
+                "G",
+                "R"
+              ]
+            }
+          },
+          {
+            "name": "WaterFogAmbientScale",
+            "displayName": "Water Fog Ambient Scale",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WaterFogIntensity",
+            "displayName": "Water Fog Intensity",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WaterFogScatteringColor",
+            "displayName": "Water Fog Scattering Color",
+            "tooltip": "",
+            "type": "color",
+            "composite": {
+              "kind": "color",
+              "subPorts": [
+                "A",
+                "B",
+                "G",
+                "R"
+              ]
+            }
+          },
+          {
+            "name": "WaterFogScatteringScale",
+            "displayName": "Water Fog Scattering Scale",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "WaterScattering",
+            "displayName": "Water Scattering",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          },
+          {
+            "name": "ZoneEndDistance",
+            "displayName": "Zone End Distance",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "ZoneStartDistance",
+            "displayName": "Zone Start Distance",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "ZoneWindForce",
+            "displayName": "Zone Wind Force",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bOccupied",
+            "displayName": "Occupied",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "OccupantCount",
+            "displayName": "Occupant Count",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "ZoneRef",
+            "displayName": "Zone Ref",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "BrickComponentType_AerodynamicSurface",
       "brickDisplayName": "Directional Aerodynamic Surface",
       "brickSummary": "Uses a direction relative to the brick to orient an aerodynamic surface that applies lift and drag to its build or vehicle.",
@@ -22357,6 +23076,13 @@
             "composite": null
           },
           {
+            "name": "TagFilter",
+            "displayName": "Tag Filter",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
             "name": "WaterAbsorption",
             "displayName": "Water Absorption",
             "tooltip": "",
@@ -22447,6 +23173,13 @@
             "displayName": "Zone Start Distance",
             "tooltip": "",
             "type": "int",
+            "composite": null
+          },
+          {
+            "name": "ZoneWindForce",
+            "displayName": "Zone Wind Force",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ],
@@ -23757,6 +24490,552 @@
             "composite": null
           }
         ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "PB_AerodynamicSurface",
+      "brickDisplayName": "Aerodynamic Surface",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 20,
+        "Z": 1
+      },
+      "component": {
+        "class": "BrickComponentType_Internal_AerodynamicSurface",
+        "displayName": "Aerodynamic Surface",
+        "description": "",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "AerodynamicSurface",
+        "inputs": [
+          {
+            "name": "bDiscoverable",
+            "displayName": "Discoverable",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bEnabled",
+            "displayName": "Enabled",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Control_DriveAndSteer",
+            "displayName": "Control Drive And Steer",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Deflection",
+            "displayName": "Deflection",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "DragCoefficient",
+            "displayName": "Drag Coefficient",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "ForceApplication",
+            "displayName": "Force Application",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "LiftCoefficient",
+            "displayName": "Lift Coefficient",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "LiftMultiplier",
+            "displayName": "Lift Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "MaxDeflection",
+            "displayName": "Max Deflection",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Role",
+            "displayName": "Role",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "StallAngle",
+            "displayName": "Stall Angle",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "PB_AerodynamicSurfaceVertical",
+      "brickDisplayName": "Vertical Aerodynamic Surface",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 10
+      },
+      "component": {
+        "class": "BrickComponentType_Internal_AerodynamicSurfaceVertical",
+        "displayName": "Vertical Aerodynamic Surface",
+        "description": "",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "AerodynamicSurfaceVertical",
+        "inputs": [
+          {
+            "name": "bDiscoverable",
+            "displayName": "Discoverable",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bEnabled",
+            "displayName": "Enabled",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Control_DriveAndSteer",
+            "displayName": "Control Drive And Steer",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "Deflection",
+            "displayName": "Deflection",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "DragCoefficient",
+            "displayName": "Drag Coefficient",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "ForceApplication",
+            "displayName": "Force Application",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "LiftCoefficient",
+            "displayName": "Lift Coefficient",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "LiftMultiplier",
+            "displayName": "Lift Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "MaxDeflection",
+            "displayName": "Max Deflection",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Role",
+            "displayName": "Role",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "StallAngle",
+            "displayName": "Stall Angle",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "PB_MotorSliderJoint",
+      "brickDisplayName": "Slider (Motor)",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 1
+      },
+      "component": {
+        "class": "Component_Internal_MotorSlider",
+        "displayName": "Motor Slider",
+        "description": "This brick is a motor slider. Attach another entity with the placer or manipulator!",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "MotorSlider",
+        "inputs": [
+          {
+            "name": "bEnabled",
+            "displayName": "Enabled",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bPositionsArePercentages",
+            "displayName": "Positions Are Percentages",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Damping",
+            "displayName": "Damping",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Power",
+            "displayName": "Power",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Speed",
+            "displayName": "Speed",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "CurrentPosition",
+            "displayName": "Current Position",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "bReversed",
+            "displayName": "Reversed",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "PB_RigidSliderJoint",
+      "brickDisplayName": "Slider (Rigid)",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 1
+      },
+      "component": {
+        "class": "Component_Internal_RigidSlider",
+        "displayName": "Rigid Slider",
+        "description": "This brick is a rigid slider. Weld another entity with the placer or manipulator!",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "RigidSlider",
+        "inputs": [
+          {
+            "name": "bPositionsArePercentages",
+            "displayName": "Positions Are Percentages",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "InterpMode",
+            "displayName": "Interp Mode",
+            "tooltip": "",
+            "type": "int",
+            "composite": null
+          },
+          {
+            "name": "SmoothTime",
+            "displayName": "Smooth Time",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "TargetPosition",
+            "displayName": "Target Position",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "TopSpeed",
+            "displayName": "Top Speed",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bStopped",
+            "displayName": "Stopped",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bWelded",
+            "displayName": "Welded",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "CurrentPosition",
+            "displayName": "Current Position",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "bReversed",
+            "displayName": "Reversed",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "PB_ServoSliderJoint",
+      "brickDisplayName": "Slider (Servo)",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 1
+      },
+      "component": {
+        "class": "Component_Internal_ServoSlider",
+        "displayName": "Servo Slider",
+        "description": "This brick is a servo slider. Attach another entity with the placer or manipulator!",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "ServoSlider",
+        "inputs": [
+          {
+            "name": "bEnabled",
+            "displayName": "Enabled",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bPositionsArePercentages",
+            "displayName": "Positions Are Percentages",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Damping",
+            "displayName": "Damping",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Exponent",
+            "displayName": "Exponent",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Power",
+            "displayName": "Power",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "TargetPosition",
+            "displayName": "Target Position",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "TopSpeed",
+            "displayName": "Top Speed",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bStopped",
+            "displayName": "Stopped",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "CurrentPosition",
+            "displayName": "Current Position",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "bReversed",
+            "displayName": "Reversed",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "PB_SliderJoint",
+      "brickDisplayName": "Slider",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 5,
+        "Z": 1
+      },
+      "component": {
+        "class": "Component_Internal_Slider",
+        "displayName": "Slider",
+        "description": "This brick is a slider. Attach another entity with the placer or manipulator!",
+        "searchTags": "",
+        "kind": "internal",
+        "family": "Slider",
+        "inputs": [
+          {
+            "name": "bPositionsArePercentages",
+            "displayName": "Positions Are Percentages",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Damping",
+            "displayName": "Damping",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "CurrentPosition",
+            "displayName": "Current Position",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "bReversed",
+            "displayName": "Reversed",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "PB_Spike",
+      "brickDisplayName": "Spike",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 10,
+        "Y": 10,
+        "Z": 6
+      },
+      "component": {
+        "class": "Component_Damage",
+        "displayName": "Damage",
+        "description": "Damages the player when touching",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [
+          {
+            "name": "ConsoleTag",
+            "displayName": "Console Tag",
+            "tooltip": "If this is set to anything, the string it is set to will be printed to the console.",
+            "type": "string",
+            "composite": null
+          },
+          {
+            "name": "Damage",
+            "displayName": "Damage",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Message",
+            "displayName": "Message",
+            "tooltip": "If this is set to anything, a player will see that message upon touching the brick.",
+            "type": "string",
+            "composite": null
+          },
+          {
+            "name": "RepeatDelay",
+            "displayName": "Repeat Delay",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [],
         "config": []
       }
     }

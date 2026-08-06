@@ -113,7 +113,7 @@ out total = w1 + w2
 fn snapshot_mod_with_parent_capture() {
     let src = r#"
 var counter: int = 0
-array log: int[]
+var log: int[]
 mod record_step() {
     counter = counter + 1
     log.push(counter)
@@ -141,7 +141,7 @@ fn snapshot_cross_file_capture_pattern() {
 mod save(val: int) {
     log.push(val)
 }
-array log: int[]
+var log: int[]
 in tick: exec
 on tick {
     save(42)

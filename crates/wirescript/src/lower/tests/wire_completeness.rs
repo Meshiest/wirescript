@@ -43,7 +43,7 @@ fn chip_id_num(n: NodeId) -> String {
 /// Build one program from the matrix axes and return its source.
 fn program(kind: &str, body: &str, parent_out: &str, call: &str, sig: &str) -> String {
     format!(
-        "array a: int[]\n\
+        "var a: int[]\n\
          {parent_out}var r: int = 0\n\
          {kind} f(x: int) -> {sig} {{\n\
          {body}\n\
@@ -151,7 +151,7 @@ fn wire_completeness_multi_output_and_nested() {
     let mut failures = Vec::new();
     for (label, snippet) in cases {
         // Always with a parent `out` present (the trigger for the value-drop bug).
-        let src = format!("array a: int[]\nout extra: int[] = a\nvar r: int = 0\nin z: exec\n{snippet}\n");
+        let src = format!("var a: int[]\nout extra: int[] = a\nvar r: int = 0\nin z: exec\n{snippet}\n");
         let r = compile(&src);
         if r.diagnostics.iter().any(|d| d.severity == Severity::Error) {
             failures.push(format!(
@@ -184,7 +184,7 @@ fn multi_call_site_distinct_inputs() {
     // `out`, a chip that find()s it and returns via a select, called 3x with
     // distinct string args inside one exec handler.
     let src = "\
-array userIds: string[]\n\
+var userIds: string[]\n\
 out ui: string[] = userIds\n\
 chip slotOfUser(uid: string) -> int {\n\
   let res = userIds.find(uid)\n\
@@ -285,7 +285,7 @@ fn chip_nested_in_repeated_inline_mod_keeps_boundary_wires() {
     // `slotOf` is an inline mod wrapping a chip call; it is expanded 3x with
     // distinct args, mirroring the unrolled rosterRow(g, 0..N) pattern.
     let src = "\
-array userIds: string[]\n\
+var userIds: string[]\n\
 out ui: string[] = userIds\n\
 chip slotOfUser(uid: string) -> int {\n\
   let res = userIds.find(uid)\n\
@@ -330,7 +330,7 @@ on z {\n\
 #[test]
 fn chip_arg_derived_from_mod_param_in_repeated_mod() {
     let src = "\
-array userIds: string[]\n\
+var userIds: string[]\n\
 out ui: string[] = userIds\n\
 chip slotOfUser(uid: string) -> int {\n\
   let res = userIds.find(uid)\n\

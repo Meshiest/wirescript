@@ -77,6 +77,46 @@ pub fn hover_at(
         .or_else(|| hover_namespace_member(source, symbols, doc_comments, resource_estimates, &word, line, col))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
         .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
+        .or_else(|| hover_type_or_class(&word))
+}
+
+/// A short description for a built-in primitive type name.
+fn builtin_type_desc(word: &str) -> Option<&'static str> {
+    Some(match word {
+        "bool" => "Boolean (`true` / `false`).",
+        "int" => "64-bit signed integer.",
+        "float" => "64-bit floating-point number.",
+        "string" => "Text string.",
+        "vector" => "3D vector (x, y, z floats).",
+        "rotator" => "Euler rotation (pitch, yaw, roll).",
+        "quat" => "Quaternion (x, y, z, w) — a rotation value.",
+        "color" => "RGBA color (r, g, b, a).",
+        "entity" => "Reference to a game entity.",
+        "character" => "Reference to a player character.",
+        "controller" => "Reference to a player controller.",
+        "exec" => "Execution trigger signal — not a data value.",
+        "zone" => "Reference to a Zone brick (rerouter-only, like a var ref).",
+        "teleport" => "Reference to a Teleport Destination (rerouter-only, like a var ref).",
+        "any" => "Wildcard type — works anywhere but erases the type; prefer a generic `<T>`.",
+        "never" => "Bottom type — no value inhabits it.",
+        _ => return None,
+    })
+}
+
+/// Hover for a bare type word: a generic **constraint class** (`Scalar` /
+/// `Numeric` / `Variant`), or a built-in primitive type (`int`, `vector`, …).
+/// Runs after user-symbol lookup so a user type alias of the same name still
+/// wins; these names are otherwise not declared symbols.
+fn hover_type_or_class(word: &str) -> Option<String> {
+    if let Some(members) = crate::types::classes::class_mask(word) {
+        let names: Vec<String> = members.iter().map(type_str).collect();
+        return Some(format!(
+            "```wirescript\n{word}  (generic constraint class)\n```\nA bound for a generic type parameter — `<T: {word}>` restricts `T` to one of: {}.",
+            names.join(", ")
+        ));
+    }
+    let desc = builtin_type_desc(word)?;
+    Some(format!("```wirescript\n{word}\n```\n{desc}"))
 }
 
 /// Hover for a `$` reference token under the cursor: a prefab file reference
@@ -602,10 +642,43 @@ fn render_decl_hover(
     let ty_str = sym.ty.as_deref().unwrap_or("unknown");
     let mut v = match sym.kind {
         "mod" | "chip" | "fn" => {
+            // The signature may carry a leading `<T>` generics prefix, so insert
+            // `exec` after the FIRST `(`, not at the start of the string.
             let sig = if sym.exec {
-                if ty_str.starts_with('(') && ty_str.len() > 2 { format!("(exec, {}", &ty_str[1..]) } else { "(exec)".into() }
+                match ty_str.find('(') {
+                    Some(i) => {
+                        let (head, rest) = ty_str.split_at(i + 1); // head ends with `(`
+                        if rest.starts_with(')') {
+                            format!("{head}exec{rest}")
+                        } else {
+                            format!("{head}exec, {rest}")
+                        }
+                    }
+                    None => ty_str.to_string(),
+                }
             } else { ty_str.to_string() };
             format!("```wirescript\n{} {}{}\n```", sym.kind, sym.name, sig)
+        }
+        "typeparam" => {
+            // Show the bound; if it's a named constraint class (`Scalar` /
+            // `Numeric` / `Variant`), expand it to the concrete types it admits
+            // so the reader learns what `T` may be without hovering the bound.
+            let (bound, detail) = match sym.ty.as_deref() {
+                Some(b) => {
+                    let members = crate::types::classes::class_mask(b)
+                        .map(|m| {
+                            let names: Vec<String> = m.iter().map(type_str).collect();
+                            format!(" — one of: {}", names.join(", "))
+                        })
+                        .unwrap_or_default();
+                    (format!(": {b}"), members)
+                }
+                None => (String::new(), String::new()),
+            };
+            format!(
+                "```wirescript\n{}{}  (generic type parameter)\n```\nA generic type parameter — resolved to a concrete type per call site{detail}.",
+                sym.name, bound
+            )
         }
         _ => format!("```wirescript\n{} {}: {}\n```", sym.kind, sym.name, ty_str),
     };
@@ -787,8 +860,13 @@ fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[
     let fmt_field = |ty_display: String| format!("```wirescript\nfield {}: {}\n```", field, ty_display);
 
     // Layer 1: Full expression span (obj.field) in type_map - best case, typechecker
-    // recorded the type of the entire dotted expression.
-    if let Some(ty) = type_map.get(&(f.clone(), lo + obj_start, lo + field_end_col)) {
+    // recorded the type of the entire dotted expression. Skip a bare `any`: for a
+    // `.field` that's the error-fallback type of a field that didn't resolve, so
+    // fall through to structural resolution / the record-type fallback below
+    // rather than showing an unhelpful `field z: any`.
+    if let Some(ty) = type_map.get(&(f.clone(), lo + obj_start, lo + field_end_col))
+        && !matches!(ty, Type::Any)
+    {
         return Some(fmt_field(type_str(ty)));
     }
 
@@ -817,11 +895,75 @@ fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[
     // Layer 3: Symbol-based fallback - look up the object name in symbols, find
     // its type declaration, and resolve the field from the type's string form.
     // This handles imported files where type_map offsets don't match the current source.
-    if !obj_name.is_empty() {
-        return resolve_field_via_symbols(symbols, obj_name, field).map(fmt_field);
+    if !obj_name.is_empty()
+        && let Some(hit) = resolve_field_via_symbols(symbols, obj_name, field).map(fmt_field)
+    {
+        return Some(hit);
+    }
+
+    // Fallback: the field didn't resolve, but if the object IS a record, show
+    // its whole type — one field per line in a fenced `wirescript` block, which
+    // VS Code syntax-COLOURS. Hovering an erroring `x.Jump` then lists the valid
+    // fields, coloured. (The diagnostic message reporting the same error stays
+    // plain text — VS Code diagnostics don't support markup/colour.) Try the
+    // typed `type_map` first (gives a real `Type::Record` for a multi-line
+    // render), then the symbol table (a record TYPE STRING for named aliases /
+    // `in` ports the type_map didn't key at this span).
+    let obj_ty = find_obj_type(type_map, &f, lo + obj_start, lo + obj_end).or_else(|| {
+        type_map
+            .iter()
+            .filter(|((f2, _, e), _)| **f2 == *f && *e == lo + obj_end)
+            .max_by_key(|((_, s, _), _)| *s)
+            .map(|(_, t)| t.clone())
+    });
+    if let Some(ty) = &obj_ty {
+        let rec = match ty {
+            Type::Ref(inner) => inner.as_ref(),
+            other => other,
+        };
+        if let Type::Record(fields) = rec {
+            let body: String = fields
+                .iter()
+                .map(|(n, t)| format!("\n  {n}: {},", type_str(t)))
+                .collect();
+            return Some(format!("```wirescript\n{{{body}\n}}\n```"));
+        }
+    }
+    if !obj_name.is_empty()
+        && let Some(rec) = resolve_object_record_string(symbols, obj_name)
+    {
+        return Some(render_record_type_string_hover(&rec));
     }
 
     None
+}
+
+/// The object's resolved record TYPE STRING (`{ x: int, y: int }`) from the
+/// symbol table — either an inline record type on the symbol itself, or a named
+/// alias resolved to its `type` declaration. `None` if the object isn't a record.
+fn resolve_object_record_string(symbols: &[SymbolDef], obj_name: &str) -> Option<String> {
+    let sym = symbols.iter().find(|s| s.name == obj_name)?;
+    let ty_name = sym.ty.as_deref()?;
+    if ty_name.starts_with('{') {
+        return Some(ty_name.to_string());
+    }
+    symbols
+        .iter()
+        .find(|ts| ts.kind == "type" && ts.name == ty_name)
+        .and_then(|ts| ts.ty.clone())
+        .filter(|s| s.trim_start().starts_with('{'))
+}
+
+/// Reformat a single-line record type string (`{ x: int, y: int }`) into a
+/// fenced, one-field-per-line `wirescript` block so VS Code colours it.
+fn render_record_type_string_hover(rec: &str) -> String {
+    let inner = rec.trim().trim_start_matches('{').trim_end_matches('}').trim();
+    let body: String = inner
+        .split(", ")
+        .filter(|f| !f.trim().is_empty())
+        .map(|f| format!("\n  {},", f.trim()))
+        .collect();
+    format!("```wirescript\n{{{body}\n}}\n```")
 }
 
 /// Look up `obj_name` in symbols, find its type declaration, and resolve `field`
@@ -975,6 +1117,62 @@ mod tests {
     }
 
     #[test]
+    fn generic_mod_hover_shows_type_params() {
+        // Hovering a generic mod's name shows its `<T: Numeric>` generics, not
+        // just `(v: T) -> T`.
+        let src = "mod square<T: Numeric>(v: T) -> T { return v * v }\n";
+        let col = src.find("square").unwrap() + 1;
+        let h = hover_for(src, 0, col).expect("hover on generic mod");
+        assert!(h.contains("<T: Numeric>"), "hover should show generics: {h}");
+        assert!(h.contains("v: T"), "hover should still show params: {h}");
+    }
+
+    #[test]
+    fn constraint_class_hovers() {
+        // Hovering the bound `Numeric` shows the class + its members.
+        let src = "mod square<T: Numeric>(v: T) -> T { return v * v }\n";
+        let col = src.find("Numeric").unwrap() + 1;
+        let h = hover_for(src, 0, col).expect("hover on Numeric");
+        assert!(h.contains("constraint class"), "Numeric hover: {h}");
+        assert!(h.contains("vector"), "Numeric should list members incl vector: {h}");
+    }
+
+    #[test]
+    fn builtin_type_hovers() {
+        // Hovering a primitive type annotation shows its description.
+        let src = "mod f(v: int) -> int { return v }\n";
+        let col = src.find(": int").unwrap() + 2; // on the `int` after `v: `
+        let h = hover_for(src, 0, col).expect("hover on int");
+        assert!(h.contains("64-bit signed integer"), "int hover: {h}");
+    }
+
+    #[test]
+    fn type_param_hovers() {
+        // Hovering the `T` in `v: T` resolves to the generic parameter (with its
+        // bound), rather than falling through to nothing.
+        let src = "mod square<T: Numeric>(v: T) -> T { return v * v }\n";
+        let col = src.find(": T").unwrap() + 2; // on the `T` in `(v: T)`
+        let h = hover_for(src, 0, col).expect("hover on type parameter T");
+        assert!(h.contains("generic type parameter"), "T hover: {h}");
+        assert!(h.contains("T: Numeric"), "T hover should show bound: {h}");
+        // The bound is a constraint class, so its concrete members are expanded.
+        assert!(h.contains("vector"), "bounded T hover should expand class members: {h}");
+    }
+
+    #[test]
+    fn type_param_hovers_through_ref_and_shows_scalar_members() {
+        // Hovering the `T` inside a `*T` ref param (a real example shape) still
+        // resolves to the generic parameter, and a `Scalar` bound expands to
+        // its members (int, float).
+        let src = "mod inc<T: Scalar>(v: *T) { v = v + 1 }\n";
+        let col = src.find("*T").unwrap() + 1; // on the `T` in `*T`
+        let h = hover_for(src, 0, col).expect("hover on T inside *T");
+        assert!(h.contains("generic type parameter"), "ref-T hover: {h}");
+        assert!(h.contains("T: Scalar"), "should show the Scalar bound: {h}");
+        assert!(h.contains("int") && h.contains("float"), "Scalar should expand to int/float: {h}");
+    }
+
+    #[test]
     fn record_type_field_doc_comment_shows_on_hover() {
         let src = "type Point = {\n  /// the x coordinate\n  x: int,\n  y: int,\n}";
         // `x` is on line 2 (0-based); hover it.
@@ -1087,6 +1285,23 @@ mod bump({ counter, step }: State) { counter = counter + step }";
     }
 
     #[test]
+    fn self_receiver_method_hovers_as_mod() {
+        // Hovering `.dist` in `a.dist(b)` shows the user `self`-mod's signature
+        // (the bare-word symbol lookup resolves `dist` to its declaration).
+        let src = "mod dist(self: vector, o: vector) -> float { return self.Dot(o) }\n\
+                   in a: vector\nin b: vector\nin go: exec\non go { let d = a.dist(b) }";
+        let line = 4;
+        let l = src.lines().nth(line).unwrap();
+        let col = l.find(".dist").unwrap() + 2; // inside `dist`
+        let h = hover_for(src, line, col).expect("hover on .dist should return the mod");
+        assert!(h.contains("dist"), "hover should name the mod: {h}");
+        assert!(
+            h.contains("self: vector"),
+            "hover should show the self-mod signature: {h}"
+        );
+    }
+
+    #[test]
     fn user_var_named_like_array_method_hovers_as_var() {
         // A variable named after an array method (`sum`) must hover as the
         // variable, not as `array.sum`. The array-method hover only applies to a
@@ -1134,7 +1349,7 @@ mod bump({ counter, step }: State) { counter = counter + step }";
     fn array_method_access_still_hovers_as_method() {
         // The `.sum` access must still show the array method hover.
         let src = "\
-array fa: int[] = [5, 10, 15]
+var fa: int[] = [5, 10, 15]
 on load { let s = fa.sum() }";
         // "sum" in "fa.sum()" starts at col 20 on line 1
         let h = hover_for(src, 1, 21).expect("hover on `.sum` should return something");
@@ -1190,7 +1405,7 @@ let v = p.x";
         // `arr[i]` is typed as the bare element, so once it is bound to a `let`
         // the bounds flag has no record to resolve against and used to fall
         // through to Any - which is universal, so nothing downstream complained.
-        let src = "array names: string[]
+        let src = "var names: string[]
 in go: exec
 on go {
   let n = names[0]
@@ -1210,7 +1425,7 @@ on go {
         // `arr.find(x).Found` - the object is a call result, not an
         // identifier, so the field type must resolve from the call
         // expression's record type in the type map.
-        let src = "array ids: string[]
+        let src = "var ids: string[]
 chip a(uid: string) -> int {
   return if ids.find(uid).Found then 1 else 0
 }";
@@ -1227,7 +1442,7 @@ chip a(uid: string) -> int {
     fn record_destructured_let_hover_shows_field_types() {
         // `let { Found, Index } = ids.find(uid)` - each destructured name
         // takes its field's type from the initializer's record type.
-        let src = "array ids: string[]
+        let src = "var ids: string[]
 chip a(uid: string) -> int {
   let { Found, Index } = ids.find(uid)
   return if Found then Index else -1
@@ -1310,5 +1525,20 @@ chip a(uid: string) -> int {
             .expect("hover on raw enum config field");
         assert!(h.contains("EBrickDirection"), "should name the enum: {h}");
         assert!(h.contains("Y_Positive"), "should list members: {h}");
+    }
+
+    #[test]
+    fn invalid_field_on_record_hovers_the_record_type() {
+        // Hovering an erroring `.z` on a record-typed value surfaces the record
+        // type in a fenced (VS-Code-coloured) block listing its valid fields —
+        // the editor-native way to get a coloured type, since the diagnostic
+        // message that reports the same error is plain text.
+        let src = "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet v = p.z";
+        let h = hover_for(src, 2, 10).expect("hover on invalid field"); // `z` in `p.z`
+        assert!(h.contains("```wirescript"), "must be a fenced (coloured) block: {h}");
+        assert!(
+            h.contains("x: int") && h.contains("y: int"),
+            "must list the record's fields: {h}"
+        );
     }
 }

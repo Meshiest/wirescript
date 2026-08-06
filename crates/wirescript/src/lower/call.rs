@@ -2,19 +2,20 @@ use super::*;
 use crate::collections::HashSet;
 
 pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
-    let (callee, args, range) = match e {
+    let (callee, args, type_args, range) = match e {
         Expr::Call {
             callee,
             args,
+            type_args,
             range,
-        } => (callee, args, range),
+        } => (callee, args, type_args, range),
         _ => return synthesise_unsupported(ctx, e),
     };
     if let Expr::Ident { name, .. } = callee.as_ref() {
         // User-defined chips/mods shadow builtins of the same name, so a program
         // can define e.g. `chip Toggle` without colliding with the builtin.
         if let Some(chip_decl) = ctx.lookup_chip(name).cloned() {
-            return lower_chip_call(ctx, &chip_decl, args, range);
+            return lower_chip_call(ctx, &chip_decl, args, type_args, range);
         }
         if let Some(spec) = find_call(name) {
             return lower_builtin_call(ctx, spec, None, args, range, e);
@@ -44,11 +45,12 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         && let Expr::Ident { name: ns_name, .. } = obj.as_ref()
         && let Some(chip_decl) = ctx.lookup_ns_chip(ns_name, field).cloned()
     {
-        return lower_chip_call(ctx, &chip_decl, args, range);
+        return lower_chip_call(ctx, &chip_decl, args, type_args, range);
     }
     // Method calls: arr.push(val), arr.pop()
     if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
         if let Expr::Ident { name, .. } = obj.as_ref()
+            && crate::catalog::arrays::is_array_method(field)
             && let Some(var_rec) = ctx.lookup_var(name).cloned()
             && var_rec.storage == VarStorage::Array
         {
@@ -64,6 +66,7 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         }
         // Map method: m.get(k), m.set(k, v), m.has(k), etc.
         if let Expr::Ident { name, .. } = obj.as_ref()
+            && crate::catalog::maps::is_map_method(field)
             && let Some(var_rec) = ctx.lookup_var(name).cloned()
             && var_rec.storage == VarStorage::Map
         {
@@ -95,8 +98,9 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 e,
             );
         }
-        // Record-resolved array methods: cpu.regs.push(val)
-        if let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
+        // Record-resolved var methods: cpu.regs.push(val)
+        if crate::catalog::arrays::is_array_method(field)
+            && let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
             && var_rec.storage == VarStorage::Array
         {
             return lower_array_method(
@@ -117,6 +121,19 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             // avoids deep-cloning the receiver + args into a new arg vector.
             return lower_builtin_call(ctx, spec, Some(obj), args, range, e);
         }
+        // User `self`-receiver method calls: `v.dist(o)` where `dist` is a user
+        // mod/chip whose first parameter is named `self`. Desugars to
+        // `dist(v, o)` by prepending the receiver as positional arg 0. Placed
+        // AFTER the builtin-receiver case so a builtin of the same name wins
+        // (typecheck's WS035 rejects a self-mod shadowing a builtin).
+        if let Some(chip_decl) = ctx.lookup_chip(field).cloned()
+            && chip_decl.is_self_receiver()
+        {
+            let mut recv_args = Vec::with_capacity(args.len() + 1);
+            recv_args.push(CallArg::Positional(obj.as_ref().clone()));
+            recv_args.extend(args.iter().cloned());
+            return lower_chip_call(ctx, &chip_decl, &recv_args, type_args, range);
+        }
     }
     synthesise_unsupported(ctx, e)
 }
@@ -125,6 +142,7 @@ pub(super) fn lower_chip_call(
     ctx: &mut LowerCtx,
     chip_decl: &ChipDecl,
     args: &[CallArg],
+    type_args: &[TypeExpr],
     range: &SourceRange,
 ) -> PortRef {
     let named = !chip_decl.name.is_empty();
@@ -147,9 +165,9 @@ pub(super) fn lower_chip_call(
     }
 
     let result = if chip_decl.inline {
-        lower_chip_call_inline(ctx, chip_decl, args, range)
+        lower_chip_call_inline(ctx, chip_decl, args, type_args, range)
     } else {
-        lower_chip_call_instance(ctx, chip_decl, args, range)
+        lower_chip_call_instance(ctx, chip_decl, args, type_args, range)
     };
 
     if named {
@@ -162,6 +180,7 @@ pub(super) fn lower_chip_call_inline(
     ctx: &mut LowerCtx,
     chip_decl: &ChipDecl,
     args: &[CallArg],
+    type_args: &[TypeExpr],
     _range: &SourceRange,
 ) -> PortRef {
     // This call's output nodes don't exist yet, so any wire touching them
@@ -176,6 +195,21 @@ pub(super) fn lower_chip_call_inline(
             CallArg::Named { .. } | CallArg::Spread(_) => None,
         })
         .collect();
+
+    // Generic mod (`mod pick<T>(...)`): rebuild the call's type substitution
+    // from the args and push it so the body's `T`-typed annotations
+    // monomorphize (see `resolve_local_type`). Guarded on `type_params` being
+    // non-empty, so a non-generic mod pushes nothing and is byte-identical.
+    // Polymorphic recursion can't diverge here: any (transitive) self-call is
+    // already blocked by the WS020 recursion guard in `lower_chip_call` before
+    // it re-enters this inline, so the stack can't grow unbounded.
+    let pushed_mono = if chip_decl.type_params.is_empty() {
+        false
+    } else {
+        let frame = build_mono_frame(ctx, chip_decl, &positional_args, type_args);
+        ctx.mono_stack.push(frame);
+        true
+    };
 
     // Collect param bindings first (before mutating ctx) so ref lookups
     // see the caller's vars.
@@ -347,7 +381,7 @@ pub(super) fn lower_chip_call_inline(
     // return union we Var_Get the result.
     let num_return_values = count_return_values(&chip_decl.body);
     if num_return_values > 1 && chip_decl.outputs.len() == 1 {
-        let out_type = type_of_type_expr(&chip_decl.outputs[0].typ);
+        let out_type = ctx.resolve_local_type(&chip_decl.outputs[0].typ);
         let var_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::PSEUDO_VAR,
             source_range: chip_decl.body.range.clone(),
@@ -566,6 +600,10 @@ pub(super) fn lower_chip_call_inline(
         }
     }
 
+    if pushed_mono {
+        ctx.mono_stack.pop();
+    }
+
     let result = if let Some(out_port) = return_output_port {
         out_port
     } else {
@@ -576,6 +614,212 @@ pub(super) fn lower_chip_call_inline(
     };
 
     result
+}
+
+/// Type of `port` as declared on its node (searching this module and any
+/// already-built chip children). Used to read an argument's ACTUAL lowered type.
+pub(super) fn arg_port_type(ctx: &LowerCtx, port: PortRef) -> Option<Type> {
+    fn find(m: &Module, id: NodeId) -> Option<&crate::ir::Node> {
+        m.nodes
+            .get(&id)
+            .or_else(|| m.chips.values().find_map(|c| find(c, id)))
+    }
+    let n = find(&ctx.builder.module, port.node_id)?;
+    let sym = intern(port.port.as_str());
+    n.ports
+        .find_output(sym)
+        .or_else(|| n.ports.find_input(sym))
+        .map(|p| p.ty.clone())
+}
+
+/// The concrete type an argument will lower to in the CURRENT context, read
+/// from its scope binding / port type — NOT from typecheck's `type_of_expr`
+/// map. This is the crux of nested-generic correctness: inside `outer<T>`'s
+/// body a forwarded value param (`inner(v)`) is bound to the caller's already
+/// concrete arg port (int under `outer<int>`, vector under `outer<vector>`),
+/// so its real lowered type is that concrete type. `type_of_expr`, by contrast,
+/// holds the STALE last-mask-member type P2.4's per-combo body check wrote
+/// there (e.g. `Prefab`), which silently collapsed every nested monomorph to
+/// the wrong variant. Falls back to `type_of` for non-ident args (literals,
+/// compound expressions) — those aren't type-param-forwarded in practice, and
+/// their `type_of_expr` entry is already concrete.
+fn lowered_arg_type(ctx: &LowerCtx, e: &Expr) -> Type {
+    match e {
+        Expr::Ident { name, .. } => match ctx.scope.get(name) {
+            Some(Binding::Local(l)) => {
+                if let Some(t) = arg_port_type(ctx, l.port) {
+                    return t;
+                }
+            }
+            Some(Binding::Var(v)) => return v.inner_type.clone(),
+            Some(Binding::Input(i)) => return i.ty.clone(),
+            Some(Binding::Buffer(b)) => return b.ty.clone(),
+            _ => {}
+        },
+        // A COMPOUND arg forwarded into a NESTED generic call (`Box(a + b)`,
+        // `Box(if c then a else b)`) inside a generic body must report the
+        // CURRENT monomorph's type — recurse structurally, resolving operators
+        // and if-branches from their operands' monomorph types, exactly as the
+        // emit side does (`mono_op_rule` / `lower_if_expr`). Otherwise the
+        // `type_of` fallback below returns the STALE last-mask-member type the
+        // per-combo body check wrote, and the inner call monomorphizes to the
+        // wrong variant (`Numeric` → Color) — a silent miscompile. Gated on a
+        // non-empty `mono_stack` so the non-generic path stays byte-identical.
+        Expr::BinOp { op, left, right, .. } if !ctx.mono_stack.is_empty() => {
+            let l = lowered_arg_type(ctx, left);
+            let r = lowered_arg_type(ctx, right);
+            if let Some(rule) = crate::catalog::operators::resolve_op(op, &[l, r]) {
+                return rule.result.clone();
+            }
+        }
+        Expr::UnOp { op, operand, .. } if !ctx.mono_stack.is_empty() => {
+            let o = lowered_arg_type(ctx, operand);
+            if let Some(rule) = crate::catalog::operators::resolve_op(op, &[o]) {
+                return rule.result.clone();
+            }
+        }
+        Expr::IfExpr {
+            then_branch,
+            else_branch,
+            ..
+        } if !ctx.mono_stack.is_empty() => {
+            let t = unwrap_ref(&lowered_arg_type(ctx, then_branch));
+            let e2 = unwrap_ref(&lowered_arg_type(ctx, else_branch));
+            return crate::types::coerce::widening_join(&t, &e2).unwrap_or(e2);
+        }
+        // A single-output generic-mod call forwarded as an arg (`Box(id(a))`):
+        // its monomorph return type is its declared return with the callee's
+        // OWN subst applied, inferred from the (monomorph) arg types — not the
+        // stale `type_of`. Mirrors what the inner call itself will do when
+        // lowered. Recursion is bounded by expression nesting.
+        Expr::Call { callee, args, .. } if !ctx.mono_stack.is_empty() => {
+            if let Expr::Ident { name, .. } = callee.as_ref()
+                && let Some(Binding::Chip(decl)) = ctx.scope.get(name)
+            {
+                let decl = decl.clone();
+                if !decl.type_params.is_empty() && decl.outputs.len() == 1 {
+                    let pos: Vec<&Expr> = args
+                        .iter()
+                        .filter_map(|a| match a {
+                            CallArg::Positional(e) => Some(e),
+                            _ => None,
+                        })
+                        .collect();
+                    let frame = build_mono_frame(ctx, &decl, &pos, &[]);
+                    let params: Vec<String> =
+                        decl.type_params.iter().map(|tp| tp.name.clone()).collect();
+                    let empty_aliases = crate::collections::HashMap::default();
+                    let empty_generic = crate::collections::HashMap::default();
+                    let cx = crate::types::resolve::ResolveCtx {
+                        params: &params,
+                        type_aliases: &empty_aliases,
+                        generic_aliases: &empty_generic,
+                    };
+                    let ret = crate::types::resolve::resolve_type(
+                        &decl.outputs[0].typ,
+                        &cx,
+                        &mut Vec::new(),
+                    );
+                    return crate::types::mono::substitute(&ret, &frame.subst);
+                }
+            }
+        }
+        _ => {}
+    }
+    ctx.type_of(e)
+}
+
+/// Rebuild a generic mod's call-site type substitution and package it (with the
+/// callee's type-param names) into a [`MonoFrame`]. For each positional param,
+/// resolve its declared type with the type params in scope (so `T` →
+/// `Type::Param(T)`) and pair it with the argument's ACTUAL lowered type (see
+/// [`lowered_arg_type`]); then `types::mono::infer_call_subst` runs the same
+/// `collect` + `solve` inference typecheck used at the call site. Only
+/// positional value args participate; masks come from each param's bound
+/// (`T: Numeric`) so the solver's out-of-mask check matches typecheck's.
+fn build_mono_frame(
+    ctx: &LowerCtx,
+    chip_decl: &ChipDecl,
+    positional_args: &[&Expr],
+    type_args: &[TypeExpr],
+) -> MonoFrame {
+    let param_names: Vec<String> = chip_decl
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
+    // Explicit type arguments (`pick<int>(...)`): the caller pinned each type
+    // param. Typecheck already validated arity + mask, so bind each `T_i` to its
+    // resolved type arg directly — `resolve_local_type` monomorphizes a type
+    // argument that itself references an outer `T` (`inner<T>(...)` inside
+    // `outer<T>`'s body).
+    if !type_args.is_empty() {
+        let mut subst = crate::types::infer::Subst::new();
+        for (tp, te) in chip_decl.type_params.iter().zip(type_args.iter()) {
+            subst.insert(tp.name.clone(), ctx.resolve_local_type(te));
+        }
+        return MonoFrame {
+            params: param_names,
+            subst,
+        };
+    }
+    let empty_aliases: crate::collections::HashMap<String, Type> = crate::collections::HashMap::default();
+    let empty_generic_aliases: crate::collections::HashMap<String, crate::types::resolve::GenericAlias> =
+        crate::collections::HashMap::default();
+    let resolve_cx = crate::types::resolve::ResolveCtx {
+        params: &param_names,
+        type_aliases: &empty_aliases,
+        generic_aliases: &empty_generic_aliases,
+    };
+    let mut param_types = Vec::new();
+    let mut arg_types = Vec::new();
+    for (i, param) in chip_decl.inputs.iter().enumerate() {
+        let Some(arg_expr) = positional_args.get(i) else {
+            continue;
+        };
+        param_types.push(crate::types::resolve::resolve_type(
+            &param.typ,
+            &resolve_cx,
+            &mut Vec::new(),
+        ));
+        arg_types.push(lowered_arg_type(ctx, arg_expr));
+    }
+    let masks: Vec<(String, Vec<Type>)> = chip_decl
+        .type_params
+        .iter()
+        .map(|tp| {
+            (
+                tp.name.clone(),
+                crate::types::mono::mask_for_param(tp.bound.as_ref(), &empty_aliases),
+            )
+        })
+        .collect();
+    let subst = crate::types::mono::infer_call_subst(&param_types, &arg_types, &masks);
+    MonoFrame {
+        params: param_names,
+        subst,
+    }
+}
+
+/// Canonical cache/template key for one generic-chip instantiation: the chip
+/// name plus the concrete type each type param resolves to under this call's
+/// substitution (`Boxed<int>`, `Boxed<vector>`). `{:?}` on a resolved `Type` is
+/// a stable, unique-per-type string, so two instantiations collide iff they
+/// pick the same concrete types — exactly when their emitted grids are
+/// interchangeable and safe to dedup. A non-generic chip never calls this: its
+/// key stays the bare name (byte-identical to before).
+fn mono_key(chip_decl: &ChipDecl, frame: &MonoFrame) -> String {
+    let args: Vec<String> = frame
+        .params
+        .iter()
+        .map(|p| {
+            format!(
+                "{:?}",
+                crate::types::mono::substitute(&Type::Param(p.clone()), &frame.subst)
+            )
+        })
+        .collect();
+    format!("{}<{}>", chip_decl.name, args.join(","))
 }
 
 fn resolve_caller_captures(
@@ -596,16 +840,7 @@ fn resolve_caller_captures(
             continue;
         };
 
-        let resolved_record = match &param.typ {
-            TypeExpr::Record { fields, .. } => Some(fields.clone()),
-            TypeExpr::Name { name, .. } => {
-                ctx.type_aliases.get(name.as_str()).and_then(|te| match te {
-                    TypeExpr::Record { fields, .. } => Some(fields.clone()),
-                    _ => None,
-                })
-            }
-            _ => None,
-        };
+        let resolved_record = ctx.record_fields_of(&param.typ);
 
         if let Some(fields) = &resolved_record {
             if let Some(Binding::Record(rec_fields)) = resolve_field_chain(ctx, arg_expr).cloned() {
@@ -663,7 +898,14 @@ fn build_chip_module(
     instance_name: &str,
     caller_captures: &HashMap<String, VarRecord>,
     force_exec_boundary: bool,
+    mono_frame: Option<MonoFrame>,
 ) -> Module {
+    // A generic chip is monomorphized for this instantiation: `mono_frame` is
+    // `Some` only for a generic chip, and seeding the child ctx's `mono_stack`
+    // with it makes every `T`-annotated storage/operator/if-expr/return in the
+    // body — and its boundary ports (below) — resolve to the concrete type.
+    // Non-generic chips pass `None` → empty stack → byte-identical to before.
+    let is_generic = mono_frame.is_some();
     let mut child_builder = ModuleBuilder::new(instance_name);
     child_builder.module.scopes.insert(
         ROOT_SCOPE_ID,
@@ -692,6 +934,7 @@ fn build_chip_module(
         mod_return_exec: None,
         mod_return_var: None,
         type_aliases: ctx.type_aliases.clone(),
+        generic_type_aliases: ctx.generic_type_aliases.clone(),
         pending_emits: HashMap::default(),
         exec_signal_hubs: HashMap::default(),
         exec_signal_keys: HashMap::default(),
@@ -714,6 +957,14 @@ fn build_chip_module(
         // `_nofold` from the start, since the body is lowered in this
         // fresh `child_ctx`, not the caller's `ctx`.
         nofold_depth: if chip_decl.no_fold { 1 } else { 0 },
+        // Generic chips ARE monomorphized: one template per `(name, subst)`
+        // (keyed in `lower_chip_call_instance`), so the shared-template concern
+        // is moot — each distinct instantiation builds its own body here. Seed
+        // the stack with this call's frame so every `T` in the body resolves to
+        // the concrete monomorph (`resolve_local_type` / `mono_op_rule` /
+        // `lower_if_expr` all read `mono_stack`). `None` for a non-generic chip
+        // → empty stack → byte-identical resolution to before.
+        mono_stack: mono_frame.map(|f| vec![f]).unwrap_or_default(),
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -766,24 +1017,16 @@ fn build_chip_module(
     }
 
     for inp in &chip_decl.inputs {
-        let resolved_record = match &inp.typ {
-            TypeExpr::Record { fields, .. } => Some(fields.clone()),
-            TypeExpr::Name { name, .. } => {
-                child_ctx
-                    .type_aliases
-                    .get(name.as_str())
-                    .and_then(|te| match te {
-                        TypeExpr::Record { fields, .. } => Some(fields.clone()),
-                        _ => None,
-                    })
-            }
-            _ => None,
-        };
+        let resolved_record = child_ctx.record_fields_of(&inp.typ);
         if let Some(fields) = &resolved_record {
             let mut record_fields = HashMap::default();
             for field in fields {
                 let port_name = format!("{}_{}", inp.name, field.name);
-                let ft = type_of_type_expr(&field.typ);
+                let ft = if is_generic {
+                    child_ctx.resolve_local_type(&field.typ)
+                } else {
+                    type_of_type_expr(&field.typ)
+                };
                 let is_array = matches!(&field.typ, TypeExpr::Array { .. });
                 let is_ref = matches!(&field.typ, TypeExpr::Ref { .. });
 
@@ -853,7 +1096,11 @@ fn build_chip_module(
                     }),
                 );
             } else {
-                let t = type_of_type_expr(&inp.typ);
+                let t = if is_generic {
+                    child_ctx.resolve_local_type(&inp.typ)
+                } else {
+                    type_of_type_expr(&inp.typ)
+                };
                 let is_array = matches!(&inp.typ, TypeExpr::Array { .. });
                 let inner = match &t {
                     Type::Ref(inner) => inner.as_ref().clone(),
@@ -876,7 +1123,11 @@ fn build_chip_module(
                 );
             }
         } else {
-            let t = type_of_type_expr(&inp.typ);
+            let t = if is_generic {
+                child_ctx.resolve_local_type(&inp.typ)
+            } else {
+                type_of_type_expr(&inp.typ)
+            };
             let node_id = child_ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
             child_ctx
                 .scope
@@ -884,7 +1135,11 @@ fn build_chip_module(
         }
     }
     for out in &chip_decl.outputs {
-        let t = type_of_type_expr(&out.typ);
+        let t = if is_generic {
+            child_ctx.resolve_local_type(&out.typ)
+        } else {
+            type_of_type_expr(&out.typ)
+        };
         let node_id = child_ctx.add_output(&out.name, t.clone(), chip_decl.range.clone());
         child_ctx.scope.insert(
             &crate::lower::context::output_scope_key(&out.name),
@@ -990,6 +1245,7 @@ pub(super) fn lower_chip_call_instance(
     ctx: &mut LowerCtx,
     chip_decl: &ChipDecl,
     args: &[CallArg],
+    type_args: &[TypeExpr],
     range: &SourceRange,
 ) -> PortRef {
     static INSTANCE_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -1005,7 +1261,28 @@ pub(super) fn lower_chip_call_instance(
         _ => None,
     });
 
-    let mut child_module = if let Some(template) = ctx.template_cache.get(&chip_decl.name) {
+    // Monomorphize a generic chip per distinct type instantiation. Rebuild this
+    // call's type substitution (same inference the inline path + typecheck use)
+    // and key the template + emitted grid on `(name, concrete subst)` so
+    // `Box<int>` and `Box<vector>` get separate bodies AND separate grids (they
+    // dedup on `template_key`, which would otherwise collapse them into one).
+    // A non-generic chip keeps the bare name — byte-identical to before.
+    let positional_args: Vec<&Expr> = args
+        .iter()
+        .filter_map(|a| match a {
+            CallArg::Positional(e) => Some(e),
+            CallArg::Named { .. } | CallArg::Spread(_) => None,
+        })
+        .collect();
+    let (mono_frame, key) = if chip_decl.type_params.is_empty() {
+        (None, chip_decl.name.clone())
+    } else {
+        let frame = build_mono_frame(ctx, chip_decl, &positional_args, type_args);
+        let key = mono_key(chip_decl, &frame);
+        (Some(frame), key)
+    };
+
+    let mut child_module = if let Some(template) = ctx.template_cache.get(&key) {
         // Build remap: for each param name in the template's capture_names,
         // look up the caller's VarRecord and map old_id -> new_id.
         let mut captures = std::collections::HashMap::default();
@@ -1022,6 +1299,7 @@ pub(super) fn lower_chip_call_instance(
             &instance_name,
             &caller_captures,
             exec_arg.is_some(),
+            mono_frame,
         );
         // Cache the first instance as a template for subsequent calls.
         // Store capture_names so future instantiations can remap by param name.
@@ -1031,10 +1309,10 @@ pub(super) fn lower_chip_call_instance(
             .iter()
             .map(|(name, var_rec)| (name.clone(), var_rec.node_id))
             .collect();
-        ctx.template_cache.insert(&chip_decl.name, template);
+        ctx.template_cache.insert(&key, template);
         module
     };
-    child_module.template_key = Some(intern(&chip_decl.name));
+    child_module.template_key = Some(intern(&key));
 
     // All wiring goes directly to child MicrochipInput/Output nodes.
     // The chip node exists only for layout grouping + microchip link.
@@ -1102,14 +1380,16 @@ pub(super) fn lower_chip_call_instance(
     // Constants live inside the instance, so instances that folded different
     // values are no longer interchangeable. Fold the values into the template
     // key as well, or grid dedup would hand one instance another's body; calls
-    // passing the same constants still share a key.
+    // passing the same constants still share a key. The base is the monomorph
+    // `key` (not the bare name), so a generic chip folding the same constant at
+    // two DIFFERENT types (`Box<int>(5)` vs `Box<vector>(...)`) still keys apart.
     if !const_folds.is_empty() {
-        let mut key = chip_decl.name.clone();
+        let mut fold_key = key.clone();
         for fold in &const_folds {
-            key.push_str(&format!("\u{1}{}:{:?}", fold.index, fold.value));
+            fold_key.push_str(&format!("\u{1}{}:{:?}", fold.index, fold.value));
         }
         if let Some(child) = ctx.builder.module.chips.get_mut(&chip_node_id) {
-            child.template_key = Some(intern(&key));
+            child.template_key = Some(intern(&fold_key));
         }
         for fold in &const_folds {
             fold_const_chip_input(ctx, chip_node_id, fold);
@@ -1251,16 +1531,7 @@ fn wire_chip_args_and_outputs(
             continue;
         }
 
-        let resolved_rec = match &param.typ {
-            TypeExpr::Record { fields, .. } => Some(fields.clone()),
-            TypeExpr::Name { name, .. } => {
-                ctx.type_aliases.get(name.as_str()).and_then(|te| match te {
-                    TypeExpr::Record { fields, .. } => Some(fields.clone()),
-                    _ => None,
-                })
-            }
-            _ => None,
-        };
+        let resolved_rec = ctx.record_fields_of(&param.typ);
         if let Some(fields) = &resolved_rec {
             if let Some(Binding::Record(rec_fields)) = resolve_field_chain(ctx, arg_expr).cloned() {
                 for field in fields {

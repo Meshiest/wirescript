@@ -135,6 +135,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             }
             m
         },
+        generic_type_aliases: collect_generic_type_aliases(&input.ast.decls),
         pending_emits: HashMap::default(),
         exec_signal_hubs: HashMap::default(),
         exec_signal_keys: HashMap::default(),
@@ -153,6 +154,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         doc_comments: input.doc_comments,
         // Module-level `@nofold` (top of file + blank line) marks everything.
         nofold_depth: input.ast.no_fold as u32,
+        mono_stack: Vec::new(),
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -260,6 +262,46 @@ fn collect_fn_names(ast: &Script) -> HashSet<String> {
         }
     }
     names
+}
+
+/// Collect every generic type alias (`type Pair<T> = { … }`, top-level and
+/// namespaced) into the `name → (params, body)` map lowering instantiates from.
+/// Mirrors typecheck's `collect_generic_aliases` pre-pass so both layers agree
+/// on which aliases are generic (non-empty `type_params`).
+fn collect_generic_type_aliases(
+    decls: &[TopDecl],
+) -> HashMap<String, crate::types::resolve::GenericAlias> {
+    let mut m = HashMap::default();
+    for d in decls {
+        match d {
+            TopDecl::TypeAlias(ta) if !ta.type_params.is_empty() => {
+                m.insert(
+                    ta.name.clone(),
+                    crate::types::resolve::GenericAlias {
+                        params: ta.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        body: ta.typ.clone(),
+                    },
+                );
+            }
+            TopDecl::Namespace(ns) => {
+                for nd in &ns.decls {
+                    if let TopDecl::TypeAlias(ta) = nd
+                        && !ta.type_params.is_empty()
+                    {
+                        m.insert(
+                            format!("{}.{}", ns.name, ta.name),
+                            crate::types::resolve::GenericAlias {
+                                params: ta.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                                body: ta.typ.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    m
 }
 
 /// Constant `Vec/Rotation/Color` calls lower to `_Literal` nodes so consumers
@@ -1162,6 +1204,10 @@ pub fn compile_chip_template(
         mod_return_exec: None,
         mod_return_var: None,
         type_aliases: HashMap::default(),
+        // Standalone template path (resource estimation / cache) resolves
+        // record aliases from inline literals only, matching the empty
+        // `type_aliases` above — keep the generic map empty for parity.
+        generic_type_aliases: HashMap::default(),
         pending_emits: HashMap::default(),
         exec_signal_hubs: HashMap::default(),
         exec_signal_keys: HashMap::default(),
@@ -1183,20 +1229,12 @@ pub fn compile_chip_template(
         is_root_module: false,
         doc_comments: &empty_docs,
         nofold_depth: 0,
+        mono_stack: Vec::new(),
     };
 
     // Create input ports
     for inp in &chip_decl.inputs {
-        let resolved_record = match &inp.typ {
-            TypeExpr::Record { fields, .. } => Some(fields.clone()),
-            TypeExpr::Name { name, .. } => {
-                ctx.type_aliases.get(name.as_str()).and_then(|te| match te {
-                    TypeExpr::Record { fields, .. } => Some(fields.clone()),
-                    _ => None,
-                })
-            }
-            _ => None,
-        };
+        let resolved_record = ctx.record_fields_of(&inp.typ);
         if let Some(fields) = &resolved_record {
             let mut record_fields = HashMap::default();
             for field in fields {

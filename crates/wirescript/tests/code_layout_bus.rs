@@ -394,7 +394,7 @@ fn the_allocated_bus_reaches_the_emitted_world() {
     let src = "@layout(\"code\")
 
 var a: int = 1
-array log: string[]
+var log: string[]
 in go: exec
 chip Doubler(run: exec, amount: int) -> (twice: int) {
   var seen: int = 0

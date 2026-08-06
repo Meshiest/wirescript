@@ -17,8 +17,6 @@ Wirescript has a static type system that maps directly to Brickadia's wire graph
 | `entity` | Reference to a game entity | null |
 | `character` | Reference to a player character | null |
 | `controller` | Reference to a player controller | null |
-| `brick` | Reference to a brick | null |
-| `prefab` | Reference to a prefab | null |
 | `exec` | Execution signal (trigger) | -- |
 
 ### `exec` Type
@@ -44,6 +42,8 @@ on reset {
 
 `any` is a wildcard annotation for a value that flows through a wire without the checker pinning down (or caring about) its concrete type: `test & 1`, `test == "x"`, and every other operator overload still resolve against whatever operand type is on the other side, instead of erroring the way an actually-unknown type would. The tradeoff is spelled out by the name -- an `any` value works anywhere, but its side effects are on you: the checker can't warn you if the operator that ends up selected wasn't the one you meant.
 
+For a `mod` parameter that just passes a value through, prefer a [generic type parameter](#generics) (`<T>`) over `any` -- it keeps the checker's help instead of erasing the type. See [`any` vs. a Generic Parameter](#any-vs-a-generic-parameter).
+
 `any` is valid wherever a value just passes through:
 
 ```wirescript
@@ -58,7 +58,7 @@ It is **not** valid as a variable gate's storage type, because a Variable gate n
 ```wirescript
 var foo: any = 0          // ERROR: 'any' cannot be stored
 static var foo: any = 0   // ERROR: same
-array foo: any[]          // ERROR: same
+var foo: any[]          // ERROR: same
 buffer foo: any = 0       // ERROR: same
 ```
 
@@ -66,12 +66,12 @@ An **unannotated** `var`/`array`/`buffer` is unaffected -- its placeholder type 
 
 ### Object references & assets
 
-`entity`, `character`, `controller`, `brick`, and `prefab` are all **object references** -- a wire carries a handle to a game object, not a copy of it. **Asset references** (`$AssetType/AssetName`, e.g. `$BrickAudioDescriptor/BA_MUS_…`) are object references too: each lowers to its own reference gate (an `AudioReference` brick, and so on) whose output is wired wherever you use it.
+`entity`, `character`, `controller` are all **object references** -- a wire carries a handle to a game object, not a copy of it. **Asset references** (`$AssetType/AssetName`, e.g. `$BrickAudioDescriptor/BA_MUS_…`) are object references too: each lowers to its own reference gate (an `AudioReference` brick, and so on) whose output is wired wherever you use it.
 
 Because they share the same underlying object wire variant, an `entity[]` array (or an object-typed `var`) can hold any of them -- including asset references:
 
 ```wirescript
-array songs: entity[]
+var songs: entity[]
 
 on load {
   songs.push($BrickAudioDescriptor/BA_MUS_Component_Basil_CoffeeShop)
@@ -135,10 +135,10 @@ mod slide(a: *int, b: *int) { ... }
 
 ### Array Types (`T[]`)
 
-Arrays hold multiple values of the same element type. Declare them with the `array` keyword:
+Arrays hold multiple values of the same element type. Declare them with a `var` whose type ends in `[]`:
 
 ```wirescript
-array scores: int[]
+var scores: int[]
 ```
 
 Array access uses bracket syntax and returns the element type directly:
@@ -227,17 +227,222 @@ Both `Type::Record` and `Type::Tuple` exist in the type system. Records use name
 
 ### Union Types (`A | B`)
 
-Union types represent values that can be one of several types:
+Union types represent a value that can be one of several types. Write one
+directly in a type annotation:
 
 ```wirescript
-// A chip output may produce different types depending on the branch
-let result = if condition then 42 else 3.14
-// result: int | float
+let x: int | float = 42
 ```
 
-Union types primarily arise from conditional expressions where branches produce different types.
+Union syntax is also how a [generic bound](#constraint-classes-bounds) names
+an ad hoc set of types (`<T: int | vector>`).
 
-## Type Coercion
+Note that an `if`-then-else expression does **not** produce a union of its
+branch types -- it *widens* them to a single common type instead (see
+[Widening Inference](#widening-inference) and the
+[if-expression note](expressions.md#conditional-expressions-if-then-else)).
+`if condition then 42 else 3.14` has type `float`, not `int | float`.
+
+## Generics
+
+`mod` and `chip` declarations can take type parameters -- one implementation
+that specializes per call site instead of one copy per concrete type. A
+generic `mod` **inlines and monomorphizes** at each call: the compiler infers
+the concrete type(s) from the arguments and emits concrete gates for that
+type, same as a hand-written non-generic mod would.
+
+Generic **chips** work too: a generic `chip` is monomorphized *per distinct
+type instantiation* into its own microchip template (`Box<int>` and
+`Box<vector>` become two separate grids; two `Box<int>` calls share one), so
+the wire-level behavior mirrors a hand-written non-generic chip at each type.
+
+```wirescript
+mod pick<T>(c: bool, a: T, b: T) -> T {
+  return if c then a else b
+}
+
+in go: exec
+in i: int
+on go {
+  let x = pick(true, i, i)   // T = int, inferred from the arguments
+}
+```
+
+Multiple type parameters are declared as `<T, U, ...>`, each inferred
+independently from its own arguments:
+
+```wirescript
+mod first<T, U>(a: T, b: U) -> T {
+  return a
+}
+```
+
+See [`examples/generics.ws`](../../examples/generics.ws) for a complete,
+`just check`-clean file exercising every form on this page.
+
+### Constraint Classes (Bounds)
+
+A type parameter can be bounded to a named class of types with `<T: Class>`.
+There are three built-in classes, and unbounded `<T>` means `<T: Variant>`:
+
+| Class | Members |
+|-------|---------|
+| `Scalar` | `int`, `float` |
+| `Numeric` | `int`, `float`, `vector`, `rotator`, `quat`, `color` |
+| `Variant` | `Numeric` + `bool`, `string`, `entity`, `character`, `controller` (all value variants) |
+
+`Scalar ⊆ Numeric ⊆ Variant`. Note `bool` is only a member of `Variant` --
+`Scalar` and `Numeric` are strictly numeric-math types, and a bounded call
+with a `bool` argument is rejected:
+
+```wirescript
+mod addOne<T: Scalar>(v: T) -> T {
+  return v + 1
+}
+
+in flag: bool
+let bad = addOne(flag)   // ERROR WS033: 'T' = bool, which isn't allowed by its bound
+```
+
+An **anonymous union bound** (`<T: A | B>`) restricts `T` to exactly that
+set of types instead of a named class:
+
+```wirescript
+mod pickAxis<T: int | vector>(v: T) -> T {
+  return v
+}
+```
+
+### Widening Inference
+
+`T` is inferred as the **join** (least upper bound) of all the arguments'
+types, over a widening-only lattice -- there's no narrowing:
+
+- Numeric types widen toward the wider type: `int` widens to `float`, so
+  `pick(flag, 1, 2.0)` infers `T = float` (the `int` argument casts up).
+- Object types widen toward `entity`: `character` and `controller` both
+  widen to `entity`, so `pick(flag, aCharacter, aController)` infers
+  `T = entity`.
+- Incompatible operands -- e.g. `int` and `vector` -- have no common
+  widening and are a compile error (`WS033`):
+
+```wirescript
+in n: int
+in v: vector
+let bad = pick(true, n, v)
+// ERROR WS033: cannot infer 'T': it's int from one argument but vector
+// from another -- all 'T' arguments must be the same type
+```
+
+The same join is used by the built-in blend-family gates (`Blend`, `lerp`,
+`Easing`) and by [`if`-then-else expressions](expressions.md#conditional-expressions-if-then-else) --
+see the widening note there.
+
+### Body Checking Is Per-Mask-Member
+
+A generic mod's body is type-checked against **every** type in its bound's
+mask -- not just the types it happens to be called with -- so the body must
+be valid for the whole bound, not only your call sites. This is the most
+common gotcha: `<T: Numeric>` includes `rotator`, and an operator that isn't
+defined between `rotator` and a bare `int` literal fails the definition
+itself, even if you never call the mod with a `rotator`:
+
+```wirescript
+mod addOne<T: Numeric>(v: T) -> T {
+  return v + 1
+}
+// ERROR WS004: no overload for '+' on Rotator, Int -- rejected at the
+// DEFINITION, because `Numeric` includes `rotator` and `rotator + int`
+// has no overload, even though every actual call site below uses `int`.
+```
+
+Narrow the bound to `Scalar` when the body only needs `int`/`float`
+semantics -- `v + 1` is valid for every `Scalar` member, so this is clean:
+
+```wirescript
+mod addOne<T: Scalar>(v: T) -> T {
+  return v + 1     // OK -- valid for both int and float
+}
+```
+
+An operation that genuinely is valid across the whole `Numeric` family (a
+same-type operator, for instance) is fine to write against `Numeric`
+directly:
+
+```wirescript
+mod square<T: Numeric>(v: T) -> T {
+  return v * v     // OK -- same-type multiply is defined for the whole family
+}
+```
+
+### Ref Parameters
+
+A `*T` (or `ref T`) parameter infers `T` through the reference:
+
+```wirescript
+mod swap<T>(a: *T, b: *T) {
+  let tmp = a
+  a = b
+  b = tmp
+}
+```
+
+The same per-mask-member body checking applies -- a ref-param body that only
+assigns is fine unbounded (valid for every `Variant` member), but one that
+does arithmetic on the referenced value needs a `Scalar` bound for the same
+reason `addOne` does above:
+
+```wirescript
+mod inc<T: Scalar>(v: *T) {
+  v = v + 1
+}
+```
+
+### `any` vs. a Generic Parameter
+
+[`any`](#any-type) erases the type entirely -- the checker can't validate
+operators against it and can't tell you when you've made a mistake. A
+generic parameter keeps the type information and validates the body against
+the bound, so prefer a generic `mod` (`<T>` or `<T: Bound>`) over `any` for
+a value that flows through unchanged. Reach for `any` only when you
+genuinely don't care what flows through and don't need the checker's help.
+
+### Generic type aliases
+
+A `type` alias can take type parameters and is instantiated by substitution:
+
+```wirescript
+type Pair<T> = { a: T, b: T }
+let p: Pair<int> = { a: 1, b: 2 }   // resolves to { a: int, b: int }
+```
+
+An alias must be **fully applied** (`Pair` alone, or `Pair<int, float>` on a
+one-parameter alias, is a `WS002` error) and **non-recursive** (`type L<T> =
+{ tail: L<T> }` is rejected, not hung).
+
+### Explicit type arguments
+
+`T` is normally inferred from the arguments, but you can pin it explicitly with
+a `<...>` type-argument list at the call site:
+
+```wirescript
+let x = pick<int>(flag, a, b)   // same as the inferred pick(flag, a, b)
+let z = zero<vector>()          // REQUIRED: T appears only in the return
+```
+
+Explicit type arguments are the only way to call a mod whose type parameter
+can't be inferred from its arguments -- e.g. a `T` that appears only in the
+return type (`mod zero<T>() -> T`). They are checked like inferred ones: the
+count must match the type parameters, and each must satisfy its bound
+(`zero<string>()` on a `<T: Numeric>` is a `WS033` error); type arguments on a
+non-generic function are an error too, and on a builtin they are ignored with a
+`WS037` warning (a builtin's result type is derived from its arguments).
+
+Parsing note: `f<int>(...)` is read as a type-argument list only when the
+`<...>` is a valid list of types immediately followed by `(` -- a plain `a < b`
+comparison (or `a < b > c`) is never mistaken for it.
+
+
 
 Wirescript automatically inserts coercion gates when types don't match exactly but are compatible. The coercion rules mirror Brickadia's `PortsAreCompatible` behavior.
 
@@ -280,7 +485,7 @@ var label: string = 42         // int -> string: "42"
 var pos: string = someVector   // vector -> string: formatted
 ```
 
-The following types format to string: `bool`, `int`, `float`, `string`, `vector`, `rotator`, `color`, `entity`, `character`, `controller`, `brick`, `prefab`.
+The following types format to string: `bool`, `int`, `float`, `string`, `vector`, `rotator`, `color`, `entity`, `character`, `controller`.
 
 ### String Coercion to Bool -- empty is false
 
@@ -365,7 +570,7 @@ Type annotations appear after a colon in declarations:
 ```wirescript
 var x: int = 0
 in trigger: exec
-array data: float[]
+var data: float[]
 ```
 
 Type annotations are optional on `var` when an initializer is present (the type is inferred), but they are required on `in` declarations and `array` declarations.

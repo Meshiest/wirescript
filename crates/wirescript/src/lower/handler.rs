@@ -1,16 +1,17 @@
 use super::*;
 
 /// Resolve a handler param's type annotation to a wire `Type` (for typing an
-/// event's data-output ports — Custom Event). Primitives + array/ref only;
-/// user/generic types (which event data doesn't use) fall back to `any`.
+/// event's data-output ports — Custom Event). Delegates to the crate's single
+/// canonical resolver (`types::resolve::resolve_type`); no generic params or
+/// type aliases are in scope here, and any unknown-name diagnostic is
+/// discarded (typecheck has already flagged it with WS002).
 fn type_expr_to_type(te: &crate::ast::TypeExpr) -> Type {
-    use crate::ast::TypeExpr;
-    match te {
-        TypeExpr::Name { name, .. } => crate::typecheck::primitive_name(name).unwrap_or(Type::Any),
-        TypeExpr::Array { inner, .. } => Type::Array(Box::new(type_expr_to_type(inner))),
-        TypeExpr::Ref { inner, .. } => Type::Ref(Box::new(type_expr_to_type(inner))),
-        _ => Type::Any,
-    }
+    let cx = crate::types::resolve::ResolveCtx {
+        params: &[],
+        type_aliases: &crate::collections::HashMap::default(),
+        generic_aliases: &crate::collections::HashMap::default(),
+    };
+    crate::types::resolve::resolve_type(te, &cx, &mut Vec::new())
 }
 
 pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {

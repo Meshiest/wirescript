@@ -14,6 +14,7 @@ mod flatten;
 mod fold;
 mod fusion;
 mod gate_config;
+mod generics;
 mod imports;
 mod opaque;
 mod port_side;

@@ -59,6 +59,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             };
             let chip = ChipDecl {
                 name: f.name.clone(),
+                type_params: Vec::new(),
                 inputs: f.params.clone(),
                 outputs,
                 body: Block {

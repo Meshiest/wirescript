@@ -103,6 +103,8 @@ wire_ports! {
     ItemScale = "ItemScale",
     ProjectileOverride = "ProjectileOverride",
     ProjectileType = "ProjectileType",
+    WorldPosition = "WorldPosition",
+    BResult = "bResult",
     Prefab = "Prefab",
     WeaponSpeedMultiplier = "WeaponSpeedMultiplier",
     Attacker = "Attacker",

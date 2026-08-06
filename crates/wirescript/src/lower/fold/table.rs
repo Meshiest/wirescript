@@ -53,6 +53,8 @@ pub(crate) enum CaseValue {
     Color { r: f64, g: f64, b: f64, a: f64 },
 }
 
+#[allow(dead_code)] // read by the certified-semantics replay tests
+#[allow(dead_code)] // read by the certified-semantics replay tests
 #[derive(Clone, Debug)]
 pub(crate) struct CaseInput {
     pub variant: InVariant,
@@ -61,6 +63,7 @@ pub(crate) struct CaseInput {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // read by the certified-semantics replay tests
 pub(crate) struct Case {
     pub inputs: Vec<CaseInput>,
     /// The console-rendered output as recorded in-game, VERBATIM. For a
@@ -86,6 +89,7 @@ pub(crate) struct CertifiedTable {
     /// results print through the SAME interpolation path — see
     /// `probes/gate_semantics.ws`'s `runRender` doc comment). `eval.rs`'s
     /// `render_for_format` is validated directly against this.
+    #[allow(dead_code)] // read only by render_laws (replay tests)
     render: HashMap<String, String>,
 }
 
@@ -253,17 +257,20 @@ impl CertifiedTable {
     pub(crate) fn covers(&self, gate_class: &str, sig: &[InVariant]) -> bool {
         self.gates.get(gate_class).is_some_and(|g| g.signatures.contains(sig))
     }
+    #[allow(dead_code)] // replay tests
     pub(crate) fn cases(&self, gate_class: &str) -> &[Case] {
         self.gates.get(gate_class).map_or(&[], |g| &g.cases)
     }
     pub(crate) fn annihilator(&self, gate_class: &str) -> Option<AnnihilatorKind> {
         self.gates.get(gate_class).and_then(|g| g.annihilator)
     }
+    #[allow(dead_code)] // replay tests
     pub(crate) fn gate_classes(&self) -> impl Iterator<Item = &str> {
         self.gates.keys().map(|s| s.as_str())
     }
     /// The certified `render` table section: label (`"int:1000"`,
     /// `"vector:Vec(1.0,2.0,3.0)"`, ...) -> exact in-game rendered text.
+    #[allow(dead_code)] // replay tests
     pub(crate) fn render_laws(&self) -> &HashMap<String, String> {
         &self.render
     }

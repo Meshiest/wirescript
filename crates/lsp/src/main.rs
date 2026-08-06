@@ -12,8 +12,8 @@ use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
     find_all_references, find_asset_refs, find_enclosing_call, find_name_range, format_wirescript,
     hover_at, member_receiver_at, named_arg_value, param_names, receiver_methods, record_field_names,
-    rename_edit_text, swizzle_fields, type_str, word_at, AssetRef, InlayHintKind, ResourceEstimate,
-    SymbolDef, TextRange, TypeMap, VarReadContextMap,
+    rename_edit_text, swizzle_fields, type_str, user_receiver_methods, word_at, AssetRef,
+    InlayHintKind, ResourceEstimate, SymbolDef, TextRange, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::Script;
 use wirescript::catalog::arrays::ARRAY_METHODS;
@@ -1044,7 +1044,8 @@ fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionIt
         insert_text: Some(name),
         ..Default::default()
     };
-    // Method + swizzle members valid for a typed value.
+    // Method + swizzle members valid for a typed value: swizzle fields, builtin
+    // receiver-methods, then in-scope user `self`-mods whose receiver matches.
     let push_type_members = |ty: &str, items: &mut Vec<CompletionItem>| {
         for f in swizzle_fields(ty) {
             items.push(field_item(f.to_string()));
@@ -1054,6 +1055,15 @@ fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionIt
                 label: name.to_string(),
                 kind: Some(CompletionItemKind::METHOD),
                 detail: Some(sig),
+                ..Default::default()
+            });
+        }
+        for (name, sig) in user_receiver_methods(ty, symbols) {
+            items.push(CompletionItem {
+                label: name.clone(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some(format!("{name}{sig}")),
+                insert_text: Some(name),
                 ..Default::default()
             });
         }
@@ -1764,7 +1774,7 @@ mod tests {
 
     #[test]
     fn array_dot_shows_full_method_set() {
-        let src = "array xs: int[]\nxs.";
+        let src = "var xs: int[]\nxs.";
         let ls = labels(src, 1, 3);
         // The full method set is offered, not just push/pop/length.
         for m in ["push", "find", "sort", "insert", "append", "slice"] {

@@ -23,7 +23,8 @@ use crate::catalog::events::{events, find_event};
 use crate::catalog::operators::{OpRule, resolve_op};
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
 use crate::ir::Type;
-use crate::types::coerce::{CoerceRule, coerce};
+use crate::types::classes::mask_contains;
+use crate::types::coerce::{CoerceRule, coerce, widening_join, widening_join_all};
 
 // ---------- scope + symbol info ----------
 
@@ -56,6 +57,12 @@ pub struct EventDataField {
 pub struct FnOrChipSig {
     pub params: Vec<EventDataField>,
     pub outputs: Vec<EventDataField>,
+    /// Generic type params declared on a `mod`/`chip<T, ...>` decl, each
+    /// paired with its resolved mask (the concrete types it may bind to).
+    /// Empty for non-generic decls and for `fn` (no generics parse there) —
+    /// the call-site inference path is gated on this being non-empty so
+    /// non-generic calls are completely unaffected.
+    pub type_params: Vec<(String, Vec<Type>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +113,19 @@ impl Scope {
     pub fn lookup(&self, name: &str) -> Option<&SymbolInfo> {
         self.inner.get(name)
     }
+    /// Snapshot of every `SymbolKind::Type` alias currently visible
+    /// (innermost frame wins on a name collision, matching `lookup`'s
+    /// shadowing), for `resolve_type_expr`'s delegation to the shared
+    /// `types::resolve::resolve_type`.
+    pub fn type_aliases(&self) -> HashMap<String, Type> {
+        let mut out = HashMap::default();
+        for (name, info) in self.inner.iter() {
+            if info.kind == SymbolKind::Type {
+                out.entry(name.to_string()).or_insert_with(|| info.ty.clone());
+            }
+        }
+        out
+    }
 }
 
 // ---------- exec/pure context ----------
@@ -136,11 +156,29 @@ pub struct TypeCheckCtx {
     /// Ferried payload type per local exec signal, recorded from
     /// `emit sig = <value>` so `let { a, b } = await sig` can type its fields.
     pub signal_payload_types: HashMap<String, Type>,
+    /// Generic type aliases (`type Pair<T> = { a: T, b: T }`) in scope, keyed
+    /// by name (namespaced ones by their qualified `Ns.Name`). Populated by a
+    /// pre-pass over `script.decls` — BEFORE the two-pass decl
+    /// registration/checking below — so a generic alias resolves regardless
+    /// of where it's declared relative to its uses (including
+    /// self-reference, guarded separately by the resolver's depth cap).
+    /// Threaded into every `resolve_type_expr` call via `ResolveCtx`. Uses the
+    /// crate's Fx `HashMap` (like every other compiler table here), matching
+    /// `ResolveCtx::generic_aliases` and `Scope::type_aliases()`.
+    pub generic_type_aliases: HashMap<String, crate::types::resolve::GenericAlias>,
     /// Top-level `let` constants, so a `var` / `array` initializer may name one
     /// (`1 << C_FLAG`) rather than restating its value. Populated before decl
     /// checking; must stay in step with lowering's own environment so both
     /// agree on exactly which initializers are constant.
     pub const_env: crate::lower::ConstEnv,
+    /// Product of the per-mask-member combo counts on the CURRENT nesting path
+    /// of generic decls (1 at the top level). A nested generic `mod`/`chip`
+    /// re-runs its whole body per outer combo, so without this the per-decl
+    /// combo cap multiplies with depth (`13^d`). The Chip body-check divides
+    /// its remaining budget by this so total work stays bounded regardless of
+    /// nesting depth; a nested decl whose masks exceed the remaining budget
+    /// falls back to a single first-member check (like the too-many-params cap).
+    pub active_combos: usize,
 }
 
 impl TypeCheckCtx {
@@ -154,7 +192,9 @@ impl TypeCheckCtx {
             if_contexts: HashMap::default(),
             var_read_contexts: HashMap::default(),
             signal_payload_types: HashMap::default(),
+            generic_type_aliases: HashMap::default(),
             const_env: crate::lower::ConstEnv::default(),
+            active_combos: 1,
         }
     }
     pub fn exec_mode(&self) -> ExecMode {
@@ -202,6 +242,11 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
 
     let mut tmap: HashMap<(Arc<str>, usize, usize), Type> = HashMap::default();
     let mut omap: HashMap<(Arc<str>, usize, usize), OpRule> = HashMap::default();
+
+    // Pre-pass: collect every generic type alias (`type Pair<T> = …`) before
+    // any decl registration/resolution runs, so a use resolves regardless of
+    // whether its alias is declared earlier or later in the file.
+    collect_generic_aliases(&mut ctx, &script.decls);
 
     // Two-pass: register all top-level decls first so forward refs resolve.
     for d in &script.decls {
@@ -264,6 +309,46 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
     }
 }
 
+/// Populate `ctx.generic_type_aliases` from every `type Name<T, …> = …`
+/// declaration in `decls` (top-level and namespaced). Deliberately does NOT
+/// resolve the alias body here — it's still parametric (references its own
+/// free `type_params`, unbound until a use site supplies concrete args), so
+/// resolving it now would spuriously flag those params as unknown types (the
+/// pre-generics behavior the brief calls out). Instantiation happens lazily,
+/// per use, in `types::resolve::resolve_type`.
+fn collect_generic_aliases(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+    for d in decls {
+        match d {
+            TopDecl::TypeAlias(t) if !t.type_params.is_empty() => {
+                ctx.generic_type_aliases.insert(
+                    t.name.clone(),
+                    crate::types::resolve::GenericAlias {
+                        params: t.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        body: t.typ.clone(),
+                    },
+                );
+            }
+            TopDecl::Namespace(ns) => {
+                for nd in &ns.decls {
+                    if let TopDecl::TypeAlias(t) = nd
+                        && !t.type_params.is_empty()
+                    {
+                        let qualified = format!("{}.{}", ns.name, t.name);
+                        ctx.generic_type_aliases.insert(
+                            qualified,
+                            crate::types::resolve::GenericAlias {
+                                params: t.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                                body: t.typ.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn register_builtin_events(ctx: &mut TypeCheckCtx) {
     let evts = events();
     let mut keys: Vec<&&str> = evts.keys().collect();
@@ -293,87 +378,78 @@ fn register_builtin_events(ctx: &mut TypeCheckCtx) {
 }
 
 // ---------- type expression resolution ----------
+//
+// `any` (in annotation position) maps onto the *wildcard* type
+// (`Type::Opaque`, the same type `Opaque(...)` produces) rather than the
+// internal `Type::Any` error-fallback — see `reject_any_storage` below for
+// why: `any` can flow through ports/lets/params but can't back a
+// var/array/buffer's storage gate. That mapping lives in the crate's single
+// primitive-name table, `types::resolve::primitive`.
 
-pub(crate) fn primitive_name(name: &str) -> Option<Type> {
-    Some(match name {
-        "bool" => Type::Bool,
-        "int" => Type::Int,
-        "float" => Type::Float,
-        "string" => Type::String,
-        "vector" => Type::Vector,
-        "rotator" => Type::Rotator,
-        "quat" => Type::Quat,
-        "color" => Type::Color,
-        "entity" => Type::Entity,
-        "character" => Type::Character,
-        "controller" => Type::Controller,
-        "brick" => Type::Brick,
-        "prefab" => Type::Prefab,
-        "zone" => Type::Zone,
-        "teleport" => Type::Teleport,
-        "exec" => Type::Exec,
-        // `any` (in annotation position) maps onto the *wildcard* type
-        // (`Type::Opaque`, the same type `Opaque(...)` produces) rather than
-        // the internal `Type::Any` error-fallback: an `any`-typed value must
-        // resolve operator overloads (`catalog::operators::type_kind_matches`
-        // wildcards `Opaque`) and act as a permanent fold barrier, which only
-        // `Opaque` does. See `reject_any_storage` below for the flip side —
-        // `any` can flow through ports/lets/params but can't back a
-        // var/array/buffer's storage gate.
-        "any" => Type::Opaque,
-        "never" => Type::Never,
-        _ => return None,
-    })
+/// Resolve a type annotation against the current scope. Delegates to the
+/// crate's single canonical resolver (`types::resolve::resolve_type`): the
+/// scope's currently-visible `SymbolKind::Type` aliases are snapshotted (scope
+/// doesn't mutate during a type expression's resolution, so this is
+/// equivalent to the old per-`Name`-node live `ctx.scope.lookup`) and handed
+/// in as `type_aliases`, and any WS002 the resolver raises is forwarded to
+/// `ctx.diagnostics` — preserving both the alias-resolution and diagnostic
+/// behavior of the resolver this replaced.
+fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
+    // Fast path: a primitive name needs no alias snapshot. Primitives always win
+    // over aliases in `resolve_type` (it checks `primitive` before the alias
+    // map), so this is behaviour-identical — but it skips building the full
+    // in-scope alias map (an O(D) frame scan + deep `Type` clones) on the
+    // overwhelmingly common case, where annotations are `int`/`float`/`bool`/…
+    // Without it that snapshot was rebuilt for every annotation, incl. per
+    // cartesian combo inside a generic body — an accidental O(D²).
+    if let TypeExpr::Name { name, .. } = t
+        && let Some(prim) = crate::types::resolve::primitive(name)
+    {
+        return prim;
+    }
+    let aliases = ctx.scope.type_aliases();
+    let mut diags = Vec::new();
+    let result = {
+        let cx = crate::types::resolve::ResolveCtx {
+            params: &[],
+            type_aliases: &aliases,
+            generic_aliases: &ctx.generic_type_aliases,
+        };
+        crate::types::resolve::resolve_type(t, &cx, &mut diags)
+    };
+    ctx.diagnostics.extend(diags);
+    result
 }
 
-fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
-    match t {
-        TypeExpr::Name { name, range } => {
-            if let Some(prim) = primitive_name(name) {
-                return prim;
+/// A type param's mask — the set of concrete types it may be inferred to.
+/// Unbound (`T`, no `: Bound`) is the full `Variant` mask; a bound narrows it
+/// (see `types::mono::mask_for_param`).
+fn type_param_mask(ctx: &TypeCheckCtx, tp: &TypeParam) -> Vec<Type> {
+    // The bound → mask resolution lives in the shared `types::mono` module so
+    // the lowering-side monomorphizer (P2.5) can rebuild the same masks.
+    crate::types::mono::mask_for_param(tp.bound.as_ref(), &ctx.scope.type_aliases())
+}
+
+/// Cartesian product of per-type-param masks (Task 2.4): each inner
+/// `Vec<Type>` in `masks` is one type param's candidate concrete members;
+/// the result has one `Vec<Type>` per combination, index-aligned with
+/// `masks` (and so with the decl's `type_params`). Materializes the full
+/// result — callers must cap the product size (e.g. against
+/// `MAX_BODY_CHECK_COMBOS`) before calling this.
+fn cartesian_product(masks: &[Vec<Type>]) -> Vec<Vec<Type>> {
+    let mut result: Vec<Vec<Type>> = vec![Vec::new()];
+    for mask in masks {
+        let mut next = Vec::with_capacity(result.len() * mask.len());
+        for combo in &result {
+            for ty in mask {
+                let mut extended = combo.clone();
+                extended.push(ty.clone());
+                next.push(extended);
             }
-            if let Some(sym) = ctx.scope.lookup(name)
-                && sym.kind == SymbolKind::Type
-            {
-                return sym.ty.clone();
-            }
-            ctx.emit("WS002", format!("unknown type '{name}'"), range.clone());
-            Type::Any
         }
-        TypeExpr::Ref { inner, .. } => Type::Ref(Box::new(resolve_type_expr(ctx, inner))),
-        TypeExpr::Array { inner, .. } => Type::Array(Box::new(resolve_type_expr(ctx, inner))),
-        TypeExpr::Tuple { fields, .. } => {
-            Type::Tuple(fields.iter().map(|f| resolve_type_expr(ctx, f)).collect())
-        }
-        TypeExpr::Union { options, .. } => {
-            Type::Union(options.iter().map(|f| resolve_type_expr(ctx, f)).collect())
-        }
-        TypeExpr::Record { fields, .. } => Type::Record(
-            fields
-                .iter()
-                .map(|f| (f.name.clone(), resolve_type_expr(ctx, &f.typ)))
-                .collect(),
-        ),
-        TypeExpr::Generic { name, args, range } => match (name.as_str(), args.as_slice()) {
-            ("Array", [v]) => Type::Array(Box::new(resolve_type_expr(ctx, v))),
-            ("Ref", [v]) => Type::Ref(Box::new(resolve_type_expr(ctx, v))),
-            ("Map", [k, v]) => Type::Map(
-                Box::new(resolve_type_expr(ctx, k)),
-                Box::new(resolve_type_expr(ctx, v)),
-            ),
-            _ => {
-                ctx.emit(
-                    "WS002",
-                    format!("unknown generic type '{name}'"),
-                    range.clone(),
-                );
-                for a in args {
-                    resolve_type_expr(ctx, a);
-                }
-                Type::Any
-            }
-        },
+        result = next;
     }
+    result
 }
 
 // ---------- decl registration (1st pass) ----------
@@ -420,8 +496,8 @@ fn var_storable(t: &Type) -> bool {
             | Type::Entity
             | Type::Character
             | Type::Controller
-            | Type::Brick
-            | Type::Prefab
+           
+           
     )
 }
 
@@ -460,6 +536,62 @@ fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRang
     }
 }
 
+/// True if `t` is, or structurally contains, the wildcard `any` type
+/// (`Type::Opaque`). A `*any`/`any[]`/`Dict<_, any>`/`{ a: any }` annotation
+/// wraps the `Opaque` under a `Ref`/`Array`/`Map`/`Record`/…, so a shallow
+/// `matches!(t, Type::Opaque)` would miss it — recurse through every compound
+/// so `warn_any_annotation` fires on the whole annotation regardless of nesting.
+fn contains_opaque(t: &Type) -> bool {
+    match t {
+        Type::Opaque => true,
+        Type::Ref(inner) | Type::Array(inner) => contains_opaque(inner),
+        Type::Map(k, v) => contains_opaque(k) || contains_opaque(v),
+        Type::Tuple(fields) | Type::Union(fields) => fields.iter().any(contains_opaque),
+        Type::Record(fields) => fields.iter().any(|(_, ft)| contains_opaque(ft)),
+        _ => false,
+    }
+}
+
+/// True if `t` is, or structurally contains, a `Type::Param` — i.e. an
+/// unresolved generic type parameter. A call whose param still carries one
+/// (its `T` couldn't be inferred) is left to the WS033 inference diagnostics,
+/// not the concrete arg-vs-param coercion check.
+fn type_has_param(t: &Type) -> bool {
+    match t {
+        Type::Param(_) => true,
+        Type::Ref(inner) | Type::Array(inner) => type_has_param(inner),
+        Type::Map(k, v) => type_has_param(k) || type_has_param(v),
+        Type::Tuple(fields) | Type::Union(fields) => fields.iter().any(type_has_param),
+        Type::Record(fields) => fields.iter().any(|(_, ft)| type_has_param(ft)),
+        _ => false,
+    }
+}
+
+/// Warns (does not error) when a user's *non-storage* type annotation — an
+/// `in`/`out` port, a mod/chip param or output, a handler's typed destructure
+/// param, a `let`, or a `type X = ...` alias body — resolves to `any`
+/// (`Type::Opaque`), including when the `any` is wrapped in a compound
+/// (`*any`, `any[]`, `Dict<_, any>`, `{ a: any }`, …). `any` still works there
+/// (the value just flows through as a wildcard), but a generic type parameter
+/// would let the type flow instead of erasing it. Storage positions
+/// (var/array/buffer/map — see `reject_any_storage` above) are deliberately NOT
+/// routed through this: an explicit `any` there is already a hard error
+/// (WS025), and warning on top would double-fire the same annotation. Fires
+/// once per annotation (at the top-level annotation range), not once per nested
+/// `Opaque`.
+fn warn_any_annotation(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRange) {
+    if contains_opaque(resolved) {
+        ctx.diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            code: "WS032".into(),
+            message: "'any' works, but prefer a generic type parameter here — it lets the type \
+                       flow instead of erasing it"
+                .into(),
+            range,
+        });
+    }
+}
+
 fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
     match d {
         TopDecl::Var(v) => {
@@ -484,7 +616,18 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 })
                 .unwrap_or(Type::Any);
             if let Some(t) = &v.typ {
-                reject_any_storage(ctx, &inner, type_expr_range(t), "a variable gate");
+                // A `var` can be scalar, array (`var x: T[]`), or map
+                // (`var m: Dict<K,V>`) storage — each needs a concrete element/
+                // value wire type. Reject `any` in the STORED position: the
+                // element for an array, the value for a map, else the type
+                // itself. (Matches the `array`/`map` decl checks below, so the
+                // `var` form has full parity now that those keywords are gone.)
+                let (stored, what) = match &inner {
+                    Type::Array(elem) => (elem.as_ref(), "an array's element type"),
+                    Type::Map(_, val) => (val.as_ref(), "a map's value type"),
+                    other => (other, "a variable gate"),
+                };
+                reject_any_storage(ctx, stored, type_expr_range(t), what);
             }
             declare_or_dup(
                 ctx,
@@ -527,7 +670,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 ctx,
                 &value,
                 type_expr_range(&m.value_type),
-                "a map's value type",
+                "a dict's value type",
             );
             declare_or_dup(
                 ctx,
@@ -567,6 +710,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
         }
         TopDecl::In(d) => {
             let t = resolve_type_expr(ctx, &d.typ);
+            warn_any_annotation(ctx, &t, type_expr_range(&d.typ));
             declare_or_dup(
                 ctx,
                 &d.name,
@@ -584,15 +728,23 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             let params: Vec<EventDataField> = f
                 .params
                 .iter()
-                .map(|p| EventDataField {
-                    name: p.name.clone(),
-                    ty: resolve_type_expr(ctx, &p.typ),
+                .map(|p| {
+                    let ty = resolve_type_expr(ctx, &p.typ);
+                    warn_any_annotation(ctx, &ty, type_expr_range(&p.typ));
+                    EventDataField {
+                        name: p.name.clone(),
+                        ty,
+                    }
                 })
                 .collect();
             let ret = f
                 .return_type
                 .as_ref()
-                .map(|t| resolve_type_expr(ctx, t))
+                .map(|t| {
+                    let ty = resolve_type_expr(ctx, t);
+                    warn_any_annotation(ctx, &ty, type_expr_range(t));
+                    ty
+                })
                 .unwrap_or(Type::Any);
             declare_or_dup(
                 ctx,
@@ -608,28 +760,105 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             name: "_".into(),
                             ty: ret,
                         }],
+                        type_params: Vec::new(),
                     }),
                     event_data: None,
                 },
             );
         }
         TopDecl::Chip(c) => {
+            // Generic *chips* (physical microchips, `inline == false`) are
+            // monomorphized per distinct type instantiation at lowering time:
+            // `lower_chip_call_instance` builds one microchip template per
+            // `(name, concrete subst)` and keys the emitted grid on it, so
+            // `Box<int>` and `Box<vector>` never share a body. (Generic `mod`s
+            // still inline per call site.) Nothing to reject here.
+            // Generic decl: register each type param as a scope `Type`
+            // symbol resolving to `Type::Param(name)` so the sig's own
+            // `TypeExpr`s (below) see `T` as a known type instead of
+            // WS002. Scoped to this signature's resolution only — popped
+            // before `declare_or_dup` so it never leaks to sibling decls.
+            let has_type_params = !c.type_params.is_empty();
+            // Name + mask for each type param, computed once at registration
+            // (mirrors the scope-declare loop just below) so the call-typing
+            // path can later solve `Constraint`s against it without having to
+            // re-walk the decl. Stored on the signature (see `FnOrChipSig`).
+            let mut type_param_masks: Vec<(String, Vec<Type>)> = Vec::new();
+            if has_type_params {
+                ctx.scope.push();
+                for tp in &c.type_params {
+                    ctx.scope.declare(
+                        &tp.name,
+                        SymbolInfo {
+                            kind: SymbolKind::Type,
+                            name: tp.name.clone(),
+                            ty: Type::Param(tp.name.clone()),
+                            decl_range: tp.range.clone(),
+                            signature: None,
+                            event_data: None,
+                        },
+                    );
+                }
+                type_param_masks = c
+                    .type_params
+                    .iter()
+                    .map(|tp| (tp.name.clone(), type_param_mask(ctx, tp)))
+                    .collect();
+            }
             let params: Vec<EventDataField> = c
                 .inputs
                 .iter()
-                .map(|p| EventDataField {
-                    name: p.name.clone(),
-                    ty: resolve_type_expr(ctx, &p.typ),
+                .map(|p| {
+                    let ty = resolve_type_expr(ctx, &p.typ);
+                    warn_any_annotation(ctx, &ty, type_expr_range(&p.typ));
+                    EventDataField {
+                        name: p.name.clone(),
+                        ty,
+                    }
                 })
                 .collect();
             let outputs: Vec<EventDataField> = c
                 .outputs
                 .iter()
-                .map(|o| EventDataField {
-                    name: o.name.clone(),
-                    ty: resolve_type_expr(ctx, &o.typ),
+                .map(|o| {
+                    let ty = resolve_type_expr(ctx, &o.typ);
+                    warn_any_annotation(ctx, &ty, type_expr_range(&o.typ));
+                    EventDataField {
+                        name: o.name.clone(),
+                        ty,
+                    }
                 })
                 .collect();
+            if has_type_params {
+                ctx.scope.pop();
+            }
+            // A `self`-mod whose name AND receiver type collide with a builtin
+            // receiver-method (e.g. `mod Dot(self: vector, …)` vs the builtin
+            // `Dot` on vector) would be silently shadowed at every call site —
+            // the builtin always wins the `.method()` resolution — so reject it
+            // at the declaration. Only flags an *overlapping* receiver type
+            // (same coercion rule the completion uses): a same-named mod on an
+            // unrelated receiver type is reachable and left alone.
+            if c.is_self_receiver()
+                && let Some(recv) = params.first().map(|p| p.ty.clone())
+                && let Some(builtin_recv) = find_call(&c.name).and_then(|b| b.receiver.clone())
+                && matches!(coerce(&recv, &builtin_recv), CoerceRule::Same | CoerceRule::Coerce)
+            {
+                ctx.emit(
+                    "WS035",
+                    format!(
+                        "`{name}` shadows the builtin receiver-method `{name}` on `{recv}` — \
+                         a call like `x.{name}(…)` always resolves to the builtin, so this \
+                         mod could never be reached as a method (rename it)",
+                        name = c.name,
+                        recv = crate::analysis::types::type_str(&recv),
+                    ),
+                    c.inputs
+                        .first()
+                        .map(|p| p.range.clone())
+                        .unwrap_or_else(|| c.range.clone()),
+                );
+            }
             declare_or_dup(
                 ctx,
                 &c.name,
@@ -638,7 +867,11 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     name: c.name.clone(),
                     ty: Type::Any,
                     decl_range: c.range.clone(),
-                    signature: Some(FnOrChipSig { params, outputs }),
+                    signature: Some(FnOrChipSig {
+                        params,
+                        outputs,
+                        type_params: type_param_masks,
+                    }),
                     event_data: None,
                 },
             );
@@ -670,19 +903,44 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             }
         }
         TopDecl::TypeAlias(t) => {
-            let resolved = resolve_type_expr(ctx, &t.typ);
-            declare_or_dup(
-                ctx,
-                &t.name,
-                SymbolInfo {
-                    kind: SymbolKind::Type,
-                    name: t.name.clone(),
-                    ty: resolved,
-                    decl_range: t.range.clone(),
-                    signature: None,
-                    event_data: None,
-                },
-            );
+            if t.type_params.is_empty() {
+                let resolved = resolve_type_expr(ctx, &t.typ);
+                warn_any_annotation(ctx, &resolved, type_expr_range(&t.typ));
+                declare_or_dup(
+                    ctx,
+                    &t.name,
+                    SymbolInfo {
+                        kind: SymbolKind::Type,
+                        name: t.name.clone(),
+                        ty: resolved,
+                        decl_range: t.range.clone(),
+                        signature: None,
+                        event_data: None,
+                    },
+                );
+            } else {
+                // Generic alias: already collected into `ctx.generic_type_aliases`
+                // by the `collect_generic_aliases` pre-pass (its body is
+                // resolved lazily, per-use, by `resolve_type` — NOT here,
+                // since it still references its own free `type_params`).
+                // Still declare a placeholder `SymbolKind::Type` symbol so
+                // `declare_or_dup` catches a duplicate name; a bare use of
+                // this name (no `<Args>`) is caught by `resolve_type`'s
+                // `generic_aliases` check before it would ever reach this
+                // placeholder via the plain alias map.
+                declare_or_dup(
+                    ctx,
+                    &t.name,
+                    SymbolInfo {
+                        kind: SymbolKind::Type,
+                        name: t.name.clone(),
+                        ty: Type::Any,
+                        decl_range: t.range.clone(),
+                        signature: None,
+                        event_data: None,
+                    },
+                );
+            }
         }
         TopDecl::Out(_)
         | TopDecl::Let(_)
@@ -752,19 +1010,37 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     // name so `let p: Ns.Point` resolves through the ordinary
                     // type lookup. The bare name stays private to the module.
                     TopDecl::TypeAlias(t) => {
-                        let resolved = resolve_type_expr(ctx, &t.typ);
                         let qualified = format!("{}.{}", ns.name, t.name);
-                        ctx.scope.declare(
-                            &qualified,
-                            SymbolInfo {
-                                kind: SymbolKind::Type,
-                                name: qualified.clone(),
-                                ty: resolved,
-                                decl_range: t.range.clone(),
-                                signature: None,
-                                event_data: None,
-                            },
-                        );
+                        if t.type_params.is_empty() {
+                            let resolved = resolve_type_expr(ctx, &t.typ);
+                            warn_any_annotation(ctx, &resolved, type_expr_range(&t.typ));
+                            ctx.scope.declare(
+                                &qualified,
+                                SymbolInfo {
+                                    kind: SymbolKind::Type,
+                                    name: qualified.clone(),
+                                    ty: resolved,
+                                    decl_range: t.range.clone(),
+                                    signature: None,
+                                    event_data: None,
+                                },
+                            );
+                        } else {
+                            // Generic alias, already collected under its
+                            // qualified name by `collect_generic_aliases`;
+                            // see the top-level `TopDecl::TypeAlias` arm.
+                            ctx.scope.declare(
+                                &qualified,
+                                SymbolInfo {
+                                    kind: SymbolKind::Type,
+                                    name: qualified.clone(),
+                                    ty: Type::Any,
+                                    decl_range: t.range.clone(),
+                                    signature: None,
+                                    event_data: None,
+                                },
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -783,7 +1059,7 @@ fn declare_or_dup(ctx: &mut TypeCheckCtx, name: &str, info: SymbolInfo) {
 
 // ---------- decl checking (2nd pass) ----------
 
-/// Validate a top-level (non-exec) array initializer: every element must be a
+/// Validate a top-level (non-exec) var initializer: every element must be a
 /// constant literal whose type coerces to the array's element type. Spreads and
 /// non-literal values are only meaningful when the array is built at runtime, so
 /// they're rejected here with a pointer to assigning the array in an exec
@@ -826,7 +1102,7 @@ fn check_top_level_array_init(
                 ctx.emit(
                     "WS003",
                     format!(
-                        "array element: expected {}, got {}",
+                        "var element: expected {}, got {}",
                         crate::analysis::type_str(elem_ty),
                         crate::analysis::type_str(&t)
                     ),
@@ -843,11 +1119,30 @@ fn check_top_level_array_init(
     }
 }
 
-/// Check a map literal's entries against `Map<K, V>`: each key coerces to
-/// `k`, each value to `v` (same `expect_coerce` helper assignment checking
-/// uses). Call this from the VALID slots — a `map`/`var` initializer or an
-/// assignment RHS to a map var — so the literal never reaches the generic
-/// `infer_expr` `MapLit` arm, which is the position-guard for every other use.
+/// Check a map literal's entries against `Dict<K, V>`: each key must coerce to
+/// `k`, each value to `v`. This is deliberately STRICTER than the `expect_coerce`
+/// helper assignment checking uses — a map *literal* entry additionally rejects
+/// `ViaString` (and any coercion that isn't `Same`/`Coerce`), because the literal
+/// entry has no gate to run a string-format coercion through (an assignment does).
+/// Call this from the VALID slots — a `map`/`var` initializer or an assignment
+/// RHS to a map var — so the literal never reaches the generic `infer_expr`
+/// `MapLit` arm, which is the position-guard for every other use.
+///
+/// The entries of a map initializer for a `Dict<K, V>` slot: a real `MapLit`, or
+/// an empty `{}`. The parser emits `{}` as an empty `RecordLit` (with no keys it
+/// can't tell an empty map from an empty record), but in a `Map`-typed slot it
+/// is the natural spelling of an empty-map initializer — equivalent to no
+/// initializer, since lowering's `bake_map_init` starts the map empty for any
+/// non-`MapLit` init. Returns `None` for anything else (a non-empty record, a
+/// scalar, …) so it still hits the generic coerce / position guard.
+fn map_init_entries(init: &Expr) -> Option<&[MapLitEntry]> {
+    match init {
+        Expr::MapLit { entries, .. } => Some(entries),
+        Expr::RecordLit { fields, .. } if fields.is_empty() => Some(&[]),
+        _ => None,
+    }
+}
+
 fn check_map_literal(
     ctx: &mut TypeCheckCtx,
     entries: &[MapLitEntry],
@@ -856,11 +1151,39 @@ fn check_map_literal(
     tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
     omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
+    // A map literal entry has no gate to run a coercion through (e.g.
+    // `ViaString`'s `FormatText` gate) — only coercions that hold at the
+    // literal itself (`Same`/`Coerce`) are valid; anything else (notably
+    // `ViaString`) would silently corrupt every non-matching entry at emit.
     for MapLitEntry { key, value, .. } in entries {
         let kt = infer_expr(ctx, key, tmap, omap);
-        expect_coerce(ctx, &kt, k, key.range());
+        let key_rule = coerce(&kt, k);
+        if !matches!(key_rule, CoerceRule::Same | CoerceRule::Coerce) {
+            ctx.emit(
+                "WS003",
+                format!(
+                    "map literal key: expected {}, got {} — a map literal entry \
+                     can't be string-formatted; write a matching-type literal",
+                    crate::analysis::types::type_str(k),
+                    crate::analysis::types::type_str(&kt),
+                ),
+                key.range().clone(),
+            );
+        }
         let vt = infer_expr(ctx, value, tmap, omap);
-        expect_coerce(ctx, &vt, v, value.range());
+        let value_rule = coerce(&vt, v);
+        if !matches!(value_rule, CoerceRule::Same | CoerceRule::Coerce) {
+            ctx.emit(
+                "WS003",
+                format!(
+                    "map literal value: expected {}, got {} — a map literal entry \
+                     can't be string-formatted; write a matching-type literal",
+                    crate::analysis::types::type_str(v),
+                    crate::analysis::types::type_str(&vt),
+                ),
+                value.range().clone(),
+            );
+        }
     }
 }
 
@@ -894,13 +1217,13 @@ fn check_decl(
                         _ => Type::Any,
                     };
                     check_top_level_array_init(ctx, elements, &elem_ty, tmap, omap);
-                } else if let Expr::MapLit { entries, .. } = init
+                } else if let Some(entries) = map_init_entries(init)
                     && let Type::Map(k, v_ty) = &inner
                 {
                     // A map-valued `var` initializer: validate entries against
-                    // the declared `Map<K, V>` directly, bypassing the generic
+                    // the declared `Dict<K, V>` directly, bypassing the generic
                     // `infer_expr` `MapLit` arm (the position guard) — this IS
-                    // the valid initializer slot.
+                    // the valid initializer slot. An empty `{}` is an empty-map init.
                     ctx.in_pure(|ctx| {
                         check_map_literal(ctx, entries, k, v_ty, tmap, omap);
                     });
@@ -939,7 +1262,7 @@ fn check_decl(
             }
         }
         TopDecl::Map(m) => {
-            // Optional literal initializer: `map m: Map<K, V> = { k => v, ... }`.
+            // Optional literal initializer: `var m: Dict<K, V> = { k => v, ... }`.
             // Key/value types were already resolved in registration — reuse the
             // registered symbol instead of re-resolving (avoids double-emitting
             // an "unknown type" diagnostic if `key_type`/`value_type` is bad).
@@ -951,10 +1274,10 @@ fn check_decl(
                     }) => (k.as_ref().clone(), v.as_ref().clone()),
                     _ => (Type::Any, Type::Any),
                 };
-                if let Expr::MapLit { entries, .. } = init {
+                if let Some(entries) = map_init_entries(init) {
                     // The valid initializer slot: validate entries directly,
                     // bypassing the generic `infer_expr` `MapLit` arm (the
-                    // position guard).
+                    // position guard). An empty `{}` is an empty-map init.
                     ctx.in_pure(|ctx| {
                         check_map_literal(ctx, entries, &key, &value, tmap, omap);
                     });
@@ -980,6 +1303,7 @@ fn check_decl(
                 // When out has ref type and value is a var, override to show "ref" in hover
                 if let Some(ref te) = b.typ {
                     let resolved = resolve_type_expr(ctx, te);
+                    warn_any_annotation(ctx, &resolved, type_expr_range(te));
                     if matches!(resolved, Type::Ref(_))
                         && let Expr::Ident { range, .. } = value
                     {
@@ -1046,129 +1370,251 @@ fn check_decl(
             ctx.scope.pop();
         }
         TopDecl::Chip(c) => {
-            ctx.scope.push();
-            for p in &c.inputs {
-                let pt = resolve_type_expr(ctx, &p.typ);
-                let kind = if matches!(&p.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
-                    SymbolKind::Var
+            // Task 2.4: bounded-polymorphism body checking. Body-check the
+            // decl once per concrete member of the cartesian product of its
+            // type params' masks — an operation on a type param (`a + 1`)
+            // can't resolve against the signature's `Type::Param`
+            // placeholder (P2.2/P2.3's registration, untouched by this
+            // arm), and even where it somehow could, the body must be valid
+            // for EVERY concrete type the mask allows, not just checked once
+            // symbolically. A non-generic decl (`type_params` empty) gets
+            // the single trivial "no bindings" combo below, so its check —
+            // and its diagnostics — are unchanged from before this task.
+            const MAX_BODY_CHECK_COMBOS: usize = 64;
+            // Budget is a whole-PATH cap, not per-decl: a nested generic decl is
+            // re-checked once per OUTER combo, so divide the cap by the combos
+            // already committed on this path (`active_combos`). At the top level
+            // `active_combos == 1`, so a single generic decl is unchanged (cap
+            // 64); deeper nesting shrinks the effective cap toward 1, bounding
+            // total body-check work at ~64 regardless of nesting depth.
+            let per_path_cap = (MAX_BODY_CHECK_COMBOS / ctx.active_combos.max(1)).max(1);
+            let combos: Vec<Vec<Type>> = if c.type_params.is_empty() {
+                vec![Vec::new()]
+            } else {
+                let masks: Vec<Vec<Type>> = c
+                    .type_params
+                    .iter()
+                    .map(|tp| {
+                        let m = type_param_mask(ctx, tp);
+                        if m.is_empty() { vec![Type::Any] } else { m }
+                    })
+                    .collect();
+                let mut total: usize = 1;
+                let mut capped = false;
+                for m in &masks {
+                    match total.checked_mul(m.len()) {
+                        Some(t) if t <= per_path_cap => total = t,
+                        _ => {
+                            capped = true;
+                            break;
+                        }
+                    }
+                }
+                if capped {
+                    // Too many combinations for the full cartesian product.
+                    // A single all-first-member combo is unsound: a param's
+                    // first mask member is the MOST permissive for arithmetic
+                    // (an unbounded param's is `bool`, which coerces into every
+                    // numeric op), so a body op invalid for other members would
+                    // slip through unchecked (a silent miscompile at any call
+                    // site that picks those members). Instead vary each param
+                    // across its WHOLE mask while the others hold a fixed
+                    // representative (mask[0]). This checks every operation
+                    // whose validity depends on a single param's type — the
+                    // realistic case — at O(sum of mask sizes) rather than
+                    // O(product), then truncates to the path budget so nested
+                    // generics stay bounded. Residual: an op valid for every
+                    // single-param variation yet invalid only for a specific
+                    // multi-param COMBINATION is not caught (needs ≥2 unbounded
+                    // params AND a cross-param-only type dependency).
+                    let rep: Vec<Type> = masks.iter().map(|m| m[0].clone()).collect();
+                    let mut combos = vec![rep.clone()];
+                    for (i, m) in masks.iter().enumerate() {
+                        for member in m.iter().skip(1) {
+                            let mut combo = rep.clone();
+                            combo[i] = member.clone();
+                            combos.push(combo);
+                        }
+                    }
+                    combos.truncate(per_path_cap.max(1));
+                    combos
                 } else {
-                    SymbolKind::Param
-                };
-                // If the param has a destructuring pattern, register the
-                // synthetic name with the full type, then also register each
-                // destructured field with its resolved field type.
-                if let Some(pattern) = &p.pattern {
+                    cartesian_product(&masks)
+                }
+            };
+            // Diagnostics are only batched + deduped for an actual
+            // multi-combo generic check; the non-generic single combo
+            // writes straight into `ctx.diagnostics` exactly as before.
+            let multi_pass = combos.len() > 1;
+            let mut seen = std::collections::HashSet::new();
+            let mut deduped: Vec<Diagnostic> = Vec::new();
+            // Commit this decl's combos to the path budget so any nested generic
+            // decl checked inside the loop divides the REMAINING cap (restored
+            // after). Non-generic decls (`combos.len() == 1`) don't move it.
+            let saved_active_combos = ctx.active_combos;
+            ctx.active_combos = saved_active_combos.saturating_mul(combos.len().max(1));
+            for combo in &combos {
+                ctx.scope.push();
+                // Same registration as the signature pass (register_decl),
+                // but in the body scope: covers annotations inside the body
+                // (e.g. `let x: T = a`). For a generic decl each type param
+                // is bound to THIS combo's concrete mask member (not
+                // `Type::Param` — an operation like `a + 1` must resolve
+                // against a real type); `combo` is empty for a non-generic
+                // decl, so this loop is a no-op there. Scope is popped at
+                // the end of each pass, so params never leak to sibling
+                // decls.
+                for (tp, ty) in c.type_params.iter().zip(combo.iter()) {
                     ctx.scope.declare(
-                        &p.name,
+                        &tp.name,
                         SymbolInfo {
-                            kind: SymbolKind::Param,
-                            name: p.name.clone(),
-                            ty: pt.clone(),
-                            decl_range: p.range.clone(),
+                            kind: SymbolKind::Type,
+                            name: tp.name.clone(),
+                            ty: ty.clone(),
+                            decl_range: tp.range.clone(),
                             signature: None,
                             event_data: None,
                         },
                     );
-                    match pattern {
-                        crate::ast::ParamPattern::Record { fields, .. } => {
-                            for field in fields {
-                                match field {
-                                    crate::ast::RecordDestructField::Named {
-                                        name, alias, ..
-                                    } => {
-                                        let bind_name = alias.as_ref().unwrap_or(name);
-                                        let field_ty = if let Type::Record(rec_fields) = &pt {
-                                            rec_fields
-                                                .iter()
-                                                .find(|(k, _)| k == name)
-                                                .map(|(_, t)| t.clone())
-                                                .unwrap_or(Type::Any)
-                                        } else {
-                                            Type::Any
-                                        };
-                                        ctx.scope.declare(
-                                            bind_name,
-                                            SymbolInfo {
-                                                kind: SymbolKind::Param,
-                                                name: bind_name.clone(),
-                                                ty: field_ty,
-                                                decl_range: p.range.clone(),
-                                                signature: None,
-                                                event_data: None,
-                                            },
-                                        );
-                                    }
-                                    crate::ast::RecordDestructField::Rest { name, .. } => {
-                                        ctx.scope.declare(
-                                            name,
-                                            SymbolInfo {
-                                                kind: SymbolKind::Param,
-                                                name: name.clone(),
-                                                ty: Type::Any,
-                                                decl_range: p.range.clone(),
-                                                signature: None,
-                                                event_data: None,
-                                            },
-                                        );
+                }
+                let before = ctx.diagnostics.len();
+                for p in &c.inputs {
+                    let pt = resolve_type_expr(ctx, &p.typ);
+                    let kind = if matches!(&p.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
+                        SymbolKind::Var
+                    } else {
+                        SymbolKind::Param
+                    };
+                    // If the param has a destructuring pattern, register the
+                    // synthetic name with the full type, then also register each
+                    // destructured field with its resolved field type.
+                    if let Some(pattern) = &p.pattern {
+                        ctx.scope.declare(
+                            &p.name,
+                            SymbolInfo {
+                                kind: SymbolKind::Param,
+                                name: p.name.clone(),
+                                ty: pt.clone(),
+                                decl_range: p.range.clone(),
+                                signature: None,
+                                event_data: None,
+                            },
+                        );
+                        match pattern {
+                            crate::ast::ParamPattern::Record { fields, .. } => {
+                                for field in fields {
+                                    match field {
+                                        crate::ast::RecordDestructField::Named {
+                                            name, alias, ..
+                                        } => {
+                                            let bind_name = alias.as_ref().unwrap_or(name);
+                                            let field_ty = if let Type::Record(rec_fields) = &pt {
+                                                rec_fields
+                                                    .iter()
+                                                    .find(|(k, _)| k == name)
+                                                    .map(|(_, t)| t.clone())
+                                                    .unwrap_or(Type::Any)
+                                            } else {
+                                                Type::Any
+                                            };
+                                            ctx.scope.declare(
+                                                bind_name,
+                                                SymbolInfo {
+                                                    kind: SymbolKind::Param,
+                                                    name: bind_name.clone(),
+                                                    ty: field_ty,
+                                                    decl_range: p.range.clone(),
+                                                    signature: None,
+                                                    event_data: None,
+                                                },
+                                            );
+                                        }
+                                        crate::ast::RecordDestructField::Rest { name, .. } => {
+                                            ctx.scope.declare(
+                                                name,
+                                                SymbolInfo {
+                                                    kind: SymbolKind::Param,
+                                                    name: name.clone(),
+                                                    ty: Type::Any,
+                                                    decl_range: p.range.clone(),
+                                                    signature: None,
+                                                    event_data: None,
+                                                },
+                                            );
+                                        }
                                     }
                                 }
                             }
-                        }
-                        crate::ast::ParamPattern::Tuple { names, .. } => {
-                            let field_types = if let Type::Tuple(fs) = &pt {
-                                fs.clone()
-                            } else {
-                                vec![]
-                            };
-                            for (i, name) in names.iter().enumerate() {
-                                let field_ty = field_types.get(i).cloned().unwrap_or(Type::Any);
-                                ctx.scope.declare(
-                                    name,
-                                    SymbolInfo {
-                                        kind: SymbolKind::Param,
-                                        name: name.clone(),
-                                        ty: field_ty,
-                                        decl_range: p.range.clone(),
-                                        signature: None,
-                                        event_data: None,
-                                    },
-                                );
+                            crate::ast::ParamPattern::Tuple { names, .. } => {
+                                let field_types = if let Type::Tuple(fs) = &pt {
+                                    fs.clone()
+                                } else {
+                                    vec![]
+                                };
+                                for (i, name) in names.iter().enumerate() {
+                                    let field_ty = field_types.get(i).cloned().unwrap_or(Type::Any);
+                                    ctx.scope.declare(
+                                        name,
+                                        SymbolInfo {
+                                            kind: SymbolKind::Param,
+                                            name: name.clone(),
+                                            ty: field_ty,
+                                            decl_range: p.range.clone(),
+                                            signature: None,
+                                            event_data: None,
+                                        },
+                                    );
+                                }
                             }
                         }
-                    }
-                } else {
-                    ctx.scope.declare(
-                        &p.name,
-                        SymbolInfo {
-                            kind,
-                            name: p.name.clone(),
-                            ty: pt,
-                            decl_range: p.range.clone(),
-                            signature: None,
-                            event_data: None,
-                        },
-                    );
-                }
-            }
-            ctx.in_exec(|ctx| check_block(ctx, &c.body, tmap, omap));
-            // Warn if outputs are declared but never assigned. Assignments
-            // count anywhere in the body, including nested if blocks and
-            // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
-            // `x = expr` assignment.
-            if !c.outputs.is_empty() && !block_has_return_value(&c.body) {
-                let mut assigned = std::collections::HashSet::default();
-                collect_output_assignments(&c.body, &mut assigned);
-                for out in &c.outputs {
-                    if !assigned.contains(&out.name) {
-                        ctx.emit(
-                            "WS013",
-                            format!("output '{}' is never assigned — use `out {} = expr`, `emit {}`, or `return expr`", out.name, out.name, out.name),
-                            out.range.clone(),
+                    } else {
+                        ctx.scope.declare(
+                            &p.name,
+                            SymbolInfo {
+                                kind,
+                                name: p.name.clone(),
+                                ty: pt,
+                                decl_range: p.range.clone(),
+                                signature: None,
+                                event_data: None,
+                            },
                         );
                     }
                 }
+                ctx.in_exec(|ctx| check_block(ctx, &c.body, tmap, omap));
+                // Warn if outputs are declared but never assigned. Assignments
+                // count anywhere in the body, including nested if blocks and
+                // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
+                // `x = expr` assignment.
+                if !c.outputs.is_empty() && !block_has_return_value(&c.body) {
+                    let mut assigned = std::collections::HashSet::default();
+                    collect_output_assignments(&c.body, &mut assigned);
+                    for out in &c.outputs {
+                        if !assigned.contains(&out.name) {
+                            ctx.emit(
+                                "WS013",
+                                format!("output '{}' is never assigned — use `out {} = expr`, `emit {}`, or `return expr`", out.name, out.name, out.name),
+                                out.range.clone(),
+                            );
+                        }
+                    }
+                }
+                if multi_pass {
+                    // Dedup by (code, start offset): the same body error
+                    // surfaces once per mask member it's invalid for, but
+                    // should be reported once, at the definition.
+                    for d in ctx.diagnostics.split_off(before) {
+                        if seen.insert((d.code.clone(), d.range.start.offset)) {
+                            deduped.push(d);
+                        }
+                    }
+                }
+                ctx.scope.pop();
             }
-            ctx.scope.pop();
+            ctx.active_combos = saved_active_combos;
+            if multi_pass {
+                ctx.diagnostics.extend(deduped);
+            }
         }
         TopDecl::AnonChip(ac) => {
             // Anon chip shares parent scope — NO scope push/pop.
@@ -1327,7 +1773,11 @@ fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
             // A handler type annotation (`a: int` on Custom Event) overrides the
             // event's declared data type (which is `any` for such events).
             let ty = match &pname.ty {
-                Some(te) => resolve_type_expr(ctx, te),
+                Some(te) => {
+                    let t = resolve_type_expr(ctx, te);
+                    warn_any_annotation(ctx, &t, type_expr_range(te));
+                    t
+                }
                 None => {
                     let evt_ty = evt.data.get(i).map(|d| d.ty.clone()).unwrap_or(Type::Any);
                     if matches!(evt_ty, Type::Any) {
@@ -1495,12 +1945,13 @@ fn check_stmt(
                     }) => inner.as_ref().clone(),
                     _ => Type::Any,
                 };
-                if let Expr::MapLit { entries, .. } = init
+                if let Some(entries) = map_init_entries(init)
                     && let Type::Map(k, v_ty) = &inner
                 {
                     // A map-valued `var` initializer inside a handler: validate
                     // entries directly (the valid initializer slot) instead of
                     // routing through the generic `infer_expr` position guard.
+                    // An empty `{}` is an empty-map init.
                     check_map_literal(ctx, entries, k, v_ty, tmap, omap);
                 } else {
                     let t = infer_expr(ctx, init, tmap, omap);
@@ -1558,6 +2009,15 @@ fn check_stmt(
             }
         }
         Stmt::OutBinding(b) => {
+            // An anon-chip's statement-level `out` carries a type annotation
+            // too (`chip { @bottom out done: any = 5 }`); mirror the top-level
+            // `TopDecl::Out` any-warn so `any` there is flagged like anywhere
+            // else. (This path predates — and still lacks — the top-level
+            // decl's WS003 value/annotation check; that gap is out of scope.)
+            if let Some(te) = &b.typ {
+                let resolved = resolve_type_expr(ctx, te);
+                warn_any_annotation(ctx, &resolved, type_expr_range(te));
+            }
             if let Some(value) = &b.value {
                 infer_expr(ctx, value, tmap, omap);
             }
@@ -1710,34 +2170,72 @@ fn target_name(e: &Expr) -> Option<String> {
 /// the same shape as `Tuple([T0, T1])` and destructures the same way.
 /// The result type of a call whose declared output is a union.
 ///
-/// The math-variant gates (`Blend`/`lerp`/`Tween`) carry whichever variant
-/// their inputs do, so a union output resolves to the type of the first
-/// positional argument bound to a union-typed param. Left as the union, the
-/// result would satisfy no operator overload and every use of it would fail.
-/// Any other output type is returned unchanged.
+/// The math-variant gates (`Blend`/`lerp`/`Easing`) carry whichever variant
+/// their inputs do, so a union output resolves to the **widening join**
+/// (`crate::types::coerce::widening_join`) of every union-typed param's
+/// argument type — the least upper bound, not just "first arg wins". Left as
+/// the union, the result would satisfy no operator overload and every use of
+/// it would fail. When only one operand is concrete, the join is just that
+/// type (unchanged from the old behavior). When two operands have no common
+/// widening (e.g. `Blend(vector, 1, t)`), that's a genuine incompatibility —
+/// emit `WS033` (the same code the generic-mod inference solver uses for an
+/// unwidenable conflict; this is the same kind of failure, just for a
+/// builtin's dynamically-typed param instead of a user type parameter) and
+/// fall back to the declared union. Any other output type is returned
+/// unchanged.
 fn union_output_type(
     ctx: &mut TypeCheckCtx,
     c: &crate::catalog::calls::CallSpec,
     args: &[CallArg],
     out_index: usize,
+    range: &SourceRange,
     tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
     omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) -> Type {
     let declared = c.outputs[out_index].ty.clone();
-    if !matches!(declared, Type::Union(_)) {
+    let Type::Union(mask) = &declared else {
         return declared;
-    }
+    };
+    let mut joined: Option<Type> = None;
     for (i, p) in c.params.iter().enumerate() {
         if matches!(p.ty, Type::Union(_))
             && let Some(CallArg::Positional(e)) = args.get(i)
         {
             let t = unwrap_ref(&infer_expr(ctx, e, tmap, omap));
-            if !matches!(t, Type::Any) {
-                return t;
+            if matches!(t, Type::Any) {
+                continue;
             }
+            joined = Some(match joined {
+                None => t,
+                Some(prev) => match widening_join_all([prev.clone(), t.clone()]) {
+                    Some(j) => j,
+                    None => {
+                        ctx.emit(
+                            "WS033",
+                            format!(
+                                "'{}': incompatible operand types {} and {} — no common \
+                                 widening (the math-variant params must all agree, up to \
+                                 numeric/rotation widening)",
+                                c.name,
+                                crate::analysis::types::type_str(&prev),
+                                crate::analysis::types::type_str(&t),
+                            ),
+                            range.clone(),
+                        );
+                        return declared;
+                    }
+                },
+            });
         }
     }
-    declared
+    match joined {
+        // Bool never appears as a math-variant on its own (the mask is
+        // Float/Int/Vector/Rotator/Quat/Color) — an all-bool fold widens one
+        // step further to Int, the mask's narrowest numeric member.
+        Some(Type::Bool) if !mask_contains(mask, &Type::Bool) => Type::Int,
+        Some(t) => t,
+        None => declared,
+    }
 }
 
 fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
@@ -1921,6 +2419,227 @@ fn infer_assign_target(
     }
 }
 
+/// Type a resolved user `mod`/`chip` call from its already-inferred positional
+/// argument types. Shared by the plain-identifier call path and the
+/// `self`-receiver method path (which prepends the receiver as positional
+/// arg 0). Emits WS021 (use-before-declaration), WS022 (argument count) and
+/// WS033 (generic inference), then returns the call's result type — the
+/// (possibly monomorphized) single output, a record of the outputs, or `any`.
+///
+/// `positional_count` and `positional_arg_types` must already include the
+/// receiver for a method call. `name_range` anchors the count / decl-order
+/// diagnostics; `call_range` anchors the generic-inference one.
+#[allow(clippy::too_many_arguments)]
+fn type_user_symbol_call(
+    ctx: &mut TypeCheckCtx,
+    name: &str,
+    sym: &SymbolInfo,
+    positional_arg_types: &[Type],
+    type_args: &[TypeExpr],
+    positional_count: usize,
+    has_spread: bool,
+    has_exec_arg: bool,
+    call_range: &SourceRange,
+    name_range: &SourceRange,
+) -> Type {
+    // Use-before-declaration. Chips/mods are registered in source order during
+    // lowering, so a call whose declaration lexically follows the call site
+    // cannot resolve — it would synthesise an `_Unsupported` gate that silently
+    // reads 0 at runtime. Only applies to same-file chip/mod decls (imports
+    // live elsewhere and are always available).
+    if sym.kind == SymbolKind::Chip
+        && sym.signature.is_some()
+        && sym.decl_range.file == name_range.file
+        && (name_range.start.line, name_range.start.col)
+            < (sym.decl_range.start.line, sym.decl_range.start.col)
+    {
+        ctx.emit(
+            "WS021",
+            format!(
+                "call to `{name}` before its declaration — chips and \
+                 mods must be declared before the point where they \
+                 are used (move the declaration above its first caller)"
+            ),
+            name_range.clone(),
+        );
+    }
+    // Argument-count check. User chips/mods/fns have no default parameters, so
+    // the positional-argument count must equal the parameter count — each param
+    // (including a whole-record or destructured one, and the `self` receiver)
+    // takes exactly one positional arg. A spread makes the count dynamic, so
+    // skip the check then. A mismatch would otherwise leave a param unbound,
+    // silently reading 0 / an empty value.
+    if let Some(sig) = &sym.signature
+        && !has_spread
+    {
+        let expected = sig.params.len();
+        if positional_count != expected {
+            ctx.emit(
+                "WS022",
+                format!(
+                    "`{name}` expects {expected} argument{} but {positional_count} {} given",
+                    if expected == 1 { "" } else { "s" },
+                    if positional_count == 1 { "was" } else { "were" },
+                ),
+                name_range.clone(),
+            );
+        }
+    }
+    let Some(sig) = &sym.signature else {
+        // The callee resolved to a non-callable symbol — a var / let / array /
+        // buffer / input / param, not a mod, chip, or function. Without this the
+        // call typed as `any` with no diagnostic and lowering emitted an
+        // `_Unsupported` gate that reads 0 — a silent miscompile. Common causes:
+        // an index typo (`xs(i)` for `xs[i]`) and a chained comparison the
+        // parser reads as an explicit-type-argument call (`a < b > (c)`).
+        ctx.emit(
+            "WS038",
+            format!("`{name}` is not callable — only mods, chips, and functions can be called"),
+            name_range.clone(),
+        );
+        return Type::Any;
+    };
+    // Arg-driven inference for a generic mod/chip call: collect an equality
+    // constraint from every (declared param type, inferred arg type) pair, solve
+    // for each type param, and substitute the result into the output types
+    // below. Guarded on `type_params` being non-empty so a non-generic call
+    // takes exactly the pre-generics path — `subst` stays `None` and `out_ty`
+    // is a plain clone.
+    let subst: Option<crate::types::infer::Subst> = if sig.type_params.is_empty() {
+        if !type_args.is_empty() {
+            ctx.emit(
+                "WS033",
+                format!("`{name}` is not generic — it takes no type arguments"),
+                call_range.clone(),
+            );
+        }
+        None
+    } else if !type_args.is_empty() {
+        // Explicit type arguments `f<int>(...)`: the caller pinned each type
+        // param. Bind them directly (skipping arg-driven inference), validating
+        // arity and each arg against its param's bound mask. This is the ONLY
+        // way to pin a `T` that appears only in the return type (`make<int>()`),
+        // which inference can't derive from the arguments.
+        if type_args.len() != sig.type_params.len() {
+            ctx.emit(
+                "WS033",
+                format!(
+                    "`{name}` expects {} type argument{}, but {} {} given",
+                    sig.type_params.len(),
+                    if sig.type_params.len() == 1 { "" } else { "s" },
+                    type_args.len(),
+                    if type_args.len() == 1 { "was" } else { "were" },
+                ),
+                call_range.clone(),
+            );
+            None
+        } else {
+            let mut s = crate::types::infer::Subst::new();
+            for ((pname, mask), te) in sig.type_params.iter().zip(type_args.iter()) {
+                let ty = resolve_type_expr(ctx, te);
+                if !crate::types::classes::mask_contains(mask, &ty) {
+                    ctx.emit(
+                        "WS033",
+                        format!(
+                            "`{pname}` = {}, which isn't allowed by its bound",
+                            crate::analysis::types::type_str(&ty),
+                        ),
+                        te.range().clone(),
+                    );
+                }
+                s.insert(pname.clone(), ty);
+            }
+            Some(s)
+        }
+    } else {
+        // Ref-align param and arg before collecting. A `*T` param resolves to
+        // `Ref(Param(T))`, but a var passed to it infers to its already-auto-
+        // derefed inner type (`Int`, not `Ref(Int)`), so the Ref layers are
+        // asymmetric: strip a leading Ref off BOTH so `*T` vs `int` collects
+        // as `Param(T)` vs `int` → `Eq(T, int)`, exactly like a value `T`.
+        let param_types: Vec<Type> = sig.params.iter().map(|p| p.ty.clone()).collect();
+        let constraints = crate::types::mono::call_constraints(&param_types, positional_arg_types);
+        match crate::types::infer::solve(&constraints, &sig.type_params) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                let msg = match &e {
+                    crate::types::infer::InferError::Conflict { var, a, b } => format!(
+                        "cannot infer '{var}': it's {} from one argument but {} from another — all '{var}' arguments must be the same type",
+                        crate::analysis::types::type_str(a),
+                        crate::analysis::types::type_str(b),
+                    ),
+                    crate::types::infer::InferError::Unpinnable(var) => format!(
+                        "cannot infer type parameter '{var}' — annotate the argument(s)"
+                    ),
+                    crate::types::infer::InferError::OutOfMask { var, ty, .. } => format!(
+                        "'{var}' = {}, which isn't allowed by its bound",
+                        crate::analysis::types::type_str(ty),
+                    ),
+                };
+                ctx.emit("WS033", msg, call_range.clone());
+                None
+            }
+        }
+    };
+    // Validate each positional argument against its (substituted) parameter
+    // type — the same coercion the wire layer applies (`PortsAreCompatible`).
+    // User mod/chip calls previously skipped this entirely, so `f(int)` on a
+    // `vector` param — and a receiver call `x.m()` whose `x`'s type doesn't
+    // match `self` — passed clean and then miscompiled at the wire level.
+    // Skip: a spread (variable positional count), an argument whose type is the
+    // unknown/wildcard `Any`/`Opaque` (already erroring, or deliberately `any`),
+    // and a parameter still carrying a `Type::Param` (an uninferable generic,
+    // left to the WS033 inference diagnostics above).
+    if !has_spread {
+        for (i, arg_ty) in positional_arg_types.iter().enumerate() {
+            let Some(param) = sig.params.get(i) else { break };
+            if matches!(unwrap_ref(arg_ty), Type::Any | Type::Opaque) {
+                continue;
+            }
+            let param_ty = match &subst {
+                Some(s) => substitute(&param.ty, s),
+                None => param.ty.clone(),
+            };
+            if type_has_param(&param_ty) {
+                continue;
+            }
+            if coerce(&unwrap_ref(arg_ty), &unwrap_ref(&param_ty)) == CoerceRule::Mismatch {
+                ctx.emit(
+                    "WS003",
+                    format!(
+                        "argument '{}': expected {}, got {}",
+                        param.name,
+                        crate::analysis::types::type_str(&param_ty),
+                        crate::analysis::types::type_str(arg_ty),
+                    ),
+                    call_range.clone(),
+                );
+            }
+        }
+    }
+    let out_ty = |t: &Type| match &subst {
+        Some(s) => substitute(t, s),
+        None => t.clone(),
+    };
+    // A call with an `exec =` trigger also returns the chip's completion exec as
+    // an `exec` field (unless the chip declares its own `exec` output).
+    if sig.outputs.len() == 1 && !has_exec_arg {
+        return out_ty(&sig.outputs[0].ty);
+    }
+    if !sig.outputs.is_empty() {
+        let mut fields: Vec<(String, Type)> = sig
+            .outputs
+            .iter()
+            .map(|o| (o.name.clone(), out_ty(&o.ty)))
+            .collect();
+        if has_exec_arg && !fields.iter().any(|(n, _)| n == "exec") {
+            fields.push(("exec".into(), Type::Exec));
+        }
+        return Type::Record(fields);
+    }
+    Type::Any
+}
+
 // ---------- expression inference ----------
 
 fn infer_expr(
@@ -1976,7 +2695,7 @@ fn infer_expr_inner(
         // `check_stmt`) and never reach this arm. Still infer each entry (so
         // key/value expressions get typed and any inner errors surface, e.g. a
         // key referencing an unknown identifier) and infer the literal's real
-        // `Map<K, V>` shape from the first entry — mirroring the array
+        // `Dict<K, V>` shape from the first entry — mirroring the array
         // literal's element-type inference above — but the position itself is
         // always an error: a map literal must initialize or assign a Map.
         Expr::MapLit { entries, range } => {
@@ -1992,7 +2711,7 @@ fn infer_expr_inner(
             }
             ctx.emit(
                 "WS026",
-                "a map literal must initialize or assign a Map variable",
+                "a dict literal must initialize or assign a Dict variable",
                 range.clone(),
             );
             Type::Map(Box::new(kt), Box::new(vt))
@@ -2178,9 +2897,20 @@ fn infer_expr_inner(
                 if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
                     return t.clone();
                 }
+                // One concise line naming the valid fields. The full,
+                // syntax-COLOURED record type is rendered on hover
+                // (analysis::hover) — the only place VS Code can show colour;
+                // dumping the multi-line block into the diagnostic too just
+                // repeats it verbatim under the hover (VS Code stacks the
+                // hover-provider content and the diagnostic message together).
+                let names: String = fields
+                    .iter()
+                    .map(|(n, _)| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 ctx.emit(
                     "WS010",
-                    format!("no field '{field}' on {:?}", ot),
+                    format!("no field `{field}` on record (has: {names})"),
                     range.clone(),
                 );
                 return Type::Any;
@@ -2236,7 +2966,12 @@ fn infer_expr_inner(
                 _ => Type::Any,
             }
         }
-        Expr::Call { callee, args, .. } => {
+        Expr::Call {
+            callee,
+            args,
+            type_args,
+            range: call_range,
+        } => {
             // Resolve the target call spec (if any) so enum-typed config args
             // can be skipped below — a bare member name (`function = Bounce`)
             // is not a variable and must not be inferred as one.
@@ -2254,7 +2989,11 @@ fn infer_expr_inner(
                     && arg_spec.is_some_and(|c| c.receiver.is_some()),
             );
             // Side-effect: typecheck every arg, except enum-typed config args.
+            // `positional_arg_types` mirrors the positional args in order —
+            // used below to infer a generic user mod/chip call's type params
+            // from its arguments (builtin `find_call`s ignore it).
             let mut pos = 0usize;
+            let mut positional_arg_types: Vec<Type> = Vec::new();
             for a in args {
                 let is_config_enum = arg_spec.is_some_and(|c| match a {
                     CallArg::Named { name, .. } => match c.params.iter().find(|p| p.name == name) {
@@ -2278,7 +3017,8 @@ fn infer_expr_inner(
                 }
                 match a {
                     CallArg::Positional(v) => {
-                        infer_expr(ctx, v, tmap, omap);
+                        let t = infer_expr(ctx, v, tmap, omap);
+                        positional_arg_types.push(t);
                     }
                     CallArg::Named { value, .. } => {
                         infer_expr(ctx, value, tmap, omap);
@@ -2291,6 +3031,21 @@ fn infer_expr_inner(
             // Resolve callee if it's a plain identifier.
             if let Expr::Ident { name, range } = callee.as_ref() {
                 if let Some(c) = find_call(name) {
+                    // Explicit type arguments on a builtin are ignored: a
+                    // builtin's result type is derived from its arguments (the
+                    // masked-generic engine), not pinned by an explicit `<...>`.
+                    // Warn rather than silently dropping them.
+                    if !type_args.is_empty() {
+                        ctx.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            code: "WS037".into(),
+                            message: format!(
+                                "explicit type arguments are ignored on builtin `{name}` — its \
+                                 result type is derived from the arguments"
+                            ),
+                            range: range.clone(),
+                        });
+                    }
                     if c.exec && ctx.exec_mode() != ExecMode::Exec {
                         let has_exec_arg = args
                             .iter()
@@ -2321,7 +3076,7 @@ fn infer_expr_inner(
                     }
                     check_call_args(ctx, c, args, range, tmap, omap);
                     if c.outputs.len() == 1 {
-                        return union_output_type(ctx, c, args, 0, tmap, omap);
+                        return union_output_type(ctx, c, args, 0, range, tmap, omap);
                     }
                     if c.outputs.len() > 1 {
                         return Type::Record(
@@ -2344,78 +3099,26 @@ fn infer_expr_inner(
                     );
                     return Type::Any;
                 };
-                // Use-before-declaration. Chips/mods are registered in source
-                // order during lowering, so a call whose declaration lexically
-                // follows the call site cannot resolve — it would synthesise an
-                // `_Unsupported` gate that silently reads 0 at runtime. Only
-                // applies to same-file chip/mod decls (imports live elsewhere
-                // and are always available).
-                if sym.kind == SymbolKind::Chip
-                    && sym.signature.is_some()
-                    && sym.decl_range.file == range.file
-                    && (range.start.line, range.start.col)
-                        < (sym.decl_range.start.line, sym.decl_range.start.col)
-                {
-                    ctx.emit(
-                        "WS021",
-                        format!(
-                            "call to `{name}` before its declaration — chips and \
-                             mods must be declared before the point where they \
-                             are used (move the declaration above its first caller)"
-                        ),
-                        range.clone(),
-                    );
-                }
-                // Argument-count check. User chips/mods/fns have no default
-                // parameters, so the positional-argument count must equal the
-                // parameter count — each param (including a whole-record or
-                // destructured one) takes exactly one positional arg. Named args
-                // (e.g. `exec =`) aren't parameters; a spread makes the count
-                // dynamic, so skip the check then. A mismatch would otherwise
-                // leave a param unbound, silently reading 0 / an empty value.
-                if let Some(sig) = &sym.signature {
-                    let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
-                    if !has_spread {
-                        let positional = args
-                            .iter()
-                            .filter(|a| matches!(a, CallArg::Positional(_)))
-                            .count();
-                        let expected = sig.params.len();
-                        if positional != expected {
-                            ctx.emit(
-                                "WS022",
-                                format!(
-                                    "`{name}` expects {expected} argument{} but {positional} {} given",
-                                    if expected == 1 { "" } else { "s" },
-                                    if positional == 1 { "was" } else { "were" },
-                                ),
-                                range.clone(),
-                            );
-                        }
-                    }
-                }
-                if let Some(sig) = sym.signature {
-                    // A call with an `exec =` trigger also returns the chip's
-                    // completion exec as an `exec` field (unless the chip
-                    // declares its own `exec` output).
-                    let has_exec_arg = args
-                        .iter()
-                        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
-                    if sig.outputs.len() == 1 && !has_exec_arg {
-                        return sig.outputs[0].ty.clone();
-                    }
-                    if !sig.outputs.is_empty() {
-                        let mut fields: Vec<(String, Type)> = sig
-                            .outputs
-                            .iter()
-                            .map(|o| (o.name.clone(), o.ty.clone()))
-                            .collect();
-                        if has_exec_arg && !fields.iter().any(|(n, _)| n == "exec") {
-                            fields.push(("exec".into(), Type::Exec));
-                        }
-                        return Type::Record(fields);
-                    }
-                }
+                let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
+                let has_exec_arg = args
+                    .iter()
+                    .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+                let positional_count = args
+                    .iter()
+                    .filter(|a| matches!(a, CallArg::Positional(_)))
+                    .count();
+                return type_user_symbol_call(
+                    ctx,
+                    name,
+                    &sym,
+                    &positional_arg_types,
+                    type_args,
+                    positional_count,
+                    has_spread,
+                    has_exec_arg,
+                    call_range,
+                    range,
+                );
             }
             // Namespace call: ns.foo(args)
             if let Expr::FieldAccess {
@@ -2491,7 +3194,7 @@ fn infer_expr_inner(
                 recv_args.extend(args.iter().cloned());
                 check_call_args(ctx, c, &recv_args, fa_range, tmap, omap);
                 if c.outputs.len() == 1 {
-                    return union_output_type(ctx, c, &recv_args, 0, tmap, omap);
+                    return union_output_type(ctx, c, &recv_args, 0, fa_range, tmap, omap);
                 }
                 if c.outputs.len() > 1 {
                     return Type::Record(
@@ -2503,12 +3206,58 @@ fn infer_expr_inner(
                 }
                 return Type::Any;
             }
+            // User `self`-receiver method call: `v.dist(o)` where `dist` is a
+            // user mod/chip whose first parameter is named `self`. Desugars to
+            // `dist(v, o)` — bind the receiver as positional arg 0 and type it
+            // exactly like the plain `dist(v, o)` call would (generics inferred
+            // through the receiver too). Placed AFTER the builtin-receiver case
+            // so a builtin receiver-method of the same name wins (a user
+            // self-mod shadowing one is rejected as WS035 at its declaration).
+            if let Expr::FieldAccess {
+                obj,
+                field,
+                range: fa_range,
+            } = callee.as_ref()
+                && let Some(sym) = ctx.scope.lookup(field).cloned()
+                && sym.kind == SymbolKind::Chip
+                && sym
+                    .signature
+                    .as_ref()
+                    .is_some_and(|s| s.params.first().is_some_and(|p| p.name == "self"))
+            {
+                let recv_ty = infer_expr(ctx, obj, tmap, omap);
+                let mut recv_pos_types = Vec::with_capacity(positional_arg_types.len() + 1);
+                recv_pos_types.push(recv_ty);
+                recv_pos_types.extend(positional_arg_types.iter().cloned());
+                let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
+                let has_exec_arg = args
+                    .iter()
+                    .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+                let positional_count = 1 + args
+                    .iter()
+                    .filter(|a| matches!(a, CallArg::Positional(_)))
+                    .count();
+                return type_user_symbol_call(
+                    ctx,
+                    field,
+                    &sym,
+                    &recv_pos_types,
+                    type_args,
+                    positional_count,
+                    has_spread,
+                    has_exec_arg,
+                    call_range,
+                    fa_range,
+                );
+            }
             // A method/namespace call whose base identifier resolves to nothing:
             // e.g. `card.drawLobby(...)` after an `import * as card` was removed.
             // None of the branches above matched and `card` is not a namespace,
             // variable, or value in scope. Left alone this silently lowers to an
             // `_Unsupported` gate that reads a default (does nothing) at runtime —
             // flag the dangling base, mirroring the bare-identifier WS002 above.
+            // Returns so it stays the primary diagnostic for an unknown base
+            // (the non-self-mod check below never double-reports over it).
             if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
                 && let Expr::Ident {
                     name,
@@ -2526,6 +3275,39 @@ fn infer_expr_inner(
                     ),
                     base_range.clone(),
                 );
+                return Type::Any;
+            }
+            // A method call `obj.field(...)` on a valid receiver whose `field`
+            // names a KNOWN user mod/chip that is NOT a `self`-receiver (the
+            // self-mod case above would have returned; builtin / array / map
+            // receiver methods were handled earlier). Only a `self`-mod is
+            // method-callable — without this, the call would silently type as
+            // `any` and lower to an `_Unsupported` no-op (typecheck/lowering
+            // divergence). Flag it instead of letting it disappear.
+            if let Expr::FieldAccess {
+                obj,
+                field,
+                range: fa_range,
+            } = callee.as_ref()
+                && ctx
+                    .scope
+                    .lookup(field)
+                    .is_some_and(|s| s.kind == SymbolKind::Chip)
+            {
+                // Keep the receiver's type in the map (hover/goto) even though
+                // the call itself doesn't resolve to a value.
+                infer_expr(ctx, obj, tmap, omap);
+                ctx.emit(
+                    "WS036",
+                    format!(
+                        "`{field}` is not a receiver method — its first parameter is not \
+                         named `self`, so it can't be called as `x.{field}(…)`. Call \
+                         `{field}(<receiver>, …)` directly, or rename its first parameter \
+                         to `self` to allow method syntax."
+                    ),
+                    fa_range.clone(),
+                );
+                return Type::Any;
             }
             Type::Any
         }
@@ -2557,18 +3339,21 @@ fn infer_expr_inner(
                     );
                 }
             }
-            if coerce(&tt, &et) == CoerceRule::Mismatch {
-                ctx.emit(
-                    "WS003",
-                    format!(
-                        "if-then-else branch type mismatch: then is {}, else is {} (Select output follows else type)",
-                        crate::analysis::types::type_str(&tt),
-                        crate::analysis::types::type_str(&et),
-                    ),
-                    range.clone(),
-                );
+            match widening_join(&tt, &et) {
+                Some(j) => j,
+                None => {
+                    ctx.emit(
+                        "WS003",
+                        format!(
+                            "if-then-else branch type mismatch: then is {}, else is {} (no common widening)",
+                            crate::analysis::types::type_str(&tt),
+                            crate::analysis::types::type_str(&et),
+                        ),
+                        range.clone(),
+                    );
+                    et
+                }
             }
-            et
         }
         Expr::BlockExpr { stmts, value, .. } => {
             ctx.scope.push();
@@ -2646,19 +3431,25 @@ fn infer_expr_inner(
     }
 }
 
-fn unwrap_ref(t: &Type) -> Type {
-    match t {
-        Type::Ref(inner) => inner.as_ref().clone(),
-        other => other.clone(),
-    }
-}
-
 /// Reference-only types: like a variable ref, these wire and reroute but are not
 /// values — they can't be selected, stored, or operated on. Covers the explicit
 /// `ref T` var ref plus the opaque `zone`/`teleport` component references.
 fn is_reference_type(t: &Type) -> bool {
     matches!(t, Type::Ref(_) | Type::Zone | Type::Teleport)
 }
+
+// ---------- generic mod/chip call-site inference ----------
+//
+// Arg-driven inference at a call to a generic `mod`/`chip`: `mono::call_constraints`
+// walks each (declared param type, inferred arg type) pair in lockstep and
+// records an equality `Constraint` everywhere the param side names a
+// `Type::Param`. `types::infer::solve` turns the collected constraints into a
+// `Subst`; `mono::substitute` then replaces every `Type::Param` in the
+// signature's output type with its solved binding. The
+// `call_constraints`/`substitute`/`mask_for_param` helpers live in the shared
+// `types::mono` module so the lowering-side monomorphizer (P2.5) reuses the
+// exact same inference at each generic-mod inline site.
+use crate::types::mono::{substitute, unwrap_ref};
 
 // ---------- custom-event sender/receiver type consistency (WS030) ----------
 
@@ -2690,7 +3481,7 @@ fn wire_class(t: &Type) -> Option<WireClass> {
         Type::Rotator => WireClass::Rotator,
         Type::Quat => WireClass::Quat,
         Type::Color => WireClass::Color,
-        Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab => {
+        Type::Controller | Type::Character | Type::Entity => {
             WireClass::Object
         }
         _ => return None,
@@ -2700,19 +3491,25 @@ fn wire_class(t: &Type) -> Option<WireClass> {
 /// Resolve a Custom Event param annotation to its type without emitting — the
 /// handler-binding pass already reported any bad annotation, so this must not
 /// double-report. Custom-event data is always a wire variant (a primitive), so
-/// anything more exotic resolves to `any` and simply isn't linted.
+/// anything more exotic resolves to `any` and simply isn't linted. Delegates
+/// to the crate's single canonical resolver (`types::resolve::resolve_type`);
+/// any diagnostic it would emit is discarded per the no-double-report rule
+/// above.
 fn ce_param_type(te: &TypeExpr) -> Type {
-    match te {
-        TypeExpr::Name { name, .. } => primitive_name(name).unwrap_or(Type::Any),
-        _ => Type::Any,
-    }
+    let cx = crate::types::resolve::ResolveCtx {
+        params: &[],
+        type_aliases: &HashMap::default(),
+        generic_aliases: &HashMap::default(),
+    };
+    crate::types::resolve::resolve_type(te, &cx, &mut Vec::new())
 }
 
-/// `(event name, per-slot declared type)` for a handler that is a Custom Event
-/// receiver with a literal channel name. `None` for any other handler (or a
-/// dynamic channel name — nothing to key receivers by).
-fn ce_receiver_of(h: &Handler) -> Option<(String, Vec<Option<Type>>)> {
-    if !matches!(&h.trigger, Trigger::Ident { name, .. } if name == "CustomEvent") {
+/// `(channel name, per-slot declared type)` for a handler that is a custom-event
+/// receiver of kind `event_name` (`"CustomEvent"` or `"GlobalCustomEvent"`) with
+/// a literal channel name. `None` for any other handler (or a dynamic channel
+/// name — nothing to key receivers by).
+fn ce_receiver_of(h: &Handler, event_name: &str) -> Option<(String, Vec<Option<Type>>)> {
+    if !matches!(&h.trigger, Trigger::Ident { name, .. } if name == event_name) {
         return None;
     }
     let name = h.config.iter().find_map(|c| match c {
@@ -2815,15 +3612,60 @@ fn check_custom_event_types(
     script: &Script,
     tmap: &HashMap<(Arc<str>, usize, usize), Type>,
 ) {
-    // One AST walk: gather every receiver's signature and every sender call.
-    let mut receivers: HashMap<String, Vec<Option<Type>>> = HashMap::default();
-    let mut senders: Vec<&Expr> = Vec::new();
-    for d in &script.decls {
-        ce_walk_decl(d, &mut receivers, &mut senders);
-    }
-    if senders.is_empty() {
-        return;
-    }
+    // Personal and Global custom events are SEPARATE channel namespaces: a
+    // `SendCustomEvent("x")` only reaches `on CustomEvent("x")`, and a
+    // `SendGlobalCustomEvent("x")` only reaches `on GlobalCustomEvent("x")`. Gather
+    // each namespace's receivers and senders in one AST walk, then type-check the
+    // send/receive pairs within each namespace independently.
+    let mut personal_recv: HashMap<String, Vec<Option<Type>>> = HashMap::default();
+    let mut global_recv: HashMap<String, Vec<Option<Type>>> = HashMap::default();
+    let mut personal_send: Vec<&Expr> = Vec::new();
+    let mut global_send: Vec<&Expr> = Vec::new();
+    crate::analysis::visit_program(
+        script,
+        &mut |h| {
+            if let Some((name, params)) = ce_receiver_of(h, "CustomEvent") {
+                ce_merge_receiver(&mut personal_recv, name, params);
+            } else if let Some((name, params)) = ce_receiver_of(h, "GlobalCustomEvent") {
+                ce_merge_receiver(&mut global_recv, name, params);
+            }
+        },
+        &mut |call| {
+            if let Expr::Call { callee, .. } = call {
+                match callee.as_ref() {
+                    Expr::Ident { name, .. } if name == "SendCustomEvent" => {
+                        personal_send.push(call)
+                    }
+                    Expr::Ident { name, .. } if name == "SendGlobalCustomEvent" => {
+                        global_send.push(call)
+                    }
+                    _ => {}
+                }
+            }
+        },
+    );
+    check_ce_namespace(ctx, &personal_send, &personal_recv, tmap, "SendCustomEvent", "CustomEvent");
+    check_ce_namespace(
+        ctx,
+        &global_send,
+        &global_recv,
+        tmap,
+        "SendGlobalCustomEvent",
+        "GlobalCustomEvent",
+    );
+}
+
+/// Within ONE custom-event namespace, warn (WS030) when a send's data value type
+/// disagrees with the receiver's declared param type for the same channel — the
+/// game keys the wire variant off the sender, so a mismatch is a real bug.
+fn check_ce_namespace(
+    ctx: &mut TypeCheckCtx,
+    senders: &[&Expr],
+    receivers: &HashMap<String, Vec<Option<Type>>>,
+    tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+    send_name: &str,
+    event_name: &str,
+) {
     for call in senders {
         let Expr::Call { args, .. } = call else {
             continue;
@@ -2854,9 +3696,8 @@ fn check_custom_event_types(
                     severity: Severity::Warning,
                     code: "WS030".into(),
                     message: format!(
-                        "custom event '{name}' data #{} is {}, but the `on CustomEvent(\"{name}\", …)` \
-                         receiver declares {} — SendCustomEvent values must match the receiver's \
-                         param types",
+                        "custom event '{name}' data #{} is {}, but the `on {event_name}(\"{name}\", …)` \
+                         receiver declares {} — {send_name} values must match the receiver's param types",
                         slot + 1,
                         send_ty,
                         recv_ty,
@@ -2865,219 +3706,6 @@ fn check_custom_event_types(
                 });
             }
         }
-    }
-}
-
-fn ce_walk_decl<'a>(
-    d: &'a TopDecl,
-    receivers: &mut HashMap<String, Vec<Option<Type>>>,
-    senders: &mut Vec<&'a Expr>,
-) {
-    match d {
-        TopDecl::Handler(h) => {
-            if let Some((name, params)) = ce_receiver_of(h) {
-                ce_merge_receiver(receivers, name, params);
-            }
-            ce_walk_block(&h.body, receivers, senders);
-        }
-        TopDecl::Chip(c) => ce_walk_block(&c.body, receivers, senders),
-        TopDecl::AnonChip(ac) => ce_walk_block(&ac.body, receivers, senders),
-        TopDecl::Namespace(ns) => {
-            for d in &ns.decls {
-                ce_walk_decl(d, receivers, senders);
-            }
-        }
-        TopDecl::Fn(f) => ce_walk_expr(&f.body, senders),
-        TopDecl::Let(l) => ce_walk_expr(&l.value, senders),
-        TopDecl::Var(v) => {
-            if let Some(e) = &v.init {
-                ce_walk_expr(e, senders);
-            }
-        }
-        TopDecl::Buffer(b) => ce_walk_expr(&b.init, senders),
-        TopDecl::Out(o) => {
-            if let Some(e) = &o.value {
-                ce_walk_expr(e, senders);
-            }
-        }
-        TopDecl::Assign(a) => {
-            ce_walk_expr(&a.target, senders);
-            ce_walk_expr(&a.value, senders);
-        }
-        TopDecl::If(i) => ce_walk_if(i, receivers, senders),
-        TopDecl::ExprStmt(es) => ce_walk_expr(&es.expr, senders),
-        _ => {}
-    }
-}
-
-fn ce_walk_block<'a>(
-    b: &'a Block,
-    receivers: &mut HashMap<String, Vec<Option<Type>>>,
-    senders: &mut Vec<&'a Expr>,
-) {
-    for s in &b.stmts {
-        ce_walk_stmt(s, receivers, senders);
-    }
-}
-
-fn ce_walk_stmt<'a>(
-    s: &'a Stmt,
-    receivers: &mut HashMap<String, Vec<Option<Type>>>,
-    senders: &mut Vec<&'a Expr>,
-) {
-    match s {
-        Stmt::Handler(h) => {
-            if let Some((name, params)) = ce_receiver_of(h) {
-                ce_merge_receiver(receivers, name, params);
-            }
-            ce_walk_block(&h.body, receivers, senders);
-        }
-        Stmt::AnonChip(ac) => ce_walk_block(&ac.body, receivers, senders),
-        Stmt::ChipDecl(c) => ce_walk_block(&c.body, receivers, senders),
-        Stmt::If(i) => ce_walk_if(i, receivers, senders),
-        Stmt::Let(l) => ce_walk_expr(&l.value, senders),
-        Stmt::Assign(a) => {
-            ce_walk_expr(&a.target, senders);
-            ce_walk_expr(&a.value, senders);
-        }
-        Stmt::ExprStmt(es) => ce_walk_expr(&es.expr, senders),
-        Stmt::Var(v) => {
-            if let Some(e) = &v.init {
-                ce_walk_expr(e, senders);
-            }
-        }
-        Stmt::Buffer(b) => ce_walk_expr(&b.init, senders),
-        Stmt::OutBinding(ob) => {
-            if let Some(e) = &ob.value {
-                ce_walk_expr(e, senders);
-            }
-        }
-        Stmt::Emit(e) => {
-            if let Some(v) = &e.value {
-                ce_walk_expr(v, senders);
-            }
-        }
-        Stmt::Await(a) => {
-            if let Some(e) = &a.value_expr {
-                ce_walk_expr(e, senders);
-            }
-            ce_walk_expr(&a.exec_expr, senders);
-        }
-        Stmt::Return { value, .. } => {
-            if let Some(e) = value {
-                ce_walk_expr(e, senders);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn ce_walk_if<'a>(
-    i: &'a If,
-    receivers: &mut HashMap<String, Vec<Option<Type>>>,
-    senders: &mut Vec<&'a Expr>,
-) {
-    ce_walk_expr(&i.cond, senders);
-    ce_walk_block(&i.then_block, receivers, senders);
-    if let Some(eb) = &i.else_block {
-        ce_walk_block(eb, receivers, senders);
-    }
-}
-
-fn ce_walk_expr<'a>(e: &'a Expr, senders: &mut Vec<&'a Expr>) {
-    match e {
-        Expr::Call { callee, args, .. } => {
-            if matches!(callee.as_ref(), Expr::Ident { name, .. } if name == "SendCustomEvent") {
-                senders.push(e);
-            }
-            ce_walk_expr(callee, senders);
-            for a in args {
-                match a {
-                    CallArg::Positional(x) | CallArg::Spread(x) => ce_walk_expr(x, senders),
-                    CallArg::Named { value, .. } => ce_walk_expr(value, senders),
-                }
-            }
-        }
-        Expr::BinOp { left, right, .. } => {
-            ce_walk_expr(left, senders);
-            ce_walk_expr(right, senders);
-        }
-        Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
-            ce_walk_expr(operand, senders)
-        }
-        Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => ce_walk_expr(obj, senders),
-        Expr::IndexAccess { obj, index, .. } => {
-            ce_walk_expr(obj, senders);
-            ce_walk_expr(index, senders);
-        }
-        Expr::IfExpr {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            ce_walk_expr(cond, senders);
-            ce_walk_expr(then_branch, senders);
-            ce_walk_expr(else_branch, senders);
-        }
-        Expr::BlockExpr { stmts, value, .. } => {
-            // A block expr can host a `SendCustomEvent` in statement position;
-            // receivers can't appear here, so pass an empty map through.
-            let mut ignore = HashMap::default();
-            for s in stmts {
-                ce_walk_stmt(s, &mut ignore, senders);
-            }
-            ce_walk_expr(value, senders);
-        }
-        Expr::InterpLit { parts, .. } => {
-            for p in parts {
-                if let InterpPart::Expr(x) = p {
-                    ce_walk_expr(x, senders);
-                }
-            }
-        }
-        Expr::RecordLit { fields, .. } => {
-            for f in fields {
-                match f {
-                    RecordLitField::Named { value, .. }
-                    | RecordLitField::Spread { value, .. } => ce_walk_expr(value, senders),
-                    RecordLitField::Shorthand { .. } => {}
-                }
-            }
-        }
-        Expr::MatchExpr {
-            scrutinee, arms, ..
-        } => {
-            ce_walk_expr(scrutinee, senders);
-            for arm in arms {
-                match &arm.body {
-                    MatchBody::Expr(x) => ce_walk_expr(x, senders),
-                    MatchBody::Block(b) => {
-                        let mut ignore = HashMap::default();
-                        ce_walk_block(b, &mut ignore, senders);
-                    }
-                }
-            }
-        }
-        Expr::Array { elements, .. } => {
-            for el in elements {
-                ce_walk_expr(el.expr(), senders);
-            }
-        }
-        Expr::MapLit { entries, .. } => {
-            for en in entries {
-                ce_walk_expr(&en.key, senders);
-                ce_walk_expr(&en.value, senders);
-            }
-        }
-        Expr::IntLit { .. }
-        | Expr::AtomLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::AssetRef { .. }
-        | Expr::PrefabRef { .. }
-        | Expr::Ident { .. } => {}
     }
 }
 
@@ -3403,15 +4031,21 @@ fn check_call_args(
             ctx.emit(
                 "WS003",
                 format!(
-                    "argument '{}': expected {:?}, got {:?}",
-                    param.name, param.ty, arg_ty,
+                    "argument '{}': expected {}, got {}",
+                    param.name,
+                    crate::analysis::types::type_str(&param.ty),
+                    crate::analysis::types::type_str(&arg_ty),
                 ),
                 arg_expr.range().clone(),
             );
         }
     }
-    // Named args are otherwise unchecked here; validate the enum-typed config
-    // ones (`function = Bounce`) against the schema member list.
+    // Named args: config params validate against the schema (enum member,
+    // composite shape, or constant scalar); a named arg bound to a real
+    // wire-input param is type-checked against the param type with the same
+    // coerce the positional path applies — otherwise a wrong-typed named wire
+    // arg (`target = 5` on an entity port) would wire an incompatible value in
+    // with no diagnostic.
     for a in args {
         if let CallArg::Named { name, value } = a {
             if let Some(param) = spec.params.iter().find(|p| p.name == name) {
@@ -3421,6 +4055,20 @@ fn check_call_args(
                     validate_composite_config_arg(ctx, param, value);
                 } else if is_scalar_config_param(spec, param) {
                     validate_scalar_config_arg(ctx, param, value);
+                } else {
+                    let arg_ty = unwrap_ref(&infer_expr(ctx, value, tmap, omap));
+                    if coerce(&arg_ty, &param.ty) == CoerceRule::Mismatch {
+                        ctx.emit(
+                            "WS003",
+                            format!(
+                                "argument '{}': expected {}, got {}",
+                                param.name,
+                                crate::analysis::types::type_str(&param.ty),
+                                crate::analysis::types::type_str(&arg_ty),
+                            ),
+                            value.range().clone(),
+                        );
+                    }
                 }
             } else if let Some(cfg) =
                 crate::catalog::scalar_config_field(spec.gate_class, name)
@@ -3463,7 +4111,11 @@ fn expect_coerce(ctx: &mut TypeCheckCtx, from: &Type, to: &Type, range: &SourceR
     if coerce(from, to) == CoerceRule::Mismatch {
         ctx.emit(
             "WS003",
-            format!("expected {:?}, got {:?}", to, from),
+            format!(
+                "expected {}, got {}",
+                crate::analysis::types::type_str(to),
+                crate::analysis::types::type_str(from),
+            ),
             range.clone(),
         );
     }
@@ -3481,6 +4133,7 @@ fn check_let_type_annotation(
         // Point errors at the specific field/spread that introduced the mismatch.
         if let Expr::RecordLit { fields, .. } = &l.value {
             let expected = resolve_type_expr(ctx, te);
+            warn_any_annotation(ctx, &expected, type_expr_range(te));
             if let Type::Record(expected_fields) = &expected {
                 let type_name = crate::analysis::types::type_expr_str(te);
                 // Check each field/spread for extra fields
@@ -3543,6 +4196,7 @@ fn check_let_type_annotation(
             return;
         }
         let expected = resolve_type_expr(ctx, te);
+        warn_any_annotation(ctx, &expected, type_expr_range(te));
         let rule = coerce(inferred, &expected);
         // `ViaString` is fine: anything primitive casts to string, so
         // `let s: string = 5` is an intentional format, not a type lie.
@@ -3593,16 +4247,16 @@ mod tests {
     #[test]
     fn generic_array_and_ref_syntax_desugar() {
         // `Array<V>` is an alternate spelling of `V[]`, and `Ref<V>` of `*V`.
-        assert_no_diags(&tc("array a: Array<int> = [1, 2]"));
-        assert_no_diags(&tc("array a: int[] = [1, 2]"));
+        assert_no_diags(&tc("var a: Array<int> = [1, 2]"));
+        assert_no_diags(&tc("var a: int[] = [1, 2]"));
         assert_no_diags(&tc("mod inc(v: Ref<int>) { v = v + 1 }"));
         assert_no_diags(&tc("mod inc(v: *int) { v = v + 1 }"));
     }
 
     #[test]
     fn generic_map_type_resolves() {
-        // `Map<K, V>` resolves to a map type usable in an annotation.
-        assert_no_diags(&tc("mod f(m: Map<string, int>) { }"));
+        // `Dict<K, V>` resolves to a map type usable in an annotation.
+        assert_no_diags(&tc("mod f(m: Dict<string, int>) { }"));
     }
 
     #[test]
@@ -3672,7 +4326,7 @@ mod tests {
         // brick; they can't bake into a constant array initializer (they'd be
         // silently dropped), so warn.
         let r =
-            tc("array songs: entity[] = [$BrickAudioDescriptor/BA_MUS_Component_Basil_CoffeeShop]");
+            tc("var songs: entity[] = [$BrickAudioDescriptor/BA_MUS_Component_Basil_CoffeeShop]");
         assert!(
             r.diagnostics
                 .iter()
@@ -3681,7 +4335,7 @@ mod tests {
             r.diagnostics
         );
         // A constant array initializer must NOT warn.
-        let ok = tc("array nums: int[] = [1, 2, 3]");
+        let ok = tc("var nums: int[] = [1, 2, 3]");
         assert!(
             !ok.diagnostics.iter().any(|d| d.code == "WS024"),
             "constant array initializer must not warn; got {:?}",
@@ -3827,7 +4481,7 @@ mod tests {
         // Constant Vec(…) folds to a literal, so it's a legal top-level
         // array initializer element (previously WS003).
         assert_no_diags(&tc(
-            "array pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]",
+            "var pts: vector[] = [Vec(0.0, 0.0, 0.0), Vec(1.0, 2.0, 3.0)]",
         ));
     }
 
@@ -4119,7 +4773,7 @@ mod tests {
     fn array_index_returns_element_type() {
         // Array reads require exec context (compile to Exec_ArrayVar_Get).
         let r = tc(
-            "array items: int[]\nin trigger: exec\non trigger { let x = items[0]\nlet ok = x + 1 }",
+            "var items: int[]\nin trigger: exec\non trigger { let x = items[0]\nlet ok = x + 1 }",
         );
         assert_no_diags(&r);
     }
@@ -4127,7 +4781,7 @@ mod tests {
     #[test]
     fn array_index_outside_exec_is_ws007() {
         // Array index read in pure context should emit WS007.
-        let r = tc("array items: int[]\nlet x = items[0]");
+        let r = tc("var items: int[]\nlet x = items[0]");
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS007"),
             "expected WS007 for array index read outside exec context"
@@ -4153,14 +4807,14 @@ mod tests {
     #[test]
     fn array_push_pop() {
         let r =
-            tc("array items: int[]\nin trigger: exec\non trigger { items.push(1)\nitems.pop() }");
+            tc("var items: int[]\nin trigger: exec\non trigger { items.push(1)\nitems.pop() }");
         assert_no_diags(&r);
     }
 
     #[test]
     fn array_length_returns_int() {
         let r = tc(
-            "array items: int[]\nin trigger: exec\non trigger { let len = items.length()\nlet ok = len + 1 }",
+            "var items: int[]\nin trigger: exec\non trigger { let len = items.length()\nlet ok = len + 1 }",
         );
         assert_no_diags(&r);
         // len should be Int, so len + 1 should resolve without error.
@@ -4308,10 +4962,10 @@ mod tests {
 
     #[test]
     fn array_any_element_is_ws025() {
-        let r = tc("array arr: any[]");
+        let r = tc("var arr: any[]");
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS025"),
-            "`array arr: any[]` must be rejected as WS025, got {:?}",
+            "`var arr: any[]` must be rejected as WS025, got {:?}",
             r.diagnostics
         );
     }
@@ -4443,7 +5097,7 @@ mod tests {
         assert!(
             r.diagnostics
                 .iter()
-                .any(|d| d.code == "WS003" && d.message.contains("expected Int")),
+                .any(|d| d.code == "WS003" && d.message.contains("expected int")),
             "string into ColorSRGB's int param must stay WS003, got {:?}",
             r.diagnostics
         );
@@ -4503,5 +5157,111 @@ mod tests {
             .filter(|d| d.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "ref out must not error: {:?}", errors);
+    }
+
+    // ---------- `self`-receiver (UFCS) ----------
+
+    #[test]
+    fn self_mod_shadowing_builtin_receiver_is_ws035() {
+        // A user `self`-mod named exactly like a builtin receiver-method on the
+        // same receiver type (`Dot` on vector) would be silently shadowed by the
+        // builtin at every call site — a footgun, so it is rejected at the
+        // declaration.
+        let r = tc("mod Dot(self: vector, o: vector) -> float { return 0.0 }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS035"),
+            "a self-mod shadowing a builtin receiver-method must emit WS035; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn self_mod_distinct_name_no_shadow() {
+        // A distinctly-named self-mod does not collide with any builtin.
+        let r = tc("mod dist(self: vector, o: vector) -> float { return self.Dot(o) }");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS035"),
+            "a distinct-named self-mod must not be flagged as shadowing; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn self_mod_same_name_different_receiver_no_shadow() {
+        // `Dot` is a builtin receiver-method on `vector`; a self-mod named `Dot`
+        // whose receiver is a DIFFERENT type (int) does not overlap it, so the
+        // builtin never shadows it and there is no error.
+        let r = tc("mod Dot(self: int) -> int { return self }");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS035"),
+            "the same name on a different receiver type must not shadow; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn non_self_mod_receiver_type_still_not_shadow() {
+        // A normal (non-`self`) mod is never a receiver method, so it can never
+        // shadow a builtin receiver-method even if it shares the name.
+        let r = tc("mod Dot(a: vector, o: vector) -> float { return a.Dot(o) }");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS035"),
+            "a non-self mod must never be flagged as shadowing; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn self_mod_method_call_wrong_arg_count_is_ws022() {
+        // `a.dist()` is missing the `o` argument: with the receiver bound as
+        // arg 0 the call still has too few args for `dist(self, o)`. Proves the
+        // method call is resolved to the user mod (before the feature it typed
+        // as `any` and no arg-count check fired).
+        let r = tc(
+            "mod dist(self: vector, o: vector) -> float { return self.Dot(o) }\n\
+             in a: vector\nin go: exec\non go { let d = a.dist() }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS022"),
+            "a receiver method call with too few args must emit WS022; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn non_self_mod_method_call_is_ws036() {
+        // `f`'s first param is not named `self`, so `v.f(w)` is NOT a valid
+        // method call — only `self` opts in. Rather than silently typing as
+        // `any` and lowering to an `_Unsupported` no-op, it is a hard error.
+        let r = tc(
+            "mod f(a: vector, o: vector) -> float { return a.Dot(o) }\n\
+             in v: vector\nin w: vector\nin go: exec\non go { let d = v.f(w) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS036"),
+            "a non-self mod called with method syntax must emit WS036; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn unknown_base_method_call_stays_ws002_not_ws036() {
+        // An unknown receiver base is the primary problem — it stays WS002 and
+        // must NOT be masked by the non-self-mod WS036 check, even when the
+        // method name happens to be a known non-self mod.
+        let r = tc(
+            "mod scale(v: vector, k: float) -> vector { return v * k }\n\
+             in go: exec\non go { let s = missing.scale(2.0) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS002"),
+            "an unknown base must emit WS002; got {:?}",
+            r.diagnostics
+        );
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS036"),
+            "WS036 must not double-report over an unknown base; got {:?}",
+            r.diagnostics
+        );
     }
 }

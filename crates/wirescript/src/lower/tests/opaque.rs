@@ -55,7 +55,7 @@ fn any_fallback_still_rejected_by_operators() {
     // lowering-pass diagnostics) — a WS004 here is Error-severity, so we
     // typecheck directly and inspect `TypeCheckResult.diagnostics` instead
     // of routing through `compile()`.
-    let src = "array arr: int[]\nin t: exec\nvar y: int = 0\non t { y = arr.clear() + 3 }";
+    let src = "var arr: int[]\nin t: exec\nvar y: int = 0\non t { y = arr.clear() + 3 }";
     let parsed = crate::parser::parse(src, "test");
     assert!(
         parsed.diagnostics.is_empty(),

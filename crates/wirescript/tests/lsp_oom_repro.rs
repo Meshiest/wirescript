@@ -617,7 +617,7 @@ fn cursor_importing_broken_lib_full_lsp_path_terminates() {
 /// Minimised shape of the crashing file: a chip declared inside an `on`
 /// handler, calling itself from its own body, plus a kick-off call.
 const RECURSIVE_CHIP_WS: &str = r#"
-array items: controller[]
+var items: controller[]
 
 on RoundStart {
   var index: int = 0

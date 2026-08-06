@@ -11,5 +11,5 @@ on RoundStart {
   u.clamp(y, 0, 100)
 }
 
-out rx = x
-out ry = y
+out rx = x.Value
+out ry = y.Value

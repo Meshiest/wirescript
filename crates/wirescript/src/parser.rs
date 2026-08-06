@@ -1295,20 +1295,31 @@ impl<'a> Parser<'a> {
     fn parse_type_alias_decl(&mut self) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("type")).start;
         let name = self.expect(TokenKind::Ident, None).text;
+        let type_params = self.parse_type_params();
         self.expect(TokenKind::Op, Some("="));
         let typ = self.parse_type();
         let end = self.peek().start;
         self.eat_stmt_end();
         TopDecl::TypeAlias(TypeAliasDecl {
             name,
+            type_params,
             typ,
             range: self.make_range(start, end),
         })
     }
 
-    // `array name: ElementType[]`
+    // `var name: ElementType[]`
     fn parse_array_decl(&mut self) -> TopDecl {
-        let start = self.expect(TokenKind::Kw, Some("array")).start;
+        let kw = self.expect(TokenKind::Kw, Some("array"));
+        let start = kw.start;
+        // The `array` declaration keyword has been removed — arrays are declared
+        // with `var NAME: T[]` (identical storage). Reject, but keep parsing the
+        // rest so a stray `array` decl doesn't derail the whole file.
+        self.error(
+            "`array` declarations have been removed — declare an array with `var NAME: T[]` instead",
+            kw.start,
+            kw.end,
+        );
         let name = self.expect(TokenKind::Ident, None).text;
         self.expect(TokenKind::Colon, None);
         let full_type = self.parse_type();
@@ -1346,15 +1357,23 @@ impl<'a> Parser<'a> {
         })
     }
 
-    // `map name: Map<K, V>`
+    // `var name: Dict<K, V>`
     fn parse_map_decl(&mut self) -> TopDecl {
-        let start = self.expect(TokenKind::Kw, Some("map")).start;
+        let kw = self.expect(TokenKind::Kw, Some("map"));
+        let start = kw.start;
+        // The `map` declaration keyword has been removed — dicts are declared with
+        // `var NAME: Dict<K, V>` (identical storage). Reject, but keep parsing.
+        self.error(
+            "`map` declarations have been removed — declare a dict with `var NAME: Dict<K, V>` instead",
+            kw.start,
+            kw.end,
+        );
         let name = self.expect(TokenKind::Ident, None).text;
         self.expect(TokenKind::Colon, None);
         let full_type = self.parse_type();
         let (key_type, value_type) = match full_type {
             TypeExpr::Generic { name: gname, mut args, .. }
-                if gname == "Map" && args.len() == 2 =>
+                if gname == "Dict" && args.len() == 2 =>
             {
                 let value_type = args.pop().unwrap();
                 let key_type = args.pop().unwrap();
@@ -1363,7 +1382,7 @@ impl<'a> Parser<'a> {
             other => {
                 let r = other.range();
                 self.error(
-                    String::from("map type must be `Map<KeyType, ValueType>`"),
+                    String::from("dict type must be `Dict<KeyType, ValueType>`"),
                     r.start,
                     r.end,
                 );
@@ -1386,6 +1405,42 @@ impl<'a> Parser<'a> {
             init,
             range: self.make_range(start, end),
         })
+    }
+
+    /// Optional declaration-header generic type params: `<T>` / `<T: Numeric>`
+    /// / `<T, U>`. Called right after a `mod`/`chip`/`type` decl's name is
+    /// consumed — in that position `<` is unambiguous (it can only start a
+    /// type-param list, never the `<` comparison operator), unlike at a call
+    /// site, where an explicit type-argument `<...>` needs the speculative
+    /// disambiguation in [`Self::try_parse_type_args`]. Returns `Vec::new()`
+    /// when there's no `<`.
+    fn parse_type_params(&mut self) -> Vec<TypeParam> {
+        if !self.check(TokenKind::Op, Some("<")) {
+            return Vec::new();
+        }
+        self.advance(); // consume `<`
+        let mut params = Vec::new();
+        while !self.check(TokenKind::Op, Some(">")) && self.peek().kind != TokenKind::Eof {
+            let name_tok = self.expect(TokenKind::Ident, None);
+            let mut end = name_tok.end;
+            let bound = if self.match_tok(TokenKind::Colon, None).is_some() {
+                let b = self.parse_type();
+                end = b.range().end;
+                Some(b)
+            } else {
+                None
+            };
+            params.push(TypeParam {
+                name: name_tok.text,
+                bound,
+                range: self.make_range(name_tok.start, end),
+            });
+            if self.match_tok(TokenKind::Comma, None).is_none() {
+                break;
+            }
+        }
+        self.expect(TokenKind::Op, Some(">"));
+        params
     }
 
     // `chip Name(params) [-> outputs] { body }`
@@ -1491,6 +1546,7 @@ impl<'a> Parser<'a> {
             });
         }
         let name = self.expect(TokenKind::Ident, None).text;
+        let type_params = self.parse_type_params();
         let inputs = self.parse_param_list();
         let outputs = if self.match_tok(TokenKind::Arrow, None).is_some() {
             self.parse_chip_outputs()
@@ -1501,6 +1557,7 @@ impl<'a> Parser<'a> {
         let end = body.range.end;
         TopDecl::Chip(ChipDecl {
             name,
+            type_params,
             inputs,
             outputs,
             body,
@@ -1597,6 +1654,7 @@ impl<'a> Parser<'a> {
     fn parse_mod_decl(&mut self) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("mod")).start;
         let name = self.expect(TokenKind::Ident, None).text;
+        let type_params = self.parse_type_params();
         let inputs = self.parse_param_list();
         let outputs = if self.match_tok(TokenKind::Arrow, None).is_some() {
             self.parse_chip_outputs()
@@ -1607,6 +1665,7 @@ impl<'a> Parser<'a> {
         let end = body.range.end;
         TopDecl::Chip(ChipDecl {
             name,
+            type_params,
             inputs,
             outputs,
             body,
@@ -2151,7 +2210,7 @@ impl<'a> Parser<'a> {
             name = format!("{name}.{}", member.text);
             end = member.end;
         }
-        // Generic application `Name<Arg, ...>` (e.g. `Map<string, int>`,
+        // Generic application `Name<Arg, ...>` (e.g. `Dict<string, int>`,
         // `Array<int>`, `Ref<Point>`). `Array`/`Ref` desugar straight to the
         // existing postfix forms so downstream code sees no new shape.
         if self.check(TokenKind::Op, Some("<")) {
@@ -2811,13 +2870,80 @@ impl<'a> Parser<'a> {
                 e = Expr::Call {
                     callee: Box::new(e),
                     args,
+                    type_args: Vec::new(),
                     range: self.make_range(start, end),
                 };
                 continue;
             }
+            // Explicit type arguments: `callee<Type, ...>(args)` for a generic
+            // mod/chip. `<` is otherwise a comparison operator, so only commit
+            // when the `<...>` parses as a type-argument list AND is immediately
+            // followed by `(` (which a `<`/`>` comparison never is). Otherwise
+            // fully backtrack — position AND any speculative diagnostics — and
+            // let `<` fall through to the comparison parser.
+            if t.kind == TokenKind::Op && t.text == "<" {
+                let save_pos = self.pos;
+                let save_diag = self.diagnostics.len();
+                if let Some(type_args) = self.try_parse_type_args()
+                    && self.check(TokenKind::LParen, None)
+                {
+                    self.advance();
+                    let mut args: Vec<CallArg> = Vec::new();
+                    self.eat_newlines();
+                    while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
+                        args.push(self.parse_call_arg());
+                        self.eat_newlines();
+                        if self.match_tok(TokenKind::Comma, None).is_none() {
+                            self.eat_newlines();
+                            break;
+                        }
+                        self.eat_newlines();
+                    }
+                    let end = self.expect(TokenKind::RParen, None).end;
+                    let start = e.range().start;
+                    e = Expr::Call {
+                        callee: Box::new(e),
+                        args,
+                        type_args,
+                        range: self.make_range(start, end),
+                    };
+                    continue;
+                }
+                self.pos = save_pos;
+                self.diagnostics.truncate(save_diag);
+                break;
+            }
             break;
         }
         e
+    }
+
+    /// Speculatively parse an explicit type-argument list `< Type (, Type)* >`
+    /// at a call site. Returns `None` (leaving diagnostics for the caller to
+    /// truncate) when the tokens after `<` don't form a type list. Does NOT
+    /// consume the following `(` — the caller checks for it to disambiguate real
+    /// type arguments from a `<`/`>` comparison.
+    fn try_parse_type_args(&mut self) -> Option<Vec<TypeExpr>> {
+        self.match_tok(TokenKind::Op, Some("<"))?;
+        let mut args: Vec<TypeExpr> = Vec::new();
+        loop {
+            // A type argument must begin with an identifier (a primitive, type
+            // param, alias, or `Generic<...>`); anything else means this `<` was
+            // a comparison, not a type-argument list.
+            if self.peek().kind != TokenKind::Ident {
+                return None;
+            }
+            args.push(self.parse_type());
+            if self.match_tok(TokenKind::Comma, None).is_some() {
+                continue;
+            }
+            break;
+        }
+        self.match_tok(TokenKind::Op, Some(">"))?;
+        if args.is_empty() {
+            return None;
+        }
+        Some(args)
     }
 
     fn parse_call_arg(&mut self) -> CallArg {
@@ -3057,10 +3183,17 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::LBrace => {
-                if self.looks_like_map_lit() {
-                    self.parse_map_lit()
-                } else if self.looks_like_record_lit() {
+                // Check the O(1) record test first — a record (`ident:` /
+                // `ident,` / `ident}` / `...spread` / `{}`) and a map
+                // (top-level `=>`, or a literal/computed key with `:`) are
+                // mutually exclusive at this position, so whichever we probe
+                // first can short-circuit the other. Record is cheap and
+                // covers the common block-expr-vs-record case without ever
+                // touching the (potentially large) braced-region map scan.
+                if self.looks_like_record_lit() {
                     self.parse_record_lit()
+                } else if self.looks_like_map_lit() {
+                    self.parse_map_lit()
                 } else {
                     self.parse_block_expr()
                 }
@@ -3091,10 +3224,47 @@ impl<'a> Parser<'a> {
         while get(i).kind == TokenKind::Newline {
             i += 1;
         }
+        let first = get(i);
+        // First-token precheck — a REJECT-list, not an allow-list. A map key
+        // is `self.parse_expr()` (any expression: `-1`, `f()`, `(1)`, `true`,
+        // `base + 1`, an asset ref, …), so an allow-list of "map-entry
+        // openers" can never be complete and would hard-reject valid maps.
+        // Instead: the call site already ruled out records (record-first
+        // check), so here we only separate a MAP from a BLOCK-EXPR. In
+        // expression position a block-expr can only be *led* by a statement,
+        // and `parse_block_expr` dispatches exactly `let` / `var` / `static`
+        // to `parse_stmt` — every other leading token it parses as an
+        // expression (block-style `if x { … }` is a statement form NOT
+        // reachable here; expression-position `if` is the `if…then…else`
+        // expression, itself a valid map key). Those three keywords cannot
+        // begin a key expression, so a `{` opening with one is unambiguously
+        // a block, never a map → fast-reject O(1) without the scan. An empty
+        // `{}` is a record (handled at the call site) and not a map either.
+        // EVERYTHING ELSE falls through to the bounded depth-0 `=>` scan
+        // below, which is the sound test: a real map has a top-level `=>` (or
+        // a literal/computed `:` key, checked after), a keyword-less
+        // block-expr does not. This preserves exact map/record/block
+        // classification while keeping the wins (records → record-first O(1);
+        // `let`/`var`/`static` blocks → O(1) reject; unbalanced braces →
+        // bounded scan).
+        if first.kind == TokenKind::RBrace {
+            return false; // empty `{}` — not a map (defensive; call site routes it to record)
+        }
+        if first.kind == TokenKind::Kw
+            && matches!(first.text.as_str(), "let" | "var" | "static")
+        {
+            return false; // block-expr statement leader — never a map key
+        }
         // Scan to the matching `}` at brace depth 0; a top-level `=>` ⇒ map.
+        // Bounded: an unbalanced expression-position `{` (common mid-edit in
+        // the LSP) must not scan the rest of the file token-by-token every
+        // time this runs — give up (not a map) past a generous token budget
+        // instead of relying on `Eof` as the only terminator.
+        const MAX_SCAN_TOKENS: usize = 8192;
         let mut depth = 1i32;
         let mut j = i;
-        while j < self.tokens.len() {
+        let scan_limit = self.tokens.len().min(i.saturating_add(MAX_SCAN_TOKENS));
+        while j < scan_limit {
             match get(j).kind {
                 TokenKind::LBrace => depth += 1,
                 TokenKind::RBrace => {
@@ -3110,7 +3280,6 @@ impl<'a> Parser<'a> {
             j += 1;
         }
         // Colon literal-key form: first token is a str/atom/int then `:`.
-        let first = get(i);
         if matches!(first.kind, TokenKind::Str | TokenKind::StrInterp | TokenKind::Atom | TokenKind::Int) {
             let mut k = i + 1;
             while get(k).kind == TokenKind::Newline {
@@ -3602,16 +3771,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_array_decl() {
-        let r = crate::parser::parse("array xs: int[]", "test");
-        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
-        match &r.ast.decls[0] {
-            TopDecl::Array(a) => {
-                assert_eq!(a.name, "xs");
-                assert!(matches!(&a.element_type, TypeExpr::Name { name, .. } if name == "int"));
-            }
-            d => panic!("expected Array, got {:?}", d),
+    fn array_and_map_decl_keywords_are_rejected() {
+        // The `array`/`map` declaration keywords were removed in favor of
+        // `var NAME: T[]` / `var NAME: Dict<K,V>` (identical storage). Using them
+        // is a parse error pointing at the `var` replacement.
+        let ra = crate::parser::parse("array xs: int[]", "test");
+        assert!(
+            ra.diagnostics
+                .iter()
+                .any(|d| d.message.contains("`array` declarations have been removed")),
+            "array decl must be rejected: {:?}",
+            ra.diagnostics
+        );
+        let rm = crate::parser::parse("map m: Dict<string, int>", "test");
+        assert!(
+            rm.diagnostics
+                .iter()
+                .any(|d| d.message.contains("`map` declarations have been removed")),
+            "map decl must be rejected: {:?}",
+            rm.diagnostics
+        );
+        // The `var` forms parse clean into `TopDecl::Var`.
+        let rv = crate::parser::parse("var xs: int[]", "test");
+        assert!(rv.diagnostics.is_empty(), "var array: {:?}", rv.diagnostics);
+        match &rv.ast.decls[0] {
+            TopDecl::Var(v) => assert_eq!(v.name, "xs"),
+            d => panic!("expected Var, got {:?}", d),
         }
+        let rvm = crate::parser::parse("var m: Dict<string, int>", "test");
+        assert!(rvm.diagnostics.is_empty(), "var map: {:?}", rvm.diagnostics);
     }
 
     #[test]
@@ -3686,6 +3874,39 @@ mod tests {
                 assert_eq!(c.outputs[0].name, "_");
             }
             d => panic!("expected Chip (mod), got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn parses_generic_decl_headers() {
+        use crate::ast::TopDecl;
+        let mod_of = |s: &str| {
+            crate::parser::parse(s, "t").ast.decls.into_iter()
+                .find_map(|d| if let TopDecl::Chip(c) = d { Some(c) } else { None }).expect("a mod/chip")
+        };
+        let c = mod_of("mod pick<T>(c: bool, a: T, b: T) -> T { return a }\n");
+        assert_eq!(c.type_params.len(), 1);
+        assert_eq!(c.type_params[0].name, "T");
+        assert!(c.type_params[0].bound.is_none());
+
+        let c2 = mod_of("mod clamp<T: Numeric>(v: T) -> T { return v }\n");
+        assert_eq!(c2.type_params.len(), 1);
+        assert!(c2.type_params[0].bound.is_some(), "T: Numeric has a bound");
+
+        let c3 = mod_of("mod two<T, U>(a: T, b: U) { }\n");
+        assert_eq!(c3.type_params.len(), 2);
+        assert_eq!(c3.type_params[1].name, "U");
+
+        let ast = crate::parser::parse("type Pair<T> = { a: T, b: T }\n", "t").ast;
+        let ta = ast.decls.iter().find_map(|d| if let TopDecl::TypeAlias(t) = d { Some(t) } else { None }).expect("alias");
+        assert_eq!(ta.type_params.len(), 1);
+        assert_eq!(ta.type_params[0].name, "T");
+
+        // all of the above (and a non-generic mod) parse with no errors
+        for s in ["mod pick<T>(a: T) -> T { return a }\n", "mod plain(a: int) -> int { return a }\n",
+                  "type Grid<T> = T[]\n"] {
+            assert!(crate::parser::parse(s, "t").diagnostics.iter()
+                .all(|d| d.severity != crate::diagnostic::Severity::Error), "should parse cleanly: {s}");
         }
     }
 
@@ -4148,5 +4369,29 @@ mod tests {
         // No blank line before the declaration → decl-scoped, module flags unset.
         let p = crate::parser::parse("@nofold @left\nin x: exec\n", "t");
         assert!(!p.ast.no_fold);
+    }
+
+    #[test]
+    fn brace_disambiguation_preserved_and_bounded() {
+        let no_err = |s: &str| crate::parser::parse(s, "t").diagnostics.iter()
+            .all(|d| d.severity != crate::diagnostic::Severity::Error);
+        // record literal stays a record
+        assert!(no_err("let r = { x: 1, y: 2 }\n"), "record should parse");
+        // map literal stays a map
+        assert!(no_err("var m: Dict<int,int> = { 1 => 2 }\n"), "map should parse");
+        // block-expr braces still parse
+        assert!(no_err("let b = { let x = 1\n x + 1 }\n"), "block-expr should parse");
+        // Non-literal / non-trivial key expressions are valid maps — the key
+        // is `parse_expr()`, so any expression may open an entry. These all
+        // regressed under an allow-list precheck (misparsed as block-exprs,
+        // spurious WSP001 on the `=>`); the reject-list precheck must let them
+        // fall through to the `=>` scan and classify as maps.
+        assert!(no_err("var m: Dict<int,int> = { -1 => 1 }\n"), "unary-key map should parse");
+        assert!(no_err("var m: Dict<int,int> = { (1) => 1 }\n"), "paren-key map should parse");
+        assert!(no_err("var m: Dict<int,int> = { true => 1 }\n"), "bool-key map should parse");
+        assert!(no_err("var m: Dict<int,int> = { 1 + 1 => 2 }\n"), "binop-key map should parse");
+        // an unbalanced expression-position brace must terminate quickly, not scan to EOF
+        let big = format!("let x = {{ {}", "a a a a ".repeat(5000));
+        let _ = crate::parser::parse(&big, "t"); // must simply COMPLETE (no hang)
     }
 }

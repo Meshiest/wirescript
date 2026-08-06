@@ -613,6 +613,9 @@ struct ModSig {
     params: Vec<(String, PTy)>,
     ret: Option<RetTy>,
     pure_call: bool,
+    // true for the generic-identity-mod entries registered by gen_mod's form-6
+    // arm — lets call sites opt into emitting explicit `<Type>` type arguments.
+    generic: bool,
 }
 
 #[derive(Clone)]
@@ -1045,6 +1048,16 @@ impl Gen {
                 }
                 _ => return None,
             }
+        }
+        // Explicit type-argument call syntax `f<int>(...)` on the generic mods
+        // registered by gen_mod's form-6 arm. `ty` is already the concrete
+        // type this candidate was selected for (it's `T`, since every
+        // param/ret of that mod shares one type parameter), so pinning it
+        // explicitly is always a valid, redundant-with-inference annotation
+        // — never a type mismatch.
+        let is_generic = self.mods.iter().any(|m| m.name == name && m.generic);
+        if is_generic && self.rng.chance(1, 3) {
+            return Some(format!("{name}<{}>({})", ty.name(), args.join(", ")));
         }
         Some(format!("{name}({})", args.join(", ")))
     }
@@ -1562,7 +1575,7 @@ impl Gen {
 
     fn gen_mod(&mut self) {
         let name = self.fresh("M");
-        let form = self.rng.below(6);
+        let form = self.rng.below(7);
         match form {
             // pure mod: value params, single return
             0 | 1 => {
@@ -1603,6 +1616,7 @@ impl Gen {
                     params,
                     ret: Some(RetTy::Val(rt)),
                     pure_call: true,
+                    generic: false,
                 });
             }
             // exec mod with ref params
@@ -1625,7 +1639,7 @@ impl Gen {
                     stmts.join("\n")
                 };
                 self.blocks.push(format!("mod {name}({sig}) {{\n{body}\n}}"));
-                self.mods.push(ModSig { name, params, ret: None, pure_call: false });
+                self.mods.push(ModSig { name, params, ret: None, pure_call: false, generic: false });
             }
             // destructured record param mod
             4 => {
@@ -1655,6 +1669,7 @@ impl Gen {
                     params: vec![("_p".into(), PTy::RecDestr(ridx))],
                     ret: Some(RetTy::Val(Ty::Int)),
                     pure_call: true,
+                    generic: false,
                 });
             }
             // record-literal return mod
@@ -1676,7 +1691,38 @@ impl Gen {
                     params: vec![("q0".into(), PTy::Val(Ty::Int))],
                     ret: Some(RetTy::Rec(ridx)),
                     pure_call: true,
+                    generic: false,
                 });
+            }
+            // Unbounded `<T>` generic identity mod, structurally identical to
+            // `pick<T>` in examples/generics.ws. Declared ONCE
+            // as source text, but registered as `SCALAR_TYS.len()` separate
+            // `ModSig` entries sharing one name — one per monomorphization.
+            // Every existing call site (`pure_call`, the exec mod-call
+            // fallback) already selects candidates purely by declared
+            // param/ret `Ty`, oblivious to whether the decl behind a name is
+            // monomorphic or generic — so this makes real generic mods
+            // (implicit T-inference through arguments, real
+            // monomorphization via mono.rs/infer.rs/coerce.rs) reachable
+            // from every existing expression/statement shape for free, with
+            // zero changes to call-site codegen.
+            6 => {
+                self.blocks.push(format!(
+                    "mod {name}<T>(a: T, b: T, c: bool) -> T {{\n  return if c then a else b\n}}"
+                ));
+                for t in SCALAR_TYS {
+                    self.mods.push(ModSig {
+                        name: name.clone(),
+                        params: vec![
+                            ("a".into(), PTy::Val(t)),
+                            ("b".into(), PTy::Val(t)),
+                            ("c".into(), PTy::Val(Ty::Bool)),
+                        ],
+                        ret: Some(RetTy::Val(t)),
+                        pure_call: true,
+                        generic: true,
+                    });
+                }
             }
             _ => unreachable!(),
         }
@@ -1693,6 +1739,7 @@ impl Gen {
             params: vec![("q0".into(), PTy::Val(Ty::Int))],
             ret: Some(RetTy::Val(Ty::Int)),
             pure_call: true,
+            generic: false,
         });
     }
 
@@ -2274,7 +2321,7 @@ fn selftest() -> bool {
     // typecheck now WS007-errors this, so it is NOT a silent-miscompile
     // finding — but the lowered module must still contain the placeholder,
     // proving the scanner works.)
-    let src = "array items: int[]\nlet x = items[0]\nout r = x";
+    let src = "var items: int[]\nlet x = items[0]\nout r = x";
     let out = run_pipeline(src);
     if out.unsupported.is_empty() {
         eprintln!("[selftest] FAIL: pure array read produced no _Unsupported node");

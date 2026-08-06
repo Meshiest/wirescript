@@ -581,7 +581,7 @@ fn no_crossings_is_a_no_op() {
 
 #[test]
 fn scope_pins_are_labeled_with_the_identifier() {
-    let r = lowered("var score: int = 0\narray log: string[]\nin go: exec\non go {\n  chip {\n    score = score + 1\n    log.push(\"x\")\n  }\n}\n");
+    let r = lowered("var score: int = 0\nvar log: string[]\nin go: exec\non go {\n  chip {\n    score = score + 1\n    log.push(\"x\")\n  }\n}\n");
     let mut labels: Vec<String> = Vec::new();
     collect_pin_labels(&r.module, &mut labels);
     assert!(labels.iter().any(|l| l == "score"), "got {labels:?}");
@@ -610,7 +610,7 @@ fn pin_labels_are_never_internal_notes_or_empty() {
 #[test]
 fn array_element_crossing_never_leaks_the_internal_note() {
     let r = lowered(
-        "array arr: int[]\nin go: exec\non go {\n  let v = arr[0]\n  chip {\n    PrintToConsole(\"${v}\")\n  }\n}\n",
+        "var arr: int[]\nin go: exec\non go {\n  let v = arr[0]\n  chip {\n    PrintToConsole(\"${v}\")\n  }\n}\n",
     );
     let mut labels: Vec<String> = Vec::new();
     collect_pin_labels(&r.module, &mut labels);

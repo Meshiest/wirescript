@@ -41,19 +41,19 @@ fn errors(src: &str) -> Vec<String> {
 #[test]
 fn shift_of_named_constant_bakes() {
     // The motivating case: a bitmask table written as `1 << C_FLAG`.
-    let v = baked_array("let C_A = 0\nlet C_B = 3\narray m: int[] = [1 << C_A, 1 << C_B]");
+    let v = baked_array("let C_A = 0\nlet C_B = 3\nvar m: int[] = [1 << C_A, 1 << C_B]");
     assert_eq!(v, vec![Literal::Int(1), Literal::Int(8)]);
 }
 
 #[test]
 fn bare_named_constant_bakes() {
-    let v = baked_array("let LO = 2\nlet HI = 9\narray m: int[] = [LO, HI]");
+    let v = baked_array("let LO = 2\nlet HI = 9\nvar m: int[] = [LO, HI]");
     assert_eq!(v, vec![Literal::Int(2), Literal::Int(9)]);
 }
 
 #[test]
 fn arithmetic_bakes() {
-    let v = baked_array("array m: int[] = [2 + 3, 10 * 4, 7 - 9]");
+    let v = baked_array("var m: int[] = [2 + 3, 10 * 4, 7 - 9]");
     assert_eq!(v, vec![Literal::Int(5), Literal::Int(40), Literal::Int(-2)]);
 }
 
@@ -62,22 +62,22 @@ fn constant_chain_resolves_regardless_of_order() {
     // `B` is defined in terms of `A`, and `C` in terms of `B`. Declaration
     // order is not dependency order once imports are merged, so the constant
     // environment iterates to a fixpoint.
-    let v = baked_array("let C = B * 2\nlet B = A + 1\nlet A = 5\narray m: int[] = [A, B, C]");
+    let v = baked_array("let C = B * 2\nlet B = A + 1\nlet A = 5\nvar m: int[] = [A, B, C]");
     assert_eq!(v, vec![Literal::Int(5), Literal::Int(6), Literal::Int(12)]);
 }
 
 #[test]
 fn division_by_zero_bakes_zero_like_the_gates() {
-    let v = baked_array("array m: int[] = [8 / 0, 8 % 0]");
+    let v = baked_array("var m: int[] = [8 / 0, 8 % 0]");
     assert_eq!(v, vec![Literal::Int(0), Literal::Int(0)]);
 }
 
 #[test]
 fn string_concat_and_bool_ops_bake() {
     let s = baked_array(r#"let A = "x"
-array m: string[] = [A .. "y"]"#);
+var m: string[] = [A .. "y"]"#);
     assert_eq!(s, vec![Literal::String("xy".into())]);
-    let b = baked_array("let T = true\narray m: bool[] = [T && false, T || false, !T]");
+    let b = baked_array("let T = true\nvar m: bool[] = [T && false, T || false, !T]");
     assert_eq!(
         b,
         vec![Literal::Bool(false), Literal::Bool(true), Literal::Bool(false)]
@@ -122,7 +122,7 @@ fn constant_named_in_an_initializer_counts_as_used() {
         }
     }
     let r = resolve(
-        "import { C_FLAG } from \"consts\"\narray m: int[] = [1 << C_FLAG]\n",
+        "import { C_FLAG } from \"consts\"\nvar m: int[] = [1 << C_FLAG]\n",
         "test",
         &Loader,
     );
@@ -145,7 +145,7 @@ fn constants_travel_with_an_imported_array() {
         fn load(&self, path: &str, _relative_to: &str) -> Result<String, String> {
             match path {
                 "prov" => Ok("let K_ONE = 7\nlet K_TWO = 9\n\
-                              array table: int[] = [K_ONE, K_TWO]\n\
+                              var table: int[] = [K_ONE, K_TWO]\n\
                               mod getEntry(i: int) -> int {\n  return table[i]\n}\n"
                     .to_string()),
                 other => Err(format!("no such module: {other}")),
@@ -169,7 +169,7 @@ fn constants_travel_with_an_imported_array() {
                 crate::ast::LetBinding::Ident { name, .. } => Some(name.clone()),
                 _ => None,
             },
-            crate::ast::TopDecl::Array(a) => Some(a.name.clone()),
+            crate::ast::TopDecl::Var(v) => Some(v.name.clone()),
             _ => None,
         })
         .collect();
@@ -182,18 +182,18 @@ fn constants_travel_with_an_imported_array() {
 fn non_constant_element_still_errors() {
     // A runtime value has no compile-time form — the initializer must still be
     // rejected rather than silently baking a wrong value.
-    assert!(errors("in x: int\narray m: int[] = [x]").contains(&"WS003".to_string()));
+    assert!(errors("in x: int\nvar m: int[] = [x]").contains(&"WS003".to_string()));
 }
 
 #[test]
 fn out_of_range_shift_is_not_folded() {
     // 1 << 64 is undefined for i64; refuse rather than guess.
-    assert!(errors("array m: int[] = [1 << 64]").contains(&"WS003".to_string()));
+    assert!(errors("var m: int[] = [1 << 64]").contains(&"WS003".to_string()));
 }
 
 #[test]
 fn cyclic_constants_do_not_hang_or_bake() {
     // A depends on B depends on A: neither resolves, the fixpoint terminates,
     // and the initializer stays an error.
-    assert!(errors("let A = B + 1\nlet B = A + 1\narray m: int[] = [A]").contains(&"WS003".to_string()));
+    assert!(errors("let A = B + 1\nlet B = A + 1\nvar m: int[] = [A]").contains(&"WS003".to_string()));
 }

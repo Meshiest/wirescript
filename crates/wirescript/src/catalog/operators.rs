@@ -259,8 +259,6 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
         Type::Entity,
         Type::Controller,
         Type::Character,
-        Type::Brick,
-        Type::Prefab,
     ];
     for o in OBJECT_TYPES {
         rules.extend([
@@ -327,7 +325,7 @@ fn math_unary_op(op: &'static str, class_math: &'static str) -> OpSpec {
 fn logical_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
     use Type::*;
     const LOGICAL_TYPES: &[Type] = &[
-        Bool, Int, Float, Exec, String, Entity, Controller, Character, Brick, Prefab,
+        Bool, Int, Float, Exec, String, Entity, Controller, Character,
     ];
     let mut rules = Vec::new();
     for a in LOGICAL_TYPES {
@@ -413,7 +411,7 @@ fn bitwise_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
 fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
     use Type::*;
     const VARIANT_TYPES: &[Type] = &[
-        Int, Float, Bool, String, Entity, Controller, Character, Brick, Prefab,
+        Int, Float, Bool, String, Entity, Controller, Character,
     ];
     let mut rules = Vec::new();
     for a in VARIANT_TYPES {
@@ -441,7 +439,7 @@ fn build_operators() -> Vec<OpSpec> {
         {
             use Type::*;
             const NOT_TYPES: &[Type] = &[
-                Bool, Int, Float, Exec, String, Entity, Controller, Character, Brick, Prefab,
+                Bool, Int, Float, Exec, String, Entity, Controller, Character,
             ];
             OpSpec {
                 op: "!",
@@ -550,7 +548,7 @@ fn build_operators() -> Vec<OpSpec> {
             use Type::*;
             const CONCAT_TYPES: &[Type] = &[
                 String, Int, Float, Bool, Vector, Rotator, Quat, Color, Entity, Controller,
-                Character, Brick, Prefab,
+                Character,
             ];
             let mut rules = Vec::new();
             for a in CONCAT_TYPES {

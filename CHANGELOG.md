@@ -2,9 +2,9 @@
 
 ## 1.0.0
 
-- **Maps (`Map<K, V>`)** - a keyed variable collection paralleling arrays: `map scores: Map<string, int>`, keyed by `int`/`string`/reference and holding any wire-storable value, with exec-context methods `set`/`get`/`has`/`remove`/`clear`/`copyFrom`/`length`/`keys`/`values` (`get` gives `{ Value, Found }`, auto-unwrapping to `Value`).
-- **Map literals** - `{ k => v }` keys by any expression, `"s": v` / `:atom: v` by a string/atom/int literal, and `[expr] => v` by a computed key; a fully-constant literal bakes the map pre-populated at rest, and `m = { ... }` in a handler desugars to `clear()` plus one `set` per entry in source order.
-- **Atom literals (`:name`)** - a compile-time `int` constant (the deterministic xxHash64 hash of the name), a readable stand-in for a magic number as an `int`-map key or enum-like tag; it only ever resolves at compile time, never from a runtime string.
+- **Dicts (`Dict<K, V>`)** - a keyed variable collection paralleling arrays: `var scores: Dict<string, int>`, keyed by `int`/`string`/object reference and holding any wire-storable value, with exec-context methods `set`/`get`/`has`/`remove`/`clear`/`copyFrom`/`length`/`keys`/`values` (`get` gives `{ Value, Found }`, auto-unwrapping to `Value`). A non-int/string/object key type is a `WS039` error.
+- **Dict literals** - `{ k => v }` keys by any expression, `"s": v` / `:atom: v` by a string/atom/int literal, and `[expr] => v` by a computed key; a fully-constant literal bakes the dict pre-populated at rest, `{}` is an empty dict, and `m = { ... }` in a handler desugars to `clear()` plus one `set` per entry in source order.
+- **Atom literals (`:name`)** - a compile-time `int` constant (the deterministic xxHash64 hash of the name), a readable stand-in for a magic number as an `int`-dict key or enum-like tag; it only ever resolves at compile time, never from a runtime string.
 - **Generic type syntax** - `Array<V>` and `Ref<V>` are exact aliases of `V[]` and `*V`.
 - **Gate config properties** - a gate's non-wire settings-menu fields (checkboxes, dropdowns, values) are now settable as optional, constant-only call args, both by friendly alias and by raw game name (`SweepSimple(Direction = X_Negative, ...)`, `p.DisplayText("hi", typeface = Bold)`); enum args take bare member names validated against the game's enum list, and an unknown name or non-constant value is a `WS028` error.
 - **Custom events** - `SendCustomEvent(name, data…)` pulses every `on CustomEvent("name", a: int, b: float, …)` receiver on that channel with up to 8 typed data values; a receiver fires the tick after the send, and an untyped receiver param warns (`WS029`).
@@ -35,6 +35,7 @@
 - **`InputReader().Jump` removed** - the movement record dropped `Jump`; read the new axis/button fields instead (`Up`, `Pitch`/`Yaw`/`Roll`, `MouseWheel`, `PressedC`/`E`/`Q`/`LeftMouse`/`RightMouse`).
 - **`BrickChanged` / `BrickRemoved` lost their brick output** - these events no longer carry a `brick` value, so `on BrickChanged(brick) { ... }` won't bind; drop the parameter (`on BrickChanged { ... }`).
 - **`RotToDir` removed** - its gate no longer exists in the build; use `q.ToDirection()` (takes a `quat`) to turn a rotation into a forward direction.
+- **`array` / `map` declaration keywords removed** - declare container variables with `var` instead: `var scores: int[]` (was `array scores: int[]`) and `var m: Dict<K, V>` (was `map m: Dict<K, V>`). Storage and behavior are identical - only the keyword changed - so the fix is a mechanical rename. Using `array`/`map` as a declaration keyword is now a parse error that points at the `var` form.
 
 ## 0.20.0
 

@@ -128,74 +128,30 @@ pub(super) fn build_exec_signal_hub(ctx: &mut LowerCtx, name: &str, range: &Sour
     ctx.pending_emits.entry(key).or_default();
 }
 
+/// Resolve a lowering-side type annotation to its `Type`. Delegates to the
+/// crate's single canonical resolver (`types::resolve::resolve_type`); no
+/// generic params or type aliases are in scope on this path (typecheck has
+/// already resolved + flagged anything exotic with WS002), so an empty
+/// params/aliases context is correct and the returned diagnostics are
+/// discarded.
 pub(super) fn type_of_type_expr(t: &TypeExpr) -> Type {
-    match t {
-        TypeExpr::Name { name, .. } => match name.as_str() {
-            "bool" => Type::Bool,
-            "int" => Type::Int,
-            "float" => Type::Float,
-            "string" => Type::String,
-            "vector" => Type::Vector,
-            "rotator" => Type::Rotator,
-            "quat" => Type::Quat,
-            "color" => Type::Color,
-            "entity" => Type::Entity,
-            "character" => Type::Character,
-            "controller" => Type::Controller,
-            "brick" => Type::Brick,
-            "prefab" => Type::Prefab,
-            "exec" => Type::Exec,
-            // Mirrors `typecheck::primitive_name`'s `"any" => Type::Opaque`:
-            // the `any` annotation is the operator wildcard, not the
-            // internal `Type::Any` fallback (which is what the `_` arm
-            // below still uses for genuinely unresolvable type names —
-            // typecheck has already flagged those with WS002 by the time
-            // lowering runs).
-            "any" => Type::Opaque,
-            _ => Type::Any,
-        },
-        TypeExpr::Ref { inner, .. } => Type::Ref(Box::new(type_of_type_expr(inner))),
-        TypeExpr::Array { inner, .. } => Type::Array(Box::new(type_of_type_expr(inner))),
-        TypeExpr::Tuple { fields, .. } => {
-            Type::Tuple(fields.iter().map(type_of_type_expr).collect())
-        }
-        TypeExpr::Union { options, .. } => {
-            Type::Union(options.iter().map(type_of_type_expr).collect())
-        }
-        TypeExpr::Record { fields, .. } => Type::Record(
-            fields
-                .iter()
-                .map(|f| (f.name.clone(), type_of_type_expr(&f.typ)))
-                .collect(),
-        ),
-        TypeExpr::Generic { name, args, .. } => match (name.as_str(), args.as_slice()) {
-            // `Array<V>` / `Ref<V>` are desugared in the parser; these remain as
-            // an alternate spelling in case a Generic reaches here directly.
-            ("Array", [v]) => Type::Array(Box::new(type_of_type_expr(v))),
-            ("Ref", [v]) => Type::Ref(Box::new(type_of_type_expr(v))),
-            ("Map", [k, v]) => Type::Map(
-                Box::new(type_of_type_expr(k)),
-                Box::new(type_of_type_expr(v)),
-            ),
-            _ => Type::Any,
-        },
-    }
+    let cx = crate::types::resolve::ResolveCtx {
+        params: &[],
+        type_aliases: &crate::collections::HashMap::default(),
+        generic_aliases: &crate::collections::HashMap::default(),
+    };
+    crate::types::resolve::resolve_type(t, &cx, &mut Vec::new())
 }
 
 #[allow(dead_code)]
 pub(super) fn is_entity_family(t: &Type) -> bool {
     matches!(
         t,
-        Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab
+        Type::Controller | Type::Character | Type::Entity
     )
 }
 
-pub(super) fn unwrap_ref(t: &Type) -> Type {
-    match t {
-        Type::Ref(inner) => inner.as_ref().clone(),
-        other => other.clone(),
-    }
-}
+pub(super) use crate::types::mono::unwrap_ref;
 
 /// Default initial literal for Pseudo_Var data structs. Only covers
 /// primitive types that have a clean wire_graph_variant mapping.
@@ -229,7 +185,7 @@ pub(super) fn default_literal_for_var_type(t: &Type) -> Option<Literal> {
             b: 1.0,
             a: 1.0,
         }),
-        Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab => {
+        Type::Controller | Type::Character | Type::Entity => {
             Some(Literal::Object)
         }
         _ => Some(Literal::Float(0.0)),
@@ -625,7 +581,7 @@ fn fold_resource_amount(e: &Expr) -> Option<Literal> {
 /// numeric int/float/bool normalization). Identity for anything already the
 /// right kind or with no defined coercion.
 ///
-/// Without this, a coercion-mixed map entry (e.g. `Map<int, bool> = { 1 =>
+/// Without this, a coercion-mixed map entry (e.g. `Dict<int, bool> = { 1 =>
 /// "on" }`) would bake its RAW folded literal (`String("on")`), which emit's
 /// `wire_map_variant_from_literals` then can't match against the declared
 /// value kind and silently zero-falls-back to `false` — a typechecked
@@ -670,15 +626,15 @@ fn map_entry_literal(
     ))
 }
 
-/// Bake a constant map-literal initializer (`map m = {...}` / `var m:
-/// Map<K,V> = {...}`) into `properties` as an `InitialValue` (`Literal::Map`)
-/// — zero runtime gates, exactly like the array path bakes `Literal::Array`.
-/// Shared by [`pre_declare_map`] and the `Map<K, V>` branch of
+/// Bake a constant map-literal initializer (`var m: Dict<K, V> = {...}`) into
+/// `properties` as an `InitialValue` (`Literal::Map`) — zero runtime gates,
+/// exactly like the array path bakes `Literal::Array`.
+/// Shared by [`pre_declare_map`] and the `Dict<K, V>` branch of
 /// [`pre_declare_var`] since both bake the same way. Non-constant entries
 /// can't bake at a (pure) decl: the map starts empty and a warning is
 /// raised (Task 8 handles the exec-context desugar for `m = {…}`).
 ///
-/// `key_ty`/`val_ty` are the declared `Map<K, V>` types — every entry is
+/// `key_ty`/`val_ty` are the declared `Dict<K, V>` types — every entry is
 /// coerced to them at fold time (see [`coerce_literal_to_type`]) so the baked
 /// `Literal::Map` is already correct, not a raw literal emit has to guess at.
 fn bake_map_init(
@@ -698,7 +654,7 @@ fn bake_map_init(
     // Fall to the non-constant path instead: warn + start empty.
     if matches!(
         key_ty,
-        Type::Entity | Type::Character | Type::Controller | Type::Brick | Type::Prefab
+        Type::Entity | Type::Character | Type::Controller
     ) {
         ctx.warn(
             format!(
@@ -734,6 +690,12 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, env: &ConstEnv) -> Option<&'a Expr> {
         Expr::Array { elements, .. } => elements
             .iter()
             .any(|el| array_elem_literal(el, env).is_none()),
+        // A map literal is baked — and any non-bakeable case (object keys,
+        // non-constant entries) is warned — by `bake_map_init`, the single
+        // authority on map-init diagnostics. A constant `{ "k": v }` bakes as a
+        // `Literal::Map` InitialValue, so it is NOT unbaked; never double-report
+        // it here with the generic "not a compile-time constant" message.
+        Expr::MapLit { .. } => false,
         e => expr_to_literal_in(e, env).is_none(),
     };
     unbaked.then_some(init)
@@ -767,16 +729,18 @@ pub(super) fn warn_unbaked_var_init(ctx: &mut LowerCtx, v: &VarDecl, skip_array_
 }
 
 pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
+    // `resolve_local_type` monomorphizes a `T` annotation inside a generic mod
+    // body (and is identical to `type_of_type_expr` everywhere else).
     let inner_type = d
         .typ
         .as_ref()
-        .map(type_of_type_expr)
+        .map(|te| ctx.resolve_local_type(te))
         .or_else(|| d.init.as_ref().map(|e| ctx.type_of(e)))
         .unwrap_or(Type::Any);
 
-    // `var foo: T[]` is an array — desugar to an ArrayVar gate (same as an
-    // `array foo: T[]` declaration) so the array methods actually work. A
-    // `= [..]` initializer carries its constant literals like `array` does.
+    // `var foo: T[]` is an array — desugar to an ArrayVar gate so the array
+    // methods actually work. A `= [..]` initializer carries its constant
+    // literals inline (mirrors the map path below).
     if let Type::Array(elem) = &inner_type {
         let elem_type = elem.as_ref().clone();
         let mut properties = HashMap::default();
@@ -820,9 +784,9 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         return;
     }
 
-    // `var m: Map<K, V>` is a map — desugar to a MapVar gate (same as a
-    // `map m: Map<K, V>` declaration) so the map methods work. A constant
-    // `= {...}` initializer bakes via `bake_map_init`, same as `map`.
+    // `var m: Dict<K, V>` is a map — desugar to a MapVar gate so the map
+    // methods work. A constant `= {...}` initializer bakes via
+    // `bake_map_init`.
     if let Type::Map(key_ty, value_ty) = &inner_type {
         let (key_ty, value_ty) = (key_ty.as_ref().clone(), value_ty.as_ref().clone());
         let mut properties = HashMap::default();
@@ -904,7 +868,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
 }
 
 pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
-    let annotated = d.typ.as_ref().map(type_of_type_expr);
+    let annotated = d.typ.as_ref().map(|te| ctx.resolve_local_type(te));
     let rhs_type = ctx.type_of(&d.init);
     let inner_type = annotated.unwrap_or_else(|| unwrap_ref(&rhs_type));
 
@@ -943,14 +907,14 @@ pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
 }
 
 pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
-    let elem_type = type_of_type_expr(&d.element_type);
-    // Constant initializer (`array foo: int[] = [1, 2, 3]`): every element must
+    let elem_type = ctx.resolve_local_type(&d.element_type);
+    // Constant initializer (`var foo: int[] = [1, 2, 3]`): every element must
     // be a literal. Carry the values as an `InitialValue` property the emitter
     // writes straight into the ArrayVar's array variant (no runtime gates).
     let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
     if !d.init.is_empty() {
-        // Element-wise compile-time string → bool for `array a: bool[] =
+        // Element-wise compile-time string → bool for `var a: bool[] =
         // ["x", ""]` → [true, false] — same `!= ""` law as the wire path's
         // CompareNotEqual gate (see `bake_string_bool`); a raw String
         // element in a Bool array variant would diverge to the gate's
@@ -990,12 +954,12 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     );
 }
 
-/// `map name: Map<K, V>` — create the backing `Pseudo_MapVar` gate (exposing a
+/// `var name: Dict<K, V>` — create the backing `Pseudo_MapVar` gate (exposing a
 /// `MapVarRef`) and bind the name as a `VarStorage::Map` whose `inner_type`
 /// carries the whole `Type::Map(K, V)`. Mirrors [`pre_declare_array`].
 pub(super) fn pre_declare_map(ctx: &mut LowerCtx, d: &crate::ast::MapDecl) {
-    let key_type = type_of_type_expr(&d.key_type);
-    let value_type = type_of_type_expr(&d.value_type);
+    let key_type = ctx.resolve_local_type(&d.key_type);
+    let value_type = ctx.resolve_local_type(&d.value_type);
     let map_type = Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone()));
     let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
@@ -1066,6 +1030,57 @@ fn apply_port_side(
 }
 
 pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
+    // A record-typed input port (inline `{ … }`, a non-generic `type P = { … }`,
+    // or a generic `type Pair<T> = { … }` instantiated as `Pair<int>`) dissolves
+    // into one sub-port per field, bound as a `Record` so `p.field` reads the
+    // right sub-port. Without this a record port collapsed to a single `any`
+    // port and its field accesses lowered to `_Unsupported`/swizzle gates —
+    // mirrors the standalone-chip input expansion in `lower::mod`.
+    if let Some(fields) = ctx.record_fields_of(&d.typ) {
+        let mut record_fields = HashMap::default();
+        for field in &fields {
+            let port_name = format!("{}_{}", d.name, field.name);
+            let ft = type_of_type_expr(&field.typ);
+            let is_array = matches!(&field.typ, TypeExpr::Array { .. });
+            let is_ref = matches!(&field.typ, TypeExpr::Ref { .. });
+            let node_id = ctx.add_input(&port_name, ft.clone(), d.range.clone());
+            let binding = if is_array {
+                let inner = match &ft {
+                    Type::Array(inner) => inner.as_ref().clone(),
+                    Type::Ref(inner) => match inner.as_ref() {
+                        Type::Array(inner) => inner.as_ref().clone(),
+                        _ => ft.clone(),
+                    },
+                    _ => ft.clone(),
+                };
+                Binding::Var(VarRecord {
+                    node_id,
+                    inner_type: inner,
+                    get_node_for_handler: None,
+                    storage: VarStorage::Array,
+                })
+            } else if is_ref {
+                let inner = match &ft {
+                    Type::Ref(inner) => inner.as_ref().clone(),
+                    _ => ft.clone(),
+                };
+                Binding::Var(VarRecord {
+                    node_id,
+                    inner_type: inner,
+                    get_node_for_handler: None,
+                    storage: VarStorage::Var,
+                })
+            } else {
+                Binding::Input(NodeRecord {
+                    node_id,
+                    ty: ft.clone(),
+                })
+            };
+            record_fields.insert(crate::intern::intern(&field.name), binding);
+        }
+        ctx.scope.insert(&d.name, Binding::Record(record_fields));
+        return;
+    }
     let t = type_of_type_expr(&d.typ);
     let node_id = ctx.add_input(&d.name, t.clone(), d.range.clone());
     apply_port_side(ctx, node_id, d.side, &d.range);
@@ -1096,11 +1111,11 @@ pub(super) fn pre_declare_output(
     // value-typed port it always had (the ref-ness lives in the AST/emit
     // handling, not the pin type).
     let t = if let (Some(te), Some(_)) = (typ, value) {
-        unwrap_ref(&type_of_type_expr(te))
+        unwrap_ref(&ctx.resolve_local_type(te))
     } else if let Some(v) = value {
         unwrap_ref(&ctx.type_of(v))
     } else if let Some(te) = typ {
-        type_of_type_expr(te)
+        ctx.resolve_local_type(te)
     } else {
         Type::Any
     };

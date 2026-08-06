@@ -180,3 +180,29 @@ fn bitwise_and_still_works_with_ampersand_ref() {
     assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseAND"),
         "infix & should still be bitwise AND");
 }
+
+/// Regression for the `types::resolve` unification: lowering's
+/// `type_of_type_expr` (predeclare.rs) used to be missing `zone`/`teleport`
+/// from its primitive-name match, so a `zone`/`teleport`-annotated `in` port
+/// silently degraded to `Type::Any` on this path even though typecheck had
+/// already resolved it correctly. `pre_declare_input` (predeclare.rs) feeds
+/// the resolved type straight into the `MicrochipInput` node's output port,
+/// so an `Any` drift is directly observable there.
+#[test]
+fn zone_and_teleport_annotations_keep_their_type_through_lowering() {
+    let r = compile("in z: zone\nin p: teleport");
+    assert_no_errors(&r);
+    let port_ty = |name: &str| {
+        r.module
+            .nodes
+            .values()
+            .find(|n| {
+                n.gate_class == crate::ir::gate_class::MICROCHIP_INPUT
+                    && n.properties.get(&*crate::intern::sym::PORT_LABEL)
+                        == Some(&Literal::String(name.into()))
+            })
+            .map(|n| n.ports.outputs[0].ty.clone())
+    };
+    assert_eq!(port_ty("z"), Some(Type::Zone), "`in z: zone` must stay Type::Zone through lowering, not degrade to Type::Any");
+    assert_eq!(port_ty("p"), Some(Type::Teleport), "`in p: teleport` must stay Type::Teleport through lowering, not degrade to Type::Any");
+}

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use serde::Serialize;
 use wirescript::analysis::{
@@ -112,8 +111,13 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
     serde_json::to_string(&diags).unwrap_or_else(|_| "[]".into())
 }
 
-/// Swizzle components (`vector`/`color`) + receiver methods valid for a typed value.
-fn push_type_members(ty: &str, items: &mut Vec<CompletionOut>) {
+/// Swizzle components (`vector`/`color`) + receiver methods (builtin and user
+/// `self`-mods) valid for a typed value.
+fn push_type_members(
+    ty: &str,
+    symbols: &[wirescript::analysis::SymbolDef],
+    items: &mut Vec<CompletionOut>,
+) {
     for f in wirescript::analysis::swizzle_fields(ty) {
         items.push(CompletionOut {
             label: f.to_string(),
@@ -128,6 +132,14 @@ fn push_type_members(ty: &str, items: &mut Vec<CompletionOut>) {
             kind: "method",
             detail: Some(sig),
             insert_text: None,
+        });
+    }
+    for (name, sig) in wirescript::analysis::user_receiver_methods(ty, symbols) {
+        items.push(CompletionOut {
+            label: name.clone(),
+            kind: "method",
+            detail: Some(format!("{name}{sig}")),
+            insert_text: Some(name),
         });
     }
 }
@@ -284,7 +296,7 @@ pub fn completions(
                 insert_text: Some("prev".to_string()),
             });
             if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
-                push_type_members(ty, &mut items);
+                push_type_members(ty, &symbols, &mut items);
             }
             return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
         }
@@ -307,7 +319,7 @@ pub fn completions(
         // Any other typed value: methods (e.g. string methods) + swizzle. A
         // member-access context never falls through to the global list.
         if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
-            push_type_members(ty, &mut items);
+            push_type_members(ty, &symbols, &mut items);
         }
         return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
     }
@@ -857,7 +869,7 @@ mod tests {
     // ---- array method hover ----
     #[test]
     fn hover_array_push() {
-        let h = hover_value("array items: int[]\non RoundStart { items.push(1) }", 1, 22).unwrap();
+        let h = hover_value("var items: int[]\non RoundStart { items.push(1) }", 1, 22).unwrap();
         assert!(h.contains("push"), "got: {h}");
     }
 
@@ -1242,7 +1254,7 @@ mod tests {
 
     #[test]
     fn definition_array() {
-        let d = def_loc("array items: int[]\non RoundStart { items.push(1) }", 1, 16);
+        let d = def_loc("var items: int[]\non RoundStart { items.push(1) }", 1, 16);
         assert!(d.is_some(), "should find definition of items");
         assert_eq!(d.unwrap()["startLine"], 0);
     }

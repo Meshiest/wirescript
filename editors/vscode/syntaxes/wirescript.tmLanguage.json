@@ -128,7 +128,7 @@
         },
         {
           "name": "keyword.declaration.wirescript",
-          "match": "\\b(var|static|array|buffer|let|fn|chip|mod|in|out|open|ref|import|type)\\b"
+          "match": "\\b(var|static|buffer|let|fn|chip|mod|in|out|open|ref|import|type)\\b"
         },
         {
           "name": "storage.modifier.wirescript",

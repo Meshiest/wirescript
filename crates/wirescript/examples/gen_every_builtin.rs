@@ -29,7 +29,6 @@ fn arg_expr(ty: &Type, arrays: &mut BTreeSet<&'static str>, refs: &mut BTreeSet<
         Type::Entity => "src_entity".into(),
         Type::Character => "src_char".into(),
         Type::Controller => "src_ctrl".into(),
-        Type::Brick => "src_brick".into(),
         Type::Any => "0".into(),
         Type::Opaque => "Opaque(0)".into(),
         Type::Array(inner) => {
@@ -163,7 +162,6 @@ fn main() {
     s.push_str("in src_entity: entity\n");
     s.push_str("in src_char: character\n");
     s.push_str("in src_ctrl: controller\n");
-    s.push_str("in src_brick: brick\n");
     for d in &arrays {
         s.push_str(&format!("var arr_{d}: {d}[]\n"));
     }

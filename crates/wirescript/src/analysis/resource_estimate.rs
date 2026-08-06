@@ -250,6 +250,7 @@ fn estimate_handler(
     if !estimates.contains_key(&key) {
         let synthetic = ChipDecl {
             name: String::new(),
+            type_params: Vec::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
             body: h.body.clone(),
@@ -484,6 +485,7 @@ fn estimate_anon_chip(
     }
     let synthetic = ChipDecl {
         name: String::new(),
+        type_params: Vec::new(),
         inputs: Vec::new(),
         outputs: Vec::new(),
         body: ac.body.clone(),

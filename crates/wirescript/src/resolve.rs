@@ -523,7 +523,7 @@ fn collect_runtime_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
         }
         TopDecl::Let(l) => collect_idents_in_expr(&l.value, idents),
         // An array's initializer may name top-level constants
-        // (`array teams: int[] = [T_RED, T_BLUE]`). Those constants have to
+        // (`var teams: int[] = [T_RED, T_BLUE]`). Those constants have to
         // travel with the array through a named import, or the importing file
         // sees the array but not the values it is built from.
         TopDecl::Array(a) => {
@@ -633,7 +633,7 @@ fn collect_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
         TopDecl::Array(a) => {
             collect_idents_in_type_expr(&a.element_type, idents);
             // The initializer counts too: an element may name a top-level `let`
-            // constant (`array mask: int[] = [1 << C_FLAG]`). Missing these
+            // constant (`var mask: int[] = [1 << C_FLAG]`). Missing these
             // would report the import unused — and Organize Imports would then
             // delete it, silently breaking the table it feeds.
             for el in &a.init {
@@ -1146,7 +1146,7 @@ mod dep_pull_tests {
             "lib.ws",
             "let X = 7\n\
              type Tables = { vals: int[] }\n\
-             array vals: int[]\n\
+             var vals: int[]\n\
              let TB: Tables = { vals: vals }\n\
              mod bump(tables: Tables, v: int) {\n  tables.vals.push(v + X)\n}\n\
              chip Init(init: exec, tables: Tables) -> (code: int) {\n  on init {\n    bump(tables, X)\n    emit code = X\n  }\n}\n",

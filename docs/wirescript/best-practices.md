@@ -88,7 +88,7 @@ into a queue, and dequeue **one per tick** at a single call site. The state mach
 inlines exactly once.
 
 ```wirescript
-array queue: int[]
+var queue: int[]
 
 // Producers are now trivial -- they inline almost nothing.
 mod enqueue(slot: int, code: int) {
@@ -262,9 +262,9 @@ source, then `slice` the window into a scratch array and `sum()` it -- 2 gates i
 ~`N`.
 
 ```wirescript
-array packed: int[]   // source (e.g. state+value packed per element)
-array vals: int[]     // derived mirror: the summable value per element
-array scratch: int[]  // reusable slice target
+var packed: int[]   // source (e.g. state+value packed per element)
+var vals: int[]     // derived mirror: the summable value per element
+var scratch: int[]  // reusable slice target
 
 // keep the mirror in lockstep at EVERY write to `packed`
 mod setCell(i: int, v: int) { packed[i] = encode(v)  vals[i] = v }

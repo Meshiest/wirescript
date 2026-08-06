@@ -122,7 +122,7 @@ fn constant_string_inlines_into_consumers() {
     // `String_Concatenate` wrapper. Real concats (`a .. b`, wired inputs) are
     // unaffected (covered by `string_concat_op_works`).
     for src in [
-        "array a: string[]\nin t: exec\non t { a.push(\"x\") }",
+        "var a: string[]\nin t: exec\non t { a.push(\"x\") }",
         "in t: exec\non t { var s: string = \"hi\" }",
         "in s: string\nout r = s == \"y\"",
     ] {
@@ -450,7 +450,7 @@ fn var_bool_string_literal_init_bakes_bool() {
 
 #[test]
 fn array_bool_string_literal_inits_bake_elementwise() {
-    let r = compile("array a: bool[] = [\"x\", \"\"]");
+    let r = compile("var a: bool[] = [\"x\", \"\"]");
     assert_no_errors(&r);
     let arr = r
         .module
@@ -516,7 +516,7 @@ fn string_literal_into_bool_array_slot_inserts_compare() {
     // constant "0" and whose InputB is the baked "" — evaluating
     // "0" != "" = true at runtime, per the law (native truthiness would
     // have read a raw "0" as false).
-    let r = compile("in t: exec\narray a: bool[]\non t { a.push(false)\na[0] = \"0\" }");
+    let r = compile("in t: exec\nvar a: bool[]\non t { a.push(false)\na[0] = \"0\" }");
     assert_no_errors(&r);
 
     let ne_nodes: Vec<_> = r
@@ -558,7 +558,7 @@ fn string_literal_into_bool_array_slot_inserts_compare() {
 fn string_var_into_bool_array_slot_inserts_compare() {
     // Wired form of the same hole: `a[i] = s` with a string input.
     let r = compile(
-        "in s: string\nin t: exec\narray a: bool[]\non t { a.push(false)\na[0] = s }",
+        "in s: string\nin t: exec\nvar a: bool[]\non t { a.push(false)\na[0] = s }",
     );
     assert_no_errors(&r);
 

@@ -126,8 +126,8 @@ mod tests {
 
     #[test]
     fn multi_line_array_literal_indents_elements() {
-        let src = "array names: string[] = [\n\"A\",\n\"B\",\n]\nlet x = 1\n";
-        let want = "array names: string[] = [\n  \"A\",\n  \"B\",\n]\nlet x = 1\n";
+        let src = "var names: string[] = [\n\"A\",\n\"B\",\n]\nlet x = 1\n";
+        let want = "var names: string[] = [\n  \"A\",\n  \"B\",\n]\nlet x = 1\n";
         assert_eq!(fmt(src), want);
     }
 
@@ -140,16 +140,16 @@ mod tests {
 
     #[test]
     fn single_line_arrays_and_index_reads_unaffected() {
-        let src = "array base: int[] = [1, 2, 3]\nlet v = arr[i]\n";
+        let src = "var base: int[] = [1, 2, 3]\nlet v = arr[i]\n";
         assert_eq!(fmt(src), src);
     }
 
     #[test]
     fn brackets_in_strings_and_comments_ignored() {
         let src =
-            "array a: string[] = [\n\"[not a bracket]\",\n// comment with ] and [\n\"end\",\n]\n";
+            "var a: string[] = [\n\"[not a bracket]\",\n// comment with ] and [\n\"end\",\n]\n";
         let want =
-            "array a: string[] = [\n  \"[not a bracket]\",\n  // comment with ] and [\n  \"end\",\n]\n";
+            "var a: string[] = [\n  \"[not a bracket]\",\n  // comment with ] and [\n  \"end\",\n]\n";
         assert_eq!(fmt(src), want);
     }
 
@@ -186,7 +186,7 @@ done = true
 
     #[test]
     fn formatting_is_idempotent() {
-        let src = "on t {\nfoo = [\n1,\n2\n]\n}\narray n: string[] = [\n\"x\",\n]\n";
+        let src = "on t {\nfoo = [\n1,\n2\n]\n}\nvar n: string[] = [\n\"x\",\n]\n";
         let once = fmt(src);
         assert_eq!(fmt(&once), once);
     }

@@ -623,6 +623,132 @@ fn custom_event_typed_params_type_the_data_ports() {
 }
 
 #[test]
+fn custom_event_object_config_and_send_target() {
+    // The receive gate's `objectEvent` bakes bIsObjectEvent (scopes the event to
+    // a grid/object), and the send gate's `target` (the entity whose grid
+    // receives object events) wires into the Target port.
+    let src = "in go: exec\n\
+               in obj: entity\n\
+               static var last: int = 0\n\
+               on CustomEvent(\"dmg\", amount: int, objectEvent = true) {\n  last = amount\n}\n\
+               on go {\n  SendCustomEvent(\"dmg\", 7, target = obj)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let recv = crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
+    let send = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT;
+    assert!(
+        matches!(prop(&r, recv, "bIsObjectEvent"), Some(Literal::Bool(true))),
+        "objectEvent = true should bake bIsObjectEvent, got {:?}",
+        prop(&r, recv, "bIsObjectEvent")
+    );
+    // `target = obj` wires an entity into the send gate's Target input.
+    let send_node = find_gate(&r, send);
+    assert!(
+        r.module.wires.iter().any(|w| w.target.node_id == send_node
+            && w.target.port == crate::ir::port_registry::WirePort::Target),
+        "target = obj should produce a wire into the send gate's Target port"
+    );
+}
+
+#[test]
+fn send_custom_event_target_is_entity_typed() {
+    // The Target input (the grid that receives object events) is entity-typed:
+    // a non-entity value is a clear WS003, not a silently-wired type violation.
+    let bad = "in go: exec\non go {\n  SendCustomEvent(\"dmg\", 7, target = 5)\n}\n";
+    assert!(
+        errors(bad).contains(&"WS003".to_string()),
+        "non-entity target should be WS003, got {:?}",
+        errors(bad)
+    );
+    // Any object-family reference (entity/character/controller) connects cleanly.
+    let ok = "on CharacterSpawned(ch) {\n  SendCustomEvent(\"dmg\", 7, target = ch)\n}\n";
+    assert!(
+        errors(ok).is_empty(),
+        "character target should typecheck: {:?}",
+        errors(ok)
+    );
+}
+
+#[test]
+fn spawn_explosion_at_wires_world_position() {
+    // SpawnExplosionAt spawns at an absolute world position: `worldPosition`
+    // (vector) wires into the WorldPosition input on the SpawnExplosionAt gate.
+    let src = "in go: exec\nin pos: vector\nin who: entity\n\
+               on go {\n  SpawnExplosionAt(pos, who, instigator = who)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let gate = crate::ir::gate_class::EXEC_SPAWN_EXPLOSION_AT;
+    let node = find_gate(&r, gate);
+    assert!(
+        r.module.wires.iter().any(|w| w.target.node_id == node
+            && w.target.port == crate::ir::port_registry::WirePort::WorldPosition),
+        "worldPosition should wire into the SpawnExplosionAt gate's WorldPosition port"
+    );
+}
+
+#[test]
+fn global_custom_event_warns_and_keeps_separate_namespace() {
+    let ws030 = |src: &str| {
+        crate::typecheck::typecheck(&parse(src, "test").ast, "test")
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.code == "WS030")
+            .count()
+    };
+    // A Global send whose data type disagrees with the `on GlobalCustomEvent`
+    // receiver warns (WS030), exactly like the personal pair.
+    let mismatch = "in go: exec\nstatic var n: int = 0\n\
+                    on GlobalCustomEvent(\"g\", amount: int) {\n  n = amount\n}\n\
+                    on go {\n  SendGlobalCustomEvent(\"g\", 1.5)\n}\n";
+    assert_eq!(ws030(mismatch), 1, "global send/recv mismatch must warn WS030");
+    // Personal and Global are SEPARATE namespaces: the same channel name with
+    // different types across the two kinds must NOT cross-warn.
+    let separate = "in go: exec\nstatic var n: int = 0\nstatic var s: string = \"\"\n\
+                    on CustomEvent(\"x\", a: int) {\n  n = a\n}\n\
+                    on GlobalCustomEvent(\"x\", b: string) {\n  s = b\n}\n\
+                    on go {\n  SendCustomEvent(\"x\", 5)\n  SendGlobalCustomEvent(\"x\", \"hi\")\n}\n";
+    assert_eq!(ws030(separate), 0, "personal/global channels of the same name must not cross-warn");
+}
+
+#[test]
+fn team_predicates_are_pure_bool() {
+    // IsBuilderTeam / IsUnaffiliatedTeam are pure predicates over a Team entity,
+    // yielding bool. Receiver form works too (`team.IsUnaffiliatedTeam()`).
+    let src = "in t: entity\nlet a = IsBuilderTeam(t)\nlet b = t.IsUnaffiliatedTeam()\n\
+               out x: bool = a\nout y: bool = b\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(has_gate(&r, crate::ir::gate_class::GAMEMODE_IS_BUILDER_TEAM), "IsBuilderTeam gate");
+    assert!(
+        has_gate(&r, crate::ir::gate_class::GAMEMODE_IS_UNAFFILIATED_TEAM),
+        "IsUnaffiliatedTeam gate (receiver form)"
+    );
+    // A vector annotation rejects the bool result (bool has no vector coercion),
+    // proving the return type is a real bool rather than `any`.
+    let bad = crate::typecheck::typecheck(
+        &parse("in t: entity\nout v: vector = IsBuilderTeam(t)\n", "test").ast,
+        "test",
+    );
+    assert!(
+        bad.diagnostics.iter().any(|d| d.code == "WS003"),
+        "IsBuilderTeam returns bool, which has no vector coercion"
+    );
+}
+
+#[test]
+fn team_join_leave_events_expose_team_and_playerstate() {
+    // ControllerJoinedTeam/LeftTeam fire on team join/leave, binding the joining
+    // player's PlayerState plus the Team entity, userId, userName.
+    let src = "static var n: int = 0\n\
+               on ControllerJoinedTeam(controller, team, userId, userName) {\n  n = n + 1\n}\n\
+               on ControllerLeftTeam(controller, team, userId, userName) {\n  n = n - 1\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedTeamEvent"));
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftTeamEvent"));
+}
+
+#[test]
 fn untyped_custom_event_param_lints_ws029() {
     // A Custom Event receiver param without a type annotation warns (WS029) —
     // the data has no wire type otherwise.
@@ -771,4 +897,400 @@ fn reference_types_cannot_be_stored() {
             errors(src)
         );
     }
+}
+
+#[test]
+fn baked_map_literal_rejects_non_string_key_for_string_map() {
+    // A baked map entry has no gate to run a string-format coercion through,
+    // so a non-string constant key/value must be rejected, not silently "".
+    for src in [
+        "var m: Dict<string, int> = { 1 => 10 }\n",
+        "var m: Dict<string, int> = { :alice => 1, :bob => 2 }\n",
+        "var v: Dict<int, string> = { 1 => 5 }\n",
+    ] {
+        assert!(
+            errors(src).contains(&"WS003".to_string()),
+            "non-string baked key/value should be WS003: {src} -> {:?}",
+            errors(src)
+        );
+    }
+    // A correctly-typed string-keyed map still compiles clean.
+    let ok = "var m: Dict<string, int> = { \"a\" => 1, \"b\" => 2 }\n";
+    assert!(errors(ok).is_empty(), "valid string map should compile: {:?}", errors(ok));
+}
+
+#[test]
+fn ws030_sees_send_inside_captured_event() {
+    // A SendCustomEvent inside a captured event body (`let h = on go { … }`)
+    // must be seen by the WS030 sender/receiver type check.
+    let src = "on CustomEvent(\"hp\", amount: float) { let x = amount }\n\
+               let h = on go { SendCustomEvent(\"hp\", 5) }\n";
+    let d = crate::typecheck::typecheck(&crate::parser::parse(src, "t").ast, "t").diagnostics;
+    assert!(
+        d.iter().any(|x| x.code == "WS030"),
+        "WS030 must see a send inside a captured event body: {:?}",
+        d.iter().map(|x| x.code.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn any_annotation_warns_but_storage_and_probe_do_not() {
+    let diags = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t").diagnostics;
+    let has = |s: &str, code: &str, sev: crate::diagnostic::Severity|
+        diags(s).iter().any(|x| x.code == code && x.severity == sev);
+    use crate::diagnostic::Severity;
+    // param + output annotations `any` → warn
+    assert!(has("mod f(a: any) -> any { return a }\n", "WS032", Severity::Warning),
+        "any param/output should warn");
+    // in-port `any` → warn
+    assert!(has("in x: any\n", "WS032", Severity::Warning), "any in-port should warn");
+    // Opaque(...) probe VALUE is not an annotation → no warn
+    assert!(!diags("in x: int\nlet y = Opaque(x)\n").iter().any(|z| z.code == "WS032"),
+        "Opaque() value must not warn");
+    // storage `any` is WS025 (error), and must NOT also emit the WS032 warning
+    assert!(has("var v: any = 0\n", "WS025", Severity::Error), "storage any is WS025 error");
+    assert!(!diags("var v: any = 0\n").iter().any(|z| z.code == "WS032"),
+        "storage any must not double-fire WS032");
+}
+
+#[test]
+fn any_annotation_warns_on_compound_and_stmt_out() {
+    let diags = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t").diagnostics;
+    let has = |s: &str, code: &str, sev: crate::diagnostic::Severity|
+        diags(s).iter().any(|x| x.code == code && x.severity == sev);
+    let count = |s: &str, code: &str| diags(s).iter().filter(|x| x.code == code).count();
+    use crate::diagnostic::Severity;
+    // `*any` (Ref-wrapped) ref param → warn (shallow matches! would miss it)
+    assert!(has("mod inc(v: *any) { v = v }\n", "WS032", Severity::Warning),
+        "*any ref param should warn");
+    // `any[]` (Array-wrapped) param → warn
+    assert!(has("mod f(a: any[]) -> int { return 0 }\n", "WS032", Severity::Warning),
+        "any[] param should warn");
+    // anon-chip statement-level `out` annotation `any` → warn (Stmt::OutBinding path)
+    assert!(has("in go: exec\nchip { @bottom out done: any = 5 }\n", "WS032", Severity::Warning),
+        "anon-chip statement-level out any should warn");
+    // fires once per annotation (at the top-level range), not once per nested Opaque
+    assert_eq!(count("mod inc(v: *any) { v = v }\n", "WS032"), 1, "one warn for *any param");
+    assert_eq!(count("mod f(a: any[]) -> int { return 0 }\n", "WS032"), 1, "one warn for any[] param");
+    assert_eq!(count("in go: exec\nchip { @bottom out done: any = 5 }\n", "WS032"), 1,
+        "one warn for anon-chip out");
+}
+
+#[test]
+fn generic_mod_type_params_resolve_not_ws002() {
+    let errs = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        .diagnostics.into_iter()
+        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| d.code.to_string()).collect::<Vec<_>>();
+    // T is a recognized type param -> NO WS002 for T (sig + body annotation)
+    let e = errs("mod pick<T>(a: T, b: T) -> T {\n  let x: T = a\n  return x\n}\n");
+    assert!(!e.contains(&"WS002".to_string()), "T should resolve, not WS002: {e:?}");
+    // a bound param resolves too
+    let e2 = errs("mod clamp<T: Numeric>(v: T) -> T { return v }\n");
+    assert!(!e2.contains(&"WS002".to_string()), "bounded T should resolve: {e2:?}");
+    // an actually-unknown type still errors WS002
+    let e3 = errs("mod bad<T>(a: T) -> T {\n  let y: Q = a\n  return a\n}\n");
+    assert!(e3.contains(&"WS002".to_string()), "unknown Q should be WS002: {e3:?}");
+    // type params do NOT leak out: a non-generic mod using `T` still errors
+    let e4 = errs("mod plain(a: T) -> int { return 0 }\n");
+    assert!(e4.contains(&"WS002".to_string()), "T outside a generic mod should be WS002: {e4:?}");
+}
+
+#[test]
+fn generic_mod_call_inference() {
+    let errs = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        .diagnostics.into_iter().filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| d.code.to_string()).collect::<Vec<_>>();
+    // Error diagnostics as (code, message) pairs — used where the message text
+    // itself is load-bearing (proving the *concrete* substituted type).
+    let err_msgs = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        .diagnostics.into_iter().filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| (d.code.to_string(), d.message)).collect::<Vec<_>>();
+    let pick = "in flag: bool\nmod pick<T>(c: bool, a: T, b: T) -> T { return a }\n";
+    // inference succeeds: pick(flag, 1, 2) => T=int, no error
+    assert!(errs(&format!("{pick}let x = pick(flag, 1, 2)\n")).is_empty(),
+        "int inference should be clean: {:?}", errs(&format!("{pick}let x = pick(flag, 1, 2)\n")));
+    // result type is CONCRETELY float (not any, not a leaked `Param("T")`):
+    // int + float safe-widens T to float, and assigning the result to a
+    // vector-typed var errors, AND the error MESSAGE names `Float` as the
+    // actual type. (A `let` annotation mismatch is only a WS016 *warning*
+    // here — `var`'s initializer coercion is the hard WS003 error, so
+    // that's the construct that proves the result type.) Asserting the message
+    // (not just the WS003 code) is deliberate: `coerce(Param("T"), Vector)` is
+    // ALSO a Mismatch → WS003, so a regression that stopped substituting and
+    // leaked a raw `Param` would still emit WS003 — only the "got Float" text
+    // proves substitution actually produced the concrete widened `float`.
+    let vecerr = err_msgs(&format!("{pick}var v: vector = pick(flag, 1, 2.0)\n"));
+    assert!(vecerr.iter().any(|(c, m)| c == "WS003" && m.contains("float")),
+        "int+float widened result into vector var should WS003 whose message names Float \
+         (proves result is concrete float, not any / leaked Param): {vecerr:?}");
+    // widening: int + float have no strict-equality agreement but DO share a
+    // safe widening (int -> float) -> T=float, clean (NOT a WS033 conflict —
+    // this used to be the strict-equality conflict case pre-widening).
+    assert!(errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")).is_empty(),
+        "int+float should widen to float, not conflict: {:?}",
+        errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")));
+    // incompatible: int vs vector share no common widening -> WS033
+    let e = errs(&format!("in vecArg: vector\n{pick}let x = pick(flag, 1, vecArg)\n"));
+    assert!(e.iter().any(|c| c == "WS033"), "int/vector incompatible should be WS033: {e:?}");
+    // out of mask: string is not Numeric. (Named `onlyNumeric`, not `clamp` —
+    // `clamp` collides with the builtin math function of the same name, which
+    // `find_call` resolves before user symbols and so never reaches this
+    // user-mod inference path at all.)
+    let only_numeric = "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n";
+    let e2 = errs(&format!("{only_numeric}let x = onlyNumeric(\"hi\")\n"));
+    assert!(e2.iter().any(|c| c == "WS033"), "string out of Numeric mask should be WS033: {e2:?}");
+    // vector inference: pick(flag, va, vb) => T=vector, clean. (`pick` already
+    // declares `in flag: bool`; only `va`/`vb` are new here — redeclaring
+    // `flag` would itself be a duplicate-decl error unrelated to inference.)
+    let vecsrc = format!("in va: vector\nin vb: vector\n{pick}let r = pick(flag, va, vb)\n");
+    assert!(errs(&vecsrc).is_empty(), "vector inference should be clean: {:?}", errs(&vecsrc));
+    // Ref-param inference: a `*T` param resolves to `Ref(Param(T))`, but a var
+    // arg auto-derefs to its inner type — the Ref layers must be aligned before
+    // collecting or `T` is never pinned. Ref params are core idiomatic
+    // Wirescript (`mod inc(v: *int)`), so this MUST infer cleanly (no WS033).
+    let e3 = errs("mod passRef<T>(v: *T) { }\nvar x: int = 0\npassRef(x)\n");
+    assert!(!e3.iter().any(|c| c == "WS033"),
+        "ref-param generic call should infer cleanly (no WS033): {e3:?}");
+    // ...and a ref param that's actually written through (the `inc` shape) works too.
+    let e4 = errs("mod inc<T>(v: *T) { v = v }\nvar y: int = 0\ninc(y)\n");
+    assert!(!e4.iter().any(|c| c == "WS033"),
+        "ref-param write-through generic call should infer cleanly (no WS033): {e4:?}");
+}
+
+#[test]
+fn generic_widening_inference() {
+    let errs = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        .diagnostics.into_iter().filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| d.code.to_string()).collect::<Vec<_>>();
+    let pick = "in flag: bool\nmod pick<T>(c: bool, a: T, b: T) -> T { return a }\n";
+    // int + float widens to float -> clean (was a strict-equality error)
+    assert!(errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")).is_empty(),
+        "int+float should widen to float: {:?}", errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")));
+    // int + vector don't widen -> WS033
+    let e = errs(&format!("in v: vector\n{pick}let x = pick(flag, 1, v)\n"));
+    assert!(e.iter().any(|c| c == "WS033"), "int+vector incompatible should be WS033: {e:?}");
+    // character + entity widens to entity -> clean
+    let obj = "in flag: bool\nin ch: character\nin en: entity\nmod pick2<T>(c: bool, a: T, b: T) -> T { return a }\n";
+    assert!(errs(&format!("{obj}let r = pick2(flag, ch, en)\n")).is_empty(),
+        "character+entity should widen to entity: {:?}", errs(&format!("{obj}let r = pick2(flag, ch, en)\n")));
+}
+
+#[test]
+fn generic_body_checked_per_mask_member() {
+    let errs = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        .diagnostics.into_iter().filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| d.code.to_string()).collect::<Vec<_>>();
+    // `a + 1` is valid for every Scalar member (int + 1 -> int, float + 1 -> float),
+    // so the generic body checks CLEAN once we check per concrete member.
+    let ok = "mod addOne<T: Scalar>(a: T) -> T { return a + 1 }\n";
+    assert!(errs(ok).is_empty(), "a + 1 valid for all Scalar members should be clean: {:?}", errs(ok));
+    // `Dot()` takes two vectors — invalid for every Scalar member (int/float
+    // aren't vectors) — so the body fails per-member checking and surfaces
+    // an error at the DEFINITION. (Confirmed in Step 0: `a.length()` is
+    // NOT a counterexample here — method-call resolution doesn't check the
+    // receiver type strictly, so it silently passes on int/float too;
+    // `Dot()`'s WS003 "expected Vector, got Int/Float" argument-type check
+    // is a genuine per-member failure.)
+    let bad = "mod wrong<T: Scalar>(a: T) -> float { return a.Dot(a) }\n";
+    assert!(!errs(bad).is_empty(), "member-invalid op should error at the generic definition: {:?}", errs(bad));
+    // the error surfaces ONCE (not once per member) — dedup check:
+    assert!(errs(bad).len() <= 2, "member errors should be deduped, got {:?}", errs(bad));
+    // a non-generic mod is unaffected
+    assert!(errs("mod plain(a: int) -> int { return a + 1 }\n").is_empty());
+}
+
+#[test]
+fn if_expr_and_builtins_widen() {
+    let errs = |s: &str| crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        .diagnostics.into_iter().filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| (d.code.to_string(), d.message.clone())).collect::<Vec<_>>();
+    let codes = |s: &str| errs(s).into_iter().map(|(c, _)| c).collect::<Vec<_>>();
+
+    // if-expr: int/float branches widen to float -> clean.
+    assert!(codes("in c: bool\nlet x = if c then 1 else 2.0\n").is_empty(),
+        "if int/float should widen to float: {:?}", errs("in c: bool\nlet x = if c then 1 else 2.0\n"));
+    // Same, branches swapped: under the OLD "else-branch wins" rule this
+    // resolved to `int` (the else type) and was clean; under widening it's
+    // `float` either way -- still clean, but now proven by the assignment
+    // check below rather than by luck of which branch is which.
+    assert!(codes("in c: bool\nlet y = if c then 2.0 else 1\n").is_empty(),
+        "if float/int (branches swapped) should also widen to float: {:?}",
+        errs("in c: bool\nlet y = if c then 2.0 else 1\n"));
+    // result is float: assigning to a vector annotation errors "got Float".
+    // (`var`'s initializer coercion is the hard WS003 error -- a `let`
+    // annotation mismatch is only a WS016 warning here, per the `pick`
+    // tests above, so `var` is what proves the concrete result type.)
+    // Proves the *swapped* branch order also now yields Float (old else-wins
+    // code would have produced Int here, whose WS003 message would say
+    // "Int", not "Float").
+    let swapped_vec_err = errs("in c: bool\nvar v: vector = if c then 2.0 else 1\n");
+    assert!(swapped_vec_err.iter().any(|(cd, m)| cd == "WS003" && m.contains("float")),
+        "if-expr result (else-wins branch order) should still be Float under widening: {:?}",
+        swapped_vec_err);
+    let vec_err = errs("in c: bool\nvar v: vector = if c then 1 else 2.0\n");
+    assert!(vec_err.iter().any(|(cd, m)| cd == "WS003" && m.contains("float")),
+        "if-expr result should be Float: {:?}", vec_err);
+    // incompatible branches still error (WS003, no common widening).
+    assert!(codes("in c: bool\nin v: vector\nlet x = if c then 1 else v\n").iter().any(|c| c == "WS003"),
+        "int/vector branches should still error");
+
+    // Builtin half: `union_output_type` is used by the math-variant gates
+    // whose declared output is `Type::Union` -- confirmed (via catalog/calls.rs)
+    // to be `Blend`, `lerp`, and `Easing` (all built from `blend_variant()` ==
+    // Union([Float, Int, Vector, Rotator, Quat, Color])). `Tween`'s output is a
+    // *Record* wrapping a union field, not a bare Union, so it doesn't go
+    // through this path. Use `lerp(a, b, t)` -- the plainest signature.
+    assert!(codes("let x = lerp(1, 2.0, 0.5)\n").is_empty(),
+        "lerp(int, float, float) should widen to float, clean: {:?}", errs("let x = lerp(1, 2.0, 0.5)\n"));
+    // incompatible: int vs vector share no common widening -> WS033 (both
+    // ARE individually valid blend-variant members, so this only fails at
+    // the join step, not at argument-type checking).
+    let e = errs("in vecArg: vector\nlet x = lerp(1, vecArg, 0.5)\n");
+    assert!(e.iter().any(|(c, _)| c == "WS033"), "lerp(int, vector) incompatible should be WS033: {e:?}");
+    // Blend, receiver form: `a.Blend(b, alpha)` -- same widening, same gate.
+    assert!(codes("in a: int\nlet x = a.Blend(2.0, 0.5)\n").is_empty(),
+        "a.Blend(2.0, ...) should widen to float, clean: {:?}", errs("in a: int\nlet x = a.Blend(2.0, 0.5)\n"));
+}
+
+#[test]
+fn generic_chip_type_checks_clean() {
+    // Generic *chips* (physical microchips) are now monomorphized per distinct
+    // type instantiation at lowering time (one template per `(name, subst)`),
+    // so a generic chip decl type-checks clean — the old WS034 hard error is
+    // gone. (The per-type lowering + no-shared-grid proof lives in
+    // `lower::tests::generics::generic_chip_monomorphizes_per_instantiation`.)
+    let gchip = "chip Box<T>(v: T) -> (r: T) { out r = v }\n";
+    assert!(
+        errors(gchip).is_empty(),
+        "generic chip must type-check clean now: {:?}",
+        errors(gchip)
+    );
+    // a generic MOD is likewise clean -- mods inline+monomorphize per call.
+    let gmod = "mod pick<T>(a: T) -> T { return a }\n";
+    assert!(
+        errors(gmod).is_empty(),
+        "generic mod must be allowed: {:?}",
+        errors(gmod)
+    );
+    // a non-generic chip is allowed (same syntax, no `<T>`).
+    let plain = "chip Box(v: int) -> (r: int) { out r = v }\n";
+    assert!(
+        errors(plain).is_empty(),
+        "non-generic chip must be allowed: {:?}",
+        errors(plain)
+    );
+}
+
+#[test]
+fn generic_type_aliases_instantiate() {
+    // Pair<int> resolves to { a: int, b: int } — `.a` used where an `int` is
+    // expected is clean.
+    let ok = "type Pair<T> = { a: T, b: T }\nin p: Pair<int>\nout r: int = p.a\n";
+    assert!(errors(ok).is_empty(), "Pair<int>.a should be int, clean: {:?}", errors(ok));
+    // Pair<string> resolves to { a: string, b: string } — `.a` no longer
+    // coerces to `int` (string doesn't coerce to a numeric), proving `T`
+    // actually substituted per instantiation rather than resolving to `any`
+    // (which would coerce to anything and stay clean).
+    let bad = "type Pair<T> = { a: T, b: T }\nin p: Pair<string>\nout r: int = p.a\n";
+    assert!(
+        !errors(bad).is_empty(),
+        "Pair<string>.a should be string, mismatched against an int out port (T=string): {:?}",
+        errors(bad)
+    );
+    // Not fully applied.
+    let bare = "type Pair<T> = { a: T, b: T }\nlet p: Pair = { a: 1, b: 2 }\n";
+    assert!(!errors(bare).is_empty(), "bare generic alias should error: {:?}", errors(bare));
+    // Wrong arity.
+    let arity = "type Pair<T> = { a: T, b: T }\nlet p: Pair<int, float> = { a: 1, b: 2 }\n";
+    assert!(!errors(arity).is_empty(), "arity mismatch should error: {:?}", errors(arity));
+    // Recursive alias errors (does not hang).
+    let recursive = "type L<T> = { head: T, tail: L<T> }\nin x: L<int>\n";
+    assert!(!errors(recursive).is_empty(), "recursive generic alias should error: {:?}", errors(recursive));
+    // A DOUBLY self-referencing alias would re-expand each occurrence — a
+    // depth-only guard blows up exponentially; the in-progress cycle guard must
+    // cut it off so this terminates with a diagnostic rather than hanging.
+    let tree = "type Tree<T> = { l: Tree<T>, r: Tree<T> }\nin x: Tree<int>\n";
+    assert!(!errors(tree).is_empty(), "doubly-recursive generic alias should error, not hang: {:?}", errors(tree));
+    // A non-generic alias still works.
+    let plain = "type P = { x: int }\nlet q: P = { x: 1 }\n";
+    assert!(errors(plain).is_empty(), "non-generic alias should still work: {:?}", errors(plain));
+}
+
+/// Regression for the review's Critical 1: a generic-alias record type used at
+/// a PORT or a chip param must dissolve into real per-field wire gates at
+/// LOWERING — not silently degrade to a single `any` port whose field accesses
+/// emit `_Unsupported`/`SplitColor` swizzle gates with zero diagnostics.
+/// typecheck alone can't catch this (it was green while the IR was broken), so
+/// this asserts on the emitted IR.
+#[test]
+fn generic_alias_record_port_lowers_to_real_gates() {
+    // Top-level record PORT: `Pair<int>` → two int sub-ports feeding a MathAdd.
+    let r = compile("type Pair<T> = { a: T, b: T }\nin p: Pair<int>\nout r: int = p.a + p.b\n");
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "generic-alias port field access must not lower to _Unsupported"
+    );
+    assert!(
+        !has_gate(&r, gc::SPLIT_COLOR),
+        "generic-alias port field access must not lower to a SplitColor swizzle"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        "p.a + p.b on a Pair<int> port must lower to a real MathAdd gate"
+    );
+    // The port must have dissolved into one sub-port per field (2), not stayed
+    // a single collapsed `any` port.
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_Internal_MicrochipInput"),
+        2,
+        "Pair<int> port should expand into two int sub-ports"
+    );
+
+    // Chip param form — the `resolved_record` site the review named. The
+    // generic case must produce IR identical in shape to the non-generic one.
+    let rg = compile(
+        "type Pt<T> = { foo: T, bar: T }\nchip Sum(p: Pt<int>) -> (r: int) { out r = p.foo + p.bar }\nin a: int\nout total: int = Sum({ foo: a, bar: 2 })\n",
+    );
+    assert_no_errors(&rg);
+    assert!(!has_gate(&rg, "_Unsupported"), "root of generic chip-param program must have no _Unsupported");
+    let child_has_add = rg
+        .module
+        .chips
+        .values()
+        .any(|c| c.nodes.values().any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd"));
+    let child_has_unsupported = rg
+        .module
+        .chips
+        .values()
+        .any(|c| c.nodes.values().any(|n| n.gate_class == "_Unsupported"));
+    assert!(child_has_add, "generic chip body must lower p.foo + p.bar to a MathAdd");
+    assert!(!child_has_unsupported, "generic chip body must have no _Unsupported field-access gates");
+}
+
+#[test]
+fn deeply_nested_generic_decls_terminate_quickly() {
+    // Whole-branch review: the per-mask-member body check is a whole-PATH
+    // budget, not per-decl, so nesting generic decls can't multiply the combo
+    // count (`13^d` → a 17s+ typecheck / LSP hang). Depth-6 nested generic mods
+    // must type-check clean and near-instantly (this test would time out
+    // conspicuously in the suite if the budget regressed).
+    let src = "mod l0<A>(a: A) -> A {\n\
+               mod l1<B>(b: B) -> B {\n\
+               mod l2<C>(c: C) -> C {\n\
+               mod l3<D>(d: D) -> D {\n\
+               mod l4<E>(e: E) -> E {\n\
+               mod l5<F>(f: F) -> F { return f }\n return e }\n return d }\n\
+               return c }\n return b }\n return a }\n\
+               in go: exec\nin n: int\non go { let z = l0(n) }\n";
+    let parsed = crate::parser::parse(src, "t");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "t");
+    let errs: Vec<String> = tc
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| d.code.to_string())
+        .collect();
+    assert!(errs.is_empty(), "deep nested generics must check clean: {errs:?}");
 }

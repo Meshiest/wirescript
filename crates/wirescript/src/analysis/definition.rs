@@ -353,7 +353,7 @@ fn custom_event_send_definition(
     // 1. Resolve the channel name under the cursor (must be a SendCustomEvent
     //    channel-name string).
     let mut name: Option<String> = None;
-    visit_ast(
+    super::visit::visit_program(
         ast,
         &mut |_h| {},
         &mut |call| {
@@ -367,7 +367,7 @@ fn custom_event_send_definition(
     let name = name?;
     // 2. Find the matching receiver handler in this file.
     let mut target: Option<SourceRange> = None;
-    visit_ast(
+    super::visit::visit_program(
         ast,
         &mut |h| {
             if target.is_none()
@@ -379,226 +379,6 @@ fn custom_event_send_definition(
         &mut |_c| {},
     );
     target.map(|r| source_range_to_location(&r, None))
-}
-
-/// Visit every handler and every call expression in the AST. Handlers drive the
-/// receiver lookup; calls drive send-site detection.
-fn visit_ast<'a>(
-    ast: &'a Script,
-    on_handler: &mut dyn FnMut(&'a Handler),
-    on_call: &mut dyn FnMut(&'a Expr),
-) {
-    for d in &ast.decls {
-        visit_decl(d, on_handler, on_call);
-    }
-}
-
-fn visit_decl<'a>(
-    d: &'a TopDecl,
-    on_handler: &mut dyn FnMut(&'a Handler),
-    on_call: &mut dyn FnMut(&'a Expr),
-) {
-    match d {
-        TopDecl::Handler(h) => {
-            on_handler(h);
-            visit_block(&h.body, on_handler, on_call);
-        }
-        TopDecl::Chip(c) => visit_block(&c.body, on_handler, on_call),
-        TopDecl::AnonChip(ac) => visit_block(&ac.body, on_handler, on_call),
-        TopDecl::Namespace(ns) => {
-            for d in &ns.decls {
-                visit_decl(d, on_handler, on_call);
-            }
-        }
-        TopDecl::Fn(f) => visit_expr(&f.body, on_call),
-        TopDecl::Let(l) => visit_expr(&l.value, on_call),
-        TopDecl::Var(v) => {
-            if let Some(e) = &v.init {
-                visit_expr(e, on_call);
-            }
-        }
-        TopDecl::Buffer(b) => visit_expr(&b.init, on_call),
-        TopDecl::Out(o) => {
-            if let Some(e) = &o.value {
-                visit_expr(e, on_call);
-            }
-        }
-        TopDecl::Assign(a) => {
-            visit_expr(&a.target, on_call);
-            visit_expr(&a.value, on_call);
-        }
-        TopDecl::If(i) => visit_if(i, on_handler, on_call),
-        TopDecl::ExprStmt(es) => visit_expr(&es.expr, on_call),
-        _ => {}
-    }
-}
-
-fn visit_block<'a>(
-    b: &'a Block,
-    on_handler: &mut dyn FnMut(&'a Handler),
-    on_call: &mut dyn FnMut(&'a Expr),
-) {
-    for s in &b.stmts {
-        visit_stmt(s, on_handler, on_call);
-    }
-}
-
-fn visit_stmt<'a>(
-    s: &'a Stmt,
-    on_handler: &mut dyn FnMut(&'a Handler),
-    on_call: &mut dyn FnMut(&'a Expr),
-) {
-    match s {
-        Stmt::Handler(h) => {
-            on_handler(h);
-            visit_block(&h.body, on_handler, on_call);
-        }
-        Stmt::AnonChip(ac) => visit_block(&ac.body, on_handler, on_call),
-        Stmt::ChipDecl(c) => visit_block(&c.body, on_handler, on_call),
-        Stmt::If(i) => visit_if(i, on_handler, on_call),
-        Stmt::Let(l) => visit_expr(&l.value, on_call),
-        Stmt::Assign(a) => {
-            visit_expr(&a.target, on_call);
-            visit_expr(&a.value, on_call);
-        }
-        Stmt::ExprStmt(es) => visit_expr(&es.expr, on_call),
-        Stmt::Var(v) => {
-            if let Some(e) = &v.init {
-                visit_expr(e, on_call);
-            }
-        }
-        Stmt::Buffer(b) => visit_expr(&b.init, on_call),
-        Stmt::OutBinding(ob) => {
-            if let Some(e) = &ob.value {
-                visit_expr(e, on_call);
-            }
-        }
-        Stmt::Emit(e) => {
-            if let Some(v) = &e.value {
-                visit_expr(v, on_call);
-            }
-        }
-        Stmt::Await(a) => {
-            if let Some(e) = &a.value_expr {
-                visit_expr(e, on_call);
-            }
-            visit_expr(&a.exec_expr, on_call);
-        }
-        Stmt::Return { value, .. } => {
-            if let Some(e) = value {
-                visit_expr(e, on_call);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn visit_if<'a>(
-    i: &'a If,
-    on_handler: &mut dyn FnMut(&'a Handler),
-    on_call: &mut dyn FnMut(&'a Expr),
-) {
-    visit_expr(&i.cond, on_call);
-    visit_block(&i.then_block, on_handler, on_call);
-    if let Some(eb) = &i.else_block {
-        visit_block(eb, on_handler, on_call);
-    }
-}
-
-fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
-    match e {
-        Expr::Call { callee, args, .. } => {
-            on_call(e);
-            visit_expr(callee, on_call);
-            for a in args {
-                match a {
-                    CallArg::Positional(x) | CallArg::Spread(x) => visit_expr(x, on_call),
-                    CallArg::Named { value, .. } => visit_expr(value, on_call),
-                }
-            }
-        }
-        Expr::BinOp { left, right, .. } => {
-            visit_expr(left, on_call);
-            visit_expr(right, on_call);
-        }
-        Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
-            visit_expr(operand, on_call)
-        }
-        Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => visit_expr(obj, on_call),
-        Expr::IndexAccess { obj, index, .. } => {
-            visit_expr(obj, on_call);
-            visit_expr(index, on_call);
-        }
-        Expr::IfExpr {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            visit_expr(cond, on_call);
-            visit_expr(then_branch, on_call);
-            visit_expr(else_branch, on_call);
-        }
-        Expr::BlockExpr { stmts, value, .. } => {
-            // Statements here can host a SendCustomEvent; handlers cannot, so a
-            // no-op handler sink suffices.
-            let mut no_handler = |_: &Handler| {};
-            for s in stmts {
-                visit_stmt(s, &mut no_handler, on_call);
-            }
-            visit_expr(value, on_call);
-        }
-        Expr::InterpLit { parts, .. } => {
-            for p in parts {
-                if let InterpPart::Expr(x) = p {
-                    visit_expr(x, on_call);
-                }
-            }
-        }
-        Expr::RecordLit { fields, .. } => {
-            for f in fields {
-                match f {
-                    RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
-                        visit_expr(value, on_call)
-                    }
-                    RecordLitField::Shorthand { .. } => {}
-                }
-            }
-        }
-        Expr::MatchExpr {
-            scrutinee, arms, ..
-        } => {
-            visit_expr(scrutinee, on_call);
-            for arm in arms {
-                match &arm.body {
-                    MatchBody::Expr(x) => visit_expr(x, on_call),
-                    MatchBody::Block(b) => {
-                        let mut no_handler = |_: &Handler| {};
-                        visit_block(b, &mut no_handler, on_call);
-                    }
-                }
-            }
-        }
-        Expr::Array { elements, .. } => {
-            for el in elements {
-                visit_expr(el.expr(), on_call);
-            }
-        }
-        Expr::MapLit { entries, .. } => {
-            for en in entries {
-                visit_expr(&en.key, on_call);
-                visit_expr(&en.value, on_call);
-            }
-        }
-        Expr::IntLit { .. }
-        | Expr::AtomLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::AssetRef { .. }
-        | Expr::PrefabRef { .. }
-        | Expr::Ident { .. } => {}
-    }
 }
 
 #[cfg(test)]
@@ -616,6 +396,20 @@ mod tests {
         let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws");
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main.ws"));
         definition_at(main, &pre.ast, &symbols, "main.ws", &loader, line, col)
+    }
+
+    #[test]
+    fn self_receiver_method_goes_to_mod_decl() {
+        // Go-to-definition on the `.dist` of `a.dist(b)` jumps to the user
+        // `self`-mod declaration (the bare-word symbol fallback resolves it).
+        let main = "mod dist(self: vector, o: vector) -> float { return self.Dot(o) }\n\
+                    in a: vector\nin b: vector\nin go: exec\non go { let d = a.dist(b) }\n";
+        let call_line = 4;
+        let l = main.lines().nth(call_line).unwrap();
+        let col = l.find(".dist").unwrap() + 2; // inside `dist`
+        let loc = goto(main, "", call_line, col).expect("goto on .dist should resolve");
+        assert_eq!(loc.file, None, "same-file mod: {loc:?}");
+        assert_eq!(loc.start_line, 0, "mod dist is declared on line 0, got {loc:?}");
     }
 
     #[test]

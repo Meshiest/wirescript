@@ -1,7 +1,30 @@
 use super::*;
+use crate::catalog::operators::OpRule;
+
+/// The operator rule for the CURRENT monomorph. Non-generic bodies read the
+/// baked `op_resolutions` map (byte-identical to pre-generics lowering). Inside
+/// a generic mod's body that map holds the STALE last-mask-member rule — the
+/// per-mask-member body check in typecheck re-resolves every operator once per
+/// member and the last write wins (`Numeric` → Color, `Scalar` → Float, an
+/// unbounded `T` → Prefab), so a `square<int>` monomorph would otherwise emit a
+/// Color MathMultiply. Re-resolve from the operands' ACTUAL lowered port types,
+/// which already carry the concrete monomorph; nested operators resolve
+/// bottom-up because each sub-expr's output port type is fixed first.
+fn mono_op_rule(ctx: &LowerCtx, e: &Expr, op: &str, operand_ports: &[PortRef]) -> Option<OpRule> {
+    if ctx.mono_stack.is_empty() {
+        return ctx.op_for(e).cloned();
+    }
+    let tys: Vec<Type> = operand_ports
+        .iter()
+        .map(|&p| super::call::arg_port_type(ctx, p).unwrap_or(Type::Any))
+        .collect();
+    crate::catalog::operators::resolve_op(op, &tys)
+        .cloned()
+        .or_else(|| ctx.op_for(e).cloned())
+}
 
 pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
-    let (_op, left, right, range) = match e {
+    let (op, left, right, range) = match e {
         Expr::BinOp {
             op,
             left,
@@ -10,12 +33,18 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         } => (op, left, right, range),
         _ => return synthesise_unsupported(ctx, e),
     };
-    let rule = match ctx.op_for(e).cloned() {
+    // Non-generic path short-circuits on a missing rule exactly as before (no
+    // operand gates created). A generic body defers rule resolution until the
+    // operands are lowered so `mono_op_rule` can read their concrete port types.
+    if ctx.mono_stack.is_empty() && ctx.op_for(e).is_none() {
+        return synthesise_unsupported(ctx, e);
+    }
+    let left_port = lower_expr(ctx, left);
+    let right_port = lower_expr(ctx, right);
+    let rule = match mono_op_rule(ctx, e, op, &[left_port, right_port]) {
         Some(r) => r,
         None => return synthesise_unsupported(ctx, e),
     };
-    let left_port = lower_expr(ctx, left);
-    let right_port = lower_expr(ctx, right);
 
     // Players (and other objects) no longer cast directly to ints on a math gate,
     // so an object math operand is routed through `(obj || false)` first — that
@@ -77,7 +106,7 @@ fn wrap_object_for_math(
 ) -> (PortRef, Type) {
     let is_object = matches!(
         operand_ty,
-        Type::Entity | Type::Controller | Type::Character | Type::Brick | Type::Prefab
+        Type::Entity | Type::Controller | Type::Character
     );
     let is_math = gate_class.starts_with("BrickComponentType_WireGraph_Expr_Math");
     if !(is_object && is_math) {
@@ -220,11 +249,14 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             return node_id.port(out_port);
         }
     }
-    let rule = match ctx.op_for(e).cloned() {
+    if ctx.mono_stack.is_empty() && ctx.op_for(e).is_none() {
+        return synthesise_unsupported(ctx, e);
+    }
+    let in_port = lower_expr(ctx, operand);
+    let rule = match mono_op_rule(ctx, e, op, &[in_port]) {
         Some(r) => r,
         None => return synthesise_unsupported(ctx, e),
     };
-    let in_port = lower_expr(ctx, operand);
     let in_a = rule.ports.inputs[0];
     let out = rule.ports.output;
     let in_a_sym = intern(in_a.as_str());

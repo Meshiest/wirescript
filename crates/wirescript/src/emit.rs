@@ -1173,7 +1173,7 @@ fn emit_module(
                 LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
             }
             // Pseudo_MapVar: WireGraphMapVariant, key/value kinds chosen from the
-            // declared `Map<K, V>` on the MapVarRef port. A constant initializer
+            // declared `Dict<K, V>` on the MapVarRef port. A constant initializer
             // is carried as an `InitialValue` map literal and populates the
             // variant's `entries`; otherwise the map starts empty (runtime
             // `set`s populate it).
@@ -2175,10 +2175,14 @@ fn coerce_for_prim_math(wv: WireVariant) -> WireVariant {
 
 fn var_type_to_wire_variant(ty: Option<&crate::ir::Type>) -> WireVariant {
     use crate::ir::Type;
+    debug_assert!(
+        !matches!(ty, Some(Type::Param(_))),
+        "Type::Param reached emit — monomorphization must substitute it first"
+    );
     match ty {
         Some(Type::Bool) => WireVariant::Bool(false),
         Some(Type::Int) => WireVariant::Int(0),
-        Some(Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab) => {
+        Some(Type::Controller | Type::Character | Type::Entity) => {
             WireVariant::Object(None)
         }
         Some(Type::String) => WireVariant::Str(String::new()),
@@ -2223,7 +2227,7 @@ fn array_element_type(ty: &crate::ir::Type) -> Option<&crate::ir::Type> {
 }
 
 /// The `WireMapVariant` (empty map) an empty `MapVar` brick serializes, chosen
-/// from the declared `Map<K, V>` type on its `MapVarRef` output port. Keys are
+/// from the declared `Dict<K, V>` type on its `MapVarRef` output port. Keys are
 /// int/string/object; values cover the wire-storable scalars. Defaults to
 /// `int -> float` for an unknown/degenerate type.
 fn map_variant_from_type(ty: &crate::ir::Type) -> WireMapVariant {
@@ -2251,7 +2255,7 @@ fn map_variant_from_type(ty: &crate::ir::Type) -> WireMapVariant {
         Type::Rotator => WireMapValue::Rotator,
         Type::Quat => WireMapValue::Quat,
         Type::Color => WireMapValue::LinearColor,
-        Type::Entity | Type::Character | Type::Controller | Type::Brick | Type::Prefab => {
+        Type::Entity | Type::Character | Type::Controller => {
             WireMapValue::Object
         }
         _ => WireMapValue::Number,
@@ -2261,7 +2265,7 @@ fn map_variant_from_type(ty: &crate::ir::Type) -> WireMapVariant {
 
 /// Build a populated `WireMapVariant` from a map's constant entries. `kinds`
 /// gives the key/value member kinds (from [`map_variant_from_type`] on the
-/// declared `Map<K, V>` port type); each literal is read in that kind.
+/// declared `Dict<K, V>` port type); each literal is read in that kind.
 fn wire_map_variant_from_literals(
     kinds: WireMapVariant,
     entries: &[(Literal, Literal)],
@@ -2336,7 +2340,7 @@ fn empty_wire_array_variant(elem: Option<&crate::ir::Type>) -> WireArrayVariant 
         Some(Type::Rotator) => WireArrayVariant::RotatorArray(Vec::new()),
         Some(Type::Quat) => WireArrayVariant::QuatArray(Vec::new()),
         Some(Type::Color) => WireArrayVariant::LinearColorArray(Vec::new()),
-        Some(Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab) => {
+        Some(Type::Controller | Type::Character | Type::Entity) => {
             WireArrayVariant::ObjectArray(Vec::new())
         }
         _ => WireArrayVariant::DoubleArray(Vec::new()), // float + default
@@ -2429,7 +2433,7 @@ fn wire_array_variant_from_literals(
                 .collect(),
         ),
         // Object arrays can't be initialised from literals.
-        Some(Type::Controller | Type::Character | Type::Entity | Type::Brick | Type::Prefab) => {
+        Some(Type::Controller | Type::Character | Type::Entity) => {
             WireArrayVariant::ObjectArray(vec![None; lits.len()])
         }
         _ => WireArrayVariant::DoubleArray(lits.iter().map(as_f64).collect()), // float + default
@@ -2877,7 +2881,7 @@ fn color_for_type(t: &Type) -> Color {
         // colours as int.
         Type::Ref(inner) | Type::Array(inner) => color_for_type(inner),
         // Everything else (Vector, Rotator, Color, Entity, Controller,
-        // Brick, Prefab, Record, Tuple, Union, Any, Never, Exec) falls
+        // Brick, Record, Tuple, Union, Any, Never, Exec) falls
         // back to the struct-ish light-orange bucket.
         _ => C_STRUCT,
     }

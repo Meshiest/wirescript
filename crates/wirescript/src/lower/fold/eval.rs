@@ -343,6 +343,7 @@ pub(crate) fn render_for_format(v: &Value) -> String {
 /// (including the composite-chapter scalar outputs like `VecDotProduct`)
 /// is itself post-round, post-trim text, and no probed int-valued GATE case
 /// (as opposed to the dedicated `render` section) ever exceeds 999.
+#[allow(dead_code)] // used by the certified-semantics replay tests (this module's #[cfg(test)])
 pub(crate) fn render(v: &Value) -> String {
     match v {
         Value::Int(n) => n.to_string(),

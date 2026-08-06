@@ -105,7 +105,7 @@ array literals `[ ... ]`, and record literals `{ ... }` — after the opener,
 around commas, and before the closer, with an optional trailing comma:
 
 ```wirescript
-array names: string[] = [
+var names: string[] = [
   "alice",
   "bob",
 ]

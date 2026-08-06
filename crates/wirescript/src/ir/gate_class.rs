@@ -189,6 +189,10 @@ pub const PSEUDO_TWEEN: &str = "BrickComponentType_WireGraphPseudo_Tween";
 pub const PSEUDO_TIMER: &str = "BrickComponentType_WireGraphPseudo_Timer";
 pub const PSEUDO_SEND_CUSTOM_EVENT: &str = "BrickComponentType_WireGraphPseudo_SendCustomEvent";
 pub const PSEUDO_CUSTOM_EVENT: &str = "BrickComponentType_WireGraphPseudo_CustomEvent";
+pub const PSEUDO_SEND_CUSTOM_EVENT_GLOBAL: &str =
+    "BrickComponentType_WireGraphPseudo_SendCustomEvent_Global";
+pub const PSEUDO_CUSTOM_EVENT_GLOBAL: &str =
+    "BrickComponentType_WireGraphPseudo_CustomEvent_Global";
 pub const MATH_EASING: &str = "BrickComponentType_WireGraph_Expr_MathEasing";
 pub const GAMEMODE_FILL_FROM_PLAYERS: &str = "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromPlayers";
 pub const GAMEMODE_FILL_FROM_TEAM: &str = "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers";
@@ -239,6 +243,10 @@ pub const GAMEMODE_SET_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Ga
 pub const GAMEMODE_INC_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_IncrementLeaderboardValue";
 pub const GAMEMODE_GET_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetLeaderboardValue";
 pub const GAMEMODE_GET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetTeam";
+pub const GAMEMODE_IS_BUILDER_TEAM: &str =
+    "BrickComponentType_WireGraph_Expr_Gamemode_IsBuilderTeam";
+pub const GAMEMODE_IS_UNAFFILIATED_TEAM: &str =
+    "BrickComponentType_WireGraph_Expr_Gamemode_IsUnaffiliatedTeam";
 pub const GAMEMODE_GET_CURRENT_ROUND: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetCurrentRound";
 pub const GAMEMODE_GET_TEAM_NAME: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamName";
 pub const GAMEMODE_SET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Gamemode_SetTeam";
@@ -251,6 +259,7 @@ pub const GAMEMODE_SET_TEAM_LEADERBOARD: &str = "BrickComponentType_WireGraph_Ex
 // Prefab / Sweep
 pub const PREFAB_SPAWNER: &str = "BrickComponentType_WireGraph_Exec_PrefabSpawner";
 pub const EXEC_SPAWN_EXPLOSION: &str = "BrickComponentType_WireGraph_Exec_SpawnExplosion";
+pub const EXEC_SPAWN_EXPLOSION_AT: &str = "BrickComponentType_WireGraph_Exec_SpawnExplosionAt";
 pub const SWEEP: &str = "BrickComponentType_WireGraph_Exec_Sweep";
 
 // Messaging

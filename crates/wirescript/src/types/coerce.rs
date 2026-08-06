@@ -36,8 +36,6 @@ fn type_eq(a: &Type, b: &Type) -> bool {
         | (Entity, Entity)
         | (Character, Character)
         | (Controller, Controller)
-        | (Brick, Brick)
-        | (Prefab, Prefab)
         | (Zone, Zone)
         | (Teleport, Teleport)
         | (Exec, Exec)
@@ -62,6 +60,10 @@ fn type_eq(a: &Type, b: &Type) -> bool {
                     bx.iter().any(|(k2, t2)| k1 == k2 && type_eq(t1, t2))
                 })
         }
+        // A param is invariant/nominal — it doesn't coerce to anything; this
+        // arm is defensive since substitution normally removes params before
+        // coercion.
+        (Param(a), Param(b)) => a == b,
         _ => false,
     }
 }
@@ -72,7 +74,10 @@ fn is_pulsing(t: &Type) -> bool {
     matches!(t, Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
 }
 
-fn is_numeric(t: &Type) -> bool {
+/// Narrower than the `Numeric` constraint class (`class_mask("Numeric")` also
+/// includes vector/rotator/quat/color) — just the three primitive scalars
+/// that widen/coerce numerically among themselves.
+fn is_prim_number(t: &Type) -> bool {
     matches!(t, Type::Bool | Type::Int | Type::Float)
 }
 
@@ -90,8 +95,6 @@ fn formats_to_string(t: &Type) -> bool {
             | Type::Entity
             | Type::Character
             | Type::Controller
-            | Type::Brick
-            | Type::Prefab
             | Type::String
     )
 }
@@ -171,7 +174,7 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     }
 
     // Numeric <-> numeric (bidirectional: bool, int, float).
-    if is_numeric(from) && is_numeric(to) {
+    if is_prim_number(from) && is_prim_number(to) {
         return CoerceRule::Coerce;
     }
 
@@ -215,6 +218,66 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     }
 
     CoerceRule::Mismatch
+}
+
+/// The least-upper-bound of `a` and `b` over a **widening-only** lattice —
+/// used by generic-inference joins (`types::infer::solve`): both `a` and
+/// `b` cast into the result via a single non-lossy widening, never a
+/// narrowing. Returns `None` when there's no common widening (a genuine
+/// incompatibility, e.g. int vs vector).
+///
+/// Only the leaf/value variants below widen; compound types (`Ref`/`Array`/
+/// `Map`/`Union`/`Tuple`/`Record`) only join with themselves via the `a == b`
+/// fast path — a mismatched compound pair returns `None`, this function
+/// never tries to widen through a compound's structure.
+pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
+    use Type::*;
+    if type_eq(a, b) {
+        return Some(a.clone());
+    }
+    // `any`/`Opaque` is neutral — it widens to whatever the other side is.
+    if matches!(a, Any | Opaque) {
+        return Some(b.clone());
+    }
+    if matches!(b, Any | Opaque) {
+        return Some(a.clone());
+    }
+    // Numerics: bool ⊏ int ⊏ float (widest wins).
+    if is_prim_number(a) && is_prim_number(b) {
+        return Some(if matches!(a, Float) || matches!(b, Float) {
+            Float
+        } else if matches!(a, Int) || matches!(b, Int) {
+            Int
+        } else {
+            Bool
+        });
+    }
+    // Objects: character/controller ⊏ entity.
+    let is_obj = |t: &Type| matches!(t, Character | Controller | Entity);
+    if is_obj(a) && is_obj(b) {
+        return Some(Entity);
+    }
+    // Rotator/Quat are interchangeable rotation values at the wire level
+    // (see `coerce`'s Rotator<->Quat rule) -> one canonical representative.
+    if matches!((a, b), (Rotator, Quat) | (Quat, Rotator)) {
+        return Some(Rotator);
+    }
+    None
+}
+
+/// Left-to-right fold of [`widening_join`] over `types` — each item widens
+/// into the running accumulator, so the result is the least-upper-bound of
+/// the whole sequence. `None` if `types` is empty (there's no join of
+/// nothing), or if any step has no common widening with the accumulator so
+/// far (mirrors `widening_join`'s own `None` — a genuine incompatibility).
+/// Shared by the two call-site folds that need this (`types::infer::solve`
+/// joining a type param's constraint types; `typecheck::union_output_type`
+/// joining a builtin's union-typed operand/arg types) so the widening
+/// semantics can't drift between them.
+pub fn widening_join_all(types: impl IntoIterator<Item = Type>) -> Option<Type> {
+    let mut iter = types.into_iter();
+    let first = iter.next()?;
+    iter.try_fold(first, |acc, t| widening_join(&acc, &t))
 }
 
 /// Return the list of primitives from which `to` is reachable via at
@@ -306,8 +369,6 @@ mod tests {
             Type::Entity,
             Type::Character,
             Type::Controller,
-            Type::Brick,
-            Type::Prefab,
             Type::Rotator,
             Type::Color,
         ] {
@@ -378,5 +439,56 @@ mod tests {
         // Mismatch forever.
         assert_eq!(coerce(&Type::String, &Type::Int), CoerceRule::Mismatch);
         assert_eq!(coerce(&Type::String, &Type::Float), CoerceRule::Mismatch);
+    }
+    #[test]
+    fn widening_join_lattice() {
+        // same type -> itself
+        assert_eq!(widening_join(&Type::Int, &Type::Int), Some(Type::Int));
+        // any/Opaque is neutral
+        assert_eq!(widening_join(&Type::Any, &Type::Int), Some(Type::Int));
+        assert_eq!(widening_join(&Type::Int, &Type::Opaque), Some(Type::Int));
+        // numerics: bool < int < float, widest wins
+        assert_eq!(widening_join(&Type::Bool, &Type::Int), Some(Type::Int));
+        assert_eq!(widening_join(&Type::Int, &Type::Float), Some(Type::Float));
+        assert_eq!(widening_join(&Type::Bool, &Type::Float), Some(Type::Float));
+        assert_eq!(widening_join(&Type::Float, &Type::Bool), Some(Type::Float));
+        // objects: character/controller < entity
+        assert_eq!(widening_join(&Type::Character, &Type::Entity), Some(Type::Entity));
+        assert_eq!(widening_join(&Type::Controller, &Type::Entity), Some(Type::Entity));
+        assert_eq!(widening_join(&Type::Character, &Type::Controller), Some(Type::Entity));
+        // rotator/quat -> canonical rotator
+        assert_eq!(widening_join(&Type::Rotator, &Type::Quat), Some(Type::Rotator));
+        assert_eq!(widening_join(&Type::Quat, &Type::Rotator), Some(Type::Rotator));
+        // no common widening
+        assert_eq!(widening_join(&Type::Int, &Type::Vector), None);
+        assert_eq!(widening_join(&Type::String, &Type::Int), None);
+        // compound types only join with themselves (structural mismatch -> None)
+        let arr_int = Type::Array(Box::new(Type::Int));
+        let arr_float = Type::Array(Box::new(Type::Float));
+        assert_eq!(widening_join(&arr_int, &arr_int.clone()), Some(arr_int.clone()));
+        assert_eq!(widening_join(&arr_int, &arr_float), None);
+    }
+    #[test]
+    fn widening_join_all_folds_left_to_right() {
+        // empty -> no join of nothing
+        assert_eq!(widening_join_all(vec![]), None);
+        // single element -> itself, no widening_join call needed
+        assert_eq!(widening_join_all(vec![Type::Int]), Some(Type::Int));
+        // multiple: same lattice as the pairwise fold
+        assert_eq!(
+            widening_join_all(vec![Type::Bool, Type::Int, Type::Float]),
+            Some(Type::Float)
+        );
+        assert_eq!(
+            widening_join_all(vec![Type::Character, Type::Controller, Type::Entity]),
+            Some(Type::Entity)
+        );
+        // any/Opaque stay neutral mid-sequence
+        assert_eq!(
+            widening_join_all(vec![Type::Any, Type::Int, Type::Opaque]),
+            Some(Type::Int)
+        );
+        // no common widening anywhere in the sequence -> None
+        assert_eq!(widening_join_all(vec![Type::Int, Type::Float, Type::Vector]), None);
     }
 }

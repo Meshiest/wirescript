@@ -149,7 +149,7 @@ on player {
 fn nested_mod_array_push_lowers() {
     let r = compile(
         "\
-array data: int[]
+var data: int[]
 in player: character
 on player {
   data.clear()
@@ -261,7 +261,7 @@ fn standalone_chip_exec_body_return_keeps_exec_output() {
     // the exec chain was orphaned and the chip shipped with only one output.
     let r = compile(
         "\
-array counts: int[]
+var counts: int[]
 chip slotOfUser(uid: int) -> int {
   let res = counts.find(uid)
   return if res.Found then res.Index else -1
@@ -313,7 +313,7 @@ fn standalone_chip_return_wires_value_with_parent_out() {
     let r = compile(
         "\
 in z: exec
-array counts: int[]
+var counts: int[]
 out counts2: int[] = counts
 chip slotOfUser(uid: int) -> int {
   let res = counts.find(uid)
@@ -354,7 +354,7 @@ fn standalone_chip_multi_call_preserves_value_wire() {
     // instance must keep its value output fed by the SELECT and expose _exec_out.
     let r = compile(
         "\
-array counts: int[]
+var counts: int[]
 chip slotOfUser(uid: int) -> int {
   let res = counts.find(uid)
   return if res.Found then res.Index else -1
@@ -401,7 +401,7 @@ fn inline_mod_exec_body_returns_select_reaches_consumer() {
     // advances the exec chain.
     let r = compile(
         "\
-array counts: int[]
+var counts: int[]
 mod slotOfUser(uid: int) -> int {
   let res = counts.find(uid)
   return if res.Found then res.Index else -1
@@ -628,7 +628,7 @@ on player {
 #[test]
 fn return_value_with_array_read() {
     let r = compile("\
-array data: int[]
+var data: int[]
 mod get_first(arr: int[]) -> int {
   return arr[0]
 }

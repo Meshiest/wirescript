@@ -24,8 +24,7 @@ var dir: vector = Vec(0.0, 0.0, 1.0)
 
 A variable is backed by a wire-graph `Variable` gate, whose value is a wire
 variant, so a `var` can hold any variant member type: `int`, `float`, `bool`,
-`string`, `vector`, and object types (`entity`, `controller`, `character`,
-`brick`, `prefab`).
+`string`, `vector`, and object types (`entity`, `controller`, `character`).
 
 ### `static var` -- Persistent Variable
 
@@ -151,19 +150,20 @@ buffer delayed: int = count
 
 The optional type annotation is useful when the expression type needs clarification (e.g., for self-referential buffers).
 
-## `array` -- Array Declaration
+## Arrays -- `var name: elementType[]`
 
-Declares an array that holds multiple values of the same element type.
+An array holds multiple values of the same element type. Declare one as a `var`
+whose type ends in `[]` (there is no separate `array` keyword):
 
 ```wirescript
-array name: elementType[]
+var name: elementType[]
 ```
 
 ```wirescript
-array scores: int[]
-array positions: vector[]
-array names: string[]
-array flags: bool[]
+var scores: int[]
+var positions: vector[]
+var names: string[]
+var flags: bool[]
 ```
 
 The type annotation must end with `[]` to indicate it is an array type. The
@@ -178,8 +178,8 @@ straight into the array gate, so **every element must be a compile-time
 constant**. The array loads pre-populated with no runtime setup:
 
 ```wirescript
-array scores: int[] = [100, 50, -10]
-array names: string[] = ["alice", "bob"]
+var scores: int[] = [100, 50, -10]
+var names: string[] = ["alice", "bob"]
 ```
 
 A constant is a literal (numbers — including negatives — strings, and bools), or
@@ -190,8 +190,8 @@ name its constants instead of restating their values:
 let C_FROZEN = 3
 let WIDTH = 8
 
-array masks: int[] = [1 << C_FROZEN, 1 << C_FROZEN | 1]
-array cells: int[] = [WIDTH * WIDTH, WIDTH - 1]
+var masks: int[] = [1 << C_FROZEN, 1 << C_FROZEN | 1]
+var cells: int[] = [WIDTH * WIDTH, WIDTH - 1]
 ```
 
 Constants resolve through chains (`let B = A + 1`) and in any declaration order.
@@ -203,7 +203,7 @@ Initializers may span multiple lines — newlines are allowed after `[`, around
 commas, and before `]`, with an optional trailing comma:
 
 ```wirescript
-array names: string[] = [
+var names: string[] = [
   "alice",
   "bob",
 ]
@@ -214,11 +214,10 @@ An element that is **not** a compile-time constant — a runtime value such as a
 is no exec context in which to populate it. Build the array from runtime values
 inside a handler instead (see below).
 
-### Array-typed `var` and inferred element type
+### Inferred element type
 
-A `var` whose value is an array literal is also an array — it desugars to the
-same gate as `array`. The element type is taken from the annotation, or inferred
-from the literal when there's no annotation:
+The element type is taken from the annotation, or inferred from the literal
+when there's no annotation:
 
 ```wirescript
 var queue: int[] = [1, 2, 3]   // annotated
@@ -233,7 +232,7 @@ be any runtime value, and a `...spread` splices another array's contents in
 place:
 
 ```wirescript
-array base: int[] = [3, 4]
+var base: int[] = [3, 4]
 var work: int[]
 
 on tick {
@@ -1073,6 +1072,8 @@ These events are available as handler triggers. Parameters listed can be bound u
 | `CharacterDied` | `character: character` | A character died |
 | `ControllerJoined` | `controller: controller`, `userId: string` | A player joined |
 | `ControllerLeft` | `controller: controller`, `userId: string` | A player left (`userId` stays valid even as the controller is torn down on disconnect) |
+| `ControllerJoinedTeam` | `controller: entity`, `team: entity`, `userId: string`, `userName: string` | A player joined a team (`team` is the team they joined) |
+| `ControllerLeftTeam` | `controller: entity`, `team: entity`, `userId: string`, `userName: string` | A player left a team |
 | `ZoneEntered` | `character: character` | A character entered a zone |
 | `ZoneLeft` | `character: character` | A character left a zone |
 | `EntityZoneEntered` | `entity: entity` | An entity entered a zone |

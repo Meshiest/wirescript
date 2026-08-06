@@ -83,7 +83,7 @@ on player { if x > 0 { x = 1 } }");
 #[test]
 fn exec_array_read_uses_exec_get() {
     let r = compile("\
-array arr: int[]
+var arr: int[]
 in player: character
 on player { arr.push(42); let v = arr[0] }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
