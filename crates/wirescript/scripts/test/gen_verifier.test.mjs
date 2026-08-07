@@ -21,7 +21,7 @@ const table = {
 
 test('emits header, opaque leaves, eq assertion, branch if-pattern', () => {
   const ws = generateVerifier(table);
-  assert.match(ws, /VERIFIER v1 table testbuild/);
+  assert.match(ws, /VERIFIER v1/);
   assert.match(ws, /Opaque\(1\) == Opaque\("1"\)/);
   assert.match(ws, /== false/);                 // asserted against expected literal
   assert.match(ws, /if Opaque\(0\)/);           // Branch case → statement if

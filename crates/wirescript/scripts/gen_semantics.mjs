@@ -14,7 +14,7 @@ import { dirname, join } from 'path';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(SCRIPT_DIR, '..', 'data', 'gate_semantics.json');
 
-export const EXPECTED_PROBE_VERSION = 3;
+export const EXPECTED_PROBE_VERSION = 4;
 
 const GATE_CLASS = {
   CompareEqual: 'BrickComponentType_WireGraph_Expr_CompareEqual',
@@ -80,6 +80,47 @@ const GATE_CLASS = {
   DirectionToRotation: 'BrickComponentType_WireGraph_Expr_DirectionToRotation',
   RotationToDirection: 'BrickComponentType_WireGraph_Expr_RotationToDirection',
   ColorBlend: 'BrickComponentType_WireGraph_Expr_ColorBlend',
+
+  // -- v4: extendedMath / bitwise / rounding chapters ----------------------
+  MathSin: 'BrickComponentType_WireGraph_Expr_MathSin',
+  MathCos: 'BrickComponentType_WireGraph_Expr_MathCos',
+  MathTan: 'BrickComponentType_WireGraph_Expr_MathTan',
+  MathAsin: 'BrickComponentType_WireGraph_Expr_MathAsin',
+  MathAcos: 'BrickComponentType_WireGraph_Expr_MathAcos',
+  MathAtan: 'BrickComponentType_WireGraph_Expr_MathAtan',
+  MathSinh: 'BrickComponentType_WireGraph_Expr_MathSinh',
+  MathCosh: 'BrickComponentType_WireGraph_Expr_MathCosh',
+  MathTanh: 'BrickComponentType_WireGraph_Expr_MathTanh',
+  MathAsinh: 'BrickComponentType_WireGraph_Expr_MathAsinh',
+  MathAcosh: 'BrickComponentType_WireGraph_Expr_MathAcosh',
+  MathAtanh: 'BrickComponentType_WireGraph_Expr_MathAtanh',
+  MathExp: 'BrickComponentType_WireGraph_Expr_MathExp',
+  MathLn: 'BrickComponentType_WireGraph_Expr_MathLn',
+  MathSqrt: 'BrickComponentType_WireGraph_Expr_MathSqrt',
+  MathAbs: 'BrickComponentType_WireGraph_Expr_MathAbs',
+  MathSign: 'BrickComponentType_WireGraph_Expr_MathSign',
+  MathNegate: 'BrickComponentType_WireGraph_Expr_MathNegate',
+  MathDegreesToRadians: 'BrickComponentType_WireGraph_Expr_MathDegreesToRadians',
+  MathRadiansToDegrees: 'BrickComponentType_WireGraph_Expr_MathRadiansToDegrees',
+  MathAtan2: 'BrickComponentType_WireGraph_Expr_MathAtan2',
+  MathPow: 'BrickComponentType_WireGraph_Expr_MathPow',
+  MathMin: 'BrickComponentType_WireGraph_Expr_MathMin',
+  MathMax: 'BrickComponentType_WireGraph_Expr_MathMax',
+  MathLogBase: 'BrickComponentType_WireGraph_Expr_MathLogBase',
+  MathClamp: 'BrickComponentType_WireGraph_Expr_MathClamp',
+  MathModuloFloored: 'BrickComponentType_WireGraph_Expr_MathModuloFloored',
+  BitwiseAND: 'BrickComponentType_WireGraph_Expr_BitwiseAND',
+  BitwiseOR: 'BrickComponentType_WireGraph_Expr_BitwiseOR',
+  BitwiseXOR: 'BrickComponentType_WireGraph_Expr_BitwiseXOR',
+  BitwiseNOT: 'BrickComponentType_WireGraph_Expr_BitwiseNOT',
+  BitwiseNAND: 'BrickComponentType_WireGraph_Expr_BitwiseNAND',
+  BitwiseNOR: 'BrickComponentType_WireGraph_Expr_BitwiseNOR',
+  BitwiseShiftLeft: 'BrickComponentType_WireGraph_Expr_BitwiseShiftLeft',
+  BitwiseShiftRight: 'BrickComponentType_WireGraph_Expr_BitwiseShiftRight',
+  BitwiseBitCount: 'BrickComponentType_WireGraph_Expr_BitwiseBitCount',
+  Round: 'BrickComponentType_WireGraph_Expr_Round',
+  Floor: 'BrickComponentType_WireGraph_Expr_Floor',
+  Ceil: 'BrickComponentType_WireGraph_Expr_Ceil',
 };
 
 // FormatText renders bools as 1/0 and large ints with thousands separators —
@@ -185,6 +226,19 @@ const BOOL_OUTPUT = new Set([
   'String_Contains', 'String_StartsWith', 'String_EndsWith',
 ]);
 
+// v4: gates whose output port is ALWAYS float, even when a case's result is a
+// whole number that FormatText renders without a decimal point (`min(3,7)->3`,
+// `abs(-4)->4`, `pow(2,10)->1024`, `round(2.6)->3`). Without this they'd be
+// misclassified `int` by the generic numeric fallback in outVariant.
+const FLOAT_OUTPUT = new Set([
+  'MathSin', 'MathCos', 'MathTan', 'MathAsin', 'MathAcos', 'MathAtan',
+  'MathSinh', 'MathCosh', 'MathTanh', 'MathAsinh', 'MathAcosh', 'MathAtanh',
+  'MathExp', 'MathLn', 'MathSqrt', 'MathAbs', 'MathSign', 'MathNegate',
+  'MathDegreesToRadians', 'MathRadiansToDegrees', 'MathAtan2', 'MathPow',
+  'MathMin', 'MathMax', 'MathLogBase', 'MathClamp', 'MathModuloFloored',
+  'Round', 'Floor', 'Ceil',
+]);
+
 // v3: the four composite (non-scalar) wire variants. Their rendered text is
 // never interpreted here (that's Task 3's job, against certified render
 // laws) — it is stored verbatim as `value`.
@@ -230,6 +284,9 @@ function outVariant(raw, gateShort, inputs) {
     if (raw === '0' || raw === 'false') return { variant: 'bool', value: 'false' };
     throw new Error(`unexpected bool-gate output token: ${raw} (${gateShort})`);
   }
+  // Float-output gates keep the rendered text verbatim (the float render law,
+  // certified by the `render` chapter, interprets it) — never the int fallback.
+  if (FLOAT_OUTPUT.has(gateShort)) return { variant: 'float', value: raw };
   if (raw === 'true' || raw === 'false') return { variant: 'bool', value: raw };
   if (/^-?[\d,]+$/.test(raw)) return { variant: 'int', value: raw.replace(/,/g, '') };
   if (/^-?(\d+\.\d*|nan|inf|-inf)$/i.test(raw)) return { variant: 'float', value: raw };
@@ -424,15 +481,14 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv
 if (isMain) {
   const args = process.argv.slice(2);
   const dumpPath = args.find(a => !a.startsWith('--'));
-  const build = args[args.indexOf('--build') + 1];
   const out = args.includes('--out') ? args[args.indexOf('--out') + 1] : DEFAULT_OUT;
-  if (!dumpPath || !build || build.startsWith('--')) {
-    console.error('usage: node scripts/gen_semantics.mjs <dump.txt> --build <label> [--out <path>]');
+  if (!dumpPath) {
+    console.error('usage: node scripts/gen_semantics.mjs <dump.txt> [--out <path>]');
     process.exit(1);
   }
   const table = parseDump(readFileSync(dumpPath, 'utf8'), EXPECTED_PROBE_VERSION);
   for (const [cls, entry] of Object.entries(table.gates)) entry.rules = deriveRules(entry, cls);
-  const doc = { build, generatedAt: new Date().toISOString(), ...table };
+  const doc = { generatedAt: new Date().toISOString(), ...table };
   writeFileSync(out, JSON.stringify(doc, null, 2) + '\n');
   const nCases = Object.values(table.gates).reduce((a, g) => a + g.cases.length, 0);
   const nRender = Object.keys(table.render ?? {}).length;

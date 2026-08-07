@@ -140,7 +140,7 @@
       "patterns": [
         {
           "name": "support.type.wirescript",
-          "match": "\\b(int|float|bool|string|entity|controller|character|vector|rotator|color|exec|brick|prefab)\\b"
+          "match": "\\b(int|float|bool|string|entity|controller|character|vector|rotator|quat|color|exec|zone|teleport|any|never)\\b"
         },
         {
           "name": "entity.name.type.wirescript",

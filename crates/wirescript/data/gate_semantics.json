@@ -1,7 +1,6 @@
 {
-  "build": "cl14860",
-  "generatedAt": "2026-07-21T21:54:04.300Z",
-  "probeVersion": 3,
+  "generatedAt": "2026-08-07T18:05:33.007Z",
+  "probeVersion": 4,
   "gates": {
     "BrickComponentType_WireGraph_Expr_CompareEqual": {
       "cases": [
@@ -5772,6 +5771,805 @@
           "output": {
             "variant": "color",
             "value": ""
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathSin": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.841"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathCos": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.54"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathTan": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.557"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAsin": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.524"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAcos": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.047"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAtan": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.785"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathSinh": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.175"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathCosh": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.543"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathTanh": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.762"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAsinh": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.881"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAcosh": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "2.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.317"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAtanh": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.5"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.549"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathExp": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "2.718"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathLn": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "2.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.693"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathSqrt": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "9.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAbs": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "-4.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "4"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathSign": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "-3.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "-1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "2.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "0.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathNegate": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "5.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "-5"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathDegreesToRadians": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "90.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1.571"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathRadiansToDegrees": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.5708"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "90"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathAtan2": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "1.0"
+            },
+            {
+              "variant": "float",
+              "value": "2.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "0.464"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathPow": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "2.0"
+            },
+            {
+              "variant": "float",
+              "value": "10.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1,024"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathMin": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "3.0"
+            },
+            {
+              "variant": "float",
+              "value": "7.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathMax": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "3.0"
+            },
+            {
+              "variant": "float",
+              "value": "7.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "7"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathLogBase": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "8.0"
+            },
+            {
+              "variant": "float",
+              "value": "2.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathClamp": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "5.0"
+            },
+            {
+              "variant": "float",
+              "value": "0.0"
+            },
+            {
+              "variant": "float",
+              "value": "1.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_MathModuloFloored": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "7.0"
+            },
+            {
+              "variant": "float",
+              "value": "3.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "1"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "-1.0"
+            },
+            {
+              "variant": "float",
+              "value": "3.0"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "2"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseAND": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "12"
+            },
+            {
+              "variant": "int",
+              "value": "10"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "8"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseOR": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "12"
+            },
+            {
+              "variant": "int",
+              "value": "10"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "14"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseXOR": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "12"
+            },
+            {
+              "variant": "int",
+              "value": "10"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "6"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseNOT": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "12"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-13"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseNAND": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "12"
+            },
+            {
+              "variant": "int",
+              "value": "10"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-9"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseNOR": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "12"
+            },
+            {
+              "variant": "int",
+              "value": "10"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "-15"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "1"
+            },
+            {
+              "variant": "int",
+              "value": "5"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "32"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseShiftRight": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "64"
+            },
+            {
+              "variant": "int",
+              "value": "2"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "16"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_BitwiseBitCount": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "int",
+              "value": "255"
+            }
+          ],
+          "output": {
+            "variant": "int",
+            "value": "8"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_Round": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "2.6"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "3"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "-2.6"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "-3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_Floor": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "2.9"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "2"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "-2.1"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "-3"
+          }
+        }
+      ],
+      "rules": []
+    },
+    "BrickComponentType_WireGraph_Expr_Ceil": {
+      "cases": [
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "2.1"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "3"
+          }
+        },
+        {
+          "inputs": [
+            {
+              "variant": "float",
+              "value": "-2.9"
+            }
+          ],
+          "output": {
+            "variant": "float",
+            "value": "-2"
           }
         }
       ],

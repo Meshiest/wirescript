@@ -349,9 +349,13 @@ pub(crate) fn render(v: &Value) -> String {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Float(f) => {
+            // Float goes through the SAME law as `render_for_format` (grouped
+            // integer part) — a float case's stored text is the game's verbatim
+            // FormatText output, which groups thousands (`pow(2,10) -> 1,024`).
             let (neg, int_part, frac) = round3(*f);
+            let grouped = group_thousands(&int_part);
             let sign = if neg { "-" } else { "" };
-            if frac.is_empty() { format!("{sign}{int_part}") } else { format!("{sign}{int_part}.{frac}") }
+            if frac.is_empty() { format!("{sign}{grouped}") } else { format!("{sign}{grouped}.{frac}") }
         }
         _ => render_for_format(v),
     }
@@ -606,6 +610,105 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
         g if g.ends_with(G_MATH_MULTIPLY) => x * y,
         g if g.ends_with(G_MATH_DIVIDE) => x / y,   // non-finite result: fold
         _ => return None,                          // renders as "0"
+    }))
+}
+
+// ── Extended math + bitwise + rounding ─────────────────────────────────────
+// One Rust law per uncertified pure gate. `eval`'s `covers()` gate keeps each
+// inert until the gate's cases land in the certified table (a re-probe), and
+// the replay gate then checks the law against the game's own output. Float
+// laws refuse a non-finite RESULT (`fold/mod.rs` also guards this); the probe
+// is written with clean, finite, in-domain inputs so `covers()` never presents
+// an edge case these laws would mishandle (domain errors, shift-by->=64, the
+// half-rounding tie direction), all of which stay unprobed → unfolded.
+const EXTENDED_MATH: &[&str] = &[
+    "MathSin", "MathCos", "MathTan", "MathAsin", "MathAcos", "MathAtan",
+    "MathSinh", "MathCosh", "MathTanh", "MathAsinh", "MathAcosh", "MathAtanh",
+    "MathExp", "MathLn", "MathSqrt", "MathAbs", "MathSign", "MathNegate",
+    "MathDegreesToRadians", "MathRadiansToDegrees",
+    "MathAtan2", "MathPow", "MathMin", "MathMax", "MathLogBase",
+    "MathClamp", "MathModuloFloored",
+];
+
+fn as_float(v: Option<&Value>) -> Option<f64> {
+    match v? {
+        Value::Float(f) => Some(*f),
+        Value::Int(n) => int_as_f64(*n),
+        _ => None,
+    }
+}
+
+fn as_int(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::Int(n) => Some(*n),
+        Value::Bool(b) => Some(i64::from(*b)),
+        _ => None,
+    }
+}
+
+fn extended_math(short: &str, a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Option<Value> {
+    let r: f64 = match short {
+        "MathSin" => as_float(a)?.sin(),
+        "MathCos" => as_float(a)?.cos(),
+        "MathTan" => as_float(a)?.tan(),
+        "MathAsin" => as_float(a)?.asin(),
+        "MathAcos" => as_float(a)?.acos(),
+        "MathAtan" => as_float(a)?.atan(),
+        "MathSinh" => as_float(a)?.sinh(),
+        "MathCosh" => as_float(a)?.cosh(),
+        "MathTanh" => as_float(a)?.tanh(),
+        "MathAsinh" => as_float(a)?.asinh(),
+        "MathAcosh" => as_float(a)?.acosh(),
+        "MathAtanh" => as_float(a)?.atanh(),
+        "MathExp" => as_float(a)?.exp(),
+        "MathLn" => as_float(a)?.ln(),
+        "MathSqrt" => as_float(a)?.sqrt(),
+        "MathAbs" => as_float(a)?.abs(),
+        "MathSign" => {
+            let x = as_float(a)?;
+            if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
+        }
+        "MathNegate" => -as_float(a)?,
+        "MathDegreesToRadians" => as_float(a)?.to_radians(),
+        "MathRadiansToDegrees" => as_float(a)?.to_degrees(),
+        "MathAtan2" => as_float(a)?.atan2(as_float(b)?),
+        "MathPow" => as_float(a)?.powf(as_float(b)?),
+        "MathMin" => as_float(a)?.min(as_float(b)?),
+        "MathMax" => as_float(a)?.max(as_float(b)?),
+        "MathLogBase" => as_float(a)?.log(as_float(b)?),
+        // clamp(x, lo, hi): raise to lo, then cap at hi.
+        "MathClamp" => as_float(a)?.max(as_float(b)?).min(as_float(c)?),
+        // Floored modulo: result carries the divisor's sign.
+        "MathModuloFloored" => {
+            let (x, y) = (as_float(a)?, as_float(b)?);
+            x - y * (x / y).floor()
+        }
+        _ => return None,
+    };
+    r.is_finite().then_some(Value::Float(r))
+}
+
+fn bitwise(short: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
+    Some(Value::Int(match short {
+        "BitwiseAND" => as_int(a)? & as_int(b)?,
+        "BitwiseOR" => as_int(a)? | as_int(b)?,
+        "BitwiseXOR" => as_int(a)? ^ as_int(b)?,
+        "BitwiseNOT" => !as_int(a)?,
+        "BitwiseNAND" => !(as_int(a)? & as_int(b)?),
+        "BitwiseNOR" => !(as_int(a)? | as_int(b)?),
+        // Shift amounts outside 0..63 are unprobed (UB in Rust) — refuse.
+        "BitwiseShiftLeft" => {
+            let s = as_int(b)?;
+            if !(0..64).contains(&s) { return None; }
+            as_int(a)? << s
+        }
+        "BitwiseShiftRight" => {
+            let s = as_int(b)?;
+            if !(0..64).contains(&s) { return None; }
+            as_int(a)? >> s
+        }
+        "BitwiseBitCount" => i64::from(as_int(a)?.count_ones()),
+        _ => return None,
     }))
 }
 
@@ -1101,6 +1204,11 @@ pub fn eval(gate_class: &str, inputs: &[Option<Value>]) -> Option<Value> {
         G_LOGICAL_OR => Value::Bool(truthy(a) || truthy(b)),
         G_LOGICAL_XOR => Value::Bool(truthy(a) != truthy(b)),
         G_LOGICAL_NOT => Value::Bool(!truthy(a)),
+        "Round" => Value::Float(as_float(a)?.round()),
+        "Floor" => Value::Float(as_float(a)?.floor()),
+        "Ceil" => Value::Float(as_float(a)?.ceil()),
+        s if EXTENDED_MATH.contains(&s) => extended_math(s, a, b, c)?,
+        s if s.starts_with("Bitwise") => bitwise(s, a, b)?,
         s if s.starts_with("Math") => math(gate_class, a, b)?,
         G_CONCATENATE => concatenate(a, b)?,
         G_LENGTH => string_length(a)?,
@@ -1146,6 +1254,63 @@ mod tests {
     const SELECT: &str = "BrickComponentType_WireGraph_Expr_Select";
     const BRANCH: &str = "BrickComponentType_WireGraph_Exec_Branch";
     const FORMAT_TEXT: &str = "BrickComponentType_WireGraph_Expr_String_FormatText";
+
+    // The extended-math / bitwise / rounding laws are gated out of `eval` by
+    // `covers()` until re-probed, so test the pure laws directly here.
+    #[test]
+    fn extended_math_laws() {
+        let f = |x: f64| Some(Value::Float(x));
+        let got = |g: &str, a: Option<Value>, b: Option<Value>, c: Option<Value>| {
+            match extended_math(g, a.as_ref(), b.as_ref(), c.as_ref()) {
+                Some(Value::Float(v)) => Some(v),
+                _ => None,
+            }
+        };
+        let approx = |a: Option<f64>, b: f64| a.is_some_and(|v| (v - b).abs() < 1e-6);
+        assert!(approx(got("MathSqrt", f(9.0), None, None), 3.0));
+        assert!(approx(got("MathPow", f(2.0), f(10.0), None), 1024.0));
+        assert!(approx(got("MathMin", f(3.0), f(7.0), None), 3.0));
+        assert!(approx(got("MathMax", f(3.0), f(7.0), None), 7.0));
+        assert!(approx(got("MathAbs", f(-4.0), None, None), 4.0));
+        assert!(approx(got("MathSign", f(-3.0), None, None), -1.0));
+        assert!(approx(got("MathSign", f(0.0), None, None), 0.0));
+        assert!(approx(got("MathClamp", f(5.0), f(0.0), f(1.0)), 1.0));
+        assert!(approx(got("MathLogBase", f(8.0), f(2.0), None), 3.0));
+        assert!(approx(got("MathModuloFloored", f(-1.0), f(3.0), None), 2.0)); // divisor-signed
+        // Domain error → non-finite result → refuse.
+        assert!(got("MathSqrt", f(-1.0), None, None).is_none());
+        assert!(got("MathLn", f(-1.0), None, None).is_none());
+    }
+
+    #[test]
+    fn bitwise_laws() {
+        let i = |n: i64| Some(Value::Int(n));
+        let got = |g: &str, a: Option<Value>, b: Option<Value>| match bitwise(g, a.as_ref(), b.as_ref()) {
+            Some(Value::Int(n)) => Some(n),
+            _ => None,
+        };
+        assert_eq!(got("BitwiseAND", i(12), i(10)), Some(8));
+        assert_eq!(got("BitwiseOR", i(12), i(10)), Some(14));
+        assert_eq!(got("BitwiseXOR", i(12), i(10)), Some(6));
+        assert_eq!(got("BitwiseNOT", i(12), None), Some(-13));
+        assert_eq!(got("BitwiseNAND", i(12), i(10)), Some(!(12 & 10)));
+        assert_eq!(got("BitwiseNOR", i(12), i(10)), Some(!(12 | 10)));
+        assert_eq!(got("BitwiseShiftLeft", i(1), i(5)), Some(32));
+        assert_eq!(got("BitwiseShiftRight", i(64), i(2)), Some(16));
+        assert_eq!(got("BitwiseBitCount", i(255), None), Some(8));
+        // Out-of-range shift → refuse.
+        assert_eq!(got("BitwiseShiftLeft", i(1), i(64)), None);
+        assert_eq!(got("BitwiseShiftLeft", i(1), i(-1)), None);
+    }
+
+    #[test]
+    fn rounding_laws() {
+        // Round/Floor/Ceil route through `eval`'s explicit arms, but `covers()`
+        // gates them; exercise the underlying `as_float`-fed f64 methods here.
+        assert_eq!(as_float(Some(&Value::Float(2.6))).map(f64::round), Some(3.0));
+        assert_eq!(as_float(Some(&Value::Float(2.9))).map(f64::floor), Some(2.0));
+        assert_eq!(as_float(Some(&Value::Float(2.1))).map(f64::ceil), Some(3.0));
+    }
 
     fn case_value(ci: &crate::lower::fold::table::CaseInput) -> Option<Value> {
         let v = ci.value.as_ref()?;
@@ -1285,8 +1450,8 @@ mod tests {
                 }
             }
         }
-        assert_eq!(replayed + refused + blank, 360, "table case count changed — re-audit");
-        assert_eq!(replayed, 326);
+        assert_eq!(replayed + refused + blank, 405, "table case count changed — re-audit");
+        assert_eq!(replayed, 371); // +45 v4: 30 extendedMath + 9 bitwise + 6 rounding
         assert_eq!(refused, 28, "3 math-with-string + 11 FormatText + 4 multibyte + 10 deferredOps");
         assert_eq!(blank, 6, "MakeRotation/MakeQuaternion/MakeColor/MakeColorSRGB/MakeColorHex/\
             InvertRotation — blank==blank proves nothing, see BLANK_RENDER_ONLY");

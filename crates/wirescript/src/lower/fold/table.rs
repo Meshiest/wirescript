@@ -281,10 +281,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_real_table_v3() {
+    fn loads_real_table_v4() {
         let t = CertifiedTable::certified();
-        assert_eq!(t.gate_classes().count(), 56);
+        assert_eq!(t.gate_classes().count(), 95);
         assert_eq!(t.render_laws().len(), 32);
+        // v4: extendedMath / bitwise / rounding chapters.
+        assert!(t.covers("BrickComponentType_WireGraph_Expr_MathSin", &[InVariant::Float]));
+        assert!(t.covers("BrickComponentType_WireGraph_Expr_MathClamp",
+            &[InVariant::Float, InVariant::Float, InVariant::Float]));
+        assert!(t.covers("BrickComponentType_WireGraph_Expr_BitwiseAND",
+            &[InVariant::Int, InVariant::Int]));
+        assert!(t.covers("BrickComponentType_WireGraph_Expr_Round", &[InVariant::Float]));
         assert!(t.covers("BrickComponentType_WireGraph_Expr_MathAdd",
             &[InVariant::Int, InVariant::Int]));
         // Probed one direction only — the reverse signature must NOT be covered.

@@ -1,7 +1,7 @@
 /// Gate semantics probe — prints one CASE line per observed interaction.
 /// Paste into a local world; it runs itself (ReadBrickGrid fires on paste).
 /// Bump VERSION whenever the case matrix changes.
-let VERSION = 3
+let VERSION = 4
 
 let grid = ReadBrickGrid()
 
@@ -740,6 +740,80 @@ mod runDeferredOps() {
   caseLine("END deferredOps")
 }
 
+// ============================================================================
+// v4 additions: extendedMath / bitwise / rounding — the deterministic,
+// single-scalar-output pure gates the fold table did not yet cover. All use
+// clean, finite, in-domain constant inputs (Opaque-armored so the gate runs
+// in-game rather than folding) so no case hits a domain error, a shift by
+// >= 64, or a round-half tie — those stay unprobed and therefore unfolded.
+// (Split*/FormatDate are multi-output/record and need format+eval support
+// first, so they are deliberately NOT here.)
+// ============================================================================
+
+// -- ExtendedMath: transcendental / pow / atan2 / min / max / log / clamp /
+// -- floored-mod / abs / sign / negate / deg<->rad. Float output. -----------
+mod runExtendedMath() {
+  caseLine("BEGIN extendedMath 30")
+  caseLine("CASE MathSin float:1.0 -> ${sin(Opaque(1.0))}")
+  caseLine("CASE MathCos float:1.0 -> ${cos(Opaque(1.0))}")
+  caseLine("CASE MathTan float:1.0 -> ${tan(Opaque(1.0))}")
+  caseLine("CASE MathAsin float:0.5 -> ${asin(Opaque(0.5))}")
+  caseLine("CASE MathAcos float:0.5 -> ${acos(Opaque(0.5))}")
+  caseLine("CASE MathAtan float:1.0 -> ${atan(Opaque(1.0))}")
+  caseLine("CASE MathSinh float:1.0 -> ${sinh(Opaque(1.0))}")
+  caseLine("CASE MathCosh float:1.0 -> ${cosh(Opaque(1.0))}")
+  caseLine("CASE MathTanh float:1.0 -> ${tanh(Opaque(1.0))}")
+  caseLine("CASE MathAsinh float:1.0 -> ${asinh(Opaque(1.0))}")
+  caseLine("CASE MathAcosh float:2.0 -> ${acosh(Opaque(2.0))}")
+  caseLine("CASE MathAtanh float:0.5 -> ${atanh(Opaque(0.5))}")
+  caseLine("CASE MathExp float:1.0 -> ${exp(Opaque(1.0))}")
+  caseLine("CASE MathLn float:2.0 -> ${ln(Opaque(2.0))}")
+  caseLine("CASE MathSqrt float:9.0 -> ${sqrt(Opaque(9.0))}")
+  caseLine("CASE MathAbs float:-4.0 -> ${abs(Opaque(-4.0))}")
+  caseLine("CASE MathSign float:-3.0 -> ${sign(Opaque(-3.0))}")
+  caseLine("CASE MathSign float:2.0 -> ${sign(Opaque(2.0))}")
+  caseLine("CASE MathSign float:0.0 -> ${sign(Opaque(0.0))}")
+  caseLine("CASE MathNegate float:5.0 -> ${-Opaque(5.0)}")
+  caseLine("CASE MathDegreesToRadians float:90.0 -> ${Deg2Rad(Opaque(90.0))}")
+  caseLine("CASE MathRadiansToDegrees float:1.5708 -> ${Rad2Deg(Opaque(1.5708))}")
+  caseLine("CASE MathAtan2 float:1.0 float:2.0 -> ${atan2(Opaque(1.0), Opaque(2.0))}")
+  caseLine("CASE MathPow float:2.0 float:10.0 -> ${pow(Opaque(2.0), Opaque(10.0))}")
+  caseLine("CASE MathMin float:3.0 float:7.0 -> ${min(Opaque(3.0), Opaque(7.0))}")
+  caseLine("CASE MathMax float:3.0 float:7.0 -> ${max(Opaque(3.0), Opaque(7.0))}")
+  caseLine("CASE MathLogBase float:8.0 float:2.0 -> ${log(Opaque(8.0), Opaque(2.0))}")
+  caseLine("CASE MathClamp float:5.0 float:0.0 float:1.0 -> ${clamp(Opaque(5.0), Opaque(0.0), Opaque(1.0))}")
+  caseLine("CASE MathModuloFloored float:7.0 float:3.0 -> ${fmod(Opaque(7.0), Opaque(3.0))}")
+  caseLine("CASE MathModuloFloored float:-1.0 float:3.0 -> ${fmod(Opaque(-1.0), Opaque(3.0))}")
+  caseLine("END extendedMath")
+}
+
+// -- Bitwise (int output). --------------------------------------------------
+mod runBitwise() {
+  caseLine("BEGIN bitwise 9")
+  caseLine("CASE BitwiseAND int:12 int:10 -> ${Opaque(12) & Opaque(10)}")
+  caseLine("CASE BitwiseOR int:12 int:10 -> ${Opaque(12) | Opaque(10)}")
+  caseLine("CASE BitwiseXOR int:12 int:10 -> ${Opaque(12) ^ Opaque(10)}")
+  caseLine("CASE BitwiseNOT int:12 -> ${~Opaque(12)}")
+  caseLine("CASE BitwiseNAND int:12 int:10 -> ${BitNand(Opaque(12), Opaque(10))}")
+  caseLine("CASE BitwiseNOR int:12 int:10 -> ${BitNor(Opaque(12), Opaque(10))}")
+  caseLine("CASE BitwiseShiftLeft int:1 int:5 -> ${Opaque(1) << Opaque(5)}")
+  caseLine("CASE BitwiseShiftRight int:64 int:2 -> ${Opaque(64) >> Opaque(2)}")
+  caseLine("CASE BitwiseBitCount int:255 -> ${BitCount(Opaque(255))}")
+  caseLine("END bitwise")
+}
+
+// -- Rounding (float output; half-tie direction left unprobed). --------------
+mod runRounding() {
+  caseLine("BEGIN rounding 6")
+  caseLine("CASE Round float:2.6 -> ${round(Opaque(2.6))}")
+  caseLine("CASE Round float:-2.6 -> ${round(Opaque(-2.6))}")
+  caseLine("CASE Floor float:2.9 -> ${floor(Opaque(2.9))}")
+  caseLine("CASE Floor float:-2.1 -> ${floor(Opaque(-2.1))}")
+  caseLine("CASE Ceil float:2.1 -> ${ceil(Opaque(2.1))}")
+  caseLine("CASE Ceil float:-2.9 -> ${ceil(Opaque(-2.9))}")
+  caseLine("END rounding")
+}
+
 on grid {
   PrintToConsole("PROBE gate_semantics v${VERSION}")
   runEq()
@@ -753,5 +827,8 @@ on grid {
   runCompositeMath()
   runCompositeOps()
   runDeferredOps()
+  runExtendedMath()
+  runBitwise()
+  runRounding()
   PrintToConsole("PROBE done")
 }
