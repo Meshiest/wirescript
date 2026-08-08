@@ -3916,7 +3916,7 @@ on go { PrintToConsole(\"${table[0]}\") }
     }
 
     const ANON_CHIP_SRC: &str =
-        "var g: int = 7\nin t: exec\nchip {\n  var h: int = 0\n  on t { h = h + g }\n}\nout o = h\n";
+        "var g: int = 7\nin t: exec\nchip {\n  var h: int = 0\n  var k: int = 0\n  on t {\n    h = h + g\n    k = k + g\n  }\n}\nout o = h\nout p = k\n";
 
     fn is_boundary_pin(n: &Node) -> bool {
         n.note == Some("boundary_pin")
@@ -3924,9 +3924,10 @@ on go { PrintToConsole(\"${table[0]}\") }
 
     #[test]
     fn synthesized_pins_stack_on_edges() {
-        // Anonymous chip whose interior reads global g and whose state (h)
-        // is read at root: the chip module gets 2 boundary MicrochipInputs
-        // and 2 boundary MicrochipOutputs (verified against dumped IR).
+        // Anonymous chip whose interior reads global g (+ the exec input t) and
+        // whose state (h, k) is read at root: the chip module gets 2 boundary
+        // MicrochipInputs and 2 boundary MicrochipOutputs (verified against
+        // dumped IR).
         let root = lowered(ANON_CHIP_SRC);
         let chip = root.chips.values().next().expect("one chip");
         let l = layout_code(chip, &opts(), false);

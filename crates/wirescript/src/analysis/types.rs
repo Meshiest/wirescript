@@ -213,34 +213,38 @@ pub fn user_receiver_methods(
 }
 
 /// What kind of collection a receiver's declared type resolves to. Drives
-/// `.method` hover and completion dispatch onto the right method table.
-#[derive(Debug, Clone, PartialEq)]
+/// `.method` hover and completion dispatch onto the right method table. The
+/// concrete element types aren't needed for dispatch (both wire to opaque
+/// gates), so no payload — hovers display the receiver's declared type string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionKind {
     Array,
-    /// Carries the concrete map type spelling (`Map<string, int>`) for display.
-    Map(String),
+    Map,
 }
 
-/// Resolve a receiver's declared type STRING to a [`CollectionKind`], chasing
-/// through `type Name = <body>` aliases recorded as `type` symbols (bounded to
-/// guard against alias cycles). A direct `T[]` / `Map<...>` short-circuits.
-/// Returns `None` for any non-collection type — including a generic-alias
-/// instance like `Grid<int>`, whose base alias isn't looked up (a limitation
-/// that only matters once generic type aliases ship).
+/// Resolve a receiver's declared type STRING to a [`CollectionKind`], following
+/// `type Name = <body>` aliases recorded as `type` symbols (bounded to guard
+/// against alias cycles). Recognizes both the postfix (`T[]`) and generic
+/// (`Array<T>`/`Map<K, V>`) spellings, and resolves a generic-alias instance
+/// like `Grid<int>` by its BASE name (`Grid`) — only the collection SHAPE
+/// matters here, so the alias body's still-unsubstituted params are irrelevant.
+/// Returns `None` for any non-collection type.
 pub fn collection_kind(ty: &str, symbols: &[crate::analysis::SymbolDef]) -> Option<CollectionKind> {
     let mut cur = ty.trim().to_string();
     for _ in 0..16 {
         let c = cur.trim();
-        if c.ends_with("[]") {
+        if c.ends_with("[]") || c.starts_with("Array<") {
             return Some(CollectionKind::Array);
         }
         if c.starts_with("Map<") {
-            return Some(CollectionKind::Map(c.to_string()));
+            return Some(CollectionKind::Map);
         }
-        // A bare type name: follow a matching `type` alias, if there is one.
+        // A bare name (`Scores`) or a generic-alias instance (`Grid<int>`): follow
+        // the matching `type` alias by its base name and continue with its body.
+        let base = c.split_once('<').map_or(c, |(b, _)| b.trim());
         let body = symbols
             .iter()
-            .find(|s| s.kind == "type" && s.name == c)
+            .find(|s| s.kind == "type" && s.name == base)
             .and_then(|s| s.ty.clone())?;
         cur = body;
     }
@@ -342,19 +346,24 @@ mod tests {
         let syms = vec![
             sd("Scores", "Map<string, int>"),
             sd("Ids", "int[]"),
-            sd("A", "B"),              // alias chain A -> B -> Map
+            sd("A", "B"),                 // alias chain A -> B -> Map
             sd("B", "Map<int, int>"),
-            sd("Cyc", "Cyc"),          // self-referential alias must not loop
+            sd("Grid", "Map<string, T>"), // GENERIC alias: body keeps the param T
+            sd("Cyc", "Cyc"),             // self-referential alias must not loop
         ];
-        let map = |s: &str| Some(CollectionKind::Map(s.to_string()));
-        // Direct annotations.
-        assert_eq!(collection_kind("Map<string, int>", &syms), map("Map<string, int>"));
-        assert_eq!(collection_kind("int[]", &syms), Some(CollectionKind::Array));
+        let map = Some(CollectionKind::Map);
+        let arr = Some(CollectionKind::Array);
+        // Direct annotations, both spellings.
+        assert_eq!(collection_kind("Map<string, int>", &syms), map);
+        assert_eq!(collection_kind("int[]", &syms), arr);
+        assert_eq!(collection_kind("Array<int>", &syms), arr);
         // Single-hop aliases.
-        assert_eq!(collection_kind("Scores", &syms), map("Map<string, int>"));
-        assert_eq!(collection_kind("Ids", &syms), Some(CollectionKind::Array));
+        assert_eq!(collection_kind("Scores", &syms), map);
+        assert_eq!(collection_kind("Ids", &syms), arr);
         // Multi-hop alias chain.
-        assert_eq!(collection_kind("A", &syms), map("Map<int, int>"));
+        assert_eq!(collection_kind("A", &syms), map);
+        // Generic-alias INSTANCE resolves by base name.
+        assert_eq!(collection_kind("Grid<int>", &syms), map);
         // Non-collection and cycle both yield None (no hang).
         assert_eq!(collection_kind("int", &syms), None);
         assert_eq!(collection_kind("Cyc", &syms), None);

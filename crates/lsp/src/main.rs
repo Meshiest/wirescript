@@ -1111,7 +1111,7 @@ fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionIt
                     items.push(method_item(m.name, m.signature, m.doc));
                 }
             }
-            CollectionKind::Map(_) => {
+            CollectionKind::Map => {
                 for m in MAP_METHODS {
                     items.push(method_item(m.name, m.signature, m.doc));
                 }
@@ -1943,6 +1943,17 @@ mod tests {
         assert!(ls.iter().any(|l| l == "get"), "get missing on aliased map: {ls:?}");
         assert!(ls.iter().any(|l| l == "has"), "has missing on aliased map: {ls:?}");
         assert!(!ls.iter().any(|l| l == "push"), "array-only `push` leaked onto aliased map: {ls:?}");
+    }
+
+    #[test]
+    fn var_map_via_generic_alias_instance_dot_shows_map_methods() {
+        // `type Grid<T> = Map<string, T>`; `var g: Grid<int>` — the generic-alias
+        // instance resolves by base name to the map table.
+        let src = "type Grid<T> = Map<string, T>\nvar g: Grid<int>\ng.";
+        let ls = labels(src, 2, 2);
+        assert!(ls.iter().any(|l| l == "get"), "get missing on generic-aliased map: {ls:?}");
+        assert!(ls.iter().any(|l| l == "set"), "set missing on generic-aliased map: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "push"), "array-only `push` leaked: {ls:?}");
     }
 
     #[test]

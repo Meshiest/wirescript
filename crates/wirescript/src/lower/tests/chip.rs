@@ -947,6 +947,30 @@ on t {
 }
 
 #[test]
+fn map_get_with_exec_arg_lowers_in_pure_context() {
+    // `m.get(k, exec = <trigger>)` in a PURE binding drives the read off an
+    // explicit trigger (mirrors the array `lut.get(i, exec = …)` path), so it must
+    // lower to a real Map_Get gate — not the `_Unsupported` placeholder it used to.
+    // `Change(k).exec` is a bare-exec builtin result used as the trigger — the
+    // same shape the user hit — so this also guards the `.exec`-on-exec lowering.
+    let src = "\
+var teams: Map<string, string> = { \"red\" => \"f00\" }
+in k: string
+let color = teams.get(k, exec = Change(k).exec)
+out status: string = color";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "pure-context map get with exec= must not lower to _Unsupported"
+    );
+    assert!(
+        has_gate(&r, crate::ir::gate_class::MAP_GET),
+        "expected a Map_Get gate for the pure-context map get"
+    );
+}
+
+#[test]
 fn baked_map_literal_emits_brz() {
     // A constant map literal bakes into the Pseudo_MapVar's InitialValue;
     // this exercises the populated-variant emit path end to end.

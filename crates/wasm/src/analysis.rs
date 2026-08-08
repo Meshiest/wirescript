@@ -272,7 +272,7 @@ pub fn completions(
                         push_method(&mut items, m.name, m.signature, m.doc);
                     }
                 }
-                wirescript::analysis::CollectionKind::Map(_) => {
+                wirescript::analysis::CollectionKind::Map => {
                     for m in wirescript::catalog::maps::MAP_METHODS {
                         push_method(&mut items, m.name, m.signature, m.doc);
                     }

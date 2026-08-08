@@ -291,13 +291,14 @@ fn hover_collection_method(
     let obj_start = word_start_in_line(l, obj_end);
     let obj_name = &l[obj_start..obj_end];
 
-    let recv = symbols
+    // The receiver's DECLARED type string (`Map<string, int>`, `Grid<int>`, ...)
+    // drives dispatch and is what the map hover displays — the type the user wrote.
+    let declared = symbols
         .iter()
         .find(|s| s.name == obj_name)
-        .and_then(|s| s.ty.as_deref())
-        .map(|ty| collection_kind(ty, symbols));
-    match recv {
-        Some(Some(CollectionKind::Map(disp))) => hover_map_method(word, &disp),
+        .and_then(|s| s.ty.as_deref());
+    match declared.map(|ty| collection_kind(ty, symbols)) {
+        Some(Some(CollectionKind::Map)) => hover_map_method(word, declared.unwrap()),
         Some(Some(CollectionKind::Array)) => hover_array_method_named(word),
         // A known receiver of a non-collection type (record, scalar, ...): `.word`
         // isn't a collection method on it, so let the field/builtin hovers later
@@ -1793,6 +1794,23 @@ on t { let a = s.get(\"x\") }";
             h.as_deref().is_some_and(|h| h.contains("map.get")),
             "aliased map `.get` should hover as a map method, got: {h:?}"
         );
+    }
+
+    #[test]
+    fn map_method_via_generic_alias_instance_hovers_as_map() {
+        // A generic type alias instantiated to a map (`type Grid<T> = Map<string,
+        // T>`; `var g: Grid<int>`) resolves by its base name, so `.get` dispatches
+        // to the map table and the hover shows the declared type `Grid<int>`.
+        let src = "\
+type Grid<T> = Map<string, T>
+var g: Grid<int>
+in t: exec
+on t { let a = g.get(\"x\") }";
+        let l = src.lines().nth(3).unwrap();
+        let col = l.find(".get").unwrap() + 2;
+        let h = hover_for(src, 3, col).expect("generic-aliased map `.get` should hover");
+        assert!(h.contains("map.get"), "should hover as a map method: {h}");
+        assert!(h.contains("Grid<int>"), "should show the declared type: {h}");
     }
 
     #[test]

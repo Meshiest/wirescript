@@ -564,3 +564,97 @@ fn doc_comment_renders_under_the_title() {
     }
     assert!(found, "expected the Foo header with its doc comment");
 }
+
+/// A `var m: Map<K, V>` must get the same floating name label as an ordinary
+/// var/array (its var name) — before, `Pseudo_MapVar` fell through the emit's
+/// label match and got nothing.
+#[test]
+fn map_var_gets_a_name_label() {
+    use brdb::IntoReader;
+    use brdb::schema::BrdbValue;
+
+    let cr = wirescript::compile::compile(CompileInput {
+        source: "var scores: Map<string, int>\nin t: exec\non t { let g = scores.get(\"a\") }\n",
+        file: "maplabel.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    })
+    .expect("should compile to brz");
+    let path = std::env::temp_dir().join("ws_map_label_test.brz");
+    std::fs::write(&path, &cr.brz).expect("write brz");
+    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
+
+    let mut texts: Vec<String> = Vec::new();
+    for gid in 1..32 {
+        let chunks = match reader.brick_chunk_index(gid) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        for chunk in chunks {
+            if chunk.num_components == 0 {
+                continue;
+            }
+            let (_soa, comps) = reader
+                .component_chunk_soa(gid, chunk.index)
+                .expect("read components");
+            for c in comps {
+                if let Some(BrdbValue::String(text)) = c.get("Text") {
+                    texts.push(text.clone());
+                }
+            }
+        }
+    }
+    assert!(
+        texts.iter().any(|t| t == "scores"),
+        "map var `scores` should get a floating name label; label texts: {texts:?}"
+    );
+}
+
+/// The map-op `Key`/`Value` DATA fields must be baked with the map's CONCRETE
+/// key/value type. A generic `any` Key bakes a float `0.0`; for a string-keyed
+/// map that is a type the game rejects at load, failing every wire into the
+/// Map_Get component (including its `Exec` — the "map get has no inbound exec"
+/// bug). The `Key` field of a `Map<string, _>` get must therefore be a String.
+#[test]
+fn map_get_key_data_field_matches_key_type() {
+    use brdb::IntoReader;
+    use brdb::schema::BrdbValue;
+
+    let cr = wirescript::compile::compile(CompileInput {
+        source: "var m: Map<string, int> = { \"a\" => 1 }\nin t: exec\non t { let g = m.get(\"a\") }\n",
+        file: "mapkey.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    })
+    .expect("should compile to brz");
+    let path = std::env::temp_dir().join("ws_map_key_type_test.brz");
+    std::fs::write(&path, &cr.brz).expect("write brz");
+    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
+
+    let mut checked = false;
+    for gid in 1..32 {
+        let chunks = match reader.brick_chunk_index(gid) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        for chunk in chunks {
+            if chunk.num_components == 0 {
+                continue;
+            }
+            let (_soa, comps) = reader
+                .component_chunk_soa(gid, chunk.index)
+                .expect("read components");
+            for c in comps {
+                // The Map_Get component is the one carrying both `Key` and `bFound`.
+                if let (Some(key), Some(_)) = (c.get("Key"), c.get("bFound")) {
+                    checked = true;
+                    assert!(
+                        matches!(key, BrdbValue::String(_)),
+                        "a string-keyed map's Map_Get `Key` data field must be a String, got {key:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked, "expected a Map_Get component carrying a `Key` field");
+}

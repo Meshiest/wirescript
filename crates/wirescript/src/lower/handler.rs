@@ -594,6 +594,21 @@ pub(super) fn is_handler_like(d: &TopDecl) -> bool {
     }
 }
 
+/// A pure, reactive top-level declaration — `let`/`out`/`var`/`buffer` — whose
+/// value defines signal flow, as opposed to an imperative continuation
+/// (`assign`/`if`/expr-statement) that legitimately runs after — and chains
+/// from — a preceding handler's exit. A pure declaration must be lowered with a
+/// cleared `current_exec` so its reads stay pure and never splice onto that
+/// handler exec chain (which would, e.g., turn `let c = "${x}"` into an
+/// exec-context `Exec_Var_Get` on the handler's spine, and — via `on Change(v)`'s
+/// synthetic `let _on_expr = Change(v)` — misplace a trigger's own input read).
+pub(super) fn is_pure_top_decl(d: &TopDecl) -> bool {
+    matches!(
+        d,
+        TopDecl::Let(_) | TopDecl::Out(_) | TopDecl::Var(_) | TopDecl::Buffer(_)
+    )
+}
+
 /// Union all accumulated handler end execs into a single Union gate,
 /// setting `current_exec` so subsequent code chains from every handler's exit.
 pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {

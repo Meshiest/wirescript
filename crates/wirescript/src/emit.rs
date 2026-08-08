@@ -1434,7 +1434,8 @@ fn emit_module(
                 microchip_io_label(node).map(|s| (s, LABEL_LINE_HEIGHT))
             }
             "BrickComponentType_WireGraphPseudo_Var"
-            | "BrickComponentType_WireGraphPseudo_ArrayVar" => {
+            | "BrickComponentType_WireGraphPseudo_ArrayVar"
+            | "BrickComponentType_WireGraphPseudo_MapVar" => {
                 let label = node.properties.get(&*sym::NAME_LABEL).and_then(named);
                 // The var's own name still drives the small tags on its
                 // Var_Get/Set gates (via var_labels), even when its own big
@@ -1460,12 +1461,13 @@ fn emit_module(
             // they access, traced through the gate's (Array)VarRef wire.
             // The var node is always emitted first, so its label is known.
             c if c.starts_with("BrickComponentType_WireGraph_Exec_Var_")
-                || c.starts_with("BrickComponentType_WireGraph_Exec_ArrayVar_") =>
+                || c.starts_with("BrickComponentType_WireGraph_Exec_ArrayVar_")
+                || c.starts_with("BrickComponentType_WireGraph_Exec_MapVar_") =>
             {
                 node.ports
                     .inputs
                     .iter()
-                    .find(|p| matches!(resolve(p.name), "VarRef" | "ArrayVarRef"))
+                    .find(|p| matches!(resolve(p.name), "VarRef" | "ArrayVarRef" | "MapVarRef"))
                     .and_then(|p| {
                         let port = WirePort::from_name(resolve(p.name));
                         ctx.wire_sources.get(&(node.id, port))

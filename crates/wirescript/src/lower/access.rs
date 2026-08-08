@@ -314,6 +314,15 @@ pub(super) fn lower_field_access(
                 if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
                     return port;
                 }
+                // `.exec` on a call whose result IS an exec (e.g. `Change(x).exec`,
+                // where the exec output port is named `OnChanged`, not `exec`)
+                // denotes that exec — return the call's exec output directly rather
+                // than degrading to an `_Unsupported` placeholder. Mirrors how a
+                // chip's `.exec` completion field resolves via the named-port path
+                // above; this covers builtins that return a bare exec.
+                if field == "exec" && matches!(ctx.type_of(obj), Type::Exec) {
+                    return obj_port;
+                }
             }
             synthesise_unsupported(ctx, e)
         }
@@ -580,61 +589,83 @@ pub(super) fn lower_map_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    let value_ty = match &map_type {
-        Type::Map(_, v) => v.as_ref().clone(),
-        _ => Type::Any,
+    // The Key/Value ports MUST carry the map's concrete key/value types, not
+    // `any`: a port's declared type drives the baked DATA-field default in the
+    // component (the "last value"). A generic `any` Key bakes a float `0.0`,
+    // which for a string-keyed map is a type the game rejects at load — the
+    // whole component (and every wire into it, including Exec) fails to connect.
+    // Mirror how `Value` already keys off `value_ty`.
+    let (key_ty, value_ty) = match &map_type {
+        Type::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
+        _ => (Type::Any, Type::Any),
     };
-    let first_key = |ctx: &mut LowerCtx| match args.first() {
+
+    // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
+    // of the surrounding exec chain, so a read like
+    // `m.get(k, exec = Change(k).exec)` works in a PURE context (e.g. an output
+    // binding). Mirrors the array-method path. The op is a leaf then, so restore
+    // the caller's exec afterward rather than advancing it.
+    let exec_arg: Option<&Expr> = args.iter().find_map(|a| match a {
+        CallArg::Named { name, value } if name == "exec" => Some(value),
+        _ => None,
+    });
+    let saved_exec = ctx.current_exec;
+    if let Some(exec_expr) = exec_arg {
+        let src = lower_expr(ctx, exec_expr);
+        ctx.current_exec = Some(src);
+    }
+
+    // Positional args only — the `exec =` named arg is handled above, so the key
+    // is the first POSITIONAL arg even when an `exec =` precedes it.
+    let pos_args: Vec<&CallArg> = args
+        .iter()
+        .filter(|a| matches!(a, CallArg::Positional(_)))
+        .collect();
+    let key_at = |ctx: &mut LowerCtx, i: usize| match pos_args.get(i).copied() {
         Some(CallArg::Positional(k)) => Some(lower_expr(ctx, k)),
         _ => None,
     };
-    match method {
-        "get" => {
-            let Some(key) = first_key(ctx) else {
-                return synthesise_unsupported(ctx, e);
-            };
-            map_exec_op(
+
+    let method_result = match method {
+        "get" => match key_at(ctx, 0) {
+            Some(key) => map_exec_op(
                 ctx,
                 range,
                 map_ref,
                 gc::MAP_GET,
-                vec![(WirePort::Key, Type::Any, key)],
+                vec![(WirePort::Key, key_ty.clone(), key)],
                 vec![(WirePort::Value, value_ty), (WirePort::BFound, Type::Bool)],
                 WirePort::Value,
-            )
-        }
-        "set" => {
-            let (key, val) = match (args.first(), args.get(1)) {
-                (Some(CallArg::Positional(k)), Some(CallArg::Positional(v))) => {
-                    (lower_expr(ctx, k), lower_expr(ctx, v))
-                }
-                _ => return synthesise_unsupported(ctx, e),
-            };
-            map_exec_op(
+            ),
+            None => synthesise_unsupported(ctx, e),
+        },
+        "set" => match (key_at(ctx, 0), key_at(ctx, 1)) {
+            (Some(key), Some(val)) => map_exec_op(
                 ctx,
                 range,
                 map_ref,
                 gc::MAP_SET,
-                vec![(WirePort::Key, Type::Any, key), (WirePort::Value, Type::Any, val)],
+                vec![(WirePort::Key, key_ty.clone(), key), (WirePort::Value, value_ty, val)],
                 vec![],
                 WirePort::ExecOut,
-            )
-        }
-        "has" | "remove" => {
-            let Some(key) = first_key(ctx) else {
-                return synthesise_unsupported(ctx, e);
-            };
-            let gate = if method == "has" { gc::MAP_HAS } else { gc::MAP_REMOVE };
-            map_exec_op(
-                ctx,
-                range,
-                map_ref,
-                gate,
-                vec![(WirePort::Key, Type::Any, key)],
-                vec![(WirePort::BFound, Type::Bool)],
-                WirePort::BFound,
-            )
-        }
+            ),
+            _ => synthesise_unsupported(ctx, e),
+        },
+        "has" | "remove" => match key_at(ctx, 0) {
+            Some(key) => {
+                let gate = if method == "has" { gc::MAP_HAS } else { gc::MAP_REMOVE };
+                map_exec_op(
+                    ctx,
+                    range,
+                    map_ref,
+                    gate,
+                    vec![(WirePort::Key, key_ty.clone(), key)],
+                    vec![(WirePort::BFound, Type::Bool)],
+                    WirePort::BFound,
+                )
+            }
+            None => synthesise_unsupported(ctx, e),
+        },
         "clear" => map_exec_op(ctx, range, map_ref, gc::MAP_CLEAR, vec![], vec![], WirePort::ExecOut),
         "length" => map_exec_op(
             ctx,
@@ -645,11 +676,8 @@ pub(super) fn lower_map_method(
             vec![(WirePort::Length, Type::Int)],
             WirePort::Length,
         ),
-        "copyFrom" => {
-            let Some(src) = resolve_map_ref_arg(ctx, args.first()) else {
-                return synthesise_unsupported(ctx, e);
-            };
-            map_exec_op(
+        "copyFrom" => match resolve_map_ref_arg(ctx, pos_args.first().copied()) {
+            Some(src) => map_exec_op(
                 ctx,
                 range,
                 map_ref,
@@ -657,25 +685,33 @@ pub(super) fn lower_map_method(
                 vec![(WirePort::SourceRef, Type::Ref(Box::new(Type::Any)), src)],
                 vec![],
                 WirePort::ExecOut,
-            )
-        }
-        "keys" | "values" => {
-            let Some(dest) = resolve_array_ref_arg(ctx, args.first()) else {
-                return synthesise_unsupported(ctx, e);
-            };
-            let gate = if method == "keys" { gc::MAP_GET_KEYS } else { gc::MAP_GET_VALUES };
-            map_exec_op(
-                ctx,
-                range,
-                map_ref,
-                gate,
-                vec![(WirePort::ArrayVarRef, Type::Array(Box::new(Type::Any)), dest)],
-                vec![],
-                WirePort::ExecOut,
-            )
-        }
+            ),
+            None => synthesise_unsupported(ctx, e),
+        },
+        "keys" | "values" => match resolve_array_ref_arg(ctx, pos_args.first().copied()) {
+            Some(dest) => {
+                let gate = if method == "keys" { gc::MAP_GET_KEYS } else { gc::MAP_GET_VALUES };
+                map_exec_op(
+                    ctx,
+                    range,
+                    map_ref,
+                    gate,
+                    vec![(WirePort::ArrayVarRef, Type::Array(Box::new(Type::Any)), dest)],
+                    vec![],
+                    WirePort::ExecOut,
+                )
+            }
+            None => synthesise_unsupported(ctx, e),
+        },
         _ => synthesise_unsupported(ctx, e),
+    };
+
+    // An explicit `exec =` trigger makes this op a leaf: restore the caller's exec
+    // context so the surrounding (possibly pure) lowering is unaffected.
+    if exec_arg.is_some() {
+        ctx.current_exec = saved_exec;
     }
+    method_result
 }
 
 pub(super) fn lower_array_method(

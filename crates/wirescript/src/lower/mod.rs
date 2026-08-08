@@ -170,7 +170,19 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         if !ctx.handler_end_execs.is_empty() && !is_handler_like(d) {
             flush_handler_end_execs(&mut ctx);
         }
-        lower_decl(&mut ctx, d);
+        // The flush above sets `current_exec` for imperative top-level statements
+        // (assign / if / expr) that genuinely continue from a handler. A pure,
+        // reactive declaration (let / out / var / buffer) must NOT inherit it —
+        // its reads are pure signal flow, not steps on the handler's spine — so
+        // lower it with a cleared exec, then restore for any following statement.
+        if is_pure_top_decl(d) {
+            let saved_exec = ctx.current_exec;
+            ctx.current_exec = None;
+            lower_decl(&mut ctx, d);
+            ctx.current_exec = saved_exec;
+        } else {
+            lower_decl(&mut ctx, d);
+        }
     }
 
     // Pass 2b: resolve runtime `@label(expr)` on top-level vars into dynamic

@@ -2062,6 +2062,20 @@ impl<'a> Parser<'a> {
                 .unwrap_or_else(|| self.tokens.last().unwrap())
         };
 
+        // `on Foo(...)` where `Foo` is a builtin CALL that is NOT an event is a
+        // call-expression trigger — `on ServerUptime()` fires whenever the call's
+        // value changes, desugared like any other expr trigger into
+        // `let _on_expr_N = Foo(...)` + `on _on_expr_N`. This is distinct from the
+        // event-with-args form (`on Clock(...)`, `on CustomEvent(...)`), whose name
+        // resolves as an event and stays a plain trigger with config/data args.
+        if get(i).kind == TokenKind::Ident
+            && get(i + 1).kind == TokenKind::LParen
+            && crate::catalog::events::find_event(&get(i).text).is_none()
+            && crate::catalog::calls::calls().get(get(i).text.as_str()).is_some()
+        {
+            return true;
+        }
+
         // Skip one or more `|`-separated trigger atoms.  Each atom is:
         //   `!*  ident  (.ident)?`
         loop {
@@ -3960,6 +3974,48 @@ mod tests {
         match &s.decls[4] {
             TopDecl::Handler(h) => match &h.trigger {
                 Trigger::Ident { name, .. } => assert_eq!(name, "_on_expr_0"),
+                _ => panic!("expected Ident trigger"),
+            },
+            d => panic!("expected Handler, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn handler_call_trigger_desugars_to_let_plus_handler() {
+        // `on ServerUptime() { … }` — a builtin CALL used as a trigger — desugars
+        // to `let _on_expr_0 = ServerUptime()` + `on _on_expr_0 { … }`, exactly
+        // like the value-capture pattern `let t = ServerUptime(); on t`. This must
+        // NOT be mistaken for the event-with-args form (`on Clock(...)`).
+        let src = "on ServerUptime() { BroadcastChatMessage(\"tick\") }";
+        let s = parse_ok(src);
+        // Expected: Let(_on_expr_0 = ServerUptime()), Handler(_on_expr_0).
+        assert_eq!(s.decls.len(), 2, "decls: {:?}", s.decls);
+        match &s.decls[0] {
+            TopDecl::Let(l) => match &l.binding {
+                LetBinding::Ident { name, .. } => assert_eq!(name, "_on_expr_0"),
+                _ => panic!("expected Ident binding"),
+            },
+            d => panic!("expected Let, got {:?}", d),
+        }
+        match &s.decls[1] {
+            TopDecl::Handler(h) => match &h.trigger {
+                Trigger::Ident { name, .. } => assert_eq!(name, "_on_expr_0"),
+                _ => panic!("expected Ident trigger"),
+            },
+            d => panic!("expected Handler, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn handler_event_with_args_is_not_a_call_trigger() {
+        // `on Clock(enabled = true)` stays a plain event handler — its name IS an
+        // event, so the call-trigger path must not hijack it into an expr trigger.
+        let src = "on Clock(enabled = true) { }";
+        let s = parse_ok(src);
+        assert_eq!(s.decls.len(), 1, "no synthetic let for an event: {:?}", s.decls);
+        match &s.decls[0] {
+            TopDecl::Handler(h) => match &h.trigger {
+                Trigger::Ident { name, .. } => assert_eq!(name, "Clock"),
                 _ => panic!("expected Ident trigger"),
             },
             d => panic!("expected Handler, got {:?}", d),

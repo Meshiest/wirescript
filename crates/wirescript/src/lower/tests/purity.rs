@@ -234,3 +234,30 @@ on RoundStart {
         "static var should NOT emit any Exec_Var_Set gates, found {set_count}"
     );
 }
+
+#[test]
+fn pure_top_level_let_after_handler_reads_purely() {
+    // A pure, reactive top-level binding (`let`/`out`) that FOLLOWS an `on`
+    // handler must read its vars purely — never spliced onto the handler's exec
+    // chain as an `Exec_Var_Get`. The flush-handler-ends machinery sets
+    // `current_exec` for genuine imperative continuations (assign/if/expr); a
+    // pure `let` inheriting it tangles unrelated bindings, and — via the
+    // `on Change(v)` synthetic `let _on_expr = Change(v)` — misplaces a trigger's
+    // own input read, corrupting the exec chain into a following gate.
+    let src = "var x: int = 0\nin t: exec\non t { x = 1 }\nlet y = x + 1\nout o = y\n";
+    let r = compile(src);
+    assert!(
+        r.diagnostics
+            .iter()
+            .all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "unexpected errors: {:?}",
+        r.diagnostics
+    );
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Get"),
+        "a pure top-level `let` after a handler must read its var purely, not via an Exec_Var_Get"
+    );
+}
