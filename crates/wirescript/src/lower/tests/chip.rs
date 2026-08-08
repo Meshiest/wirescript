@@ -927,9 +927,9 @@ fn map_var_emits_brz() {
     let src = r#"
 in t: exec
 var e: entity
-var scores: Dict<string, int>
-var byId: Dict<int, entity>
-var pos: Dict<string, vector>
+var scores: Map<string, int>
+var byId: Map<int, entity>
+var pos: Map<string, vector>
 on t {
   scores.set("a", 1)
   let g = scores.get("a")
@@ -951,7 +951,7 @@ fn baked_map_literal_emits_brz() {
     // A constant map literal bakes into the Pseudo_MapVar's InitialValue;
     // this exercises the populated-variant emit path end to end.
     let src =
-        "var scores: Dict<int, int> = { :red => 10, :blue => 20 }\nin t: exec\non t { let g = scores.get(:red) }\n";
+        "var scores: Map<int, int> = { :red => 10, :blue => 20 }\nin t: exec\non t { let g = scores.get(:red) }\n";
     let r = compile(src);
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);

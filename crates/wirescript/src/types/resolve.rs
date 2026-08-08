@@ -312,12 +312,12 @@ fn resolve_type_at_depth(
                 ("Ref", [v]) => {
                     Type::Ref(Box::new(resolve_type_at_depth(v, cx, diags, depth, in_progress)))
                 }
-                ("Dict", [k, v]) => {
+                ("Map", [k, v]) => {
                     let key = resolve_type_at_depth(k, cx, diags, depth, in_progress);
                     let val = resolve_type_at_depth(v, cx, diags, depth, in_progress);
-                    // A dict is keyed by a hashed slot, so only int, string, and
+                    // A map is keyed by a hashed slot, so only int, string, and
                     // object (entity/character/controller) keys have a
-                    // representation. A generic param key (`Dict<K, V>`) is
+                    // representation. A generic param key (`Map<K, V>`) is
                     // validated per concrete instantiation; an already-errored
                     // `any` key is left alone.
                     if !matches!(
@@ -333,7 +333,7 @@ fn resolve_type_at_depth(
                         diags.push(Diagnostic::error(
                             "WS039",
                             format!(
-                                "dict key type must be int, string, or an object \
+                                "map key type must be int, string, or an object \
                                  (entity/character/controller), got {key}"
                             ),
                             k.range().clone(),

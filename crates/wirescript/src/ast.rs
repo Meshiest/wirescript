@@ -249,13 +249,13 @@ pub struct ArrayDecl {
     pub range: SourceRange,
 }
 
-/// `map name: Dict<K, V>` — a keyed variable collection (parallels `ArrayDecl`).
+/// `map name: Map<K, V>` — a keyed variable collection (parallels `ArrayDecl`).
 #[derive(Clone, Debug)]
 pub struct MapDecl {
     pub name: String,
     pub key_type: TypeExpr,
     pub value_type: TypeExpr,
-    /// Optional literal initializer: `map m: Dict<int, int> = { 1 => 2 }`.
+    /// Optional literal initializer: `map m: Map<int, int> = { 1 => 2 }`.
     pub init: Option<Expr>,
     pub range: SourceRange,
 }
@@ -556,7 +556,7 @@ pub enum TypeExpr {
         fields: Vec<RecordTypeField>,
         range: SourceRange,
     },
-    /// A generic application `Name<Arg, ...>` (e.g. `Dict<string, int>`).
+    /// A generic application `Name<Arg, ...>` (e.g. `Map<string, int>`).
     /// `Array<V>` / `Ref<V>` are desugared to `Array` / `Ref` at parse time, so
     /// this carries the remaining generics (currently `Map`) resolved by
     /// `type_of_type_expr`.

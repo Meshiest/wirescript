@@ -1377,17 +1377,17 @@ mod inc(v: Ref<int>) { v = v + 1 }   // same as *int
 
 `Array<V>` and `Ref<V>` are exact aliases of `V[]` and `*V`.
 
-## Dicts (`var m: Dict<K, V>`)
+## Maps (`var m: Map<K, V>`)
 
-A dict is a keyed variable collection (the `MapVar` gate family), declared as a `var`
-of the generic `Dict<K, V>` type. Keys must be `int`, `string`, or an object reference
+A map is a keyed variable collection (the `MapVar` gate family), declared as a `var`
+of the generic `Map<K, V>` type. Keys must be `int`, `string`, or an object reference
 (entity/character/controller) — any other key type is a **`WS039`** error; values may
 be any wire-storable scalar (int/float/bool/string/vector/rotator/quat/color/object).
-A dict starts empty unless given a constant literal initializer (`= {}` is the explicit
+A map starts empty unless given a constant literal initializer (`= {}` is the explicit
 empty form).
 
 ```wirescript
-var scores: Dict<string, int>
+var scores: Map<string, int>
 var names: string[]
 
 on tick {
@@ -1403,36 +1403,36 @@ on tick {
 ```
 
 Methods (exec context, like array methods): `set(key, value)`, `get(key)`,
-`has(key)`, `remove(key)`, `clear()`, `copyFrom(otherDict)`, `length()`,
+`has(key)`, `remove(key)`, `clear()`, `copyFrom(otherMap)`, `length()`,
 `keys(destArray)`, `values(destArray)`.
 
-### Dict literals
+### Map literals
 
-A `var` of `Dict<K, V>` type can be given literal contents with `{ ... }`.
+A `var` of `Map<K, V>` type can be given literal contents with `{ ... }`.
 Entries use `=>` for any key expression, or `:` for a string / atom / int
 *literal* key (or a bracketed `[expr]` computed key):
 
 ```wirescript
-var m: Dict<int, int>    = { :red => 10, 7 => 0 }    // arrow -- any key
-var s: Dict<string, int> = { "red": 1, "blue": 2 }    // colon -- string literal key
-var a: Dict<int, int>    = { :red: 1, :blue: 2 }      // colon -- atom literal key
-var e: Dict<int, int>    = {}                         // explicit empty dict
+var m: Map<int, int>    = { :red => 10, 7 => 0 }    // arrow -- any key
+var s: Map<string, int> = { "red": 1, "blue": 2 }    // colon -- string literal key
+var a: Map<int, int>    = { :red: 1, :blue: 2 }      // colon -- atom literal key
+var e: Map<int, int>    = {}                         // explicit empty map
 on tick { m = { [runtimeKey] => x } }                // computed key -- desugars
 ```
 
-A **constant** dict literal (every key and value a compile-time constant) in a
-`var` initializer bakes straight into the dict at rest -- no runtime
-gates, the dict loads pre-populated. An initializer with any non-constant
+A **constant** map literal (every key and value a compile-time constant) in a
+`var` initializer bakes straight into the map at rest -- no runtime
+gates, the map loads pre-populated. An initializer with any non-constant
 entry doesn't bake -- its entries are dropped (with a compiler warning) and
-the dict loads empty; build it at runtime instead. Inside an exec handler,
+the map loads empty; build it at runtime instead. Inside an exec handler,
 `m = { ... }` (or a literal with runtime keys/values) desugars to `clear()`
 followed by one `set(key, value)` per entry, in source order -- the same
 clear-then-populate shape as [array literal assignment](statements.md).
 
-`{ foo: 1 }` with a **bare identifier** key is a record literal, not a dict --
-`:` only introduces a dict key for a string/atom/int literal or a `[expr]`
-computed key. Use `foo => 1` or `[foo]: 1` to key a dict by an identifier's
+`{ foo: 1 }` with a **bare identifier** key is a record literal, not a map --
+`:` only introduces a map key for a string/atom/int literal or a `[expr]`
+computed key. Use `foo => 1` or `[foo]: 1` to key a map by an identifier's
 value.
 
-Assigning a whole dict from another dict variable (`m = m2`) is not supported
--- there is no whole-dict-copy gate. Use `m.copyFrom(m2)` instead.
+Assigning a whole map from another map variable (`m = m2`) is not supported
+-- there is no whole-map-copy gate. Use `m.copyFrom(m2)` instead.

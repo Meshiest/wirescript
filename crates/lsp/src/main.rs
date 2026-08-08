@@ -10,13 +10,15 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    find_all_references, find_asset_refs, find_enclosing_call, find_name_range, format_wirescript,
-    hover_at, member_receiver_at, named_arg_value, param_names, receiver_methods, record_field_names,
-    rename_edit_text, swizzle_fields, type_str, user_receiver_methods, word_at, AssetRef,
-    InlayHintKind, ResourceEstimate, SymbolDef, TextRange, TypeMap, VarReadContextMap,
+    collection_kind, find_all_references, find_asset_refs, find_enclosing_call, find_name_range,
+    format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names, receiver_methods,
+    record_field_names, rename_edit_text, swizzle_fields, type_str, user_receiver_methods, word_at,
+    AssetRef, CollectionKind, InlayHintKind, ResourceEstimate, SymbolDef, TextRange, TypeMap,
+    VarReadContextMap,
 };
 use wirescript::ast::Script;
 use wirescript::catalog::arrays::ARRAY_METHODS;
+use wirescript::catalog::maps::MAP_METHODS;
 use wirescript::catalog::calls::calls;
 use wirescript::catalog::events::events;
 use wirescript::lexer::KEYWORDS;
@@ -1085,20 +1087,35 @@ fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionIt
         }
     };
 
-    // Arrays — declared with `array` or any array-typed value (e.g. a
-    // `var ids: string[]`). All methods come from the canonical table.
-    let is_array = sym.is_some_and(|s| {
-        s.kind == "array" || s.ty.as_deref().is_some_and(|t| t.ends_with("[]"))
+    // Collection methods come from the receiver's declared type (resolved through
+    // type aliases): a `Map<K, V>` gets the map table, `T[]` or an `array` decl
+    // the array table. The tables are distinct — a map's `length`/`clear`/
+    // `copyFrom` are its own, and `get`/`set`/`has`/`keys`/`values` exist on no
+    // array — so this dispatches on type, never on the bare method name.
+    let collection = sym.and_then(|s| {
+        s.ty.as_deref()
+            .and_then(|ty| collection_kind(ty, symbols))
+            .or_else(|| (s.kind == "array").then_some(CollectionKind::Array))
     });
-    if is_array {
-        for m in ARRAY_METHODS {
-            items.push(CompletionItem {
-                label: m.name.to_string(),
-                kind: Some(CompletionItemKind::METHOD),
-                detail: Some(format!("{}{}", m.name, m.signature)),
-                documentation: Some(Documentation::String(m.doc.to_string())),
-                ..Default::default()
-            });
+    if let Some(kind) = collection {
+        let method_item = |name: &str, signature: &str, doc: &str| CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(format!("{name}{signature}")),
+            documentation: Some(Documentation::String(doc.to_string())),
+            ..Default::default()
+        };
+        match kind {
+            CollectionKind::Array => {
+                for m in ARRAY_METHODS {
+                    items.push(method_item(m.name, m.signature, m.doc));
+                }
+            }
+            CollectionKind::Map(_) => {
+                for m in MAP_METHODS {
+                    items.push(method_item(m.name, m.signature, m.doc));
+                }
+            }
         }
         return items;
     }
@@ -1902,6 +1919,30 @@ mod tests {
         let ls = labels(src, 1, 4);
         assert!(ls.iter().any(|l| l == "push"), "push missing on var array: {ls:?}");
         assert!(ls.iter().any(|l| l == "find"), "find missing on var array: {ls:?}");
+    }
+
+    #[test]
+    fn var_map_dot_shows_map_methods_not_array() {
+        // `var m: Map<K, V>` completes the MAP method table — the map-only names
+        // (`get`/`set`/`has`) and NOT array-only names (`push`/`find`).
+        let src = "var m: Map<string, int>\nm.";
+        let ls = labels(src, 1, 2);
+        for m in ["get", "set", "has", "remove", "clear", "keys", "values"] {
+            assert!(ls.iter().any(|l| l == m), "map method {m} missing: {ls:?}");
+        }
+        assert!(!ls.iter().any(|l| l == "push"), "array-only `push` leaked onto map: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "find"), "array-only `find` leaked onto map: {ls:?}");
+    }
+
+    #[test]
+    fn var_map_via_type_alias_dot_shows_map_methods() {
+        // A var whose type is a type ALIAS of a map (`type Scores = Map<...>`)
+        // must resolve through the alias and complete map methods.
+        let src = "type Scores = Map<string, int>\nvar s: Scores\ns.";
+        let ls = labels(src, 2, 2);
+        assert!(ls.iter().any(|l| l == "get"), "get missing on aliased map: {ls:?}");
+        assert!(ls.iter().any(|l| l == "has"), "has missing on aliased map: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "push"), "array-only `push` leaked onto aliased map: {ls:?}");
     }
 
     #[test]

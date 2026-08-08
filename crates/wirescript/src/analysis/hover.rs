@@ -4,7 +4,7 @@ use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
 use crate::ir::Type;
 use super::{TypeMap, IfContextMap, VarReadContextMap};
-use super::types::type_str;
+use super::types::{type_str, collection_kind, CollectionKind};
 use super::text::{word_at, find_enclosing_call};
 use super::symbols::SymbolDef;
 use super::gate_docs::gate_docs;
@@ -69,7 +69,7 @@ pub fn hover_at(
         .or_else(|| hover_event_config_param(source, &word, line, col))
         .or_else(|| hover_data_driven_config(source, &word, line, col))
         .or_else(|| hover_config_enum_value(source, &word, line, col))
-        .or_else(|| hover_array_method(source, &word, line, col))
+        .or_else(|| hover_collection_method(source, symbols, &word, line, col))
         .or_else(|| hover_custom_event(source, file, &word, type_map, line, col))
         .or_else(|| hover_builtin_event(&word))
         .or_else(|| hover_builtin_call(source, &word, line, col))
@@ -257,20 +257,77 @@ fn word_is_named_arg_name(source: &str, line: usize, col: usize) -> bool {
     rest.starts_with('=') && !rest.starts_with("==")
 }
 
-/// Array methods like `push`, `pop`, `length`, etc. Only fires on a `.method`
+/// Collection methods (`arr.push`, `m.get`, ...). Only fires on a `.method`
 /// access (the hovered word is immediately preceded by `.`), so a user symbol
 /// that happens to share a method name — e.g. `var sum = 0` — still hovers as
 /// itself rather than as `array.sum`.
-fn hover_array_method(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
+///
+/// Which table the method comes from depends on the RECEIVER's type: a map's
+/// `length`/`remove`/`clear`/`copyFrom` are distinct from the identically-named
+/// array methods, and map-only names (`get`/`set`/`has`/`keys`/`values`) exist
+/// on no array. So we resolve the object's type first and dispatch to the right
+/// catalog. When the receiver's type can't be recovered (imported var whose span
+/// the local `type_map` never keyed), we fall back to the name-based array lookup
+/// — the historical behavior — rather than showing nothing.
+fn hover_collection_method(
+    source: &str,
+    symbols: &[SymbolDef],
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
     let l = source.lines().nth(line)?;
     let start = word_start_in_line(l, col);
     if start == 0 || l.as_bytes()[start - 1] != b'.' {
         return None;
     }
+    // Dispatch on the RECEIVER's declared type. The receiver identifier of a
+    // method call is NOT recorded as its own expression in `type_map` — only the
+    // whole call's result type is, and at the same start offset — so a span
+    // lookup there would grab the call's type (e.g. `get`'s `{ Value, Found }`)
+    // rather than the receiver's. The symbol table keys type by name, which is
+    // exactly the receiver here, and covers both top-level and handler-local vars.
+    let obj_end = start - 1;
+    let obj_start = word_start_in_line(l, obj_end);
+    let obj_name = &l[obj_start..obj_end];
+
+    let recv = symbols
+        .iter()
+        .find(|s| s.name == obj_name)
+        .and_then(|s| s.ty.as_deref())
+        .map(|ty| collection_kind(ty, symbols));
+    match recv {
+        Some(Some(CollectionKind::Map(disp))) => hover_map_method(word, &disp),
+        Some(Some(CollectionKind::Array)) => hover_array_method_named(word),
+        // A known receiver of a non-collection type (record, scalar, ...): `.word`
+        // isn't a collection method on it, so let the field/builtin hovers later
+        // in the chain handle it instead of claiming a same-named array method.
+        Some(None) => None,
+        // Receiver isn't a named symbol we can type (a call/index result, or a name
+        // the symbol table doesn't carry): preserve the pre-type-aware behavior of
+        // matching array method names only.
+        None => hover_array_method_named(word),
+    }
+}
+
+/// Render the array-method hover for `word`, or `None` if it isn't one.
+fn hover_array_method_named(word: &str) -> Option<String> {
     let m = crate::catalog::arrays::ARRAY_METHODS
         .iter()
         .find(|m| m.name == word)?;
     Some(format!("**array.{}**\n\n{}{} - {}", m.name, m.name, m.signature, m.doc))
+}
+
+/// Render the map-method hover for `word` on a receiver whose type displays as
+/// `map_display` (e.g. `Map<string, int>`), or `None` if `word` isn't a map
+/// method. The concrete key/value types are surfaced so the hover reflects the
+/// receiver, not a generic `Map<K, V>`.
+fn hover_map_method(word: &str, map_display: &str) -> Option<String> {
+    let m = crate::catalog::maps::map_method(word)?;
+    Some(format!(
+        "**map.{}**\n\n{}{} - {}\n\n*{}*",
+        m.name, m.name, m.signature, m.doc, map_display,
+    ))
 }
 
 /// Built-in event names like `RoundStart`, `CharacterSpawned`, `Clock`, etc.
@@ -1684,6 +1741,57 @@ on load { let s = fa.sum() }";
         assert!(
             h.contains("array.sum"),
             "hover on `fa.sum()` should show the array method, got: {h}"
+        );
+    }
+
+    #[test]
+    fn map_method_access_hovers_as_map_not_array() {
+        // Method hovers dispatch on the RECEIVER's type. On a `Map` receiver:
+        //  - map-only names (`get`, `has`) that no array has must now hover
+        //    (previously produced nothing);
+        //  - shared names (`clear`) must show the MAP method, not the array one;
+        //  - the concrete key/value types appear in the hover.
+        let src = "\
+var scores: Map<string, int>
+in t: exec
+on t {
+  let a = scores.get(\"x\")
+  let h = scores.has(\"x\")
+  scores.clear()
+}";
+        let col_in = |line: usize, needle: &str| {
+            let l = src.lines().nth(line).unwrap();
+            l.find(needle).unwrap() + 2 // land inside the method name
+        };
+
+        let hg = hover_for(src, 3, col_in(3, ".get")).expect("map .get should hover");
+        assert!(hg.contains("map.get"), "map .get hover: {hg}");
+        assert!(hg.contains("Map<"), "map .get shows the concrete map type: {hg}");
+
+        let hh = hover_for(src, 4, col_in(4, ".has")).expect("map .has should hover");
+        assert!(hh.contains("map.has"), "map .has hover: {hh}");
+
+        let hc = hover_for(src, 5, col_in(5, ".clear")).expect("map .clear should hover");
+        assert!(hc.contains("map.clear"), "shared name resolves to map: {hc}");
+        assert!(!hc.contains("array.clear"), "must not be the array hover: {hc}");
+    }
+
+    #[test]
+    fn map_method_via_type_alias_hovers_as_map() {
+        // A receiver whose declared type is a type ALIAS of a map (`type Scores =
+        // Map<...>`) must still dispatch to the map table — the symbol carries the
+        // alias name, so resolution has to see through it.
+        let src = "\
+type Scores = Map<string, int>
+var s: Scores
+in t: exec
+on t { let a = s.get(\"x\") }";
+        let l = src.lines().nth(3).unwrap();
+        let col = l.find(".get").unwrap() + 2;
+        let h = hover_for(src, 3, col);
+        assert!(
+            h.as_deref().is_some_and(|h| h.contains("map.get")),
+            "aliased map `.get` should hover as a map method, got: {h:?}"
         );
     }
 

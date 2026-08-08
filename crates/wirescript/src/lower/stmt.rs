@@ -67,7 +67,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                 } else if let Some(init) = &v.init {
                     ctx.warn(
                         format!(
-                            "'var {}' dict initializer must be a dict literal — this value is dropped; build the dict with methods like set/copyFrom instead",
+                            "'var {}' map initializer must be a map literal — this value is dropped; build the map with methods like set/copyFrom instead",
                             v.name
                         ),
                         init.range(),

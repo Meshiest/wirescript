@@ -6613,7 +6613,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Clear",
-      "brickDisplayName": "Clear Dict",
+      "brickDisplayName": "Clear Map",
       "brickSummary": "Removes every key and value from the connected map. Use it to reset a score table, lookup cache, or set of per-player data.",
       "halfSize": {
         "X": 5,
@@ -6622,7 +6622,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Clear",
-        "displayName": "Clear Dict",
+        "displayName": "Clear Map",
         "description": "Removes every key and value from the connected map. Use it to reset a score table, lookup cache, or set of per-player data.",
         "searchTags": "",
         "kind": "exec",
@@ -6657,7 +6657,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_CopyFrom",
-      "brickDisplayName": "Copy Dict",
+      "brickDisplayName": "Copy Map",
       "brickSummary": "Replaces the connected destination map with every key and value from Source. Use it to restore a working lookup from a saved template or snapshot.",
       "halfSize": {
         "X": 5,
@@ -6666,7 +6666,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_CopyFrom",
-        "displayName": "Copy Dict",
+        "displayName": "Copy Map",
         "description": "Replaces the connected destination map with every key and value from Source. Use it to restore a working lookup from a saved template or snapshot.",
         "searchTags": "",
         "kind": "exec",
@@ -6708,7 +6708,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Get",
-      "brickDisplayName": "Get Dict Element",
+      "brickDisplayName": "Get Map Element",
       "brickSummary": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed, which is useful before using saved player or object data.",
       "halfSize": {
         "X": 5,
@@ -6717,7 +6717,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Get",
-        "displayName": "Get Dict Element",
+        "displayName": "Get Map Element",
         "description": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed, which is useful before using saved player or object data.",
         "searchTags": "",
         "kind": "exec",
@@ -6773,7 +6773,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_GetKeys",
-      "brickDisplayName": "Get Dict Keys",
+      "brickDisplayName": "Get Map Keys",
       "brickSummary": "Writes every key from the connected map into the connected Array Var. Use it to make a list of player names, IDs, or objects that can be processed one by one.",
       "halfSize": {
         "X": 5,
@@ -6782,7 +6782,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_GetKeys",
-        "displayName": "Get Dict Keys",
+        "displayName": "Get Map Keys",
         "description": "Writes every key from the connected map into the connected Array Var. Use it to make a list of player names, IDs, or objects that can be processed one by one.",
         "searchTags": "",
         "kind": "exec",
@@ -6824,7 +6824,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_GetLength",
-      "brickDisplayName": "Get Dict Length",
+      "brickDisplayName": "Get Map Length",
       "brickSummary": "Outputs how many key and value pairs are stored in the connected map. Use it to count tracked players, objects, settings, or records.",
       "halfSize": {
         "X": 5,
@@ -6833,7 +6833,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_GetLength",
-        "displayName": "Get Dict Length",
+        "displayName": "Get Map Length",
         "description": "Outputs how many key and value pairs are stored in the connected map. Use it to count tracked players, objects, settings, or records.",
         "searchTags": "",
         "kind": "exec",
@@ -6875,7 +6875,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_GetValues",
-      "brickDisplayName": "Get Dict Values",
+      "brickDisplayName": "Get Map Values",
       "brickSummary": "Writes every value from the connected map into the connected Array Var. Use it to collect all stored scores, settings, or object data for array operations.",
       "halfSize": {
         "X": 5,
@@ -6884,7 +6884,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_GetValues",
-        "displayName": "Get Dict Values",
+        "displayName": "Get Map Values",
         "description": "Writes every value from the connected map into the connected Array Var. Use it to collect all stored scores, settings, or object data for array operations.",
         "searchTags": "",
         "kind": "exec",
@@ -6926,7 +6926,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Has",
-      "brickDisplayName": "Has Dict Element",
+      "brickDisplayName": "Has Map Element",
       "brickSummary": "Checks whether Key exists in the connected map without changing it. Use Found to branch between creating new data and updating an existing entry.",
       "halfSize": {
         "X": 5,
@@ -6935,7 +6935,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Has",
-        "displayName": "Has Dict Element",
+        "displayName": "Has Map Element",
         "description": "Checks whether Key exists in the connected map without changing it. Use Found to branch between creating new data and updating an existing entry.",
         "searchTags": "",
         "kind": "exec",
@@ -6984,7 +6984,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Remove",
-      "brickDisplayName": "Remove Dict Element",
+      "brickDisplayName": "Remove Map Element",
       "brickSummary": "Removes Key and its value from the connected map. Found reports whether anything was removed; use it when a player leaves or tracked data is no longer needed.",
       "halfSize": {
         "X": 5,
@@ -6993,7 +6993,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Remove",
-        "displayName": "Remove Dict Element",
+        "displayName": "Remove Map Element",
         "description": "Removes Key and its value from the connected map. Found reports whether anything was removed; use it when a player leaves or tracked data is no longer needed.",
         "searchTags": "",
         "kind": "exec",
@@ -7042,7 +7042,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Set",
-      "brickDisplayName": "Set Dict Element",
+      "brickDisplayName": "Set Map Element",
       "brickSummary": "Stores Value under Key in the connected map, replacing the old value if that key already exists. Use it for data such as a score for each player name.",
       "halfSize": {
         "X": 5,
@@ -7051,7 +7051,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Set",
-        "displayName": "Set Dict Element",
+        "displayName": "Set Map Element",
         "description": "Stores Value under Key in the connected map, replacing the old value if that key already exists. Use it for data such as a score for each player name.",
         "searchTags": "",
         "kind": "exec",
@@ -17603,7 +17603,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Variable_Map",
-      "brickDisplayName": "Dict Variable",
+      "brickDisplayName": "Map Variable",
       "brickSummary": "Allows defining a map variable, which can be modified and read via other Map Variable gates.",
       "halfSize": {
         "X": 5,
@@ -17612,7 +17612,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraphPseudo_MapVar",
-        "displayName": "Dict Var",
+        "displayName": "Map Var",
         "description": "Stores values under unique keys and provides a Map Var Ref for map gates. Use it to associate player names, IDs, or objects with scores, settings, or other data.",
         "searchTags": "",
         "kind": "pseudo",

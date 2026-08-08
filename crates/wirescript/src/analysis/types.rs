@@ -2,7 +2,7 @@ use crate::ast::TypeExpr;
 use crate::ir::Type;
 use super::TypeMap;
 
-/// The source-language spelling of a type (`*int`, `int[]`, `Dict<string, int>`,
+/// The source-language spelling of a type (`*int`, `int[]`, `Map<string, int>`,
 /// …). A thin alias over the `Display` impl on [`Type`] (in `crate::ir`), kept
 /// as a named helper for the many call sites that read better than `.to_string()`.
 pub fn type_str(t: &Type) -> String {
@@ -93,7 +93,7 @@ pub fn receiver_methods(type_name: &str) -> Vec<(&'static str, String)> {
 /// Split a rendered mod/chip signature — `"<G>(p0: T0, p1: T1, …) -> R"` — into
 /// its first parameter's `(name, type)` plus the remaining params rendered back
 /// as a comma-separated string. Depth-aware so record/tuple/generic parameter
-/// types (`{ x: int }`, `(a, b)`, `Dict<K, V>`) don't confuse the split.
+/// types (`{ x: int }`, `(a, b)`, `Map<K, V>`) don't confuse the split.
 /// Returns `None` when there is no parameter list or it is empty.
 fn split_signature_params(sig: &str) -> Option<(&str, &str, String)> {
     let bytes = sig.as_bytes();
@@ -212,6 +212,41 @@ pub fn user_receiver_methods(
     out
 }
 
+/// What kind of collection a receiver's declared type resolves to. Drives
+/// `.method` hover and completion dispatch onto the right method table.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CollectionKind {
+    Array,
+    /// Carries the concrete map type spelling (`Map<string, int>`) for display.
+    Map(String),
+}
+
+/// Resolve a receiver's declared type STRING to a [`CollectionKind`], chasing
+/// through `type Name = <body>` aliases recorded as `type` symbols (bounded to
+/// guard against alias cycles). A direct `T[]` / `Map<...>` short-circuits.
+/// Returns `None` for any non-collection type — including a generic-alias
+/// instance like `Grid<int>`, whose base alias isn't looked up (a limitation
+/// that only matters once generic type aliases ship).
+pub fn collection_kind(ty: &str, symbols: &[crate::analysis::SymbolDef]) -> Option<CollectionKind> {
+    let mut cur = ty.trim().to_string();
+    for _ in 0..16 {
+        let c = cur.trim();
+        if c.ends_with("[]") {
+            return Some(CollectionKind::Array);
+        }
+        if c.starts_with("Map<") {
+            return Some(CollectionKind::Map(c.to_string()));
+        }
+        // A bare type name: follow a matching `type` alias, if there is one.
+        let body = symbols
+            .iter()
+            .find(|s| s.kind == "type" && s.name == c)
+            .and_then(|s| s.ty.clone())?;
+        cur = body;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{receiver_methods, split_signature_params};
@@ -258,10 +293,10 @@ mod tests {
         assert_eq!((n, t, rest.as_str()), ("self", "T", ""));
         // Nested commas/colons inside a record or generic type stay with param 0.
         let (n, t, rest) =
-            split_signature_params("(self: { x: int, y: int }, k: Dict<string, int>)").unwrap();
+            split_signature_params("(self: { x: int, y: int }, k: Map<string, int>)").unwrap();
         assert_eq!(n, "self");
         assert_eq!(t, "{ x: int, y: int }");
-        assert_eq!(rest, "k: Dict<string, int>");
+        assert_eq!(rest, "k: Map<string, int>");
         // No params → None.
         assert!(split_signature_params("() -> int").is_none());
     }
@@ -292,5 +327,36 @@ mod tests {
             .collect();
         assert!(on_int.contains(&"inc".to_string()), "int should offer inc: {on_int:?}");
         assert!(!on_int.contains(&"dist".to_string()), "vector-receiver dist must not appear on int");
+    }
+
+    #[test]
+    fn collection_kind_resolves_direct_and_aliased() {
+        use super::{collection_kind, CollectionKind};
+        let sd = |name: &str, ty: &str| crate::analysis::SymbolDef {
+            name: name.into(),
+            kind: "type",
+            range: Default::default(),
+            ty: Some(ty.to_string()),
+            exec: false,
+        };
+        let syms = vec![
+            sd("Scores", "Map<string, int>"),
+            sd("Ids", "int[]"),
+            sd("A", "B"),              // alias chain A -> B -> Map
+            sd("B", "Map<int, int>"),
+            sd("Cyc", "Cyc"),          // self-referential alias must not loop
+        ];
+        let map = |s: &str| Some(CollectionKind::Map(s.to_string()));
+        // Direct annotations.
+        assert_eq!(collection_kind("Map<string, int>", &syms), map("Map<string, int>"));
+        assert_eq!(collection_kind("int[]", &syms), Some(CollectionKind::Array));
+        // Single-hop aliases.
+        assert_eq!(collection_kind("Scores", &syms), map("Map<string, int>"));
+        assert_eq!(collection_kind("Ids", &syms), Some(CollectionKind::Array));
+        // Multi-hop alias chain.
+        assert_eq!(collection_kind("A", &syms), map("Map<int, int>"));
+        // Non-collection and cycle both yield None (no hang).
+        assert_eq!(collection_kind("int", &syms), None);
+        assert_eq!(collection_kind("Cyc", &syms), None);
     }
 }

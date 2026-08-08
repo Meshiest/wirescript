@@ -958,7 +958,7 @@ fn every_canonical_array_method_lowers() {
 fn every_canonical_map_method_lowers() {
     // Exercises every method in MAP_METHODS; a table entry the dispatch can't
     // handle would lower to `_Unsupported` and fail here.
-    let src = "var m: Dict<string, int>\nvar m2: Dict<string, int>\nvar keys: string[]\n\
+    let src = "var m: Map<string, int>\nvar m2: Map<string, int>\nvar keys: string[]\n\
         var vals: int[]\nin t: exec\non t {\n  \
         m.set(\"a\", 1)\n  let g = m.get(\"a\")\n  let h = m.has(\"a\")\n  let rm = m.remove(\"a\")\n  \
         let n = m.length()\n  m.copyFrom(m2)\n  m.keys(keys)\n  m.values(vals)\n  m.clear()\n}";
@@ -976,10 +976,10 @@ fn every_canonical_map_method_lowers() {
 
 #[test]
 fn var_declared_map_lowers_like_map_keyword() {
-    // `var m: Dict<K, V>` desugars to a MapVar (mirrors how `var x: T[]`
+    // `var m: Map<K, V>` desugars to a MapVar (mirrors how `var x: T[]`
     // desugars to an ArrayVar).
     let r = compile(
-        "var m: Dict<string, int>\nin t: exec\non t {\n  m.set(\"a\", 1)\n  let g = m.get(\"a\")\n}",
+        "var m: Map<string, int>\nin t: exec\non t {\n  m.set(\"a\", 1)\n  let g = m.get(\"a\")\n}",
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "var-map methods must lower, not drop");
@@ -998,7 +998,7 @@ fn constant_map_literal_bakes_no_set_gates() {
     // A constant map literal in a `map`/`var` initializer bakes into the
     // Pseudo_MapVar's InitialValue at rest — zero runtime gates — exactly
     // like `array a = [1,2,3]` bakes a `Literal::Array`.
-    let r = compile("var scores: Dict<int, int> = { :red => 10, :blue => 20 }\n");
+    let r = compile("var scores: Map<int, int> = { :red => 10, :blue => 20 }\n");
     assert_no_errors(&r);
     assert!(
         has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
@@ -1020,15 +1020,15 @@ fn constant_map_literal_bakes_no_set_gates() {
 
 #[test]
 fn empty_map_literal_initializes_an_empty_map() {
-    // `var m: Dict<K, V> = {}` is the natural spelling of an empty-map init. The
+    // `var m: Map<K, V> = {}` is the natural spelling of an empty-map init. The
     // parser emits `{}` as an empty RECORD (with no keys it can't tell an empty
     // map from an empty record), so this exercises the map-init slots accepting
     // an empty record in a Map-typed slot. Typecheck DIRECTLY — `compile()`
     // drops Error-severity typecheck diags, so it would pass even if WS003 fired.
     for src in [
-        "var m: Dict<string, int> = {}\n",                              // top-level Map decl
-        "static var m: Dict<int, int> = {}\nin t: exec\non t {}\n",     // static
-        "in t: exec\non t {\n  var m: Dict<int, int> = {}\n}\n",        // handler-local var
+        "var m: Map<string, int> = {}\n",                              // top-level Map decl
+        "static var m: Map<int, int> = {}\nin t: exec\non t {}\n",     // static
+        "in t: exec\non t {\n  var m: Map<int, int> = {}\n}\n",        // handler-local var
     ] {
         let tc = crate::typecheck::typecheck(&parse(src, "test").ast, "test");
         let errs: Vec<_> = tc
@@ -1040,7 +1040,7 @@ fn empty_map_literal_initializes_an_empty_map() {
     }
     // Lowering: an empty init produces an empty Pseudo_MapVar — no Set gates and
     // no baked entries (same as a map var with no initializer).
-    let r = compile("var m: Dict<string, int> = {}\n");
+    let r = compile("var m: Map<string, int> = {}\n");
     assert!(
         has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
         "must create a Pseudo_MapVar"
@@ -1062,7 +1062,7 @@ fn empty_map_literal_initializes_an_empty_map() {
 }
 
 #[test]
-fn dict_key_type_must_be_int_string_or_object() {
+fn map_key_type_must_be_int_string_or_object() {
     let errs = |src: &str| {
         crate::typecheck::typecheck(&parse(src, "test").ast, "test")
             .diagnostics
@@ -1071,24 +1071,24 @@ fn dict_key_type_must_be_int_string_or_object() {
             .map(|d| d.code.to_string())
             .collect::<Vec<_>>()
     };
-    // Valid dict key types: int, string, and object references.
+    // Valid map key types: int, string, and object references.
     for ok in [
-        "var d: Dict<int, int>\n",
-        "var d: Dict<string, int>\n",
-        "var d: Dict<entity, int>\n",
-        "var d: Dict<character, int>\n",
+        "var d: Map<int, int>\n",
+        "var d: Map<string, int>\n",
+        "var d: Map<entity, int>\n",
+        "var d: Map<character, int>\n",
     ] {
-        assert!(errs(ok).is_empty(), "valid dict key must typecheck clean for {ok:?}: {:?}", errs(ok));
+        assert!(errs(ok).is_empty(), "valid map key must typecheck clean for {ok:?}: {:?}", errs(ok));
     }
     // Any other key type is WS039.
     for bad in [
-        "var d: Dict<float, int>\n",
-        "var d: Dict<bool, int>\n",
-        "var d: Dict<vector, int>\n",
+        "var d: Map<float, int>\n",
+        "var d: Map<bool, int>\n",
+        "var d: Map<vector, int>\n",
     ] {
         assert!(
             errs(bad).contains(&"WS039".to_string()),
-            "invalid dict key must be WS039 for {bad:?}: {:?}",
+            "invalid map key must be WS039 for {bad:?}: {:?}",
             errs(bad)
         );
     }
@@ -1101,10 +1101,10 @@ fn map_literal_coerces_mixed_entry_literals() {
     // the array path — string->bool `!= ""`, bool<->int, and int<->float
     // truncation/widening — not the emit-side zero fallback.
     let cases = [
-        ("var m: Dict<int, bool> = { 1 => \"on\" }\n", crate::ir::Literal::Bool(true)),
-        ("var m: Dict<int, int>  = { 1 => true }\n", crate::ir::Literal::Int(1)),
-        ("var m: Dict<int, int>  = { 1 => 2.9 }\n", crate::ir::Literal::Int(2)),
-        ("var m: Dict<int, float> = { 1 => true }\n", crate::ir::Literal::Float(1.0)),
+        ("var m: Map<int, bool> = { 1 => \"on\" }\n", crate::ir::Literal::Bool(true)),
+        ("var m: Map<int, int>  = { 1 => true }\n", crate::ir::Literal::Int(1)),
+        ("var m: Map<int, int>  = { 1 => 2.9 }\n", crate::ir::Literal::Int(2)),
+        ("var m: Map<int, float> = { 1 => true }\n", crate::ir::Literal::Float(1.0)),
     ];
     for (src, want_val) in cases {
         let r = compile(src);
@@ -1148,13 +1148,13 @@ fn map_literal_typechecks_against_declared_map() {
         );
     };
     // 1. top-level `map`-keyword initializer (atom keys)
-    valid("var m: Dict<int, int> = { :red => 1, :blue => 2 }\n");
+    valid("var m: Map<int, int> = { :red => 1, :blue => 2 }\n");
     // 2. top-level `var`-with-Map-annotation initializer
-    valid("var m: Dict<string, int> = { \"a\" => 1 }\n");
+    valid("var m: Map<string, int> = { \"a\" => 1 }\n");
     // 3. in-handler assignment RHS to a `map`-declared var
-    valid("var m: Dict<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
+    valid("var m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
     // 4. in-handler assignment RHS to a `var`-declared map
-    valid("var m: Dict<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
+    valid("var m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
 }
 
 #[test]
@@ -1180,7 +1180,7 @@ fn runtime_map_literal_desugars_to_clear_and_sets() {
     // one MapVar_Set per entry, on the current exec chain. Mirrors the array
     // literal assign path (clear + push per element).
     let r = compile(
-        "var m: Dict<int, int>\nin k: int\nin t: exec\non t {\n  m = { [k] => 1, :fixed => 2 }\n}\n",
+        "var m: Map<int, int>\nin k: int\nin t: exec\non t {\n  m = { [k] => 1, :fixed => 2 }\n}\n",
     );
     assert_no_errors(&r);
     assert!(
@@ -1196,12 +1196,12 @@ fn runtime_map_literal_desugars_to_clear_and_sets() {
 
 #[test]
 fn in_handler_var_map_literal_init_desugars_to_clear_and_sets() {
-    // `var m: Dict<K, V> = {…}` declared INSIDE a handler (non-static) must
+    // `var m: Map<K, V> = {…}` declared INSIDE a handler (non-static) must
     // re-run the same Clear + Set reset on every invocation, exactly like the
     // array counterpart (`var a: T[] = […]` inside a handler) — a plain
     // Var_Set reset is impossible since Pseudo_MapVar has no `VarRef` port.
     let r = compile(
-        "in k: int\nin t: exec\non t {\n  var m: Dict<int, int> = { [k] => 1, :fixed => 2 }\n}\n",
+        "in k: int\nin t: exec\non t {\n  var m: Map<int, int> = { [k] => 1, :fixed => 2 }\n}\n",
     );
     assert_no_errors(&r);
     assert!(
@@ -1230,7 +1230,7 @@ fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
     // `lower_assign` rejects it with a hard ERROR (WS027) — a droppable
     // warning would be missed by error-gated checks and ship a silent no-op.
     let r = compile(
-        "var m: Dict<int, int>\nvar m2: Dict<int, int>\nin t: exec\non t {\n  m = m2\n}\n",
+        "var m: Map<int, int>\nvar m2: Map<int, int>\nin t: exec\non t {\n  m = m2\n}\n",
     );
     // Must be an ERROR-severity diagnostic (not a warning), pointing at the
     // supported `.copyFrom` alternative. If the guard is ever downgraded to a
@@ -2111,11 +2111,11 @@ fn atom_literal_bakes_as_its_hash_int() {
 #[test]
 fn map_and_record_literals_disambiguate() {
     // A `=>` or a non-bare-ident key makes it a map; `{ ident: v }` stays a record.
-    let arrow = parse("var m: Dict<int,int> = { 1 => 2, 3 => 4 }\n", "test");
+    let arrow = parse("var m: Map<int,int> = { 1 => 2, 3 => 4 }\n", "test");
     assert!(arrow.diagnostics.is_empty(), "{:?}", arrow.diagnostics);
-    let colon = parse("var m: Dict<string,int> = { \"a\": 1 }\n", "test");
+    let colon = parse("var m: Map<string,int> = { \"a\": 1 }\n", "test");
     assert!(colon.diagnostics.is_empty(), "{:?}", colon.diagnostics);
-    let computed = parse("in k: int\nvar m: Dict<int,int> = { [k]: 9 }\n", "test");
+    let computed = parse("in k: int\nvar m: Map<int,int> = { [k]: 9 }\n", "test");
     assert!(computed.diagnostics.is_empty(), "{:?}", computed.diagnostics);
     // A record literal is unaffected.
     let rec = parse("type P = { x: int }\nlet p: P = { x: 1 }\n", "test");

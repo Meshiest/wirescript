@@ -73,7 +73,7 @@ var counter: int = 0
 var ratio: float = 0.0
 var lo: int = 1
 var hi: int = 2
-var foo: Dict<string, int> = { "bar": 5 }
+var foo: Map<string, int> = { "bar": 5 }
 
 on go {
   let a = pick(true, i, i) // T = int

@@ -729,8 +729,8 @@ fn container_map_self_receiver_desugars_to_mod_call() {
     // body. (The body avoids calling a map method on `self` — map PARAMETERS
     // aren't method-callable inside a mod body, a separate pre-existing gap
     // unrelated to receiver dispatch.)
-    let src = "mod bump(self: Dict<string, int>, d: int) -> int { return d + 1 }\n\
-               var m: Dict<string, int>\nvar rr: int = 0\nin go: exec\non go { rr = m.bump(5) }\n";
+    let src = "mod bump(self: Map<string, int>, d: int) -> int { return d + 1 }\n\
+               var m: Map<string, int>\nvar rr: int = 0\nin go: exec\non go { rr = m.bump(5) }\n";
     let r = compile(src);
     assert_no_errors(&r);
     emit_ok(&r).expect("emit must succeed for a map-var self-mod method call");

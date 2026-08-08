@@ -665,7 +665,7 @@ fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRang
 }
 
 /// True if `t` is, or structurally contains, the wildcard `any` type
-/// (`Type::Opaque`). A `*any`/`any[]`/`Dict<_, any>`/`{ a: any }` annotation
+/// (`Type::Opaque`). A `*any`/`any[]`/`Map<_, any>`/`{ a: any }` annotation
 /// wraps the `Opaque` under a `Ref`/`Array`/`Map`/`Record`/…, so a shallow
 /// `matches!(t, Type::Opaque)` would miss it — recurse through every compound
 /// so `warn_any_annotation` fires on the whole annotation regardless of nesting.
@@ -699,7 +699,7 @@ fn type_has_param(t: &Type) -> bool {
 /// `in`/`out` port, a mod/chip param or output, a handler's typed destructure
 /// param, a `let`, or a `type X = ...` alias body — resolves to `any`
 /// (`Type::Opaque`), including when the `any` is wrapped in a compound
-/// (`*any`, `any[]`, `Dict<_, any>`, `{ a: any }`, …). `any` still works there
+/// (`*any`, `any[]`, `Map<_, any>`, `{ a: any }`, …). `any` still works there
 /// (the value just flows through as a wildcard), but a generic type parameter
 /// would let the type flow instead of erasing it. Storage positions
 /// (var/array/buffer/map — see `reject_any_storage` above) are deliberately NOT
@@ -745,7 +745,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 .unwrap_or(Type::Any);
             if let Some(t) = &v.typ {
                 // A `var` can be scalar, array (`var x: T[]`), or map
-                // (`var m: Dict<K,V>`) storage — each needs a concrete element/
+                // (`var m: Map<K,V>`) storage — each needs a concrete element/
                 // value wire type. Reject `any` in the STORED position: the
                 // element for an array, the value for a map, else the type
                 // itself. (Matches the `array`/`map` decl checks below, so the
@@ -798,7 +798,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 ctx,
                 &value,
                 type_expr_range(&m.value_type),
-                "a dict's value type",
+                "a map's value type",
             );
             declare_or_dup(
                 ctx,
@@ -1249,7 +1249,7 @@ fn check_top_level_array_init(
     }
 }
 
-/// Check a map literal's entries against `Dict<K, V>`: each key must coerce to
+/// Check a map literal's entries against `Map<K, V>`: each key must coerce to
 /// `k`, each value to `v`. This is deliberately STRICTER than the `expect_coerce`
 /// helper assignment checking uses — a map *literal* entry additionally rejects
 /// `ViaString` (and any coercion that isn't `Same`/`Coerce`), because the literal
@@ -1258,7 +1258,7 @@ fn check_top_level_array_init(
 /// RHS to a map var — so the literal never reaches the generic `infer_expr`
 /// `MapLit` arm, which is the position-guard for every other use.
 ///
-/// The entries of a map initializer for a `Dict<K, V>` slot: a real `MapLit`, or
+/// The entries of a map initializer for a `Map<K, V>` slot: a real `MapLit`, or
 /// an empty `{}`. The parser emits `{}` as an empty `RecordLit` (with no keys it
 /// can't tell an empty map from an empty record), but in a `Map`-typed slot it
 /// is the natural spelling of an empty-map initializer — equivalent to no
@@ -1351,7 +1351,7 @@ fn check_decl(
                     && let Type::Map(k, v_ty) = &inner
                 {
                     // A map-valued `var` initializer: validate entries against
-                    // the declared `Dict<K, V>` directly, bypassing the generic
+                    // the declared `Map<K, V>` directly, bypassing the generic
                     // `infer_expr` `MapLit` arm (the position guard) — this IS
                     // the valid initializer slot. An empty `{}` is an empty-map init.
                     ctx.in_pure(|ctx| {
@@ -1392,7 +1392,7 @@ fn check_decl(
             }
         }
         TopDecl::Map(m) => {
-            // Optional literal initializer: `var m: Dict<K, V> = { k => v, ... }`.
+            // Optional literal initializer: `var m: Map<K, V> = { k => v, ... }`.
             // Key/value types were already resolved in registration — reuse the
             // registered symbol instead of re-resolving (avoids double-emitting
             // an "unknown type" diagnostic if `key_type`/`value_type` is bad).
@@ -2836,7 +2836,7 @@ fn infer_expr_inner(
         // `check_stmt`) and never reach this arm. Still infer each entry (so
         // key/value expressions get typed and any inner errors surface, e.g. a
         // key referencing an unknown identifier) and infer the literal's real
-        // `Dict<K, V>` shape from the first entry — mirroring the array
+        // `Map<K, V>` shape from the first entry — mirroring the array
         // literal's element-type inference above — but the position itself is
         // always an error: a map literal must initialize or assign a Map.
         Expr::MapLit { entries, range } => {
@@ -2852,7 +2852,7 @@ fn infer_expr_inner(
             }
             ctx.emit(
                 "WS026",
-                "a dict literal must initialize or assign a Dict variable",
+                "a map literal must initialize or assign a Map variable",
                 range.clone(),
             );
             Type::Map(Box::new(kt), Box::new(vt))
@@ -4471,8 +4471,8 @@ mod tests {
 
     #[test]
     fn generic_map_type_resolves() {
-        // `Dict<K, V>` resolves to a map type usable in an annotation.
-        assert_no_diags(&tc("mod f(m: Dict<string, int>) { }"));
+        // `Map<K, V>` resolves to a map type usable in an annotation.
+        assert_no_diags(&tc("mod f(m: Map<string, int>) { }"));
     }
 
     #[test]

@@ -625,7 +625,7 @@ fn fold_resource_amount(e: &Expr) -> Option<Literal> {
 /// numeric int/float/bool normalization). Identity for anything already the
 /// right kind or with no defined coercion.
 ///
-/// Without this, a coercion-mixed map entry (e.g. `Dict<int, bool> = { 1 =>
+/// Without this, a coercion-mixed map entry (e.g. `Map<int, bool> = { 1 =>
 /// "on" }`) would bake its RAW folded literal (`String("on")`), which emit's
 /// `wire_map_variant_from_literals` then can't match against the declared
 /// value kind and silently zero-falls-back to `false` — a typechecked
@@ -670,15 +670,15 @@ fn map_entry_literal(
     ))
 }
 
-/// Bake a constant map-literal initializer (`var m: Dict<K, V> = {...}`) into
+/// Bake a constant map-literal initializer (`var m: Map<K, V> = {...}`) into
 /// `properties` as an `InitialValue` (`Literal::Map`) — zero runtime gates,
 /// exactly like the array path bakes `Literal::Array`.
-/// Shared by [`pre_declare_map`] and the `Dict<K, V>` branch of
+/// Shared by [`pre_declare_map`] and the `Map<K, V>` branch of
 /// [`pre_declare_var`] since both bake the same way. Non-constant entries
 /// can't bake at a (pure) decl: the map starts empty and a warning is
 /// raised (Task 8 handles the exec-context desugar for `m = {…}`).
 ///
-/// `key_ty`/`val_ty` are the declared `Dict<K, V>` types — every entry is
+/// `key_ty`/`val_ty` are the declared `Map<K, V>` types — every entry is
 /// coerced to them at fold time (see [`coerce_literal_to_type`]) so the baked
 /// `Literal::Map` is already correct, not a raw literal emit has to guess at.
 fn bake_map_init(
@@ -830,7 +830,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         return;
     }
 
-    // `var m: Dict<K, V>` is a map — desugar to a MapVar gate so the map
+    // `var m: Map<K, V>` is a map — desugar to a MapVar gate so the map
     // methods work. A constant `= {...}` initializer bakes via
     // `bake_map_init`.
     if let Type::Map(key_ty, value_ty) = &inner_type {
@@ -1004,7 +1004,7 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     );
 }
 
-/// `var name: Dict<K, V>` — create the backing `Pseudo_MapVar` gate (exposing a
+/// `var name: Map<K, V>` — create the backing `Pseudo_MapVar` gate (exposing a
 /// `MapVarRef`) and bind the name as a `VarStorage::Map` whose `inner_type`
 /// carries the whole `Type::Map(K, V)`. Mirrors [`pre_declare_array`].
 pub(super) fn pre_declare_map(ctx: &mut LowerCtx, d: &crate::ast::MapDecl) {

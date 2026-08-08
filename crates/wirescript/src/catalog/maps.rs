@@ -42,7 +42,7 @@ pub fn is_map_method(name: &str) -> bool {
     MAP_METHOD_NAMES.contains(name)
 }
 
-/// The return type of `m.<method>()` for a `Dict<key, value>`. `get` yields a
+/// The return type of `m.<method>()` for a `Map<key, value>`. `get` yields a
 /// record that auto-unwraps to `Value`; `has`/`remove` a bool; `length` an int;
 /// the rest are statements (`Any`).
 pub fn map_return_type(method: &str, _key: &Type, value: &Type) -> Option<Type> {

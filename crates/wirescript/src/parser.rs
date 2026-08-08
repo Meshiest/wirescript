@@ -1527,14 +1527,14 @@ impl<'a> Parser<'a> {
         })
     }
 
-    // `var name: Dict<K, V>`
+    // `var name: Map<K, V>`
     fn parse_map_decl(&mut self) -> TopDecl {
         let kw = self.expect(TokenKind::Kw, Some("map"));
         let start = kw.start;
-        // The `map` declaration keyword has been removed — dicts are declared with
-        // `var NAME: Dict<K, V>` (identical storage). Reject, but keep parsing.
+        // The `map` declaration keyword has been removed — maps are declared with
+        // `var NAME: Map<K, V>` (identical storage). Reject, but keep parsing.
         self.error(
-            "`map` declarations have been removed — declare a dict with `var NAME: Dict<K, V>` instead",
+            "`map` declarations have been removed — declare a map with `var NAME: Map<K, V>` instead",
             kw.start,
             kw.end,
         );
@@ -1543,7 +1543,7 @@ impl<'a> Parser<'a> {
         let full_type = self.parse_type();
         let (key_type, value_type) = match full_type {
             TypeExpr::Generic { name: gname, mut args, .. }
-                if gname == "Dict" && args.len() == 2 =>
+                if gname == "Map" && args.len() == 2 =>
             {
                 let value_type = args.pop().unwrap();
                 let key_type = args.pop().unwrap();
@@ -1552,7 +1552,7 @@ impl<'a> Parser<'a> {
             other => {
                 let r = other.range();
                 self.error(
-                    String::from("dict type must be `Dict<KeyType, ValueType>`"),
+                    String::from("map type must be `Map<KeyType, ValueType>`"),
                     r.start,
                     r.end,
                 );
@@ -2389,7 +2389,7 @@ impl<'a> Parser<'a> {
             name = format!("{name}.{}", member.text);
             end = member.end;
         }
-        // Generic application `Name<Arg, ...>` (e.g. `Dict<string, int>`,
+        // Generic application `Name<Arg, ...>` (e.g. `Map<string, int>`,
         // `Array<int>`, `Ref<Point>`). `Array`/`Ref` desugar straight to the
         // existing postfix forms so downstream code sees no new shape.
         if self.check(TokenKind::Op, Some("<")) {
@@ -4003,7 +4003,7 @@ mod tests {
     #[test]
     fn array_and_map_decl_keywords_are_rejected() {
         // The `array`/`map` declaration keywords were removed in favor of
-        // `var NAME: T[]` / `var NAME: Dict<K,V>` (identical storage). Using them
+        // `var NAME: T[]` / `var NAME: Map<K,V>` (identical storage). Using them
         // is a parse error pointing at the `var` replacement.
         let ra = crate::parser::parse("array xs: int[]", "test");
         assert!(
@@ -4013,7 +4013,7 @@ mod tests {
             "array decl must be rejected: {:?}",
             ra.diagnostics
         );
-        let rm = crate::parser::parse("map m: Dict<string, int>", "test");
+        let rm = crate::parser::parse("map m: Map<string, int>", "test");
         assert!(
             rm.diagnostics
                 .iter()
@@ -4028,7 +4028,7 @@ mod tests {
             TopDecl::Var(v) => assert_eq!(v.name, "xs"),
             d => panic!("expected Var, got {:?}", d),
         }
-        let rvm = crate::parser::parse("var m: Dict<string, int>", "test");
+        let rvm = crate::parser::parse("var m: Map<string, int>", "test");
         assert!(rvm.diagnostics.is_empty(), "var map: {:?}", rvm.diagnostics);
     }
 
@@ -4758,7 +4758,7 @@ mod tests {
         // record literal stays a record
         assert!(no_err("let r = { x: 1, y: 2 }\n"), "record should parse");
         // map literal stays a map
-        assert!(no_err("var m: Dict<int,int> = { 1 => 2 }\n"), "map should parse");
+        assert!(no_err("var m: Map<int,int> = { 1 => 2 }\n"), "map should parse");
         // block-expr braces still parse
         assert!(no_err("let b = { let x = 1\n x + 1 }\n"), "block-expr should parse");
         // Non-literal / non-trivial key expressions are valid maps — the key
@@ -4766,10 +4766,10 @@ mod tests {
         // regressed under an allow-list precheck (misparsed as block-exprs,
         // spurious WSP001 on the `=>`); the reject-list precheck must let them
         // fall through to the `=>` scan and classify as maps.
-        assert!(no_err("var m: Dict<int,int> = { -1 => 1 }\n"), "unary-key map should parse");
-        assert!(no_err("var m: Dict<int,int> = { (1) => 1 }\n"), "paren-key map should parse");
-        assert!(no_err("var m: Dict<int,int> = { true => 1 }\n"), "bool-key map should parse");
-        assert!(no_err("var m: Dict<int,int> = { 1 + 1 => 2 }\n"), "binop-key map should parse");
+        assert!(no_err("var m: Map<int,int> = { -1 => 1 }\n"), "unary-key map should parse");
+        assert!(no_err("var m: Map<int,int> = { (1) => 1 }\n"), "paren-key map should parse");
+        assert!(no_err("var m: Map<int,int> = { true => 1 }\n"), "bool-key map should parse");
+        assert!(no_err("var m: Map<int,int> = { 1 + 1 => 2 }\n"), "binop-key map should parse");
         // an unbalanced expression-position brace must terminate quickly, not scan to EOF
         let big = format!("let x = {{ {}", "a a a a ".repeat(5000));
         let _ = crate::parser::parse(&big, "t"); // must simply COMPLETE (no hang)

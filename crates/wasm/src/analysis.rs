@@ -246,19 +246,37 @@ pub fn completions(
         wirescript::analysis::member_receiver_at(source, line as usize, col as usize)
     {
         let sym = symbols.iter().find(|s| s.name == var_name);
-        // Arrays — `array` decls and any array-typed value (e.g. a
-        // `var ids: string[]`). Methods come from the canonical table.
-        let is_array = sym.is_some_and(|s| {
-            s.kind == "array" || s.ty.as_deref().is_some_and(|t| t.ends_with("[]"))
+        // Collection methods dispatch on the receiver's declared type (resolved
+        // through type aliases): `Map<K, V>` -> map table, `T[]` / an `array` decl
+        // -> array table. The tables are distinct (map-only `get`/`set`/`has`/
+        // `keys`/`values` exist on no array), so this keys on type, never on name.
+        let collection = sym.and_then(|s| {
+            s.ty.as_deref()
+                .and_then(|ty| wirescript::analysis::collection_kind(ty, &symbols))
+                .or_else(|| {
+                    (s.kind == "array").then_some(wirescript::analysis::CollectionKind::Array)
+                })
         });
-        if is_array {
-            for m in wirescript::catalog::arrays::ARRAY_METHODS {
+        if let Some(kind) = collection {
+            let push_method = |items: &mut Vec<CompletionOut>, name: &str, sig: &str, doc: &str| {
                 items.push(CompletionOut {
-                    label: m.name.to_string(),
+                    label: name.to_string(),
                     kind: "method",
-                    detail: Some(format!("{}{} - {}", m.name, m.signature, m.doc)),
+                    detail: Some(format!("{name}{sig} - {doc}")),
                     insert_text: None,
                 });
+            };
+            match kind {
+                wirescript::analysis::CollectionKind::Array => {
+                    for m in wirescript::catalog::arrays::ARRAY_METHODS {
+                        push_method(&mut items, m.name, m.signature, m.doc);
+                    }
+                }
+                wirescript::analysis::CollectionKind::Map(_) => {
+                    for m in wirescript::catalog::maps::MAP_METHODS {
+                        push_method(&mut items, m.name, m.signature, m.doc);
+                    }
+                }
             }
             return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
         }

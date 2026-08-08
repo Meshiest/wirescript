@@ -1,18 +1,18 @@
-// Dicts - keyed variable collections (Dict<K, V>)
+// Maps - keyed variable collections (Map<K, V>)
 //
-// A dict maps keys to values, backed by the MapVar gate. Keys must be int,
+// A map maps keys to values, backed by the MapVar gate. Keys must be int,
 // string, or an object reference (entity/character/controller); values may be
 // any wire-storable type. Methods run in exec context, like array methods.
 
-// A constant literal initializer bakes the dict pre-populated - no runtime gates.
-var levelPar: Dict<string, int> = { "easy" => 3, "normal" => 5, "hard" => 8 }
+// A constant literal initializer bakes the map pre-populated - no runtime gates.
+var levelPar: Map<string, int> = { "easy" => 3, "normal" => 5, "hard" => 8 }
 
 // Atom keys (:name is a compile-time int hash) read like an enum table.
-var colorHex: Dict<int, string> = { :red => "#ff0000", :green => "#00ff00" }
+var colorHex: Map<int, string> = { :red => "ff0000", :green => "00ff00" }
 
-// Empty dicts, built at runtime.
-var scores: Dict<string, int> = {}
-var kills: Dict<character, int> = {}      // one entry per character (object key)
+// Empty maps, built at runtime.
+var scores: Map<string, int> = {}
+var kills: Map<character, int> = {}      // one entry per character (object key)
 
 in player: character
 on player {
@@ -26,7 +26,7 @@ on player {
   scores.remove("bob")                // -> bool (was present)
   let count = scores.length()
 
-  // Object-keyed dict: bump this character's kill count.
+  // Object-keyed map: bump this character's kill count.
   let k = kills.get(player)
   kills.set(player, k.Value + 1)
 
@@ -35,7 +35,7 @@ on player {
   scores.keys(names)
 
   let par = levelPar.get("hard")      // 8
-  let red = colorHex.get(:red)        // "#ff0000"
+  let red = colorHex.get(:red)        // "ff0000"
 
   player.DisplayText(
     "alice=${a.Value} hadBob=${hadBob} count=${count} par=${par.Value} red=${red.Value} kills=${kills.get(player).Value}",

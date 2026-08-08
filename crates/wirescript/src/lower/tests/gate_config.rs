@@ -1010,9 +1010,9 @@ fn baked_map_literal_rejects_non_string_key_for_string_map() {
     // A baked map entry has no gate to run a string-format coercion through,
     // so a non-string constant key/value must be rejected, not silently "".
     for src in [
-        "var m: Dict<string, int> = { 1 => 10 }\n",
-        "var m: Dict<string, int> = { :alice => 1, :bob => 2 }\n",
-        "var v: Dict<int, string> = { 1 => 5 }\n",
+        "var m: Map<string, int> = { 1 => 10 }\n",
+        "var m: Map<string, int> = { :alice => 1, :bob => 2 }\n",
+        "var v: Map<int, string> = { 1 => 5 }\n",
     ] {
         assert!(
             errors(src).contains(&"WS003".to_string()),
@@ -1021,7 +1021,7 @@ fn baked_map_literal_rejects_non_string_key_for_string_map() {
         );
     }
     // A correctly-typed string-keyed map still compiles clean.
-    let ok = "var m: Dict<string, int> = { \"a\" => 1, \"b\" => 2 }\n";
+    let ok = "var m: Map<string, int> = { \"a\" => 1, \"b\" => 2 }\n";
     assert!(errors(ok).is_empty(), "valid string map should compile: {:?}", errors(ok));
 }
 

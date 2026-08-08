@@ -132,7 +132,7 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// Record / struct; Phase 1 keeps this untyped inner (map of name→Type).
     Record(Vec<(String, Type)>),
-    /// `Dict<K, V>` — a keyed variable collection (parallels `Array`). The key
+    /// `Map<K, V>` — a keyed variable collection (parallels `Array`). The key
     /// and value types are tracked for the source language; at the wire level a
     /// map is an opaque `MapVarRef`, so both sides are `any`-compatible.
     Map(Box<Type>, Box<Type>),
@@ -142,7 +142,7 @@ pub enum Type {
 }
 
 /// The source-language spelling of a type. Compound variants render by
-/// recursion (`*int`, `int[]`, `Dict<string, int>`, …), which is exactly why
+/// recursion (`*int`, `int[]`, `Map<string, int>`, …), which is exactly why
 /// this is `Display` and not `AsRef<str>`: those strings are built on the fly,
 /// so there is no `&str` inside the value to borrow. `analysis::type_str` is a
 /// thin `to_string()` alias over this.
@@ -169,7 +169,7 @@ impl std::fmt::Display for Type {
             Type::Never => f.write_str("never"),
             Type::Ref(inner) => write!(f, "*{inner}"),
             Type::Array(inner) => write!(f, "{inner}[]"),
-            Type::Map(k, v) => write!(f, "Dict<{k}, {v}>"),
+            Type::Map(k, v) => write!(f, "Map<{k}, {v}>"),
             Type::Param(n) => f.write_str(n),
             Type::Union(opts) => {
                 for (i, o) in opts.iter().enumerate() {

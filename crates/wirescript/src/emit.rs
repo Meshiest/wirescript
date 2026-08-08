@@ -1283,7 +1283,7 @@ fn emit_module(
                 LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
             }
             // Pseudo_MapVar: WireGraphMapVariant, key/value kinds chosen from the
-            // declared `Dict<K, V>` on the MapVarRef port. A constant initializer
+            // declared `Map<K, V>` on the MapVarRef port. A constant initializer
             // is carried as an `InitialValue` map literal and populates the
             // variant's `entries`; otherwise the map starts empty (runtime
             // `set`s populate it).
@@ -2460,7 +2460,7 @@ fn array_element_type(ty: &crate::ir::Type) -> Option<&crate::ir::Type> {
 }
 
 /// The `WireMapVariant` (empty map) an empty `MapVar` brick serializes, chosen
-/// from the declared `Dict<K, V>` type on its `MapVarRef` output port. Keys are
+/// from the declared `Map<K, V>` type on its `MapVarRef` output port. Keys are
 /// int/string/object; values cover the wire-storable scalars. Defaults to
 /// `int -> float` for an unknown/degenerate type.
 fn map_variant_from_type(ty: &crate::ir::Type) -> WireMapVariant {
@@ -2498,7 +2498,7 @@ fn map_variant_from_type(ty: &crate::ir::Type) -> WireMapVariant {
 
 /// Build a populated `WireMapVariant` from a map's constant entries. `kinds`
 /// gives the key/value member kinds (from [`map_variant_from_type`] on the
-/// declared `Dict<K, V>` port type); each literal is read in that kind.
+/// declared `Map<K, V>` port type); each literal is read in that kind.
 fn wire_map_variant_from_literals(
     kinds: WireMapVariant,
     entries: &[(Literal, Literal)],
