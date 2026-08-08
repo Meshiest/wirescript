@@ -105,6 +105,44 @@ pub fn disk_prefab_resolver(entry_file: &str) -> PrefabResolver {
     })
 }
 
+/// Maximum `$```…``` nesting depth before compilation refuses (runaway guard).
+const MAX_NESTED_DEPTH: usize = 8;
+
+/// A default nested-prefab compiler for blocks at `depth` levels of nesting.
+/// Recursively compiles the inner source into prefab `.brz` bytes. The closure
+/// ignores the `depth` argument the emit layer passes (always 1) and uses its
+/// own captured `depth` for the guard and for the next level's compiler.
+fn default_nested_compiler(
+    depth: usize,
+    file: String,
+    fold_mode: FoldMode,
+) -> crate::emit::NestedCompiler {
+    crate::emit::NestedCompiler::new(move |inner_src: &str, _embed_depth: usize| {
+        if depth > MAX_NESTED_DEPTH {
+            return Err(format!(
+                "nested prefab blocks are nested too deeply (limit {MAX_NESTED_DEPTH})"
+            ));
+        }
+        // Compile the inner source as its own isolated program. Its OWN nested
+        // blocks get the next depth level's compiler (this is what accumulates
+        // the depth — NOT the emit arg). Imports resolve relative to the outer
+        // file (reuse `file`).
+        let inner_opts = EmitOptions {
+            nested_compiler: Some(default_nested_compiler(depth + 1, file.clone(), fold_mode)),
+            ..Default::default()
+        };
+        let result = compile_to_world(
+            CompileInput { source: inner_src, file: &file, module_name: None, fold_mode },
+            inner_opts,
+        )
+        .map_err(|e| format!("nested prefab failed to compile: {e}"))?;
+        result
+            .world
+            .to_brz_vec()
+            .map_err(|e| format!("nested prefab .brz encode failed: {e}"))
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct CompileProgress {
     pub step: u32,
@@ -157,6 +195,9 @@ fn compile_with_opts_inner(
     if opts.prefab_resolver.is_none() {
         opts.prefab_resolver = Some(disk_prefab_resolver(file));
     }
+    if opts.nested_compiler.is_none() {
+        opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
+    }
 
     report(&progress);
     let resolved = resolve(source, file, &FsLoader);
@@ -171,6 +212,8 @@ fn compile_with_opts_inner(
             .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
             .cloned()
     });
+    // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
+    opts.invisible = resolved.ast.invisible;
     let tc = typecheck(&resolved.ast, file);
 
     let template_cache = {
@@ -267,6 +310,9 @@ fn compile_to_world_inner(
     if opts.prefab_resolver.is_none() {
         opts.prefab_resolver = Some(disk_prefab_resolver(file));
     }
+    if opts.nested_compiler.is_none() {
+        opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
+    }
     let t0 = std::time::Instant::now();
     let resolved = resolve(source, file, &FsLoader);
     opts.module_doc = resolved.ast.module_doc.clone().or_else(|| {
@@ -277,6 +323,8 @@ fn compile_to_world_inner(
             .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
             .cloned()
     });
+    // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
+    opts.invisible = resolved.ast.invisible;
     let tc = typecheck(&resolved.ast, file);
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());

@@ -117,6 +117,17 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if let Some(spec) = find_call(field)
             && spec.receiver.is_some()
         {
+            // A named-target receiver (`entity.SendCustomEvent(…)`) binds the
+            // object to a specific param (`target`) rather than the first, so
+            // append it as a named arg and let the normal binding path place it.
+            if let Some(tp) = spec.receiver_target_param() {
+                let mut recv_args: Vec<CallArg> = args.to_vec();
+                recv_args.push(CallArg::Named {
+                    name: tp.to_string(),
+                    value: obj.as_ref().clone(),
+                });
+                return lower_builtin_call(ctx, spec, None, &recv_args, range, e);
+            }
             // The receiver fills the spec's first param; passing it separately
             // avoids deep-cloning the receiver + args into a new arg vector.
             return lower_builtin_call(ctx, spec, Some(obj), args, range, e);
@@ -354,7 +365,17 @@ pub(super) fn lower_chip_call_inline(
     // Track their IDs so cleanup only removes these, not parent outputs.
     let mut mod_output_ids = Vec::new();
     for out in &chip_decl.outputs {
-        pre_declare_output(ctx, &out.name, None, Some(&out.typ), None, None, &out.range);
+        pre_declare_output(
+            ctx,
+            &out.name,
+            None,
+            Some(&out.typ),
+            None,
+            None,
+            None,
+            false,
+            &out.range,
+        );
         if let Some(r) = ctx.lookup_output(&out.name) {
             mod_output_ids.push(r.node_id);
         }
@@ -1180,6 +1201,8 @@ fn build_chip_module(
                         o.typ.as_ref(),
                         o.side,
                         o.label.as_deref(),
+                        o.label_expr.as_ref(),
+                        o.invisible,
                         &o.range,
                     )
                 });
@@ -1334,8 +1357,12 @@ pub(super) fn lower_chip_call_instance(
         if chip_decl.closed {
             props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
         }
-        if let Some(label) = &chip_decl.label {
-            props.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+        if let Some(label) = resolve_label_text(
+            chip_decl.label.as_deref(),
+            chip_decl.label_expr.as_ref(),
+            &ctx.const_env,
+        ) {
+            props.insert(*sym::NAME_LABEL, Literal::String(label));
         }
         if let Some(doc) = ctx.doc_comments.get(&chip_decl.range.start.offset) {
             props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
@@ -1802,11 +1829,24 @@ pub(super) fn lower_builtin_call(
         }
     }
 
+    // Most exec gates take their incoming exec on an `Exec` input, but a few
+    // pseudo gates (Send[Global]CustomEvent, QueueTicks/QueueSeconds) name it
+    // `ExecIn`. Wire into whichever the real component actually exposes, or the
+    // game rejects the connection ("port Exec does not exist in target
+    // component") when the save loads.
+    let exec_in_port = if spec.exec
+        && crate::catalog::is_wire_input(spec.gate_class, WirePort::ExecIn.as_str())
+    {
+        WirePort::ExecIn
+    } else {
+        WirePort::Exec
+    };
+
     // Build gate ports
     let mut ports = GateIO::default();
     if spec.exec {
         ports.inputs.push(PortSpec {
-            name: *sym::EXEC,
+            name: intern(exec_in_port.as_str()),
             ty: Type::Exec,
         });
         ports.outputs.push(PortSpec {
@@ -1867,7 +1907,7 @@ pub(super) fn lower_builtin_call(
             .current_exec
             .or_else(|| explicit_exec.map(|e| lower_expr(ctx, e)));
         if let Some(exec) = exec_source {
-            ctx.connect(exec, node_id.port(WirePort::Exec));
+            ctx.connect(exec, node_id.port(exec_in_port));
             if ctx.current_exec.is_some() {
                 ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
             }

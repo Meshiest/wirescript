@@ -227,6 +227,29 @@ fn stamp_module(
         scopes: src.scopes.clone(),
         template_key: src.template_key,
         scope_captures: new_scope_captures,
+        // Remap dynamic-label host/source node ids per instance (empty for the
+        // top-level-only labels shipped so far, but kept correct for the day a
+        // chip body carries one).
+        dynamic_labels: src
+            .dynamic_labels
+            .iter()
+            .map(|(host, port)| {
+                (
+                    remap(*host),
+                    PortRef {
+                        node_id: remap(port.node_id),
+                        port: port.port,
+                    },
+                )
+            })
+            .collect(),
+        // Root-chip label lives only on the root module, never a chip template
+        // instance — carried through for correctness (both are `None` here).
+        root_label_override: src.root_label_override.clone(),
+        root_dynamic_label: src.root_dynamic_label.map(|p| PortRef {
+            node_id: remap(p.node_id),
+            port: p.port,
+        }),
     };
     // Return this module's map PLUS all descendants' maps, so a caller
     // remapping boundary PortRefs (or a parent instantiation) can resolve

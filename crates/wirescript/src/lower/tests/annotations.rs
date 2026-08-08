@@ -239,3 +239,79 @@ fn multi_line_doc_joins_with_newlines() {
         Some(&Literal::String("Line one.\nLine two.".into()))
     );
 }
+
+// ---------- labels P3: `@label(expr)` + `@label` on `var` ----------
+
+#[test]
+fn out_can_carry_explicit_string_label() {
+    // Regression: the existing string form still bakes as-is.
+    let m = lower_src("@label(\"hi\") out v: int = 0");
+    let node = m
+        .outputs
+        .iter()
+        .filter_map(|id| m.nodes.get(id))
+        .next()
+        .expect("output node for v");
+    assert_eq!(
+        node.properties.get(&*sym::NAME_LABEL),
+        Some(&Literal::String("hi".into()))
+    );
+}
+
+#[test]
+fn out_label_expr_folds_via_constant_let() {
+    let m = lower_src("let title = \"Score\"\n@label(title) out v: int = 0");
+    let node = m
+        .outputs
+        .iter()
+        .filter_map(|id| m.nodes.get(id))
+        .next()
+        .expect("output node for v");
+    assert_eq!(
+        node.properties.get(&*sym::NAME_LABEL),
+        Some(&Literal::String("Score".into()))
+    );
+}
+
+#[test]
+fn anon_chip_label_expr_folds_arithmetic() {
+    let m = lower_src("@label(1 + 2) chip { }");
+    let chips = chip_nodes(&m);
+    assert_eq!(chips.len(), 1);
+    assert_eq!(
+        chips[0].properties.get(&*sym::NAME_LABEL),
+        Some(&Literal::String("3".into()))
+    );
+}
+
+#[test]
+fn var_can_carry_explicit_label() {
+    // `@label` is now legal directly on `var` (previously a parse error) and
+    // overrides the name-derived default the same way it does on a port.
+    let m = lower_src("@label(\"HP\") var hp: int = 0");
+    m.nodes
+        .values()
+        .find(|n| {
+            matches!(
+                n.properties.get(&*sym::NAME_LABEL),
+                Some(Literal::String(s)) if s == "HP"
+            )
+        })
+        .expect("var node labeled \"HP\"");
+}
+
+#[test]
+fn label_expr_float_rounds_via_format_render_law() {
+    // A folded float label reads the same 3-decimal / trailing-zero-trimmed
+    // way FormatText renders a float everywhere else (0.33333 -> "0.333"),
+    // NOT the full-precision `f64::to_string()`. (An uncalled *named* chip
+    // produces no instance node, so the anon-chip form is used to exercise
+    // the baked label — the float render path is shared by every label site.)
+    let m = lower_src("@label(0.33333) chip { }");
+    let chips = chip_nodes(&m);
+    assert_eq!(chips.len(), 1);
+    assert_eq!(
+        chips[0].properties.get(&*sym::NAME_LABEL),
+        Some(&Literal::String("0.333".into()))
+    );
+}

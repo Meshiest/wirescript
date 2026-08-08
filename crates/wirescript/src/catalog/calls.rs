@@ -75,6 +75,21 @@ pub struct CallSpec {
     pub receiver: Option<Type>,
 }
 
+impl CallSpec {
+    /// For a receiver method whose object binds to a NAMED param instead of the
+    /// first positional, that param's name. `entity.SendCustomEvent("x", …)`
+    /// binds the entity to `target` (the object-event recipient's grid), not the
+    /// first param (`eventName`), and leaves the positional args as the channel
+    /// name + data values. `None` = the ordinary first-param receiver form
+    /// (`entity.SetLocation(pos)`).
+    pub fn receiver_target_param(&self) -> Option<&'static str> {
+        match self.name {
+            "SendCustomEvent" | "SendGlobalCustomEvent" => Some("target"),
+            _ => None,
+        }
+    }
+}
+
 fn math_unary(name: &'static str, gate_class: &'static str) -> CallSpec {
     CallSpec {
         name,
@@ -2442,7 +2457,10 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: true,
             outputs: vec![],
-            receiver: None,
+            // Receiver form: `entity.SendCustomEvent("x", …)` auto-binds the
+            // entity to `target` (see `receiver_target_param`), so the object
+            // event reaches that entity's grid.
+            receiver: Some(Type::Entity),
         },
     );
 
@@ -2469,7 +2487,10 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             ],
             exec: true,
             outputs: vec![],
-            receiver: None,
+            // Receiver form: `entity.SendCustomEvent("x", …)` auto-binds the
+            // entity to `target` (see `receiver_target_param`), so the object
+            // event reaches that entity's grid.
+            receiver: Some(Type::Entity),
         },
     );
 

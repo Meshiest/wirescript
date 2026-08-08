@@ -527,7 +527,23 @@ impl LanguageServer for Backend {
         let items = match self.docs.lock() {
             Ok(docs) => match docs.get(uri) {
                 Some(doc) => {
-                    build_completions(&doc.source, &doc.symbols, line, col, &prefab_paths)
+                    // Inside a `$```…``` ` nested-prefab block, complete against
+                    // the INNER program so the outer file's context (SpawnPrefab
+                    // params, outer symbols) doesn't leak into the isolated block.
+                    if let Some((inner, il, ic)) =
+                        nested_block_at(&doc.source, &uri_to_file_string(uri), line, col)
+                    {
+                        let resolved = resolve(&inner, "nested", &FsLoader);
+                        let tc = typecheck(&resolved.ast, "nested");
+                        let syms = collect_symbols_for_file(
+                            &resolved.ast,
+                            &tc.type_of_expr,
+                            Some("nested"),
+                        );
+                        build_completions(&inner, &syms, il, ic, &[])
+                    } else {
+                        build_completions(&doc.source, &doc.symbols, line, col, &prefab_paths)
+                    }
                 }
                 None => build_completions("", &[], line, col, &prefab_paths),
             },
@@ -1171,6 +1187,69 @@ fn namespace_member_kind(kind: &str) -> CompletionItemKind {
     }
 }
 
+/// Byte offset of a zero-based `(line, col)` position in `source`. `col` is a
+/// byte offset within the line (the convention the rest of this file uses),
+/// clamped to the line's length.
+fn line_col_to_offset(source: &str, line: usize, col: usize) -> usize {
+    let mut off = 0usize;
+    for (i, l) in source.split_inclusive('\n').enumerate() {
+        if i == line {
+            let line_len = l.len() - usize::from(l.ends_with('\n'));
+            return off + col.min(line_len);
+        }
+        off += l.len();
+    }
+    source.len()
+}
+
+/// Inverse of [`line_col_to_offset`]: a byte `offset` back to a zero-based
+/// `(line, col)`.
+fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    let clamped = offset.min(source.len());
+    let mut line = 0usize;
+    let mut line_start = 0usize;
+    for (i, b) in source.bytes().enumerate() {
+        if i >= clamped {
+            break;
+        }
+        if b == b'\n' {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+    (line, clamped - line_start)
+}
+
+/// If `(line, col)` sits inside a `$```…``` ` nested-prefab block, return the
+/// block's inner source and the cursor's position remapped into it. LSP features
+/// can then analyze the inner block as its own isolated program instead of
+/// leaking the outer file's context into it. Returns `None` outside any block.
+fn nested_block_at(
+    source: &str,
+    file: &str,
+    line: usize,
+    col: usize,
+) -> Option<(String, usize, usize)> {
+    let cursor = line_col_to_offset(source, line, col);
+    let lexed = wirescript::lex(source, file);
+    for t in &lexed.tokens {
+        if t.kind != wirescript::TokenKind::NestedPrefab {
+            continue;
+        }
+        let Some(wirescript::lexer::TokenValue::Str(inner)) = &t.value else {
+            continue;
+        };
+        // Inner text begins just past the opening `$``` fence.
+        let content_start = t.start.offset + 4;
+        let content_end = content_start + inner.len();
+        if cursor >= content_start && cursor <= content_end {
+            let (il, ic) = offset_to_line_col(inner, cursor - content_start);
+            return Some((inner.clone(), il, ic));
+        }
+    }
+    None
+}
+
 /// Build completion items for a position. Pure (no document lock / async) so it
 /// can be unit-tested.
 fn build_completions(
@@ -1644,6 +1723,38 @@ mod tests {
             .into_iter()
             .map(|i| i.label)
             .collect()
+    }
+
+    #[test]
+    fn completion_inside_nested_block_isolates_from_outer_context() {
+        // Cursor inside a `$```…``` ` block: the outer SpawnPrefab param names
+        // (`velocity`, `offset`, `lifetime`) must NOT leak in; the block is
+        // completed as its own isolated program.
+        let src = "on go { let e = SpawnPrefab(lifetime = 0, offset = 1, $```in a: exec\non a { v }```) }\nin go: exec";
+        let cursor = src.find("on a { v").unwrap() + "on a { ".len();
+        let (line, col) = offset_to_line_col(src, cursor);
+        let block = nested_block_at(src, "t", line, col);
+        assert!(block.is_some(), "cursor inside the block should be detected");
+        let (inner, il, ic) = block.unwrap();
+        assert!(inner.contains("in a: exec"), "inner source captured: {inner:?}");
+        let syms = symbols_for(&inner);
+        let got: Vec<String> = build_completions(&inner, &syms, il, ic, &[])
+            .into_iter()
+            .map(|i| i.label)
+            .collect();
+        assert!(
+            !got.iter().any(|l| l == "velocity" || l == "offset" || l == "lifetime"),
+            "SpawnPrefab params must not leak into the nested block: {got:?}"
+        );
+    }
+
+    #[test]
+    fn completion_outside_nested_block_is_not_isolated() {
+        // A cursor that is NOT inside a nested block returns None (the normal
+        // outer-file completion path runs).
+        let src = "on go { SpawnPrefab(prefab = $./a.brz) }\nin go: exec";
+        let col = src.find("SpawnPrefab").unwrap() + 3;
+        assert!(nested_block_at(src, "t", 0, col).is_none());
     }
 
     #[test]

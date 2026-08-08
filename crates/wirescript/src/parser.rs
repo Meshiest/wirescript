@@ -162,8 +162,13 @@ fn trigger_to_expr(t: &Trigger) -> Expr {
 struct ParsedAnnotations {
     side: Option<(PortSide, SourceRange)>,
     label: Option<(String, SourceRange)>,
+    /// `@label(expr)` — the general-expression form (anything besides a bare
+    /// string literal). Const-folded at lowering; at most one of `label` /
+    /// `label_expr` is ever set.
+    label_expr: Option<(Expr, SourceRange)>,
     closed: Option<SourceRange>,
     nofold: Option<SourceRange>,
+    invisible: Option<SourceRange>,
 }
 
 /// Result of [`Parser::collect_module_annotations`] — which module-level
@@ -174,6 +179,7 @@ struct ModuleAnnotations {
     fold: bool,
     layout: Option<crate::ast::LayoutName>,
     flat: bool,
+    invisible: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -182,6 +188,7 @@ enum ModuleAnnKind {
     NoFold,
     Layout(crate::ast::LayoutName),
     Flat,
+    Invisible,
 }
 
 /// Every annotation word the module-level run accepts. Both the run's opening
@@ -189,7 +196,7 @@ enum ModuleAnnKind {
 /// module annotation cannot be recognized at the start of a run and then
 /// dropped mid-run (which parses as a decl-scoped annotation and reports a
 /// misleading "module-level only" error).
-const MODULE_ANN_WORDS: &[&str] = &["nofold", "fold", "layout", "flat"];
+const MODULE_ANN_WORDS: &[&str] = &["nofold", "fold", "layout", "flat", "invisible"];
 
 fn is_module_ann_word(word: &str) -> bool {
     MODULE_ANN_WORDS.contains(&word)
@@ -409,6 +416,7 @@ impl<'a> Parser<'a> {
         // into it.
         let module_doc = self.collect_module_doc();
         let module_anns = self.collect_module_annotations();
+        let module_label = self.collect_module_label();
         while self.peek().kind != TokenKind::Eof {
             let doc = self.collect_doc_comment();
             let before = self.pos;
@@ -447,7 +455,69 @@ impl<'a> Parser<'a> {
             fold: module_anns.fold,
             layout: module_anns.layout,
             flat: module_anns.flat,
+            invisible: module_anns.invisible,
+            module_label,
         }
+    }
+
+    /// If the file opens (after any module doc / annotations) with a
+    /// `@label(<expr>)` that is separated from the first declaration by a blank
+    /// line, consume it as the ROOT microchip's label (same blank-line rule as
+    /// the other top-of-file annotations) and return its expression. A `@label`
+    /// directly above a declaration (no blank line) is left untouched for
+    /// `parse_annotations` to attach to that declaration.
+    ///
+    /// Uses a non-advancing look-ahead to find the matching `)` and check the
+    /// blank-line separator BEFORE committing, so a decl-level `@label` never
+    /// gets its expression parsed here (which would otherwise emit stray
+    /// diagnostics before the roll-back).
+    /// Non-advancing look-ahead: is the token at `idx` a module-level
+    /// `@label(<expr>)` — i.e. `@label` `(` … `)` with balanced parens, followed
+    /// by a blank line (or EOF)? Shared by [`Self::collect_module_label`] and the
+    /// module-annotation run so the two passes compose (a run of `@invisible`
+    /// etc. may hand off to a `@label` that follows it).
+    fn module_label_follows(&self, idx: usize) -> bool {
+        if self.peek_at(idx).kind != TokenKind::Annotation || self.peek_at(idx).text != "label" {
+            return false;
+        }
+        if self.peek_at(idx + 1).kind != TokenKind::LParen {
+            return false;
+        }
+        // Scan to the `)` matching the opening `(`, counting nested parens.
+        let mut c = idx + 2;
+        let mut depth = 1usize;
+        loop {
+            match self.peek_at(c).kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                TokenKind::Eof => return false, // unbalanced — leave for normal parse
+                _ => {}
+            }
+            c += 1;
+        }
+        // Module-level only if a blank line (or EOF) follows the closing `)`.
+        let after = self.peek_at(c + 1).kind;
+        let after2 = self.peek_at(c + 2).kind;
+        after == TokenKind::Eof
+            || (after == TokenKind::Newline && matches!(after2, TokenKind::Newline | TokenKind::Eof))
+    }
+
+    fn collect_module_label(&mut self) -> Option<Expr> {
+        if !self.module_label_follows(0) {
+            return None; // not present, or decl-level — leave for parse_annotations
+        }
+        // Commit: advance past `@label` `(`, parse the expression, eat `)`.
+        self.advance();
+        self.advance();
+        let expr = self.parse_expr();
+        self.match_tok(TokenKind::RParen, None);
+        self.eat_newlines();
+        Some(expr)
     }
 
     /// If the file opens (after any module doc) with a run of module-level
@@ -483,6 +553,7 @@ impl<'a> Parser<'a> {
                 "fold" => Some(ModuleAnnKind::Fold),
                 "nofold" => Some(ModuleAnnKind::NoFold),
                 "flat" => Some(ModuleAnnKind::Flat),
+                "invisible" => Some(ModuleAnnKind::Invisible),
                 _ => {
                     // @layout("<name>") — the `(` Str `)` tokens follow directly.
                     if self.peek_at(cursor + 1).kind == TokenKind::LParen
@@ -577,6 +648,14 @@ impl<'a> Parser<'a> {
             // line — keep scanning (the next loop iteration checks it).
             cursor += 2;
         }
+        // The run stopped at a token that isn't a module-annotation word. If it
+        // is a blank-line-separated `@label(<expr>)` (its own later pass) and we
+        // already collected module annotations, finish the run here — consuming
+        // those annotations and leaving the `@label` for `collect_module_label`
+        // — so e.g. `@invisible` directly above a module `@label` isn't lost.
+        if !spans.is_empty() && self.module_label_follows(cursor) {
+            return self.finish_module_annotations(spans, errors, cursor);
+        }
         ModuleAnnotations::default()
     }
 
@@ -608,6 +687,7 @@ impl<'a> Parser<'a> {
                 ModuleAnnKind::Fold => result.fold = true,
                 ModuleAnnKind::NoFold => result.no_fold = true,
                 ModuleAnnKind::Flat => result.flat = true,
+                ModuleAnnKind::Invisible => result.invisible = true,
                 ModuleAnnKind::Layout(choice) => {
                     // No engine outranks another, so the last spelling wins and
                     // the file is told its earlier one was discarded.
@@ -683,6 +763,8 @@ impl<'a> Parser<'a> {
                 }
                 let side = anns.side.map(|(s, _)| s);
                 let label = anns.label.map(|(l, _)| l);
+                let label_expr = anns.label_expr.map(|(e, _)| e);
+                let invisible = anns.invisible.is_some();
                 let no_fold = anns.nofold.is_some();
                 if kw("in") {
                     if let Some(r) = &anns.nofold {
@@ -692,9 +774,11 @@ impl<'a> Parser<'a> {
                             r.end,
                         );
                     }
-                    return Some(self.parse_in_decl(side, label));
+                    return Some(self.parse_in_decl(side, label, label_expr, invisible));
                 }
-                return Some(TopDecl::Out(self.parse_out_binding(side, label, no_fold)));
+                return Some(TopDecl::Out(
+                    self.parse_out_binding(side, label, label_expr, invisible, no_fold),
+                ));
             }
             let next_is_open_chip = kw("open")
                 && self.peek_at(1).kind == TokenKind::Kw
@@ -709,6 +793,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 let label = anns.label.map(|(l, _)| l);
+                let label_expr = anns.label_expr.map(|(e, _)| e);
                 let no_fold = anns.nofold.is_some();
                 if next_is_open_chip {
                     if let Some(r) = &anns.closed {
@@ -719,36 +804,48 @@ impl<'a> Parser<'a> {
                         );
                     }
                     self.advance(); // consume "open"
-                    let decl = self.parse_chip_decl(true, label, false, no_fold);
+                    let decl = self.parse_chip_decl(true, label, label_expr, false, no_fold);
                     if let (TopDecl::AnonChip(_), Some(r)) = (&decl, &anns.nofold) {
                         self.warn("@nofold has no effect on an anonymous chip", r.start, r.end);
                     }
                     return Some(decl);
                 }
-                let decl = self.parse_chip_decl(false, label, anns.closed.is_some(), no_fold);
+                let decl =
+                    self.parse_chip_decl(false, label, label_expr, anns.closed.is_some(), no_fold);
                 if let (TopDecl::AnonChip(_), Some(r)) = (&decl, &anns.nofold) {
                     self.warn("@nofold has no effect on an anonymous chip", r.start, r.end);
                 }
                 return Some(decl);
             }
             // `@nofold` (alone — no side/label/closed) is also legal directly on
-            // `var` / `static var` / `let` / `on`, at any nesting depth. Any
-            // other annotation combined with these still falls through to the
-            // generic "must be followed by ..." error below, unchanged.
+            // `var` / `static var` / `let` / `on`, at any nesting depth. `@label`
+            // (string or constant expression) is additionally legal directly on
+            // `var` / `static var` — it overrides the var's name-derived
+            // floating label, same as on a port. Any other annotation combined
+            // with these still falls through to the generic "must be followed
+            // by ..." error below, unchanged.
             let is_static_var = kw("static")
                 && self.peek_at(1).kind == TokenKind::Kw
                 && self.peek_at(1).text == "var";
-            let bare_nofold = anns.nofold.is_some()
-                && anns.side.is_none()
+            let no_side_closed_invisible =
+                anns.side.is_none() && anns.closed.is_none() && anns.invisible.is_none();
+            let var_ann_ok = no_side_closed_invisible
+                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some());
+            let bare_nofold = no_side_closed_invisible
+                && anns.nofold.is_some()
                 && anns.label.is_none()
-                && anns.closed.is_none();
-            if bare_nofold && (kw("var") || is_static_var || kw("let") || kw("on")) {
+                && anns.label_expr.is_none();
+            if (var_ann_ok && (kw("var") || is_static_var)) || (bare_nofold && (kw("let") || kw("on")))
+            {
+                let no_fold = anns.nofold.is_some();
+                let label = anns.label.map(|(l, _)| l);
+                let label_expr = anns.label_expr.map(|(e, _)| e);
                 if is_static_var {
                     self.advance(); // consume "static"
-                    return Some(self.parse_var_decl(true, true));
+                    return Some(self.parse_var_decl(true, no_fold, label, label_expr));
                 }
                 if kw("var") {
-                    return Some(self.parse_var_decl(false, true));
+                    return Some(self.parse_var_decl(false, no_fold, label, label_expr));
                 }
                 if kw("let") {
                     let mut decl = self.parse_let_decl();
@@ -784,26 +881,30 @@ impl<'a> Parser<'a> {
         }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
-                "var" => return Some(self.parse_var_decl(false, false)),
+                "var" => return Some(self.parse_var_decl(false, false, None, None)),
                 "static" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "var" {
                         self.advance(); // consume "static"
-                        return Some(self.parse_var_decl(true, false));
+                        return Some(self.parse_var_decl(true, false, None, None));
                     }
                 }
                 "buffer" => return Some(self.parse_buffer_decl()),
-                "in" => return Some(self.parse_in_decl(None, None)),
-                "out" => return Some(TopDecl::Out(self.parse_out_binding(None, None, false))),
+                "in" => return Some(self.parse_in_decl(None, None, None, false)),
+                "out" => {
+                    return Some(TopDecl::Out(
+                        self.parse_out_binding(None, None, None, false, false),
+                    ));
+                }
                 "let" => return Some(self.parse_let_decl()),
                 "on" => return Some(TopDecl::Handler(self.parse_handler(false))),
                 "array" => return Some(self.parse_array_decl()),
                 "map" => return Some(self.parse_map_decl()),
-                "chip" => return Some(self.parse_chip_decl(false, None, false, false)),
+                "chip" => return Some(self.parse_chip_decl(false, None, None, false, false)),
                 "mod" => return Some(self.parse_mod_decl()),
                 "open" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
                         self.advance(); // consume "open"
-                        return Some(self.parse_chip_decl(true, None, false, false));
+                        return Some(self.parse_chip_decl(true, None, None, false, false));
                     }
                 }
                 "fn" => return Some(self.parse_fn_decl()),
@@ -840,7 +941,13 @@ impl<'a> Parser<'a> {
 
     // ---------- declarations ----------
 
-    fn parse_var_decl(&mut self, is_static: bool, no_fold: bool) -> TopDecl {
+    fn parse_var_decl(
+        &mut self,
+        is_static: bool,
+        no_fold: bool,
+        label: Option<String>,
+        label_expr: Option<Expr>,
+    ) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("var")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let typ = if self.match_tok(TokenKind::Colon, None).is_some() {
@@ -849,6 +956,24 @@ impl<'a> Parser<'a> {
             None
         };
         let init = if self.match_tok(TokenKind::Op, Some("=")).is_some() {
+            Some(self.parse_expr())
+        } else if !matches!(
+            self.peek().kind,
+            TokenKind::Newline | TokenKind::Semi | TokenKind::Eof | TokenKind::RBrace
+        ) {
+            // A `var` may legitimately have no initializer (`var x: int`), but
+            // only when the declaration actually ends here. A leftover token
+            // that isn't `=` is almost always a missing `=`: `var x: int 5`.
+            // Report it, then recover by taking the expression as the value.
+            let (s, e, txt) = {
+                let t = self.peek();
+                (t.start, t.end, t.text.clone())
+            };
+            self.error(
+                format!("missing `=` before the initializer for `var {name}`; found `{txt}`"),
+                s,
+                e,
+            );
             Some(self.parse_expr())
         } else {
             None
@@ -861,6 +986,8 @@ impl<'a> Parser<'a> {
             init,
             is_static,
             no_fold,
+            label,
+            label_expr,
             range: self.make_range(start, end),
         })
     }
@@ -885,7 +1012,13 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_in_decl(&mut self, side: Option<PortSide>, label: Option<String>) -> TopDecl {
+    fn parse_in_decl(
+        &mut self,
+        side: Option<PortSide>,
+        label: Option<String>,
+        label_expr: Option<Expr>,
+        invisible: bool,
+    ) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("in")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         self.expect(TokenKind::Colon, None);
@@ -897,6 +1030,8 @@ impl<'a> Parser<'a> {
             typ,
             side,
             label,
+            label_expr,
+            invisible,
             range: self.make_range(start, end),
         })
     }
@@ -910,34 +1045,56 @@ impl<'a> Parser<'a> {
             let tok = self.advance();
             match tok.text.as_str() {
                 "label" => {
+                    // Fast path (unchanged): a single string literal —
+                    // `@label("text")`. Anything else inside the parens
+                    // (a named constant, arithmetic, …) parses as a general
+                    // expression and is const-folded to display text at
+                    // lowering (typecheck rejects a non-constant one).
                     let mut text: Option<(String, Pos)> = None;
+                    let mut expr: Option<(Expr, Pos)> = None;
                     if self.match_tok(TokenKind::LParen, None).is_some() {
-                        if self.check(TokenKind::Str, None) {
+                        if self.check(TokenKind::Str, None)
+                            && self.peek_at(1).kind == TokenKind::RParen
+                        {
                             let s_tok = self.advance();
                             let s = match &s_tok.value {
                                 Some(TokenValue::Str(s)) => s.clone(),
                                 _ => s_tok.text.clone(),
                             };
                             text = Some((s, s_tok.end));
+                            self.match_tok(TokenKind::RParen, None);
+                        } else if !self.check(TokenKind::RParen, None) {
+                            let e = self.parse_expr();
+                            let end = e.range().end;
+                            expr = Some((e, end));
+                            self.match_tok(TokenKind::RParen, None);
+                        } else {
+                            self.match_tok(TokenKind::RParen, None); // `@label()`
                         }
-                        self.match_tok(TokenKind::RParen, None);
                     }
-                    match text {
-                        Some((s, end)) if s.is_empty() => {
+                    match (text, expr) {
+                        (Some((s, end)), _) if s.is_empty() => {
                             self.error(
                                 "@label text must not be empty".to_string(),
                                 tok.start,
                                 end,
                             );
                         }
-                        Some((s, end)) => {
-                            if anns.label.is_some() {
+                        (Some((s, end)), _) => {
+                            if anns.label.is_some() || anns.label_expr.is_some() {
                                 self.error("duplicate @label".to_string(), tok.start, end);
                             } else {
                                 anns.label = Some((s, self.make_range(tok.start, end)));
                             }
                         }
-                        None => self.error(
+                        (None, Some((e, end))) => {
+                            if anns.label.is_some() || anns.label_expr.is_some() {
+                                self.error("duplicate @label".to_string(), tok.start, end);
+                            } else {
+                                anns.label_expr = Some((e, self.make_range(tok.start, end)));
+                            }
+                        }
+                        (None, None) => self.error(
                             "@label requires a string argument: @label(\"text\")".to_string(),
                             tok.start,
                             tok.end,
@@ -949,6 +1106,13 @@ impl<'a> Parser<'a> {
                         self.error("duplicate @closed".to_string(), tok.start, tok.end);
                     } else {
                         anns.closed = Some(self.make_range(tok.start, tok.end));
+                    }
+                }
+                "invisible" => {
+                    if anns.invisible.is_some() {
+                        self.error("duplicate @invisible".to_string(), tok.start, tok.end);
+                    } else {
+                        anns.invisible = Some(self.make_range(tok.start, tok.end));
                     }
                 }
                 "nofold" => {
@@ -1001,7 +1165,7 @@ impl<'a> Parser<'a> {
                             )
                         } else {
                             format!(
-                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, or @nofold",
+                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @closed, @invisible, or @nofold",
                                 w
                             )
                         };
@@ -1020,6 +1184,8 @@ impl<'a> Parser<'a> {
         &mut self,
         side: Option<PortSide>,
         label: Option<String>,
+        label_expr: Option<Expr>,
+        invisible: bool,
         no_fold: bool,
     ) -> OutBinding {
         let start = self.expect(TokenKind::Kw, Some("out")).start;
@@ -1039,6 +1205,8 @@ impl<'a> Parser<'a> {
                 typ,
                 side,
                 label: label.clone(),
+                label_expr: label_expr.clone(),
+                invisible,
                 no_fold,
                 range: self.make_range(start, end),
             }
@@ -1070,6 +1238,8 @@ impl<'a> Parser<'a> {
                 typ,
                 side,
                 label,
+                label_expr,
+                invisible,
                 no_fold,
                 range: self.make_range(start, end),
             }
@@ -1448,6 +1618,7 @@ impl<'a> Parser<'a> {
         &mut self,
         open: bool,
         label: Option<String>,
+        label_expr: Option<Expr>,
         closed: bool,
         no_fold: bool,
     ) -> TopDecl {
@@ -1493,8 +1664,11 @@ impl<'a> Parser<'a> {
             self.eat_stmt_end();
             // A `chip let` has no name of its own, so default its display label
             // to the binding name(s) — the chip should show what it computes.
-            // An explicit `@label(...)` still wins.
-            let derived_label = label.clone().or_else(|| {
+            // An explicit `@label(...)` (string OR expression) still wins —
+            // the name-derived fallback only applies when neither is given.
+            let derived_label = if label.is_some() || label_expr.is_some() {
+                label.clone()
+            } else {
                 let names: Vec<&str> = stmts
                     .iter()
                     .filter_map(|s| match s {
@@ -1506,7 +1680,7 @@ impl<'a> Parser<'a> {
                     })
                     .collect();
                 (!names.is_empty()).then(|| names.join(", "))
-            });
+            };
             return TopDecl::AnonChip(AnonChipDecl {
                 open,
                 body: Block {
@@ -1515,6 +1689,7 @@ impl<'a> Parser<'a> {
                 },
                 range: self.make_range(start, end),
                 label: derived_label,
+                label_expr: label_expr.clone(),
                 closed,
             });
         }
@@ -1530,6 +1705,7 @@ impl<'a> Parser<'a> {
                 },
                 range: self.make_range(start, end),
                 label: label.clone(),
+                label_expr: label_expr.clone(),
                 closed,
             });
         }
@@ -1542,6 +1718,7 @@ impl<'a> Parser<'a> {
                 body,
                 range: self.make_range(start, end),
                 label,
+                label_expr,
                 closed,
             });
         }
@@ -1564,6 +1741,7 @@ impl<'a> Parser<'a> {
             range: self.make_range(start, end),
             inline: false,
             label,
+            label_expr,
             closed,
             no_fold,
         })
@@ -1672,6 +1850,7 @@ impl<'a> Parser<'a> {
             range: self.make_range(start, end),
             inline: true,
             label: None,
+            label_expr: None,
             closed: false,
             no_fold: false,
         })
@@ -2303,6 +2482,8 @@ impl<'a> Parser<'a> {
                 }
                 let side = anns.side.map(|(s, _)| s);
                 let label = anns.label.map(|(l, _)| l);
+                let label_expr = anns.label_expr.map(|(e, _)| e);
+                let invisible = anns.invisible.is_some();
                 let no_fold = anns.nofold.is_some();
                 if kw("in") {
                     if let Some(r) = &anns.nofold {
@@ -2312,12 +2493,15 @@ impl<'a> Parser<'a> {
                             r.end,
                         );
                     }
-                    if let TopDecl::In(i) = self.parse_in_decl(side, label) {
+                    if let TopDecl::In(i) = self.parse_in_decl(side, label, label_expr, invisible)
+                    {
                         return Some(Stmt::In(i));
                     }
                     return None;
                 }
-                return Some(Stmt::OutBinding(self.parse_out_binding(side, label, no_fold)));
+                return Some(Stmt::OutBinding(
+                    self.parse_out_binding(side, label, label_expr, invisible, no_fold),
+                ));
             }
             let next_is_open_chip = kw("open")
                 && self.peek_at(1).kind == TokenKind::Kw
@@ -2332,6 +2516,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 let label = anns.label.map(|(l, _)| l);
+                let label_expr = anns.label_expr.map(|(e, _)| e);
                 let no_fold = anns.nofold.is_some();
                 let (open, closed) = if next_is_open_chip {
                     if let Some(r) = &anns.closed {
@@ -2346,7 +2531,7 @@ impl<'a> Parser<'a> {
                 } else {
                     (false, anns.closed.is_some())
                 };
-                match self.parse_chip_decl(open, label, closed, no_fold) {
+                match self.parse_chip_decl(open, label, label_expr, closed, no_fold) {
                     TopDecl::AnonChip(ac) => {
                         if let Some(r) = &anns.nofold {
                             self.warn(
@@ -2362,26 +2547,40 @@ impl<'a> Parser<'a> {
                 }
             }
             // `@nofold` (alone — no side/label/closed) is also legal directly on
-            // `var` / `static var` / `let` / `on`, at any nesting depth. Any
-            // other annotation combined with these still falls through to the
-            // generic "must be followed by ..." error below, unchanged.
+            // `var` / `static var` / `let` / `on`, at any nesting depth. `@label`
+            // (string or constant expression) is additionally legal directly on
+            // `var` / `static var` — it overrides the var's name-derived
+            // floating label, same as on a port. Any other annotation combined
+            // with these still falls through to the generic "must be followed
+            // by ..." error below, unchanged.
             let is_static_var = kw("static")
                 && self.peek_at(1).kind == TokenKind::Kw
                 && self.peek_at(1).text == "var";
-            let bare_nofold = anns.nofold.is_some()
-                && anns.side.is_none()
+            let no_side_closed_invisible =
+                anns.side.is_none() && anns.closed.is_none() && anns.invisible.is_none();
+            let var_ann_ok = no_side_closed_invisible
+                && (anns.nofold.is_some() || anns.label.is_some() || anns.label_expr.is_some());
+            let bare_nofold = no_side_closed_invisible
+                && anns.nofold.is_some()
                 && anns.label.is_none()
-                && anns.closed.is_none();
-            if bare_nofold && (kw("var") || is_static_var || kw("let") || kw("on")) {
+                && anns.label_expr.is_none();
+            if (var_ann_ok && (kw("var") || is_static_var)) || (bare_nofold && (kw("let") || kw("on")))
+            {
+                let no_fold = anns.nofold.is_some();
+                let label = anns.label.map(|(l, _)| l);
+                let label_expr = anns.label_expr.map(|(e, _)| e);
                 if is_static_var {
                     self.advance(); // consume "static"
-                    if let TopDecl::Var(v) = self.parse_var_decl(true, true) {
+                    if let TopDecl::Var(v) = self.parse_var_decl(true, no_fold, label, label_expr)
+                    {
                         return Some(Stmt::Var(v));
                     }
                     return None;
                 }
                 if kw("var") {
-                    if let TopDecl::Var(v) = self.parse_var_decl(false, true) {
+                    if let TopDecl::Var(v) =
+                        self.parse_var_decl(false, no_fold, label, label_expr)
+                    {
                         return Some(Stmt::Var(v));
                     }
                     return None;
@@ -2428,14 +2627,14 @@ impl<'a> Parser<'a> {
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
                 "var" => {
-                    if let TopDecl::Var(v) = self.parse_var_decl(false, false) {
+                    if let TopDecl::Var(v) = self.parse_var_decl(false, false, None, None) {
                         return Some(Stmt::Var(v));
                     }
                 }
                 "static" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "var" {
                         self.advance();
-                        if let TopDecl::Var(v) = self.parse_var_decl(true, false) {
+                        if let TopDecl::Var(v) = self.parse_var_decl(true, false, None, None) {
                             return Some(Stmt::Var(v));
                         }
                     }
@@ -2453,7 +2652,11 @@ impl<'a> Parser<'a> {
                         return Some(Stmt::Buffer(v));
                     }
                 }
-                "out" => return Some(Stmt::OutBinding(self.parse_out_binding(None, None, false))),
+                "out" => {
+                    return Some(Stmt::OutBinding(
+                        self.parse_out_binding(None, None, None, false, false),
+                    ));
+                }
                 "let" => {
                     let decl = self.parse_let_decl();
                     match decl {
@@ -2473,7 +2676,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "in" => {
-                    if let TopDecl::In(i) = self.parse_in_decl(None, None) {
+                    if let TopDecl::In(i) = self.parse_in_decl(None, None, None, false) {
                         return Some(Stmt::In(i));
                     }
                 }
@@ -2498,7 +2701,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "if" => return Some(self.parse_if_stmt()),
-                "chip" => match self.parse_chip_decl(false, None, false, false) {
+                "chip" => match self.parse_chip_decl(false, None, None, false, false) {
                     TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
                     TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
                     _ => {}
@@ -2506,7 +2709,9 @@ impl<'a> Parser<'a> {
                 "open" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
                         self.advance();
-                        if let TopDecl::AnonChip(ac) = self.parse_chip_decl(true, None, false, false) {
+                        if let TopDecl::AnonChip(ac) =
+                            self.parse_chip_decl(true, None, None, false, false)
+                        {
                             return Some(Stmt::AnonChip(ac));
                         }
                     }
@@ -2815,6 +3020,22 @@ impl<'a> Parser<'a> {
     fn parse_postfix(&mut self) -> Expr {
         let mut e = self.parse_primary();
         loop {
+            // A method/field chain may continue on a following line:
+            //   let e = SpawnPrefab(...)
+            //     .SendCustomEvent("init", p)
+            // Skip the intervening newline(s) ONLY when the next real token is
+            // `.` (a leading-dot continuation) — an ordinary line break still
+            // ends the expression. A statement can never legally begin with `.`,
+            // so this only accepts input that was previously a parse error.
+            if self.peek().kind == TokenKind::Newline {
+                let mut i = 1;
+                while self.peek_at(i).kind == TokenKind::Newline {
+                    i += 1;
+                }
+                if self.peek_at(i).kind == TokenKind::Dot {
+                    self.eat_newlines();
+                }
+            }
             let t = self.peek().clone();
             if t.kind == TokenKind::Dot {
                 self.advance();
@@ -3035,6 +3256,15 @@ impl<'a> Parser<'a> {
                         range,
                     }
                 }
+            }
+            TokenKind::NestedPrefab => {
+                self.advance();
+                let source = match t.value {
+                    Some(TokenValue::Str(s)) => s,
+                    _ => String::new(),
+                };
+                let range = self.make_range(t.start, t.end);
+                Expr::NestedPrefab { source, range }
             }
             TokenKind::LBracket => {
                 let start = t.start;
@@ -3989,6 +4219,24 @@ mod tests {
     }
 
     #[test]
+    fn invisible_before_non_port_decl_errors() {
+        // `@invisible` must participate in the bare-@nofold validity guard
+        // exactly like `@closed`: it is a port annotation, so pairing it with
+        // `@nofold` before a plain `var` is not the special bare-@nofold case
+        // and must be diagnosed (not silently discarded).
+        let r = parse("@invisible @nofold var x: int = 0", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d
+                .message
+                .contains("must be followed by an 'in', 'out', or chip declaration")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+        // The var itself still parses.
+        assert!(matches!(&r.ast.decls[0], TopDecl::Var(_)));
+    }
+
+    #[test]
     fn duplicate_annotation_errors_first_wins() {
         let r = parse("@left @right in a: bool", "test");
         assert!(
@@ -4106,6 +4354,54 @@ mod tests {
     }
 
     #[test]
+    fn label_expr_annotation_parses_general_expressions() {
+        // Anything besides a bare string literal parses as a general
+        // expression, stored separately from the string form. Const-folding
+        // it to display text happens at lowering (typecheck rejects a
+        // non-constant one).
+        let r = parse("@label(1 + 2) chip { }", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::AnonChip(ac) = &r.ast.decls[0] else {
+            panic!("decl 0: {:?}", r.ast.decls[0])
+        };
+        assert!(ac.label.is_none());
+        assert!(matches!(ac.label_expr, Some(Expr::BinOp { .. })));
+    }
+
+    #[test]
+    fn label_expr_and_label_string_are_mutually_exclusive() {
+        let r = parse("@label(\"a\") @label(x) chip { }", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("duplicate @label")),
+            "diags: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn label_annotation_is_allowed_on_var() {
+        // Previously any annotation besides a bare `@nofold` before `var`
+        // fell through to the generic "must be followed by ..." parse error.
+        let r = parse("@label(\"HP\") var hp: int = 0", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::Var(v) = &r.ast.decls[0] else {
+            panic!("decl 0: {:?}", r.ast.decls[0])
+        };
+        assert_eq!(v.label.as_deref(), Some("HP"));
+    }
+
+    #[test]
+    fn label_and_nofold_stack_on_var() {
+        let r = parse("@label(\"HP\") @nofold var hp: int = 0", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let TopDecl::Var(v) = &r.ast.decls[0] else {
+            panic!("decl 0: {:?}", r.ast.decls[0])
+        };
+        assert_eq!(v.label.as_deref(), Some("HP"));
+        assert!(v.no_fold);
+    }
+
+    #[test]
     fn closed_open_chip_contradiction_errors() {
         let r = parse("@closed open chip { var a: int = 0 }", "test");
         assert!(
@@ -4135,9 +4431,9 @@ mod tests {
     fn unknown_annotation_lists_all_words() {
         let r = parse("@middle in a: bool", "test");
         assert!(
-            r.diagnostics[0]
-                .message
-                .contains("expected @left, @right, @top, @bottom, @label, @closed, or @nofold"),
+            r.diagnostics[0].message.contains(
+                "expected @left, @right, @top, @bottom, @label, @closed, @invisible, or @nofold"
+            ),
             "diags: {:?}",
             r.diagnostics
         );
@@ -4198,6 +4494,90 @@ mod tests {
             "{:?}",
             p.diagnostics
         );
+    }
+
+    #[test]
+    fn var_initializer_without_equals_is_an_error() {
+        // `var x: type LITERAL` (missing `=`) must not silently drop the value.
+        for src in ["var test: string \"hello\"\n", "var n: int 5\n"] {
+            let p = crate::parser::parse(src, "t");
+            assert!(
+                p.diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("missing `=`")),
+                "missing `=` before an initializer must error; src {src:?} gave {:?}",
+                p.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn var_without_initializer_is_allowed() {
+        // A bare `var x: int` (declaration ends after the type) is valid.
+        for src in ["var x: int\n", "var y: bool\nvar z: int = 0\n", "chip { var q: int }\n"] {
+            let p = crate::parser::parse(src, "t");
+            assert!(
+                p.diagnostics.is_empty(),
+                "an uninitialized var is valid; src {src:?} gave {:?}",
+                p.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn module_label_blank_line_separated_labels_the_root() {
+        // `@label(expr)` at the top of the file, separated from the first decl
+        // by a blank line, is a MODULE-level label (root chip) — not attached
+        // to the var below it.
+        let p = crate::parser::parse("@label(title)\n\nvar title: string = \"hi\"\n", "t");
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+        assert!(
+            p.ast.module_label.is_some(),
+            "a blank-line-separated top @label is module-level"
+        );
+        match &p.ast.decls[0] {
+            TopDecl::Var(v) => assert!(
+                v.label.is_none() && v.label_expr.is_none(),
+                "the var must NOT also carry the module @label"
+            ),
+            other => panic!("expected var, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn module_annotation_run_hands_off_to_module_label() {
+        // `@invisible` directly above a blank-line-separated module `@label`
+        // keeps BOTH: the run finishes (module stays invisible) and the `@label`
+        // is claimed as the root label — no lost-annotation error.
+        let p =
+            crate::parser::parse("@invisible\n@label(title)\n\nvar title: string = \"hi\"\n", "t");
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+        assert!(
+            p.ast.invisible,
+            "@invisible must survive the hand-off to a following module @label"
+        );
+        assert!(
+            p.ast.module_label.is_some(),
+            "the @label is still module-level"
+        );
+    }
+
+    #[test]
+    fn attached_label_stays_decl_level() {
+        // No blank line: `@label(expr)` attaches to the var below it (the
+        // declaration-level self-label), and there is no module-level label.
+        let p = crate::parser::parse("@label(title)\nvar title: string = \"hi\"\n", "t");
+        assert!(
+            p.ast.module_label.is_none(),
+            "an attached top @label is NOT module-level"
+        );
+        match &p.ast.decls[0] {
+            TopDecl::Var(v) => assert!(
+                v.label_expr.is_some(),
+                "the var carries the attached @label expression"
+            ),
+            other => panic!("expected var, got {other:?}"),
+        }
     }
 
     #[test]
@@ -4393,5 +4773,101 @@ mod tests {
         // an unbalanced expression-position brace must terminate quickly, not scan to EOF
         let big = format!("let x = {{ {}", "a a a a ".repeat(5000));
         let _ = crate::parser::parse(&big, "t"); // must simply COMPLETE (no hang)
+    }
+
+    #[test]
+    fn parse_invisible_port_annotation() {
+        let r = crate::parser::parse("@left @invisible in go: exec", "test");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        match &r.ast.decls[0] {
+            TopDecl::In(p) => {
+                assert!(p.invisible, "@invisible should set InDecl.invisible");
+                assert_eq!(p.side, Some(crate::ast::PortSide::Left));
+            }
+            other => panic!("expected In decl, got {other:?}"),
+        }
+    }
+
+    /// Walks a parsed script for the first `Expr::NestedPrefab`, returning its
+    /// captured inner source. Only recurses through the handful of expression
+    /// and statement kinds needed to reach a call argument inside a handler
+    /// body — enough for this test, not a general-purpose AST visitor.
+    fn find_nested_prefab_source(script: &Script) -> Option<String> {
+        fn walk_expr(e: &Expr) -> Option<String> {
+            match e {
+                Expr::NestedPrefab { source, .. } => Some(source.clone()),
+                Expr::Call { callee, args, .. } => walk_expr(callee).or_else(|| {
+                    args.iter().find_map(|a| match a {
+                        CallArg::Positional(e) | CallArg::Spread(e) => walk_expr(e),
+                        CallArg::Named { value, .. } => walk_expr(value),
+                    })
+                }),
+                _ => None,
+            }
+        }
+        fn walk_stmt(s: &Stmt) -> Option<String> {
+            match s {
+                Stmt::Let(l) => walk_expr(&l.value),
+                Stmt::ExprStmt(e) => walk_expr(&e.expr),
+                Stmt::Assign(a) => walk_expr(&a.value),
+                Stmt::Handler(h) => h.body.stmts.iter().find_map(walk_stmt),
+                _ => None,
+            }
+        }
+        script.decls.iter().find_map(|d| match d {
+            TopDecl::Handler(h) => h.body.stmts.iter().find_map(walk_stmt),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn parse_nested_prefab_expr() {
+        let r = crate::parser::parse(
+            "in go: exec\non go { let e = SpawnPrefab($```in a: exec```) }\n",
+            "test",
+        );
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        assert_eq!(
+            find_nested_prefab_source(&r.ast),
+            Some("in a: exec".to_string()),
+            "should parse a NestedPrefab carrying the inner source"
+        );
+    }
+
+    #[test]
+    fn method_chain_continues_across_newline() {
+        // A `.method(...)` on the line after its receiver continues the chain
+        // (a leading-dot continuation), rather than parsing as two statements /
+        // a stray-`.` error.
+        let src = "in go: exec\nin obj: entity\non go {\n  obj\n    .SendCustomEvent(\"x\", 1)\n}\n";
+        let r = crate::parser::parse(src, "test");
+        assert!(r.diagnostics.is_empty(), "chain should parse: {:?}", r.diagnostics);
+        let handler = r
+            .ast
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(
+            handler.body.stmts.len(),
+            1,
+            "the chain is one statement, not two: {:?}",
+            handler.body.stmts
+        );
+        // That one statement is a chained call whose callee is `.SendCustomEvent`.
+        match &handler.body.stmts[0] {
+            Stmt::ExprStmt(es) => match &es.expr {
+                Expr::Call { callee, .. } => assert!(
+                    matches!(callee.as_ref(), Expr::FieldAccess { field, .. } if field == "SendCustomEvent"),
+                    "callee should be a chained .SendCustomEvent, got {:?}",
+                    es.expr
+                ),
+                other => panic!("expected a Call, got {other:?}"),
+            },
+            other => panic!("expected an ExprStmt, got {other:?}"),
+        }
     }
 }

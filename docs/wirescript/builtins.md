@@ -1051,7 +1051,7 @@ The receiver's first argument is the channel name (positional), and the
 remaining params are the **typed data outputs**. The type annotations are
 **required** — the game stores each data slot as a typed value, not `any`, so a
 receiver param without a type is a **`WS029`** lint. Unused slots default to
-`float`. `objectEvent = true` is constant config that scopes the receiver to a
+`float`. `isObject = true` is constant config that scopes the receiver to a
 specific grid/object (an **object event**) instead of firing grid-wide.
 
 ```wirescript
@@ -1068,7 +1068,7 @@ on CustomEvent("damage", amount: int, attacker: character) {
 `SendGlobalCustomEvent` and `on GlobalCustomEvent` are the **ownership-agnostic**
 counterparts: delivery ignores the owner, reaching every matching global receiver.
 They have the same shape (constant channel name, up to 8 typed data values,
-optional `target` entity, `objectEvent` config), on a channel namespace that is
+optional `target` entity, `isObject` config), on a channel namespace that is
 **separate** from the personal one — `SendGlobalCustomEvent("x")` reaches
 `on GlobalCustomEvent("x")` but never `on CustomEvent("x")`, and vice versa.
 

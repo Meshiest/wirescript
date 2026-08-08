@@ -124,7 +124,13 @@ function formatWirescript(source, tabWidth, useTabs) {
         trimmed.startsWith("then ") ||
         trimmed.startsWith("then\t"));
     const isBinopCont = !startsClose && isBinopContinuation(trimmed);
-    const extra = isExprElse || isBinopCont ? 1 : 0;
+    // A line starting with `.` is a method/field-chain continuation of the
+    // previous expression (`SpawnPrefab(...)\n  .SendCustomEvent(...)`) — indent
+    // one extra level. Exclude `...spread`, which is a record/array element, not
+    // a chain continuation.
+    const isDotCont =
+      !startsClose && trimmed.startsWith(".") && !trimmed.startsWith("...");
+    const extra = isExprElse || isBinopCont || isDotCont ? 1 : 0;
     const base = stack.filter(Boolean).length + extra;
 
     // A standalone `// fmt-ignore` is re-indented normally, then protects the

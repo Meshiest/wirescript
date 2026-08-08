@@ -297,15 +297,26 @@ fn cursor_byte_offset(source: &str, line: usize, col: usize) -> usize {
     line_start + bc
 }
 
-/// If `call` is `SendCustomEvent(...)` and `off` sits on its channel-name string
-/// literal, return that channel name.
-fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<&'a str> {
+/// If `call` is a `SendCustomEvent(...)` / `SendGlobalCustomEvent(...)` send and
+/// `off` sits on its channel-name string literal, return that channel name plus
+/// the RECEIVER trigger word (`CustomEvent` / `GlobalCustomEvent`) — the two are
+/// separate channel namespaces, so a send only jumps to its own kind of receiver.
+fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<(&'a str, &'static str)> {
     let Expr::Call { callee, args, .. } = call else {
         return None;
     };
-    if !matches!(callee.as_ref(), Expr::Ident { name, .. } if name == "SendCustomEvent") {
-        return None;
-    }
+    // Both `SendCustomEvent("x", …)` and the receiver form
+    // `entity.SendCustomEvent("x", …)` carry the channel name in their args.
+    let send = match callee.as_ref() {
+        Expr::Ident { name, .. } => name.as_str(),
+        Expr::FieldAccess { field, .. } => field.as_str(),
+        _ => return None,
+    };
+    let trigger_word = match send {
+        "SendCustomEvent" => "CustomEvent",
+        "SendGlobalCustomEvent" => "GlobalCustomEvent",
+        _ => return None,
+    };
     // The channel name is a named `eventName = …`, else the first positional arg.
     let name_expr = args
         .iter()
@@ -323,16 +334,16 @@ fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<&'a str> {
         Expr::StringLit { value, range }
             if range.start.offset <= off && off <= range.end.offset =>
         {
-            Some(value)
+            Some((value, trigger_word))
         }
         _ => None,
     }
 }
 
-/// The channel-name string-literal range of a handler that is a `CustomEvent`
-/// receiver for `name`, if it is one.
-fn receiver_name_range(h: &Handler, name: &str) -> Option<SourceRange> {
-    if !matches!(&h.trigger, Trigger::Ident { name: n, .. } if n == "CustomEvent") {
+/// The channel-name string-literal range of a handler that is a `trigger_word`
+/// (`CustomEvent` / `GlobalCustomEvent`) receiver for `name`, if it is one.
+fn receiver_name_range(h: &Handler, name: &str, trigger_word: &str) -> Option<SourceRange> {
+    if !matches!(&h.trigger, Trigger::Ident { name: n, .. } if n == trigger_word) {
         return None;
     }
     h.config.iter().find_map(|c| match c {
@@ -352,26 +363,26 @@ fn custom_event_send_definition(
     let off = cursor_byte_offset(source, line, col);
     // 1. Resolve the channel name under the cursor (must be a SendCustomEvent
     //    channel-name string).
-    let mut name: Option<String> = None;
+    let mut name: Option<(String, &'static str)> = None;
     super::visit::visit_program(
         ast,
         &mut |_h| {},
         &mut |call| {
             if name.is_none()
-                && let Some(n) = send_event_name_at(call, off)
+                && let Some((n, tw)) = send_event_name_at(call, off)
             {
-                name = Some(n.to_string());
+                name = Some((n.to_string(), tw));
             }
         },
     );
-    let name = name?;
-    // 2. Find the matching receiver handler in this file.
+    let (name, trigger_word) = name?;
+    // 2. Find the matching receiver handler in the SAME namespace in this file.
     let mut target: Option<SourceRange> = None;
     super::visit::visit_program(
         ast,
         &mut |h| {
             if target.is_none()
-                && let Some(r) = receiver_name_range(h, &name)
+                && let Some(r) = receiver_name_range(h, &name, trigger_word)
             {
                 target = Some(r);
             }
@@ -442,6 +453,22 @@ mod tests {
         assert_eq!(
             loc.start_line, 0,
             "receiver `on CustomEvent(\"dmg\", …)` is on line 0, got {loc:?}"
+        );
+    }
+
+    #[test]
+    fn send_global_custom_event_jumps_to_global_receiver_not_personal() {
+        // A `SendGlobalCustomEvent(...)` channel jumps to `on GlobalCustomEvent`
+        // (line 0), NOT the same-named personal `on CustomEvent` (line 2) — they
+        // are separate namespaces.
+        let main = "on GlobalCustomEvent(\"score\", pts: int) {\n}\non CustomEvent(\"score\", x: int) {\n}\nin go: exec\non go {\n  SendGlobalCustomEvent(\"score\", 5)\n}\n";
+        let send_line = 6; // the SendGlobalCustomEvent line (0-based)
+        let line_str = main.lines().nth(send_line).unwrap();
+        let col = line_str.find("score").unwrap() + 1;
+        let loc = goto(main, "", send_line, col).expect("should jump to the global receiver");
+        assert_eq!(
+            loc.start_line, 0,
+            "SendGlobalCustomEvent should jump to `on GlobalCustomEvent` (line 0), not personal (line 2): {loc:?}"
         );
     }
 

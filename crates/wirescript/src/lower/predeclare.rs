@@ -19,6 +19,8 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 o.typ.as_ref(),
                 o.side,
                 o.label.as_deref(),
+                o.label_expr.as_ref(),
+                o.invisible,
                 &o.range,
             )
         }),
@@ -36,8 +38,10 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 if ac.closed {
                     props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
                 }
-                if let Some(label) = &ac.label {
-                    props.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+                if let Some(label) =
+                    resolve_label_text(ac.label.as_deref(), ac.label_expr.as_ref(), &ctx.const_env)
+                {
+                    props.insert(*sym::NAME_LABEL, Literal::String(label));
                 }
                 if let Some(doc) = ctx.doc_comments.get(&ac.range.start.offset) {
                     props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
@@ -224,6 +228,41 @@ pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
         if !changed {
             return env;
         }
+    }
+}
+
+/// Resolve an explicit `@label` override to its baked display text: the
+/// string form (`@label("text")`) is used as-is; the expression form
+/// (`@label(expr)`) is const-folded against the script's constant
+/// environment via [`expr_to_literal_in`] — typecheck.rs already rejects a
+/// non-constant expression, so a fold failure here just yields no override
+/// (rather than double-reporting the error). `None` means "no override" —
+/// the caller's own default (e.g. the decl's name) applies.
+pub(super) fn resolve_label_text(
+    label: Option<&str>,
+    label_expr: Option<&Expr>,
+    env: &ConstEnv,
+) -> Option<String> {
+    if let Some(s) = label {
+        return Some(s.to_string());
+    }
+    let lit = expr_to_literal_in(label_expr?, env)?;
+    Some(literal_to_label_text(&lit))
+}
+
+/// Render a folded `@label(expr)` literal as its baked display text.
+fn literal_to_label_text(lit: &Literal) -> String {
+    match lit {
+        Literal::String(s) => s.clone(),
+        Literal::Int(n) => n.to_string(),
+        // A float reads the same 3-decimal / trailing-zero-trimmed way
+        // FormatText renders one everywhere else (the certified render law),
+        // not full `f64` precision.
+        Literal::Float(f) => {
+            crate::lower::fold::eval::render_for_format(&crate::lower::fold::eval::Value::Float(*f))
+        }
+        Literal::Bool(b) => b.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -425,6 +464,11 @@ fn expr_to_literal_lit(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
         // Prefab file reference `$./file.brz` — inlined; resolved + embedded
         // at emit into the gate's `bundle_path_ref` property.
         Expr::PrefabRef { path, .. } => Some(Literal::PrefabRef { path: path.clone() }),
+        // Inline nested-prefab block `$``` ... ``` ` — inlined; compiled +
+        // embedded at emit (Task 7) into the gate's `bundle_path_ref` property.
+        Expr::NestedPrefab { source, .. } => Some(Literal::NestedPrefab {
+            source: source.clone(),
+        }),
         _ => None,
     }
 }
@@ -744,7 +788,9 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     if let Type::Array(elem) = &inner_type {
         let elem_type = elem.as_ref().clone();
         let mut properties = HashMap::default();
-        properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
+        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+            .unwrap_or_else(|| d.name.clone());
+        properties.insert(*sym::NAME_LABEL, Literal::String(label));
         if let Some(Expr::Array { elements, .. }) = &d.init {
             // Element-wise compile-time string → bool for `var v: bool[] =
             // [..]` — same `!= ""` law as the wire path's CompareNotEqual
@@ -790,7 +836,9 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     if let Type::Map(key_ty, value_ty) = &inner_type {
         let (key_ty, value_ty) = (key_ty.as_ref().clone(), value_ty.as_ref().clone());
         let mut properties = HashMap::default();
-        properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
+        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+            .unwrap_or_else(|| d.name.clone());
+        properties.insert(*sym::NAME_LABEL, Literal::String(label));
         bake_map_init(ctx, &mut properties, &d.name, &d.init, &key_ty, &value_ty);
         let node_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::PSEUDO_MAP_VAR,
@@ -831,7 +879,9 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         .map(|lit| bake_string_bool(lit, &inner_type))
         .or_else(|| default_literal_for_var_type(&inner_type));
     let mut properties = HashMap::default();
-    properties.insert(*sym::NAME_LABEL, Literal::String(d.name.clone()));
+    let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+        .unwrap_or_else(|| d.name.clone());
+    properties.insert(*sym::NAME_LABEL, Literal::String(label));
     if let Some(lit) = init_lit {
         properties.insert(*sym::INITIAL_VALUE, lit);
     }
@@ -1009,13 +1059,21 @@ fn report_non_root_side(ctx: &mut LowerCtx, range: &SourceRange) {
 
 /// Attach a `@side` annotation to a freshly created I/O node, or reject it
 /// with WS023 when the port doesn't belong to the root module (chip/mod
-/// bodies, anonymous chips).
+/// bodies, anonymous chips). Also carries the `@invisible` flag onto the
+/// same node when the port declared it.
 fn apply_port_side(
     ctx: &mut LowerCtx,
     node_id: NodeId,
     side: Option<crate::ast::PortSide>,
+    invisible: bool,
     range: &SourceRange,
 ) {
+    if invisible {
+        if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
+            std::sync::Arc::make_mut(&mut node.properties)
+                .insert(*crate::intern::sym::REROUTE_INVISIBLE, Literal::Bool(true));
+        }
+    }
     let Some(side) = side else { return };
     if !ctx.is_root_module || ctx.current_anon_chip.is_some() {
         report_non_root_side(ctx, range);
@@ -1083,11 +1141,13 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
     }
     let t = type_of_type_expr(&d.typ);
     let node_id = ctx.add_input(&d.name, t.clone(), d.range.clone());
-    apply_port_side(ctx, node_id, d.side, &d.range);
-    if let Some(label) = &d.label {
+    apply_port_side(ctx, node_id, d.side, d.invisible, &d.range);
+    if let Some(label) =
+        resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+    {
         if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
             std::sync::Arc::make_mut(&mut node.properties)
-                .insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+                .insert(*sym::NAME_LABEL, Literal::String(label));
         }
     }
     ctx.scope
@@ -1101,6 +1161,8 @@ pub(super) fn pre_declare_output(
     typ: Option<&TypeExpr>,
     side: Option<crate::ast::PortSide>,
     label: Option<&str>,
+    label_expr: Option<&Expr>,
+    invisible: bool,
     range: &SourceRange,
 ) {
     // An explicit annotation IS the port's type — the value coerces INTO it
@@ -1120,11 +1182,11 @@ pub(super) fn pre_declare_output(
         Type::Any
     };
     let node_id = ctx.add_output(name, t.clone(), range.clone());
-    apply_port_side(ctx, node_id, side, range);
-    if let Some(label) = label {
+    apply_port_side(ctx, node_id, side, invisible, range);
+    if let Some(label) = resolve_label_text(label, label_expr, &ctx.const_env) {
         if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
             std::sync::Arc::make_mut(&mut node.properties)
-                .insert(*sym::NAME_LABEL, Literal::String(label.to_string()));
+                .insert(*sym::NAME_LABEL, Literal::String(label));
         }
     }
     ctx.scope.insert(

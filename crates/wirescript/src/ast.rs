@@ -32,6 +32,18 @@ pub struct Script {
     /// it, so the program emits no microchip bricks and no child brick grids.
     /// Independent of `layout`; the two compose.
     pub flat: bool,
+    /// A `@invisible` at the very top of the file (same placement rule as
+    /// `fold` above) — the emitted top-level microchip shell is hidden,
+    /// non-colliding, and carries no labels (root name, plane header, var
+    /// tags, I/O gate labels). Independent of `flat`/`layout`.
+    pub invisible: bool,
+    /// A `@label(<expr>)` at the very top of the file (same blank-line
+    /// placement rule as `fold` above) — labels the ROOT microchip rather than
+    /// a declaration. A constant expression bakes static title text; a runtime
+    /// expression wires the live value into the root chip's label. The
+    /// expression may forward-reference declarations below it (resolved in a
+    /// post-declaration pass), so `@label(x)` above `var x` is valid.
+    pub module_label: Option<Expr>,
 }
 
 /// The engine a `@layout("…")` annotation names, spelled as the source spells
@@ -217,6 +229,12 @@ pub struct VarDecl {
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
+    /// `@label("…")` display-text override for the var's floating label.
+    pub label: Option<String>,
+    /// `@label(expr)` — a compile-time-constant expression form of the
+    /// above; folded to text at lowering. At most one of `label` /
+    /// `label_expr` is ever set.
+    pub label_expr: Option<Expr>,
     pub range: SourceRange,
 }
 
@@ -304,6 +322,10 @@ pub struct ChipDecl {
     pub inline: bool,
     /// `@label("…")` display-text override for the chip's labels and header.
     pub label: Option<String>,
+    /// `@label(expr)` — a compile-time-constant expression form of the
+    /// above; folded to text at lowering. At most one of `label` /
+    /// `label_expr` is ever set.
+    pub label_expr: Option<Expr>,
     /// `@closed`: emit this chip's inner grid collapsed.
     pub closed: bool,
     /// `@nofold`: every IR node lowered from this declaration's subtree
@@ -334,6 +356,10 @@ pub struct AnonChipDecl {
     pub range: SourceRange,
     /// `@label("…")` display-text override for the chip's labels and header.
     pub label: Option<String>,
+    /// `@label(expr)` — a compile-time-constant expression form of the
+    /// above; folded to text at lowering. At most one of `label` /
+    /// `label_expr` is ever set.
+    pub label_expr: Option<Expr>,
     /// `@closed`: emit this chip's inner grid collapsed.
     pub closed: bool,
 }
@@ -387,6 +413,12 @@ pub struct InDecl {
     pub side: Option<PortSide>,
     /// `@label("…")` display-text override for the port's floating label.
     pub label: Option<String>,
+    /// `@label(expr)` — a compile-time-constant expression form of the
+    /// above; folded to text at lowering. At most one of `label` /
+    /// `label_expr` is ever set.
+    pub label_expr: Option<Expr>,
+    /// `@invisible`: the port's rerouter is emitted hidden.
+    pub invisible: bool,
     pub range: SourceRange,
 }
 
@@ -672,6 +704,12 @@ pub struct OutBinding {
     pub side: Option<PortSide>,
     /// `@label("…")` display-text override for the port's floating label.
     pub label: Option<String>,
+    /// `@label(expr)` — a compile-time-constant expression form of the
+    /// above; folded to text at lowering. At most one of `label` /
+    /// `label_expr` is ever set.
+    pub label_expr: Option<Expr>,
+    /// `@invisible`: the port's rerouter is emitted hidden.
+    pub invisible: bool,
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
@@ -806,6 +844,14 @@ pub enum Expr {
         path: String,
         range: SourceRange,
     },
+    /// Inline nested-prefab block `` $```…``` `` — the enclosed text is a
+    /// whole Wirescript source compiled as its own program and embedded as a
+    /// prefab, the same way `PrefabRef` embeds a `.brz` on disk. `source` is
+    /// the verbatim text between the fences (captured by the lexer).
+    NestedPrefab {
+        source: String,
+        range: SourceRange,
+    },
     /// Map literal `{ k => v, ... }` / `{ "k": v }` / `{ [expr]: v }`. Valid as
     /// a constant `map` initializer (all-literal entries, baked at load).
     MapLit {
@@ -864,6 +910,7 @@ impl Expr {
             | Expr::Array { range, .. }
             | Expr::AssetRef { range, .. }
             | Expr::PrefabRef { range, .. }
+            | Expr::NestedPrefab { range, .. }
             | Expr::MapLit { range, .. } => range,
         }
     }
@@ -892,6 +939,7 @@ impl Expr {
             | Expr::Array { range, .. }
             | Expr::AssetRef { range, .. }
             | Expr::PrefabRef { range, .. }
+            | Expr::NestedPrefab { range, .. }
             | Expr::MapLit { range, .. } => range,
         }
     }

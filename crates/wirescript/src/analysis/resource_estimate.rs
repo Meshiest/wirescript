@@ -257,6 +257,7 @@ fn estimate_handler(
             range: h.range.clone(),
             inline: false,
             label: None,
+            label_expr: None,
             closed: false,
             no_fold: false,
         };
@@ -492,6 +493,7 @@ fn estimate_anon_chip(
         range: ac.range.clone(),
         inline: false,
         label: None,
+        label_expr: None,
         closed: false,
         no_fold: false,
     };

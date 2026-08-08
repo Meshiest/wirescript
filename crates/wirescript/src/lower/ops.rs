@@ -295,7 +295,7 @@ const FORMAT_SLOTS: [WirePort; 7] = [
 
 /// Build one FormatText gate from a finished format string and its already
 /// lowered substitution ports (`slots.len()` must be `<= FORMAT_SLOTS.len()`).
-fn build_format_text(
+pub(super) fn build_format_text(
     ctx: &mut LowerCtx,
     format_string: String,
     slots: Vec<PortRef>,

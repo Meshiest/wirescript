@@ -497,6 +497,12 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
             // Same rule again — the entry file decides whether the whole
             // program flattens; an imported file's @flat is inert.
             flat: parsed.ast.flat,
+            // Same rule again — only the entry file's @invisible hides the
+            // emitted shell; an imported file's is inert.
+            invisible: parsed.ast.invisible,
+            // Only the entry file's module `@label` labels the root chip; an
+            // imported file's is inert. Cloned so the entry expr survives.
+            module_label: parsed.ast.module_label.clone(),
         },
         diagnostics,
         doc_comments,

@@ -38,6 +38,10 @@ pub enum TokenKind {
     /// Asset reference literal `$AssetType/AssetName`. The `Str` value holds the
     /// path without the leading `$`.
     AssetRef,
+    /// Inline nested-prefab block `` $```…``` ``. The `Str` value holds the
+    /// verbatim inner source (between the fences), for a later compile stage
+    /// to lex/parse as its own program.
+    NestedPrefab,
     /// `@word` annotation (`@left` etc.). `text` holds the word without `@`;
     /// the parser validates it.
     Annotation,
@@ -240,6 +244,16 @@ impl<'a> Lexer<'a> {
                 self.read_ident();
                 continue;
             }
+            // Inline nested-prefab block `$```…```` — checked before the asset-
+            // ref branch below since both start with `$`.
+            if c == '$'
+                && self.peek_char(1) == Some('`')
+                && self.peek_char(2) == Some('`')
+                && self.peek_char(3) == Some('`')
+            {
+                self.read_nested_prefab();
+                continue;
+            }
             // Asset reference `$AssetType/AssetName`, or prefab file reference
             // `$./file.brz` / `$/abs.brz` (only outside strings; the `${...}`
             // interpolation form is handled inside string reading).
@@ -386,6 +400,97 @@ impl<'a> Lexer<'a> {
         let end = self.snapshot();
         let text = self.source[start.offset..end.offset].to_string();
         self.emit(TokenKind::AssetRef, text, start, end, Some(TokenValue::Str(path)));
+    }
+
+    /// Read an inline nested-prefab block `` $```…``` `` into a
+    /// [`TokenKind::NestedPrefab`] token. The inner text (between the
+    /// fences) is captured verbatim for a later compile stage to lex/parse
+    /// as its own program. The scan is string- and line-comment-aware so a
+    /// backtick inside a string or `//` comment can't miscount, and a
+    /// nested `` $``` `` block is tracked via depth so the outer fence owns
+    /// the whole span.
+    fn read_nested_prefab(&mut self) {
+        let start = self.snapshot();
+        self.advance(); // '$'
+        self.advance(); // '`'
+        self.advance(); // '`'
+        self.advance(); // '`'
+        let content_start = self.pos;
+        let mut depth: i32 = 1;
+        while self.pos < self.bytes.len() {
+            let c = self.bytes[self.pos] as char;
+            // String literal — skip verbatim (honoring `\` escapes) so a
+            // backtick inside it can't be mistaken for a fence.
+            if c == '"' || c == '\'' {
+                let quote = c;
+                self.advance();
+                while self.pos < self.bytes.len() && self.bytes[self.pos] as char != quote {
+                    if self.bytes[self.pos] == b'\\' {
+                        self.advance();
+                        if self.pos >= self.bytes.len() {
+                            break;
+                        }
+                    }
+                    self.advance();
+                }
+                if self.pos < self.bytes.len() {
+                    self.advance(); // closing quote
+                }
+                continue;
+            }
+            // `//` line comment — may itself contain backticks.
+            if c == '/' && self.peek_char(1) == Some('/') {
+                while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
+                    self.advance();
+                }
+                continue;
+            }
+            // Nested `$``` open.
+            if c == '$'
+                && self.peek_char(1) == Some('`')
+                && self.peek_char(2) == Some('`')
+                && self.peek_char(3) == Some('`')
+            {
+                depth += 1;
+                self.advance();
+                self.advance();
+                self.advance();
+                self.advance();
+                continue;
+            }
+            // A closing fence.
+            if c == '`' && self.peek_char(1) == Some('`') && self.peek_char(2) == Some('`') {
+                depth -= 1;
+                if depth == 0 {
+                    let close_start = self.pos;
+                    self.advance();
+                    self.advance();
+                    self.advance();
+                    let inner = self.source[content_start..close_start].to_string();
+                    let end = self.snapshot();
+                    let text = self.source[start.offset..end.offset].to_string();
+                    self.emit(
+                        TokenKind::NestedPrefab,
+                        text,
+                        start,
+                        end,
+                        Some(TokenValue::Str(inner)),
+                    );
+                    return;
+                }
+                self.advance();
+                self.advance();
+                self.advance();
+                continue;
+            }
+            self.advance();
+        }
+        self.diag(
+            "WSP001",
+            "unterminated $``` nested-prefab block",
+            start,
+            self.snapshot(),
+        );
     }
 
     /// True when the previously emitted token completes a value, so a following
@@ -1180,5 +1285,37 @@ mod tests {
         // `var x:int` produces NO atom.
         let r = lex("var x:int = 0", "t");
         assert!(!r.tokens.iter().any(|t| t.kind == TokenKind::Atom));
+    }
+
+    #[test]
+    fn lex_nested_prefab_block() {
+        let r = lex("$```in a: exec\non a { }\n```", "t");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        let t = r
+            .tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::NestedPrefab)
+            .expect("a NestedPrefab token");
+        match &t.value {
+            Some(TokenValue::Str(s)) => assert_eq!(s, "in a: exec\non a { }\n"),
+            other => panic!("expected Str value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_nested_prefab_nesting_and_strings() {
+        // A triple-backtick inside an inner string must not close the block, and a
+        // nested `$```…``` must be balanced (the OUTER block owns the whole span).
+        let src = "$```on x { let s = \"```\" \n let e = $```in q: exec```\n }```";
+        let r = lex(src, "t");
+        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+        assert_eq!(
+            r.tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::NestedPrefab)
+                .count(),
+            1,
+            "outer block owns the whole span; the inner $``` is part of its text"
+        );
     }
 }

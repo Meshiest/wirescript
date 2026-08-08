@@ -280,6 +280,10 @@ pub enum Literal {
     /// and writes the resulting `Prefabs/Uploads/…` path into the gate's
     /// `bundle_path_ref` property.
     PrefabRef { path: String },
+    /// Inline nested-prefab source (the `$``` ... ``` ` form). The emitter
+    /// will compile `source` and embed it the same way `PrefabRef` embeds a
+    /// `.brz` file (Task 7); for now it just carries the raw source.
+    NestedPrefab { source: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -408,6 +412,23 @@ pub struct Module {
     /// `nodes` map. Discovered by bottom-up diff after lowering. Used by
     /// template instantiation to remap external refs per instance.
     pub scope_captures: Vec<NodeId>,
+    /// Dynamic labels: a host node (a `Pseudo_Var`) whose floating name label
+    /// is driven at runtime by a wire instead of a baked string. Maps the host
+    /// node to the (already string-coerced) value port that feeds its label
+    /// component's `Text` input. The wire itself is added at emit time, once the
+    /// host brick's id is known — see `emit.rs` Pass 3.5. Not an IR wire (the
+    /// label `Component_TextDisplay` is not an IR node), so it does not affect
+    /// layout or pruning.
+    pub dynamic_labels: HashMap<NodeId, PortRef>,
+    /// A module-level `@label(<constant>)` folded to static text — overrides the
+    /// root microchip's default label (the module name) at emit. Root module
+    /// only; `None` for chips.
+    pub root_label_override: Option<String>,
+    /// A module-level `@label(<runtime expr>)` lowered to a value port — wired
+    /// into the ROOT microchip shell's label `Text` at emit (analogous to
+    /// `dynamic_labels`, but the host is the root shell brick rather than an IR
+    /// node). Root module only; `None` for chips.
+    pub root_dynamic_label: Option<PortRef>,
 }
 
 impl Default for Module {
@@ -431,6 +452,9 @@ impl Default for Module {
             scopes,
             template_key: None,
             scope_captures: Vec::new(),
+            dynamic_labels: HashMap::default(),
+            root_label_override: None,
+            root_dynamic_label: None,
         }
     }
 }

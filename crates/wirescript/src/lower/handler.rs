@@ -306,6 +306,111 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         return;
     }
 
+    // Try: a `var` as trigger — fires on the var's value change (`on x` / `on !x`).
+    // Mirrors the local (let-binding) case: the var gate's `Value` output is the
+    // trigger port; negation adds a LogicalNOT.
+    if trigger_field.is_none() {
+        if let Some(rec) = ctx.lookup_var(&trigger_name).cloned() {
+            let base_port = port_ref(rec.node_id, "Value");
+            let trigger_port = if negated {
+                let not_id = ctx.add_gate(AddNodeOpts {
+                    gate_class: gc::LOGICAL_NOT,
+                    ports: GateIO {
+                        inputs: vec![PortSpec {
+                            name: *sym::B_INPUT,
+                            ty: Type::Bool,
+                        }],
+                        outputs: vec![PortSpec {
+                            name: *sym::B_OUTPUT,
+                            ty: Type::Bool,
+                        }],
+                    },
+                    ..Default::default()
+                });
+                ctx.connect(base_port, not_id.port(WirePort::BInput));
+                not_id.port(WirePort::BOutput)
+            } else {
+                base_port
+            };
+            let saved = (ctx.current_exec, ctx.handler_entry_exec);
+            ctx.current_exec = Some(trigger_port);
+            ctx.handler_entry_exec = Some(trigger_port);
+            reset_var_get_caches(ctx);
+            ctx.with_scope(
+                ScopeKind::HandlerBody {
+                    trigger_label: trigger_name.clone(),
+                },
+                h.range.clone(),
+                |ctx| lower_block(ctx, &h.body),
+            );
+            let this_end = ctx.current_exec;
+            ctx.current_exec = saved.0;
+            ctx.handler_entry_exec = saved.1;
+            ctx.builder.current_chain_id = saved_chain;
+            ctx.handler_end_execs = saved_handler_ends;
+            if let Some(e) = this_end {
+                ctx.handler_end_execs.push(e);
+            }
+            return;
+        }
+    }
+
+    // Try: an enclosing handler's event data param as trigger — `on p` / `on !p`
+    // where `p` is e.g. `on CustomEvent(…, p: character)`'s data output. Fires on
+    // the param's value edge; negation adds a LogicalNOT, exactly like the local
+    // (let-binding) case above.
+    if let Some(Binding::EventParam(ep_port)) = ctx.scope.get(&trigger_name).cloned() {
+        let base_port = match &trigger_field {
+            Some(field) => {
+                crate::lower::access::resolve_output_field_port(ctx, ep_port.node_id, field)
+                    .unwrap_or(ep_port)
+            }
+            None => ep_port,
+        };
+        let trigger_port = if negated {
+            let not_id = ctx.add_gate(AddNodeOpts {
+                gate_class: gc::LOGICAL_NOT,
+                ports: GateIO {
+                    inputs: vec![PortSpec {
+                        name: *sym::B_INPUT,
+                        ty: Type::Bool,
+                    }],
+                    outputs: vec![PortSpec {
+                        name: *sym::B_OUTPUT,
+                        ty: Type::Bool,
+                    }],
+                },
+                ..Default::default()
+            });
+            ctx.connect(base_port, not_id.port(WirePort::BInput));
+            not_id.port(WirePort::BOutput)
+        } else {
+            base_port
+        };
+        let saved = (ctx.current_exec, ctx.handler_entry_exec);
+        ctx.current_exec = Some(trigger_port);
+        ctx.handler_entry_exec = Some(trigger_port);
+        reset_var_get_caches(ctx);
+        let trigger_label = match &trigger_field {
+            Some(field) => format!("{}.{}", trigger_name, field),
+            None => trigger_name.clone(),
+        };
+        ctx.with_scope(
+            ScopeKind::HandlerBody { trigger_label },
+            h.range.clone(),
+            |ctx| lower_block(ctx, &h.body),
+        );
+        let this_end = ctx.current_exec;
+        ctx.current_exec = saved.0;
+        ctx.handler_entry_exec = saved.1;
+        ctx.builder.current_chain_id = saved_chain;
+        ctx.handler_end_execs = saved_handler_ends;
+        if let Some(e) = this_end {
+            ctx.handler_end_execs.push(e);
+        }
+        return;
+    }
+
     // Built-in event
     let evt = match find_event(&trigger_name) {
         Some(e) => e,

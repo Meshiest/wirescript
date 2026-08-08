@@ -64,12 +64,19 @@ pub fn receiver_methods(type_name: &str) -> Vec<(&'static str, String)> {
     for (name, spec) in crate::catalog::calls::calls().iter() {
         let Some(recv) = &spec.receiver else { continue };
         if matches!(coerce(&var_ty, recv), CoerceRule::Same | CoerceRule::Coerce) {
-            // Skip the receiver (first) param in the displayed signature.
+            // Hide the receiver-bound param from the displayed signature: the
+            // first param normally, or the named `target` param for a
+            // named-target receiver (`entity.SendCustomEvent(…)`).
+            let skip_name = spec.receiver_target_param();
             let params: Vec<String> = spec
                 .params
                 .iter()
-                .skip(1)
-                .map(|p| {
+                .enumerate()
+                .filter(|(i, p)| match skip_name {
+                    Some(tp) => p.name != tp,
+                    None => *i != 0,
+                })
+                .map(|(_, p)| {
                     if p.optional {
                         format!("{}?", p.name)
                     } else {

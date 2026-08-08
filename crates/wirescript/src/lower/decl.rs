@@ -2,6 +2,89 @@ use super::*;
 
 // ---------- declaration body pass ----------
 
+/// True if `p`'s declared output type is `string`, read straight off the IR
+/// node's port spec (no typecheck-map dependency). A label value that is already
+/// a string wires into the label's `Text` port directly; only a non-string is
+/// routed through a `FormatText` gate to coerce it.
+fn label_source_is_string(ctx: &LowerCtx, p: PortRef) -> bool {
+    ctx.builder
+        .module
+        .nodes
+        .get(&p.node_id)
+        .and_then(|n| {
+            n.ports
+                .outputs
+                .iter()
+                .find(|s| s.name == crate::intern::intern(p.port.as_str()))
+        })
+        .map(|s| s.ty == Type::String)
+        .unwrap_or(false)
+}
+
+/// Lower a label expression to a string-typed value port: the value directly if
+/// it is already a string (e.g. a string var, or an interpolation that already
+/// built its own `FormatText`), otherwise coerced through a single `FormatText`.
+fn lower_label_value(ctx: &mut LowerCtx, le: &Expr) -> PortRef {
+    let value = lower_expr(ctx, le);
+    if label_source_is_string(ctx, value) {
+        value
+    } else {
+        build_format_text(ctx, "{0}".to_string(), vec![value], le.range())
+    }
+}
+
+/// Resolve runtime `@label(expr)` on top-level `var`s into dynamic labels.
+///
+/// For each top-level var whose label doesn't fold to a constant (a constant
+/// baked its text statically in pass 1), lower the expression to a value port,
+/// string-coerce it if needed, and record `host_var → source_port` on the
+/// module. Emit turns each entry into a wire from that port into the var's
+/// label `Component_TextDisplay.Text` (see `emit.rs` Pass 3.5).
+///
+/// Runs after the body pass so any var/gate the label references already exists,
+/// and in a *pure* context (`current_exec` cleared) so a var read resolves to
+/// the var's live `Value` output rather than an exec-chained `Var_Get`.
+pub(super) fn resolve_dynamic_var_labels(ctx: &mut LowerCtx, decls: &[TopDecl]) {
+    let saved_exec = ctx.current_exec.take();
+    for d in decls {
+        let TopDecl::Var(v) = d else { continue };
+        let Some(le) = &v.label_expr else { continue };
+        if expr_to_literal_in(le, &ctx.const_env).is_some() {
+            continue; // constant label — already baked as static text.
+        }
+        // The host var node carries the label component at emit time.
+        let host = match ctx.scope.get(&v.name) {
+            Some(Binding::Var(rec)) => rec.node_id,
+            _ => continue,
+        };
+        let src = lower_label_value(ctx, le);
+        ctx.builder.module.dynamic_labels.insert(host, src);
+    }
+    ctx.current_exec = saved_exec;
+}
+
+/// Resolve a module-level `@label(<expr>)` into the root microchip's label.
+///
+/// A constant expression folds to static title text (`root_label_override`);
+/// a runtime expression is lowered (string-coerced) and recorded as
+/// `root_dynamic_label`, which emit wires into the root shell's `Text` port.
+/// Runs in the same post-declaration pass as [`resolve_dynamic_var_labels`], so
+/// the expression may forward-reference declarations below it (hoisting).
+pub(super) fn resolve_module_label(ctx: &mut LowerCtx, module_label: Option<&Expr>) {
+    let Some(le) = module_label else { return };
+    if let Some(text) = resolve_label_text(None, Some(le), &ctx.const_env) {
+        // Constant — baked static title text.
+        ctx.builder.module.root_label_override = Some(text);
+        return;
+    }
+    // Runtime value — lower in a pure context and coerce to string only if it
+    // isn't already one. Emit wires this into the root shell's `Text`.
+    let saved_exec = ctx.current_exec.take();
+    let src = lower_label_value(ctx, le);
+    ctx.builder.module.root_dynamic_label = Some(src);
+    ctx.current_exec = saved_exec;
+}
+
 pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
     match d {
         TopDecl::Out(b) => ctx.with_nofold(b.no_fold, |ctx| {
@@ -72,6 +155,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 range: f.range.clone(),
                 inline: true,
                 label: None,
+                label_expr: None,
                 closed: false,
                 no_fold: false,
             };

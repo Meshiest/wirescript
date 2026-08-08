@@ -29,8 +29,8 @@ use std::path::Path;
 use std::collections::HashMap as StdMap;
 
 use brdb::{
-    AsBrdbValue, BString, BrickType, Color, IntVector, Position, Vector3f, WireConnection,
-    WirePort as BrdbWirePort, World,
+    AsBrdbValue, BString, BrickType, Collision, Color, IntVector, Position, Vector3f,
+    WireConnection, WirePort as BrdbWirePort, World,
     assets::LiteralComponent,
     schema::{
         WireArrayVariant, WireMapKey, WireMapKeyData, WireMapValue, WireMapValueData,
@@ -91,6 +91,30 @@ impl std::fmt::Debug for PrefabResolver {
     }
 }
 
+/// Compiles an inline nested-prefab block (`$``` ... ``` `) to `.brz` bytes to
+/// embed, mirroring [`PrefabResolver`]. The argument is the inner source text
+/// and the current nesting depth (1 for a block written directly in the root
+/// source); `Err` carries a human-readable reason surfaced as an emit error.
+#[derive(Clone)]
+pub struct NestedCompiler(
+    pub std::sync::Arc<dyn Fn(&str, usize) -> Result<Vec<u8>, String> + Send + Sync>,
+);
+
+impl NestedCompiler {
+    pub fn new(f: impl Fn(&str, usize) -> Result<Vec<u8>, String> + Send + Sync + 'static) -> Self {
+        NestedCompiler(std::sync::Arc::new(f))
+    }
+    fn compile(&self, src: &str, depth: usize) -> Result<Vec<u8>, String> {
+        (self.0)(src, depth)
+    }
+}
+
+impl std::fmt::Debug for NestedCompiler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NestedCompiler(..)")
+    }
+}
+
 /// Options for a single emit run.
 #[derive(Clone, Debug)]
 pub struct EmitOptions {
@@ -104,10 +128,17 @@ pub struct EmitOptions {
     /// Resolves `$./file.brz` / `$/abs/file.brz` prefab references to bytes.
     /// `None` makes any prefab reference an emit error.
     pub prefab_resolver: Option<PrefabResolver>,
+    /// Compiles inline nested-prefab blocks (`$``` ... ``` `) to bytes.
+    /// `None` makes any nested-prefab block an emit error.
+    pub nested_compiler: Option<NestedCompiler>,
     /// Doc comment rendered under the root plane's title (module-level `///`
     /// block — the doc attached to the file's first declaration, mirroring
     /// how namespace imports derive their module doc).
     pub module_doc: Option<String>,
+    /// Module-level `@invisible` — the emitted top-level microchip shell is
+    /// hidden, non-colliding, and carries no labels (root name, root plane
+    /// header, var tags, I/O gate labels).
+    pub invisible: bool,
 }
 
 impl Default for EmitOptions {
@@ -117,7 +148,9 @@ impl Default for EmitOptions {
             description: String::from("wirescript emit"),
             open: false,
             prefab_resolver: None,
+            nested_compiler: None,
             module_doc: None,
+            invisible: false,
         }
     }
 }
@@ -373,7 +406,7 @@ pub fn build_world(
         (opts.chip_pos.x, opts.chip_pos.y, opts.chip_pos.z),
     );
 
-    let (_chip_brick_id, _root_entity_id, mut inner_pair) = world.add_microchip(
+    let (chip_brick_id, _root_entity_id, mut inner_pair) = world.add_microchip(
         opts.chip_pos.into(),
         wall.root.location,
         wall.root.extent,
@@ -381,22 +414,55 @@ pub fn build_world(
     );
     inner_pair.0.rotation = WALL_ROT;
 
-    // Top-level chip label: the root module's name (entry file stem, or an
-    // explicit module_name override). The chip brick is the one
-    // `add_microchip` just pushed onto the main grid.
-    let root_label = resolve(module.name);
-    if !root_label.is_empty() {
-        let label = text_label(
-            &mut world,
-            root_label,
-            LABEL_ROTATION_DEG,
-            -0.5,
-            LABEL_LINE_HEIGHT,
-            0.5,
-            0.5,
-        );
+    // Module-level `@invisible`: hide the shell brick `add_microchip` just
+    // pushed and drop all its collision, mirroring the `@invisible` port
+    // rerouter treatment in `emit_port_rerouters`.
+    if opts.invisible {
         if let Some(chip_brick) = world.bricks.last_mut() {
-            chip_brick.add_component_box(Box::new(label));
+            chip_brick.visible = false;
+            chip_brick.collision = Collision {
+                player: false,
+                player1: Some(false),
+                player2: Some(false),
+                player3: Some(false),
+                weapon: false,
+                interact: false,
+                tool: false,
+                physics: false,
+            };
+        }
+    }
+
+    // Top-level chip label. The default is the root module's name (entry file
+    // stem, or an explicit module_name override); a module-level `@label`
+    // overrides it — a constant with baked text, a runtime value with an empty
+    // placeholder that Pass 3.5 drives by wire. The chip brick is the one
+    // `add_microchip` just pushed onto the main grid.
+    if !opts.invisible {
+        let dynamic_root = module.root_dynamic_label.is_some();
+        let root_label: &str = if dynamic_root {
+            // Wire-driven — bake an empty placeholder (the wire supplies the
+            // text). `named`-style suppression doesn't apply to the root label.
+            ""
+        } else {
+            module
+                .root_label_override
+                .as_deref()
+                .unwrap_or_else(|| resolve(module.name))
+        };
+        if dynamic_root || !root_label.is_empty() {
+            let label = text_label(
+                &mut world,
+                root_label,
+                LABEL_ROTATION_DEG,
+                -0.5,
+                LABEL_LINE_HEIGHT,
+                0.5,
+                0.5,
+            );
+            if let Some(chip_brick) = world.bricks.last_mut() {
+                chip_brick.add_component_box(Box::new(label));
+            }
         }
     }
 
@@ -409,8 +475,11 @@ pub fn build_world(
         node_brick_ids: HashMap::default(),
         class_index: HashMap::default(),
         prefab_resolver: opts.prefab_resolver.clone(),
+        nested_compiler: opts.nested_compiler.clone(),
         wire_sources: HashMap::default(),
         var_labels: HashMap::default(),
+        invisible: opts.invisible,
+        root_shell_brick_id: chip_brick_id,
     };
     emit_module(
         &mut world,
@@ -422,14 +491,23 @@ pub fn build_world(
         template_cache,
     )?;
 
-    let root_title = (!root_label.is_empty()).then(|| root_label.to_string());
-    emit_plane_header(
-        &mut world,
-        &mut inner_pair.1,
-        wall.root.extent,
-        root_title.as_deref(),
-        opts.module_doc.as_deref(),
-    );
+    if !opts.invisible {
+        // The plane header title stays static text: a constant module `@label`
+        // override, else the module name. (A runtime module `@label` drives the
+        // outer shell label by wire; the inner header keeps the module name.)
+        let header = module
+            .root_label_override
+            .clone()
+            .unwrap_or_else(|| resolve(module.name).to_string());
+        let root_title = (!header.is_empty()).then_some(header);
+        emit_plane_header(
+            &mut world,
+            &mut inner_pair.1,
+            wall.root.extent,
+            root_title.as_deref(),
+            opts.module_doc.as_deref(),
+        );
+    }
 
     // Replace placeholder with actual bricks (shifted by -CHUNK_HALF).
     let shifted: Vec<brdb::Brick> = inner_pair
@@ -886,19 +964,41 @@ fn emit_port_rerouters(world: &mut World, ctx: &EmitContext, module: &Module, op
             // data struct is empty.
             brick.add_component_box(Box::new(LiteralComponent::new(gc::REROUTER)));
 
-            if let Some(name) = microchip_io_label(node) {
-                // Rotation + anchor are calibrated per side/direction (see
-                // rerouter_label_rotation / rerouter_label_anchor_x).
-                let label = text_label(
-                    world,
-                    &name,
-                    rerouter_label_rotation(side, is_input),
-                    0.5,
-                    REROUTER_LABEL_LINE_HEIGHT,
-                    rerouter_label_anchor_x(side),
-                    0.5,
-                );
-                brick.add_component_box(Box::new(label));
+            // `@invisible` ports: hide the rerouter, drop all collision so it
+            // doesn't block players/weapons/tools, and skip its name label.
+            let invisible = matches!(
+                node.properties.get(&*sym::REROUTE_INVISIBLE),
+                Some(Literal::Bool(true))
+            );
+            if invisible {
+                brick.visible = false;
+                brick.collision = Collision {
+                    player: false,
+                    player1: Some(false),
+                    player2: Some(false),
+                    player3: Some(false),
+                    weapon: false,
+                    interact: false,
+                    tool: false,
+                    physics: false,
+                };
+            }
+
+            if !invisible {
+                if let Some(name) = microchip_io_label(node) {
+                    // Rotation + anchor are calibrated per side/direction (see
+                    // rerouter_label_rotation / rerouter_label_anchor_x).
+                    let label = text_label(
+                        world,
+                        &name,
+                        rerouter_label_rotation(side, is_input),
+                        0.5,
+                        REROUTER_LABEL_LINE_HEIGHT,
+                        rerouter_label_anchor_x(side),
+                        0.5,
+                    );
+                    brick.add_component_box(Box::new(label));
+                }
             }
             world.bricks.push(brick);
 
@@ -961,6 +1061,8 @@ struct EmitContext {
     class_index: HashMap<NodeId, &'static str>,
     /// Resolver for `$./file.brz` prefab references, from `EmitOptions`.
     prefab_resolver: Option<PrefabResolver>,
+    /// Compiler for inline nested-prefab blocks, from `EmitOptions`.
+    nested_compiler: Option<NestedCompiler>,
     /// (target node, target port) → source node, accumulated across all
     /// modules so Var_Get/Set gates can trace `VarRef` wires that cross
     /// module boundaries (scope captures, anon-chip partitions).
@@ -968,6 +1070,13 @@ struct EmitContext {
     /// Pseudo_Var/ArrayVar node → its labelable source name. Vars are
     /// always emitted before the gates that reference them.
     var_labels: HashMap<NodeId, String>,
+    /// Module-level `@invisible`, from `EmitOptions` — suppresses var-tag
+    /// and I/O-gate label emission in `emit_module`.
+    invisible: bool,
+    /// The root microchip shell brick's id. Pass 3.5 wires a module-level
+    /// dynamic `@label` (`Module.root_dynamic_label`) into this brick's label
+    /// `Text` port.
+    root_shell_brick_id: usize,
 }
 
 /// Resolve a wire source to its var/array-var label, following the source
@@ -1128,6 +1237,7 @@ fn emit_module(
                 &gate_inlined,
                 world,
                 ctx.prefab_resolver.as_ref(),
+                ctx.nested_compiler.as_ref(),
             )?)
         } else {
             Box::new(match effective_class_str {
@@ -1300,6 +1410,7 @@ fn emit_module(
                 &gate_inlined,
                 world,
                 ctx.prefab_resolver.as_ref(),
+                ctx.nested_compiler.as_ref(),
             )?,
             })
         };
@@ -1325,10 +1436,25 @@ fn emit_module(
             "BrickComponentType_WireGraphPseudo_Var"
             | "BrickComponentType_WireGraphPseudo_ArrayVar" => {
                 let label = node.properties.get(&*sym::NAME_LABEL).and_then(named);
+                // The var's own name still drives the small tags on its
+                // Var_Get/Set gates (via var_labels), even when its own big
+                // label is a dynamic, wire-driven one below.
                 if let Some(name) = &label {
                     ctx.var_labels.insert(**id, name.clone());
                 }
-                label.map(|s| (s, LABEL_LINE_HEIGHT))
+                if module.dynamic_labels.contains_key(*id) {
+                    // A dynamic `@label(expr)` drives this var's label text by
+                    // wire (Pass 3.5). Force the text component to exist as the
+                    // wire's target — with an empty placeholder the wire
+                    // overrides at runtime — REGARDLESS of the name-suppression
+                    // filter. Without this, a var whose name is empty or
+                    // `_`-prefixed would emit a wire into a Component_TextDisplay
+                    // that was never added: a dangling target that fails to
+                    // connect at load.
+                    Some((String::new(), LABEL_LINE_HEIGHT))
+                } else {
+                    label.map(|s| (s, LABEL_LINE_HEIGHT))
+                }
             }
             // Var/ArrayVar exec gates: a smaller tag naming the variable
             // they access, traced through the gate's (Array)VarRef wire.
@@ -1350,15 +1476,17 @@ fn emit_module(
             _ => None,
         };
         if let Some((text, line_height)) = label_spec {
-            brick.add_component_box(Box::new(text_label(
-                world,
-                &text,
-                label_rotation_deg(rotation),
-                0.5,
-                line_height,
-                0.5,
-                0.5,
-            )));
+            if !ctx.invisible {
+                brick.add_component_box(Box::new(text_label(
+                    world,
+                    &text,
+                    label_rotation_deg(rotation),
+                    0.5,
+                    line_height,
+                    0.5,
+                    0.5,
+                )));
+            }
         }
 
         bricks.push(brick);
@@ -1526,6 +1654,71 @@ fn emit_module(
         }
     }
 
+    // ── Pass 3.5: dynamic label wires ──
+    // A runtime `@label(expr)` on a var drives its floating name label instead
+    // of baking a static string: wire the (already string-coerced) value into
+    // the label `Component_TextDisplay`'s `Text` input port. The label brick was
+    // emitted normally (its baked name is the pre-wire placeholder). Skipped
+    // under `@invisible`, which emits no labels for the wire to target.
+    if !ctx.invisible {
+        for (host, src) in &module.dynamic_labels {
+            if matches!(ctx.class_index.get(&src.node_id), Some(c) if *c == gc::LITERAL || *c == gc::UNSUPPORTED)
+            {
+                continue;
+            }
+            let source = match resolve_wire_end(
+                src.node_id,
+                src.port,
+                &ctx.node_brick_ids,
+                &ctx.class_index,
+                &port_index,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[label-wire] dropped source for {}: {e:?}", src.node_id);
+                    continue;
+                }
+            };
+            let Some(&host_brick) = ctx.node_brick_ids.get(host) else {
+                continue;
+            };
+            world.add_wire(WireConnection {
+                source,
+                target: BrdbWirePort {
+                    brick_id: host_brick,
+                    component_type: BString::Static("Component_TextDisplay"),
+                    port_name: BString::Static("Text"),
+                },
+            });
+        }
+        // Module-level dynamic `@label`: wire the value into the ROOT shell
+        // brick's label `Text` port (the shell hosts a placeholder-empty
+        // TextDisplay emitted in `build_world`). Root module only — chip
+        // sub-modules leave `root_dynamic_label` unset.
+        if let Some(src) = &module.root_dynamic_label {
+            if !matches!(ctx.class_index.get(&src.node_id), Some(c) if *c == gc::LITERAL || *c == gc::UNSUPPORTED)
+            {
+                match resolve_wire_end(
+                    src.node_id,
+                    src.port,
+                    &ctx.node_brick_ids,
+                    &ctx.class_index,
+                    &port_index,
+                ) {
+                    Ok(source) => world.add_wire(WireConnection {
+                        source,
+                        target: BrdbWirePort {
+                            brick_id: ctx.root_shell_brick_id,
+                            component_type: BString::Static("Component_TextDisplay"),
+                            port_name: BString::Static("Text"),
+                        },
+                    }),
+                    Err(e) => eprintln!("[label-wire] dropped root label source: {e:?}"),
+                }
+            }
+        }
+    }
+
     // ── Pass 3b: the bus lanes' own wires ──
     // A lane hop reads a rerouter's `RER_Output` and drives the next one's
     // `RER_Input`; a `BusEnd::Node` end resolves exactly like a module wire
@@ -1657,8 +1850,16 @@ fn build_gate_component(
     inlined: &StdMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
+    nested_compiler: Option<&NestedCompiler>,
 ) -> Result<LiteralComponent, EmitError> {
-    match build_gate_data_map(gate_class, ports, inlined, world, prefab_resolver)? {
+    match build_gate_data_map(
+        gate_class,
+        ports,
+        inlined,
+        world,
+        prefab_resolver,
+        nested_compiler,
+    )? {
         Some(data) => Ok(LiteralComponent::new_from_data(
             gate_class,
             std::sync::Arc::new(data),
@@ -1681,6 +1882,7 @@ fn build_gate_data_map(
     inlined: &StdMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
+    nested_compiler: Option<&NestedCompiler>,
 ) -> Result<Option<StdMap<BString, Box<dyn AsBrdbValue>>>, EmitError> {
     // For gates whose component data struct carries wire_graph_variant fields,
     // look up the struct schema and build the component with embedded values.
@@ -1742,6 +1944,23 @@ fn build_gate_data_map(
                                 let bytes = resolver
                                     .resolve(path)
                                     .map_err(|e| EmitError::PrefabResolve(path.clone(), e))?;
+                                let embedded = world.add_prefab(bytes);
+                                Box::new(embedded)
+                            }
+                            // Inline nested-prefab block (`$``` ... ``` `):
+                            // compile the inner source to `.brz` bytes and
+                            // embed it the same way a resolved on-disk prefab
+                            // is embedded above.
+                            Literal::NestedPrefab { source } => {
+                                let compiler = nested_compiler.ok_or_else(|| {
+                                    EmitError::PrefabResolve(
+                                        "<nested>".into(),
+                                        "no nested compiler configured for this compile".into(),
+                                    )
+                                })?;
+                                let bytes = compiler
+                                    .compile(source, 1)
+                                    .map_err(|e| EmitError::PrefabResolve("<nested>".into(), e))?;
                                 let embedded = world.add_prefab(bytes);
                                 Box::new(embedded)
                             }
@@ -1991,9 +2210,17 @@ fn build_adv_inventory_component(
     inlined: &StdMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
+    nested_compiler: Option<&NestedCompiler>,
 ) -> Result<NativeStruct, EmitError> {
-    let mut data = build_gate_data_map(gate_class, ports, inlined, world, prefab_resolver)?
-        .unwrap_or_default();
+    let mut data = build_gate_data_map(
+        gate_class,
+        ports,
+        inlined,
+        world,
+        prefab_resolver,
+        nested_compiler,
+    )?
+    .unwrap_or_default();
 
     // MeshColors: a fixed-size Color[] (like WeaponAmmoOverride.Resources).
     // Always written with exactly MESH_COLOR_SLOTS entries — the user's colours
@@ -2031,9 +2258,15 @@ pub(crate) fn roundtrip_adv_inventory_component(node: &Node) -> brdb::schema::Br
     for (k, v) in node.properties.as_ref() {
         inlined.insert(*k, v);
     }
-    let comp =
-        build_adv_inventory_component(node.gate_class, &node.ports, &inlined, &mut world, None)
-            .expect("build advanced-inventory component");
+    let comp = build_adv_inventory_component(
+        node.gate_class,
+        &node.ports,
+        &inlined,
+        &mut world,
+        None,
+        None,
+    )
+    .expect("build advanced-inventory component");
     let schema = brdb::schemas::bricks_components_schema_max();
     let struct_name = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
         .iter()
@@ -2603,9 +2836,11 @@ fn literal_to_wire_variant(lit: &Literal) -> Option<WireVariant> {
             b: *b as f32 / 255.0,
             a: *a as f32 / 255.0,
         }),
-        Literal::Array(_) | Literal::Map(_) | Literal::Asset { .. } | Literal::PrefabRef { .. } => {
-            None
-        }
+        Literal::Array(_)
+        | Literal::Map(_)
+        | Literal::Asset { .. }
+        | Literal::PrefabRef { .. }
+        | Literal::NestedPrefab { .. } => None,
     }
 }
 
@@ -3005,8 +3240,11 @@ mod tests {
             node_brick_ids: HashMap::default(),
             class_index: HashMap::default(),
             prefab_resolver: None,
+            nested_compiler: None,
             wire_sources: HashMap::default(),
             var_labels: HashMap::default(),
+            invisible: false,
+            root_shell_brick_id: 0,
         }
     }
 

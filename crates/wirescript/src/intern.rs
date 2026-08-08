@@ -70,6 +70,10 @@ pub mod sym {
     // carried on MicrochipInput/Output nodes so emit can place an outer
     // rerouter. Never written to the brick.
     def!(REROUTE_SIDE, "_reroute_side");
+    // Pseudo-property (not a game field): the `@invisible` port annotation,
+    // carried on MicrochipInput/Output nodes so emit hides the outer
+    // rerouter. Never written to the brick.
+    def!(REROUTE_INVISIBLE, "_reroute_invisible");
     // Pseudo-property (not a game field): `@closed` — emit this chip's inner
     // grid collapsed. Absent = open (the default for non-root chips).
     def!(CHIP_CLOSED, "_closed");

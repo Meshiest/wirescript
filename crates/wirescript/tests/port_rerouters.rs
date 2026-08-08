@@ -196,6 +196,44 @@ fn bottom_side_two_ports_center_along_y() {
 }
 
 #[test]
+fn invisible_port_rerouter_is_hidden_and_noncolliding() {
+    let world = compile_to_world(
+        CompileInput {
+            source: "@left @invisible in go: exec\non go { }\n",
+            file: "invisible.ws",
+            module_name: None,
+            fold_mode: FoldMode::Auto,
+        },
+        EmitOptions::default(),
+    )
+    .expect("should compile")
+    .world;
+    let rer = world
+        .bricks
+        .iter()
+        .find(|b| b.asset == brdb::BrickType::from("B_1x1_Reroute_Node"))
+        .expect("a rerouter brick");
+    assert!(!rer.visible, "invisible port rerouter must have visible=false");
+    let c = rer.collision;
+    assert!(
+        !c.player
+            && c.player1 != Some(true)
+            && c.player2 != Some(true)
+            && c.player3 != Some(true)
+            && !c.weapon
+            && !c.interact
+            && !c.tool
+            && !c.physics,
+        "invisible rerouter must not collide: {:?}",
+        c
+    );
+    assert!(
+        !rer.components.iter().any(is_text_display),
+        "invisible rerouter must not carry a port-name label"
+    );
+}
+
+#[test]
 fn bottom_ports_wire_and_label() {
     let w = bottom_world();
     let ty = |s: &brdb::WirePort| s.component_type.to_string();

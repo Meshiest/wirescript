@@ -173,6 +173,14 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         lower_decl(&mut ctx, d);
     }
 
+    // Pass 2b: resolve runtime `@label(expr)` on top-level vars into dynamic
+    // label wires. Runs after every top-level var/gate exists, and before the
+    // dead-gate prune below so the coercion gate's input wire keeps it alive.
+    resolve_dynamic_var_labels(&mut ctx, &input.ast.decls);
+    // A module-level `@label(<expr>)` labels the ROOT chip (same pass, so it may
+    // forward-reference declarations below it).
+    resolve_module_label(&mut ctx, input.ast.module_label.as_ref());
+
     flush_pending_emits(&mut ctx);
 
     let ids_unused = ctx.ids; // move consumed
@@ -1336,6 +1344,8 @@ pub fn compile_chip_template(
                     o.typ.as_ref(),
                     o.side,
                     o.label.as_deref(),
+                    o.label_expr.as_ref(),
+                    o.invisible,
                     &o.range,
                 );
             }

@@ -1,4 +1,5 @@
 use crate::collections::HashMap;
+use crate::ast::{CallArg, Expr, Handler, HandlerConfigArg, Script, Trigger};
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
 use crate::ir::Type;
@@ -69,6 +70,7 @@ pub fn hover_at(
         .or_else(|| hover_data_driven_config(source, &word, line, col))
         .or_else(|| hover_config_enum_value(source, &word, line, col))
         .or_else(|| hover_array_method(source, &word, line, col))
+        .or_else(|| hover_custom_event(source, file, &word, type_map, line, col))
         .or_else(|| hover_builtin_event(&word))
         .or_else(|| hover_builtin_call(source, &word, line, col))
         .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
@@ -282,7 +284,14 @@ fn hover_builtin_event(word: &str) -> Option<String> {
         .map(|d| format!("{}: {}", d.name, type_str(&d.ty)))
         .collect();
     let sig = if !data_parts.is_empty() {
-        format!("({})", data_parts.join(", "))
+        // Custom events lead with a positional channel-name string (`config`),
+        // which isn't in `evt.data` — surface it so the generic hover still
+        // shows the full call shape (`on CustomEvent("name", data1: any, …)`).
+        if matches!(evt.surface_name, "CustomEvent" | "GlobalCustomEvent") {
+            format!("(\"name\", {})", data_parts.join(", "))
+        } else {
+            format!("({})", data_parts.join(", "))
+        }
     } else {
         // Config-only / input events (Clock, ChatCommand): show their arg names.
         let mut surfs: Vec<&str> = evt.input_named.iter().map(|(s, _, _)| *s).collect();
@@ -304,6 +313,281 @@ fn hover_builtin_event(word: &str) -> Option<String> {
         out += &format!("\n\n**Config:** {} *(constant-only)*", cfg.join(", "));
     }
     Some(out)
+}
+
+/// Context-aware hover for the custom-event channel words — both the receiver
+/// TRIGGER (`on CustomEvent` / `on GlobalCustomEvent`) and the SEND call
+/// (`SendCustomEvent` / `SendGlobalCustomEvent`, including the receiver form
+/// `e.SendCustomEvent(…)`). Resolves the channel's data slots (names + types)
+/// from every receiver declaration and matching sender in the file, and renders
+/// the full typed signature — e.g. `on CustomEvent("init", p: character)` or
+/// `SendCustomEvent("init", p: character)`. Returns `None` when the word is not a
+/// CE word with a resolvable channel under the cursor, so the generic hovers
+/// handle that case.
+fn hover_custom_event(
+    source: &str,
+    file: &str,
+    word: &str,
+    type_map: &TypeMap,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    // (is_send, receiver-namespace word). Both the trigger and the send call for
+    // one namespace resolve against the SAME receivers + senders.
+    let (is_send, ns_word) = match word {
+        "CustomEvent" => (false, "CustomEvent"),
+        "GlobalCustomEvent" => (false, "GlobalCustomEvent"),
+        "SendCustomEvent" => (true, "CustomEvent"),
+        "SendGlobalCustomEvent" => (true, "GlobalCustomEvent"),
+        _ => return None,
+    };
+    let line_str = source.lines().nth(line)?;
+    let word_off = line_offset_at(source, line) + word_start_in_line(line_str, col);
+
+    // Re-parse the same source: identical byte offsets, so `type_map` (keyed by
+    // (file, start, end)) still resolves each sender arg's inferred type.
+    let parsed = crate::parser::parse(source, file);
+    let script = &parsed.ast;
+
+    let channel = if is_send {
+        ce_send_channel_at(script, word, word_off)?
+    } else {
+        ce_trigger_channel_at(script, ns_word, word_off)?
+    };
+    let slots = resolve_ce_channel_slots(script, ns_word, &channel, type_map, file);
+
+    let mut parts = vec![format!("\"{channel}\"")];
+    for (name, ty) in &slots {
+        parts.push(format!("{name}: {ty}"));
+    }
+    let sig = if is_send {
+        format!("{word}({})", parts.join(", "))
+    } else {
+        format!("on {word}({})", parts.join(", "))
+    };
+    Some(format!(
+        "```wirescript\n{sig}\n```\n\n\
+         *Data slot names/types resolved from this channel's receivers and senders in the file.*"
+    ))
+}
+
+/// The literal channel name of the `send_name`
+/// (`SendCustomEvent`/`SendGlobalCustomEvent`) CALL whose callee identifier
+/// contains byte offset `off` — handles both the plain call and the receiver
+/// form `e.SendCustomEvent(…)`.
+fn ce_send_channel_at(script: &Script, send_name: &str, off: usize) -> Option<String> {
+    let mut channel = None;
+    {
+        let mut on_handler = |_: &Handler| {};
+        let mut on_call = |call: &Expr| {
+            if channel.is_some() {
+                return;
+            }
+            let Expr::Call { callee, args, .. } = call else {
+                return;
+            };
+            let (cn, crange) = match callee.as_ref() {
+                Expr::Ident { name, range } => (name.as_str(), range),
+                Expr::FieldAccess { field, range, .. } => (field.as_str(), range),
+                _ => return,
+            };
+            if cn != send_name || off < crange.start.offset || off > crange.end.offset {
+                return;
+            }
+            channel = ce_send_channel(args);
+        };
+        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+    }
+    channel
+}
+
+/// The literal channel name of the `word` (`CustomEvent`/`GlobalCustomEvent`)
+/// receiver handler whose trigger identifier contains byte offset `off`.
+fn ce_trigger_channel_at(script: &Script, word: &str, off: usize) -> Option<String> {
+    let mut channel = None;
+    {
+        let mut on_handler = |h: &Handler| {
+            if channel.is_some() {
+                return;
+            }
+            let Trigger::Ident { name, range } = &h.trigger else {
+                return;
+            };
+            if name != word || off < range.start.offset || off > range.end.offset {
+                return;
+            }
+            channel = ce_handler_channel(h);
+        };
+        let mut on_call = |_: &Expr| {};
+        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+    }
+    channel
+}
+
+/// The channel a CE receiver handler listens on: its `config`'s named
+/// `eventName = "x"` if present, else its first positional string literal.
+fn ce_handler_channel(h: &Handler) -> Option<String> {
+    for c in &h.config {
+        if let HandlerConfigArg::Named { name, value: Expr::StringLit { value, .. } } = c {
+            if name.eq_ignore_ascii_case("eventname") {
+                return Some(value.clone());
+            }
+        }
+    }
+    for c in &h.config {
+        if let HandlerConfigArg::Positional(Expr::StringLit { value, .. }) = c {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+/// Resolve a CE channel's data slots to `(name, type)` display strings by
+/// merging every receiver declaration (names + declared types) and matching
+/// sender call (inferred arg types fill untyped slots) in `script`. Receiver
+/// declarations win for both name and type; senders fill slots the receivers
+/// left untyped.
+fn resolve_ce_channel_slots(
+    script: &Script,
+    trigger_word: &str,
+    channel: &str,
+    type_map: &TypeMap,
+    file: &str,
+) -> Vec<(String, String)> {
+    let send_name = if trigger_word == "GlobalCustomEvent" {
+        "SendGlobalCustomEvent"
+    } else {
+        "SendCustomEvent"
+    };
+    let file_arc: std::sync::Arc<str> = file.into();
+
+    // Per slot: first receiver-declared name, first receiver-declared type,
+    // first sender-inferred type. `on_handler` and `on_call` touch disjoint
+    // vectors, so neither captures the other's state.
+    let mut names: Vec<Option<String>> = Vec::new();
+    let mut decl_types: Vec<Option<String>> = Vec::new();
+    let mut send_types: Vec<Option<String>> = Vec::new();
+
+    {
+        let mut on_handler = |h: &Handler| {
+            if !matches!(&h.trigger, Trigger::Ident { name, .. } if name == trigger_word) {
+                return;
+            }
+            if ce_handler_channel(h).as_deref() != Some(channel) {
+                return;
+            }
+            for (i, p) in h.params.iter().enumerate() {
+                if names.len() <= i {
+                    names.resize(i + 1, None);
+                    decl_types.resize(i + 1, None);
+                }
+                if names[i].is_none() {
+                    names[i] = Some(p.name.clone());
+                }
+                if decl_types[i].is_none() {
+                    if let Some(te) = &p.ty {
+                        decl_types[i] = Some(crate::analysis::types::type_expr_str(te));
+                    }
+                }
+            }
+        };
+        let mut on_call = |call: &Expr| {
+            let Expr::Call { callee, args, .. } = call else {
+                return;
+            };
+            let cn = match callee.as_ref() {
+                Expr::Ident { name, .. } => name.as_str(),
+                Expr::FieldAccess { field, .. } => field.as_str(),
+                _ => return,
+            };
+            if cn != send_name || ce_send_channel(args).as_deref() != Some(channel) {
+                return;
+            }
+            for (slot, expr) in ce_send_data_slots(args) {
+                if send_types.len() <= slot {
+                    send_types.resize(slot + 1, None);
+                }
+                if send_types[slot].is_none() {
+                    let r = expr.range();
+                    if let Some(t) =
+                        type_map.get(&(file_arc.clone(), r.start.offset, r.end.offset))
+                    {
+                        if !matches!(t, Type::Any | Type::Opaque) {
+                            send_types[slot] = Some(type_str(t));
+                        }
+                    }
+                }
+            }
+        };
+        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+    }
+
+    let n = names.len().max(decl_types.len()).max(send_types.len());
+    (0..n)
+        .map(|i| {
+            let name = names
+                .get(i)
+                .and_then(|o| o.clone())
+                .unwrap_or_else(|| format!("data{}", i + 1));
+            let ty = decl_types
+                .get(i)
+                .and_then(|o| o.clone())
+                .or_else(|| send_types.get(i).and_then(|o| o.clone()))
+                .unwrap_or_else(|| "any".to_string());
+            (name, ty)
+        })
+        .collect()
+}
+
+/// The channel name a `SendCustomEvent`-family call targets: named `eventName`
+/// if present, else the first positional string literal.
+fn ce_send_channel(args: &[CallArg]) -> Option<String> {
+    for a in args {
+        if let CallArg::Named { name, value: Expr::StringLit { value, .. } } = a {
+            if name.eq_ignore_ascii_case("eventname") {
+                return Some(value.clone());
+            }
+        }
+    }
+    for a in args {
+        if let CallArg::Positional(Expr::StringLit { value, .. }) = a {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+/// Map a `SendCustomEvent`-family call's data args to `(0-based slot, value)`.
+/// The channel occupies the first positional (unless a named `eventName` was
+/// given); the remaining positionals are data slots 0.., and `dataN` names slot
+/// N-1. A `target` named arg is neither the channel nor a data slot.
+fn ce_send_data_slots(args: &[CallArg]) -> Vec<(usize, &Expr)> {
+    let has_named_channel = args
+        .iter()
+        .any(|a| matches!(a, CallArg::Named { name, .. } if name.eq_ignore_ascii_case("eventname")));
+    let mut out = Vec::new();
+    let mut pos_idx = 0usize;
+    for a in args {
+        match a {
+            CallArg::Positional(e) => {
+                let is_channel = !has_named_channel && pos_idx == 0;
+                if !is_channel {
+                    let slot = if has_named_channel { pos_idx } else { pos_idx - 1 };
+                    out.push((slot, e));
+                }
+                pos_idx += 1;
+            }
+            CallArg::Named { name, value } => {
+                if let Some(n) = name.strip_prefix("data").and_then(|s| s.parse::<usize>().ok()) {
+                    if n >= 1 {
+                        out.push((n - 1, value));
+                    }
+                }
+            }
+            CallArg::Spread(_) => {}
+        }
+    }
+    out
 }
 
 /// Hover for an event handler's config-arg NAME (`enabled` in
@@ -1073,6 +1357,50 @@ mod tests {
             line,
             col,
         )
+    }
+
+    #[test]
+    fn custom_event_hover_resolves_channel_and_types() {
+        // Hovering the `CustomEvent` trigger shows the channel name plus each
+        // data slot's name/type: declared by the receiver, and filled from a
+        // matching sender for the slot the receiver left untyped (`attacker`).
+        let src = "on CustomEvent(\"dmg\", amount: int, attacker) {\n  let x = amount\n}\n\
+                   on CharacterSpawned(ch) {\n  SendCustomEvent(\"dmg\", 5, ch)\n}\n";
+        let line0 = src.lines().next().unwrap();
+        let col = line0.find("CustomEvent").unwrap();
+        let h = hover_for(src, 0, col).expect("CustomEvent trigger should hover");
+        assert!(h.contains("on CustomEvent(\"dmg\""), "channel name in sig: {h}");
+        assert!(h.contains("amount: int"), "declared slot type: {h}");
+        assert!(h.contains("attacker: character"), "sender-filled slot type: {h}");
+    }
+
+    #[test]
+    fn global_custom_event_hover_uses_global_senders() {
+        // The global namespace resolves against `SendGlobalCustomEvent` senders,
+        // not personal ones (separate channel namespaces), and fills an untyped
+        // receiver slot from the sender's inferred arg type.
+        let src = "on GlobalCustomEvent(\"score\", points) {\n}\n\
+                   on go {\n  SendGlobalCustomEvent(\"score\", 10)\n}\nin go: exec\n";
+        let l0 = src.lines().next().unwrap();
+        let c = l0.find("GlobalCustomEvent").unwrap();
+        let h = hover_for(src, 0, c).expect("GlobalCustomEvent trigger should hover");
+        assert!(h.contains("on GlobalCustomEvent(\"score\""), "channel: {h}");
+        assert!(h.contains("points: int"), "int sender fills the slot: {h}");
+    }
+
+    #[test]
+    fn send_custom_event_call_hover_shows_channel_typings() {
+        // Hovering `SendCustomEvent` on the SEND call shows the channel's typed
+        // fields (resolved from the matching receiver declaration).
+        let src = "on CustomEvent(\"dmg\", amount: int, attacker: character) {\n}\n\
+                   on go {\n  SendCustomEvent(\"dmg\", 5, ch)\n}\nin go: exec\n";
+        let send_line = 3usize; // the `SendCustomEvent(...)` line
+        let l = src.lines().nth(send_line).unwrap();
+        let c = l.find("SendCustomEvent").unwrap();
+        let h = hover_for(src, send_line, c).expect("SendCustomEvent call should hover");
+        assert!(h.contains("SendCustomEvent(\"dmg\""), "channel in send hover: {h}");
+        assert!(h.contains("amount: int"), "receiver-declared type shown: {h}");
+        assert!(h.contains("attacker: character"), "second declared type shown: {h}");
     }
 
     #[test]

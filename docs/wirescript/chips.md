@@ -389,6 +389,12 @@ order -- see [Outer Rerouter Pins](statements.md#left--right--top--bottom----out
 There it overrides the port's floating display label (and its rerouter pin
 label); the port's wiring-UI name is unaffected either way.
 
+The `@label` argument may also be an expression: a constant folds to baked
+text, and on a top-level `var` a runtime expression becomes a **dynamic
+label** that shows the value live -- see
+[Expression labels](statements.md#expression-labels-label-expr). A chip
+label must be a constant (its shell brick has no wired text component).
+
 Each opened plane with a title or doc comment gets a header at its top
 edge: the title rendered as `<size="96">...</>`, with the chip's `///` doc
 comment on the line below. The title is the chip's `@label` text if

@@ -411,6 +411,54 @@ stacks with a side annotation in either order:
 @label("Fire!") @left in trigger: exec   // order doesn't matter
 ```
 
+#### Expression labels (`@label(<expr>)`)
+
+The argument may be an expression, not just a string literal. A
+**compile-time constant** expression is folded and its value baked as the
+label text (a float renders the same 3-decimal way `FormatText` shows one):
+
+```wirescript
+let title = "Score"
+@label(title) out v: int = 0      // baked "Score"
+@label(1 + 2) out w: int = 0      // baked "3"
+```
+
+`@label` also applies to a **`var`**, overriding the name it would otherwise
+show. On a **top-level `var`** the expression may be a *runtime* value — this
+is a **dynamic label**: the value is coerced to text and wired live into the
+variable's floating label, so the label updates as the value changes. The
+common form is a variable labelling itself with its own value:
+
+```wirescript
+@label(score) var score: int = 0     // the label shows score's live value
+@label(hp * 2) var shown: int = 0    // any runtime expression works
+```
+
+A runtime expression is only dynamic on a top-level `var` (the one element
+that carries a wireable text component). A runtime `@label` on a port
+(`in`/`out`), a chip, or a nested `var` has nowhere to host the wire and is
+a compile error — use a constant there.
+
+#### Module-level `@label` (the root microchip)
+
+A `@label(<expr>)` at the **top of the file**, separated from the first
+declaration by a blank line, labels the **root microchip** itself rather than
+any declaration — the same blank-line placement rule as `@invisible`/`@nofold`.
+A constant bakes the chip's title text; a runtime value labels the chip
+dynamically (wired into the root shell's label). The expression may
+forward-reference declarations below it, so a chip can label itself with one of
+its own variables:
+
+```wirescript
+@label(status)          // labels the whole chip with `status`'s live value
+
+var status: string = "idle"
+on tick { status = "running" }
+```
+
+Without the blank line, `@label(status)` would instead attach to the `status`
+declaration directly (a variable self-label, above).
+
 ### `@nofold` -- Suppress Constant Folding
 
 - `@nofold` — suppress constant folding/elision for everything lowered from this

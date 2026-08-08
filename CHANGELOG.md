@@ -22,6 +22,12 @@
 - **Player-reference gates target persistent player-state** - `DisplayText`, chat/leaderboard/team setters, and the join/left/chat events resolve the current build's persistent player-state; existing `controller`-typed scripts keep working unchanged.
 - **Fixed fixed-size component arrays failing to load** - weapon ammo resources and mesh colors are native fixed-length arrays; emit now pads them to their full length so a save that sets one loads instead of rejecting on size.
 - **LSP: config-aware completions and hovers** - enum sibling completion, hovers for events, enum values, `Clock`, and settings-menu config fields, and asset-type dropdown completions for `$Type/Name` config refs.
+- **`@label(<expr>)` labels** - `@label` accepts an expression, not just a string literal. A constant folds to baked text; on a top-level `var` a runtime value becomes a *dynamic* label, wired live into the variable's floating text - including a variable labelling itself with its own value (`@label(x) var x`). A blank-line-separated `@label(<expr>)` at the very top of the file labels the root microchip rather than a declaration, and may forward-reference declarations below it. A runtime `@label` on a port/chip (which has no wireable text) is a `WS040` error.
+- **`@invisible`** - hide a port's rerouter brick and label, or - as a top-of-file annotation - the whole microchip shell (hidden, non-colliding, no labels), for microchips that spawn other microchips.
+- **Inline nested prefabs** - a triple-backtick block prefixed with `$` compiles an *isolated* inner program and embeds it as a prefab, usable directly as a `SpawnPrefab` argument. The inner block can `import` but shares no wires with the outer file (it is a separate prefab); its diagnostics, highlighting, and completions all resolve against the inner program.
+- **`on <expr>` triggers** - an `on` handler can fire on an arbitrary boolean expression, a negation (`on !flag`), or a bare variable - not only a named event or input.
+- **Chained method calls across lines** - a call chain may continue with a leading `.` on the next line (`f(...)` then `.g(...)` below it); the formatter indents the continuation.
+- **Fixed a `var` initializer missing its `=`** - `var x: int 5` silently dropped the value; it now reports a `missing =` error (and still recovers by taking the expression as the value).
 
 ### Migrating from 0.x
 
@@ -35,7 +41,7 @@
 - **`InputReader().Jump` removed** - the movement record dropped `Jump`; read the new axis/button fields instead (`Up`, `Pitch`/`Yaw`/`Roll`, `MouseWheel`, `PressedC`/`E`/`Q`/`LeftMouse`/`RightMouse`).
 - **`BrickChanged` / `BrickRemoved` lost their brick output** - these events no longer carry a `brick` value, so `on BrickChanged(brick) { ... }` won't bind; drop the parameter (`on BrickChanged { ... }`).
 - **`RotToDir` removed** - its gate no longer exists in the build; use `q.ToDirection()` (takes a `quat`) to turn a rotation into a forward direction.
-- **`array` / `map` declaration keywords removed** - declare container variables with `var` instead: `var scores: int[]` (was `array scores: int[]`) and `var m: Dict<K, V>` (was `map m: Dict<K, V>`). Storage and behavior are identical - only the keyword changed - so the fix is a mechanical rename. Using `array`/`map` as a declaration keyword is now a parse error that points at the `var` form.
+- **`array` declaration keyword removed** - declare container variables with `var` instead: `var scores: int[]` (was `array scores: int[]`). Storage and behavior is identical - only the keyword changed - so the fix is a mechanical rename. Using `array` as a declaration keyword is now a parse error that points at the `var` form.
 
 ## 0.20.0
 

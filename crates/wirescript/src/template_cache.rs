@@ -478,6 +478,7 @@ fn collect_calls_in_expr(expr: &Expr, known: &HashSet<String>, out: &mut HashSet
         | Expr::BoolLit { .. }
         | Expr::AssetRef { .. }
         | Expr::PrefabRef { .. }
+        | Expr::NestedPrefab { .. }
         | Expr::Ident { .. } => {}
     }
 }

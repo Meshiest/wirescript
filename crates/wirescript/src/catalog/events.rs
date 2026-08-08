@@ -362,7 +362,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         // The leading positional is the channel name (baked into `EventName` when
         // constant); the remaining params are the TYPED data outputs, whose
         // annotations type the gate's WireGraphVariant ports (the game can't store
-        // them as `any`). Unused slots default to float. `objectEvent` is constant
+        // them as `any`). Unused slots default to float. `isObject` is constant
         // config that scopes the event to a specific grid/object instead of firing
         // grid-wide. Delivery is same-owner only — the ownership-agnostic
         // counterpart is `on GlobalCustomEvent(...)`.
@@ -383,14 +383,14 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
                 ],
                 config_positional: vec!["EventName"],
-                config_named: vec![("objectevent", "bIsObjectEvent")],
+                config_named: vec![("isobject", "bIsObjectEvent")],
                 input_named: vec![],
                 exec_out: "ExecOut",
             },
         ),
         // Global Custom Event: the ownership-agnostic counterpart of Custom Event
         // — fires for a matching `SendGlobalCustomEvent` regardless of owner. Same
-        // shape (channel-name positional, up to 8 typed data outputs, `objectEvent`
+        // shape (channel-name positional, up to 8 typed data outputs, `isObject`
         // config).
         (
             "GlobalCustomEvent",
@@ -408,7 +408,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
                 ],
                 config_positional: vec!["EventName"],
-                config_named: vec![("objectevent", "bIsObjectEvent")],
+                config_named: vec![("isobject", "bIsObjectEvent")],
                 input_named: vec![],
                 exec_out: "ExecOut",
             },

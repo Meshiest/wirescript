@@ -256,6 +256,16 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
     // initializer may name one. Built from the same function lowering uses, so
     // the two can't disagree about what counts as a compile-time constant.
     ctx.const_env = crate::lower::build_const_env(&script.decls);
+    // `@label(expr)` on a port/chip/nested-var must fold to a compile-time
+    // constant (the folded text is baked as the label) — a runtime value there
+    // has nowhere to host a wire, so it stays a WS040 error. A TOP-LEVEL `var`
+    // is the exception: it carries a wireable text component, so a runtime label
+    // there is a valid dynamic label (checked separately in
+    // `check_dynamic_var_labels`, after all top-level symbols are declared). A
+    // single dedicated walk, since these decls are checked from several
+    // different call paths below (top-level, nested in chip/anon-chip bodies,
+    // statement-level).
+    check_label_exprs(&mut ctx, &script.decls);
     let mut saw_handler = false;
     // Named chip/mod bodies are checked AFTER everything else: top-level
     // `let` types are only inferred (and thus declared) during this pass, so
@@ -295,6 +305,11 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
         }
     }
 
+    // Runtime `@label(expr)` on a top-level `var`: type-check the expression
+    // now that every top-level symbol is declared (an undefined ref or a bad
+    // type surfaces here). A constant label is skipped — it bakes statically.
+    check_dynamic_var_labels(&mut ctx, script, &mut tmap, &mut omap);
+
     // Whole-program pass: `SendCustomEvent("name", …)` data whose wire types
     // disagree with the `on CustomEvent("name", …)` receiver's declared params.
     // Runs last so every arg has an inferred type in `tmap`.
@@ -306,6 +321,119 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
         if_contexts: ctx.if_contexts,
         var_read_contexts: ctx.var_read_contexts,
         diagnostics: ctx.diagnostics,
+    }
+}
+
+// ---------- `@label(expr)` constant-folding check (WS040) ----------
+
+/// Walk every top-level decl, recursing into chip/anon-chip bodies (and the
+/// blocks nested inside them — `if`/`on`), and flag any `@label(expr)` whose
+/// expression doesn't fold to a compile-time constant.
+fn check_label_exprs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+    for d in decls {
+        check_label_expr_decl(ctx, d);
+    }
+}
+
+fn check_label_expr_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
+    match d {
+        // A TOP-LEVEL `var` accepts a runtime `@label(expr)` — it becomes a
+        // dynamic label wired into the text component's `Text` port at emit
+        // (`lower::resolve_dynamic_var_labels`). So no WS040 here; the
+        // expression is instead type-checked in `check_dynamic_var_labels`
+        // after every top-level symbol is in scope. (A CONSTANT label still
+        // bakes statically — that path folds it and never reaches the wire.)
+        TopDecl::Var(_) => {}
+        TopDecl::In(i) => check_one_label_expr(ctx, &i.label_expr),
+        TopDecl::Out(o) => check_one_label_expr(ctx, &o.label_expr),
+        TopDecl::Chip(c) => {
+            check_one_label_expr(ctx, &c.label_expr);
+            check_label_exprs_in_block(ctx, &c.body);
+        }
+        TopDecl::AnonChip(ac) => {
+            check_one_label_expr(ctx, &ac.label_expr);
+            check_label_exprs_in_block(ctx, &ac.body);
+        }
+        // A decl can also live inside a top-level `on Event { ... }` handler
+        // (the standard Wirescript pattern) or a top-level `if` — recurse into
+        // those blocks too, or a non-constant `@label` there would silently
+        // fall back to the name instead of erroring.
+        TopDecl::Handler(h) => check_label_exprs_in_block(ctx, &h.body),
+        TopDecl::If(i) => {
+            check_label_exprs_in_block(ctx, &i.then_block);
+            if let Some(else_b) = &i.else_block {
+                check_label_exprs_in_block(ctx, else_b);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Visit every statement in `block`, recursing into nested chip/handler/if
+/// bodies. Shared by the decl-level and statement-level walks so the two
+/// stay in step.
+fn check_label_exprs_in_block(ctx: &mut TypeCheckCtx, block: &Block) {
+    for s in &block.stmts {
+        check_label_expr_stmt(ctx, s);
+    }
+}
+
+fn check_label_expr_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
+    match s {
+        Stmt::Var(v) => check_one_label_expr(ctx, &v.label_expr),
+        Stmt::In(i) => check_one_label_expr(ctx, &i.label_expr),
+        Stmt::OutBinding(o) => check_one_label_expr(ctx, &o.label_expr),
+        Stmt::ChipDecl(c) => {
+            check_one_label_expr(ctx, &c.label_expr);
+            check_label_exprs_in_block(ctx, &c.body);
+        }
+        Stmt::AnonChip(ac) => {
+            check_one_label_expr(ctx, &ac.label_expr);
+            check_label_exprs_in_block(ctx, &ac.body);
+        }
+        Stmt::If(i) => {
+            check_label_exprs_in_block(ctx, &i.then_block);
+            if let Some(else_b) = &i.else_block {
+                check_label_exprs_in_block(ctx, else_b);
+            }
+        }
+        Stmt::Handler(h) => check_label_exprs_in_block(ctx, &h.body),
+        _ => {}
+    }
+}
+
+fn check_one_label_expr(ctx: &mut TypeCheckCtx, label_expr: &Option<Expr>) {
+    let Some(expr) = label_expr else { return };
+    if crate::lower::expr_to_literal_in(expr, &ctx.const_env).is_some() {
+        return;
+    }
+    ctx.emit(
+        "WS040",
+        "`@label` expression must be a compile-time constant (a literal or a constant `let`); \
+         a runtime value cannot be baked as a label",
+        expr.range().clone(),
+    );
+}
+
+/// Type-check the runtime `@label(expr)` on each top-level `var` so an undefined
+/// symbol or a bad type surfaces (the lowering pass then wires the value into
+/// the label component's `Text` port). Only the non-constant labels reach here —
+/// a constant one bakes its text statically and needs no wire. Runs after the
+/// main decl loop so every top-level symbol is already declared.
+fn check_dynamic_var_labels(
+    ctx: &mut TypeCheckCtx,
+    script: &Script,
+    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
+    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
+) {
+    for d in &script.decls {
+        if let TopDecl::Var(v) = d {
+            if let Some(le) = &v.label_expr {
+                if crate::lower::expr_to_literal_in(le, &ctx.const_env).is_none() {
+                    infer_expr(ctx, le, tmap, omap);
+                }
+            }
+        }
     }
 }
 
@@ -1087,7 +1215,9 @@ fn check_top_level_array_init(
             // constant value list. Inlined here they'd be silently dropped.
             if matches!(
                 lit,
-                crate::ir::Literal::Asset { .. } | crate::ir::Literal::PrefabRef { .. }
+                crate::ir::Literal::Asset { .. }
+                    | crate::ir::Literal::PrefabRef { .. }
+                    | crate::ir::Literal::NestedPrefab { .. }
             ) {
                 ctx.diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
@@ -1714,9 +1844,19 @@ fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
             &sym,
             Some(s) if s.kind == SymbolKind::LetBinding
         );
+        // A mod/chip param (`Param`) or an event data output bound by the
+        // enclosing handler (`EventParam`, e.g. `on CustomEvent(…, p: character)`)
+        // can trigger a nested handler on its value/edge — `on p` / `on !p`.
         let known_param_trigger = matches!(
             &sym,
-            Some(s) if s.kind == SymbolKind::Param && matches!(s.ty, Type::Exec | Type::Bool | Type::Int | Type::Float | Type::Character | Type::Controller | Type::Entity)
+            Some(s) if matches!(s.kind, SymbolKind::Param | SymbolKind::EventParam)
+                && matches!(s.ty, Type::Exec | Type::Bool | Type::Int | Type::Float | Type::Character | Type::Controller | Type::Entity)
+        );
+        // A `var` can trigger a handler on its value change — `on x` / `on !x`.
+        let known_var_trigger = matches!(
+            &sym,
+            Some(s) if s.kind == SymbolKind::Var
+                && matches!(s.ty, Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
         );
         if !known_event
             && !known_capture
@@ -1724,6 +1864,7 @@ fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
             && !known_buffer_trigger
             && !known_let_trigger
             && !known_param_trigger
+            && !known_var_trigger
         {
             ctx.emit(
                 "WS001",
@@ -2738,6 +2879,60 @@ fn infer_expr_inner(
             }
             Type::Any
         }
+        Expr::NestedPrefab { source, range } => {
+            // Inline nested-prefab block `$``` ... ``` ` — like `PrefabRef`, it
+            // flows into a `bundle_path_ref` gate property; typed `any` so it's
+            // accepted there, and (unlike `PrefabRef`) there's no `.brz`/WS019
+            // path check. Additionally, type-check the enclosed source as its own
+            // isolated program and surface its diagnostics shifted into this
+            // block's span in the outer file, so an error inside the block
+            // underlines the real location in the editor.
+            let inner = crate::parser::parse(source, &range.file);
+            // Imports in a nested block resolve at compile time (the driver
+            // recursively resolves + compiles it), but this in-editor pass has no
+            // loader — so when the block imports, surface only its parse
+            // diagnostics (skip type-check, whose unresolved imports would be
+            // false positives). A self-contained block (the common case) is
+            // fully checked.
+            let has_imports = inner
+                .ast
+                .decls
+                .iter()
+                .any(|d| matches!(d, crate::ast::TopDecl::Import(_)));
+            let inner_diags: Vec<Diagnostic> = if has_imports {
+                inner.diagnostics
+            } else {
+                let inner_tc = typecheck(&inner.ast, &range.file);
+                inner
+                    .diagnostics
+                    .into_iter()
+                    .chain(inner_tc.diagnostics)
+                    .collect()
+            };
+            // The inner source begins right after the 4-char `$``` ` fence, so a
+            // position at inner offset `o` lands at outer offset `o + bo + 4`.
+            // Its first line shares the fence's outer line; later lines are whole
+            // lines of the outer file, so their columns map through directly.
+            let (bo, bl, bc) = (range.start.offset, range.start.line, range.start.col);
+            let shift = |p: crate::diagnostic::Pos| crate::diagnostic::Pos {
+                offset: p.offset + bo + 4,
+                line: if p.line <= 1 { bl } else { bl + p.line - 1 },
+                col: if p.line <= 1 {
+                    bc + 4 + p.col.saturating_sub(1)
+                } else {
+                    p.col
+                },
+            };
+            for mut d in inner_diags {
+                d.range = crate::diagnostic::SourceRange {
+                    file: range.file.clone(),
+                    start: shift(d.range.start),
+                    end: shift(d.range.end),
+                };
+                ctx.diagnostics.push(d);
+            }
+            Type::Any
+        }
         Expr::InterpLit { parts, .. } => {
             for p in parts {
                 if let InterpPart::Expr(expr) = p {
@@ -2982,11 +3177,14 @@ fn infer_expr_inner(
                 }
                 _ => None,
             };
-            // A receiver method call binds the object as param 0, so positional
-            // args in `args` start at param index 1.
+            // A receiver method call normally binds the object as param 0, so
+            // positional args in `args` start at param index 1. A named-target
+            // receiver (`entity.SendCustomEvent(…)`) binds the object to a named
+            // param instead, so its positional args still start at index 0.
             let pos_base = usize::from(
                 matches!(callee.as_ref(), Expr::FieldAccess { .. })
-                    && arg_spec.is_some_and(|c| c.receiver.is_some()),
+                    && arg_spec
+                        .is_some_and(|c| c.receiver.is_some() && c.receiver_target_param().is_none()),
             );
             // Side-effect: typecheck every arg, except enum-typed config args.
             // `positional_arg_types` mirrors the positional args in order —
@@ -3190,8 +3388,21 @@ fn infer_expr_inner(
                 && let Some(c) = find_call(field)
                 && c.receiver.is_some()
             {
-                let mut recv_args = vec![CallArg::Positional(obj.as_ref().clone())];
-                recv_args.extend(args.iter().cloned());
+                // Named-target receiver (`entity.SendCustomEvent(…)`) binds the
+                // object to `target`; positional args stay as the channel name +
+                // data. Ordinary receiver binds the object as positional arg 0.
+                let recv_args = if let Some(tp) = c.receiver_target_param() {
+                    let mut v = args.to_vec();
+                    v.push(CallArg::Named {
+                        name: tp.to_string(),
+                        value: obj.as_ref().clone(),
+                    });
+                    v
+                } else {
+                    let mut v = vec![CallArg::Positional(obj.as_ref().clone())];
+                    v.extend(args.iter().cloned());
+                    v
+                };
                 check_call_args(ctx, c, &recv_args, fa_range, tmap, omap);
                 if c.outputs.len() == 1 {
                     return union_output_type(ctx, c, &recv_args, 0, fa_range, tmap, omap);
@@ -3632,13 +3843,18 @@ fn check_custom_event_types(
         },
         &mut |call| {
             if let Expr::Call { callee, .. } = call {
-                match callee.as_ref() {
-                    Expr::Ident { name, .. } if name == "SendCustomEvent" => {
-                        personal_send.push(call)
-                    }
-                    Expr::Ident { name, .. } if name == "SendGlobalCustomEvent" => {
-                        global_send.push(call)
-                    }
+                // The channel name + data args live in `call`'s positional args in
+                // both the plain `SendCustomEvent("x", …)` and the receiver form
+                // `entity.SendCustomEvent("x", …)` (the receiver is separate), so
+                // both forms are collected the same way.
+                let callee_name = match callee.as_ref() {
+                    Expr::Ident { name, .. } => Some(name.as_str()),
+                    Expr::FieldAccess { field, .. } => Some(field.as_str()),
+                    _ => None,
+                };
+                match callee_name {
+                    Some("SendCustomEvent") => personal_send.push(call),
+                    Some("SendGlobalCustomEvent") => global_send.push(call),
                     _ => {}
                 }
             }
@@ -4289,6 +4505,71 @@ mod tests {
             !r.diagnostics.iter().any(|d| d.code == "WS021"),
             "declaration-before-use must NOT emit WS021; got {:?}",
             r.diagnostics
+        );
+    }
+
+    #[test]
+    fn nested_prefab_types_as_prefab_and_lowers_to_literal() {
+        let src = "in go: exec\non go { SpawnPrefab($```in a: exec```) }\n";
+        let r = tc(src);
+        assert!(
+            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "nested prefab as SpawnPrefab arg should typecheck: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn nested_prefab_inner_error_remaps_into_outer_file() {
+        // A syntax error INSIDE the block must surface (not be dropped), remapped
+        // into the block's outer-file span (not left at the inner offset 0).
+        let src = "in go: exec\non go { SpawnPrefab($```on q { let y = }```) }\n";
+        let r = typecheck(&parse(src, "test").ast, "test");
+        let err = r.diagnostics.iter().find(|d| d.severity == Severity::Error);
+        assert!(err.is_some(), "inner error should surface: {:?}", r.diagnostics);
+        let block = src.find("$```").unwrap();
+        let d = err.unwrap();
+        assert!(
+            d.range.start.offset >= block,
+            "diagnostic remapped into the block span (offset {} vs block start {})",
+            d.range.start.offset,
+            block
+        );
+    }
+
+    #[test]
+    fn nested_handler_on_event_param_is_valid() {
+        // A nested handler triggered by the enclosing handler's EVENT data param
+        // — `on CustomEvent(…, p: character) { on p { } }` and the negated
+        // `on !p { }` — must type-check (the param is bound as EventParam).
+        for src in [
+            "on CustomEvent(\"x\", p: character) {\n  on p { }\n}\n",
+            "on CustomEvent(\"x\", p: character) {\n  on !p { }\n}\n",
+        ] {
+            let r = typecheck(&parse(src, "test").ast, "test");
+            assert!(
+                !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "`on (!)p` over an event data param should type-check: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn nested_prefab_lowers_to_nested_literal() {
+        // The predeclare const-literal-of mapping turns Expr::NestedPrefab
+        // into Literal::NestedPrefab, carrying the raw inner source verbatim
+        // — mirroring how Expr::PrefabRef lowers to Literal::PrefabRef.
+        let range = crate::diagnostic::SourceRange::default();
+        let expr = crate::ast::Expr::NestedPrefab {
+            source: "in a: exec".to_string(),
+            range,
+        };
+        assert_eq!(
+            crate::lower::expr_to_literal(&expr),
+            Some(crate::ir::Literal::NestedPrefab {
+                source: "in a: exec".to_string()
+            })
         );
     }
 
@@ -5261,6 +5542,86 @@ mod tests {
         assert!(
             !r.diagnostics.iter().any(|d| d.code == "WS036"),
             "WS036 must not double-report over an unknown base; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn non_constant_label_expr_is_rejected() {
+        // A runtime `@label` on a PORT (`out`) can't be a dynamic label — a
+        // rerouter pin has no text component to wire — so it stays a hard
+        // WS040. (Top-level `var`s DO support dynamic labels; see below.)
+        let r = tc("in x: int\n@label(x) out v: int = 0");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS040"),
+            "a non-constant @label expression must emit WS040; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn runtime_label_on_top_level_var_is_accepted() {
+        // A non-constant `@label` on a top-level `var` is a DYNAMIC label — the
+        // value is wired into the label's Text port at emit — so it is valid and
+        // must NOT emit WS040. Both a self-reference and another var work.
+        assert_no_diags(&tc("@label(hp) var hp: int = 0"));
+        assert_no_diags(&tc(
+            "var hp: int = 0\n@label(hp * 2) var shown: int = 0",
+        ));
+    }
+
+    #[test]
+    fn undefined_ref_in_var_label_errors() {
+        // The runtime label is still type-checked: an undefined symbol surfaces
+        // (it isn't silently swallowed just because WS040 no longer fires).
+        let r = tc("@label(nope) var v: int = 0");
+        assert!(
+            r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an undefined ref inside a var @label must error; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn constant_label_expr_is_accepted() {
+        // A folded constant expression (a literal, or a constant `let`) is
+        // valid and must not emit WS040.
+        assert_no_diags(&tc("@label(1 + 2) chip { }"));
+        assert_no_diags(&tc("let title = \"Score\"\n@label(title) out v: int = 0"));
+    }
+
+    #[test]
+    fn non_constant_label_expr_inside_handler_is_rejected() {
+        // A decl inside a top-level `on Event { ... }` handler (the standard
+        // Wirescript pattern) must still be visited — a non-constant `@label`
+        // there is an error, not a silent fall-back to the name.
+        let r = tc(
+            "in x: int\n\
+             on ControllerJoined(c, id, name) {\n\
+             @label(x) var y: int = 0\n\
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS040"),
+            "a non-constant @label inside a handler must emit WS040; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn non_constant_label_expr_inside_top_level_if_is_rejected() {
+        // A decl inside a top-level `if` block is likewise visited.
+        let r = tc(
+            "in go: exec\nin x: int\n\
+             on go {\n\
+             if x > 0 {\n\
+             @label(x) var y: int = 0\n\
+             }\n\
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS040"),
+            "a non-constant @label inside an if must emit WS040; got {:?}",
             r.diagnostics
         );
     }

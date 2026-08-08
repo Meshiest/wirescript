@@ -624,13 +624,13 @@ fn custom_event_typed_params_type_the_data_ports() {
 
 #[test]
 fn custom_event_object_config_and_send_target() {
-    // The receive gate's `objectEvent` bakes bIsObjectEvent (scopes the event to
+    // The receive gate's `isObject` bakes bIsObjectEvent (scopes the event to
     // a grid/object), and the send gate's `target` (the entity whose grid
     // receives object events) wires into the Target port.
     let src = "in go: exec\n\
                in obj: entity\n\
                static var last: int = 0\n\
-               on CustomEvent(\"dmg\", amount: int, objectEvent = true) {\n  last = amount\n}\n\
+               on CustomEvent(\"dmg\", amount: int, isObject = true) {\n  last = amount\n}\n\
                on go {\n  SendCustomEvent(\"dmg\", 7, target = obj)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
@@ -638,7 +638,7 @@ fn custom_event_object_config_and_send_target() {
     let send = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT;
     assert!(
         matches!(prop(&r, recv, "bIsObjectEvent"), Some(Literal::Bool(true))),
-        "objectEvent = true should bake bIsObjectEvent, got {:?}",
+        "isObject = true should bake bIsObjectEvent, got {:?}",
         prop(&r, recv, "bIsObjectEvent")
     );
     // `target = obj` wires an entity into the send gate's Target input.
@@ -666,6 +666,112 @@ fn send_custom_event_target_is_entity_typed() {
         errors(ok).is_empty(),
         "character target should typecheck: {:?}",
         errors(ok)
+    );
+}
+
+#[test]
+fn send_custom_event_receiver_form_binds_target() {
+    // `entity.SendCustomEvent("x", …)` is the receiver form: the object binds to
+    // the send gate's `target` (the object-event recipient's grid), NOT to the
+    // channel-name param — so the channel name + data still fill their normal
+    // slots and the receiver becomes the Target wire.
+    let src = "in go: exec\n\
+               in obj: entity\n\
+               on go {\n  obj.SendCustomEvent(\"dmg\", 7)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let send = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT;
+    let send_node = find_gate(&r, send);
+    assert!(
+        r.module.wires.iter().any(|w| w.target.node_id == send_node
+            && w.target.port == crate::ir::port_registry::WirePort::Target),
+        "obj.SendCustomEvent should wire the receiver into the send gate's Target port"
+    );
+    // Positional 0 is still the channel name (baked into EventName), proving the
+    // receiver did not consume the first positional slot.
+    assert!(
+        matches!(prop(&r, send, "EventName"), Some(Literal::String(s)) if s == "dmg"),
+        "channel name should bake into EventName, got {:?}",
+        prop(&r, send, "EventName")
+    );
+    // The global variant behaves identically against its own send gate.
+    let gsrc = "in go: exec\n\
+                in obj: entity\n\
+                on go {\n  obj.SendGlobalCustomEvent(\"dmg\", 7)\n}\n";
+    let gr = compile(gsrc);
+    assert_no_errors(&gr);
+    let gsend = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL;
+    let gsend_node = find_gate(&gr, gsend);
+    assert!(
+        gr.module.wires.iter().any(|w| w.target.node_id == gsend_node
+            && w.target.port == crate::ir::port_registry::WirePort::Target),
+        "obj.SendGlobalCustomEvent should wire the receiver into the Target port"
+    );
+}
+
+#[test]
+fn send_custom_event_exec_wires_to_execin_not_exec() {
+    use crate::ir::port_registry::WirePort;
+    // The Send[Global]CustomEvent gates name their exec INPUT `ExecIn`, not the
+    // `Exec` that 157 other exec gates use. The exec chain must wire into ExecIn,
+    // or the game rejects the connection at load ("port Exec does not exist in
+    // target component"). Verify for both the personal and global variants.
+    for (src, class) in [
+        (
+            "in go: exec\nin obj: entity\non go {\n  obj.SendCustomEvent(\"x\", 1)\n}\n",
+            crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT,
+        ),
+        (
+            "in go: exec\non go {\n  SendGlobalCustomEvent(\"x\", 1)\n}\n",
+            crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL,
+        ),
+    ] {
+        let r = compile(src);
+        let node = find_gate(&r, class);
+        assert!(
+            r.module.wires.iter().any(|w| w.target.node_id == node
+                && w.target.port == WirePort::ExecIn),
+            "exec chain must wire into {class}'s ExecIn port"
+        );
+        assert!(
+            !r.module.wires.iter().any(|w| w.target.node_id == node
+                && w.target.port == WirePort::Exec),
+            "must not wire into a phantom `Exec` port the real {class} component lacks"
+        );
+    }
+}
+
+#[test]
+fn nested_on_negated_event_param_lowers_not_omitted() {
+    // `on !p` where p is a CustomEvent data param must LOWER (it was silently
+    // omitted before — EventParam wasn't in any trigger lookup): the negated
+    // trigger emits a LogicalNOT gate driven by p's port.
+    let src = "on CustomEvent(\"init\", p: character) {\n  on !p {\n    BroadcastChatMessage(\"gone\")\n  }\n}\n";
+    let r = compile(src);
+    assert!(
+        r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == crate::ir::gate_class::LOGICAL_NOT),
+        "on !p (negated event-param trigger) must emit a LogicalNOT gate, not be omitted"
+    );
+}
+
+#[test]
+fn var_as_trigger_typechecks_and_lowers() {
+    // `on x` where x is a var fires on the var's value change; `on !x` negates.
+    let ok = "static var x: bool = false\non x {\n  BroadcastChatMessage(\"changed\")\n}\n";
+    let r = compile(ok);
+    assert_no_errors(&r);
+    let neg = "static var x: bool = false\non !x {\n  BroadcastChatMessage(\"off\")\n}\n";
+    let rn = compile(neg);
+    assert_no_errors(&rn);
+    assert!(
+        rn.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == crate::ir::gate_class::LOGICAL_NOT),
+        "on !x (negated var trigger) should emit a LogicalNOT gate"
     );
 }
 

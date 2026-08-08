@@ -5,6 +5,7 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
+    { "include": "#nested-prefab" },
     { "include": "#asset-reference" },
     { "include": "#numbers" },
     { "include": "#annotations" },
@@ -67,6 +68,19 @@
         }
       ]
     },
+    "nested-prefab": {
+      "patterns": [
+        {
+          "comment": "Inline nested-prefab block: $```<wirescript source>``` — the inner source is highlighted as wirescript (self-embedded grammar).",
+          "name": "meta.embedded.block.wirescript",
+          "begin": "\\$```",
+          "end": "```",
+          "beginCaptures": { "0": { "name": "punctuation.definition.nested.begin.wirescript" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.nested.end.wirescript" } },
+          "patterns": [{ "include": "source.wirescript" }]
+        }
+      ]
+    },
     "asset-reference": {
       "patterns": [
         {
@@ -116,7 +130,7 @@
       "patterns": [
         {
           "name": "storage.modifier.annotation.wirescript",
-          "match": "@(left|right|top|bottom|label|closed|nofold|fold|layout|flat)\\b"
+          "match": "@(left|right|top|bottom|label|closed|nofold|fold|layout|flat|invisible)\\b"
         }
       ]
     },
