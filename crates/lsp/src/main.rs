@@ -1252,6 +1252,12 @@ fn nested_block_at(
     line: usize,
     col: usize,
 ) -> Option<(String, usize, usize)> {
+    // Fast path: nested-prefab blocks open with a `$``` ` fence. The vast
+    // majority of documents have none, so skip re-lexing the whole file on
+    // every completion when the fence marker is absent entirely.
+    if !source.contains("$```") {
+        return None;
+    }
     let cursor = line_col_to_offset(source, line, col);
     let lexed = wirescript::lex(source, file);
     for t in &lexed.tokens {
@@ -1270,6 +1276,24 @@ fn nested_block_at(
         }
     }
     None
+}
+
+/// Push a completion item for each member of enum `et`. `filter_text` is set to
+/// whatever is already typed (`value_so_far`) so VS Code keeps showing every
+/// sibling even when the cursor sits at the end of a complete member. Shared by
+/// the `CallSpec` and `EventSpec` named-arg value paths.
+fn push_enum_member_completions(items: &mut Vec<CompletionItem>, et: &str, value_so_far: &str) {
+    let filter = value_so_far.trim().to_string();
+    for v in wirescript::catalog::enum_member_names(et) {
+        items.push(CompletionItem {
+            label: v.clone(),
+            kind: Some(CompletionItemKind::ENUM_MEMBER),
+            detail: Some(format!("{et} member")),
+            insert_text: Some(v),
+            filter_text: Some(filter.clone()),
+            ..Default::default()
+        });
+    }
 }
 
 /// Build completion items for a position. Pure (no document lock / async) so it
@@ -1389,21 +1413,7 @@ fn build_completions(
                     call_name.as_str(),
                     &param_name,
                 ) {
-                    // filter_text = whatever is already typed, so VS Code shows
-                    // ALL siblings even when the cursor sits at the end of a
-                    // complete member (it otherwise prefix-filters them out and
-                    // hides the no-op exact match -> empty dropdown).
-                    let filter = value_so_far.trim().to_string();
-                    for v in wirescript::catalog::enum_member_names(et) {
-                        items.push(CompletionItem {
-                            label: v.clone(),
-                            kind: Some(CompletionItemKind::ENUM_MEMBER),
-                            detail: Some(format!("{et} member")),
-                            insert_text: Some(v),
-                            filter_text: Some(filter.clone()),
-                            ..Default::default()
-                        });
-                    }
+                    push_enum_member_completions(&mut items, et, &value_so_far);
                     if !items.is_empty() {
                         return items;
                     }
@@ -1490,17 +1500,7 @@ fn build_completions(
                 if let Some(et) =
                     wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), &param_name)
                 {
-                    let filter = value_so_far.trim().to_string();
-                    for v in wirescript::catalog::enum_member_names(et) {
-                        items.push(CompletionItem {
-                            label: v.clone(),
-                            kind: Some(CompletionItemKind::ENUM_MEMBER),
-                            detail: Some(format!("{et} member")),
-                            insert_text: Some(v),
-                            filter_text: Some(filter.clone()),
-                            ..Default::default()
-                        });
-                    }
+                    push_enum_member_completions(&mut items, et, &value_so_far);
                     if !items.is_empty() {
                         return items;
                     }
@@ -1560,7 +1560,28 @@ fn build_completions(
     // handler-local `players: character[]` doesn't leak into file scope where a
     // different `players` is visible. Forward references to top-level symbols
     // still appear (`resolve_symbol` falls back to the first declaration).
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // Precompute the nearest-preceding (and first-seen) declaration per name in
+    // ONE pass over the symbol table, then resolve each unique name by O(1)
+    // lookup below. `resolve_symbol` re-scans every symbol per call, so calling
+    // it once per unique name made this loop O(n²). This mirrors its rule: the
+    // nearest declaration at/before the cursor wins, else the first declaration.
+    let (cl, cc) = ((line + 1) as u32, (col + 1) as u32);
+    let mut first: wirescript::collections::HashMap<&str, &SymbolDef> =
+        wirescript::collections::HashMap::default();
+    let mut best: wirescript::collections::HashMap<&str, (&SymbolDef, (u32, u32))> =
+        wirescript::collections::HashMap::default();
+    for s in symbols {
+        if s.name.contains('.') {
+            continue;
+        }
+        first.entry(s.name.as_str()).or_insert(s);
+        let p = (s.range.start.line, s.range.start.col);
+        let precedes = p.0 < cl || (p.0 == cl && p.1 <= cc);
+        if precedes && best.get(s.name.as_str()).is_none_or(|(_, bp)| p > *bp) {
+            best.insert(s.name.as_str(), (s, p));
+        }
+    }
+    let mut seen: wirescript::collections::HashSet<&str> = wirescript::collections::HashSet::default();
     for sym in symbols {
         if sym.name.contains('.') {
             continue;
@@ -1568,7 +1589,11 @@ fn build_completions(
         if !seen.insert(sym.name.as_str()) {
             continue;
         }
-        let chosen = resolve_symbol(symbols, &sym.name, line, col).unwrap_or(sym);
+        let chosen = best
+            .get(sym.name.as_str())
+            .map(|(s, _)| *s)
+            .or_else(|| first.get(sym.name.as_str()).copied())
+            .unwrap_or(sym);
         let kind = match chosen.kind {
             "var" | "static var" | "buffer" | "array" => CompletionItemKind::VARIABLE,
             "fn" | "mod" | "chip" => CompletionItemKind::FUNCTION,

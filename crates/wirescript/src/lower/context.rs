@@ -168,7 +168,7 @@ pub(super) struct LowerCtx<'a> {
     /// Shared (Arc) so child contexts clone it cheaply.
     pub(super) known_fn_names: std::sync::Arc<crate::collections::HashSet<String>>,
     /// Top-level `let` constants of the (import-merged) program, so a `var` /
-    /// `array` initializer can name one (`1 << C_FLAG`) instead of restating its
+    /// `var … : T[]` initializer can name one (`1 << C_FLAG`) instead of restating its
     /// value. Shared (Arc) so child contexts clone it cheaply.
     pub(super) const_env: std::sync::Arc<super::predeclare::ConstEnv>,
     /// True only for the compiled entry file's root LowerCtx. `@side` port

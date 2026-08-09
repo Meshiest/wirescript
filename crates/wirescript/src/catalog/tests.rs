@@ -87,3 +87,53 @@
         assert_eq!(dirs.first().map(String::as_str), Some("X_Positive"));
         assert_eq!(enum_member_value("EBrickDirection", "MAX"), None);
     }
+
+    #[test]
+    fn every_gate_builtin_desugars_to_a_real_method_or_assignment() {
+        use crate::catalog::{arrays, gate_builtins as gb, maps};
+        // The set builtins carry no expression method (`method_for` returns
+        // None) — they desugar to a statement assignment / variable access.
+        let statement_forms = [
+            gb::GET_VARIABLE,
+            gb::SET_VARIABLE,
+            gb::INCREMENT_VARIABLE,
+            gb::SET_ARRAY_ELEMENT,
+        ];
+        let cat = default_catalog();
+        for &name in gb::ALL {
+            match gb::method_for(name) {
+                Some(method) => {
+                    // The desugared method must be a known array and/or map
+                    // method (some names — get/length/clear/remove/copyFrom —
+                    // are both), and each gate it lowers to must be a real
+                    // catalog gate, never the `_Unsupported` placeholder.
+                    let mut gates = Vec::new();
+                    if let Some(m) = arrays::array_method(method) {
+                        gates.push(m.gate);
+                    }
+                    if let Some(m) = maps::map_method(method) {
+                        gates.push(m.gate);
+                    }
+                    assert!(
+                        !gates.is_empty(),
+                        "{name} desugars to unknown method {method:?}"
+                    );
+                    for gate in gates {
+                        assert_ne!(
+                            gate,
+                            crate::ir::gate_class::UNSUPPORTED,
+                            "{name} ({method}) lowers to _Unsupported"
+                        );
+                        assert!(
+                            cat.find_by_class(gate).is_some(),
+                            "{name} ({method}) gate {gate} is not a real catalog gate"
+                        );
+                    }
+                }
+                None => assert!(
+                    statement_forms.contains(&name),
+                    "{name} has no method_for mapping but isn't a known statement form"
+                ),
+            }
+        }
+    }

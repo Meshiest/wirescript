@@ -253,6 +253,41 @@ let item = scores[i]
 // item.bOutOfBounds: bool (bounds check)
 ```
 
+## Maps -- `var name: Map<K, V>`
+
+A map is a keyed collection backed by a `MapVar` gate. Declare one as a `var`
+whose type is `Map<K, V>` (there is no separate `map` keyword):
+
+```wirescript
+var scores: Map<string, int>
+var owners: Map<int, entity>
+```
+
+The **key type `K` must be `int`, `string`, or an object reference
+(`entity` / `character` / `controller`)** — a map is keyed by a hashed slot, and
+only those types have a slot representation. Any other key type is a **WS039**
+error. The value type `V` may be any storable variant.
+
+Like an array, a map **starts empty** and is built at runtime from an exec
+handler — read/write access goes through its methods, which are exec-only:
+
+```wirescript
+in tick: exec
+
+on tick {
+  scores.set("alice", 10)      // insert / overwrite
+  let r = scores.get("alice")  // r.Value + r.Found (auto-unwraps to Value)
+  if scores.has("bob") { }
+}
+```
+
+A map literal can seed a map at declaration or in an assignment
+(`scores = { "a": 1, "b": 2 }`); a map literal used anywhere else is a **WS026**
+error, and assigning a whole map from another map (`m = m2`) is unsupported —
+use `m.copyFrom(src)` (**WS027**). See
+[Builtin Functions](builtins.md) for the full map-method table (`get`, `set`,
+`has`, `remove`, `clear`, `copyFrom`, `length`, `keys`, `values`).
+
 ## `in` -- Input Port
 
 Declares an input port for the current scope. At the top level, `in` creates an external input that other wire graphs can connect to. Inside a chip, `in` creates a chip input port.
@@ -1131,12 +1166,12 @@ These events are available as handler triggers. Parameters listed can be bound u
 
 | Event | Parameters | Description |
 |-------|-----------|-------------|
-| `RoundStart` | (none) | Game round started |
-| `RoundEnd` | (none) | Game round ended |
+| `RoundStart` | `roundNumber: int` | Game round started |
+| `RoundEnd` | `roundNumber: int` | Game round ended |
 | `CharacterSpawned` | `character: character` | A character spawned |
-| `CharacterDied` | `character: character` | A character died |
-| `ControllerJoined` | `controller: controller`, `userId: string` | A player joined |
-| `ControllerLeft` | `controller: controller`, `userId: string` | A player left (`userId` stays valid even as the controller is torn down on disconnect) |
+| `CharacterDied` | `character: character`, `killer: character`, `killerWeapon: entity`, `killerWeaponName: string` | A character died (`killer` / `killerWeapon` are who/what killed it) |
+| `ControllerJoined` | `controller: controller`, `userId: string`, `userName: string` | A player joined |
+| `ControllerLeft` | `controller: controller`, `userId: string`, `userName: string` | A player left (`userId` / `userName` stay valid even as the controller is torn down on disconnect) |
 | `ControllerJoinedTeam` | `controller: entity`, `team: entity`, `userId: string`, `userName: string` | A player joined a team (`team` is the team they joined) |
 | `ControllerLeftTeam` | `controller: entity`, `team: entity`, `userId: string`, `userName: string` | A player left a team |
 | `ZoneEntered` | `character: character` | A character entered a zone |
@@ -1145,9 +1180,10 @@ These events are available as handler triggers. Parameters listed can be bound u
 | `EntityZoneLeft` | `entity: entity` | An entity left a zone |
 | `ProjectileZoneEntered` | `character: character`, `projectile: entity`, `weapon: entity`, `weaponName: string` | A projectile entered a zone (`character` is the shooter) |
 | `ProjectileZoneLeft` | `character: character`, `projectile: entity`, `weapon: entity`, `weaponName: string` | A projectile left a zone |
-| `CharacterDamaged` | `character: character`, `damage: float`, `attacker: entity`, `attackerWeapon: entity`, `attackerWeaponName: string` | A character took damage |
-| `BrickChanged` | `brick: brick` | A brick was changed in a zone |
-| `BrickRemoved` | `brick: brick` | A brick was removed from a zone |
+| `CharacterDamaged` | `character: character`, `damage: float`, `attacker: character`, `attackerWeapon: entity`, `attackerWeaponName: string` | A character took damage |
+| `CharacterFiredWeapon` | `character: character`, `direction: vector`, `start: vector`, `weapon: entity`, `weaponName: string` | A character fired a weapon (`start` / `direction` are the shot ray's origin and aim) |
+| `BrickChanged` | (none) | A brick was changed in a zone |
+| `BrickRemoved` | (none) | A brick was removed from a zone |
 | `ChatCommand` | `controller: controller`, `arguments: string` | A registered chat command was run. Takes config args for the command name + help text — see [above](#triggering-on-built-in-events) |
 
 ## `return`

@@ -25,6 +25,7 @@ const MANIFEST = {
   'exec-context.md': 'Exec Context',
   'best-practices.md': 'Best Practices',
   'folding.md': 'Constant Folding',
+  'diagnostics.md': 'Diagnostics',
 };
 
 // ── Stop words (common English words that add no search value) ──

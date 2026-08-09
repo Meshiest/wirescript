@@ -8,8 +8,8 @@
 //! constraints into a [`Subst`]; [`substitute`] then replaces every
 //! `Type::Param` with its solved binding.
 //!
-//! Typecheck (P2.3) uses these at the call site to type the result; lowering
-//! (P2.5) re-runs the same inference at the inline site to monomorphize the
+//! Typecheck uses these at the call site to type the result; lowering
+//! re-runs the same inference at the inline site to monomorphize the
 //! body — so `pick<int>` emits int gates and `pick<vector>` emits vector gates
 //! instead of leaking a `Type::Param` to emit. Keeping them here (rather than
 //! private to `typecheck.rs`) lets both consumers share one implementation.

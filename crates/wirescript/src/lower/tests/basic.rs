@@ -975,7 +975,7 @@ fn every_canonical_map_method_lowers() {
 }
 
 #[test]
-fn var_declared_map_lowers_like_map_keyword() {
+fn var_declared_map_lowers_to_mapvar() {
     // `var m: Map<K, V>` desugars to a MapVar (mirrors how `var x: T[]`
     // desugars to an ArrayVar).
     let r = compile(
@@ -995,9 +995,9 @@ fn var_declared_map_lowers_like_map_keyword() {
 
 #[test]
 fn constant_map_literal_bakes_no_set_gates() {
-    // A constant map literal in a `map`/`var` initializer bakes into the
+    // A constant map literal in a `var` initializer bakes into the
     // Pseudo_MapVar's InitialValue at rest — zero runtime gates — exactly
-    // like `array a = [1,2,3]` bakes a `Literal::Array`.
+    // like `var a: int[] = [1,2,3]` bakes a `Literal::Array`.
     let r = compile("var scores: Map<int, int> = { :red => 10, :blue => 20 }\n");
     assert_no_errors(&r);
     assert!(
@@ -1147,14 +1147,14 @@ fn map_literal_typechecks_against_declared_map() {
             errs
         );
     };
-    // 1. top-level `map`-keyword initializer (atom keys)
+    // 1. top-level Map-annotated var initializer (atom keys)
     valid("var m: Map<int, int> = { :red => 1, :blue => 2 }\n");
-    // 2. top-level `var`-with-Map-annotation initializer
+    // 2. top-level Map-annotated var initializer (string keys)
     valid("var m: Map<string, int> = { \"a\" => 1 }\n");
-    // 3. in-handler assignment RHS to a `map`-declared var
+    // 3. in-handler assignment RHS to a map var
     valid("var m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
-    // 4. in-handler assignment RHS to a `var`-declared map
-    valid("var m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2 }\n}\n");
+    // 4. in-handler assignment RHS to a map var (multi-entry)
+    valid("var m: Map<int, int>\nin t: exec\non t {\n  m = { 1 => 2, 3 => 4 }\n}\n");
 }
 
 #[test]
@@ -1655,7 +1655,7 @@ fn has_role_lowers_with_config_role_name() {
 
 #[test]
 fn rotation_quat_color_receivers_lower_to_their_gates() {
-    // The cl14428 rotation/quaternion + sRGB/hex color receivers and
+    // The rotation/quaternion + sRGB/hex color receivers and
     // constructors lower to their gates. `quat` is a distinct type from the
     // euler `rotator`.
     let src = "in p: character\non p {\n  \
@@ -1823,7 +1823,7 @@ out result = dir",
 
 #[test]
 fn detector_builtins_map_to_split_gate_classes() {
-    // cl14860 split the detectors: `Change` (value pulse-through, OnChanged)
+    // The build split the detectors: `Change` (value pulse-through, OnChanged)
     // lives on the Exec gate now, `Changed` (bool pulse) on the plain gate;
     // `EdgeExec` fires exec pulses for `on`/`await`, and `Edge`'s
     // rising/falling record fields resolve via the port aliases.

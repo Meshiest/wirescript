@@ -62,7 +62,7 @@ var foo: any[]          // ERROR: same
 buffer foo: any = 0       // ERROR: same
 ```
 
-An **unannotated** `var`/`array`/`buffer` is unaffected -- its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so it never trips this rejection.
+An **unannotated** `var` or `buffer` is unaffected -- its placeholder type is refined from the initializer (or left as the internal "unknown" fallback), never `any`, so it never trips this rejection.
 
 ### Object references & assets
 
@@ -78,7 +78,7 @@ on load {
 }
 ```
 
-**References can't be inlined into an initializer.** A constant `array` / `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate. An object reference must be wired in from its own brick, so it can't sit in a constant initializer -- build the array with `.push(...)` inside an exec handler instead. Writing `array songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
+**References can't be inlined into an initializer.** A constant `var` initializer (`= [...]`) only bakes *value* literals (`int` / `float` / `bool` / `string` / `vector` / …) into the gate. An object reference must be wired in from its own brick, so it can't sit in a constant initializer -- build the array with `.push(...)` inside an exec handler instead. Writing `var songs: entity[] = [$Asset/…]` silently drops the elements, and the compiler warns (`WS024`).
 
 ### `zone` & `teleport` references
 
@@ -89,7 +89,7 @@ on load {
 
 These are **reference-only** types, exactly like a variable ref (`ref T`): a wire carries a handle to a component, not a value. They can be passed as `in` ports, mod/chip parameters, and rerouted anywhere -- but, like a var ref, they can **not** be:
 
-- **stored** in a `var` / `array` / `buffer` (`WS025`) -- a storage gate needs a concrete wire variant;
+- **stored** in a `var` / `buffer` (`WS025`) -- a storage gate needs a concrete wire variant;
 - **selected** with an if-then-else (`WS031`) -- the Select gate routes a *value*, not a reference;
 - operated on (arithmetic, comparison, string-format).
 
@@ -133,6 +133,8 @@ mod slide(a: ref int, b: ref int) { ... }
 mod slide(a: *int, b: *int) { ... }
 ```
 
+`Ref<V>` is an alias spelling of `*V` / `ref V` (`Ref<int>` == `*int` == `ref int`).
+
 ### Array Types (`T[]`)
 
 Arrays hold multiple values of the same element type. Declare them with a `var` whose type ends in `[]`:
@@ -140,6 +142,8 @@ Arrays hold multiple values of the same element type. Declare them with a `var` 
 ```wirescript
 var scores: int[]
 ```
+
+`Array<V>` is an alias spelling of `V[]` (`Array<int>` == `int[]`).
 
 Array access uses bracket syntax and returns the element type directly:
 
@@ -149,6 +153,26 @@ if result > 100 { }     // works directly, no .value needed
 ```
 
 Assignment also works directly: `scores[i] = 42`.
+
+### Map Types (`Map<K, V>`)
+
+A `Map<K, V>` is a keyed collection, backed by a `MapVar` gate. Like an array,
+it is stored in a `var` and starts empty — build it at runtime from an exec
+handler:
+
+```wirescript
+var scores: Map<string, int>
+```
+
+The **key type `K` must be `int`, `string`, or an object reference**
+(`entity` / `character` / `controller`) — a map is keyed by a hashed slot, and
+only those types have a slot representation. Any other key type is a **`WS039`**
+error. The value type `V` may be any storable variant.
+
+Maps are read and written through their methods (`get`, `set`, `has`, `remove`,
+`clear`, `copyFrom`, `length`, `keys`, `values`), which run in exec context —
+see the map-method table in [builtins.md](builtins.md) and the
+[Maps statement section](statements.md#maps----var-name-mapk-v).
 
 ### Tuple Types (`(A, B, C)`)
 
@@ -573,7 +597,7 @@ in trigger: exec
 var data: float[]
 ```
 
-Type annotations are optional on `var` when an initializer is present (the type is inferred), but they are required on `in` declarations and `array` declarations.
+Type annotations are optional on `var` when an initializer is present (the type is inferred), but they are required on `in` declarations, and on an array or map `var` that has no initializer to infer its element/key-value types from.
 
 ## Field Access on Types
 

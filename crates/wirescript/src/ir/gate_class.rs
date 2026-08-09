@@ -144,7 +144,7 @@ pub const VEC_DISTANCE_SQ: &str = "BrickComponentType_WireGraph_Expr_VecDistance
 pub const VEC_SCALE: &str = "BrickComponentType_WireGraph_Expr_VecScale";
 pub const VEC_ROT_TO_DIR: &str = "BrickComponentType_WireGraph_Expr_VecRotationToDirection";
 
-// Rotation / quaternion (cl14428+)
+// Rotation / quaternion
 pub const MAKE_ROTATION: &str = "BrickComponentType_WireGraph_Expr_MakeRotation";
 pub const SPLIT_ROTATION: &str = "BrickComponentType_WireGraph_Expr_SplitRotation";
 pub const ROTATE_VECTOR: &str = "BrickComponentType_WireGraph_Expr_RotateVector";
@@ -157,7 +157,7 @@ pub const QUAT_FROM_AXIS_ANGLE: &str = "BrickComponentType_WireGraph_Expr_QuatFr
 pub const QUAT_TO_AXIS_ANGLE: &str = "BrickComponentType_WireGraph_Expr_QuatToAxisAngle";
 pub const QUAT_SLERP: &str = "BrickComponentType_WireGraph_Expr_QuatSlerp";
 
-// sRGB / hex color (cl14428+)
+// sRGB / hex color
 pub const MAKE_COLOR_SRGB: &str = "BrickComponentType_WireGraph_Expr_MakeColorSRGB";
 pub const SPLIT_COLOR_SRGB: &str = "BrickComponentType_WireGraph_Expr_SplitColorSRGB";
 pub const MAKE_COLOR_HEX: &str = "BrickComponentType_WireGraph_Expr_MakeColorHex";
@@ -170,11 +170,11 @@ pub const COLOR_BLEND: &str = "BrickComponentType_WireGraph_Expr_ColorBlend";
 // straight into these gates' entity-typed `PlayerState` ports.
 pub const PLAYERSTATE_HAS_ROLE: &str = "BrickComponentType_WireGraph_Exec_PlayerState_HasRole";
 
-// Character inventory (cl14428+)
+// Character inventory
 pub const CHARACTER_SET_INVENTORY_ENTRY: &str =
     "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry";
 
-// Stateful exec value gates (cl14428+)
+// Stateful exec value gates
 pub const EXEC_CYCLE: &str = "BrickComponentType_WireGraph_Exec_Cycle";
 pub const EXEC_TOGGLE: &str = "BrickComponentType_WireGraph_Exec_Toggle";
 

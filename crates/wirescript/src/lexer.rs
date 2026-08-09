@@ -1,4 +1,4 @@
-//! `src/wirescript/parser/lexer.ts`.
+//! The lexer.
 //!
 //! Newlines are tokens (significant for statement termination in the
 //! parser). Horizontal whitespace is skipped. Block comments are

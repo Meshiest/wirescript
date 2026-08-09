@@ -5,8 +5,8 @@
 //! internal [`NodeId`]s are shared across copies, causing collisions when
 //! multiple instances are merged into one graph.  [`CompiledTemplate`] wraps a
 //! module and provides [`CompiledTemplate::instantiate`], which deep-copies the
-//! module remapping every node ID to `intern("{prefix}/{old_name}")`.  Because
-//! the prefix is unique per call site the resulting IDs are globally disjoint.
+//! module and mints a globally-fresh numeric ID (`NodeId::fresh()`) for every
+//! internal node, so instances are always disjoint regardless of call site.
 
 use crate::collections::HashMap;
 

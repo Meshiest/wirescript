@@ -1,4 +1,4 @@
-//! Constant expressions in `var` / `array` initializers.
+//! Constant expressions in `var` initializers.
 //!
 //! An initializer is baked into the gate at compile time, so it may name a
 //! top-level `let` constant and do arithmetic on it rather than restating a

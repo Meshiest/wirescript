@@ -379,7 +379,7 @@ pub fn expr_to_literal(e: &Expr) -> Option<Literal> {
 
 /// [`expr_to_literal`], plus named top-level constants and operators over them —
 /// so an initializer can read `1 << C_FLAG` or `WIDTH * HEIGHT` instead of a
-/// magic number. Only the `var` / `array` initializer paths pass an environment;
+/// magic number. Only the `var` initializer paths pass an environment;
 /// everywhere else keeps the narrower behaviour above.
 pub fn expr_to_literal_in(e: &Expr, env: &ConstEnv) -> Option<Literal> {
     expr_to_literal_impl(e, Some(env))
@@ -465,7 +465,7 @@ fn expr_to_literal_lit(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
         // at emit into the gate's `bundle_path_ref` property.
         Expr::PrefabRef { path, .. } => Some(Literal::PrefabRef { path: path.clone() }),
         // Inline nested-prefab block `$``` ... ``` ` — inlined; compiled +
-        // embedded at emit (Task 7) into the gate's `bundle_path_ref` property.
+        // embedded at emit into the gate's `bundle_path_ref` property.
         Expr::NestedPrefab { source, .. } => Some(Literal::NestedPrefab {
             source: source.clone(),
         }),
@@ -676,7 +676,7 @@ fn map_entry_literal(
 /// Shared by [`pre_declare_map`] and the `Map<K, V>` branch of
 /// [`pre_declare_var`] since both bake the same way. Non-constant entries
 /// can't bake at a (pure) decl: the map starts empty and a warning is
-/// raised (Task 8 handles the exec-context desugar for `m = {…}`).
+/// raised (lowering handles the exec-context desugar for `m = {…}`).
 ///
 /// `key_ty`/`val_ty` are the declared `Map<K, V>` types — every entry is
 /// coerced to them at fold time (see [`coerce_literal_to_type`]) so the baked
@@ -716,7 +716,7 @@ fn bake_map_init(
         properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
     } else {
         // Non-constant entries can't bake at a (pure) decl; the map starts
-        // empty. (Task 8 handles the exec-context desugar for `m = {…}`.)
+        // empty. (lowering handles the exec-context desugar for `m = {…}`.)
         ctx.warn(
             format!(
                 "'{name}' initializer has non-constant entries — they are dropped here; assign them inside an exec handler"

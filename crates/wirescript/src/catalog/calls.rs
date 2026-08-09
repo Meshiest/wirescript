@@ -677,7 +677,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         ),
     );
 
-    // ---- Rotation / quaternion (cl14428+) -----------------------------
+    // ---- Rotation / quaternion -----------------------------
     // `rotator` = euler (Pitch/Yaw/Roll, used by entity rotation); `quat` =
     // quaternion produced by the conversion gates. Concise, display-name-based.
     m.insert(
@@ -831,7 +831,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         ),
     );
 
-    // ---- sRGB / hex color (cl14428+) ----------------------------------
+    // ---- sRGB / hex color ----------------------------------
     m.insert(
         "ColorSRGB",
         vec_expr(
@@ -943,7 +943,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         ),
     );
 
-    // ---- Character inventory (cl14428+) -------------------------------
+    // ---- Character inventory -------------------------------
     // `char.GiveWeapon($BRItemBase/Weapon_Pistol, slot)` — sets an inventory
     // slot to an item asset. The weapon asset is carried as the nested
     // EntryPlan.ItemTypeIfItem; the emitter builds the EntryPlan struct.
@@ -961,7 +961,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         ),
     );
 
-    // ---- Stateful exec value gates (cl14428+) -------------------------
+    // ---- Stateful exec value gates -------------------------
     // Advance per exec pulse: Cycle returns 0..Count-1, Toggle flips a bool.
     m.insert(
         "Cycle",
@@ -2578,7 +2578,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
                     WirePort::AdditionalIgnoredEntities,
                     Type::Array(Box::new(Type::Entity)),
                 ),
-                // cl14477: what the sweep detects (each defaults off in-engine).
+                // what the sweep detects (each defaults off in-engine).
                 CallParam::opt("detectBricks", WirePort::BDetectBricks, Type::Bool),
                 CallParam::opt("detectPlayers1", WirePort::BDetectPlayers1, Type::Bool),
                 CallParam::opt("detectPlayers2", WirePort::BDetectPlayers2, Type::Bool),
@@ -2765,7 +2765,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
     // ---- Change detectors ----------------------------------------
     // `Change` pulses its input value through when it changes — that's the
     // "Change Detector (Exec)" gate (its OnChanged output moved there when
-    // the game split the detectors in cl14860). The plain "Change Detector"
+    // the game split the detectors into exec and bool variants). The plain "Change Detector"
     // emits a bool pulse instead, exposed as `Changed`.
     m.insert(
         "Change",

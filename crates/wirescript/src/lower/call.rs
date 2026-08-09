@@ -659,7 +659,7 @@ pub(super) fn arg_port_type(ctx: &LowerCtx, port: PortRef) -> Option<Type> {
 /// body a forwarded value param (`inner(v)`) is bound to the caller's already
 /// concrete arg port (int under `outer<int>`, vector under `outer<vector>`),
 /// so its real lowered type is that concrete type. `type_of_expr`, by contrast,
-/// holds the STALE last-mask-member type P2.4's per-combo body check wrote
+/// holds the STALE last-mask-member type the typecheck per-combo body check wrote
 /// there (e.g. `Prefab`), which silently collapsed every nested monomorph to
 /// the wrong variant. Falls back to `type_of` for non-ident args (literals,
 /// compound expressions) — those aren't type-param-forwarded in practice, and

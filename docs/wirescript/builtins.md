@@ -189,12 +189,13 @@ let mixed = red.ColorBlend(orange, 0.5)
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `Select(cond, a, b)` | `(cond: bool, a: any, b: any) -> any` | Returns `a` if false, `b` if true |
-| `Swap(cond, a, b)` | `(cond: bool, a: any, b: any) -> {a, b: any}` | Conditionally swap two values |
+| `Swap(cond, a, b)` | `(cond: bool, a: any, b: any) -> {Output, OutputB: any}` | Conditionally swap two values |
 
 ```wirescript
 let bigger = Select(x > y, y, x)
 let result = Swap(shouldSwap, left, right)
-// result.a and result.b are swapped if shouldSwap is true
+// result auto-unwraps to Output; result.Output and result.OutputB
+// are swapped if shouldSwap is true
 ```
 
 ## Edge / Change Detectors
@@ -239,13 +240,13 @@ All string functions support **receiver syntax** on `string`:
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `s.Length()` | `(s: string) -> int` | String length |
-| `s.Contains(search)` | `(s: string, search: string) -> bool` | Check if string contains substring |
-| `s.StartsWith(prefix)` | `(s: string, prefix: string) -> bool` | Check prefix |
-| `s.EndsWith(suffix)` | `(s: string, suffix: string) -> bool` | Check suffix |
-| `s.Find(search, caseSensitive?)` | `(s: string, search: string, caseSensitive?: bool) -> int` | Find substring index (-1 if not found) |
+| `s.Contains(search, caseSensitive?)` | `(s: string, search: string, caseSensitive?: bool) -> bool` | Check if string contains substring |
+| `s.StartsWith(prefix, caseSensitive?)` | `(s: string, prefix: string, caseSensitive?: bool) -> bool` | Check prefix |
+| `s.EndsWith(suffix, caseSensitive?)` | `(s: string, suffix: string, caseSensitive?: bool) -> bool` | Check suffix |
+| `s.Find(search, caseSensitive?, start?)` | `(s: string, search: string, caseSensitive?: bool, start?: int) -> int` | Find substring index (-1 if not found) |
 | `s.Substring(start, length)` | `(s: string, start: int, length: int) -> string` | Extract substring |
-| `s.Replace(search, replacement)` | `(s: string, search: string, replacement: string) -> string` | Replace occurrences |
-| `s.Split(delimiter)` | `(s: string, delimiter: string) -> {Left, Right: string}` | Split at first delimiter |
+| `s.Replace(search, replacement, caseSensitive?, maxReplacements?, start?)` | `(s: string, search: string, replacement: string, caseSensitive?: bool, maxReplacements?: int, start?: int) -> string` | Replace occurrences |
+| `s.Split(delimiter, occurrence?, caseSensitive?)` | `(s: string, delimiter: string, occurrence?: int, caseSensitive?: bool) -> {Left, Right: string, Found: bool}` | Split at the delimiter |
 | `s.ToLower()` | `(s: string) -> string` | Convert to lowercase |
 | `s.ToUpper()` | `(s: string) -> string` | Convert to uppercase |
 | `s.Trim()` | `(s: string) -> string` | Remove leading/trailing whitespace |
@@ -281,12 +282,13 @@ let col = Fmt('{' .. bucket .. '}', 'eee4da', 'f2b179', 'f65e3b')
 
 Methods on an `array` variable. All run in exec context (they lower to ArrayVar
 exec gates), so call them inside `on` handlers / mods. Declare arrays with
-`array name: T[]` (see [statements](statements.md)).
+`var name: T[]` (see [statements](statements.md)).
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `arr.push(value)` | `(value: T)` | Append an element |
 | `arr.pop()` | `() -> T` | Remove and return the last element |
+| `arr.get(index)` | `(index: int) -> {Value: T, OutOfBounds: bool}` | Read the element at `index` (auto-unwraps to `Value`); `.OutOfBounds` flags a bad index — the explicit form of `arr[i]` |
 | `arr.length()` | `() -> int` | Number of elements |
 | `arr.remove(index)` | `(index: int)` | Remove the element at `index` |
 | `arr.insert(index, value)` | `(index: int, value: T)` | Insert before `index` |
@@ -415,10 +417,10 @@ DisplayText(target: controller, text: any, ...) -> int
 Display HUD text to a player. Receiver on `controller`. Returns the resolved
 `textId` (an `int`) so a later call can update or clear the same on-screen text.
 
-The gate's position/anchor/scale are now composite (2D) properties and are not
-settable through the call form; layout is controlled in-game. The call exposes the
-scalar styling below (plus `fontSize` / `justify` / `easing`, which remain as
-constant-only data fields).
+The 2D layout ports (`position`, `anchor`, `scale`, `pivot`, `shadowOffset`) each
+take a `vector` whose X/Y components are used. The call also exposes the scalar
+styling below, plus `fontSize` / `justify` / `easing` / `typeface` / `font`, which
+are constant-only data fields (not wire inputs).
 
 #### DisplayText Parameters
 
@@ -426,6 +428,11 @@ constant-only data fields).
 |-----------|------|----------|-------------|
 | `target` | `controller` | Yes | Player to display to |
 | `text` | `any` | Yes | Text content (auto-converted to string) |
+| `position` | `vector` | No | 2D screen position (X/Y used) |
+| `anchor` | `vector` | No | 2D anchor point (X/Y used) |
+| `scale` | `vector` | No | 2D scale (X/Y used) |
+| `pivot` | `vector` | No | 2D pivot point (X/Y used) |
+| `shadowOffset` | `vector` | No | 2D drop-shadow offset (X/Y used) |
 | `angle` | `float` | No | Rotation angle |
 | `outlineSize` | `int` | No | Text outline size |
 | `outlineColor` | `color` | No | Outline color |
@@ -440,9 +447,11 @@ constant-only data fields).
 | `lifetime` | `float` | No | Display duration (seconds) |
 | `transition` | `float` | No | Seconds to interpolate to the new state when re-emitted with the same `textId` |
 | `textId` | `int` | No | Unique ID for updating text in-place |
-| `fontSize` | `float` | No | Font size (constant only) |
+| `fontSize` | `int` | No | Font size (constant only) |
 | `justify` | `int` | No | Justification — `"Left"` / `"Center"` / `"Right"` (constant only) |
 | `easing` | `int` | No | Transition curve — `"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"` (constant only) |
+| `typeface` | `int` | No | Typeface — `Regular` / `Bold` / `Italic` / `BoldItalic` (constant only) |
+| `font` | asset ref | No | Font asset reference (constant only) |
 
 ```wirescript
 on RoundStart {
@@ -827,16 +836,17 @@ controller.GetUserId() -> string
 controller.GetDisplayName() -> string
 controller.IsTrusted() -> bool
 controller.HasPermission(permission: string) -> bool
+controller.HasRole(role: string) -> bool
 controller.SetCanRespawn(canRespawn: bool)
 controller.ForceRespawn()
 controller.SetTeamPinned(pinned: bool)
 ```
 
 Read a player's account name, persistent user id, or current display name;
-check whether they are trusted by the brick owner or hold a named permission;
-toggle their ability to respawn or immediately respawn them (`ForceRespawn`,
-also callable as `ForceRespawn(player)`); or pin them to their team. All
-receive on `controller`.
+check whether they are trusted by the brick owner, hold a named permission, or
+have a named role (`HasRole`); toggle their ability to respawn or immediately
+respawn them (`ForceRespawn`, also callable as `ForceRespawn(player)`); or pin
+them to their team. All receive on `controller`.
 
 ## Broadcast Messaging (Exec)
 

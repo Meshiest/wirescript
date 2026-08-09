@@ -602,3 +602,78 @@
             .insert(*sym::CHIP_CLOSED, Literal::Bool(true));
         assert!(chip_is_closed(&node));
     }
+
+    #[test]
+    fn non_empty_map_variant_bakes_key_and_value_kinds() {
+        // The non-empty MapVar byte layout is otherwise only exercisable in-game
+        // (a .ws test can't run one), so pin the key/value member kinds and the
+        // baked entry data for the three key flavors that reach emit.
+        use crate::ir::{Literal, Type};
+
+        // Int-keyed `Map<int, int>`: an `int64` key wrapper + `int64` value. The
+        // type-derived kinds start empty (a fresh MapVar's at-rest state).
+        let int_kinds =
+            map_variant_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Int)));
+        assert_eq!(int_kinds.key, WireMapKey::Int64);
+        assert_eq!(int_kinds.value, WireMapValue::Int64);
+        assert!(int_kinds.entries.is_empty(), "type-derived kinds carry no entries");
+        let int_map = wire_map_variant_from_literals(
+            int_kinds,
+            &[
+                (Literal::Int(1), Literal::Int(10)),
+                (Literal::Int(2), Literal::Int(20)),
+            ],
+        );
+        assert_eq!(int_map.key, WireMapKey::Int64);
+        assert_eq!(int_map.value, WireMapValue::Int64);
+        assert_eq!(int_map.entries.len(), 2);
+        assert_eq!(
+            int_map.entries[0],
+            (WireMapKeyData::Int64(1), WireMapValueData::Int64(10))
+        );
+        assert_eq!(
+            int_map.entries[1],
+            (WireMapKeyData::Int64(2), WireMapValueData::Int64(20))
+        );
+
+        // String-keyed `Map<string, float>`: the string key wrapper + a `double`
+        // value. The literal key/value bake through unchanged.
+        let str_kinds =
+            map_variant_from_type(&Type::Map(Box::new(Type::String), Box::new(Type::Float)));
+        assert_eq!(str_kinds.key, WireMapKey::Str);
+        assert_eq!(str_kinds.value, WireMapValue::Number);
+        let str_map = wire_map_variant_from_literals(
+            str_kinds,
+            &[(Literal::String("hp".into()), Literal::Float(2.5))],
+        );
+        assert_eq!(str_map.key, WireMapKey::Str);
+        assert_eq!(str_map.value, WireMapValue::Number);
+        assert_eq!(str_map.entries.len(), 1);
+        assert_eq!(
+            str_map.entries[0],
+            (
+                WireMapKeyData::Str("hp".to_string()),
+                WireMapValueData::Number(2.5)
+            )
+        );
+
+        // Atom keys hash (xxHash64) to an int64, so at emit they are just an int
+        // literal over a `Map<int, V>` — they share the int-keyed `Int64` wrapper
+        // rather than getting a distinct key kind.
+        let atom_kinds =
+            map_variant_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Bool)));
+        assert_eq!(atom_kinds.key, WireMapKey::Int64);
+        assert_eq!(atom_kinds.value, WireMapValue::Bool);
+        let atom_hash = 0x1234_5678_9abc_def0_i64;
+        let atom_map = wire_map_variant_from_literals(
+            atom_kinds,
+            &[(Literal::Int(atom_hash), Literal::Bool(true))],
+        );
+        assert_eq!(atom_map.key, WireMapKey::Int64);
+        assert_eq!(atom_map.value, WireMapValue::Bool);
+        assert_eq!(atom_map.entries.len(), 1);
+        assert_eq!(
+            atom_map.entries[0],
+            (WireMapKeyData::Int64(atom_hash), WireMapValueData::Bool(true))
+        );
+    }

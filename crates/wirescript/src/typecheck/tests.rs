@@ -70,6 +70,58 @@
     }
 
     #[test]
+    fn ws033_conflict_incompatible_arg_types() {
+        // Two arguments pin the same type param to types with no common widening
+        // (int vs vector) — InferError::Conflict — surfaced as WS033.
+        let r = tc(
+            "in flag: bool\nin v: vector\n\
+             mod pick<T>(c: bool, a: T, b: T) -> T { return a }\n\
+             let x = pick(flag, 1, v)\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("must be the same type")),
+            "int/vector conflict must fire the WS033 Conflict path: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ws033_unpinnable_return_only_type_param() {
+        // `T` appears only in the return and the call passes no explicit type
+        // argument, so nothing constrains it — InferError::Unpinnable — WS033.
+        let r = tc(
+            "mod zero<T: Numeric>() -> T { static var z: T = z\n return z }\n\
+             out r: int = zero()\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("cannot infer type parameter")),
+            "return-only type param must fire the WS033 Unpinnable path: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ws033_out_of_mask_arg_violates_bound() {
+        // A `string` argument resolves `T` to a type outside its `Numeric` bound
+        // mask — InferError::OutOfMask — WS033.
+        let r = tc(
+            "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n\
+             let x = onlyNumeric(\"hi\")\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
+            "out-of-mask arg must fire the WS033 OutOfMask path: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
     fn use_before_declaration_is_ws021() {
         // A chip/mod call whose declaration lexically follows the call site
         // cannot resolve during lowering (decls register in source order), so

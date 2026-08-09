@@ -1,8 +1,8 @@
-//! `src/wirescript/analyze/cycle.ts`.
+//! Cycle checking.
 //!
 //! Every cycle in the wire graph must pass through a tick-crossing
-//! barrier (BufferTicks/BufferSeconds/QueueTicks/QueueSeconds/EdgeDetector)
-//! per the design plan. We run Tarjan's SCC and for every non-trivial
+//! barrier (BufferTicks/BufferSeconds/QueueTicks/QueueSeconds/EdgeDetector).
+//! We run Tarjan's SCC and for every non-trivial
 //! component verify a barrier is present.
 
 use crate::collections::{HashMap, HashSet};

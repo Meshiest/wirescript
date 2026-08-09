@@ -68,6 +68,7 @@ const DOC_MANIFEST = {
   'Exec Context': 'docs/exec-context.md',
   'Best Practices': 'docs/best-practices.md',
   'Constant Folding': 'docs/folding.md',
+  Diagnostics: 'docs/diagnostics.md',
 };
 
 // List of doc pages in display order
@@ -83,6 +84,7 @@ export const DOC_PAGES = [
   'Exec Context',
   'Best Practices',
   'Constant Folding',
+  'Diagnostics',
 ];
 
 // Display names for the navigation
@@ -98,6 +100,7 @@ export const DOC_TITLES = {
   'Exec Context': 'Execution Context',
   'Best Practices': 'Best Practices',
   'Constant Folding': 'Constant Folding',
+  Diagnostics: 'Diagnostics (WS Codes)',
 };
 
 async function loadDoc(page) {

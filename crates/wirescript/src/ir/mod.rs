@@ -282,7 +282,7 @@ pub enum Literal {
     PrefabRef { path: String },
     /// Inline nested-prefab source (the `$``` ... ``` ` form). The emitter
     /// will compile `source` and embed it the same way `PrefabRef` embeds a
-    /// `.brz` file (Task 7); for now it just carries the raw source.
+    /// `.brz` file (at emit); for now it just carries the raw source.
     NestedPrefab { source: String },
 }
 

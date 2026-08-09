@@ -153,7 +153,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             synthesise_unsupported_range(ctx, range)
         }
         // A map literal reaching the generic expression lowerer is in an
-        // unsupported position (not a `map` initializer). Task 8 intercepts
+        // unsupported position (not a map-var initializer). Lowering intercepts
         // `MapLit` in the assignment/initializer path before it reaches here.
         Expr::MapLit { range, .. } => synthesise_unsupported_range(ctx, range),
         _ => synthesise_unsupported(ctx, e),

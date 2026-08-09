@@ -1,11 +1,13 @@
-//! `context.ts` and `scope.ts` fused inline).
+//! The typechecker: a two-pass walk over the AST (decl registration, then
+//! per-decl checking), with the scope stack and exec/pure context tracking
+//! fused inline.
 //!
 //! Walks the AST producing a side `typeOfExpr` map (keyed by each
 //! expression's source-range start offset) so we don't need to rebuild
 //! the AST as a typed parallel. `opResolutions` records the catalog
 //! `OpRule` chosen for every BinOp/UnOp; the lower phase consumes it.
 //!
-//! Identifier semantics for `var` (the design plan's core rule):
+//! Identifier semantics for `var`:
 //! - In exec context: `n` auto-derefs (lowered to `Exec_Var_Get`); type = inner T.
 //! - In a pure sink expecting `ref T`: `n` is the VarRef port; type = ref T.
 //! - In a pure sink expecting `T`: error (WS006); author writes `n.Value`.
@@ -166,7 +168,7 @@ pub struct TypeCheckCtx {
     /// crate's Fx `HashMap` (like every other compiler table here), matching
     /// `ResolveCtx::generic_aliases` and `Scope::type_aliases()`.
     pub generic_type_aliases: HashMap<String, crate::types::resolve::GenericAlias>,
-    /// Top-level `let` constants, so a `var` / `array` initializer may name one
+    /// Top-level `let` constants, so a `var` initializer may name one
     /// (`1 << C_FLAG`) rather than restating its value. Populated before decl
     /// checking; must stay in step with lowering's own environment so both
     /// agree on exactly which initializers are constant.
@@ -554,11 +556,11 @@ fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
 /// (see `types::mono::mask_for_param`).
 fn type_param_mask(ctx: &TypeCheckCtx, tp: &TypeParam) -> Vec<Type> {
     // The bound → mask resolution lives in the shared `types::mono` module so
-    // the lowering-side monomorphizer (P2.5) can rebuild the same masks.
+    // the lowering-side monomorphizer can rebuild the same masks.
     crate::types::mono::mask_for_param(tp.bound.as_ref(), &ctx.scope.type_aliases())
 }
 
-/// Cartesian product of per-type-param masks (Task 2.4): each inner
+/// Cartesian product of per-type-param masks: each inner
 /// `Vec<Type>` in `masks` is one type param's candidate concrete members;
 /// the result has one `Vec<Type>` per combination, index-aligned with
 /// `masks` (and so with the decl's `type_params`). Materializes the full
@@ -1254,7 +1256,7 @@ fn check_top_level_array_init(
 /// helper assignment checking uses — a map *literal* entry additionally rejects
 /// `ViaString` (and any coercion that isn't `Same`/`Coerce`), because the literal
 /// entry has no gate to run a string-format coercion through (an assignment does).
-/// Call this from the VALID slots — a `map`/`var` initializer or an assignment
+/// Call this from the VALID slots — a `var` initializer or an assignment
 /// RHS to a map var — so the literal never reaches the generic `infer_expr`
 /// `MapLit` arm, which is the position-guard for every other use.
 ///
@@ -1500,11 +1502,11 @@ fn check_decl(
             ctx.scope.pop();
         }
         TopDecl::Chip(c) => {
-            // Task 2.4: bounded-polymorphism body checking. Body-check the
+            // Bounded-polymorphism body checking. Body-check the
             // decl once per concrete member of the cartesian product of its
             // type params' masks — an operation on a type param (`a + 1`)
             // can't resolve against the signature's `Type::Param`
-            // placeholder (P2.2/P2.3's registration, untouched by this
+            // placeholder (registration, untouched by this
             // arm), and even where it somehow could, the body must be valid
             // for EVERY concrete type the mask allows, not just checked once
             // symbolically. A non-generic decl (`type_params` empty) gets
@@ -2831,7 +2833,7 @@ fn infer_expr_inner(
             Type::Array(Box::new(elem))
         }
         // Reached only when a map literal is used somewhere OTHER than a
-        // `map`/`var` initializer or an assignment RHS to a map var — those
+        // `var` initializer or an assignment RHS to a map var — those
         // valid slots call `check_map_literal` directly (see `check_decl` /
         // `check_stmt`) and never reach this arm. Still infer each entry (so
         // key/value expressions get typed and any inner errors surface, e.g. a
@@ -3699,7 +3701,7 @@ fn is_reference_type(t: &Type) -> bool {
 // `Subst`; `mono::substitute` then replaces every `Type::Param` in the
 // signature's output type with its solved binding. The
 // `call_constraints`/`substitute`/`mask_for_param` helpers live in the shared
-// `types::mono` module so the lowering-side monomorphizer (P2.5) reuses the
+// `types::mono` module so the lowering-side monomorphizer reuses the
 // exact same inference at each generic-mod inline site.
 use crate::types::mono::{substitute, unwrap_ref};
 

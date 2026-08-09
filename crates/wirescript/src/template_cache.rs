@@ -97,31 +97,22 @@ impl TemplateCache {
     pub fn topo_order(&self) -> Vec<String> {
         let deps = self.deps.read().unwrap();
 
-        // Build in-degree map and reverse adjacency (who depends on me?).
-        let mut in_degree: HashMap<&str, usize> = HashMap::default();
+        // Reverse adjacency (who depends on me?) and in-degree (how many
+        // prerequisites each node has). in_degree[name] is exactly the count of
+        // deps `name` lists; the reverse edges drive the Kahn relaxation below.
         let mut rev_adj: HashMap<&str, Vec<&str>> = HashMap::default();
-
+        let mut in_degree: HashMap<&str, usize> = HashMap::default();
         for name in deps.keys() {
-            in_degree.entry(name.as_str()).or_insert(0);
             rev_adj.entry(name.as_str()).or_default();
+            in_degree.insert(name.as_str(), deps[name].len());
         }
 
         for (name, dep_set) in deps.iter() {
             for dep in dep_set {
-                // name depends on dep  →  dep is a prerequisite of name
-                // in_degree counts "how many unresolved deps does this node have"
-                *in_degree.entry(name.as_str()).or_insert(0) += 1;
-                // If dep is satisfied, name becomes one step closer to ready.
+                // name depends on dep → dep is a prerequisite of name; when dep
+                // is satisfied, name moves one step closer to ready.
                 rev_adj.entry(dep.as_str()).or_default().push(name.as_str());
             }
-        }
-
-        // We double-counted: the `entry(...).or_insert(0)` above already
-        // initialised everything to 0, then we added the dep counts on top.
-        // That is correct — reset and recount cleanly.
-        let mut in_degree: HashMap<&str, usize> = HashMap::default();
-        for name in deps.keys() {
-            in_degree.insert(name.as_str(), deps[name].len());
         }
 
         // Initial queue: all nodes with in-degree 0 (leaves), sorted.
