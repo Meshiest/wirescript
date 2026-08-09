@@ -3280,7 +3280,7 @@ fn infer_expr_inner(
                         return Type::Record(
                             c.outputs
                                 .iter()
-                                .map(|o| (o.port.as_str().into(), o.ty.clone()))
+                                .map(|o| (o.field.unwrap_or(o.port.as_str()).to_string(), o.ty.clone()))
                                 .collect(),
                         );
                     }
@@ -3411,7 +3411,7 @@ fn infer_expr_inner(
                     return Type::Record(
                         c.outputs
                             .iter()
-                            .map(|o| (o.port.as_str().into(), o.ty.clone()))
+                            .map(|o| (o.field.unwrap_or(o.port.as_str()).to_string(), o.ty.clone()))
                             .collect(),
                     );
                 }

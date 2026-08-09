@@ -1347,3 +1347,92 @@ on t { Bump(1) Bump(2) }";
         "each instance must keep its own folded constant"
     );
 }
+
+#[test]
+fn gate_builtins_desugar_to_their_gates() {
+    // The callable gate builtins (GetMapElement, PushToArray, SetVariable, …)
+    // desugar to the SAME gates as the method / assignment forms — never an
+    // `_Unsupported` placeholder.
+    let src = "\
+var v: int = 0
+var m: Map<string, int> = { \"a\" => 1 }
+var a: int[]
+in t: exec
+on t {
+  SetVariable(v, 5)
+  PushToArray(a, 7)
+  SetArrayElement(a, 0, 9)
+  SetMapElement(m, \"b\", 2)
+  IncrementVariable(v, 3)
+  let g = GetVariable(v)
+  let mv = GetMapElement(m, \"a\")
+  let el = GetArrayElement(a, 0)
+  if HasMapElement(m, \"a\") { v = g + mv.Value + el.Value }
+}
+out o = v";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "gate builtins must not lower to _Unsupported");
+    for cls in [
+        "BrickComponentType_WireGraph_Exec_Var_Set",
+        "BrickComponentType_WireGraph_Exec_Var_Increment",
+        "BrickComponentType_WireGraph_Exec_ArrayVar_Push",
+        "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex",
+        "BrickComponentType_WireGraph_Exec_MapVar_Set",
+        "BrickComponentType_WireGraph_Exec_MapVar_Get",
+        "BrickComponentType_WireGraph_Exec_MapVar_Has",
+    ] {
+        assert!(has_gate(&r, cls), "expected gate {cls} from a builtin");
+    }
+}
+
+#[test]
+fn union_and_branch_builtins_lower_to_their_gates() {
+    // `Union(a, b)` merges two execs; `Branch(cond, e).A`/`.B` route one. Both
+    // are callable builtins that lower to their game gates — no `_Unsupported`,
+    // and the `.A`/`.B` friendly outputs resolve to the ExecOutA/ExecOutB ports.
+    let src = "\
+in a: exec
+in b: exec
+in c: bool
+var x: int = 0
+let merged = Union(a, b)
+on merged { x = 1 }
+on Branch(c, a).A { x = 2 }
+on Branch(c, a).B { x = 3 }
+out o = x";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "Union/Branch must not lower to _Unsupported");
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"), "expected an Exec_Union gate");
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"), "expected an Exec_Branch gate");
+}
+
+#[test]
+fn fill_array_builtins_lower_to_their_gates() {
+    // The game-named array-fill builtins desugar to the array `fillFrom*`
+    // methods and lower to the Gamemode/Zone fill gates — no `_Unsupported`.
+    let src = "\
+var players: character[]
+var ents: character[]
+var team: entity
+var zoneA: entity
+in t: exec
+on t {
+  FillArrayFromPlayers(players)
+  FillArrayFromTeamMembers(players, team)
+  GetPlayersInZone(players, zoneA)
+  GetEntitiesInZone(ents, zoneA)
+}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "fill builtins must not lower to _Unsupported");
+    for cls in [
+        "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromPlayers",
+        "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers",
+        "BrickComponentType_WireGraph_Exec_Zone_GetPlayers",
+        "BrickComponentType_WireGraph_Exec_Zone_GetEntities",
+    ] {
+        assert!(has_gate(&r, cls), "expected gate {cls} from a fill builtin");
+    }
+}

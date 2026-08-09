@@ -18,6 +18,35 @@ pub struct SymbolDef {
     pub exec: bool,
 }
 
+/// Resolve which declaration of `name` is visible at a cursor position. The same
+/// name can be declared in several scopes with different types (a file-scope
+/// `var players: string`, a handler-local `var players: character[]`); a flat
+/// name lookup would pick an arbitrary one and mis-type completion / hover.
+/// Approximate lexical scope by the nearest declaration at or before the cursor
+/// (shadowing — the innermost / most-recent declaration wins, and hovering a
+/// declaration resolves to itself), falling back to the first declaration for a
+/// use-before-declaration reference. `line`/`col` are 0-based (LSP cursor);
+/// symbol ranges are 1-based (parser `Pos`).
+pub fn resolve_symbol<'a>(
+    symbols: &'a [SymbolDef],
+    name: &str,
+    line: usize,
+    col: usize,
+) -> Option<&'a SymbolDef> {
+    let (cl, cc) = ((line + 1) as u32, (col + 1) as u32);
+    let mut first: Option<&SymbolDef> = None;
+    let mut best: Option<(&SymbolDef, (u32, u32))> = None;
+    for s in symbols.iter().filter(|s| s.name == name) {
+        first.get_or_insert(s);
+        let p = (s.range.start.line, s.range.start.col);
+        let precedes = p.0 < cl || (p.0 == cl && p.1 <= cc);
+        if precedes && best.is_none_or(|(_, bp)| p > bp) {
+            best = Some((s, p));
+        }
+    }
+    best.map(|(s, _)| s).or(first)
+}
+
 pub fn block_has_exec(block: &Block) -> bool {
     block.stmts.iter().any(stmt_has_exec)
 }

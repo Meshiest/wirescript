@@ -2221,6 +2221,36 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             receiver: None,
         },
     );
+    // Exec-flow gates callable directly. `Union(a, b)` merges two exec signals
+    // into one (fires when EITHER fires) — the callable form of the gate the
+    // compiler auto-inserts to rejoin exec paths. `Branch(cond, exec)` routes an
+    // exec to `.A` or `.B` on `cond` (the gate an `if` lowers to). Both are pure
+    // (no surrounding exec chain): their inputs ARE the exec signals they act on.
+    m.insert(
+        "Union",
+        vec_expr(
+            "Union",
+            gc::UNION,
+            vec![
+                CallParam::req("a", WirePort::ExecA, Type::Exec),
+                CallParam::req("b", WirePort::ExecB, Type::Exec),
+            ],
+            WirePort::ExecOut,
+            Type::Exec,
+        ),
+    );
+    m.insert(
+        "Branch",
+        vec_expr_record(
+            "Branch",
+            gc::BRANCH,
+            vec![
+                CallParam::req("cond", WirePort::BCond, Type::Bool),
+                CallParam::req("exec", WirePort::Exec, Type::Exec),
+            ],
+            vec![("A", WirePort::ExecOutA, Type::Exec), ("B", WirePort::ExecOutB, Type::Exec)],
+        ),
+    );
     // Read Brick Grid — the brick grid this gate's microchip is placed on.
     m.insert(
         "ReadBrickGrid",

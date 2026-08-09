@@ -12,9 +12,9 @@ use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
     collection_kind, find_all_references, find_asset_refs, find_enclosing_call, find_name_range,
     format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names, receiver_methods,
-    record_field_names, rename_edit_text, swizzle_fields, type_str, user_receiver_methods, word_at,
-    AssetRef, CollectionKind, InlayHintKind, ResourceEstimate, SymbolDef, TextRange, TypeMap,
-    VarReadContextMap,
+    record_field_names, rename_edit_text, resolve_symbol, swizzle_fields, type_str,
+    user_receiver_methods, word_at, AssetRef, CollectionKind, InlayHintKind, ResourceEstimate,
+    SymbolDef, TextRange, TypeMap, VarReadContextMap,
 };
 use wirescript::ast::Script;
 use wirescript::catalog::arrays::ARRAY_METHODS;
@@ -1024,14 +1024,19 @@ async fn main() {
 /// the receiver methods valid for a typed value. Returns only the members of the
 /// receiver (possibly empty); it never falls through to the global
 /// keyword/function list, so e.g. a `string` receiver shows only string methods.
-fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionItem> {
+fn member_completions(
+    var_name: &str,
+    symbols: &[SymbolDef],
+    line: usize,
+    col: usize,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
     // `arr[i].` — an indexed read, not the array itself. Its members are the
     // array-get gate's outputs (the element `Value` and the `OutOfBounds`
     // flag), never the array's methods.
     if let Some(base) = var_name.strip_suffix("[]") {
-        let sym = symbols.iter().find(|s| s.name == base);
+        let sym = resolve_symbol(symbols, base, line, col);
         let elem = sym
             .and_then(|s| s.ty.as_deref())
             .and_then(|t| t.strip_suffix("[]"))
@@ -1052,7 +1057,7 @@ fn member_completions(var_name: &str, symbols: &[SymbolDef]) -> Vec<CompletionIt
         return items;
     }
 
-    let sym = symbols.iter().find(|s| s.name == var_name);
+    let sym = resolve_symbol(symbols, var_name, line, col);
 
     // Field name (record field / swizzle component) completion item.
     let field_item = |name: String| CompletionItem {
@@ -1367,7 +1372,7 @@ fn build_completions(
     // belongs to the callee, cursor at an arg boundary) yields no receiver here
     // and falls through to param completion below.
     if let Some(var_name) = member_receiver_at(source, line, col) {
-        return member_completions(&var_name, symbols);
+        return member_completions(&var_name, symbols, line, col);
     }
 
     // Named params inside a function call: `Call(<here>)`.
@@ -1550,11 +1555,21 @@ fn build_completions(
 
     // User symbols. Qualified namespace members (`u.member`) are addressed only
     // through `u.` member completion, so keep them out of the bare-identifier list.
+    // Dedupe by name: when a name is declared in several scopes, offer only the
+    // one in scope at the cursor (nearest enclosing/preceding declaration), so a
+    // handler-local `players: character[]` doesn't leak into file scope where a
+    // different `players` is visible. Forward references to top-level symbols
+    // still appear (`resolve_symbol` falls back to the first declaration).
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for sym in symbols {
         if sym.name.contains('.') {
             continue;
         }
-        let kind = match sym.kind {
+        if !seen.insert(sym.name.as_str()) {
+            continue;
+        }
+        let chosen = resolve_symbol(symbols, &sym.name, line, col).unwrap_or(sym);
+        let kind = match chosen.kind {
             "var" | "static var" | "buffer" | "array" => CompletionItemKind::VARIABLE,
             "fn" | "mod" | "chip" => CompletionItemKind::FUNCTION,
             "in" => CompletionItemKind::FIELD,
@@ -1565,9 +1580,9 @@ fn build_completions(
             _ => CompletionItemKind::TEXT,
         };
         items.push(CompletionItem {
-            label: sym.name.clone(),
+            label: chosen.name.clone(),
             kind: Some(kind),
-            detail: sym.ty.clone(),
+            detail: chosen.ty.clone(),
             ..Default::default()
         });
     }
@@ -1635,6 +1650,17 @@ fn build_completions(
             label: name.to_string(),
             kind: Some(CompletionItemKind::FUNCTION),
             detail: Some(format!("({})", params_str.join(", "))),
+            ..Default::default()
+        });
+    }
+
+    // Callable gate builtins (GetMapElement, PushToArray, SetVariable, …) — they
+    // desugar to the method/assignment forms, so they aren't in `calls()`.
+    for name in wirescript::catalog::gate_builtins::ALL {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("gate builtin".to_string()),
             ..Default::default()
         });
     }
@@ -1919,6 +1945,38 @@ mod tests {
         let ls = labels(src, 1, 4);
         assert!(ls.iter().any(|l| l == "push"), "push missing on var array: {ls:?}");
         assert!(ls.iter().any(|l| l == "find"), "find missing on var array: {ls:?}");
+    }
+
+    #[test]
+    fn shadowed_var_completes_by_scope_not_first_decl() {
+        // Same name in two scopes with different types: a file-scope `players:
+        // string` and a handler-local `players: character[]`. At the cursor
+        // inside the handler, `players.` must complete ARRAY methods (the
+        // in-scope array), not the string's — a flat name-lookup would pick the
+        // first decl and show the wrong members.
+        let src = "var players: string = \"\"\non t {\n  var players: character[]\n  players.\n}";
+        let ls = labels(src, 3, 10);
+        assert!(ls.iter().any(|l| l == "push"), "array method missing on in-scope array: {ls:?}");
+        assert!(ls.iter().any(|l| l == "fillFromPlayers"), "fillFromPlayers missing: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "Contains"), "string method leaked from shadowed decl: {ls:?}");
+    }
+
+    #[test]
+    fn identifier_completion_dedups_shadowed_var_by_scope() {
+        // A file-scope `players: string` and a handler-local `players:
+        // character[]`. Completing a bare identifier at file scope (above and
+        // outside the handler) must offer a SINGLE `players`, typed `string` —
+        // the handler-local array is neither in scope nor declared yet.
+        let src = "var players: string = \"\"\nplayers\non tick {\n  var players: character[]\n}";
+        let syms = symbols_for(src);
+        let items = build_completions(src, &syms, 1, 7, &[]);
+        let players: Vec<&CompletionItem> = items.iter().filter(|i| i.label == "players").collect();
+        assert_eq!(players.len(), 1, "expected one `players`, got: {players:?}");
+        assert_eq!(
+            players[0].detail.as_deref(),
+            Some("string"),
+            "file-scope `players` must show its string type, not the handler-local array"
+        );
     }
 
     #[test]

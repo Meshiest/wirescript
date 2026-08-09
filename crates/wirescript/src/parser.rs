@@ -14,6 +14,87 @@ fn shift_pos(p: &mut Pos, origin: &Pos) {
     }
 }
 
+/// Rewrite an EXPRESSION-form gate builtin into its method-call / read form:
+/// `GetVariable(v)` → `v`; `GetMapElement(m, k)` → `m.get(k)`. The container is
+/// the first positional argument (resolved by name to its ref downstream, like a
+/// method receiver). Returns the original `Call` unchanged for non-builtins or a
+/// malformed shape (leaving the normal call path to diagnose it).
+fn desugar_gate_call(
+    callee: Box<Expr>,
+    args: Vec<CallArg>,
+    type_args: Vec<TypeExpr>,
+    range: SourceRange,
+) -> Expr {
+    use crate::catalog::gate_builtins as gb;
+    let name = match callee.as_ref() {
+        Expr::Ident { name, .. } if type_args.is_empty() => name.clone(),
+        _ => return Expr::Call { callee, args, type_args, range },
+    };
+    // `GetVariable(v)` reads `v` — desugar to the bare receiver expression.
+    if name == gb::GET_VARIABLE && args.len() == 1 && matches!(args[0], CallArg::Positional(_)) {
+        if let Some(CallArg::Positional(v)) = args.into_iter().next() {
+            return v;
+        }
+        unreachable!();
+    }
+    if let Some(method) = gb::method_for(&name)
+        && matches!(args.first(), Some(CallArg::Positional(_)))
+    {
+        let mut it = args.into_iter();
+        let container = match it.next() {
+            Some(CallArg::Positional(c)) => c,
+            _ => unreachable!(),
+        };
+        let rest: Vec<CallArg> = it.collect();
+        let fa = Expr::FieldAccess {
+            obj: Box::new(container),
+            field: method.to_string(),
+            range: range.clone(),
+        };
+        return Expr::Call { callee: Box::new(fa), args: rest, type_args: Vec::new(), range };
+    }
+    Expr::Call { callee, args, type_args, range }
+}
+
+/// Rewrite a STATEMENT-form gate builtin into the equivalent assignment:
+/// `SetVariable(v, x)` → `v = x`; `SetArrayElement(a, i, x)` → `a[i] = x`;
+/// `IncrementVariable(v, x)` → `v = v + x`. Returns `None` for anything else.
+fn gate_builtin_assign(e: &Expr) -> Option<Assign> {
+    use crate::catalog::gate_builtins as gb;
+    let Expr::Call { callee, args, range, type_args } = e else { return None };
+    if !type_args.is_empty() {
+        return None;
+    }
+    let Expr::Ident { name, .. } = callee.as_ref() else { return None };
+    let pos = |i: usize| match args.get(i) {
+        Some(CallArg::Positional(x)) => Some(x.clone()),
+        _ => None,
+    };
+    let assign = |target: Expr, value: Expr| Assign { target, value, range: range.clone() };
+    match name.as_str() {
+        gb::SET_VARIABLE if args.len() == 2 => Some(assign(pos(0)?, pos(1)?)),
+        gb::SET_ARRAY_ELEMENT if args.len() == 3 => {
+            let target = Expr::IndexAccess {
+                obj: Box::new(pos(0)?),
+                index: Box::new(pos(1)?),
+                range: range.clone(),
+            };
+            Some(assign(target, pos(2)?))
+        }
+        gb::INCREMENT_VARIABLE if args.len() == 2 => {
+            let v = pos(0)?;
+            let value = Expr::BinOp {
+                op: "+".into(),
+                left: Box::new(v.clone()),
+                right: Box::new(pos(1)?),
+                range: range.clone(),
+            };
+            Some(assign(v, value))
+        }
+        _ => None,
+    }
+}
+
 fn shift_expr_offsets(expr: &mut Expr, origin: Pos) {
     {
         let r = expr.range_mut();
@@ -933,6 +1014,9 @@ impl<'a> Parser<'a> {
             }));
         }
         self.eat_stmt_end();
+        if let Some(a) = gate_builtin_assign(&lhs) {
+            return Some(TopDecl::Assign(a));
+        }
         Some(TopDecl::ExprStmt(ExprStmt {
             range: self.make_range(expr_start, lhs.range().end),
             expr: lhs,
@@ -2076,8 +2160,39 @@ impl<'a> Parser<'a> {
             return true;
         }
 
+        // Skip past `idx` (which must be an open bracket) to just after its
+        // matching close, so a `(...)`/`[...]` in the head is stepped over as a
+        // unit rather than mistaken for an atom boundary.
+        let skip_balanced = |mut idx: usize| -> usize {
+            let (open, close) = match get(idx).kind {
+                TokenKind::LParen => (TokenKind::LParen, TokenKind::RParen),
+                TokenKind::LBracket => (TokenKind::LBracket, TokenKind::RBracket),
+                _ => return idx,
+            };
+            let mut depth = 0usize;
+            while idx < len {
+                let k = get(idx).kind;
+                if k == open {
+                    depth += 1;
+                } else if k == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return idx + 1;
+                    }
+                }
+                idx += 1;
+            }
+            idx
+        };
+
         // Skip one or more `|`-separated trigger atoms.  Each atom is:
-        //   `!*  ident  (.ident)?`
+        //   `!*  ident  (.ident | .ident(...) | [...])*`
+        // A `.ident(...)` method call or `[...]` index is a *value* postfix that
+        // no plain trigger can take, so its presence forces an expression trigger
+        // (e.g. `on a.Dot(b) > 0` or `on arr[i] > 0`). A bare `.ident` (a field
+        // trigger like `on split.Jump`) and a bare `ident(...)` (an event's
+        // config args, `on Clock(...)`) stay plain.
+        let mut has_value_postfix = false;
         loop {
             // Skip leading `!` prefixes.
             while i < len && get(i).kind == TokenKind::Op && get(i).text == "!" {
@@ -2093,11 +2208,24 @@ impl<'a> Parser<'a> {
             }
             i += 1; // consume ident
 
-            // Optional `.field`.
-            if i < len && get(i).kind == TokenKind::Dot {
-                i += 1;
-                if i < len && get(i).kind == TokenKind::Ident {
-                    i += 1;
+            // Postfix chain: `.field`, `.field(...)` (method call), `[...]` (index).
+            loop {
+                match get(i).kind {
+                    TokenKind::Dot => {
+                        i += 1;
+                        if i < len && get(i).kind == TokenKind::Ident {
+                            i += 1;
+                        }
+                        if i < len && get(i).kind == TokenKind::LParen {
+                            has_value_postfix = true; // method call → value expr
+                            i = skip_balanced(i);
+                        }
+                    }
+                    TokenKind::LBracket => {
+                        has_value_postfix = true; // index → value expr
+                        i = skip_balanced(i);
+                    }
+                    _ => break,
                 }
             }
 
@@ -2107,6 +2235,11 @@ impl<'a> Parser<'a> {
                 continue;
             }
             break;
+        }
+
+        // A value-only postfix in the head is never a plain trigger.
+        if has_value_postfix {
+            return true;
         }
 
         // After the last atom the next meaningful token should be `{` or `(`.
@@ -2775,6 +2908,9 @@ impl<'a> Parser<'a> {
         }
         let end = lhs.range().end;
         self.eat_stmt_end();
+        if let Some(a) = gate_builtin_assign(&lhs) {
+            return Some(Stmt::Assign(a));
+        }
         Some(Stmt::ExprStmt(ExprStmt {
             range: self.make_range(start, end),
             expr: lhs,
@@ -3102,12 +3238,7 @@ impl<'a> Parser<'a> {
                 }
                 let end = self.expect(TokenKind::RParen, None).end;
                 let start = e.range().start;
-                e = Expr::Call {
-                    callee: Box::new(e),
-                    args,
-                    type_args: Vec::new(),
-                    range: self.make_range(start, end),
-                };
+                e = desugar_gate_call(Box::new(e), args, Vec::new(), self.make_range(start, end));
                 continue;
             }
             // Explicit type arguments: `callee<Type, ...>(args)` for a generic
@@ -3741,10 +3872,14 @@ impl<'a> Parser<'a> {
                 };
             }
             // Otherwise it's an expression statement, keep going
-            stmts.push(Stmt::ExprStmt(ExprStmt {
-                expr,
-                range: SourceRange::default(),
-            }));
+            if let Some(a) = gate_builtin_assign(&expr) {
+                stmts.push(Stmt::Assign(a));
+            } else {
+                stmts.push(Stmt::ExprStmt(ExprStmt {
+                    expr,
+                    range: SourceRange::default(),
+                }));
+            }
             self.eat_stmt_end();
         }
 
@@ -4017,6 +4152,50 @@ mod tests {
             TopDecl::Handler(h) => match &h.trigger {
                 Trigger::Ident { name, .. } => assert_eq!(name, "Clock"),
                 _ => panic!("expected Ident trigger"),
+            },
+            d => panic!("expected Handler, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn handler_method_call_trigger_desugars_to_let_plus_handler() {
+        // `on a.Dot(b) > 0.0 { … }` — a method call in the trigger head. The
+        // trailing `(` of the call must NOT be read as event-config args; the
+        // whole thing is an expression trigger, desugared to a synthetic let.
+        let src = "in a: vector\nin b: vector\nvar x: int = 0\non a.Dot(b) > 0.0 { x = 1 }";
+        let s = parse_ok(src);
+        // In(a), In(b), Var(x), Let(_on_expr_0), Handler(_on_expr_0)
+        assert_eq!(s.decls.len(), 5, "decls: {:?}", s.decls);
+        match &s.decls[3] {
+            TopDecl::Let(l) => match &l.binding {
+                LetBinding::Ident { name, .. } => assert_eq!(name, "_on_expr_0"),
+                _ => panic!("expected Ident binding"),
+            },
+            d => panic!("expected Let, got {:?}", d),
+        }
+        match &s.decls[4] {
+            TopDecl::Handler(h) => match &h.trigger {
+                Trigger::Ident { name, .. } => assert_eq!(name, "_on_expr_0"),
+                _ => panic!("expected Ident trigger"),
+            },
+            d => panic!("expected Handler, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn handler_bare_field_trigger_stays_plain() {
+        // A bare `.field` head (`on split.Jump { }`) is a field trigger, NOT a
+        // value expression — the method-call classifier must not desugar it.
+        let src = "on split.Jump { }";
+        let s = parse_ok(src);
+        assert_eq!(s.decls.len(), 1, "no synthetic let for a field trigger: {:?}", s.decls);
+        match &s.decls[0] {
+            TopDecl::Handler(h) => match &h.trigger {
+                Trigger::Field { obj, field, .. } => {
+                    assert_eq!(obj, "split");
+                    assert_eq!(field, "Jump");
+                }
+                t => panic!("expected Field trigger, got {:?}", t),
             },
             d => panic!("expected Handler, got {:?}", d),
         }

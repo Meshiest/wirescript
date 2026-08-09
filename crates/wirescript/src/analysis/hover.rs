@@ -929,7 +929,11 @@ fn hover_user_symbol(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    let sym = symbols.iter().find(|s| s.name == word)?;
+    // Resolve to the declaration in scope at the cursor, so hovering (or reading)
+    // a name reused across scopes shows the one actually visible here — e.g.
+    // hovering `players` in `var players: character[]` resolves to that array,
+    // not a file-scope `players: string`.
+    let sym = super::resolve_symbol(symbols, word, line, col)?;
 
     // Namespace alias (`import * as card`): it has no type — show it as a
     // namespace and list the members it brings in (its qualified `card.*`
@@ -1430,6 +1434,19 @@ mod tests {
         assert!(h.contains("on CustomEvent(\"dmg\""), "channel name in sig: {h}");
         assert!(h.contains("amount: int"), "declared slot type: {h}");
         assert!(h.contains("attacker: character"), "sender-filled slot type: {h}");
+    }
+
+    #[test]
+    fn hover_resolves_shadowed_var_by_scope() {
+        // A file-scope `players: string` and a handler-local `players:
+        // character[]`. Hovering the array declaration must resolve to that
+        // in-scope array, not the file-scope string a flat lookup finds first.
+        let src = "var players: string = \"\"\non t {\n  var players: character[]\n}";
+        let decl_line = 2usize; // `  var players: character[]`
+        let c = src.lines().nth(decl_line).unwrap().find("players").unwrap();
+        let h = hover_for(src, decl_line, c).expect("array decl should hover");
+        assert!(h.contains("character[]"), "hover should show the in-scope array type: {h}");
+        assert!(!h.contains("string"), "must not show the shadowed string type: {h}");
     }
 
     #[test]

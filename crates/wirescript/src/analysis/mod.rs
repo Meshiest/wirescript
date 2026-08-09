@@ -25,7 +25,7 @@ pub use text::{word_at, find_enclosing_call, named_arg_value, find_asset_refs, a
 pub use hover::hover_at;
 pub use definition::{definition_at, Location};
 pub use references::{find_all_references, find_name_range, rename_edit_text, TextRange};
-pub use symbols::{collect_symbols, collect_symbols_for_file};
+pub use symbols::{collect_symbols, collect_symbols_for_file, resolve_symbol};
 pub use gate_docs::gate_docs;
 pub use format::format_wirescript;
 pub use resource_estimate::{ResourceEstimate, collect_estimates, lookup_estimate};
