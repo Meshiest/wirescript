@@ -275,6 +275,7 @@ pub const GAMEMODE_BROADCAST_STATUS: &str =
 // Audio
 pub const PLAY_AUDIO_AT: &str = "Component_WireGraph_PlayAudioAt";
 pub const PLAY_GLOBAL_AUDIO: &str = "BrickComponentType_WireGraph_Exec_PlayGlobalAudio";
+pub const PLAY_CLIENT_AUDIO: &str = "BrickComponentType_WireGraph_Exec_PlayClientAudio";
 
 // Entity tags
 pub const ENTITY_GET_TAG: &str = "BrickComponentType_WireGraph_Exec_Entity_GetTag";

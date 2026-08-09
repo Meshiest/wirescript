@@ -1484,7 +1484,7 @@ fn play_audio_builtins_carry_audio_asset() {
     // The `$BrickOneShotAudioDescriptor/…` ref inlines into the gate's
     // AudioDescriptor data field (registered as an external asset at emit).
     let r = compile(
-        "in p: character\non p {\n  p.PlayAudioAt($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press, volume = 0.5)\n  PlayGlobalAudio($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press)\n}",
+        "in p: character\non p {\n  p.PlayAudioAt($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press, volume = 0.5)\n  PlayGlobalAudio($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press)\n  p.PlayClientAudio($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press, volume = 0.5, pitch = 1.2)\n}",
     );
     assert_no_errors(&r);
     let node = r
@@ -1509,6 +1509,34 @@ fn play_audio_builtins_carry_audio_asset() {
     assert!(
         has_gate(&r, "BrickComponentType_WireGraph_Exec_PlayGlobalAudio"),
         "expected a PlayGlobalAudio gate"
+    );
+    // PlayClientAudio: same asset inlining, plus a wired Player input.
+    let client = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_PlayClientAudio")
+        .expect("expected a PlayClientAudio gate");
+    match client.properties.get(&crate::intern::intern("AudioDescriptor")) {
+        Some(crate::ir::Literal::Asset { asset_type, asset_name }) => {
+            assert_eq!(asset_type, "BrickOneShotAudioDescriptor");
+            assert_eq!(asset_name, "BOSA_Buttons_Button_1_Press");
+        }
+        other => panic!("expected an asset property on PlayClientAudio, got {other:?}"),
+    }
+    let client_id = r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class == "BrickComponentType_WireGraph_Exec_PlayClientAudio")
+        .map(|(id, _)| *id)
+        .unwrap();
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == client_id && w.target.port.as_str() == "Player"),
+        "PlayClientAudio's Player input should be wired"
     );
 }
 

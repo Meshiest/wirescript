@@ -7099,6 +7099,70 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_PlayClientAudio",
+      "brickDisplayName": "Play Client Audio",
+      "brickSummary": "Plays a non-spatial sound for one player; accepts either a player or persistent player reference.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_PlayClientAudio",
+        "displayName": "Play Client Audio",
+        "description": "Plays a non-spatial sound for one player; accepts either a player or persistent player reference.",
+        "searchTags": "",
+        "kind": "exec",
+        "family": "",
+        "inputs": [
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "PitchMultiplier",
+            "displayName": "Pitch Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Player",
+            "displayName": "Player",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          },
+          {
+            "name": "VolumeMultiplier",
+            "displayName": "Volume Multiplier",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "AudioDescriptor",
+            "displayName": "Audio Descriptor",
+            "type": "object"
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_PlayerState_DisplayText",
       "brickDisplayName": "Display Text",
       "brickSummary": "Creates or updates styled HUD text for one player, with position, lifetime, transition, and text ID controls; use it for timers or custom interfaces.",
@@ -21251,6 +21315,98 @@
       }
     },
     {
+      "brickAsset": "B_Spawn_Point_Prefab",
+      "brickDisplayName": "Prefab Spawn Point",
+      "brickSummary": "",
+      "halfSize": {
+        "X": 40,
+        "Y": 40,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_PrefabSpawn",
+        "displayName": "Prefab Spawn",
+        "description": "Spawns the selected prefab at this brick. If every spawned entity is destroyed, it respawns after Respawn Time; Clear removes the current spawn without scheduling a respawn.",
+        "searchTags": "",
+        "kind": "?",
+        "family": "",
+        "inputs": [
+          {
+            "name": "bSpawnEnable",
+            "displayName": "Spawn Enable",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "RespawnTime",
+            "displayName": "Respawn Time",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "SpawnOffset",
+            "displayName": "Spawn Offset",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          },
+          {
+            "name": "SpawnOffsetRotation",
+            "displayName": "Spawn Offset Rotation",
+            "tooltip": "",
+            "type": "rotator",
+            "composite": {
+              "kind": "rotator",
+              "subPorts": [
+                "Pitch",
+                "Roll",
+                "Yaw"
+              ]
+            }
+          },
+          {
+            "name": "SpawnVelocity",
+            "displayName": "Spawn Velocity",
+            "tooltip": "",
+            "type": "vector",
+            "composite": {
+              "kind": "vector",
+              "subPorts": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "name": "SpawnedEntity",
+            "displayName": "Spawned Entity",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "Prefab",
+            "displayName": "Prefab",
+            "type": "struct"
+          }
+        ]
+      }
+    },
+    {
       "brickAsset": "B_SpawnPoint",
       "brickDisplayName": "Spawnpoint",
       "brickSummary": "A spawnpoint for players.",
@@ -22466,98 +22622,6 @@
         ],
         "outputs": [],
         "config": []
-      }
-    },
-    {
-      "brickAsset": "BrickComponentType_PrefabSpawn",
-      "brickDisplayName": "Prefab Spawn",
-      "brickSummary": "Spawns the selected prefab at this brick. If every spawned entity is destroyed, it respawns after Respawn Time; Clear removes the current spawn without scheduling a respawn.",
-      "halfSize": {
-        "X": 5,
-        "Y": 5,
-        "Z": 2
-      },
-      "component": {
-        "class": "BrickComponentType_PrefabSpawn",
-        "displayName": "Prefab Spawn",
-        "description": "Spawns the selected prefab at this brick. If every spawned entity is destroyed, it respawns after Respawn Time; Clear removes the current spawn without scheduling a respawn.",
-        "searchTags": "",
-        "kind": "?",
-        "family": "",
-        "inputs": [
-          {
-            "name": "bSpawnEnable",
-            "displayName": "Spawn Enable",
-            "tooltip": "",
-            "type": "bool",
-            "composite": null
-          },
-          {
-            "name": "RespawnTime",
-            "displayName": "Respawn Time",
-            "tooltip": "",
-            "type": "float",
-            "composite": null
-          },
-          {
-            "name": "SpawnOffset",
-            "displayName": "Spawn Offset",
-            "tooltip": "",
-            "type": "vector",
-            "composite": {
-              "kind": "vector",
-              "subPorts": [
-                "X",
-                "Y",
-                "Z"
-              ]
-            }
-          },
-          {
-            "name": "SpawnOffsetRotation",
-            "displayName": "Spawn Offset Rotation",
-            "tooltip": "",
-            "type": "rotator",
-            "composite": {
-              "kind": "rotator",
-              "subPorts": [
-                "Pitch",
-                "Roll",
-                "Yaw"
-              ]
-            }
-          },
-          {
-            "name": "SpawnVelocity",
-            "displayName": "Spawn Velocity",
-            "tooltip": "",
-            "type": "vector",
-            "composite": {
-              "kind": "vector",
-              "subPorts": [
-                "X",
-                "Y",
-                "Z"
-              ]
-            }
-          }
-        ],
-        "outputs": [
-          {
-            "name": "SpawnedEntity",
-            "displayName": "Spawned Entity",
-            "tooltip": "",
-            "type": "entity",
-            "composite": null
-          }
-        ],
-        "config": [
-          {
-            "name": "Prefab",
-            "displayName": "Prefab",
-            "type": "struct"
-          }
-        ]
       }
     },
     {

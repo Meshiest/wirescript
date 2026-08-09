@@ -206,6 +206,63 @@ fn hover_if_keyword(
 /// Only fires in arg-name position — the word followed by a single `=` — so a
 /// value expression that shares a param's name (`delay = delay`) hovers as the
 /// symbol it is, not as the param docs.
+/// The scalar kind a `Type` renders a default value as, or `None` for a
+/// non-scalar (entity/vector/…) with no displayable constant default.
+fn scalar_kind_of(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::Bool => Some("bool"),
+        Type::Int => Some("int"),
+        Type::Float => Some("float"),
+        Type::String => Some("string"),
+        _ => None,
+    }
+}
+
+/// A gate data-struct field's registered default VALUE, rendered for display.
+/// Resolves the gate's data struct (`COMPONENT_TYPE_STRUCT_PAIRS`) and reads the
+/// field's default from brdb's `STRUCT_DEFAULTS` — the single source of truth the
+/// emitter itself uses. An enum field shows its member name (not the stored
+/// index); otherwise the value is read in its declared scalar `kind`
+/// (`bool`/`int`/`float`/`string`). `None` when the gate has no data struct, the
+/// field has no registered default, or the kind is non-scalar.
+#[cfg(feature = "brdb-full")]
+fn gate_field_default(gate_class: &str, field: &str, kind: &str) -> Option<String> {
+    let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
+        .iter()
+        .find(|(c, _)| *c == gate_class)
+        .map(|(_, s)| *s)?;
+    let value = brdb::component_db::STRUCT_DEFAULTS
+        .iter()
+        .find(|(s, _)| *s == strct)
+        .and_then(|(_, fs)| fs.iter().find(|(n, _)| *n == field))
+        .map(|(_, v)| v.as_ref())?;
+    // Enum-typed field: the default is an index; show the member name.
+    if let Some(et) = crate::catalog::config_field_enum_type(gate_class, field) {
+        if let Ok(idx) = value.as_brdb_u8() {
+            let names = crate::catalog::enum_member_names(et);
+            return Some(
+                names
+                    .into_iter()
+                    .nth(idx as usize)
+                    .unwrap_or_else(|| idx.to_string()),
+            );
+        }
+    }
+    match kind {
+        "bool" => value.as_brdb_bool().ok().map(|b| b.to_string()),
+        "int" => value.as_brdb_i64().ok().map(|i| i.to_string()),
+        // Read as f32 (the stored width) so 0.05 doesn't widen to 0.05000000074.
+        "float" => value.as_brdb_f32().ok().map(|f| f.to_string()),
+        "string" => value.as_brdb_str().ok().map(|s| format!("{s:?}")),
+        _ => None,
+    }
+}
+
+#[cfg(not(feature = "brdb-full"))]
+fn gate_field_default(_gate_class: &str, _field: &str, _kind: &str) -> Option<String> {
+    None
+}
+
 fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
     if !word_is_named_arg_name(source, line, col) {
         return None;
@@ -235,6 +292,13 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
         let members = crate::catalog::enum_member_names(et).join(", ");
         if !members.is_empty() {
             v += &format!("\n\none of: {members}");
+        }
+    }
+    // The gate's registered default for this field, if any (enum params show the
+    // member name via `gate_field_default`'s enum resolution).
+    if let Some(kind) = scalar_kind_of(&p.ty) {
+        if let Some(d) = gate_field_default(spec.gate_class, p.port.as_str(), kind) {
+            v += &format!("\n\nDefault: `{d}`");
         }
     }
     Some(v)
@@ -818,8 +882,50 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
         }).collect();
         if !param_docs.is_empty() { parts.push(format!("**Parameters:**\n{}", param_docs.join("\n"))); }
     }
+    if let Some(table) = defaults_table(spec) { parts.push(table); }
     if let Some(t) = tags_line { parts.push(t); }
     Some(parts.join("\n\n"))
+}
+
+/// A markdown table of a gate's parameter/config defaults (from
+/// `gate_field_default`), or `None` if the gate registers none. Covers both the
+/// named parameters and the extra settings-menu config fields that aren't
+/// surfaced as params — the limits/sweep-style values you'd otherwise look up
+/// in-game.
+fn defaults_table(spec: &crate::catalog::calls::CallSpec) -> Option<String> {
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    for p in &spec.params {
+        if let Some(kind) = scalar_kind_of(&p.ty) {
+            if let Some(d) = gate_field_default(spec.gate_class, p.port.as_str(), kind) {
+                // An enum-backed config param shows its enum type, not bare `int`
+                // (matching the value, which is rendered as the member name).
+                let ty_label = crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| type_str(&p.ty));
+                rows.push((p.name.to_string(), ty_label, d));
+            }
+        }
+    }
+    // Settings-menu config fields not already listed as a param port.
+    for cfg in crate::catalog::scalar_config_fields(spec.gate_class) {
+        if spec.params.iter().any(|p| p.port.as_str() == cfg.name) {
+            continue;
+        }
+        if let Some(d) = gate_field_default(spec.gate_class, &cfg.name, &cfg.ty) {
+            let ty_label = crate::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
+                .map(str::to_string)
+                .unwrap_or_else(|| cfg.ty.clone());
+            rows.push((cfg.name.clone(), ty_label, d));
+        }
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    let mut t = String::from("**Defaults:**\n\n| Parameter | Type | Default |\n| --- | --- | --- |");
+    for (n, ty, d) in &rows {
+        t += &format!("\n| {n} | {ty} | {d} |");
+    }
+    Some(t)
 }
 
 /// `chip` or `mod` keyword: show exec/pure context and resource estimate.
@@ -1419,6 +1525,29 @@ mod tests {
             line,
             col,
         )
+    }
+
+    #[test]
+    fn builtin_hover_shows_default_values_table() {
+        // A gate hover surfaces its registered defaults (from brdb
+        // STRUCT_DEFAULTS) in a table — e.g. DisplayText's FontSize default.
+        let src = "in c: controller\nin go: exec\non go {\n  DisplayText(c, \"hi\")\n}";
+        let call_line = 3usize;
+        let col = src.lines().nth(call_line).unwrap().find("DisplayText").unwrap();
+        let h = hover_for(src, call_line, col).expect("DisplayText should hover");
+        assert!(h.contains("**Defaults:**"), "expected a defaults table: {h}");
+        assert!(h.contains("| Parameter | Type | Default |"), "expected table header: {h}");
+        assert!(h.contains("fontSize"), "expected FontSize default row: {h}");
+    }
+
+    #[test]
+    fn named_param_hover_shows_default_value() {
+        // Hovering a named arg (`fontSize = …`) shows that param's default.
+        let src = "in c: controller\nin go: exec\non go {\n  DisplayText(c, \"hi\", fontSize = 20)\n}";
+        let call_line = 3usize;
+        let col = src.lines().nth(call_line).unwrap().find("fontSize").unwrap();
+        let h = hover_for(src, call_line, col).expect("fontSize named arg should hover");
+        assert!(h.contains("Default: `"), "expected a default line: {h}");
     }
 
     #[test]

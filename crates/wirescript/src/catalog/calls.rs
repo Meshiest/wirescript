@@ -1984,6 +1984,17 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             vec![],
         ),
     );
+    // Force Respawn Player — immediately respawns the player. Exec, no outputs
+    // beyond ExecOut; the gate takes only the persistent player-state ref.
+    m.insert(
+        "ForceRespawn",
+        controller_exec(
+            "ForceRespawn",
+            gc::PLAYERSTATE_FORCE_RESPAWN,
+            vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
+            vec![],
+        ),
+    );
     m.insert(
         "HasPermission",
         controller_exec(
@@ -2687,6 +2698,23 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             outputs: vec![],
             receiver: None,
         },
+    );
+    // Non-spatial audio played to a single player (accepts a player character or
+    // persistent player reference). `player` is a wired entity input; the audio
+    // descriptor inlines into the AudioDescriptor config like the other Play* gates.
+    m.insert(
+        "PlayClientAudio",
+        entity_exec(
+            "PlayClientAudio",
+            gc::PLAY_CLIENT_AUDIO,
+            vec![
+                CallParam::req("player", WirePort::Player, Type::Entity),
+                CallParam::req("audio", WirePort::AudioDescriptor, Type::Entity),
+                CallParam::opt("volume", WirePort::VolumeMultiplier, Type::Float),
+                CallParam::opt("pitch", WirePort::PitchMultiplier, Type::Float),
+            ],
+            vec![],
+        ),
     );
 
     // ---- Entity tags --------------------------------------------
@@ -3440,6 +3468,7 @@ mod tests {
         "HasPermission.permission -> PermissionName",
         "HasRole.role -> RoleName",
         "PlayAudioAt.audio -> AudioDescriptor",
+        "PlayClientAudio.audio -> AudioDescriptor",
         "PlayGlobalAudio.audio -> AudioDescriptor",
         "SendCustomEvent.eventName -> EventName",
         "SendGlobalCustomEvent.eventName -> EventName",
@@ -3494,6 +3523,61 @@ mod tests {
             gone.is_empty(),
             "these are wireable now — drop them from DATA_ONLY_PARAMS: {gone:#?}"
         );
+    }
+
+    /// Companion to `every_call_param_targets_a_real_wire_input`, for the other
+    /// wire directions the param test doesn't cover: every CallSpec OUTPUT port,
+    /// and every EVENT exec-out / data / wired-input port, must name a real port
+    /// (right direction) on its gate per the inventory. A stale name here wires
+    /// to a slot the game doesn't have — a silent load failure.
+    #[test]
+    fn every_call_output_and_event_port_is_real() {
+        let cat = crate::catalog::default_catalog();
+        let ports = |names: &[crate::catalog::Port]| -> std::collections::HashSet<String> {
+            let mut s = std::collections::HashSet::new();
+            for p in names {
+                s.insert(p.name.clone());
+                if let Some(c) = &p.composite {
+                    s.extend(c.sub_ports.iter().cloned());
+                }
+            }
+            s
+        };
+        let mut bad: Vec<String> = Vec::new();
+        for (name, spec) in calls().iter() {
+            let Some(g) = cat.find_by_class(spec.gate_class) else {
+                continue;
+            };
+            let outs = ports(&g.component.outputs);
+            for o in &spec.outputs {
+                let port = o.port.as_str();
+                if port != "ExecOut" && !outs.contains(port) {
+                    bad.push(format!("call {name} output -> {port}"));
+                }
+            }
+        }
+        for (name, e) in crate::catalog::events::events().iter() {
+            let Some(g) = cat.find_by_class(e.gate_class) else {
+                continue;
+            };
+            let ins = ports(&g.component.inputs);
+            let outs = ports(&g.component.outputs);
+            if e.exec_out != "ExecOut" && !outs.contains(e.exec_out) {
+                bad.push(format!("event {name} exec_out -> {}", e.exec_out));
+            }
+            for d in &e.data {
+                if !outs.contains(d.port) {
+                    bad.push(format!("event {name} data -> {}", d.port));
+                }
+            }
+            for (_, port, _) in &e.input_named {
+                if *port != "Exec" && !ins.contains(*port) {
+                    bad.push(format!("event {name} input -> {port}"));
+                }
+            }
+        }
+        bad.sort();
+        assert!(bad.is_empty(), "ports that don't exist on their gate: {bad:#?}");
     }
 
     #[test]
