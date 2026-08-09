@@ -64,11 +64,11 @@ fn labels_attach_to_chip_var_and_io_bricks() {
     );
 
     // One label per named element — root chip, `counter`, `tick`, `result`,
-    // the `Foo` chip brick, Foo's internal `x`/`r` I/O gates, and Foo's
-    // synthesized `_exec_in`/`_exec_out` ports (both read `exec`, see
-    // microchip_io_label) — plus a smaller variable tag on the Var_Get and
-    // Var_Increment gates from the handler, plus the two invisible plane
-    // header bricks (root plane + Foo plane).
+    // the `Foo` chip brick, Foo's internal `x`/`r` I/O gates — plus a smaller
+    // variable tag on the handler's single `Var_Increment` gate (`counter =
+    // counter + 1` folds to one increment, no separate `Var_Get`), plus the two
+    // invisible plane header bricks (root plane + Foo plane). `Foo` is a pure
+    // chip, so it has no synthesized `_exec_in`/`_exec_out` ports.
     let labeled: Vec<String> = r
         .world
         .grids
@@ -86,8 +86,8 @@ fn labels_attach_to_chip_var_and_io_bricks() {
         .collect();
     assert_eq!(
         labeled.len(),
-        13,
-        "expected root + counter + tick + result + Foo + x + r + 2 exec ports + get/increment tags + 2 plane headers, got {labeled:#?}"
+        10,
+        "expected root + counter + tick + result + Foo + x + r + increment tag + 2 plane headers, got {labeled:#?}"
     );
 }
 
@@ -156,20 +156,19 @@ fn labels_serialize_with_style() {
     }
 
     texts.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // Element names at full size; the handler's Var_Get + Var_Increment
-    // gates carry smaller `counter` tags; Foo's synthesized `_exec_in`/
-    // `_exec_out` ports each read `exec`; the root and Foo planes each get an
+    // Element names at full size; the handler's single `Var_Increment` gate
+    // (`counter = counter + 1` folds to one increment, no separate `Var_Get`)
+    // carries a smaller `counter` tag; the root and Foo planes each get an
     // invisible header brick with a `<size="96">{title}</>` text (no doc
-    // comments here, so no lines follow the title).
+    // comments here, so no lines follow the title). `Foo` is a pure chip
+    // (`out r = x + 1`, called purely), so it has no `_exec_in`/`_exec_out`
+    // ports and no `exec` labels.
     let expected = [
         ("<size=\"96\">Foo</>", 2.4),
         ("<size=\"96\">labels</>", 2.4),
         ("Foo", 2.4),
         ("counter", 1.2),
-        ("counter", 1.2),
         ("counter", 2.4),
-        ("exec", 2.4),
-        ("exec", 2.4),
         ("labels", 2.4),
         ("r", 2.4),
         ("result", 2.4),

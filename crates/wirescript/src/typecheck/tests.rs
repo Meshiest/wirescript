@@ -36,6 +36,30 @@
     }
 
     #[test]
+    fn map_method_args_are_type_checked() {
+        // `m.set`/`m.get` must validate key/value args against the map's types —
+        // storing the map itself where an `entity` value is expected (the
+        // `prefabs.set(id, prefabs)` bug) is a WS003, not a dangling load wire.
+        let r = tc("var m: Map<string, entity>\nin go: exec\non go { m.set(\"x\", m) }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "map.set value mismatch must be WS003: {:?}",
+            r.diagnostics
+        );
+        // A wrong KEY type is caught too.
+        let rk = tc("var m: Map<string, int>\nin go: exec\non go { let v = m.get(m) }");
+        assert!(
+            rk.diagnostics.iter().any(|d| d.code == "WS003"),
+            "map.get key mismatch must be WS003: {:?}",
+            rk.diagnostics
+        );
+        // Matching types stay clean.
+        assert_no_diags(&tc(
+            "var m: Map<string, int>\nin go: exec\non go { m.set(\"x\", 5)\n  let v = m.get(\"x\") }",
+        ));
+    }
+
+    #[test]
     fn unknown_generic_errors() {
         let r = tc("mod f(x: Bogus<int>) { }");
         assert!(

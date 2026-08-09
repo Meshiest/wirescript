@@ -387,6 +387,40 @@ let rgt = input.Right      // float
 let jmp = input.Jump       // bool
 ```
 
+### Exec Field (`.exec`)
+
+`.exec` names the **exec output** of an exec-returning call. Use it whenever you
+need to reference that completion signal — to sequence on it (`await`), handle it
+(`on`), or wire it into another gate's `exec =`.
+
+Two cases resolve through `.exec`:
+
+- **A call that returns a bare `exec`.** Some builtins produce an exec whose
+  underlying port has a gate-specific name (e.g. a `Change` detector's exec port
+  is `OnChanged`). `.exec` denotes that exec directly:
+
+  ```wirescript
+  let ch = Change(score)     // exec — fires when `score` changes
+  on ch.exec {               // handle it
+    ctrl.DisplayText("score changed")
+  }
+  ```
+
+- **A chip or mod called with `exec =`.** An exec chip/mod call returns its
+  completion exec as an `.exec` field on the result record, so callers can
+  sequence on the body having finished:
+
+  ```wirescript
+  let t = InitTables(exec = reset)
+  on start {
+    emit reset
+    await t.exec             // resumes after InitTables ran
+  }
+  ```
+
+See [Explicit Exec Argument](exec-context.md#4-explicit-exec-argument) and
+[Exec Chips](chips.md#exec-chips).
+
 ## Index Access
 
 Use bracket notation to index into arrays:
@@ -425,6 +459,24 @@ DisplayText(ctrl, "Hello",
 ```
 
 Named arguments use `name = value` syntax. They can be mixed with positional arguments, but positional arguments must come first (matching the parameter order).
+
+**Running an exec gate with `exec = <trigger>`.** Any exec-gate call — a builtin
+like `Random`, an array/map method, or a user-defined exec chip/mod — accepts a
+reserved `exec = <trigger>` named argument that drives its exec input. This lets
+an exec gate run **outside** a handler: it fires each time the trigger's value
+changes rather than riding the surrounding exec chain, so the call becomes a leaf
+that is legal in a **pure** binding.
+
+```wirescript
+// Pure output binding — the get fires whenever `i` changes (i + 1 is never 0):
+out c: color = lut.get(i, exec = i + 1).Value
+
+// Outside any handler — provide the trigger explicitly:
+let r = Random(0, 10, exec = someTrigger)
+```
+
+Pair it with [`.exec`](#exec-field-exec) to sequence on the result. See
+[Explicit Exec Argument](exec-context.md#4-explicit-exec-argument).
 
 ```wirescript
 // First positional args, then named

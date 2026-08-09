@@ -3376,6 +3376,47 @@ fn infer_expr_inner(
                     Type::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
                     _ => (Type::Any, Type::Any),
                 };
+                // This path returns the result type directly and so bypasses
+                // `check_call_args` — so validate the key/value arguments against
+                // the map's types here. Without it `m.set(k, wrongType)` (e.g.
+                // storing the map itself where an `entity` value is expected) or
+                // `m.get(wrongKey)` type-checked clean and emitted a dangling
+                // wire that failed to connect at load.
+                let expected: Vec<(&str, Type)> = match field.as_str() {
+                    "set" => vec![("key", key.clone()), ("value", value.clone())],
+                    "get" | "has" | "remove" => vec![("key", key.clone())],
+                    "keys" => vec![("out", Type::Array(Box::new(key.clone())))],
+                    "values" => vec![("out", Type::Array(Box::new(value.clone())))],
+                    "copyFrom" => vec![(
+                        "source",
+                        Type::Map(Box::new(key.clone()), Box::new(value.clone())),
+                    )],
+                    _ => vec![],
+                };
+                let positional: Vec<&Expr> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        CallArg::Positional(e) => Some(e),
+                        _ => None,
+                    })
+                    .collect();
+                for (i, (pname, exp)) in expected.iter().enumerate() {
+                    if let Some(arg) = positional.get(i) {
+                        let arg_ty = unwrap_ref(&infer_expr(ctx, arg, tmap, omap));
+                        if coerce(&arg_ty, exp) == CoerceRule::Mismatch {
+                            ctx.emit(
+                                "WS003",
+                                format!(
+                                    "argument '{}': expected {}, got {}",
+                                    pname,
+                                    crate::analysis::types::type_str(exp),
+                                    crate::analysis::types::type_str(&arg_ty),
+                                ),
+                                arg.range().clone(),
+                            );
+                        }
+                    }
+                }
                 return crate::catalog::maps::map_return_type(field, &key, &value)
                     .unwrap_or(Type::Any);
             }

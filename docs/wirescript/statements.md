@@ -760,6 +760,23 @@ on moved {
 }
 ```
 
+### Triggering on Arbitrary Expressions
+
+The trigger can be any expression, not just a bare name — a comparison, a
+method or index result, or a builtin call. It desugars to a hidden `let` bound
+to the expression, and the handler fires when that value changes:
+
+```wirescript
+on health <= 0 { respawn() }            // comparison
+on a.Dot(b) > 0.0 { faceTarget() }      // method call inside the expression
+on arr[i] > 0 { ... }                   // index result
+on ServerUptime() > 5.0 { ... }         // builtin call in an expression
+```
+
+A builtin call that returns an `exec` (`on ServerUptime()`, `on Change(v)`)
+fires the handler on that exec — distinct from an event with config args
+(`on Clock(...)`), whose name resolves as an event and keeps its config form.
+
 ### Triggering on Let Bindings and Buffers
 
 ```wirescript

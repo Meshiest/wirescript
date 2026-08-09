@@ -828,13 +828,15 @@ controller.GetDisplayName() -> string
 controller.IsTrusted() -> bool
 controller.HasPermission(permission: string) -> bool
 controller.SetCanRespawn(canRespawn: bool)
+controller.ForceRespawn()
 controller.SetTeamPinned(pinned: bool)
 ```
 
 Read a player's account name, persistent user id, or current display name;
 check whether they are trusted by the brick owner or hold a named permission;
-toggle their ability to respawn; or pin them to their team. All receive on
-`controller`.
+toggle their ability to respawn or immediately respawn them (`ForceRespawn`,
+also callable as `ForceRespawn(player)`); or pin them to their team. All
+receive on `controller`.
 
 ## Broadcast Messaging (Exec)
 
@@ -858,12 +860,15 @@ on roundEnd {
 ```
 entity.PlayAudioAt(audio, volume?, pitch?, innerRadius?, maxDistance?, spatialized?)
 PlayGlobalAudio(audio, volume?, pitch?)
+player.PlayClientAudio(audio, volume?, pitch?)
 ```
 
-Play a one-shot sound at an entity's location (spatialized by default) or
-globally for all players. The `audio` arg is a
-`$BrickOneShotAudioDescriptor/...` asset reference. `PlayAudioAt` receives on
-`entity` (characters work too).
+Play a one-shot sound at an entity's location (spatialized by default),
+globally for all players, or non-spatially for a single player
+(`PlayClientAudio`, receiver on the player — a character or persistent player
+reference; also callable as `PlayClientAudio(player, audio, ...)`). The `audio`
+arg is a `$BrickOneShotAudioDescriptor/...` asset reference. `PlayAudioAt`
+receives on `entity` (characters work too).
 
 ```wirescript
 on ZoneEntered(character) {
@@ -1436,3 +1441,85 @@ value.
 
 Assigning a whole map from another map variable (`m = m2`) is not supported
 -- there is no whole-map-copy gate. Use `m.copyFrom(m2)` instead.
+
+## Exec-flow gates (Union / Branch)
+
+Two exec-signal combinators, callable like any other builtin:
+
+```
+Union(a: exec, b: exec) -> exec
+Branch(cond: bool, exec: exec) -> (A: exec, B: exec)
+```
+
+- **`Union(a, b)`** merges two exec signals into one — the result fires whenever
+  *either* input fires. Handy for running one handler from several triggers:
+
+  ```wirescript
+  let go = Union(init, Change(team))
+  on go { rebuild() }
+  ```
+
+- **`Branch(cond, exec)`** routes an incoming exec to `.A` or `.B` depending on
+  `cond` at the instant it fires (a runtime `if` for exec flow). Bind or trigger
+  on the named outputs:
+
+  ```wirescript
+  on Branch(isRed, tick).A { redTick() }
+  on Branch(isRed, tick).B { blueTick() }
+  ```
+
+## Callable gate builtins
+
+Every variable / array / map wire gate is also exposed as a plain function named
+after the in-game gate, alongside its method / operator / assignment form. The
+two forms are **identical** — the call desugars to the method or assignment at
+parse time — so pick whichever reads better. Named after the game gates for
+discoverability (and completion).
+
+**Variables**
+
+| Builtin | Same as |
+| --- | --- |
+| `GetVariable(v)` | `v` |
+| `SetVariable(v, x)` | `v = x` |
+| `IncrementVariable(v, n)` | `v = v + n` |
+
+**Arrays** — the function name maps to the [array method](#array-methods-exec) of
+the same operation; the receiver is the first argument:
+
+| Builtin | Same as | | Builtin | Same as |
+| --- | --- | --- | --- | --- |
+| `GetArrayElement(a, i)` | `a.get(i)` | | `SortArray(a, desc?)` | `a.sort(desc?)` |
+| `SetArrayElement(a, i, x)` | `a[i] = x` | | `ReverseArray(a)` | `a.reverse()` |
+| `PushToArray(a, x)` | `a.push(x)` | | `ShuffleArray(a)` | `a.shuffle()` |
+| `PopFromArray(a)` | `a.pop()` | | `SwapArrayElements(a, i, j)` | `a.swap(i, j)` |
+| `InsertArrayElement(a, i, x)` | `a.insert(i, x)` | | `SliceArray(a, src, s, n)` | `a.slice(src, s, n)` |
+| `RemoveArrayElement(a, i)` | `a.remove(i)` | | `AppendArray(a, src)` | `a.append(src)` |
+| `GetArrayLength(a)` | `a.length()` | | `CopyArray(a, src)` | `a.copyFrom(src)` |
+| `FindArrayElement(a, x)` | `a.find(x)` | | `SumArray(a)` | `a.sum()` |
+| `ClearArray(a)` | `a.clear()` | | `AverageArray(a)` | `a.average()` |
+| `FillArray(a, x)` | `a.fill(x)` | | `ArrayMaximum(a)` | `a.max()` |
+| `ResizeArray(a, n, x)` | `a.resize(n, x)` | | `ArrayMinimum(a)` | `a.min()` |
+
+**Array fills** (Gamemode / Zone gates — the function-call twins of the
+[`fillFrom*` array methods](#zone-array-fills-exec--array-methods)):
+
+| Builtin | Same as |
+| --- | --- |
+| `FillArrayFromPlayers(a)` | `a.fillFromPlayers()` |
+| `FillArrayFromTeamMembers(a, team)` | `a.fillFromTeam(team)` |
+| `GetPlayersInZone(a, zone, tagFilter?)` | `a.fillFromZonePlayers(zone, tagFilter?)` |
+| `GetEntitiesInZone(a, zone, tagFilter?)` | `a.fillFromZoneEntities(zone, tagFilter?)` |
+
+**Maps** — map to the [map methods](#maps-var-m-mapk-v) of the same name:
+
+| Builtin | Same as | | Builtin | Same as |
+| --- | --- | --- | --- | --- |
+| `GetMapElement(m, k)` | `m.get(k)` | | `ClearMap(m)` | `m.clear()` |
+| `SetMapElement(m, k, v)` | `m.set(k, v)` | | `CopyMap(m, src)` | `m.copyFrom(src)` |
+| `HasMapElement(m, k)` | `m.has(k)` | | `GetMapLength(m)` | `m.length()` |
+| `RemoveMapElement(m, k)` | `m.remove(k)` | | `GetMapKeys(m, out)` | `m.keys(out)` |
+| | | | `GetMapValues(m, out)` | `m.values(out)` |
+
+All array/map operations remain **exec-context only** (they run on the exec
+chain), exactly like their method forms.

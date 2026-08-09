@@ -64,6 +64,27 @@ either side certified `true` folds to `true` -- even when the other side is unkn
 compile time. This is the only case where a non-constant operand still lets a gate
 fold, and it draws solely from the table's whitelisted rules (nothing derived).
 
+## Constant inlining into gate data (always on)
+
+Independent of `@fold`: a **bare** constant wired into a gate's data field whose
+type matches the constant's type is written straight into that field and the
+wire dropped — no separate carrier gate. This runs before the fold pass and only
+on source literals (never fold-produced ones), so folding stays a structural
+no-op.
+
+- A constant gate *setting* bakes in: `on Clock(interval = 0.25)` stores `0.25`
+  in the Clock's `IntervalSeconds` data, and a constant `Sweep` distance,
+  `DisplayText` `fontSize`, etc. do the same. A **variable** value still wires
+  (so the setting stays dynamic).
+- A matching-type constant *operand* inlines too: the `0` in `x | 0`, a `false`
+  operand of `||`, and string literals into `str` fields (`Contains`'s search
+  text, an interpolation template) all bake into the gate instead of spawning a
+  throwaway carrier gate.
+- A **type mismatch** (e.g. a float constant into an `i64` field) does *not*
+  inline — it keeps a converting carrier gate. Wire-variant math inputs
+  (`+`/`-`/`*`) and `Vector`/`Rotator`/`Quat`/`Color` fields inline as wire
+  variants instead.
+
 ## Strings and composite values (wave 2)
 
 Folding now also covers `string` operators/methods and `vector`/`rotator`/`color`/`quat`

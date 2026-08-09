@@ -124,10 +124,21 @@ let r = Random(0, 10, exec = myTrigger)
 
 This wires `myTrigger` as the exec input of the Random gate.
 
+The same convention works for **any** exec gate — array and map methods
+included. Because the trigger, not the surrounding chain, drives the gate, the
+call becomes a *leaf* and is legal in a **pure** sink. A per-index,
+always-nonzero trigger like `i + 1` turns an array/map read into a single-gate
+lookup wired straight from an `out` binding:
+
+```wirescript
+out c: color = lut.get(i, exec = i + 1).Value   // pure — no handler needed
+let v = scores.get(k, exec = Change(k).exec)     // re-reads when k changes
+```
+
 The same convention applies to user-defined exec chips and mods: outside an
 exec context, pass their trigger as `exec = ...`. The call then also returns
-the completion exec as an `exec` field on the result record, so callers can
-`await r.exec` or `on r.exec { }`. See
+the completion exec as an [`.exec`](expressions.md#exec-field-exec) field on the
+result record, so callers can `await r.exec` or `on r.exec { }`. See
 [Exec Chips](chips.md#exec-chips).
 
 ## Reading Variables: Exec vs Pure
