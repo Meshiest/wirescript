@@ -66,6 +66,12 @@ pub mod sym {
     // Pseudo-property (not a game field): the declaration's source name,
     // carried on Var/ArrayVar nodes so emit can attach a text label.
     def!(NAME_LABEL, "_label");
+    // Pseudo-property (not a game field): a `let` binding's source name,
+    // carried on its value node so a cross-chip boundary pin can derive its
+    // label from the binding (`progress`, `init`) instead of a synthetic
+    // `ext1`/`ext2`. Read ONLY by `boundary_pins::derive_label` — emit's
+    // floating-label pass reads NAME_LABEL, so this never renders in-game.
+    def!(BINDING_NAME, "_bindname");
     // Pseudo-property (not a game field): the `@side` port annotation,
     // carried on MicrochipInput/Output nodes so emit can place an outer
     // rerouter. Never written to the brick.

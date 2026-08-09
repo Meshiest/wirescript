@@ -3197,6 +3197,36 @@ pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> b
     )
 }
 
+/// Whether the constant `lit` may be BAKED into this gate's data field named by
+/// `port` as a NATIVE scalar (dropping the carrying wire), i.e. `port` names a
+/// plain scalar field on the gate's data struct AND `lit`'s type matches the
+/// field's storage type. A matching constant is written into the gate's data and
+/// read from the unwired input — this is a native-scalar inline, distinct from
+/// the wire-variant inline in [`port_accepts_inline_variant`] (a plain `i64` /
+/// `bool` field can hold a native constant but NOT a wire variant). A TYPE
+/// MISMATCH (e.g. a float into an `i64` field) is rejected here, so it falls
+/// through to a carrier gate that supplies — and converts — the value over a
+/// wire. Enum / object / class / composite fields are not baked here.
+pub(crate) fn port_accepts_inline_scalar(gate_class: &str, port: WirePort, lit: &Literal) -> bool {
+    let Some((struct_name, fields, _)) = data_struct_for_gate(gate_class) else {
+        return false;
+    };
+    let field = port.as_str();
+    if !fields.contains(&field) {
+        return false;
+    }
+    matches!(
+        (schema_field_type_str(struct_name, field).as_deref(), lit),
+        (Some("bool"), Literal::Bool(_))
+            | (Some("f32" | "f64"), Literal::Float(_))
+            | (
+                Some("i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"),
+                Literal::Int(_),
+            )
+            | (Some("str"), Literal::String(_))
+    )
+}
+
 /// If the field's schema type is an enum, resolve `lit` to its integer
 /// discriminant. Accepts both `Literal::Int` (passthrough) and
 /// `Literal::String` (looked up by variant name, with or without the

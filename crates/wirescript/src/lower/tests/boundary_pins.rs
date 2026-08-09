@@ -706,3 +706,25 @@ fn a_pin_never_reuses_a_declared_ports_label() {
         pins[0]
     );
 }
+
+#[test]
+fn captured_let_pins_use_binding_name_not_ext() {
+    // A nested chip that reads an outer `let` gets a boundary pin named after
+    // the binding (`base`) via the `BINDING_NAME` hint — not a synthetic
+    // `ext1`/`ext2`. (Mirrors `array_element_crossing_never_leaks_the_internal_note`,
+    // the case where a `let`'s source node carries no identifier of its own.)
+    let r = lowered(
+        "var g: int = 0\nin go: exec\non go {\n  let base = g + 100\n  \
+         chip {\n    PrintToConsole(\"${base}\")\n  }\n}\n",
+    );
+    let mut labels = Vec::new();
+    collect_pin_labels(&r.module, &mut labels);
+    assert!(
+        !labels.is_empty(),
+        "expected a boundary pin for the captured let"
+    );
+    assert!(
+        labels.iter().any(|l| l == "base"),
+        "captured let pin must be named 'base', not ext1/ext2; got {labels:?}"
+    );
+}

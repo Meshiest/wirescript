@@ -101,18 +101,71 @@ fn annihilator_folds_with_unknown_side() {
                 == Some(&crate::ir::Literal::Bool(false))
     });
     assert!(folded_to_false, "annihilator must compute false, not true (or stay unresolved)");
-    // OR-true has no false-annihilator: `Opaque(x) || false` must NOT fold.
-    // Baseline is 2 real LogicalOR gates, not 1, REGARDLESS of this pass (the
-    // `compile()`-unfolded baseline has the same shape): the game's
-    // LogicalOR gate can't hold its BInputB as an inline data default, so
-    // even the literal `false` RHS operand materializes its own carrier
-    // LogicalOR (same mechanism as the Bool case in
-    // `materialize_unfoldable_constants`). What matters here is that this
-    // count doesn't DROP to 0/1-collapsed-to-a-literal — it must equal the
-    // unfolded baseline exactly, proving the outer `||` stayed real.
+    // OR-true has no false-annihilator: `Opaque(x) || false` must NOT collapse.
+    // The bare `false` RHS is a native `bool` constant, so it inlines directly
+    // into the outer LogicalOR's `bInputB` data (a plain `bool` field holds a
+    // matching constant — see `emit::port_accepts_inline_scalar`) with no carrier
+    // gate: ONE real LogicalOR carrying a baked false operand. What matters is
+    // that the outer `||` stays a real gate (didn't fold to a literal), proving
+    // `|| false` isn't annihilated.
     let r2 = compile_folded("var b: bool = true\nout y = Opaque(b) || false");
     no_errors(&r2);
-    assert_eq!(count_class(&r2.module, "BrickComponentType_WireGraph_Expr_LogicalOR"), 2);
+    assert_eq!(count_class(&r2.module, "BrickComponentType_WireGraph_Expr_LogicalOR"), 1);
+    assert!(
+        r2.module.nodes.values().any(|n| n.gate_class
+            == "BrickComponentType_WireGraph_Expr_LogicalOR"
+            && n.properties.get(&crate::intern::intern("bInputB"))
+                == Some(&crate::ir::Literal::Bool(false))),
+        "the outer OR bakes its false operand into bInputB (no carrier)"
+    );
+}
+
+#[test]
+fn constant_bitwise_operand_inlines_not_carrier() {
+    // A bitwise gate stores its operands as plain `i64`, so a native-int
+    // constant operand (the `0` in `x | 0`) inlines into the gate's `InputB`
+    // data rather than materializing a `MathAdd(0, 0)` carrier — the fix for the
+    // `(pointPercent * progLen) | 0` truncation idiom's stray add gate.
+    let r = compile_folded("var x: int = 3\nout y = x | 0");
+    no_errors(&r);
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_BitwiseOR"),
+        1
+    );
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        0,
+        "the constant 0 must inline, not spawn a MathAdd(0, 0) carrier"
+    );
+    assert!(
+        r.module.nodes.values().any(|n| n.gate_class
+            == "BrickComponentType_WireGraph_Expr_BitwiseOR"
+            && n.properties.get(&crate::intern::intern("InputB"))
+                == Some(&crate::ir::Literal::Int(0))),
+        "the OR bakes its 0 operand into InputB"
+    );
+}
+
+#[test]
+fn constant_string_operand_inlines_not_carrier() {
+    // A `str` field holds a matching String constant, so a constant string
+    // operand (`Contains`'s search text, an interpolation template's literal
+    // parts) bakes into the gate's data rather than materializing a
+    // `String_Concatenate` carrier.
+    let r = compile_folded("var x: string = \"\"\nout z = x.Contains(\"foo\")");
+    no_errors(&r);
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_String_Concatenate"),
+        0,
+        "the constant search string must inline, not spawn a String_Concatenate carrier"
+    );
+    assert!(
+        r.module.nodes.values().any(|n| n.gate_class
+            == "BrickComponentType_WireGraph_Expr_String_Contains"
+            && n.properties.get(&crate::intern::intern("Search"))
+                == Some(&crate::ir::Literal::String("foo".to_string()))),
+        "Contains bakes its search string into the Search field"
+    );
 }
 
 // `uncovered_signature_stays_unfolded` (brief: `out y = "a" + 1`) is deleted
@@ -958,14 +1011,15 @@ fn make_rotation_does_not_fold() {
     );
     no_errors(&r);
     assert_eq!(count_class(&r.module, gc::MAKE_ROTATION), 1);
-    // Each `X.0 + 0.0` operand DOES still fold (to a `_Literal(Float)`), but
-    // MakeRotation's Pitch/Yaw/Roll fields don't accept inlined data (unlike
-    // e.g. a native `Vector`/`Rotator`/`Quat` struct field — see
-    // `emit::port_accepts_inline_variant`), so each folded operand
-    // re-materializes as a fully-baked (no incoming wire), same-class
-    // MathAdd(n, 0) carrier — the SAME mechanism proven by
-    // `cross_chip_constant_folds_inside_named_chip`. What matters here is
-    // MakeRotation itself: it must never become a `_Literal`.
+    // Each `X.0 + 0.0` operand is a FOLDED expression, not a bare source
+    // literal, so it never reaches `inline_bare_scalar_literals` (which runs
+    // before folding and only inlines source literals into a matching-type
+    // field). It folds to a `_Literal(Float)` during folding, which then
+    // re-materializes post-fold as a fully-baked (no incoming wire) MathAdd(n, 0)
+    // carrier — the SAME mechanism proven by
+    // `cross_chip_constant_folds_inside_named_chip`, and what keeps folding a
+    // structural no-op (an unfolded `X.0 + 0.0` is likewise a MathAdd gate).
+    // What matters here is MakeRotation itself: it must never become a `_Literal`.
     assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 3);
     let all_baked = r.module.nodes.values()
         .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")

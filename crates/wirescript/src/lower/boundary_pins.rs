@@ -322,8 +322,9 @@ fn source_port_type(root: &Module, sp: &[NodeId], src: PortRef) -> Option<Type> 
 
 /// The referenced identifier, when the source node has one — `NAME_LABEL`
 /// (a var/array/param's own declared name) first, then `PORT_LABEL` (an
-/// upstream pin's already-resolved label). Returns an empty string when
-/// neither is present; callers must not fall back to `Node.note` or the
+/// upstream pin's already-resolved label), then `BINDING_NAME` (a `let`
+/// binding's name, tagged on its value node). Returns an empty string when
+/// none is present; callers must not fall back to `Node.note` or the
 /// gate class, since both are internal implementation strings, not
 /// something a player would recognize in-game. `assign_pin_labels` turns
 /// any empty result into a synthetic name after all pins for this module
@@ -338,6 +339,7 @@ fn derive_label(root: &Module, sp: &[NodeId], src: NodeId) -> String {
     };
     get_str(*sym::NAME_LABEL)
         .or_else(|| get_str(*sym::PORT_LABEL))
+        .or_else(|| get_str(*sym::BINDING_NAME))
         .unwrap_or_default()
 }
 

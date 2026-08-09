@@ -215,6 +215,14 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         FoldMode::ForceOn => !input.ast.no_fold,
         FoldMode::Auto => input.ast.fold && !input.ast.no_fold,
     };
+    // Inline a bare source literal into a gate's scalar data field when its type
+    // matches (a constant `on Clock(interval = 0.25)`, a `Sweep` distance, the
+    // `0` in `x | 0`, …) BEFORE folding: at this point only source literals
+    // exist, never fold-produced ones, so the pass does the same thing whether or
+    // not folding runs — keeping fold a structural no-op. A folded constant
+    // EXPRESSION is untouched here and still materializes a carrier below
+    // (matching the unfolded compute gate), so the fold invariant holds.
+    inline_bare_scalar_literals(&mut module);
     if run_fold {
         fold::fold_certified_constants(&mut module);
     }
@@ -331,6 +339,61 @@ fn collect_generic_type_aliases(
 /// unmapped gates — this pass materializes the real `Make*` gate (component
 /// values baked into its data struct) and re-points those wires at it, so a
 /// folded constant is never silently dropped. Recurses into chip sub-modules.
+/// Inline a bare source literal wired into a gate's scalar data field, when the
+/// literal's type matches the field's native storage type
+/// (`port_accepts_inline_scalar`), by writing it into the gate's data and
+/// dropping the wire — so a constant settings value or a matching operand (the
+/// `0` in `x | 0`) needs no carrier gate. Runs BEFORE the fold pass, so it only
+/// ever sees source literals — never fold-produced ones — which makes it behave
+/// identically with or without folding (the fold pass stays a structural no-op);
+/// a folded constant EXPRESSION still materializes a carrier in
+/// `materialize_unfoldable_constants` (matching the unfolded compute gate).
+/// Type-mismatched constants and data-only ports are left to that pass too.
+/// Recurses into chip sub-modules.
+fn inline_bare_scalar_literals(module: &mut Module) {
+    let value_sym = *sym::VALUE;
+    let mut inlines: Vec<(usize, crate::ir::NodeId, WirePort, Literal)> = Vec::new();
+    for (i, w) in module.wires.iter().enumerate() {
+        let Some(src) = module.nodes.get(&w.source.node_id) else {
+            continue;
+        };
+        if src.gate_class != gc::LITERAL {
+            continue;
+        }
+        let lit = match src.properties.get(&value_sym) {
+            Some(
+                l @ (Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) | Literal::String(_)),
+            ) => l.clone(),
+            _ => continue,
+        };
+        let Some(target) = module.nodes.get(&w.target.node_id) else {
+            continue;
+        };
+        if !crate::catalog::is_wire_input(target.gate_class, w.target.port.as_str()) {
+            continue;
+        }
+        if !crate::emit::port_accepts_inline_scalar(target.gate_class, w.target.port, &lit) {
+            continue;
+        }
+        inlines.push((i, w.target.node_id, w.target.port, lit));
+    }
+    let mut drop_wires: Vec<usize> = Vec::with_capacity(inlines.len());
+    for (i, target_id, port, lit) in inlines {
+        if let Some(target) = module.nodes.get_mut(&target_id) {
+            std::sync::Arc::make_mut(&mut target.properties).insert(intern(port.as_str()), lit);
+            drop_wires.push(i);
+        }
+    }
+    drop_wires.sort_unstable();
+    drop_wires.dedup();
+    for i in drop_wires.into_iter().rev() {
+        module.wires.remove(i);
+    }
+    for child in module.chips.values_mut() {
+        inline_bare_scalar_literals(child);
+    }
+}
+
 fn materialize_unfoldable_constants(module: &mut Module) {
     use crate::ir::{Node, NodeId, NodeKind, PortRef, PortSpec};
     let value_sym = *sym::VALUE;

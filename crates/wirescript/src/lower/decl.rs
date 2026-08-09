@@ -480,6 +480,22 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
 
     match &d.binding {
         LetBinding::Ident { name, .. } => {
+            // Tag this `let`'s value node with the binding name, so a boundary
+            // pin that later captures it across a chip edge derives its label
+            // from `progress`/`init` rather than a synthetic `ext1`/`ext2`.
+            // Derivation-only (emit ignores it), and it never overrides a node
+            // that already carries a name (a var/param keeps its own).
+            if let Some(node) = ctx.builder.module.nodes.get_mut(&rhs_port.node_id) {
+                let props = std::sync::Arc::make_mut(&mut node.properties);
+                if !props.contains_key(&*crate::intern::sym::NAME_LABEL)
+                    && !props.contains_key(&*crate::intern::sym::BINDING_NAME)
+                {
+                    props.insert(
+                        *crate::intern::sym::BINDING_NAME,
+                        crate::ir::Literal::String(name.clone()),
+                    );
+                }
+            }
             ctx.scope
                 .insert(&name, Binding::Local(LocalRecord { port: rhs_port }));
         }

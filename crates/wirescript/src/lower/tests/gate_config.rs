@@ -145,15 +145,23 @@ fn display_text_font_ref_lands_as_data() {
 #[test]
 fn clock_event_config_lands_as_data() {
     // Clock is an event: the body chains from its Pulse; `interval`/`enabled`
-    // wire into IntervalSeconds/bEnabled; pulseOn/onTime/offTime are constant
-    // settings-menu config (these bake as data).
+    // are wire inputs (so they MAY be dynamic) but a CONSTANT value bakes into
+    // the gate's scalar data default — no carrier gate — just like the
+    // pulseOn/onTime/offTime settings-menu config. A variable value would wire.
     let src = "static var n: int = 0\non Clock(interval = 2.0, enabled = true, pulseOn = false, onTime = 0.5, offTime = 0.5) {\n  n = n + 1\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
     let c = "BrickComponentType_Clock";
     assert!(has_gate(&r, c), "Clock gate placed");
-    // `enabled` is now a wire input, not baked config.
-    assert!(prop(&r, c, "bEnabled").is_none());
+    // Constant interval/enabled bake into their scalar wire-input data (no carrier).
+    assert!(
+        matches!(prop(&r, c, "IntervalSeconds"), Some(Literal::Float(f)) if (*f - 2.0).abs() < 1e-9)
+    );
+    assert!(matches!(prop(&r, c, "bEnabled"), Some(Literal::Bool(true))));
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        "a constant interval must bake, not materialize a carrier"
+    );
     assert!(matches!(
         prop(&r, c, "bPulseOn"),
         Some(Literal::Bool(false))
@@ -163,6 +171,32 @@ fn clock_event_config_lands_as_data() {
     );
     assert!(
         matches!(prop(&r, c, "OffTimeSeconds"), Some(Literal::Float(f)) if (*f - 0.5).abs() < 1e-9)
+    );
+}
+
+#[test]
+fn dynamic_clock_interval_stays_wired() {
+    // Only a CONSTANT setting bakes; a variable `interval` must still wire into
+    // IntervalSeconds so the clock rate can change at runtime.
+    let src = "static var rate: float = 0.5\non Clock(interval = rate) {\n  rate = rate\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let c = "BrickComponentType_Clock";
+    // No baked interval, and a real wire feeds IntervalSeconds.
+    assert!(prop(&r, c, "IntervalSeconds").is_none());
+    let clock_id = r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class == c)
+        .map(|(id, _)| *id)
+        .unwrap();
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == clock_id && w.target.port.as_str() == "IntervalSeconds"),
+        "a variable interval must stay wired"
     );
 }
 
