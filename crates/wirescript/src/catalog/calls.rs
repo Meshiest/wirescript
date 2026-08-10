@@ -310,13 +310,21 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![
                 CallParam::req("target", WirePort::PlayerState, Type::Controller),
                 CallParam::req("text", WirePort::Text, Type::Any),
-                // 2D layout ports (the gate takes an {X,Y}); pass a vector, whose
-                // X/Y are used.
-                CallParam::opt("position", WirePort::Position, Type::Vector),
-                CallParam::opt("anchor", WirePort::Anchor, Type::Vector),
-                CallParam::opt("scale", WirePort::Scale, Type::Vector),
-                CallParam::opt("pivot", WirePort::Pivot, Type::Vector),
-                CallParam::opt("shadowOffset", WirePort::ShadowOffset, Type::Vector),
+                // 2D layout ports are Vector2D composites (X/Y sub-ports): set
+                // each axis with a float. A constant axis bakes the parent
+                // Vector2D data field (unset axis from STRUCT_DEFAULTS); a
+                // runtime value wires the `Position.X` / `Position.Y` sub-port.
+                // (Assembly + wiring in lower/call.rs.)
+                CallParam::opt("positionX", WirePort::PositionX, Type::Float),
+                CallParam::opt("positionY", WirePort::PositionY, Type::Float),
+                CallParam::opt("anchorX", WirePort::AnchorX, Type::Float),
+                CallParam::opt("anchorY", WirePort::AnchorY, Type::Float),
+                CallParam::opt("scaleX", WirePort::ScaleX, Type::Float),
+                CallParam::opt("scaleY", WirePort::ScaleY, Type::Float),
+                CallParam::opt("pivotX", WirePort::PivotX, Type::Float),
+                CallParam::opt("pivotY", WirePort::PivotY, Type::Float),
+                CallParam::opt("shadowOffsetX", WirePort::ShadowOffsetX, Type::Float),
+                CallParam::opt("shadowOffsetY", WirePort::ShadowOffsetY, Type::Float),
                 CallParam::opt("angle", WirePort::Angle, Type::Float),
                 CallParam::opt("outlineSize", WirePort::OutlineSize, Type::Int),
                 CallParam::opt("outlineColor", WirePort::OutlineColor, Type::Color),

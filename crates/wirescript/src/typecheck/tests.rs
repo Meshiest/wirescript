@@ -60,6 +60,135 @@
     }
 
     #[test]
+    fn map_method_missing_args_are_ws011() {
+        // Map methods have fixed params (no variadics), so a MISSING arg must
+        // be caught by arity (WS011) — the old ad-hoc validator only coerced
+        // the args that were present, so `m.set("k")` (no value) type-checked
+        // clean and emitted a dangling wire at load.
+        let rs = tc("var m: Map<string, int>\nin s: exec\non s { m.set(\"k\") }");
+        assert!(
+            rs.diagnostics.iter().any(|d| d.code == "WS011"),
+            "map.set missing value must be WS011: {:?}",
+            rs.diagnostics
+        );
+        let rg = tc("var m: Map<string, int>\nin s: exec\non s { let g = m.get() }");
+        assert!(
+            rg.diagnostics.iter().any(|d| d.code == "WS011"),
+            "map.get missing key must be WS011: {:?}",
+            rg.diagnostics
+        );
+        let rk = tc("var m: Map<string, int>\nin s: exec\non s { let g = m.keys() }");
+        assert!(
+            rk.diagnostics.iter().any(|d| d.code == "WS011"),
+            "map.keys missing dest array must be WS011: {:?}",
+            rk.diagnostics
+        );
+        // Type-mismatch checks (WS003) must still fire — regression coverage
+        // alongside `map_method_args_are_type_checked` above.
+        let rv = tc("var m: Map<string, int>\nin s: exec\non s { m.set(\"k\", \"v\") }");
+        assert!(
+            rv.diagnostics.iter().any(|d| d.code == "WS003"),
+            "map.set value mismatch must be WS003: {:?}",
+            rv.diagnostics
+        );
+        let rke = tc("var m: Map<string, int>\nin s: exec\non s { let g = m.get(m) }");
+        assert!(
+            rke.diagnostics.iter().any(|d| d.code == "WS003"),
+            "map.get key mismatch must be WS003: {:?}",
+            rke.diagnostics
+        );
+        // Fully-supplied, correctly-typed calls stay clean.
+        assert_no_diags(&tc(
+            "var m: Map<string, int>\nin s: exec\non s { m.set(\"k\", 1)\n  let g = m.get(\"k\") }",
+        ));
+        assert_no_diags(&tc(
+            "var m: Map<string, int>\nvar destArr: string[]\nin s: exec\non s { m.keys(destArr) }",
+        ));
+    }
+
+    #[test]
+    fn array_method_args_are_type_checked() {
+        // Array-method call arguments were never routed through `check_args`,
+        // so a mismatched arg (e.g. a string pushed onto an `int[]`) type
+        // checked clean and emitted a mistyped/dangling pin at lower time.
+        let r = tc("var xs: int[]\nin s: exec\non s { xs.push(\"a\") }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "arr.push(wrongType) must be WS003: {:?}",
+            r.diagnostics
+        );
+        // A wrong INDEX type is caught too.
+        let ri = tc("var xs: int[]\nin s: exec\non s { xs.insert(\"i\", 1) }");
+        assert!(
+            ri.diagnostics.iter().any(|d| d.code == "WS003"),
+            "arr.insert(wrongIndexType, _) must be WS003: {:?}",
+            ri.diagnostics
+        );
+        // Correctly-typed calls stay clean.
+        assert_no_diags(&tc(
+            "var xs: int[]\nin s: exec\non s { xs.push(1)\n  xs.insert(0, 2)\n  let v = xs.get(0) }",
+        ));
+        // `pop` takes no args — an extra positional arg is a WS011 arity error.
+        let rp = tc("var xs: int[]\nin s: exec\non s { xs.pop(5) }");
+        assert!(
+            rp.diagnostics.iter().any(|d| d.code == "WS011"),
+            "arr.pop(extraArg) must be WS011: {:?}",
+            rp.diagnostics
+        );
+        // `sortMultiple` is a true variadic (empty declared params, opting it
+        // out of arity checking) — passing parallel arrays must stay clean,
+        // not wrongly fire "expects at most 0, got N".
+        assert_no_diags(&tc(
+            "var xs: int[]\nin s: exec\non s { xs.sortMultiple(xs, xs) }",
+        ));
+        // The `exec = <trigger>` named arg on an array read in a pure binding
+        // must not trip arity or type checking.
+        assert_no_diags(&tc(
+            "var lut: color[]\nin i: int\nout c: color = lut.get(i, exec = i + 1).Value",
+        ));
+    }
+
+    #[test]
+    fn fill_from_zone_requires_zone_not_entity() {
+        // `fillFromZone*`'s zone param is `zone` ONLY — the `Zone` slot never
+        // accepts a plain entity, only a zone rerouter reference (`in z: zone`
+        // → `Type::Zone`). The `z: zone` form, with and without the optional
+        // tagFilter, type-checks clean:
+        assert_no_diags(&tc(
+            "in z: zone\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(z) }",
+        ));
+        assert_no_diags(&tc(
+            "in z: zone\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(z, \"red\") }",
+        ));
+        assert_no_diags(&tc(
+            "in z: zone\nvar ents: entity[]\nin s: exec\non s { ents.fillFromZoneEntities(z, \"tag\") }",
+        ));
+        // A plain `entity` in the zone slot is REJECTED (entity does not coerce
+        // to zone) — the whole point of the `zone`-only param.
+        let r = tc("in e: entity\nvar players: character[]\nin s: exec\non s { players.fillFromZonePlayers(e) }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "an entity in a zone slot must be WS003: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn pure_chip_stmt_records_var_read_as_pure() {
+        // A `let` inside a pure `chip { }` — even one that follows a handler, so
+        // the chip is exec-wrapped — reads its vars continuously. The read must
+        // record as PURE in `var_read_contexts` (false), or the hover shows the
+        // wrong exec context. (Mirrors the lowering's per-statement chip purity.)
+        let r = tc("var v: int = 0\nin go: exec\non go { v = 5 }\nchip { let x = v + 1 }\nout r: int = x");
+        assert!(!r.var_read_contexts.is_empty(), "no var reads recorded");
+        assert!(
+            r.var_read_contexts.values().all(|&is_exec| !is_exec),
+            "a pure chip's var read was recorded as exec: {:?}",
+            r.var_read_contexts
+        );
+    }
+
+    #[test]
     fn unknown_generic_errors() {
         let r = tc("mod f(x: Bogus<int>) { }");
         assert!(
@@ -151,6 +280,35 @@
         assert!(
             !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
             "nested prefab as SpawnPrefab arg should typecheck: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn body_local_prefab_let_reaches_spawn_prefab() {
+        // A prefab bound to a body-local `let` is a constant and must be
+        // accepted by SpawnPrefab's constant-only `prefab=` config param.
+        let r = tc("in go: exec\non go { let pf = $./foo.brz\n  SpawnPrefab(prefab = pf) }");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn top_level_prefab_let_reaches_spawn_prefab() {
+        let r = tc("let pf = $./foo.brz\nin go: exec\non go { SpawnPrefab(prefab = pf) }");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn var_prefab_still_rejected_as_ws028() {
+        // A genuine runtime `var` (never a compile-time constant, regardless
+        // of its initializer) must still be rejected — the scoped-const fix
+        // must not weaken constant-only enforcement for `prefab=`.
+        let r = tc(
+            "var pf: string = \"x\"\nin go: exec\non go { SpawnPrefab(prefab = pf) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS028"),
+            "a var in constant-only 'prefab=' must still be WS028: {:?}",
             r.diagnostics
         );
     }
@@ -291,6 +449,92 @@
             !ok.diagnostics.iter().any(|d| d.code == "WS022"),
             "matching arity must NOT emit WS022; got {:?}",
             ok.diagnostics
+        );
+    }
+
+    // ---- Task 5: user mod/chip + self-receiver calls routed through
+    // `check_args` (regression tests written BEFORE the swap; they pass
+    // against the pre-swap inline coerce loop too — see typecheck.rs) ----
+
+    #[test]
+    fn ucc_non_generic_mod_arg_type_mismatch_is_ws003() {
+        // `f(v: vector)` called with an int literal must still be caught —
+        // proves the (post-swap) `check_args` path still validates a plain
+        // user-mod call's positional args, and that arity stays WS022-only
+        // (no spurious WS011 from `check_args`'s own arity check).
+        let r = tc("mod f(v: vector) { }\nin z: exec\non z { f(5) }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "user-mod arg type mismatch must be WS003; got {:?}",
+            r.diagnostics
+        );
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS011"),
+            "user-mod calls must never emit check_args's own WS011 arity code; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ucc_non_generic_mod_valid_call_is_clean() {
+        let r = tc("mod f(v: vector) { }\nin p: vector\nin z: exec\non z { f(p) }");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn ucc_generic_conflict_still_ws033_not_ws003() {
+        // Same shape as `ws033_conflict_incompatible_arg_types`: inference
+        // fails, so the param's type stays an unresolved `Type::Param`,
+        // which the coerce path must keep skipping rather than coercing
+        // against the raw `T` and emitting a spurious WS003 alongside it.
+        let r = tc(
+            "in flag: bool\nin v: vector\n\
+             mod pick<T>(c: bool, a: T, b: T) -> T { return a }\n\
+             let x = pick(flag, 1, v)\n",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS033"),
+            "expected WS033: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a failed generic inference must not also emit a spurious WS003; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ucc_self_receiver_arg_type_checked() {
+        let clean = tc(
+            "mod dist(self: vector, o: vector) -> float { return 0.0 }\n\
+             in a: vector\nin b: vector\nin z: exec\non z { let d = a.dist(b) }",
+        );
+        assert_no_diags(&clean);
+
+        let bad = tc(
+            "mod dist(self: vector, o: vector) -> float { return 0.0 }\n\
+             in a: vector\nin z: exec\non z { let d = a.dist(5) }",
+        );
+        assert!(
+            bad.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a self-receiver call with a mismatched arg must be WS003; got {:?}",
+            bad.diagnostics
+        );
+    }
+
+    #[test]
+    fn ucc_self_receiver_mismatched_receiver_is_ws003() {
+        // The receiver binds to `self` as positional arg 0 — a receiver of
+        // the wrong type must be caught too, not just the trailing args.
+        let r = tc(
+            "mod dist(self: vector, o: vector) -> float { return 0.0 }\n\
+             in n: int\nin b: vector\nin z: exec\non z { let d = n.dist(b) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a mismatched self-receiver must be WS003; got {:?}",
+            r.diagnostics
         );
     }
 
@@ -647,6 +891,47 @@
         );
     }
 
+    // ---- Task 4: builtin/receiver calls routed through `check_args` ----
+    #[test]
+    fn call_too_few_args() {
+        // Fewer positional args than a builtin requires — the "requires N
+        // args" WS011 branch (call_too_many_args above exercises the
+        // "expects at most" branch).
+        let r = tc("in e: entity\non RoundStart { SetLocation(e) }");
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS011"));
+    }
+
+    #[test]
+    fn receiver_call_wrong_arg_type() {
+        // A receiver-method arg mismatch (`e.SetLocation(5)` — `pos` expects
+        // a vector) must fire the same WS003 the plain-call form does.
+        let r = tc("in e: entity\non RoundStart { e.SetLocation(5) }");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS003" && d.message.contains("argument"))
+        );
+    }
+
+    #[test]
+    fn receiver_call_valid_stays_clean() {
+        let r = tc("in e: entity\non RoundStart { e.SetLocation(Vec(0.0, 0.0, 0.0)) }");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn enum_config_arg_still_validates() {
+        // A bad enum-member name on a config (non-wire) param — `Easing`'s
+        // `function` — must still be rejected as WS028 once the builtin arm
+        // routes through the unified call checker.
+        let r = tc("in t: float\nlet e = Easing(0.0, 1.0, t, function = Bogus)\n");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS028"),
+            "bad enum config member must be WS028: {:?}",
+            r.diagnostics
+        );
+    }
+
     // ---- namespace import ----
     #[test]
     fn namespace_symbol_registered() {
@@ -658,6 +943,99 @@
         };
         let resolved = resolve("import * as lib from \"lib\"", "main.ws", &loader);
         let r = typecheck(&resolved.ast, "main.ws");
+        assert_no_diags(&r);
+    }
+
+    // ---- namespace call argument checking (acceptance #2) ----
+    // A namespaced call `ns.f(args)` previously routed straight to the
+    // member's return type with NO argument checking at all — wrong types
+    // and wrong arity were silent miscompiles. These pin `check_args` being
+    // wired into the namespace call arm.
+
+    fn ns_util_loader() -> crate::resolve::MemLoader {
+        crate::resolve::MemLoader {
+            files: [("util.ws".into(), "mod f(v: vector) { }".into())]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn namespace_call_wrong_arg_type_is_ws003() {
+        use crate::resolve::resolve;
+        let loader = ns_util_loader();
+        let resolved = resolve(
+            "import * as u from \"util\"\non RoundStart { u.f(5) }",
+            "main.ws",
+            &loader,
+        );
+        let r = typecheck(&resolved.ast, "main.ws");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "expected WS003 for namespaced call arg type mismatch: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn namespace_call_wrong_arity_is_ws011() {
+        use crate::resolve::resolve;
+        let loader = ns_util_loader();
+        let resolved = resolve(
+            "import * as u from \"util\"\non RoundStart { u.f() }",
+            "main.ws",
+            &loader,
+        );
+        let r = typecheck(&resolved.ast, "main.ws");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS011"),
+            "expected WS011 for namespaced call arity mismatch: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn namespace_call_valid_stays_clean() {
+        use crate::resolve::resolve;
+        let loader = ns_util_loader();
+        let resolved = resolve(
+            "import * as u from \"util\"\non RoundStart { u.f(Vec(0.0, 0.0, 0.0)) }",
+            "main.ws",
+            &loader,
+        );
+        let r = typecheck(&resolved.ast, "main.ws");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn namespace_import_of_uncalled_generic_member_is_clean() {
+        // Regression: populating `NsDeclInfo.params` eagerly resolves a
+        // member's param types at import time. A GENERIC member's params
+        // reference its own type params (`a: T`), so the population loop must
+        // push those type params into scope first — otherwise merely
+        // importing the namespace (member never called) wrongly emits WS002
+        // "unknown type 'T'". Assert a bare import compiles clean.
+        use crate::resolve::resolve;
+        let loader = crate::resolve::MemLoader {
+            files: [(
+                "gutil.ws".into(),
+                "mod maxT<T: Numeric>(a: T, b: T) -> T { return a }".into(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let resolved = resolve(
+            "import * as g from \"gutil\"\non RoundStart { }",
+            "main.ws",
+            &loader,
+        );
+        let r = typecheck(&resolved.ast, "main.ws");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS002"),
+            "importing a namespace with an uncalled generic member must not \
+             emit WS002: {:?}",
+            r.diagnostics
+        );
         assert_no_diags(&r);
     }
 
@@ -957,7 +1335,7 @@
 
     // ---- string -> bool must NOT chain transitively into numerics ----
     //
-    // Every consumer of `coerce()` (expect_coerce, check_call_args,
+    // Every consumer of `coerce()` (infer::coerce_or_emit, sig::check_args,
     // check_let_type_annotation, unify_glb) applies exactly ONE rule between
     // a source and a destination type — nothing composes String -> Bool with
     // Bool -> Int — and operator resolution (`resolve_op`) never consults
@@ -1008,7 +1386,7 @@
     #[test]
     fn string_into_int_builtin_param_still_errors() {
         // A string argument into an int-typed builtin port stays WS003 —
-        // check_call_args does one coerce(String, Int) = Mismatch, with no
+        // arg checking does one coerce(String, Int) = Mismatch, with no
         // bool hop available.
         let r = tc("in s: string\nlet c = ColorSRGB(s, 0, 0, 255)");
         assert!(
@@ -1260,4 +1638,246 @@
             "a non-constant @label inside an if must emit WS040; got {:?}",
             r.diagnostics
         );
+    }
+
+    // ---- Task 10: comprehensive generic test coverage (bounded masks +
+    // max type params). Mask membership (`types::classes::class_mask`):
+    // Scalar = {int, float}; Numeric = {int, float, vector, rotator, quat,
+    // color}; Variant (unbounded `<T>`) = all 11 wire value variants.
+    // `ws033_out_of_mask_arg_violates_bound` above already covers the plain
+    // `<T: Numeric>` + `string` case; these add the Scalar/Numeric BOUNDARY
+    // and the other machinery (check_args routing, body-checking, explicit
+    // type args, multi-param/nested resolution) named in the task brief. ----
+
+    #[test]
+    fn numeric_bound_call_site_accepts_every_mask_member() {
+        // <T: Numeric> = {int, float, vector, rotator, quat, color} — `+` has
+        // an operator rule for every one of them (`catalog::operators::
+        // math_binary`'s vec=true rule set), so a call at each in-mask type
+        // must stay fully clean.
+        assert_no_diags(&tc(
+            "mod addT<T: Numeric>(a: T, b: T) -> T { return a + b }\n\
+             in i: int\nin f: float\nin v: vector\nin rot: rotator\nin q: quat\nin c: color\n\
+             out ri: int = addT(i, i)\n\
+             out rf: float = addT(f, f)\n\
+             out rv: vector = addT(v, v)\n\
+             out rr: rotator = addT(rot, rot)\n\
+             out rq: quat = addT(q, q)\n\
+             out rc: color = addT(c, c)\n",
+        ));
+    }
+
+    #[test]
+    fn scalar_bound_call_site_accepts_int_and_float() {
+        assert_no_diags(&tc(
+            "mod addS<T: Scalar>(a: T, b: T) -> T { return a + b }\n\
+             in i: int\nin f: float\n\
+             out ri: int = addS(i, i)\n\
+             out rf: float = addS(f, f)\n",
+        ));
+    }
+
+    #[test]
+    fn scalar_bound_rejects_vector_precise_boundary() {
+        // vector IS a member of Numeric but NOT of Scalar — the precise
+        // boundary between the two masks the task brief calls out.
+        let r = tc(
+            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
+             in vec: vector\nlet x = onlyScalar(vec)\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
+            "vector is in Numeric but not Scalar — a <T: Scalar> call with a \
+             vector arg must fire WS033 OutOfMask; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn scalar_bound_rejects_bool() {
+        let r = tc(
+            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
+             in b: bool\nlet x = onlyScalar(b)\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
+            "bool is not in Scalar; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn scalar_bound_rejects_entity() {
+        let r = tc(
+            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
+             in e: entity\nlet x = onlyScalar(e)\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
+            "entity is not in Scalar; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ucc_bounded_out_of_mask_is_ws033_not_ws003() {
+        // Vector is Numeric but not Scalar, so a <T: Scalar> call with a
+        // vector arg fails OutOfMask inference (`subst` stays `None`). The
+        // recent `check_args` routing of user mod/chip calls must keep
+        // skipping the still-generic (`Type::Param`-carrying) `v: T` param
+        // via its `type_has_param` guard, rather than coercing the concrete
+        // vector arg against the raw unresolved `T` and emitting a spurious
+        // WS003 alongside the WS033.
+        let r = tc(
+            "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
+             in vec: vector\nlet x = onlyScalar(vec)\n",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS033"),
+            "expected WS033: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a bounded-generic OutOfMask failure must not also emit a spurious \
+             WS003; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ucc_bounded_in_mask_call_is_fully_clean() {
+        let r = tc(
+            "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n\
+             in vec: vector\nlet x = onlyNumeric(vec)\n",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn numeric_bound_body_op_invalid_for_a_member_is_rejected() {
+        // `&` (bitwise AND) only has operator rules for int/float/bool
+        // operands (`catalog::operators::bitwise_binary`) — it has NO rule
+        // for vector/rotator/quat/color, four of the six `Numeric` mask
+        // members. The bounded body-check runs the body once per mask
+        // member (not once per call site), so this must be rejected even
+        // though the mod below is never called. A binary `&` with no
+        // resolved overload emits WS011 (not WS004 — see the `matches!`
+        // dispatch in `Expr::BinOp` inference).
+        let r = tc("mod bitAnd<T: Numeric>(a: T, b: T) { let x = a & b }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS011"),
+            "'&' has no overload for vector/rotator/quat/color, so the \
+             Numeric body check must reject it as WS011; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn numeric_bound_body_op_valid_for_every_member_is_clean() {
+        // Sanity converse: `+` DOES have a rule for every Numeric member, so
+        // the same per-mask-member body check must stay clean.
+        assert_no_diags(&tc(
+            "mod addT<T: Numeric>(a: T, b: T) -> T { return a + b }",
+        ));
+    }
+
+    #[test]
+    fn explicit_type_arg_scalar_out_of_mask_is_ws033() {
+        // `f<string>(...)` on a `<T: Scalar>` mod: string isn't in the
+        // Scalar mask (int/float) — an explicit type argument is validated
+        // against the bound exactly like inference is.
+        let r = tc(
+            "mod onlyScalarZero<T: Scalar>() -> T { static var z: T = z\n return z }\n\
+             out r: int = onlyScalarZero<string>()\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("isn't allowed by its bound")),
+            "explicit type arg out of the Scalar bound must be WS033; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn explicit_type_arg_wrong_arity_is_ws033() {
+        let r = tc(
+            "mod pair<A: Scalar, B: Scalar>(a: A, b: B) -> A { return a }\n\
+             in x: int\nin y: float\nout r: int = pair<int>(x, y)\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("type argument")),
+            "one type arg given but 2 type params declared must be WS033; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn explicit_type_arg_on_non_generic_is_ws033() {
+        let r = tc("mod addOne(a: int) -> int { return a + 1 }\nin x: int\nout r: int = addOne<int>(x)\n");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("not generic")),
+            "type args on a non-generic mod must be WS033; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn numeric_bound_conflict_int_vector_no_common_widening() {
+        // Two `<T: Numeric>` args pin the shared T to int and vector — both
+        // individually valid Numeric members, but with no common widening
+        // between them, so this is a genuine Conflict (not OutOfMask).
+        let r = tc(
+            "mod pick2<T: Numeric>(a: T, b: T) -> T { return a }\n\
+             in n: int\nin v: vector\nlet x = pick2(n, v)\n",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS033" && d.message.contains("must be the same type")),
+            "int/vector conflict on a Numeric-bounded T must fire WS033 \
+             Conflict; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn array_and_map_generic_params_resolve_and_check() {
+        // `T[]` (Array<T> sugar) and `Map<K, V>` params both resolve their
+        // type params structurally from the argument's shape — T from the
+        // array's element type, V from the map's value type. The map's key
+        // param is left concrete (`string`), not generic: an unbounded `K`
+        // used as a map key is itself invalid (its Variant mask includes
+        // `bool`/`vector`/etc., none of which are legal map-key types —
+        // `WS039 "map key type must be int, string, or an object"` — and the
+        // bounded body-check correctly rejects that per-combo; that's a
+        // separate, orthogonal constraint from what this test targets).
+        let r = tc(
+            "mod combo<T, V>(xs: T[], m: Map<string, V>, fallback: T) -> T { return fallback }\n\
+             var ints: int[] = [1, 2, 3]\nvar strs: Map<string, bool>\n\
+             in go: exec\non go { let r = combo(ints, strs, 5) }\n",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn generic_return_type_substitutes_correctly() {
+        // `identity<T>`'s return must resolve to the CONCRETE call-site type
+        // (int here), not stay `Type::Param` — `+ 1` only type-checks if the
+        // substitution actually happened.
+        assert_no_diags(&tc(
+            "mod identity<T>(v: T) -> T { return v }\n\
+             in n: int\nout r: int = identity(n) + 1\n",
+        ));
     }

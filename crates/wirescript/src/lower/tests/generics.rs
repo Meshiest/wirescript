@@ -940,3 +940,78 @@ fn type_args_on_builtin_warn() {
     );
     assert!(!r2.diagnostics.iter().any(|d| d.code == "WS037"));
 }
+
+// ---- Task 10: max generic parameters / cartesian body-check cap
+// (`MAX_BODY_CHECK_COMBOS = 64` in typecheck.rs). A bounded generic's body
+// is checked once per member of the cartesian product of its type params'
+// masks; over the cap the check falls back to a representative combo (each
+// mask's first member) with every param individually varied across its
+// whole mask (see the `capped` branch in typecheck.rs). These confirm the
+// cap boundary (64), the truncation path just past it (128), and a wildly
+// over-cap unbounded case all compile without hanging or panicking — and
+// that truncation is still SOUND (still catches a real per-param error). ----
+
+#[test]
+fn six_scalar_type_params_at_body_check_cap_compiles_clean() {
+    // Scalar mask size 2, 6 params -> 2^6 = 64 combos, EXACTLY
+    // MAX_BODY_CHECK_COMBOS: the full cartesian product still runs (no
+    // truncation at the boundary). Body is trivially valid for every combo.
+    let src = "mod combo6<A: Scalar, B: Scalar, C: Scalar, D: Scalar, E: Scalar, F: Scalar>(a: A, b: B, c: C, d: D, e: E, f: F) -> A { return a }\n\
+               in go: exec\nin n: int\nin fl: float\n\
+               on go { let r = combo6(n, fl, n, fl, n, fl) }\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed for the 64-combo (at-cap) generic");
+    assert!(
+        !any_param_port(&r.module),
+        "no Type::Param may survive monomorphization"
+    );
+}
+
+#[test]
+fn seven_scalar_type_params_over_cap_truncates_without_error() {
+    // 2^7 = 128 combos, over the 64 cap — the truncation (representative +
+    // per-param variation) path kicks in. Body is valid for every member of
+    // every param individually, so truncation must not manufacture a
+    // spurious error, and checking must terminate promptly (no hang).
+    let src = "mod combo7<A: Scalar, B: Scalar, C: Scalar, D: Scalar, E: Scalar, F: Scalar, G: Scalar>(a: A, b: B, c: C, d: D, e: E, f: F, g: G) -> A { return a }\n\
+               in go: exec\nin n: int\nin fl: float\n\
+               on go { let r = combo7(n, fl, n, fl, n, fl, n) }\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed for the truncated (128-combo) generic");
+    assert!(!any_param_port(&r.module));
+}
+
+#[test]
+fn three_unbounded_type_params_variant_mask_truncates_without_error() {
+    // Unbounded <A, B, C> = the full Variant mask (11 members) each -> 11^3
+    // = 1331 combos, far over the cap — the same truncation path, at a much
+    // larger multiple. Body only returns `a`, valid for every combination.
+    let src = "mod triple<A, B, C>(a: A, b: B, c: C) -> A { return a }\n\
+               in go: exec\nin n: int\nin s: string\nin v: vector\n\
+               on go { let r = triple(n, s, v) }\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    emit_ok(&r).expect("emit must succeed for the unbounded 3-param generic");
+    assert!(!any_param_port(&r.module));
+}
+
+#[test]
+fn truncated_combo_check_still_catches_single_param_op_error() {
+    // 3 `Numeric` params (mask size 6) -> 6^3 = 216 combos, over the cap —
+    // the SAME truncation path as the tests above, but here the body uses
+    // an op ('&', no rule for vector/rotator/quat/color) on ONLY param A.
+    // Truncation varies each param across its whole mask while the others
+    // hold their first member (int), so this must still be caught:
+    // truncation is a coverage optimization, not a soundness hole.
+    let src = "mod combo3<A: Numeric, B: Numeric, C: Numeric>(a: A, b: B, c: C) -> A { let x = a & a\n return a }\n\
+               in go: exec\nin n: int\non go { let r = combo3(n, n, n) }\n";
+    let tc = typecheck(&parse(src, "test").ast, "test");
+    assert!(
+        tc.diagnostics.iter().any(|d| d.code == "WS011"),
+        "a single-param-only op invalid for some Numeric member must be \
+         caught even when the combo check is truncated, got {:?}",
+        tc.diagnostics.iter().map(|d| d.code.to_string()).collect::<Vec<_>>()
+    );
+}

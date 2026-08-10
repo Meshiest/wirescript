@@ -514,6 +514,124 @@ on trig {
 }
 
 #[test]
+fn let_constant_referenced_across_chips_is_cloned_per_module() {
+    // A `let`-bound constant declared in one chip and referenced in ANOTHER
+    // chip (or at the top level) shares a single `_Literal` value gate by
+    // reference — unlike the mod-inlined case above, dedup never runs on it.
+    // `partition_anon_chips` must clone that literal into EVERY consuming
+    // module (chip->chip AND chip->parent), because a `_Literal` is a compiler
+    // placeholder emit only inlines into SAME-module consumers; a cross-module
+    // literal->operand wire leaves the far operand reading its default 0.
+    // (In a real capture-point circuit `let capTotal = 20` in one chip read 0
+    // in the `capAmount < capTotal` of another chip.)
+    let src = "\
+chip {
+  let k = 20
+  let ka = k * 3
+}
+chip {
+  let kd = k * 9
+}
+out a: int = ka
+out d: int = kd
+out b: int = k * 5";
+    let r = compile(src);
+    assert_no_errors(&r);
+
+    let mut module_of: std::collections::HashMap<crate::ir::NodeId, usize> =
+        std::collections::HashMap::new();
+    let mut is_literal: std::collections::HashSet<crate::ir::NodeId> =
+        std::collections::HashSet::new();
+    fn index(
+        m: &crate::ir::Module,
+        tag: &mut usize,
+        module_of: &mut std::collections::HashMap<crate::ir::NodeId, usize>,
+        is_literal: &mut std::collections::HashSet<crate::ir::NodeId>,
+    ) {
+        let my = *tag;
+        *tag += 1;
+        for (id, n) in &m.nodes {
+            module_of.insert(*id, my);
+            if n.gate_class == "_Literal" {
+                is_literal.insert(*id);
+            }
+        }
+        for child in m.chips.values() {
+            index(child, tag, module_of, is_literal);
+        }
+    }
+    let mut tag = 0;
+    index(&r.module, &mut tag, &mut module_of, &mut is_literal);
+
+    // Every `_Literal` feeding an operand must live in its consumer's module —
+    // else emit's per-module inlining can't reach it and the operand reads 0.
+    fn check_wires(
+        m: &crate::ir::Module,
+        module_of: &std::collections::HashMap<crate::ir::NodeId, usize>,
+        is_literal: &std::collections::HashSet<crate::ir::NodeId>,
+    ) {
+        for w in &m.wires {
+            if matches!(w.target.port, WirePort::InputA | WirePort::InputB)
+                && is_literal.contains(&w.source.node_id)
+            {
+                assert_eq!(
+                    module_of.get(&w.source.node_id),
+                    module_of.get(&w.target.node_id),
+                    "cross-chip `let` constant literal not cloned per module \
+                     ({:?} -> {:?}.{:?}); emit can't inline it and the operand reads 0",
+                    w.source.node_id,
+                    w.target.node_id,
+                    w.target.port
+                );
+            }
+        }
+        for child in m.chips.values() {
+            check_wires(child, module_of, is_literal);
+        }
+    }
+    check_wires(&r.module, &module_of, &is_literal);
+}
+
+#[test]
+fn pure_chip_after_handler_reads_vars_continuously() {
+    // A top-level `chip { }` is a pure visual grouping. When it FOLLOWS an `on`
+    // handler, it must NOT inherit the post-handler exec context — otherwise its
+    // pure `let` var reads latch onto that exec chain as a one-shot
+    // `Exec_Var_Get` frozen at the var's init value, instead of reading the
+    // var's live `.Value`. (Symptom: a display chip's computed value stuck at 0
+    // even as the var updates — capTotal/timePercent-style.)
+    let src = "\
+var v: int = 0
+in go: exec
+on go { v = 5 }
+chip {
+  let x = v + 1
+}
+out r: int = x";
+    let r = compile(src);
+    assert_no_errors(&r);
+    // The only var READ here is `v` inside the pure chip; it must lower to the
+    // var's continuous `.Value`, never a latched `Exec_Var_Get`.
+    fn count_var_get(m: &crate::ir::Module) -> usize {
+        let mut n = m
+            .nodes
+            .values()
+            .filter(|node| node.gate_class == crate::ir::gate_class::VAR_GET)
+            .count();
+        for c in m.chips.values() {
+            n += count_var_get(c);
+        }
+        n
+    }
+    assert_eq!(
+        count_var_get(&r.module),
+        0,
+        "a pure chip's var read after a handler latched into an Exec_Var_Get \
+         instead of a continuous .Value read"
+    );
+}
+
+#[test]
 fn chip_decls_shared_across_instances() {
     let src = "\
 chip Add(a: int, b: int) -> (result: int) { out result = a + b }
@@ -1107,6 +1225,64 @@ fn spawn_prefab_compiles_to_brz() {
         &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
     );
     assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+}
+
+/// Assert a compiled `SpawnPrefab` call has no `_Unsupported` placeholder
+/// anywhere in the module, and its `Prefab` gate property was baked to the
+/// given path via `Literal::PrefabRef` — i.e. the `prefab = <name>` config
+/// arg resolved the `let`-bound name to its constant instead of falling
+/// through to an unresolvable wire.
+fn assert_prefab_property_baked(r: &LowerResult, expected_path: &str) {
+    assert_no_errors(r);
+    assert!(
+        !r.module.nodes.values().any(|n| n.gate_class == gc::UNSUPPORTED),
+        "no _Unsupported placeholder gate should be emitted: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| (n.id, n.gate_class))
+            .collect::<Vec<_>>()
+    );
+    let spawner = find_gate(r, gc::PREFAB_SPAWNER);
+    let node = &r.module.nodes[&spawner];
+    let prop = node
+        .properties
+        .get(&crate::intern::intern(WirePort::Prefab.as_str()));
+    assert_eq!(
+        prop,
+        Some(&Literal::PrefabRef {
+            path: expected_path.to_string()
+        }),
+        "SpawnPrefab's Prefab property should be baked from the `let`-bound name: {:?}",
+        node.properties
+    );
+}
+
+#[test]
+fn spawn_prefab_top_level_let_reaches_prefab_property() {
+    // A top-level `let pf = $./foo.brz` referenced later as `prefab = pf`
+    // must bake the SAME way a literal `prefab = $./foo.brz` argument does:
+    // `literal_for_property_port` must fold the name through the const env.
+    let src = "let pf = $./foo.brz\nin go: exec\non go { SpawnPrefab(prefab = pf) }";
+    let r = compile(src);
+    assert_prefab_property_baked(&r, "./foo.brz");
+}
+
+#[test]
+fn spawn_prefab_body_local_let_reaches_prefab_property() {
+    // A BODY-LOCAL `let pf = $./foo.brz` (declared inside the handler that
+    // uses it) is the scope-aware case: `pf` only exists in the handler's
+    // block scope, so resolving it requires the lowering-side
+    // `scoped_consts` frame stack (mirroring typecheck's), not just the
+    // top-level `const_env`. Before that stack existed, `pf` didn't resolve
+    // as a constant — and `Expr::PrefabRef` has no general expression
+    // lowering of its own (`lower_expr` falls through to
+    // `synthesise_unsupported` for it) — so the `let` itself emitted an
+    // `_Unsupported` placeholder plus a warning, and the `prefab=` arg had
+    // no way to reach the gate's `Prefab` property.
+    let src = "in go: exec\non go { let pf = $./foo.brz\n  SpawnPrefab(prefab = pf) }";
+    let r = compile(src);
+    assert_prefab_property_baked(&r, "./foo.brz");
 }
 
 #[test]

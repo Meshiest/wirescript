@@ -225,7 +225,21 @@ impl Catalog {
     /// the inventory, and treating them as wireable keeps existing behavior.
     pub fn is_wire_input(&self, gate_class: &str, port: &str) -> bool {
         match self.find_by_class(gate_class) {
-            Some(spec) => spec.component.inputs.iter().any(|p| p.name == port),
+            Some(spec) => {
+                spec.component.inputs.iter().any(|p| p.name == port)
+                    // A composite sub-port (`Position.X`) is wireable when its
+                    // parent (`Position`) is a composite input listing that
+                    // sub-port — the reworked Vector2D layout ports expose each
+                    // axis as an individually-wireable float.
+                    || port.split_once('.').is_some_and(|(base, sub)| {
+                        spec.component.inputs.iter().any(|p| {
+                            p.name == base
+                                && p.composite
+                                    .as_ref()
+                                    .is_some_and(|c| c.sub_ports.iter().any(|s| s == sub))
+                        })
+                    })
+            }
             None => true,
         }
     }

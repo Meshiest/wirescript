@@ -122,12 +122,12 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             range,
         } => lower_if_expr(ctx, cond, then_branch, else_branch, range),
         Expr::BlockExpr { stmts, value, .. } => {
-            ctx.scope.push(crate::scope::ScopeTag::BLOCK);
+            ctx.push_scope(crate::scope::ScopeTag::BLOCK);
             for s in stmts {
                 lower_stmt(ctx, s);
             }
             let result = lower_expr(ctx, value);
-            ctx.scope.pop();
+            ctx.pop_scope();
             result
         }
         Expr::Call { .. } => {
@@ -377,13 +377,48 @@ pub(super) fn bake_string_bool(lit: Literal, ty: &Type) -> Literal {
     }
 }
 
-pub(super) fn literal_for_property_port(e: &Expr, port_ty: &Type) -> Option<Literal> {
+pub(super) fn literal_for_property_port(ctx: &LowerCtx, e: &Expr, port_ty: &Type) -> Option<Literal> {
     // Return the literal without type promotion — the emit layer handles the
     // native type (i32/f64/str) from the data struct schema — EXCEPT the
     // string → bool coercion, which must apply its `!= ""` law at compile
     // time here (see `bake_string_bool`): emit has no String→bool cast, and
     // a raw String on a Bool data field is an UnimplementedCast crash.
-    expr_to_literal(e).map(|lit| bake_string_bool(lit, port_ty))
+    //
+    // The env-less fold first — UNCHANGED from before scoped consts existed:
+    // bare literals, negated literals, and constructor calls on constant
+    // args. Deliberately does not evaluate operators (`expr_to_literal`'s own
+    // doc comment: folding `0.0 + 0.0` here would delete the real MathAdd
+    // gate a program like `Rotation(0.0 + 0.0, ...)` must keep) and does not
+    // resolve names (an env is required for that — see below).
+    let lit = expr_to_literal(e).or_else(|| {
+        // A bare name referencing a scoped-or-top-level `let` constant (e.g.
+        // `let pf = $./foo.brz` ... `SpawnPrefab(prefab = pf)`), resolved via
+        // `ctx.const_lookup()` (top-level `const_env` overlaid by every open
+        // `scoped_consts` frame — see `LowerCtx::push_scope`/`pop_scope`).
+        // Restricted to a plain `Ident` (never a compound expression — that
+        // would reintroduce the operator-folding hazard above) and to
+        // non-composite literal kinds: a named Vector/Rotator/Quat/Color
+        // constant still takes the WIRE path exactly as before. Those four
+        // are the ones `inlinable` below treats specially (only inlining
+        // when `port_accepts_inline_variant` allows it) precisely because
+        // most consumers need a real wired Make* gate; resolving them here
+        // would let a receiver like `dir.RotationByAngle(...)` (`let dir =
+        // Vec(...)`) skip that wire entirely, silently pruning the producing
+        // gate as a "wireless orphan" whenever its own result also goes
+        // unused. Scalars (Int/Float/Bool/String) and prefab references
+        // (`PrefabRef`/`NestedPrefab`) have no such wired-producer nuance —
+        // `literal_for_property_port` already inlines them unconditionally
+        // when they arrive as bare literals, so resolving them by name here
+        // is consistent, not a new capability class.
+        let Expr::Ident { name, .. } = e else {
+            return None;
+        };
+        match ctx.const_lookup().get(name).cloned() {
+            Some(Literal::Vector { .. } | Literal::Rotator { .. } | Literal::Quat { .. } | Literal::LinearColor { .. }) => None,
+            other => other,
+        }
+    });
+    lit.map(|lit| bake_string_bool(lit, port_ty))
 }
 
 pub(super) fn synthesise_unsupported(ctx: &mut LowerCtx, e: &Expr) -> PortRef {

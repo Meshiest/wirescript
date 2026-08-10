@@ -573,13 +573,13 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     if ctx.nofold_depth == 0
         && let Expr::BoolLit { value, .. } = &s.cond
     {
-        ctx.scope.push(crate::scope::ScopeTag::BLOCK);
+        ctx.push_scope(crate::scope::ScopeTag::BLOCK);
         if *value {
             lower_block(ctx, &s.then_block);
         } else if let Some(else_b) = &s.else_block {
             lower_block(ctx, else_b);
         }
-        ctx.scope.pop();
+        ctx.pop_scope();
         return;
     }
     // Also fold idents bound to literal bools (e.g. inline mod params) —
@@ -592,13 +592,13 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
         && let Some(Literal::Bool(val)) = node.properties.get(&*sym::VALUE)
     {
         let val = *val;
-        ctx.scope.push(crate::scope::ScopeTag::BLOCK);
+        ctx.push_scope(crate::scope::ScopeTag::BLOCK);
         if val {
             lower_block(ctx, &s.then_block);
         } else if let Some(else_b) = &s.else_block {
             lower_block(ctx, else_b);
         }
-        ctx.scope.pop();
+        ctx.pop_scope();
         return;
     }
 
@@ -652,7 +652,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
 
     // Snapshot scope before branches so that declarations in one
     // branch don't leak into the other (each branch gets its own scope).
-    ctx.scope.push(crate::scope::ScopeTag::BLOCK);
+    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
 
     // IfThen — sibling of IfCond under IfGroup.
     ctx.builder.current_scope_id = if_group_id;
@@ -664,8 +664,8 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let then_end = ctx.current_exec;
 
     // Restore scope so the else branch starts from the same state.
-    ctx.scope.pop();
-    ctx.scope.push(crate::scope::ScopeTag::BLOCK);
+    ctx.pop_scope();
+    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
 
     // IfElse — allocated even when the source has no `else`, so layout
     // always gets the triplet (empty IfElse regions compose as zero-width).
@@ -690,7 +690,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
 
     // Restore scope so post-if code sees the pre-branch state.
     // Variables declared inside branches are not visible after the if.
-    ctx.scope.pop();
+    ctx.pop_scope();
 
     // The join/union below is post-branch flow; back to the outer scope.
     ctx.builder.current_scope_id = outer_scope;

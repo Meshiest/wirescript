@@ -9,9 +9,9 @@ Diagnostics run in a fixed order — parse, resolve/import, type-check, lower,
 wire-graph analysis — so an early error can suppress later ones on the same
 construct.
 
-> Some numbers in the `WS0xx` range are **not used**: `WS008`, `WS009`, `WS018`,
-> and `WS034` have no emit site. `WS034` was once a generic-chip cross-wiring
-> guard and has since been removed.
+> Some numbers in the `WS0xx` range are **not used**: `WS009` and `WS018` have
+> no emit site. `WS034` was once a generic-chip cross-wiring guard and has
+> since been removed.
 
 ## Execution context
 
@@ -35,7 +35,6 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS012` | Import error — a circular import, an unresolvable file, or a named binding not found in the target module. | `import { nope } from "utils"` |
 | `WS013` | Duplicate declaration, or an output that is never assigned. | two `var x: int = 0` in one scope |
 | `WS014` | *(warning)* Unused import. | `import { clamp } from "u"`, `clamp` never used |
-| `WS015` | *(warning)* `fn` is deprecated — use `mod name(...) -> T { return <body> }`. | `fn f(a: int) -> int { a }` |
 | `WS021` | Use before declaration — a chip/mod is called above the point where it's declared (declarations register in source order). | `helper()` above `mod helper() { }` |
 
 ## Types & operators
@@ -46,9 +45,10 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 |------|---------|---------|
 | `WS003` | Type mismatch — a value doesn't coerce to the expected type (assignment, argument, output, array element, `if`-branch join, event input). | `var n: int = "hi"` |
 | `WS004` | No operator overload for the operand type(s) (arithmetic / comparison / logical). | `"a" + 1` |
+| `WS008` | Taking `&`/`ref` of a non-reference — only a variable, ref parameter, or array/map element can be referenced, not a temporary. | `&(a + b)` |
 | `WS011` | No overload for a bitwise/shift operator (`&`, `\|`, `^`, `~`, `<<`, `>>`), or a builtin call with the wrong number of positional arguments. | `1.5 & 2` |
 | `WS016` | *(warning)* `let` / `out` annotation doesn't match the inferred type (a checked assertion; string-format coercion is exempt). | `let n: int = s` where `s: string` |
-| `WS025` | A non-storable type used as storage — `any`, `zone`, or `teleport` in a `var` / `buffer` / array / map. | `var x: any = 0` |
+| `WS025` | A non-storable type used as storage — `any`, `zone`, `teleport`, or `prefab` in a `var` / `buffer` / array / map. | `var x: any = 0` |
 | `WS031` | A reference (`zone` / `teleport` / var ref) used in an `if`-then-else — a Select routes a value, not a reference. | `if c then zoneA else zoneB` |
 
 ## Calls & arguments
@@ -56,10 +56,11 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | Code | Meaning | Trigger |
 |------|---------|---------|
 | `WS020` | Recursive chip/mod call — chips and mods inline at compile time and can't call themselves, directly or mutually. | `mod f() { f() }` |
-| `WS022` | Wrong argument count in a user mod/chip/fn call. | `mod f(a: int) {}` then `f(1, 2)` |
+| `WS022` | Wrong argument count in a user mod/chip call. | `mod f(a: int) {}` then `f(1, 2)` |
 | `WS035` | A `self`-receiver mod shadows a builtin receiver-method of the same name/receiver — it could never be reached as a method; rename it. | `mod Dot(self: vector, o: vector) -> float { ... }` |
 | `WS036` | A non-`self` mod called with method syntax `x.f(…)` — call `f(x, …)` directly, or rename its first param to `self`. | `mod f(a: int) {}` then `x.f()` |
 | `WS038` | The callee isn't callable — it's a var/let/array/param, not a mod/chip/fn (often an index typo). | `xs(i)` for `xs[i]` |
+| `WS041` | Unknown named argument — it matches no parameter and no settings-menu config field, so it does nothing (`exec =` and a variadic call's trailing options are exempt). | `p.DisplayText(t, positionX = 0.0)` |
 
 ## Generics
 

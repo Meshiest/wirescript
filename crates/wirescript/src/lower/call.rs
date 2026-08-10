@@ -124,6 +124,7 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 let mut recv_args: Vec<CallArg> = args.to_vec();
                 recv_args.push(CallArg::Named {
                     name: tp.to_string(),
+                    name_range: obj.range().clone(),
                     value: obj.as_ref().clone(),
                 });
                 return lower_builtin_call(ctx, spec, None, &recv_args, range, e);
@@ -280,7 +281,7 @@ pub(super) fn lower_chip_call_inline(
         }
     }
 
-    ctx.scope.push(crate::scope::ScopeTag::MODULE);
+    ctx.push_scope(crate::scope::ScopeTag::MODULE);
     for (name, rec) in ref_bindings {
         ctx.scope.insert(&name, Binding::Var(rec));
     }
@@ -384,7 +385,7 @@ pub(super) fn lower_chip_call_inline(
     // `exec = trigger` named arg: run this mod's body off the given trigger
     // when the caller is outside an exec context.
     let exec_arg = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value } if name == "exec" => Some(value),
+        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
         _ => None,
     });
     let saved_caller_exec = ctx.current_exec;
@@ -547,7 +548,7 @@ pub(super) fn lower_chip_call_inline(
         None
     };
 
-    ctx.scope.pop();
+    ctx.pop_scope();
 
     // The mod body may have written to vars passed through records.
     // Those writes invalidated caches inside the mod scope (now popped),
@@ -986,6 +987,11 @@ fn build_chip_module(
         // `lower_if_expr` all read `mono_stack`). `None` for a non-generic chip
         // → empty stack → byte-identical resolution to before.
         mono_stack: mono_frame.map(|f| vec![f]).unwrap_or_default(),
+        // Fresh module (its own root scope, not inheriting the caller's block
+        // scope — see `scope` above), so no scoped-const frame carries over
+        // either; any body-local `let` inside re-populates its own frame via
+        // `push_scope`/`pop_scope`.
+        scoped_consts: Vec::new(),
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -1280,7 +1286,7 @@ pub(super) fn lower_chip_call_instance(
     // `exec = trigger` named arg: how exec chips get their chain when invoked
     // outside an exec context (mirrors the builtin exec-call convention).
     let exec_arg = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value } if name == "exec" => Some(value),
+        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
         _ => None,
     });
 
@@ -1666,7 +1672,7 @@ pub(super) fn lower_builtin_call(
 ) -> PortRef {
     // Check for explicit `exec` named arg — allows exec gates in pure contexts
     let explicit_exec = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value } if name == "exec" => Some(value),
+        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
         _ => None,
     });
     if spec.exec && ctx.current_exec.is_none() && explicit_exec.is_none() {
@@ -1685,7 +1691,7 @@ pub(super) fn lower_builtin_call(
     }
     for a in args {
         match a {
-            CallArg::Named { name, value } => {
+            CallArg::Named { name, value, .. } => {
                 if spec.params.iter().any(|p| p.name == name) {
                     bound.insert(name, value);
                 }
@@ -1709,11 +1715,36 @@ pub(super) fn lower_builtin_call(
     }
     let mut wires: Vec<WireEntry> = Vec::new();
     let mut properties: HashMap<crate::intern::Sym, Literal> = HashMap::default();
+    // Vector2D composite layout ports (`positionX` -> "Position.X"): constant
+    // axes accumulate here (keyed by parent, e.g. "Position") and bake the parent
+    // Vector2D data field after the loop; runtime axes fall through to wire the
+    // "Position.X" sub-port.
+    let mut vec2_axes: HashMap<&'static str, (Option<f64>, Option<f64>)> = HashMap::default();
 
     for p in spec.params.iter() {
         let Some(&arg_expr) = bound.get(p.name) else {
             continue;
         };
+        // A dotted port is a Vector2D composite sub-port. Accumulate a constant
+        // axis (baked below); let a runtime axis fall through to the wire path
+        // (is_wire_input("Position.X") is true, so it wires the float sub-port).
+        if let Some((parent, axis)) = p.port.as_str().split_once('.') {
+            let axis_val = match literal_for_property_port(ctx, arg_expr, &Type::Float) {
+                Some(Literal::Float(f)) => Some(f),
+                Some(Literal::Int(i)) => Some(i as f64),
+                _ => None,
+            };
+            if let Some(f) = axis_val {
+                let e = vec2_axes.entry(parent).or_insert((None, None));
+                match axis {
+                    "X" => e.0 = Some(f),
+                    "Y" => e.1 = Some(f),
+                    _ => {}
+                }
+                continue;
+            }
+            // Runtime: fall through to the wire path below.
+        }
         // Enum-typed config passed as a bare member name (`function = Bounce`):
         // resolve to the enum's integer value and inline as gate data. Int and
         // quoted-name forms fall through to the literal path below (the emitter
@@ -1748,7 +1779,7 @@ pub(super) fn lower_builtin_call(
         // Literal check — inline constant arguments as properties so they
         // go into the data struct. With negative literal folding in the
         // parser, all constant args (positive and negative) are consistent.
-        if let Some(lit) = literal_for_property_port(arg_expr, &p.ty) {
+        if let Some(lit) = literal_for_property_port(ctx, arg_expr, &p.ty) {
             // Struct-valued constants (folded Vec/Rotation/Color) only
             // inline when the gate's data field is a wire variant; other
             // gates (entity Set*, Split*) need a wired Make* gate, which
@@ -1797,7 +1828,7 @@ pub(super) fn lower_builtin_call(
     // name; enum members resolve to their int. Typecheck (WS028) already
     // validated constant-ness / membership.
     for a in args {
-        if let CallArg::Named { name, value } = a {
+        if let CallArg::Named { name, value, .. } = a {
             if spec.params.iter().any(|p| p.name == name) {
                 continue;
             }
@@ -1814,19 +1845,29 @@ pub(super) fn lower_builtin_call(
                         | Expr::StringLit { value: member, .. } => et
                             .and_then(|e| crate::catalog::enum_member_value(e, member))
                             .map(Literal::Int),
-                        _ => literal_for_property_port(value, &Type::Int),
+                        _ => literal_for_property_port(ctx, value, &Type::Int),
                     }
                 }
-                "bool" => literal_for_property_port(value, &Type::Bool),
-                "int" => literal_for_property_port(value, &Type::Int),
-                "float" => literal_for_property_port(value, &Type::Float),
-                "string" => literal_for_property_port(value, &Type::String),
+                "bool" => literal_for_property_port(ctx, value, &Type::Bool),
+                "int" => literal_for_property_port(ctx, value, &Type::Int),
+                "float" => literal_for_property_port(ctx, value, &Type::Float),
+                "string" => literal_for_property_port(ctx, value, &Type::String),
                 _ => None,
             };
             if let Some(lit) = lit {
                 properties.insert(intern(cfg.name.as_str()), lit);
             }
         }
+    }
+
+    // Bake accumulated constant layout axes into their parent Vector2D data
+    // field, filling any axis the caller left unset from the gate's registered
+    // default (so `anchorY = 0.25` -> Anchor {X: 0.5 default, Y: 0.25}). A runtime
+    // axis wired above overrides its own sub-port at load time.
+    for (parent, (px, py)) in vec2_axes {
+        let x = px.unwrap_or_else(|| vector2d_default_axis(spec.gate_class, parent, "X"));
+        let y = py.unwrap_or_else(|| vector2d_default_axis(spec.gate_class, parent, "Y"));
+        properties.insert(intern(parent), Literal::Vector { x, y, z: 0.0 });
     }
 
     // Most exec gates take their incoming exec on an `Exec` input, but a few
@@ -1951,4 +1992,41 @@ pub(super) fn lower_builtin_call(
         return node_id.port(p.port);
     }
     node_id.port(WirePort::Output)
+}
+
+/// The registered default for one axis (`"X"`/`"Y"`) of a gate's `Vector2D` data
+/// field, read from brdb's `STRUCT_DEFAULTS` — the same source emit uses. Fills
+/// the axis a per-axis layout call left unset (e.g. `anchorY = 0.25` needs the
+/// default `Anchor.X`). `0.0` when the gate/field/axis has no registered default.
+#[cfg(feature = "brdb-full")]
+fn vector2d_default_axis(gate_class: &str, field: &str, axis: &str) -> f64 {
+    let Some(strct) = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
+        .iter()
+        .find(|(c, _)| *c == gate_class)
+        .map(|(_, s)| *s)
+    else {
+        return 0.0;
+    };
+    let Some(value) = brdb::component_db::STRUCT_DEFAULTS
+        .iter()
+        .find(|(s, _)| *s == strct)
+        .and_then(|(_, fs)| fs.iter().find(|(n, _)| *n == field))
+        .map(|(_, v)| v.as_ref())
+    else {
+        return 0.0;
+    };
+    let schema = brdb::schemas::bricks_components_schema_max();
+    let Some(id) = schema.intern.get(axis) else {
+        return 0.0;
+    };
+    value
+        .as_brdb_struct_prop_value(schema, id, id)
+        .ok()
+        .and_then(|p| p.as_brdb_f64().ok())
+        .unwrap_or(0.0)
+}
+
+#[cfg(not(feature = "brdb-full"))]
+fn vector2d_default_axis(_gate_class: &str, _field: &str, _axis: &str) -> f64 {
+    0.0
 }

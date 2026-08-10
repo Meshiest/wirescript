@@ -321,7 +321,7 @@ fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<(&'a str, &'stat
     let name_expr = args
         .iter()
         .find_map(|a| match a {
-            CallArg::Named { name, value } if name == "eventName" => Some(value),
+            CallArg::Named { name, value, .. } if name == "eventName" => Some(value),
             _ => None,
         })
         .or_else(|| {

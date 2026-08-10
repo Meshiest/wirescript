@@ -362,18 +362,21 @@
     }
 
     #[test]
-    fn parse_fn_decl() {
-        let src = "fn add(a: int, b: int) -> int = a + b";
-        let r = crate::parser::parse(src, "test");
-        assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
-        match &r.ast.decls[0] {
-            TopDecl::Fn(f) => {
-                assert_eq!(f.name, "add");
-                assert_eq!(f.params.len(), 2);
-                assert!(f.return_type.is_some());
-            }
-            d => panic!("expected Fn, got {:?}", d),
-        }
+    fn fn_decl_is_removed() {
+        // The `fn` declaration form was removed in favor of
+        // `mod NAME(params) -> T { return <expr> }`. Using it is a parse error
+        // (parsing still recovers the rest of the file).
+        let r = crate::parser::parse("fn add(a: int, b: int) -> int = a + b", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("`fn` declarations have been removed")),
+            "fn decl must be rejected: {:?}",
+            r.diagnostics
+        );
+        // The `mod` replacement parses clean.
+        let rm = crate::parser::parse("mod add(a: int, b: int) -> int { return a + b }", "test");
+        assert!(rm.diagnostics.is_empty(), "mod replacement: {:?}", rm.diagnostics);
     }
 
     #[test]

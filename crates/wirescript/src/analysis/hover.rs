@@ -99,6 +99,7 @@ fn builtin_type_desc(word: &str) -> Option<&'static str> {
         "exec" => "Execution trigger signal — not a data value.",
         "zone" => "Reference to a Zone brick (rerouter-only, like a var ref).",
         "teleport" => "Reference to a Teleport Destination (rerouter-only, like a var ref).",
+        "prefab" => "Reference to a prefab (a `$./file.brz` file or an inline prefab block) — a compile-time constant, not stored.",
         "any" => "Wildcard type — works anywhere but erases the type; prefer a generic `<T>`.",
         "never" => "Bottom type — no value inhabits it.",
         _ => return None,
@@ -263,6 +264,157 @@ fn gate_field_default(_gate_class: &str, _field: &str, _kind: &str) -> Option<St
     None
 }
 
+/// A gate data-struct field's registered COMPOSITE default (vector / color /
+/// rotator / quat), rendered for display. Reads the struct default the same way
+/// [`gate_field_default`] reads scalars, then pulls the composite's named
+/// sub-fields (`X`/`Y`/`Z`, `R`/`G`/`B`/`A`, `Pitch`/`Yaw`/`Roll`, …) through the
+/// `AsBrdbValue` struct-property accessor. Colors are stored LINEAR and shown as
+/// their sRGB hex (`#181425`); vectors/rotators show a `Vec(…)`/`Rotation(…)`
+/// constructor. `None` when the gate registers no such default or `ty` isn't a
+/// composite the emitter can bake.
+#[cfg(feature = "brdb-full")]
+fn composite_field_default(gate_class: &str, field: &str, ty: &Type) -> Option<String> {
+    let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
+        .iter()
+        .find(|(c, _)| *c == gate_class)
+        .map(|(_, s)| *s)?;
+    let value = brdb::component_db::STRUCT_DEFAULTS
+        .iter()
+        .find(|(s, _)| *s == strct)
+        .and_then(|(_, fs)| fs.iter().find(|(n, _)| *n == field))
+        .map(|(_, v)| v.as_ref())?;
+    let schema = brdb::schemas::bricks_components_schema_max();
+    // Read one named sub-field of the composite as an f64 (every numeric field
+    // cross-casts, so f32-backed color channels read fine too). `struct_name`
+    // only feeds the accessor's error path, so the prop id doubles for it.
+    let read = |prop: &str| -> Option<f64> {
+        let id = schema.intern.get(prop)?;
+        value
+            .as_brdb_struct_prop_value(schema, id, id)
+            .ok()?
+            .as_brdb_f64()
+            .ok()
+    };
+    match ty {
+        Type::Color => Some(render_color_default(
+            read("R")?,
+            read("G")?,
+            read("B")?,
+            read("A").unwrap_or(1.0),
+        )),
+        Type::Vector => {
+            let (x, y) = (read("X")?, read("Y")?);
+            Some(match read("Z") {
+                Some(z) => format!("Vec({}, {}, {})", fnum(x), fnum(y), fnum(z)),
+                None => format!("Vec({}, {})", fnum(x), fnum(y)),
+            })
+        }
+        Type::Rotator => {
+            // Most rotators name their axes Pitch/Yaw/Roll; a few dump as X/Y/Z.
+            let (p, y, r) = match (read("Pitch"), read("Yaw"), read("Roll")) {
+                (Some(p), Some(y), Some(r)) => (p, y, r),
+                _ => (read("X")?, read("Y")?, read("Z")?),
+            };
+            Some(format!("Rotation({}, {}, {})", fnum(p), fnum(y), fnum(r)))
+        }
+        Type::Quat => Some(format!(
+            "Quat({}, {}, {}, {})",
+            fnum(read("X")?),
+            fnum(read("Y")?),
+            fnum(read("Z")?),
+            fnum(read("W")?),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(not(feature = "brdb-full"))]
+fn composite_field_default(_gate_class: &str, _field: &str, _ty: &Type) -> Option<String> {
+    None
+}
+
+/// A gate field's default rendered for hover — a `Vector2D` sub-port axis
+/// (`Position.X`) via [`vector2d_subport_default`], a scalar via
+/// [`gate_field_default`], or a composite (vector/color/rotator/quat) via
+/// [`composite_field_default`].
+fn field_default_display(gate_class: &str, field: &str, ty: &Type) -> Option<String> {
+    if let Some((parent, axis)) = field.split_once('.') {
+        return vector2d_subport_default(gate_class, parent, axis);
+    }
+    match scalar_kind_of(ty) {
+        Some(kind) => gate_field_default(gate_class, field, kind),
+        None => composite_field_default(gate_class, field, ty),
+    }
+}
+
+/// The registered default for one axis (`"X"`/`"Y"`) of a gate's `Vector2D` data
+/// field, rendered for a per-axis layout param hover (`anchorY` -> `Anchor.Y` ->
+/// `0.5`). Reads the parent's composite default the same way
+/// [`composite_field_default`] does.
+#[cfg(feature = "brdb-full")]
+fn vector2d_subport_default(gate_class: &str, parent: &str, axis: &str) -> Option<String> {
+    let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
+        .iter()
+        .find(|(c, _)| *c == gate_class)
+        .map(|(_, s)| *s)?;
+    let value = brdb::component_db::STRUCT_DEFAULTS
+        .iter()
+        .find(|(s, _)| *s == strct)
+        .and_then(|(_, fs)| fs.iter().find(|(n, _)| *n == parent))
+        .map(|(_, v)| v.as_ref())?;
+    let schema = brdb::schemas::bricks_components_schema_max();
+    let id = schema.intern.get(axis)?;
+    let f = value
+        .as_brdb_struct_prop_value(schema, id, id)
+        .ok()?
+        .as_brdb_f64()
+        .ok()?;
+    Some(fnum(f))
+}
+
+#[cfg(not(feature = "brdb-full"))]
+fn vector2d_subport_default(_gate_class: &str, _parent: &str, _axis: &str) -> Option<String> {
+    None
+}
+
+/// Render a float without a trailing `.0`, matching the scalar-default style:
+/// `1.0 -> "1"`, `0.5 -> "0.5"`, `-1.0 -> "-1"`.
+#[cfg(feature = "brdb-full")]
+fn fnum(f: f64) -> String {
+    f.to_string()
+}
+
+/// Linear-light 0–1 component -> sRGB byte (the standard piecewise encode).
+#[cfg(feature = "brdb-full")]
+fn linear_to_srgb_u8(c: f64) -> u8 {
+    let c = c.clamp(0.0, 1.0);
+    let s = if c <= 0.0031308 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (s * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// Render a stored LINEAR RGBA default as sRGB hex (`#rrggbb`), the form the
+/// color appears as in-editor; a non-opaque alpha is noted after it. Alpha is
+/// stored linearly (not gamma-encoded), so it scales straight to a byte.
+#[cfg(feature = "brdb-full")]
+fn render_color_default(r: f64, g: f64, b: f64, a: f64) -> String {
+    let (r, g, b) = (
+        linear_to_srgb_u8(r),
+        linear_to_srgb_u8(g),
+        linear_to_srgb_u8(b),
+    );
+    let hex = format!("#{r:02x}{g:02x}{b:02x}");
+    let a8 = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+    if a8 == 255 {
+        hex
+    } else {
+        format!("{hex} (alpha {a8})")
+    }
+}
+
 fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
     if !word_is_named_arg_name(source, line, col) {
         return None;
@@ -294,12 +446,11 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
             v += &format!("\n\none of: {members}");
         }
     }
-    // The gate's registered default for this field, if any (enum params show the
-    // member name via `gate_field_default`'s enum resolution).
-    if let Some(kind) = scalar_kind_of(&p.ty) {
-        if let Some(d) = gate_field_default(spec.gate_class, p.port.as_str(), kind) {
-            v += &format!("\n\nDefault: `{d}`");
-        }
+    // The gate's registered default for this field, if any — scalar, or a
+    // composite vector/color (enum params show the member name via
+    // `gate_field_default`'s enum resolution).
+    if let Some(d) = field_default_display(spec.gate_class, p.port.as_str(), &p.ty) {
+        v += &format!("\n\nDefault: `{d}`");
     }
     Some(v)
 }
@@ -665,7 +816,7 @@ fn resolve_ce_channel_slots(
 /// if present, else the first positional string literal.
 fn ce_send_channel(args: &[CallArg]) -> Option<String> {
     for a in args {
-        if let CallArg::Named { name, value: Expr::StringLit { value, .. } } = a {
+        if let CallArg::Named { name, value: Expr::StringLit { value, .. }, .. } = a {
             if name.eq_ignore_ascii_case("eventname") {
                 return Some(value.clone());
             }
@@ -699,7 +850,7 @@ fn ce_send_data_slots(args: &[CallArg]) -> Vec<(usize, &Expr)> {
                 }
                 pos_idx += 1;
             }
-            CallArg::Named { name, value } => {
+            CallArg::Named { name, value, .. } => {
                 if let Some(n) = name.strip_prefix("data").and_then(|s| s.parse::<usize>().ok()) {
                     if n >= 1 {
                         out.push((n - 1, value));
@@ -895,15 +1046,13 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
 fn defaults_table(spec: &crate::catalog::calls::CallSpec) -> Option<String> {
     let mut rows: Vec<(String, String, String)> = Vec::new();
     for p in &spec.params {
-        if let Some(kind) = scalar_kind_of(&p.ty) {
-            if let Some(d) = gate_field_default(spec.gate_class, p.port.as_str(), kind) {
-                // An enum-backed config param shows its enum type, not bare `int`
-                // (matching the value, which is rendered as the member name).
-                let ty_label = crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| type_str(&p.ty));
-                rows.push((p.name.to_string(), ty_label, d));
-            }
+        if let Some(d) = field_default_display(spec.gate_class, p.port.as_str(), &p.ty) {
+            // An enum-backed config param shows its enum type, not bare `int`
+            // (matching the value, which is rendered as the member name).
+            let ty_label = crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| type_str(&p.ty));
+            rows.push((p.name.to_string(), ty_label, d));
         }
     }
     // Settings-menu config fields not already listed as a param port.

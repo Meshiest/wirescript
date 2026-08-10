@@ -979,7 +979,14 @@ pub struct MapLitEntry {
 #[derive(Clone, Debug)]
 pub enum CallArg {
     Positional(Expr),
-    Named { name: String, value: Expr },
+    Named {
+        name: String,
+        value: Expr,
+        /// Span of the argument NAME (`positionX` in `positionX = 0.0`), so a
+        /// diagnostic about the argument itself (e.g. WS041 unknown parameter)
+        /// underlines the name rather than the value expression.
+        name_range: SourceRange,
+    },
     Spread(Expr),
 }
 

@@ -19,4 +19,4 @@ mod swap(a: *int, b: *int) {
   b = tmp
 }
 
-fn double(x: int) -> int = x * 2
+mod double(x: int) -> int { return x * 2 }

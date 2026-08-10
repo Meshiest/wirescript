@@ -250,7 +250,13 @@
         let g = gc::PLAYERSTATE_DISPLAY_TEXT;
         assert!(crate::catalog::is_wire_input(g, "PlayerState"));
         assert!(crate::catalog::is_wire_input(g, "Text"));
-        // The old scalar layout ports are gone.
+        // The old flat scalar layout ports are gone.
         assert!(!crate::catalog::is_wire_input(g, "PositionX"));
         assert!(!crate::catalog::is_wire_input(g, "FontSize"));
+        // The reworked layout ports are Vector2D composites whose float X/Y
+        // sub-ports are individually wireable (resolved via composite.sub_ports).
+        assert!(crate::catalog::is_wire_input(g, "Position.X"));
+        assert!(crate::catalog::is_wire_input(g, "Anchor.Y"));
+        assert!(!crate::catalog::is_wire_input(g, "Position.Z"));
+        assert!(!crate::catalog::is_wire_input(g, "Bogus.X"));
     }

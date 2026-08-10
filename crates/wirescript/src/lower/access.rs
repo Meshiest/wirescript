@@ -606,7 +606,7 @@ pub(super) fn lower_map_method(
     // binding). Mirrors the array-method path. The op is a leaf then, so restore
     // the caller's exec afterward rather than advancing it.
     let exec_arg: Option<&Expr> = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value } if name == "exec" => Some(value),
+        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
         _ => None,
     });
     let saved_exec = ctx.current_exec;
@@ -730,7 +730,7 @@ pub(super) fn lower_array_method(
     // leaf in that case, so restore the caller's exec context afterward rather than
     // advancing it.
     let exec_arg: Option<&Expr> = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value } if name == "exec" => Some(value),
+        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
         _ => None,
     });
     let saved_exec = ctx.current_exec;
@@ -1155,7 +1155,7 @@ pub(super) fn lower_array_method(
             let tag = args
                 .iter()
                 .find_map(|a| match a {
-                    CallArg::Named { name, value } if name == "tagFilter" => Some(value),
+                    CallArg::Named { name, value, .. } if name == "tagFilter" => Some(value),
                     _ => None,
                 })
                 .or_else(|| match args.get(1) {
@@ -1185,7 +1185,7 @@ pub(super) fn lower_array_method(
             let mut descending: Option<&Expr> = None;
             for a in args {
                 match a {
-                    CallArg::Named { name, value } if name == "descending" => {
+                    CallArg::Named { name, value, .. } if name == "descending" => {
                         descending = Some(value);
                     }
                     CallArg::Positional(expr) => {

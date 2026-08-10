@@ -57,9 +57,22 @@ fn every_builtin_exposes_all_gate_ports() {
             spec.params.iter().map(|p| clean_lower(p.port.as_str())).collect();
         for p in gate.component.inputs.iter().filter(|p| p.ty != RawPortType::Exec) {
             let pair = format!("{name}.{}", p.name);
-            if !covered_in.contains(&clean_lower(&p.name)) && !allowed.contains(pair.as_str()) {
-                gaps.push(format!("{pair}  (input {:?})", p.ty));
+            if covered_in.contains(&clean_lower(&p.name)) || allowed.contains(pair.as_str()) {
+                continue;
             }
+            // A composite input (e.g. the Vector2D `Position` with X/Y sub-ports)
+            // is covered when its sub-ports are exposed as per-axis params
+            // (`positionX` -> "Position.X"), rather than a single parent param.
+            if let Some(comp) = &p.composite {
+                if comp
+                    .sub_ports
+                    .iter()
+                    .all(|s| covered_in.contains(&clean_lower(&format!("{}.{}", p.name, s))))
+                {
+                    continue;
+                }
+            }
+            gaps.push(format!("{pair}  (input {:?})", p.ty));
         }
 
         let mut covered_out: HashSet<String> = HashSet::new();

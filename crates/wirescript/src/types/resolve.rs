@@ -36,6 +36,7 @@ pub fn primitive(name: &str) -> Option<Type> {
         "controller" => Type::Controller,
         "zone" => Type::Zone,
         "teleport" => Type::Teleport,
+        "prefab" => Type::PrefabRef,
         "exec" => Type::Exec,
         // `any` (in annotation position) maps onto the *wildcard* type
         // (`Type::Opaque`, the same type `Opaque(...)` produces) rather than

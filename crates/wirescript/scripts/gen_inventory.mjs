@@ -90,6 +90,7 @@ function compositeKind(subs) {
   const s = new Set(subs);
   const eq = (...keys) => keys.length === s.size && keys.every((k) => s.has(k));
   if (eq("X", "Y", "Z")) return "vector";
+  if (eq("X", "Y")) return "vector"; // Vector2D (screen-space layout ports)
   if (eq("Pitch", "Yaw", "Roll")) return "rotator";
   if (eq("R", "G", "B", "A")) return "color";
   return "struct";
@@ -169,8 +170,10 @@ function buildPorts(portDict, curatedByName) {
       const kind = compositeKind(subs);
       type = COMPOSITE_TYPE[kind];
       composite = { kind, subPorts: subs };
-      // Prefer the curated composite shape if one already existed.
-      if (curated?.composite) {
+      // Prefer a genuinely-curated composite shape (a concrete, non-`any` type)
+      // over the dump-derived one. A stale auto-`any` curated value does NOT win,
+      // so newly-recognized shapes (e.g. Vector2D X,Y ports) take effect.
+      if (curated?.composite && curated.type && curated.type !== "any") {
         composite = curated.composite;
         type = curated.type;
       }

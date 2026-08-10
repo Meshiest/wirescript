@@ -137,8 +137,8 @@ wire_ports! {
     Yaw = "Yaw",
     AggroRange = "AggroRange",
     Agression = "Agression",
-    AnchorX = "AnchorX",
-    AnchorY = "AnchorY",
+    AnchorX = "Anchor.X",
+    AnchorY = "Anchor.Y",
     Angle = "Angle",
     AngularVelocity = "AngularVelocity",
     Arguments = "Arguments",
@@ -262,8 +262,8 @@ wire_ports! {
     Output = "Output",
     OutputB = "OutputB",
     PitchMultiplier = "PitchMultiplier",
-    PositionX = "PositionX",
-    PositionY = "PositionY",
+    PositionX = "Position.X",
+    PositionY = "Position.Y",
     Prefix = "Prefix",
     PressCount = "PressCount",
     PressSound = "PressSound",
@@ -284,8 +284,8 @@ wire_ports! {
     RoundNumber = "RoundNumber",
     RunSpeed = "RunSpeed",
     Scalar = "Scalar",
-    ScaleX = "ScaleX",
-    ScaleY = "ScaleY",
+    ScaleX = "Scale.X",
+    ScaleY = "Scale.Y",
     Search = "Search",
     SecondsToWait = "SecondsToWait",
     Seed = "Seed",
@@ -660,4 +660,40 @@ wire_ports! {
     BlendSpace = "BlendSpace",
     MeshColors = "MeshColors",
     WeaponAmmoOverride = "WeaponAmmoOverride",
+    // Vector2D composite sub-ports (DisplayText layout): each parent (`Position`,
+    // `Anchor`, …) exposes two individually-wireable float sub-ports `X`/`Y`.
+    // Position/Anchor/Scale axes reuse the (repurposed) former Controller_DisplayText
+    // variants below; Pivot/ShadowOffset are new to the reworked gate.
+    PivotX = "Pivot.X",
+    PivotY = "Pivot.Y",
+    ShadowOffsetX = "ShadowOffset.X",
+    ShadowOffsetY = "ShadowOffset.Y",
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WirePort;
+
+    #[test]
+    fn subport_wireports_round_trip() {
+        for wp in [
+            WirePort::PositionX,
+            WirePort::PositionY,
+            WirePort::AnchorX,
+            WirePort::AnchorY,
+            WirePort::ScaleX,
+            WirePort::ScaleY,
+            WirePort::PivotX,
+            WirePort::PivotY,
+            WirePort::ShadowOffsetX,
+            WirePort::ShadowOffsetY,
+        ] {
+            assert!(
+                wp.as_str().contains('.'),
+                "sub-port name is dotted: {}",
+                wp.as_str()
+            );
+            assert_eq!(WirePort::from_name(wp.as_str()), wp);
+        }
+    }
 }

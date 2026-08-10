@@ -2106,9 +2106,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // `fn name(params) [-> ReturnType] = expr`
+    // `fn name(params) [-> ReturnType] = expr` — REMOVED.
     fn parse_fn_decl(&mut self) -> TopDecl {
-        let start = self.expect(TokenKind::Kw, Some("fn")).start;
+        let kw = self.expect(TokenKind::Kw, Some("fn"));
+        let start = kw.start;
+        // The `fn` declaration form has been removed — use a `mod` with a return
+        // value. Reject, but keep parsing the rest so a stray `fn` doesn't derail
+        // the whole file (mirrors the removed `array`/`map` decl keywords).
+        self.error(
+            "`fn` declarations have been removed — use `mod NAME(params) -> T { return <expr> }` instead",
+            kw.start,
+            kw.end,
+        );
         let name = self.expect(TokenKind::Ident, None).text;
         let params = self.parse_param_list();
         let return_type = if self.match_tok(TokenKind::Arrow, None).is_some() {
@@ -3324,10 +3333,16 @@ impl<'a> Parser<'a> {
             && self.peek_at(1).kind == TokenKind::Op
             && self.peek_at(1).text == "="
         {
-            let name = self.advance().text;
+            let name_tok = self.advance();
+            let name_range = self.make_range(name_tok.start, name_tok.end);
+            let name = name_tok.text;
             self.advance(); // '='
             let value = self.parse_expr();
-            CallArg::Named { name, value }
+            CallArg::Named {
+                name,
+                value,
+                name_range,
+            }
         } else {
             CallArg::Positional(self.parse_expr())
         }

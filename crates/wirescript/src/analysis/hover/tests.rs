@@ -45,6 +45,32 @@
     }
 
     #[test]
+    fn builtin_hover_shows_layout_and_color_defaults() {
+        // DisplayText's layout ports are per-axis Vector2D sub-ports; the defaults
+        // table lists them as float rows, and the colors still render as sRGB hex
+        // (from their LinearColor defaults).
+        let src = "in c: controller\nin go: exec\non go {\n  DisplayText(c, \"hi\")\n}";
+        let call_line = 3usize;
+        let col = src.lines().nth(call_line).unwrap().find("DisplayText").unwrap();
+        let h = hover_for(src, call_line, col).expect("DisplayText should hover");
+        assert!(h.contains("anchorY"), "per-axis layout param row: {h}");
+        assert!(h.contains("pivotX"), "per-axis layout param row: {h}");
+        assert!(h.contains("#181425"), "outline color as sRGB hex: {h}");
+        assert!(h.contains("#ffffff"), "font color white: {h}");
+    }
+
+    #[test]
+    fn named_param_hover_shows_subport_axis_default() {
+        // Hovering the `anchorY =` named arg shows that axis of the parent Anchor
+        // Vector2D default (0.5). A real param name never trips the WS041 check.
+        let src = "in c: controller\nin go: exec\non go {\n  DisplayText(c, \"hi\", anchorY = 0.9)\n}";
+        let call_line = 3usize;
+        let col = src.lines().nth(call_line).unwrap().find("anchorY").unwrap();
+        let h = hover_for(src, call_line, col).expect("anchorY named arg should hover");
+        assert!(h.contains("Default: `0.5`"), "expected Anchor.Y default 0.5: {h}");
+    }
+
+    #[test]
     fn custom_event_hover_resolves_channel_and_types() {
         // Hovering the `CustomEvent` trigger shows the channel name plus each
         // data slot's name/type: declared by the receiver, and filled from a

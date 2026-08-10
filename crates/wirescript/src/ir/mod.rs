@@ -113,6 +113,11 @@ pub enum Type {
     /// destination/source ports). Reference-only, exactly like [`Type::Zone`].
     /// Teleporting to a raw position uses `SetLocation`, not a teleport point.
     Teleport,
+    /// A compile-time-constant reference to a prefab (`$./file.brz` or a
+    /// nested `prefab { ... }` block). Resolved entirely during compilation —
+    /// it is never a runtime wire value and never stored in a variable;
+    /// reference-only, exactly like [`Type::Zone`]/[`Type::Teleport`].
+    PrefabRef,
     Exec,
     Any,
     /// The result of the `Opaque(...)` builtin — an intentionally-untyped
@@ -162,6 +167,7 @@ impl std::fmt::Display for Type {
             Type::Controller => f.write_str("controller"),
             Type::Zone => f.write_str("zone"),
             Type::Teleport => f.write_str("teleport"),
+            Type::PrefabRef => f.write_str("prefab"),
             Type::Exec => f.write_str("exec"),
             // `Opaque` behaves like `any` everywhere except operator resolution,
             // and that distinction isn't user-facing.

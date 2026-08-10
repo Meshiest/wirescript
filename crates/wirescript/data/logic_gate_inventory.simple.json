@@ -7183,9 +7183,9 @@
             "name": "Anchor",
             "displayName": "Anchor",
             "tooltip": "",
-            "type": "any",
+            "type": "vector",
             "composite": {
-              "kind": "struct",
+              "kind": "vector",
               "subPorts": [
                 "X",
                 "Y"
@@ -7275,9 +7275,9 @@
             "name": "Pivot",
             "displayName": "Pivot",
             "tooltip": "",
-            "type": "any",
+            "type": "vector",
             "composite": {
-              "kind": "struct",
+              "kind": "vector",
               "subPorts": [
                 "X",
                 "Y"
@@ -7295,9 +7295,9 @@
             "name": "Position",
             "displayName": "Position",
             "tooltip": "",
-            "type": "any",
+            "type": "vector",
             "composite": {
-              "kind": "struct",
+              "kind": "vector",
               "subPorts": [
                 "X",
                 "Y"
@@ -7308,9 +7308,9 @@
             "name": "Scale",
             "displayName": "Scale",
             "tooltip": "",
-            "type": "any",
+            "type": "vector",
             "composite": {
-              "kind": "struct",
+              "kind": "vector",
               "subPorts": [
                 "X",
                 "Y"
@@ -7336,9 +7336,9 @@
             "name": "ShadowOffset",
             "displayName": "Shadow Offset",
             "tooltip": "",
-            "type": "any",
+            "type": "vector",
             "composite": {
-              "kind": "struct",
+              "kind": "vector",
               "subPorts": [
                 "X",
                 "Y"
@@ -24210,9 +24210,9 @@
             "name": "Anchor",
             "displayName": "Anchor",
             "tooltip": "",
-            "type": "any",
+            "type": "vector",
             "composite": {
-              "kind": "struct",
+              "kind": "vector",
               "subPorts": [
                 "X",
                 "Y"

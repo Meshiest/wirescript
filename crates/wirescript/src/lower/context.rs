@@ -187,6 +187,15 @@ pub(super) struct LowerCtx<'a> {
     /// takes the byte-identical `type_of_type_expr` fast path there — only a
     /// generic mod's own body sees a non-empty stack.
     pub(super) mono_stack: Vec<MonoFrame>,
+    /// Scoped constant `let` bindings, one frame per currently-open
+    /// `ctx.scope` frame (a FRAME STACK mirroring `scope` 1:1 — every
+    /// `push_scope`/`pop_scope` pair pushes/pops both together, mirroring
+    /// `typecheck::TypeCheckCtx::scoped_consts`). A body-local
+    /// `let name = <constant>` (inside a handler/mod/if/block) records
+    /// `name -> Literal` in the top frame here, so a constant-only config arg
+    /// (see `const_lookup`) can resolve it the same way a top-level `let`
+    /// resolves through `const_env`.
+    pub(super) scoped_consts: Vec<HashMap<String, Literal>>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -227,6 +236,19 @@ impl<'a> LowerCtx<'a> {
     /// Push a scope, run `f`, then restore the previous scope. Use this
     /// wrapper around any lowering call that should emit nodes under a
     /// specific scope (handler body, chip body, if branches, blocks, ...).
+    ///
+    /// Also pushes/pops a name-resolution `scope`/`scoped_consts` frame (via
+    /// `push_scope`/`pop_scope`) around `f`, so every handler body — every
+    /// trigger kind routes through this wrapper, not just the built-in-event
+    /// path — gets its own BLOCK frame. Without this, a body-local `let`
+    /// declared inside e.g. an `in`-port-triggered handler (`on go { let pf =
+    /// ... }`) had no frame of its own to bind into: it landed in whatever
+    /// scope was ambient at the call site (module root, for a top-level
+    /// handler) and was never popped. Any caller that ALSO needs to bind
+    /// names visible for the duration of `f` (e.g. a handler's typed event
+    /// params) must do so INSIDE the closure, after this push — not before
+    /// calling `with_scope` — or those bindings leak into the outer scope
+    /// instead of being cleaned up with the body.
     pub(super) fn with_scope<R>(
         &mut self,
         kind: ScopeKind,
@@ -234,7 +256,10 @@ impl<'a> LowerCtx<'a> {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let id = self.alloc_scope(kind, range);
-        self.enter_scope(id, f)
+        self.push_scope(crate::scope::ScopeTag::BLOCK);
+        let out = self.enter_scope(id, f);
+        self.pop_scope();
+        out
     }
 
     /// Enter an already-allocated scope. Useful when the caller needs the
@@ -245,6 +270,44 @@ impl<'a> LowerCtx<'a> {
         let out = f(self);
         self.builder.current_scope_id = prev;
         out
+    }
+
+    /// Push a new name-resolution `scope` frame together with a matching
+    /// empty `scoped_consts` frame, so the two stacks can never drift out of
+    /// lockstep (mirrors `typecheck::TypeCheckCtx::push_scope`). Use this
+    /// (paired with `pop_scope`) everywhere lowering enters a block scope
+    /// (handler body, if branch, `BlockExpr`, inline-mod call) instead of a
+    /// bare `ctx.scope.push(...)` — a bare push would leave `scoped_consts`
+    /// pointing at the wrong (enclosing) frame, so a body-local `let` inside
+    /// the new scope would be recorded one level too shallow, potentially
+    /// leaking past its own scope's lifetime or clobbering a sibling scope's
+    /// constant of the same name.
+    pub(super) fn push_scope(&mut self, tag: crate::scope::ScopeTag) {
+        self.scope.push(tag);
+        self.scoped_consts.push(HashMap::default());
+    }
+
+    /// Pop the frame pushed by `push_scope`.
+    pub(super) fn pop_scope(&mut self) {
+        self.scope.pop();
+        self.scoped_consts.pop();
+    }
+
+    /// The constant environment visible at the current point: the top-level
+    /// `const_env` overlaid by every currently-open `scoped_consts` frame,
+    /// applied outer-to-inner so an inner scope's `let` shadows an outer
+    /// scope's (and both shadow a same-named top-level constant). Mirrors
+    /// `typecheck::TypeCheckCtx::const_lookup` exactly, so both stages agree
+    /// on which name resolves to which literal. `const_env` is small, so
+    /// cloning per lookup is cheap.
+    pub(super) fn const_lookup(&self) -> HashMap<String, Literal> {
+        let mut env: HashMap<String, Literal> = (*self.const_env).clone();
+        for frame in &self.scoped_consts {
+            for (name, lit) in frame {
+                env.insert(name.clone(), lit.clone());
+            }
+        }
+        env
     }
 
     pub(super) fn type_of(&self, e: &Expr) -> Type {

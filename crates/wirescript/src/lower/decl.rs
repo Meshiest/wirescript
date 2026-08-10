@@ -106,30 +106,9 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             lower_expr(ctx, &es.expr);
         }
         TopDecl::Fn(f) => {
-            // Deprecated: convert fn to inline mod with return value
-            ctx.diagnostics.push(Diagnostic {
-                severity: crate::diagnostic::Severity::Warning,
-                code: "WS015".into(),
-                message: format!(
-                    "'fn {}' is deprecated — use 'mod {}({}) -> {} {{ return <body> }}'",
-                    f.name,
-                    f.name,
-                    f.params
-                        .iter()
-                        .map(|p| format!(
-                            "{}: {}",
-                            p.name,
-                            crate::analysis::types::type_expr_str(&p.typ)
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    f.return_type
-                        .as_ref()
-                        .map(crate::analysis::types::type_expr_str)
-                        .unwrap_or_else(|| "auto".into()),
-                ),
-                range: f.range.clone(),
-            });
+            // `fn` has been removed (rejected at parse with a hard error). A
+            // recovered `fn` decl is still lowered as an inline mod-with-return so
+            // a stray one doesn't crash lowering — there is no deprecation warning.
             // Synthesize a ChipDecl from the FnDecl
             let outputs = if let Some(ref ret_type) = f.return_type {
                 vec![NamedOutput {
@@ -261,9 +240,55 @@ pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
     let saved_chip = ctx.current_anon_chip.take();
     ctx.current_anon_chip = Some(chip_node_id);
 
-    lower_block(ctx, &d.body);
+    lower_chip_body(ctx, &d.body);
 
     ctx.current_anon_chip = saved_chip;
+}
+
+/// True for a chip-body statement that is a pure, reactive DECLARATION — the
+/// same set `is_pure_top_decl` uses at the top level.
+fn is_pure_chip_stmt(s: &Stmt) -> bool {
+    matches!(
+        s,
+        Stmt::Let(_) | Stmt::OutBinding(_) | Stmt::Var(_) | Stmt::Buffer(_)
+    )
+}
+
+/// Lower an anon-chip body. A `chip { }` is a visual grouping whose top-level
+/// statements behave like TOP-LEVEL declarations, not steps on a handler's exec
+/// spine: a PURE statement (`let`/`var`/`out`/`buffer`) is reactive signal flow
+/// and must NOT inherit the ambient (e.g. post-handler) `current_exec`, or its
+/// var reads latch onto that chain as a one-shot `Exec_Var_Get` frozen at the
+/// var's init instead of the var's live `.Value`. An EXEC statement (`if`,
+/// assignment, expr) KEEPS the ambient exec, so a chip that runs imperative
+/// logic (e.g. draining an input queue with `if q.length() > 0 { … }`) still
+/// fires. Mirrors the top-level decl loop's `is_pure_top_decl` handling; the
+/// rest matches `lower_block` (pre-declare nested chips, flush handler execs,
+/// trailing-emit terminates the chain).
+fn lower_chip_body(ctx: &mut LowerCtx, block: &Block) {
+    for s in &block.stmts {
+        if let Stmt::AnonChip(ac) = s {
+            pre_declare_decl(ctx, &TopDecl::AnonChip(ac.clone()));
+        }
+    }
+    for s in &block.stmts {
+        let is_handler_stmt = matches!(s, Stmt::Handler(_) | Stmt::AnonChip(_));
+        if !ctx.handler_end_execs.is_empty() && !is_handler_stmt {
+            flush_handler_end_execs(ctx);
+        }
+        if is_pure_chip_stmt(s) {
+            let saved_exec = ctx.current_exec.take();
+            lower_stmt(ctx, s);
+            ctx.current_exec = saved_exec;
+        } else {
+            lower_stmt(ctx, s);
+        }
+    }
+    if let Some(Stmt::Emit(e)) = block.stmts.last()
+        && (ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some())
+    {
+        ctx.current_exec = None;
+    }
 }
 
 pub(super) fn lower_chip_decl(ctx: &mut LowerCtx, d: &ChipDecl) {
@@ -288,7 +313,12 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // Clear any leftover inline-mod record so only THIS statement's call can set
     // it (an inline mod call within `d.value` sets it definitively at its end).
     ctx.pending_inline_record = None;
-    // `let name: exec` — local exec signal, register as emit target
+
+    // `let name: exec` — local exec signal, register as emit target. Checked
+    // first and returns unconditionally: an exec-typed `let` (parsed with a
+    // placeholder `0` value when it has no `= ...` initializer — see the
+    // parser) never names a constant, so it must not reach the const
+    // recording below.
     if let Some(TypeExpr::Name {
         name: ref type_name,
         ..
@@ -309,6 +339,38 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             return;
         }
     }
+
+    // A body-local `let name = <constant>` is recorded in the innermost
+    // `scoped_consts` frame (mirroring how a top-level `let` lands in
+    // `const_env` via `build_const_env`), so a constant-only config arg
+    // elsewhere in this scope (or a nested one) can resolve `name` via
+    // `ctx.const_lookup()` — see `literal_for_property_port`. Only the
+    // simple `Ident` binding form can name a single constant. This is a
+    // no-op at the top level: `lower_let_decl` also handles `TopDecl::Let`
+    // (via `lower_decl`), but no `push_scope` has run there yet, so
+    // `scoped_consts` is empty and `last_mut()` finds no frame — top-level
+    // constants are already covered by `const_env`.
+    if let LetBinding::Ident { name, .. } = &d.binding
+        && let Some(lit) = expr_to_literal_in(&d.value, &ctx.const_lookup())
+        && let Some(frame) = ctx.scoped_consts.last_mut()
+    {
+        frame.insert(name.clone(), lit);
+    }
+
+    // A prefab-only reference (`let pf = $./file.brz` / an inline nested-
+    // prefab block): constant-only — it lives in the const env (recorded
+    // above, resolved by `literal_for_property_port` wherever `pf` is later
+    // passed as a `prefab = pf` config arg) and has no wire value of its
+    // own. `Expr::PrefabRef`/`Expr::NestedPrefab` aren't handled by the
+    // general expression lowerer (`lower_expr` falls through to
+    // `synthesise_unsupported` for them), so without this early return —
+    // mirroring the record-lit/record-alias early-returns below — the `let`
+    // would emit a placeholder `_Unsupported` gate plus a warning even
+    // though the reference resolves fine as a constant.
+    if matches!(&d.value, Expr::PrefabRef { .. } | Expr::NestedPrefab { .. }) {
+        return;
+    }
+
     // Handle record literals specially — they produce a Binding::Record,
     // not a single PortRef.
     if let Expr::RecordLit { fields, .. } = &d.value {

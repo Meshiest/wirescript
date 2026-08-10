@@ -586,6 +586,51 @@ fn data_driven_int_config_lands_by_raw_name() {
 }
 
 #[test]
+fn display_text_constant_axes_bake_vector2d() {
+    // Constant per-axis layout bakes the parent Vector2D data field; an axis the
+    // caller omits fills from STRUCT_DEFAULTS (Anchor.X default 0.5). No wire.
+    let src = "in go: exec\nin p: controller\non go {\n  p.DisplayText(\"hi\", positionX = 0.0, positionY = -30.0, anchorY = 0.25)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let c = crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT;
+    match prop(&r, c, "Position") {
+        Some(Literal::Vector { x, y, .. }) => {
+            assert_eq!(*x, 0.0);
+            assert_eq!(*y, -30.0);
+        }
+        other => panic!("Position should bake as a Vector2D literal, got {other:?}"),
+    }
+    match prop(&r, c, "Anchor") {
+        Some(Literal::Vector { x, y, .. }) => {
+            assert_eq!(*x, 0.5, "unset Anchor.X fills from STRUCT_DEFAULTS");
+            assert_eq!(*y, 0.25);
+        }
+        other => panic!("Anchor should bake with default X=0.5, got {other:?}"),
+    }
+}
+
+#[test]
+fn display_text_runtime_axis_wires_subport() {
+    // A runtime float wires the Position.X sub-port (a valid wire input), and is
+    // NOT baked into the Position data field.
+    let src = "in go: exec\nin p: controller\nin px: float\non go {\n  p.DisplayText(\"hi\", positionX = px)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.port == crate::ir::port_registry::WirePort::PositionX),
+        "runtime positionX should wire Position.X; wires: {:?}",
+        r.module.wires
+    );
+    assert!(
+        prop(&r, crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT, "Position").is_none(),
+        "a runtime axis must not bake a constant Position field"
+    );
+}
+
+#[test]
 fn friendly_alias_still_works_alongside_raw() {
     // The hand-coded `bodyPartsOnly` alias keeps setting the same field.
     let src = "in go: exec\non go {\n  SweepSimple(500.0, bodyPartsOnly = true)\n}\n";

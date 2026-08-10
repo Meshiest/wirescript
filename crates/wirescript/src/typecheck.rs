@@ -26,7 +26,11 @@ use crate::catalog::operators::{OpRule, resolve_op};
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
 use crate::ir::Type;
 use crate::types::classes::mask_contains;
-use crate::types::coerce::{CoerceRule, coerce, widening_join, widening_join_all};
+use crate::types::coerce::{CoerceRule, coerce, widening_join_all};
+
+pub(crate) mod infer;
+mod sig;
+pub use sig::{CallSignature, Param, ParamKind, check_args};
 
 // ---------- scope + symbol info ----------
 
@@ -145,6 +149,13 @@ pub enum ExecMode {
 pub struct NsDeclInfo {
     pub kind: SymbolKind,
     pub return_type: Option<TypeExpr>,
+    /// The member's declared params, carried so a namespaced call
+    /// (`ns.f(args)`) can be arity/type-checked via `check_args` — before
+    /// this field existed those calls did NO argument checking at all. A
+    /// generic member's params may still carry `Type::Param` (there's no
+    /// call-site `subst` here to resolve them against); `check_args`'s own
+    /// `type_has_param` guard skips those, same as it does elsewhere.
+    pub params: Vec<EventDataField>,
 }
 
 pub struct TypeCheckCtx {
@@ -155,6 +166,10 @@ pub struct TypeCheckCtx {
     pub namespaces: HashMap<String, HashMap<String, NsDeclInfo>>,
     pub if_contexts: HashMap<(Arc<str>, usize), bool>,
     pub var_read_contexts: HashMap<(Arc<str>, usize), bool>,
+    /// Typed every visited expression; key is (file, start_offset, end_offset).
+    pub type_of_expr: HashMap<(Arc<str>, usize, usize), Type>,
+    /// Operator rule chosen for every BinOp/UnOp; same key scheme.
+    pub op_resolutions: HashMap<(Arc<str>, usize, usize), OpRule>,
     /// Ferried payload type per local exec signal, recorded from
     /// `emit sig = <value>` so `let { a, b } = await sig` can type its fields.
     pub signal_payload_types: HashMap<String, Type>,
@@ -181,6 +196,14 @@ pub struct TypeCheckCtx {
     /// nesting depth; a nested decl whose masks exceed the remaining budget
     /// falls back to a single first-member check (like the too-many-params cap).
     pub active_combos: usize,
+    /// Scoped constant `let` bindings, one frame per currently-open
+    /// `ctx.scope` frame (a FRAME STACK mirroring `scope` 1:1 — every
+    /// `push_scope`/`pop_scope` pair pushes/pops both together). A body-local
+    /// `let name = <constant>` (top-level OR inside a handler/mod/if/block)
+    /// records `name -> Literal` in the top frame here, so a constant-only
+    /// config arg (see `const_lookup`) can resolve it the same way a
+    /// top-level `let` resolves through `const_env`.
+    pub scoped_consts: Vec<crate::collections::HashMap<String, crate::ir::Literal>>,
 }
 
 impl TypeCheckCtx {
@@ -193,11 +216,41 @@ impl TypeCheckCtx {
             namespaces: HashMap::default(),
             if_contexts: HashMap::default(),
             var_read_contexts: HashMap::default(),
+            type_of_expr: HashMap::default(),
+            op_resolutions: HashMap::default(),
             signal_payload_types: HashMap::default(),
             generic_type_aliases: HashMap::default(),
             const_env: crate::lower::ConstEnv::default(),
             active_combos: 1,
+            scoped_consts: Vec::new(),
         }
+    }
+    /// Push a new `scope` frame together with a matching empty `scoped_consts`
+    /// frame. Use this (paired with `pop_scope`) everywhere a bare
+    /// `ctx.scope.push()`/`ctx.scope.pop()` pair would otherwise appear, so
+    /// the two stacks can never drift out of lockstep.
+    pub fn push_scope(&mut self) {
+        self.scope.push();
+        self.scoped_consts.push(crate::collections::HashMap::default());
+    }
+    /// Pop the frame pushed by `push_scope`.
+    pub fn pop_scope(&mut self) {
+        self.scope.pop();
+        self.scoped_consts.pop();
+    }
+    /// The constant environment visible at the current point: the top-level
+    /// `const_env` overlaid by every currently-open `scoped_consts` frame,
+    /// applied outer-to-inner so an inner scope's `let` shadows an outer
+    /// scope's (and both shadow a same-named top-level constant). `const_env`
+    /// is small, so cloning per lookup is cheap.
+    pub fn const_lookup(&self) -> crate::lower::ConstEnv {
+        let mut env = self.const_env.clone();
+        for frame in &self.scoped_consts {
+            for (name, lit) in frame {
+                env.insert(name.clone(), lit.clone());
+            }
+        }
+        env
     }
     pub fn exec_mode(&self) -> ExecMode {
         *self.exec_stack.last().unwrap_or(&ExecMode::Pure)
@@ -241,9 +294,6 @@ pub struct TypeCheckResult {
 pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
     let mut ctx = TypeCheckCtx::new(file);
     register_builtin_events(&mut ctx);
-
-    let mut tmap: HashMap<(Arc<str>, usize, usize), Type> = HashMap::default();
-    let mut omap: HashMap<(Arc<str>, usize, usize), OpRule> = HashMap::default();
 
     // Pre-pass: collect every generic type alias (`type Pair<T> = …`) before
     // any decl registration/resolution runs, so a use resolves regardless of
@@ -291,35 +341,39 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
         }
         if exec_wrap {
             ctx.exec_stack.push(ExecMode::Exec);
-            check_decl(&mut ctx, d, &mut tmap, &mut omap);
+            check_decl(&mut ctx, d);
             ctx.exec_stack.pop();
         } else {
-            check_decl(&mut ctx, d, &mut tmap, &mut omap);
+            check_decl(&mut ctx, d);
         }
     }
     for (exec_wrap, d) in deferred_chips {
         if exec_wrap {
             ctx.exec_stack.push(ExecMode::Exec);
-            check_decl(&mut ctx, d, &mut tmap, &mut omap);
+            check_decl(&mut ctx, d);
             ctx.exec_stack.pop();
         } else {
-            check_decl(&mut ctx, d, &mut tmap, &mut omap);
+            check_decl(&mut ctx, d);
         }
     }
 
     // Runtime `@label(expr)` on a top-level `var`: type-check the expression
     // now that every top-level symbol is declared (an undefined ref or a bad
     // type surfaces here). A constant label is skipped — it bakes statically.
-    check_dynamic_var_labels(&mut ctx, script, &mut tmap, &mut omap);
+    check_dynamic_var_labels(&mut ctx, script);
 
     // Whole-program pass: `SendCustomEvent("name", …)` data whose wire types
     // disagree with the `on CustomEvent("name", …)` receiver's declared params.
-    // Runs last so every arg has an inferred type in `tmap`.
-    check_custom_event_types(&mut ctx, script, &tmap);
+    // Runs last so every arg has an inferred type in `type_of_expr`.
+    // The custom-event pass reads already-inferred arg types while emitting
+    // diagnostics; move the map out to satisfy the borrow checker, then restore.
+    let type_of_expr = std::mem::take(&mut ctx.type_of_expr);
+    check_custom_event_types(&mut ctx, script, &type_of_expr);
+    ctx.type_of_expr = type_of_expr;
 
     TypeCheckResult {
-        type_of_expr: tmap,
-        op_resolutions: omap,
+        type_of_expr: ctx.type_of_expr,
+        op_resolutions: ctx.op_resolutions,
         if_contexts: ctx.if_contexts,
         var_read_contexts: ctx.var_read_contexts,
         diagnostics: ctx.diagnostics,
@@ -425,14 +479,12 @@ fn check_one_label_expr(ctx: &mut TypeCheckCtx, label_expr: &Option<Expr>) {
 fn check_dynamic_var_labels(
     ctx: &mut TypeCheckCtx,
     script: &Script,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     for d in &script.decls {
         if let TopDecl::Var(v) = d {
             if let Some(le) = &v.label_expr {
                 if crate::lower::expr_to_literal_in(le, &ctx.const_env).is_none() {
-                    infer_expr(ctx, le, tmap, omap);
+                    infer::infer(ctx, le);
                 }
             }
         }
@@ -639,12 +691,12 @@ fn type_expr_range(t: &TypeExpr) -> SourceRange {
 /// (ports, `let`s, mod/chip params) — but a var/array/buffer's storage gate
 /// needs a concrete wire variant to hold, so an explicit `any` annotation
 /// there is rejected (WS025). The same holds for the reference types
-/// (`zone`/`teleport`): like a var ref, they can only be wired or rerouted,
-/// never held in a storage gate. Only fires on an *explicit* annotation: an
-/// unannotated declaration's inferred placeholder is `Type::Any`, never
-/// `Type::Opaque`, so it never reaches this check.
+/// (`zone`/`teleport`/`prefab`): like a var ref, they can only be wired or
+/// rerouted, never held in a storage gate. Only fires on an *explicit*
+/// annotation: an unannotated declaration's inferred placeholder is
+/// `Type::Any`, never `Type::Opaque`, so it never reaches this check.
 fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRange, what: &str) {
-    if matches!(resolved, Type::Zone | Type::Teleport) {
+    if matches!(resolved, Type::Zone | Type::Teleport | Type::PrefabRef) {
         let n = crate::analysis::types::type_str(resolved);
         ctx.emit(
             "WS025",
@@ -686,7 +738,7 @@ fn contains_opaque(t: &Type) -> bool {
 /// unresolved generic type parameter. A call whose param still carries one
 /// (its `T` couldn't be inferred) is left to the WS033 inference diagnostics,
 /// not the concrete arg-vs-param coercion check.
-fn type_has_param(t: &Type) -> bool {
+pub(crate) fn type_has_param(t: &Type) -> bool {
     match t {
         Type::Param(_) => true,
         Type::Ref(inner) | Type::Array(inner) => type_has_param(inner),
@@ -915,7 +967,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             // re-walk the decl. Stored on the signature (see `FnOrChipSig`).
             let mut type_param_masks: Vec<(String, Vec<Type>)> = Vec::new();
             if has_type_params {
-                ctx.scope.push();
+                ctx.push_scope();
                 for tp in &c.type_params {
                     ctx.scope.declare(
                         &tp.name,
@@ -960,7 +1012,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 })
                 .collect();
             if has_type_params {
-                ctx.scope.pop();
+                ctx.pop_scope();
             }
             // A `self`-mod whose name AND receiver type collide with a builtin
             // receiver-method (e.g. `mod Dot(self: vector, …)` vs the builtin
@@ -1119,20 +1171,73 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 range: c.range.clone(),
                             }),
                         };
+                        // Mirror the chip param build (register_decl's
+                        // `TopDecl::Chip` arm above) so a namespaced call can
+                        // be arg-checked the same way a local call is. The
+                        // `warn_any_annotation` call is skipped here — it
+                        // already fires once when the member's own decl is
+                        // checked (this loop only indexes it for lookup).
+                        //
+                        // A GENERIC member's param types reference its own
+                        // type params (`mod maxT<T>(a: T, …)`), so — exactly
+                        // like the normal registration above — push those type
+                        // params into scope as `Type::Param` symbols BEFORE
+                        // resolving, then pop. Without this a generic member's
+                        // `T` hits `resolve_type_expr`'s unknown-type arm and
+                        // wrongly emits WS002 at mere import time (the member
+                        // need not even be called).
+                        let has_type_params = !c.type_params.is_empty();
+                        if has_type_params {
+                            ctx.push_scope();
+                            for tp in &c.type_params {
+                                ctx.scope.declare(
+                                    &tp.name,
+                                    SymbolInfo {
+                                        kind: SymbolKind::Type,
+                                        name: tp.name.clone(),
+                                        ty: Type::Param(tp.name.clone()),
+                                        decl_range: tp.range.clone(),
+                                        signature: None,
+                                        event_data: None,
+                                    },
+                                );
+                            }
+                        }
+                        let params: Vec<EventDataField> = c
+                            .inputs
+                            .iter()
+                            .map(|p| EventDataField {
+                                name: p.name.clone(),
+                                ty: resolve_type_expr(ctx, &p.typ),
+                            })
+                            .collect();
+                        if has_type_params {
+                            ctx.pop_scope();
+                        }
                         ns_map.insert(
                             c.name.clone(),
                             NsDeclInfo {
                                 kind: SymbolKind::Chip,
                                 return_type,
+                                params,
                             },
                         );
                     }
                     TopDecl::Fn(f) => {
+                        let params: Vec<EventDataField> = f
+                            .params
+                            .iter()
+                            .map(|p| EventDataField {
+                                name: p.name.clone(),
+                                ty: resolve_type_expr(ctx, &p.typ),
+                            })
+                            .collect();
                         ns_map.insert(
                             f.name.clone(),
                             NsDeclInfo {
                                 kind: SymbolKind::Fn,
                                 return_type: f.return_type.clone(),
+                                params,
                             },
                         );
                     }
@@ -1198,12 +1303,10 @@ fn check_top_level_array_init(
     ctx: &mut TypeCheckCtx,
     elements: &[ArrayElem],
     elem_ty: &Type,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     for el in elements {
         let e = el.expr();
-        let t = ctx.in_pure(|ctx| infer_expr(ctx, e, tmap, omap));
+        let t = ctx.in_pure(|ctx| infer::infer(ctx, e));
         if matches!(el, ArrayElem::Spread(_)) {
             ctx.emit(
                 "WS003",
@@ -1252,12 +1355,12 @@ fn check_top_level_array_init(
 }
 
 /// Check a map literal's entries against `Map<K, V>`: each key must coerce to
-/// `k`, each value to `v`. This is deliberately STRICTER than the `expect_coerce`
-/// helper assignment checking uses — a map *literal* entry additionally rejects
+/// `k`, each value to `v`. This is deliberately STRICTER than the `coerce_or_emit`
+/// sink assignment checking uses — a map *literal* entry additionally rejects
 /// `ViaString` (and any coercion that isn't `Same`/`Coerce`), because the literal
 /// entry has no gate to run a string-format coercion through (an assignment does).
 /// Call this from the VALID slots — a `var` initializer or an assignment
-/// RHS to a map var — so the literal never reaches the generic `infer_expr`
+/// RHS to a map var — so the literal never reaches the generic `infer`
 /// `MapLit` arm, which is the position-guard for every other use.
 ///
 /// The entries of a map initializer for a `Map<K, V>` slot: a real `MapLit`, or
@@ -1280,15 +1383,13 @@ fn check_map_literal(
     entries: &[MapLitEntry],
     k: &Type,
     v: &Type,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     // A map literal entry has no gate to run a coercion through (e.g.
     // `ViaString`'s `FormatText` gate) — only coercions that hold at the
     // literal itself (`Same`/`Coerce`) are valid; anything else (notably
     // `ViaString`) would silently corrupt every non-matching entry at emit.
     for MapLitEntry { key, value, .. } in entries {
-        let kt = infer_expr(ctx, key, tmap, omap);
+        let kt = infer::infer(ctx, key);
         let key_rule = coerce(&kt, k);
         if !matches!(key_rule, CoerceRule::Same | CoerceRule::Coerce) {
             ctx.emit(
@@ -1302,7 +1403,7 @@ fn check_map_literal(
                 key.range().clone(),
             );
         }
-        let vt = infer_expr(ctx, value, tmap, omap);
+        let vt = infer::infer(ctx, value);
         let value_rule = coerce(&vt, v);
         if !matches!(value_rule, CoerceRule::Same | CoerceRule::Coerce) {
             ctx.emit(
@@ -1322,8 +1423,6 @@ fn check_map_literal(
 fn check_decl(
     ctx: &mut TypeCheckCtx,
     d: &TopDecl,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     match d {
         TopDecl::Var(v) => {
@@ -1342,27 +1441,26 @@ fn check_decl(
                     // Type the whole array expr so its element type lands in the
                     // map — lowering reads it to infer an unannotated var's type.
                     ctx.in_pure(|ctx| {
-                        infer_expr(ctx, init, tmap, omap);
+                        infer::infer(ctx, init);
                     });
                     let elem_ty = match &inner {
                         Type::Array(e) => e.as_ref().clone(),
                         _ => Type::Any,
                     };
-                    check_top_level_array_init(ctx, elements, &elem_ty, tmap, omap);
+                    check_top_level_array_init(ctx, elements, &elem_ty);
                 } else if let Some(entries) = map_init_entries(init)
                     && let Type::Map(k, v_ty) = &inner
                 {
                     // A map-valued `var` initializer: validate entries against
                     // the declared `Map<K, V>` directly, bypassing the generic
-                    // `infer_expr` `MapLit` arm (the position guard) — this IS
+                    // `infer` `MapLit` arm (the position guard) — this IS
                     // the valid initializer slot. An empty `{}` is an empty-map init.
                     ctx.in_pure(|ctx| {
-                        check_map_literal(ctx, entries, k, v_ty, tmap, omap);
+                        check_map_literal(ctx, entries, k, v_ty);
                     });
                 } else {
                     ctx.in_pure(|ctx| {
-                        let t = infer_expr(ctx, init, tmap, omap);
-                        expect_coerce(ctx, &t, &inner, init.range());
+                        let t = infer::check(ctx, init, &inner);
                         // Unannotated var with a non-literal init (`var v =
                         // Vec(…)`): refine the placeholder `any` from the RHS,
                         // like buffers do.
@@ -1378,7 +1476,7 @@ fn check_decl(
         }
         TopDecl::Buffer(b) => {
             ctx.in_pure(|ctx| {
-                let t = infer_expr(ctx, &b.init, tmap, omap);
+                let t = infer::infer(ctx, &b.init);
                 if b.typ.is_none() {
                     let unwrapped = unwrap_ref(&t);
                     ctx.scope.set_type(&b.name, unwrapped);
@@ -1390,7 +1488,7 @@ fn check_decl(
             // must be constant literals matching the element type.
             if !a.init.is_empty() {
                 let inner = resolve_type_expr(ctx, &a.element_type);
-                check_top_level_array_init(ctx, &a.init, &inner, tmap, omap);
+                check_top_level_array_init(ctx, &a.init, &inner);
             }
         }
         TopDecl::Map(m) => {
@@ -1408,19 +1506,17 @@ fn check_decl(
                 };
                 if let Some(entries) = map_init_entries(init) {
                     // The valid initializer slot: validate entries directly,
-                    // bypassing the generic `infer_expr` `MapLit` arm (the
+                    // bypassing the generic `infer` `MapLit` arm (the
                     // position guard). An empty `{}` is an empty-map init.
                     ctx.in_pure(|ctx| {
-                        check_map_literal(ctx, entries, &key, &value, tmap, omap);
+                        check_map_literal(ctx, entries, &key, &value);
                     });
                 } else {
                     ctx.in_pure(|ctx| {
-                        let t = infer_expr(ctx, init, tmap, omap);
-                        expect_coerce(
+                        infer::check(
                             ctx,
-                            &t,
+                            init,
                             &Type::Map(Box::new(key.clone()), Box::new(value.clone())),
-                            init.range(),
                         );
                     });
                 }
@@ -1431,7 +1527,7 @@ fn check_decl(
         }
         TopDecl::Out(b) => {
             if let Some(value) = &b.value {
-                let value_ty = ctx.in_pure(|ctx| infer_expr(ctx, value, tmap, omap));
+                let value_ty = ctx.in_pure(|ctx| infer::infer(ctx, value));
                 // When out has ref type and value is a var, override to show "ref" in hover
                 if let Some(ref te) = b.typ {
                     let resolved = resolve_type_expr(ctx, te);
@@ -1448,7 +1544,7 @@ fn check_decl(
                     // port — pass). Both sides unwrap refs so `out y: *int
                     // = x` compares int against int, the ref-ness being the
                     // exposure mode rather than a value type.
-                    expect_coerce(
+                    infer::coerce_or_emit(
                         ctx,
                         &unwrap_ref(&value_ty),
                         &unwrap_ref(&resolved),
@@ -1476,12 +1572,12 @@ fn check_decl(
             }
         }
         TopDecl::Let(l) => {
-            let t = ctx.in_pure(|ctx| infer_expr(ctx, &l.value, tmap, omap));
-            check_let_type_annotation(ctx, l, &t, tmap, omap);
+            let t = ctx.in_pure(|ctx| infer::infer(ctx, &l.value));
+            check_let_type_annotation(ctx, l, &t);
             bind_let(ctx, &l.binding, &t);
         }
         TopDecl::Fn(f) => {
-            ctx.scope.push();
+            ctx.push_scope();
             for p in &f.params {
                 let pt = resolve_type_expr(ctx, &p.typ);
                 ctx.scope.declare(
@@ -1497,9 +1593,9 @@ fn check_decl(
                 );
             }
             ctx.in_pure(|ctx| {
-                infer_expr(ctx, &f.body, tmap, omap);
+                infer::infer(ctx, &f.body);
             });
-            ctx.scope.pop();
+            ctx.pop_scope();
         }
         TopDecl::Chip(c) => {
             // Bounded-polymorphism body checking. Body-check the
@@ -1586,7 +1682,7 @@ fn check_decl(
             let saved_active_combos = ctx.active_combos;
             ctx.active_combos = saved_active_combos.saturating_mul(combos.len().max(1));
             for combo in &combos {
-                ctx.scope.push();
+                ctx.push_scope();
                 // Same registration as the signature pass (register_decl),
                 // but in the body scope: covers annotations inside the body
                 // (e.g. `let x: T = a`). For a generic decl each type param
@@ -1713,7 +1809,7 @@ fn check_decl(
                         );
                     }
                 }
-                ctx.in_exec(|ctx| check_block(ctx, &c.body, tmap, omap));
+                ctx.in_exec(|ctx| check_block(ctx, &c.body));
                 // Warn if outputs are declared but never assigned. Assignments
                 // count anywhere in the body, including nested if blocks and
                 // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
@@ -1741,7 +1837,7 @@ fn check_decl(
                         }
                     }
                 }
-                ctx.scope.pop();
+                ctx.pop_scope();
             }
             ctx.active_combos = saved_active_combos;
             if multi_pass {
@@ -1752,31 +1848,31 @@ fn check_decl(
             // Anon chip shares parent scope — NO scope push/pop.
             // Vars already pre-registered in pass 1; use check_decl (not
             // check_stmt) for them to avoid duplicate-declaration errors.
-            check_anon_chip_stmts(ctx, &ac.body.stmts, true, tmap, omap);
+            check_anon_chip_stmts(ctx, &ac.body.stmts, true);
         }
         TopDecl::Event(e) => {
             if let Some(body) = &e.captured_body {
-                ctx.in_exec(|ctx| check_block(ctx, body, tmap, omap));
+                ctx.in_exec(|ctx| check_block(ctx, body));
             } else {
                 ctx.in_pure(|ctx| {
-                    infer_expr(ctx, &e.source, tmap, omap);
+                    infer::infer(ctx, &e.source);
                 });
             }
         }
         TopDecl::Handler(h) => {
-            ctx.scope.push();
+            ctx.push_scope();
             bind_handler_trigger_params(ctx, h);
-            check_handler_input_wires(ctx, h, tmap, omap);
-            ctx.in_exec(|ctx| check_block(ctx, &h.body, tmap, omap));
-            ctx.scope.pop();
+            check_handler_input_wires(ctx, h);
+            ctx.in_exec(|ctx| check_block(ctx, &h.body));
+            ctx.pop_scope();
         }
         TopDecl::ExprStmt(s) => {
             ctx.in_pure(|ctx| {
-                infer_expr(ctx, &s.expr, tmap, omap);
+                infer::infer(ctx, &s.expr);
             });
         }
         TopDecl::Assign(a) => {
-            check_stmt(ctx, &Stmt::Assign(a.clone()), tmap, omap);
+            check_stmt(ctx, &Stmt::Assign(a.clone()));
         }
         TopDecl::If(i) => {
             if ctx.exec_mode() != ExecMode::Exec {
@@ -1786,7 +1882,7 @@ fn check_decl(
                     i.range.clone(),
                 );
             }
-            check_stmt(ctx, &Stmt::If(i.clone()), tmap, omap);
+            check_stmt(ctx, &Stmt::If(i.clone()));
         }
         TopDecl::Namespace(ns) => {
             // A namespaced (`import * as ns`) mod body references its sibling
@@ -1795,7 +1891,7 @@ fn check_decl(
             // an isolated scope (siblings registered as bare names) so operator
             // resolutions and expression types get recorded — otherwise the
             // inlined body's arithmetic and sibling calls lower to _Unsupported.
-            ctx.scope.push();
+            ctx.push_scope();
             for d in &ns.decls {
                 register_decl(ctx, d);
             }
@@ -1804,15 +1900,15 @@ fn check_decl(
                     d,
                     TopDecl::Let(_) | TopDecl::Var(_) | TopDecl::Array(_) | TopDecl::Buffer(_)
                 ) {
-                    check_decl(ctx, d, tmap, omap);
+                    check_decl(ctx, d);
                 }
             }
             for d in &ns.decls {
                 if matches!(d, TopDecl::Chip(_) | TopDecl::Fn(_)) {
-                    check_decl(ctx, d, tmap, omap);
+                    check_decl(ctx, d);
                 }
             }
-            ctx.scope.pop();
+            ctx.pop_scope();
         }
         TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
     }
@@ -2030,22 +2126,18 @@ fn block_has_return_value(block: &Block) -> bool {
 fn check_block(
     ctx: &mut TypeCheckCtx,
     block: &Block,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
-    ctx.scope.push();
+    ctx.push_scope();
     for s in &block.stmts {
-        check_stmt(ctx, s, tmap, omap);
+        check_stmt(ctx, s);
     }
-    ctx.scope.pop();
+    ctx.pop_scope();
 }
 
 fn check_anon_chip_stmts(
     ctx: &mut TypeCheckCtx,
     stmts: &[Stmt],
     pre_registered: bool,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     if !pre_registered {
         for s in stmts {
@@ -2059,21 +2151,41 @@ fn check_anon_chip_stmts(
         }
     }
     for s in stmts {
-        match s {
-            Stmt::Var(v) => check_decl(ctx, &TopDecl::Var(v.clone()), tmap, omap),
-            Stmt::Buffer(b) => check_decl(ctx, &TopDecl::Buffer(b.clone()), tmap, omap),
-            Stmt::Array(a) => check_decl(ctx, &TopDecl::Array(a.clone()), tmap, omap),
-            Stmt::In(i) => check_decl(ctx, &TopDecl::In(i.clone()), tmap, omap),
-            other => check_stmt(ctx, other, tmap, omap),
+        // A chip's PURE statements (`let`/`var`/`out`/`buffer`/declarations) are
+        // reactive signal flow — their var reads are continuous, so check them in
+        // PURE context so `var_read_contexts` records them as pure (correct hover;
+        // mirrors the lowering's per-statement purity in `lower_chip_body`). This
+        // holds even when the chip as a whole is exec-wrapped (a top-level chip
+        // after a handler), which keeps its EXEC statements (`if`, …) valid.
+        if matches!(
+            s,
+            Stmt::Let(_)
+                | Stmt::Var(_)
+                | Stmt::Buffer(_)
+                | Stmt::OutBinding(_)
+                | Stmt::Array(_)
+                | Stmt::In(_)
+        ) {
+            ctx.in_pure(|ctx| check_one_chip_stmt(ctx, s));
+        } else {
+            check_one_chip_stmt(ctx, s);
         }
+    }
+}
+
+fn check_one_chip_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
+    match s {
+        Stmt::Var(v) => check_decl(ctx, &TopDecl::Var(v.clone())),
+        Stmt::Buffer(b) => check_decl(ctx, &TopDecl::Buffer(b.clone())),
+        Stmt::Array(a) => check_decl(ctx, &TopDecl::Array(a.clone())),
+        Stmt::In(i) => check_decl(ctx, &TopDecl::In(i.clone())),
+        other => check_stmt(ctx, other),
     }
 }
 
 fn check_stmt(
     ctx: &mut TypeCheckCtx,
     s: &Stmt,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     match s {
         Stmt::Var(v) => {
@@ -2093,12 +2205,11 @@ fn check_stmt(
                 {
                     // A map-valued `var` initializer inside a handler: validate
                     // entries directly (the valid initializer slot) instead of
-                    // routing through the generic `infer_expr` position guard.
+                    // routing through the generic `infer` position guard.
                     // An empty `{}` is an empty-map init.
-                    check_map_literal(ctx, entries, k, v_ty, tmap, omap);
+                    check_map_literal(ctx, entries, k, v_ty);
                 } else {
-                    let t = infer_expr(ctx, init, tmap, omap);
-                    expect_coerce(ctx, &t, &inner, init.range());
+                    let t = infer::check(ctx, init, &inner);
                     // Refine an unannotated var's placeholder `any` from a
                     // non-literal init, same as the top-level decl path.
                     if v.typ.is_none() && matches!(inner, Type::Any) {
@@ -2112,20 +2223,32 @@ fn check_stmt(
         }
         Stmt::Buffer(b) => {
             register_decl(ctx, &TopDecl::Buffer(b.clone()));
-            check_decl(ctx, &TopDecl::Buffer(b.clone()), tmap, omap);
+            check_decl(ctx, &TopDecl::Buffer(b.clone()));
         }
         Stmt::Array(a) => {
             register_decl(ctx, &TopDecl::Array(a.clone()));
-            check_decl(ctx, &TopDecl::Array(a.clone()), tmap, omap);
+            check_decl(ctx, &TopDecl::Array(a.clone()));
         }
         Stmt::Map(m) => {
             register_decl(ctx, &TopDecl::Map(m.clone()));
-            check_decl(ctx, &TopDecl::Map(m.clone()), tmap, omap);
+            check_decl(ctx, &TopDecl::Map(m.clone()));
         }
         Stmt::Let(l) => {
-            let t = infer_expr(ctx, &l.value, tmap, omap);
-            check_let_type_annotation(ctx, l, &t, tmap, omap);
+            let t = infer::infer(ctx, &l.value);
+            check_let_type_annotation(ctx, l, &t);
             bind_let(ctx, &l.binding, &t);
+            // A body-local `let name = <constant>` is recorded in the
+            // innermost `scoped_consts` frame (mirroring how a top-level
+            // `let` lands in `const_env`), so a constant-only config arg
+            // elsewhere in this scope (or a nested one) can resolve `name`
+            // via `ctx.const_lookup()`. Only the simple `Ident` binding form
+            // can name a single constant — a destructured `let` can't.
+            if let LetBinding::Ident { name, .. } = &l.binding
+                && let Some(lit) = crate::lower::expr_to_literal_in(&l.value, &ctx.const_lookup())
+                && let Some(frame) = ctx.scoped_consts.last_mut()
+            {
+                frame.insert(name.clone(), lit);
+            }
         }
         Stmt::Assign(a) => {
             if ctx.exec_mode() != ExecMode::Exec {
@@ -2138,17 +2261,16 @@ fn check_stmt(
                     a.range.clone(),
                 );
             }
-            let target_ty = infer_assign_target(ctx, &a.target, tmap, omap);
+            let target_ty = infer_assign_target(ctx, &a.target);
             if let Expr::MapLit { entries, .. } = &a.value
                 && let Type::Map(k, v) = &target_ty
             {
                 // Assigning a map literal to a map var: the other valid slot —
                 // validate entries directly instead of routing through the
-                // generic `infer_expr` position guard.
-                check_map_literal(ctx, entries, k, v, tmap, omap);
+                // generic `infer` position guard.
+                check_map_literal(ctx, entries, k, v);
             } else {
-                let value_ty = infer_expr(ctx, &a.value, tmap, omap);
-                expect_coerce(ctx, &value_ty, &target_ty, a.value.range());
+                infer::check(ctx, &a.value, &target_ty);
             }
         }
         Stmt::OutBinding(b) => {
@@ -2162,7 +2284,7 @@ fn check_stmt(
                 warn_any_annotation(ctx, &resolved, type_expr_range(te));
             }
             if let Some(value) = &b.value {
-                infer_expr(ctx, value, tmap, omap);
+                infer::infer(ctx, value);
             }
         }
         Stmt::Emit(e) => {
@@ -2174,7 +2296,7 @@ fn check_stmt(
                 );
             }
             if let Some(ref val) = e.value {
-                let t = infer_expr(ctx, val, tmap, omap);
+                let t = infer::infer(ctx, val);
                 // Remember the ferried payload type so a later
                 // `let { .. } = await sig` can type its destructured fields.
                 ctx.signal_payload_types.insert(e.name.clone(), t);
@@ -2185,7 +2307,7 @@ fn check_stmt(
                 ctx.emit("WS007", "await outside an exec context", a.range.clone());
             }
             // Push scope with `_` as Bool (the armed flag) for exec expression
-            ctx.scope.push();
+            ctx.push_scope();
             ctx.scope.declare(
                 "_",
                 SymbolInfo {
@@ -2197,10 +2319,10 @@ fn check_stmt(
                     event_data: None,
                 },
             );
-            let exec_ty = infer_expr(ctx, &a.exec_expr, tmap, omap);
-            ctx.scope.pop();
+            let exec_ty = infer::infer(ctx, &a.exec_expr);
+            ctx.pop_scope();
             let val_ty = if let Some(ref val) = a.value_expr {
-                infer_expr(ctx, val, tmap, omap)
+                infer::infer(ctx, val)
             } else {
                 exec_ty
             };
@@ -2259,32 +2381,32 @@ fn check_stmt(
                 (i.range.file.clone(), i.range.start.offset),
                 ctx.exec_mode() == ExecMode::Exec,
             );
-            infer_expr(ctx, &i.cond, tmap, omap);
-            check_block(ctx, &i.then_block, tmap, omap);
+            infer::infer(ctx, &i.cond);
+            check_block(ctx, &i.then_block);
             if let Some(else_b) = &i.else_block {
-                check_block(ctx, else_b, tmap, omap);
+                check_block(ctx, else_b);
             }
         }
         Stmt::ExprStmt(es) => {
-            infer_expr(ctx, &es.expr, tmap, omap);
+            infer::infer(ctx, &es.expr);
         }
         Stmt::In(i) => {
             register_decl(ctx, &TopDecl::In(i.clone()));
         }
         Stmt::Handler(h) => {
-            ctx.scope.push();
+            ctx.push_scope();
             bind_handler_trigger_params(ctx, h);
-            check_handler_input_wires(ctx, h, tmap, omap);
-            ctx.in_exec(|ctx| check_block(ctx, &h.body, tmap, omap));
-            ctx.scope.pop();
+            check_handler_input_wires(ctx, h);
+            ctx.in_exec(|ctx| check_block(ctx, &h.body));
+            ctx.pop_scope();
         }
         Stmt::AnonChip(ac) => {
             // Anon chip shares parent scope — register + check inline.
-            check_anon_chip_stmts(ctx, &ac.body.stmts, false, tmap, omap);
+            check_anon_chip_stmts(ctx, &ac.body.stmts, false);
         }
         Stmt::ChipDecl(c) => {
             register_decl(ctx, &TopDecl::Chip(c.clone()));
-            check_decl(ctx, &TopDecl::Chip(c.clone()), tmap, omap);
+            check_decl(ctx, &TopDecl::Chip(c.clone()));
         }
         Stmt::Return { value, range } => {
             if ctx.exec_mode() != ExecMode::Exec && value.is_none() {
@@ -2295,7 +2417,7 @@ fn check_stmt(
                 );
             }
             if let Some(expr) = value {
-                infer_expr(ctx, expr, tmap, omap);
+                infer::infer(ctx, expr);
             }
         }
     }
@@ -2332,8 +2454,6 @@ fn union_output_type(
     args: &[CallArg],
     out_index: usize,
     range: &SourceRange,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) -> Type {
     let declared = c.outputs[out_index].ty.clone();
     let Type::Union(mask) = &declared else {
@@ -2344,7 +2464,7 @@ fn union_output_type(
         if matches!(p.ty, Type::Union(_))
             && let Some(CallArg::Positional(e)) = args.get(i)
         {
-            let t = unwrap_ref(&infer_expr(ctx, e, tmap, omap));
+            let t = unwrap_ref(&infer::infer(ctx, e));
             if matches!(t, Type::Any) {
                 continue;
             }
@@ -2379,6 +2499,37 @@ fn union_output_type(
         Some(t) => t,
         None => declared,
     }
+}
+
+/// The result type of a call with at least one declared output — shared by
+/// the builtin and receiver call arms. A single output widens directly via
+/// `union_output_type`; multiple outputs each widen independently (per their
+/// own `out_index`) and assemble into a field-keyed record, so a multi-output
+/// gate whose field rides the math variant (like a single-output `Blend`)
+/// still resolves to the argument type instead of the declared union. Callers
+/// with a zero-output `CallSpec` handle that fallback themselves (the
+/// builtin and receiver arms differ there) and never call this helper.
+fn output_record_type(
+    ctx: &mut TypeCheckCtx,
+    c: &crate::catalog::calls::CallSpec,
+    args: &[CallArg],
+    range: &SourceRange,
+) -> Type {
+    if c.outputs.len() == 1 {
+        return union_output_type(ctx, c, args, 0, range);
+    }
+    Type::Record(
+        c.outputs
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                (
+                    o.field.unwrap_or(o.port.as_str()).to_string(),
+                    union_output_type(ctx, c, args, i, range),
+                )
+            })
+            .collect(),
+    )
 }
 
 fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
@@ -2511,11 +2662,27 @@ fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
     }
 }
 
+/// Non-emitting predicate mirroring `infer_assign_target`'s accepted
+/// writable-target shapes, used to validate `&`/`ref` operands (`WS008`)
+/// without recording a diagnostic itself — the caller decides what to emit.
+pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+    match e {
+        Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
+            Some(s) => matches!(
+                s.kind,
+                SymbolKind::Var | SymbolKind::Array | SymbolKind::Map | SymbolKind::LetBinding
+            ) || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
+                || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_))),
+            None => false,
+        },
+        Expr::IndexAccess { obj, .. } => is_ref_able(ctx, obj),
+        _ => false,
+    }
+}
+
 fn infer_assign_target(
     ctx: &mut TypeCheckCtx,
     e: &Expr,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) -> Type {
     if let Expr::Ident { name, range } = e {
         if name == "_" {
@@ -2551,8 +2718,8 @@ fn infer_assign_target(
             }
         }
     } else if let Expr::IndexAccess { obj, index, .. } = e {
-        let obj_ty = infer_assign_target(ctx, obj, tmap, omap);
-        infer_expr(ctx, index, tmap, omap);
+        let obj_ty = infer_assign_target(ctx, obj);
+        infer::infer(ctx, index);
         match obj_ty {
             Type::Array(inner) => *inner,
             _ => Type::Any,
@@ -2571,13 +2738,17 @@ fn infer_assign_target(
 ///
 /// `positional_count` and `positional_arg_types` must already include the
 /// receiver for a method call. `name_range` anchors the count / decl-order
-/// diagnostics; `call_range` anchors the generic-inference one.
+/// diagnostics; `call_range` anchors the generic-inference one. `args` feeds
+/// the `sig::check_args` arg-coercion pass — it must be the FULL `CallArg`
+/// list, receiver included as its own leading `CallArg::Positional` for a
+/// method call (mirroring `positional_arg_types`).
 #[allow(clippy::too_many_arguments)]
 fn type_user_symbol_call(
     ctx: &mut TypeCheckCtx,
     name: &str,
     sym: &SymbolInfo,
     positional_arg_types: &[Type],
+    args: &[CallArg],
     type_args: &[TypeExpr],
     positional_count: usize,
     has_spread: bool,
@@ -2724,41 +2895,26 @@ fn type_user_symbol_call(
             }
         }
     };
-    // Validate each positional argument against its (substituted) parameter
-    // type — the same coercion the wire layer applies (`PortsAreCompatible`).
-    // User mod/chip calls previously skipped this entirely, so `f(int)` on a
-    // `vector` param — and a receiver call `x.m()` whose `x`'s type doesn't
-    // match `self` — passed clean and then miscompiled at the wire level.
-    // Skip: a spread (variable positional count), an argument whose type is the
-    // unknown/wildcard `Any`/`Opaque` (already erroring, or deliberately `any`),
-    // and a parameter still carrying a `Type::Param` (an uninferable generic,
-    // left to the WS033 inference diagnostics above).
+    // Validate each argument against its (substituted) parameter type — the
+    // same coercion the wire layer applies (`PortsAreCompatible`), now routed
+    // through the shared `sig::check_args` (arity already checked above as
+    // WS022, so `check_arity = false` here). User mod/chip calls previously
+    // skipped this entirely, so `f(int)` on a `vector` param — and a receiver
+    // call `x.m()` whose `x`'s type doesn't match `self` — passed clean and
+    // then miscompiled at the wire level. Skipped only for a spread (variable
+    // positional count, nothing to line up positionally); `check_args`'s own
+    // `Wire`-arm coerce already treats `Any`/`Opaque` args as always-`Same`
+    // and skips a still-generic (`Type::Param`-carrying) param — the latter
+    // left to the WS033 inference diagnostics above.
     if !has_spread {
-        for (i, arg_ty) in positional_arg_types.iter().enumerate() {
-            let Some(param) = sig.params.get(i) else { break };
-            if matches!(unwrap_ref(arg_ty), Type::Any | Type::Opaque) {
-                continue;
-            }
-            let param_ty = match &subst {
-                Some(s) => substitute(&param.ty, s),
-                None => param.ty.clone(),
-            };
-            if type_has_param(&param_ty) {
-                continue;
-            }
-            if coerce(&unwrap_ref(arg_ty), &unwrap_ref(&param_ty)) == CoerceRule::Mismatch {
-                ctx.emit(
-                    "WS003",
-                    format!(
-                        "argument '{}': expected {}, got {}",
-                        param.name,
-                        crate::analysis::types::type_str(&param_ty),
-                        crate::analysis::types::type_str(arg_ty),
-                    ),
-                    call_range.clone(),
-                );
-            }
-        }
+        check_args(
+            ctx,
+            &sig_of_fnchip(name, sig, subst.as_ref()),
+            args,
+            0,
+            /* check_arity */ false,
+            call_range,
+        );
     }
     let out_ty = |t: &Type| match &subst {
         Some(s) => substitute(t, s),
@@ -2783,913 +2939,12 @@ fn type_user_symbol_call(
     Type::Any
 }
 
-// ---------- expression inference ----------
-
-fn infer_expr(
-    ctx: &mut TypeCheckCtx,
-    e: &Expr,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
-) -> Type {
-    let t = infer_expr_inner(ctx, e, tmap, omap);
-    let r = e.range();
-    tmap.insert((r.file.clone(), r.start.offset, r.end.offset), t.clone());
-    t
-}
-
-fn infer_expr_inner(
-    ctx: &mut TypeCheckCtx,
-    e: &Expr,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
-) -> Type {
-    match e {
-        Expr::IntLit { .. } => Type::Int,
-        Expr::AtomLit { .. } => Type::Int,
-        Expr::FloatLit { .. } => Type::Float,
-        Expr::StringLit { .. } => Type::String,
-        Expr::BoolLit { .. } => Type::Bool,
-        Expr::Array { elements, .. } => {
-            // Type each element so it lands in the type map; the array's element
-            // type is taken from the first element. A spread contributes its
-            // source array's element type, a plain item its value type. Whether
-            // the elements must be constant literals is enforced at the
-            // declaration site (top level) — not here, since the same literal is
-            // valid with runtime elements in an exec-context assignment.
-            let mut elem = Type::Any;
-            for (i, el) in elements.iter().enumerate() {
-                let t = unwrap_ref(&infer_expr_inner(ctx, el.expr(), tmap, omap));
-                let et = match el {
-                    ArrayElem::Spread(_) => match t {
-                        Type::Array(inner) => *inner,
-                        other => other,
-                    },
-                    ArrayElem::Item(_) => t,
-                };
-                if i == 0 {
-                    elem = et;
-                }
-            }
-            Type::Array(Box::new(elem))
-        }
-        // Reached only when a map literal is used somewhere OTHER than a
-        // `var` initializer or an assignment RHS to a map var — those
-        // valid slots call `check_map_literal` directly (see `check_decl` /
-        // `check_stmt`) and never reach this arm. Still infer each entry (so
-        // key/value expressions get typed and any inner errors surface, e.g. a
-        // key referencing an unknown identifier) and infer the literal's real
-        // `Map<K, V>` shape from the first entry — mirroring the array
-        // literal's element-type inference above — but the position itself is
-        // always an error: a map literal must initialize or assign a Map.
-        Expr::MapLit { entries, range } => {
-            let mut kt = Type::Any;
-            let mut vt = Type::Any;
-            for (i, entry) in entries.iter().enumerate() {
-                let k = infer_expr(ctx, &entry.key, tmap, omap);
-                let v = infer_expr(ctx, &entry.value, tmap, omap);
-                if i == 0 {
-                    kt = k;
-                    vt = v;
-                }
-            }
-            ctx.emit(
-                "WS026",
-                "a map literal must initialize or assign a Map variable",
-                range.clone(),
-            );
-            Type::Map(Box::new(kt), Box::new(vt))
-        }
-        Expr::AssetRef { .. } => {
-            // An external asset reference (`$Type/Name`) is an object/class
-            // reference — typed `entity` so it can be compared against entity
-            // values (e.g. `weapon == $BRItemBase/Weapon_Pickaxe`) and passed
-            // into object/class gate ports (which accept `any`/entity anyway).
-            // Validation against the asset catalog happens in analysis.
-            Type::Entity
-        }
-        Expr::PrefabRef { path, range } => {
-            // A prefab file reference flows into a `bundle_path_ref` gate
-            // property; typed `any` so it's accepted there. The `.brz`
-            // extension is required (the file resolution + embedding happens at
-            // emit); flag it early so the error points at the reference.
-            if !path.ends_with(".brz") {
-                ctx.emit(
-                    "WS019",
-                    format!("prefab reference `${path}` must end in `.brz`"),
-                    range.clone(),
-                );
-            }
-            Type::Any
-        }
-        Expr::NestedPrefab { source, range } => {
-            // Inline nested-prefab block `$``` ... ``` ` — like `PrefabRef`, it
-            // flows into a `bundle_path_ref` gate property; typed `any` so it's
-            // accepted there, and (unlike `PrefabRef`) there's no `.brz`/WS019
-            // path check. Additionally, type-check the enclosed source as its own
-            // isolated program and surface its diagnostics shifted into this
-            // block's span in the outer file, so an error inside the block
-            // underlines the real location in the editor.
-            let inner = crate::parser::parse(source, &range.file);
-            // Imports in a nested block resolve at compile time (the driver
-            // recursively resolves + compiles it), but this in-editor pass has no
-            // loader — so when the block imports, surface only its parse
-            // diagnostics (skip type-check, whose unresolved imports would be
-            // false positives). A self-contained block (the common case) is
-            // fully checked.
-            let has_imports = inner
-                .ast
-                .decls
-                .iter()
-                .any(|d| matches!(d, crate::ast::TopDecl::Import(_)));
-            let inner_diags: Vec<Diagnostic> = if has_imports {
-                inner.diagnostics
-            } else {
-                let inner_tc = typecheck(&inner.ast, &range.file);
-                inner
-                    .diagnostics
-                    .into_iter()
-                    .chain(inner_tc.diagnostics)
-                    .collect()
-            };
-            // The inner source begins right after the 4-char `$``` ` fence, so a
-            // position at inner offset `o` lands at outer offset `o + bo + 4`.
-            // Its first line shares the fence's outer line; later lines are whole
-            // lines of the outer file, so their columns map through directly.
-            let (bo, bl, bc) = (range.start.offset, range.start.line, range.start.col);
-            let shift = |p: crate::diagnostic::Pos| crate::diagnostic::Pos {
-                offset: p.offset + bo + 4,
-                line: if p.line <= 1 { bl } else { bl + p.line - 1 },
-                col: if p.line <= 1 {
-                    bc + 4 + p.col.saturating_sub(1)
-                } else {
-                    p.col
-                },
-            };
-            for mut d in inner_diags {
-                d.range = crate::diagnostic::SourceRange {
-                    file: range.file.clone(),
-                    start: shift(d.range.start),
-                    end: shift(d.range.end),
-                };
-                ctx.diagnostics.push(d);
-            }
-            Type::Any
-        }
-        Expr::InterpLit { parts, .. } => {
-            for p in parts {
-                if let InterpPart::Expr(expr) = p {
-                    let t = unwrap_ref(&infer_expr(ctx, expr, tmap, omap));
-                    if coerce(&t, &Type::String) == CoerceRule::Mismatch {
-                        ctx.emit(
-                            "WS003",
-                            format!("expected string, got {:?}", t),
-                            expr.range().clone(),
-                        );
-                    }
-                }
-            }
-            Type::String
-        }
-        Expr::Ident { name, range } => {
-            let Some(sym) = ctx.scope.lookup(name).cloned() else {
-                ctx.emit(
-                    "WS002",
-                    format!("unknown identifier '{name}'"),
-                    range.clone(),
-                );
-                return Type::Any;
-            };
-            match sym.kind {
-                SymbolKind::Event => Type::Exec,
-                SymbolKind::Fn | SymbolKind::Chip => Type::Any,
-                SymbolKind::Var => {
-                    let is_exec = ctx.exec_mode() == ExecMode::Exec;
-                    ctx.var_read_contexts
-                        .insert((range.file.clone(), range.start.offset), is_exec);
-                    unwrap_ref(&sym.ty)
-                }
-                SymbolKind::Array => sym.ty.clone(),
-                _ => sym.ty.clone(),
-            }
-        }
-        Expr::Deref { operand, range } => {
-            if ctx.exec_mode() != ExecMode::Exec {
-                ctx.emit(
-                    "WS006",
-                    format!(
-                        "'*{}' deref requires exec context — use .Value for pure reads",
-                        target_name(operand).unwrap_or("<expr>".into())
-                    ),
-                    range.clone(),
-                );
-            }
-            let t = infer_expr(ctx, operand, tmap, omap);
-            match t {
-                Type::Ref(inner) => *inner,
-                Type::Any => Type::Any,
-                other => {
-                    ctx.emit(
-                        "WS003",
-                        format!("expected ref T, got {:?}", other),
-                        range.clone(),
-                    );
-                    Type::Any
-                }
-            }
-        }
-        Expr::RefOf { operand, .. } => {
-            let t = infer_expr(ctx, operand, tmap, omap);
-            if matches!(t, Type::Ref(_)) {
-                t
-            } else {
-                Type::Ref(Box::new(t))
-            }
-        }
-        Expr::UnOp { op, operand, range } => {
-            let operand_t = infer_expr(ctx, operand, tmap, omap);
-            let op_key = if op == "-" { "-u" } else { op.as_str() };
-            let unwrapped = op_operand_type(&operand_t);
-            let rule = resolve_op(op_key, &[unwrapped]);
-            if let Some(r) = rule {
-                let result = r.result.clone();
-                omap.insert(
-                    (range.file.clone(), range.start.offset, range.end.offset),
-                    r.clone(),
-                );
-                result
-            } else {
-                let code = if matches!(op.as_str(), "&" | "|" | "^" | "~" | "<<" | ">>") {
-                    "WS011"
-                } else {
-                    "WS004"
-                };
-                ctx.emit(
-                    code,
-                    format!("no overload for '{op}' on {:?}", operand_t),
-                    range.clone(),
-                );
-                Type::Any
-            }
-        }
-        Expr::BinOp {
-            op,
-            left,
-            right,
-            range,
-        } => {
-            let lt = infer_expr(ctx, left, tmap, omap);
-            let rt = infer_expr(ctx, right, tmap, omap);
-            let lt_u = op_operand_type(&lt);
-            let rt_u = op_operand_type(&rt);
-            let rule = resolve_op(op, &[lt_u, rt_u]);
-            if let Some(r) = rule {
-                let result = r.result.clone();
-                omap.insert(
-                    (range.file.clone(), range.start.offset, range.end.offset),
-                    r.clone(),
-                );
-                result
-            } else {
-                let code = if matches!(op.as_str(), "&" | "|" | "^" | "<<" | ">>") {
-                    "WS011"
-                } else {
-                    "WS004"
-                };
-                ctx.emit(
-                    code,
-                    format!("no overload for '{op}' on {:?}, {:?}", lt, rt),
-                    range.clone(),
-                );
-                Type::Any
-            }
-        }
-        Expr::FieldAccess { obj, field, range } => {
-            let ot = infer_expr(ctx, obj, tmap, omap);
-            if let Type::Ref(inner) = &ot {
-                if field == "Value" || field == "prev" {
-                    return inner.as_ref().clone();
-                }
-                if field == "VarRef" {
-                    return ot.clone();
-                }
-            }
-            // `cN.prev` where `cN` was auto-dereffed in exec context:
-            // the obj's type is the inner T, not Ref(T). Look up the
-            // declared var type directly.
-            if (field == "Value" || field == "prev")
-                && let Expr::Ident { name, .. } = obj.as_ref()
-                && let Some(sym) = ctx.scope.lookup(name)
-                && let Type::Ref(inner) = &sym.ty
-            {
-                return inner.as_ref().clone();
-            }
-            // `x.Value` on a var/ref reads through to the inner type. A record
-            // with its own `Value` field (a multi-output gate result such as
-            // `a.pop()` → `{ Value, IsEmpty }`) must project that field instead,
-            // or `.Value` yields the whole record and every use of it mistypes.
-            if (field == "value" || field == "Value") && !matches!(ot, Type::Record(_)) {
-                return unwrap_ref(&ot);
-            }
-            if let Type::Record(fields) = &ot {
-                if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
-                    return t.clone();
-                }
-                // One concise line naming the valid fields. The full,
-                // syntax-COLOURED record type is rendered on hover
-                // (analysis::hover) — the only place VS Code can show colour;
-                // dumping the multi-line block into the diagnostic too just
-                // repeats it verbatim under the hover (VS Code stacks the
-                // hover-provider content and the diagnostic message together).
-                let names: String = fields
-                    .iter()
-                    .map(|(n, _)| n.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                ctx.emit(
-                    "WS010",
-                    format!("no field `{field}` on record (has: {names})"),
-                    range.clone(),
-                );
-                return Type::Any;
-            }
-            match (&ot, field.as_str()) {
-                (Type::Vector, "x" | "X" | "y" | "Y" | "z" | "Z") => Type::Float,
-                (Type::Color, "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A") => Type::Float,
-                (Type::Rotator, "pitch" | "yaw" | "roll") => Type::Float,
-                // An array read yields the element plus a bounds flag, but it is
-                // typed as the bare element (see IndexAccess), so by the time the
-                // flag is projected - directly or through a `let` - the object is
-                // the element type and this would fall through to Any. Lowering
-                // already maps these names to the gate's bOutOfBounds port.
-                (_, "OutOfBounds" | "bOutOfBounds") => Type::Bool,
-                _ => Type::Any,
-            }
-        }
-        Expr::IndexAccess { obj, index, range } => {
-            let ot = unwrap_ref(&infer_expr(ctx, obj, tmap, omap));
-            infer_expr(ctx, index, tmap, omap);
-            match &ot {
-                Type::Array(inner) => {
-                    if ctx.exec_mode() != ExecMode::Exec {
-                        ctx.emit(
-                            "WS007",
-                            format!(
-                                "array index read '{}[...]' outside an exec context",
-                                target_name(obj).unwrap_or("<expr>".into())
-                            ),
-                            range.clone(),
-                        );
-                    }
-                    inner.as_ref().clone()
-                }
-                _ => Type::Any,
-            }
-        }
-        Expr::TuplePick { obj, index, range } => {
-            let ot = infer_expr(ctx, obj, tmap, omap);
-            match &ot {
-                Type::Tuple(fields) => fields.get(*index).cloned().unwrap_or_else(|| {
-                    ctx.emit(
-                        "WS010",
-                        format!("tuple index .{index} out of range"),
-                        range.clone(),
-                    );
-                    Type::Any
-                }),
-                Type::Record(fields) => fields
-                    .get(*index)
-                    .map(|(_, t)| t.clone())
-                    .unwrap_or(Type::Any),
-                _ => Type::Any,
-            }
-        }
-        Expr::Call {
-            callee,
-            args,
-            type_args,
-            range: call_range,
-        } => {
-            // Resolve the target call spec (if any) so enum-typed config args
-            // can be skipped below — a bare member name (`function = Bounce`)
-            // is not a variable and must not be inferred as one.
-            let arg_spec: Option<&'static crate::catalog::calls::CallSpec> = match callee.as_ref() {
-                Expr::Ident { name, .. } => find_call(name),
-                Expr::FieldAccess { field, .. } => {
-                    find_call(field).filter(|c| c.receiver.is_some())
-                }
-                _ => None,
-            };
-            // A receiver method call normally binds the object as param 0, so
-            // positional args in `args` start at param index 1. A named-target
-            // receiver (`entity.SendCustomEvent(…)`) binds the object to a named
-            // param instead, so its positional args still start at index 0.
-            let pos_base = usize::from(
-                matches!(callee.as_ref(), Expr::FieldAccess { .. })
-                    && arg_spec
-                        .is_some_and(|c| c.receiver.is_some() && c.receiver_target_param().is_none()),
-            );
-            // Side-effect: typecheck every arg, except enum-typed config args.
-            // `positional_arg_types` mirrors the positional args in order —
-            // used below to infer a generic user mod/chip call's type params
-            // from its arguments (builtin `find_call`s ignore it).
-            let mut pos = 0usize;
-            let mut positional_arg_types: Vec<Type> = Vec::new();
-            for a in args {
-                let is_config_enum = arg_spec.is_some_and(|c| match a {
-                    CallArg::Named { name, .. } => match c.params.iter().find(|p| p.name == name) {
-                        Some(p) => call_param_config_enum(c, p).is_some(),
-                        // Not a declared param: a data-driven config attribute.
-                        // Skip inference when it names an enum config field (the
-                        // value is a bare member name, not a variable).
-                        None => crate::catalog::config_field_enum_type(c.gate_class, name).is_some(),
-                    },
-                    CallArg::Positional(_) => c
-                        .params
-                        .get(pos_base + pos)
-                        .is_some_and(|p| call_param_config_enum(c, p).is_some()),
-                    CallArg::Spread(_) => false,
-                });
-                if matches!(a, CallArg::Positional(_)) {
-                    pos += 1;
-                }
-                if is_config_enum {
-                    continue;
-                }
-                match a {
-                    CallArg::Positional(v) => {
-                        let t = infer_expr(ctx, v, tmap, omap);
-                        positional_arg_types.push(t);
-                    }
-                    CallArg::Named { value, .. } => {
-                        infer_expr(ctx, value, tmap, omap);
-                    }
-                    CallArg::Spread(v) => {
-                        infer_expr(ctx, v, tmap, omap);
-                    }
-                }
-            }
-            // Resolve callee if it's a plain identifier.
-            if let Expr::Ident { name, range } = callee.as_ref() {
-                if let Some(c) = find_call(name) {
-                    // Explicit type arguments on a builtin are ignored: a
-                    // builtin's result type is derived from its arguments (the
-                    // masked-generic engine), not pinned by an explicit `<...>`.
-                    // Warn rather than silently dropping them.
-                    if !type_args.is_empty() {
-                        ctx.diagnostics.push(Diagnostic {
-                            severity: Severity::Warning,
-                            code: "WS037".into(),
-                            message: format!(
-                                "explicit type arguments are ignored on builtin `{name}` — its \
-                                 result type is derived from the arguments"
-                            ),
-                            range: range.clone(),
-                        });
-                    }
-                    if c.exec && ctx.exec_mode() != ExecMode::Exec {
-                        let has_exec_arg = args
-                            .iter()
-                            .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
-                        if !has_exec_arg {
-                            ctx.emit("WS007", format!("exec call '{name}' outside an exec context (pass exec = ... to override)"), range.clone());
-                        }
-                    }
-                    // Random rides the PrimMath variant like the math operators:
-                    // its min/max may be a vector/rotator/quat/color (a
-                    // per-component random on the same gate), and the result then
-                    // matches that type rather than the int-typed CallSpec.
-                    if name == "Random" {
-                        let arg_tys: Vec<Type> = args
-                            .iter()
-                            .filter_map(|a| match a {
-                                CallArg::Positional(e) => {
-                                    Some(unwrap_ref(&infer_expr(ctx, e, tmap, omap)))
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        if let Some(t) = arg_tys.into_iter().find(|t| {
-                            matches!(t, Type::Vector | Type::Color | Type::Rotator | Type::Quat)
-                        }) {
-                            return t;
-                        }
-                    }
-                    check_call_args(ctx, c, args, range, tmap, omap);
-                    if c.outputs.len() == 1 {
-                        return union_output_type(ctx, c, args, 0, range, tmap, omap);
-                    }
-                    if c.outputs.len() > 1 {
-                        return Type::Record(
-                            c.outputs
-                                .iter()
-                                .map(|o| (o.field.unwrap_or(o.port.as_str()).to_string(), o.ty.clone()))
-                                .collect(),
-                        );
-                    }
-                    if c.exec {
-                        return Type::Any;
-                    }
-                    return c.params.first().map(|p| p.ty.clone()).unwrap_or(Type::Any);
-                }
-                let Some(sym) = ctx.scope.lookup(name).cloned() else {
-                    ctx.emit(
-                        "WS002",
-                        format!("unknown identifier '{name}'"),
-                        range.clone(),
-                    );
-                    return Type::Any;
-                };
-                let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
-                let has_exec_arg = args
-                    .iter()
-                    .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
-                let positional_count = args
-                    .iter()
-                    .filter(|a| matches!(a, CallArg::Positional(_)))
-                    .count();
-                return type_user_symbol_call(
-                    ctx,
-                    name,
-                    &sym,
-                    &positional_arg_types,
-                    type_args,
-                    positional_count,
-                    has_spread,
-                    has_exec_arg,
-                    call_range,
-                    range,
-                );
-            }
-            // Namespace call: ns.foo(args)
-            if let Expr::FieldAccess {
-                obj,
-                field,
-                range: fa_range,
-            } = callee.as_ref()
-                && let Expr::Ident { name: ns_name, .. } = obj.as_ref()
-                && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
-            {
-                let ns_lookup = ctx
-                    .namespaces
-                    .get(ns_name.as_str())
-                    .and_then(|ns_map| ns_map.get(field.as_str()))
-                    .map(|info| (info.kind, info.return_type.clone()));
-                match ns_lookup {
-                    Some((_, Some(ret))) => return resolve_type_expr(ctx, &ret),
-                    Some((_, None)) => return Type::Any,
-                    None => {
-                        ctx.emit(
-                            "WS002",
-                            format!("'{}' not found in namespace '{}'", field, ns_name),
-                            fa_range.clone(),
-                        );
-                        return Type::Any;
-                    }
-                }
-            }
-            // Array method call: arr.push(val), arr.length(), arr.pop(), etc.
-            // Any array-typed value works (an `array` decl or a `var ids: T[]`),
-            // gated on the field actually being an array method.
-            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
-                && let Expr::Ident { name, .. } = obj.as_ref()
-                && let Some(sym) = ctx.scope.lookup(name)
-                && (sym.kind == SymbolKind::Array || matches!(unwrap_ref(&sym.ty), Type::Array(_)))
-                && crate::catalog::arrays::is_array_method(field)
-            {
-                let elem = match unwrap_ref(&sym.ty) {
-                    Type::Array(inner) => inner.as_ref().clone(),
-                    _ => Type::Any,
-                };
-                // Return type is derived from the method's gate
-                // output ports (see catalog::arrays). Multi-output
-                // gates (e.g. find) yield a record that auto-unwraps
-                // to whichever field matches the use.
-                return crate::catalog::arrays::array_return_type(field, &elem)
-                    .unwrap_or(Type::Any);
-            }
-            // Map method call: m.get(k), m.set(k, v), m.has(k), etc.
-            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
-                && let Expr::Ident { name, .. } = obj.as_ref()
-                && let Some(sym) = ctx.scope.lookup(name)
-                && matches!(unwrap_ref(&sym.ty), Type::Map(_, _))
-                && crate::catalog::maps::is_map_method(field)
-            {
-                let (key, value) = match unwrap_ref(&sym.ty) {
-                    Type::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
-                    _ => (Type::Any, Type::Any),
-                };
-                // This path returns the result type directly and so bypasses
-                // `check_call_args` — so validate the key/value arguments against
-                // the map's types here. Without it `m.set(k, wrongType)` (e.g.
-                // storing the map itself where an `entity` value is expected) or
-                // `m.get(wrongKey)` type-checked clean and emitted a dangling
-                // wire that failed to connect at load.
-                let expected: Vec<(&str, Type)> = match field.as_str() {
-                    "set" => vec![("key", key.clone()), ("value", value.clone())],
-                    "get" | "has" | "remove" => vec![("key", key.clone())],
-                    "keys" => vec![("out", Type::Array(Box::new(key.clone())))],
-                    "values" => vec![("out", Type::Array(Box::new(value.clone())))],
-                    "copyFrom" => vec![(
-                        "source",
-                        Type::Map(Box::new(key.clone()), Box::new(value.clone())),
-                    )],
-                    _ => vec![],
-                };
-                let positional: Vec<&Expr> = args
-                    .iter()
-                    .filter_map(|a| match a {
-                        CallArg::Positional(e) => Some(e),
-                        _ => None,
-                    })
-                    .collect();
-                for (i, (pname, exp)) in expected.iter().enumerate() {
-                    if let Some(arg) = positional.get(i) {
-                        let arg_ty = unwrap_ref(&infer_expr(ctx, arg, tmap, omap));
-                        if coerce(&arg_ty, exp) == CoerceRule::Mismatch {
-                            ctx.emit(
-                                "WS003",
-                                format!(
-                                    "argument '{}': expected {}, got {}",
-                                    pname,
-                                    crate::analysis::types::type_str(exp),
-                                    crate::analysis::types::type_str(&arg_ty),
-                                ),
-                                arg.range().clone(),
-                            );
-                        }
-                    }
-                }
-                return crate::catalog::maps::map_return_type(field, &key, &value)
-                    .unwrap_or(Type::Any);
-            }
-            // Receiver method call: entity.SetLocation(pos)
-            if let Expr::FieldAccess {
-                obj,
-                field,
-                range: fa_range,
-            } = callee.as_ref()
-                && let Some(c) = find_call(field)
-                && c.receiver.is_some()
-            {
-                // Named-target receiver (`entity.SendCustomEvent(…)`) binds the
-                // object to `target`; positional args stay as the channel name +
-                // data. Ordinary receiver binds the object as positional arg 0.
-                let recv_args = if let Some(tp) = c.receiver_target_param() {
-                    let mut v = args.to_vec();
-                    v.push(CallArg::Named {
-                        name: tp.to_string(),
-                        value: obj.as_ref().clone(),
-                    });
-                    v
-                } else {
-                    let mut v = vec![CallArg::Positional(obj.as_ref().clone())];
-                    v.extend(args.iter().cloned());
-                    v
-                };
-                check_call_args(ctx, c, &recv_args, fa_range, tmap, omap);
-                if c.outputs.len() == 1 {
-                    return union_output_type(ctx, c, &recv_args, 0, fa_range, tmap, omap);
-                }
-                if c.outputs.len() > 1 {
-                    return Type::Record(
-                        c.outputs
-                            .iter()
-                            .map(|o| (o.field.unwrap_or(o.port.as_str()).to_string(), o.ty.clone()))
-                            .collect(),
-                    );
-                }
-                return Type::Any;
-            }
-            // User `self`-receiver method call: `v.dist(o)` where `dist` is a
-            // user mod/chip whose first parameter is named `self`. Desugars to
-            // `dist(v, o)` — bind the receiver as positional arg 0 and type it
-            // exactly like the plain `dist(v, o)` call would (generics inferred
-            // through the receiver too). Placed AFTER the builtin-receiver case
-            // so a builtin receiver-method of the same name wins (a user
-            // self-mod shadowing one is rejected as WS035 at its declaration).
-            if let Expr::FieldAccess {
-                obj,
-                field,
-                range: fa_range,
-            } = callee.as_ref()
-                && let Some(sym) = ctx.scope.lookup(field).cloned()
-                && sym.kind == SymbolKind::Chip
-                && sym
-                    .signature
-                    .as_ref()
-                    .is_some_and(|s| s.params.first().is_some_and(|p| p.name == "self"))
-            {
-                let recv_ty = infer_expr(ctx, obj, tmap, omap);
-                let mut recv_pos_types = Vec::with_capacity(positional_arg_types.len() + 1);
-                recv_pos_types.push(recv_ty);
-                recv_pos_types.extend(positional_arg_types.iter().cloned());
-                let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
-                let has_exec_arg = args
-                    .iter()
-                    .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
-                let positional_count = 1 + args
-                    .iter()
-                    .filter(|a| matches!(a, CallArg::Positional(_)))
-                    .count();
-                return type_user_symbol_call(
-                    ctx,
-                    field,
-                    &sym,
-                    &recv_pos_types,
-                    type_args,
-                    positional_count,
-                    has_spread,
-                    has_exec_arg,
-                    call_range,
-                    fa_range,
-                );
-            }
-            // A method/namespace call whose base identifier resolves to nothing:
-            // e.g. `card.drawLobby(...)` after an `import * as card` was removed.
-            // None of the branches above matched and `card` is not a namespace,
-            // variable, or value in scope. Left alone this silently lowers to an
-            // `_Unsupported` gate that reads a default (does nothing) at runtime —
-            // flag the dangling base, mirroring the bare-identifier WS002 above.
-            // Returns so it stays the primary diagnostic for an unknown base
-            // (the non-self-mod check below never double-reports over it).
-            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
-                && let Expr::Ident {
-                    name,
-                    range: base_range,
-                } = obj.as_ref()
-                && ctx.scope.lookup(name).is_none()
-                && find_call(name).is_none()
-            {
-                ctx.emit(
-                    "WS002",
-                    format!(
-                        "unknown identifier '{name}' in call `{name}.{field}(...)` — \
-                         no namespace, variable, or value named '{name}' is in scope \
-                         (is an import missing?)"
-                    ),
-                    base_range.clone(),
-                );
-                return Type::Any;
-            }
-            // A method call `obj.field(...)` on a valid receiver whose `field`
-            // names a KNOWN user mod/chip that is NOT a `self`-receiver (the
-            // self-mod case above would have returned; builtin / array / map
-            // receiver methods were handled earlier). Only a `self`-mod is
-            // method-callable — without this, the call would silently type as
-            // `any` and lower to an `_Unsupported` no-op (typecheck/lowering
-            // divergence). Flag it instead of letting it disappear.
-            if let Expr::FieldAccess {
-                obj,
-                field,
-                range: fa_range,
-            } = callee.as_ref()
-                && ctx
-                    .scope
-                    .lookup(field)
-                    .is_some_and(|s| s.kind == SymbolKind::Chip)
-            {
-                // Keep the receiver's type in the map (hover/goto) even though
-                // the call itself doesn't resolve to a value.
-                infer_expr(ctx, obj, tmap, omap);
-                ctx.emit(
-                    "WS036",
-                    format!(
-                        "`{field}` is not a receiver method — its first parameter is not \
-                         named `self`, so it can't be called as `x.{field}(…)`. Call \
-                         `{field}(<receiver>, …)` directly, or rename its first parameter \
-                         to `self` to allow method syntax."
-                    ),
-                    fa_range.clone(),
-                );
-                return Type::Any;
-            }
-            Type::Any
-        }
-        Expr::IfExpr {
-            cond,
-            then_branch,
-            else_branch,
-            range,
-            ..
-        } => {
-            ctx.if_contexts
-                .insert((range.file.clone(), range.start.offset), false);
-            infer_expr(ctx, cond, tmap, omap);
-            let tt = infer_expr(ctx, then_branch, tmap, omap);
-            let et = infer_expr(ctx, else_branch, tmap, omap);
-            // A reference (a var ref, or a `zone`/`teleport` component ref) can't
-            // flow through the Select gate an if-expr compiles to — Select routes
-            // a value, not a reference. Flag whichever branch is a reference.
-            for (br, bty) in [(then_branch, &tt), (else_branch, &et)] {
-                if is_reference_type(bty) {
-                    ctx.emit(
-                        "WS031",
-                        format!(
-                            "'{}' is a reference and can't be used in an if-then-else — a Select \
-                             routes a value, not a reference; wire or reroute it instead",
-                            crate::analysis::types::type_str(bty),
-                        ),
-                        br.range().clone(),
-                    );
-                }
-            }
-            match widening_join(&tt, &et) {
-                Some(j) => j,
-                None => {
-                    ctx.emit(
-                        "WS003",
-                        format!(
-                            "if-then-else branch type mismatch: then is {}, else is {} (no common widening)",
-                            crate::analysis::types::type_str(&tt),
-                            crate::analysis::types::type_str(&et),
-                        ),
-                        range.clone(),
-                    );
-                    et
-                }
-            }
-        }
-        Expr::BlockExpr { stmts, value, .. } => {
-            ctx.scope.push();
-            for s in stmts {
-                check_stmt(ctx, s, tmap, omap);
-            }
-            let t = infer_expr(ctx, value, tmap, omap);
-            ctx.scope.pop();
-            t
-        }
-        Expr::MatchExpr {
-            scrutinee, arms, ..
-        } => {
-            infer_expr(ctx, scrutinee, tmap, omap);
-            let mut tys: Vec<Type> = Vec::new();
-            for arm in arms {
-                if let MatchBody::Expr(expr) = &arm.body {
-                    tys.push(infer_expr(ctx, expr, tmap, omap));
-                }
-            }
-            if tys.is_empty() {
-                Type::Any
-            } else if tys
-                .iter()
-                .all(|t| std::mem::discriminant(t) == std::mem::discriminant(&tys[0]))
-            {
-                tys[0].clone()
-            } else {
-                Type::Union(tys)
-            }
-        }
-        Expr::RecordLit { fields, .. } => {
-            let mut rec_fields: Vec<(String, Type)> = Vec::new();
-            for f in fields {
-                match f {
-                    RecordLitField::Named { name, value, .. } => {
-                        let ty = infer_expr(ctx, value, tmap, omap);
-                        // Override if field already exists (from spread)
-                        if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
-                            existing.1 = ty;
-                        } else {
-                            rec_fields.push((name.clone(), ty));
-                        }
-                    }
-                    RecordLitField::Shorthand { name, .. } => {
-                        let ty = ctx
-                            .scope
-                            .lookup(name)
-                            .map(|s| s.ty.clone())
-                            .unwrap_or(Type::Any);
-                        if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
-                            existing.1 = ty;
-                        } else {
-                            rec_fields.push((name.clone(), ty));
-                        }
-                    }
-                    RecordLitField::Spread { value, .. } => {
-                        let spread_ty = infer_expr(ctx, value, tmap, omap);
-                        if let Type::Record(spread_fields) = spread_ty {
-                            for (fname, fty) in spread_fields {
-                                if let Some(existing) =
-                                    rec_fields.iter_mut().find(|(n, _)| *n == fname)
-                                {
-                                    existing.1 = fty;
-                                } else {
-                                    rec_fields.push((fname, fty));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Type::Record(rec_fields)
-        }
-    }
-}
-
 /// Reference-only types: like a variable ref, these wire and reroute but are not
 /// values — they can't be selected, stored, or operated on. Covers the explicit
-/// `ref T` var ref plus the opaque `zone`/`teleport` component references.
+/// `ref T` var ref plus the opaque `zone`/`teleport` component references and
+/// the compile-time-constant `prefab` reference.
 fn is_reference_type(t: &Type) -> bool {
-    matches!(t, Type::Ref(_) | Type::Zone | Type::Teleport)
+    matches!(t, Type::Ref(_) | Type::Zone | Type::Teleport | Type::PrefabRef)
 }
 
 // ---------- generic mod/chip call-site inference ----------
@@ -3807,7 +3062,7 @@ fn ce_send_event_name(args: &[CallArg]) -> Option<String> {
     // A named `eventName = …` is the channel if present; otherwise the first
     // positional arg is.
     for a in args {
-        if let CallArg::Named { name, value } = a
+        if let CallArg::Named { name, value, .. } = a
             && name == "eventName"
         {
             return match value {
@@ -3846,7 +3101,7 @@ fn ce_send_data_args(args: &[CallArg]) -> Vec<(usize, &Expr)> {
                 }
                 pos += 1;
             }
-            CallArg::Named { name, value } => {
+            CallArg::Named { name, value, .. } => {
                 if let Some(n) = name
                     .strip_prefix("data")
                     .and_then(|d| d.parse::<usize>().ok())
@@ -4060,12 +3315,24 @@ fn is_composite_config_param(
 /// constant of the expected shape (the same fold the lowering uses); a
 /// non-constant or malformed value is rejected here rather than becoming a
 /// silent broken gate.
+///
+/// Takes `gate_class` + `display_name` + `port_name` (rather than a
+/// `&CallParam`) so the `sig::check_args` port can call it from a bare `Param`
+/// (which doesn't carry a `CallParam::port`). `port_name` — the gate PORT name
+/// — keys the composite-shape lookup ("MeshColors"/"WeaponAmmoOverride");
+/// `display_name` — the source-level surface name — is what the WS028 message
+/// shows the author (these differ, e.g. surface `meshColors` binds the
+/// `MeshColors` port). `gate_class` isn't used by the composite check itself
+/// (kept for signature symmetry with `validate_data_driven_config`).
 fn validate_composite_config_arg(
     ctx: &mut TypeCheckCtx,
-    param: &crate::catalog::calls::CallParam,
+    gate_class: &str,
+    display_name: &str,
+    port_name: &str,
     e: &Expr,
 ) {
-    let (ok, hint) = match param.port.as_str() {
+    let _ = gate_class;
+    let (ok, hint) = match port_name {
         "MeshColors" => (
             crate::lower::fold_mesh_colors(e).is_some(),
             "a constant array of ColorSRGB(r, g, b, a) values",
@@ -4079,7 +3346,7 @@ fn validate_composite_config_arg(
     if !ok {
         ctx.emit(
             "WS028",
-            format!("'{}' config must be {hint}", param.name),
+            format!("'{display_name}' config must be {hint}"),
             e.range().clone(),
         );
     }
@@ -4097,21 +3364,107 @@ fn is_scalar_config_param(
         && !is_composite_config_param(spec, param)
 }
 
+/// Adapt a builtin/receiver `CallSpec` into the generic `CallSignature` shape
+/// `sig::check_args` validates against — the bridge that lets both call forms
+/// route through the one arg checker. Each `CallParam` maps to a `Param` whose
+/// `ParamKind` mirrors exactly the per-param branch the arg checker takes (enum
+/// config / composite config / scalar config / ordinary wire), keyed off the
+/// gate PORT name so the config validators' schema lookups are unchanged.
+fn sig_of_callspec(spec: &crate::catalog::calls::CallSpec) -> CallSignature {
+    let params = spec
+        .params
+        .iter()
+        .map(|p| {
+            let kind = if let Some(et) = call_param_config_enum(spec, p) {
+                ParamKind::ConfigEnum(et)
+            } else if is_composite_config_param(spec, p) {
+                ParamKind::ConfigComposite(p.port.as_str())
+            } else if is_scalar_config_param(spec, p) {
+                ParamKind::ConfigScalar(p.port.as_str())
+            } else {
+                ParamKind::Wire
+            };
+            Param {
+                name: p.name.to_string(),
+                ty: p.ty.clone(),
+                optional: p.optional,
+                kind,
+            }
+        })
+        .collect();
+    CallSignature {
+        name: spec.name.to_string(),
+        params,
+        config_gate: Some(spec.gate_class),
+    }
+}
+
+/// Adapt a user mod/chip's `FnOrChipSig` into a `CallSignature` for
+/// `sig::check_args` — the `type_user_symbol_call` analog of
+/// `sig_of_callspec`. Every param is a plain `ParamKind::Wire` (user mods
+/// have no config-menu params) and non-optional (user mods have no default
+/// params either). `subst` — the generic-inference result computed by the
+/// caller, `None` for a non-generic call — is applied to each param's type
+/// first, exactly like the pre-`check_args` inline coerce loop did; a param
+/// whose (possibly-substituted) type still carries a `Type::Param` is left
+/// alone here too — `check_args`'s own `type_has_param` guard skips it.
+/// `config_gate` is `None`: a named arg that matches no declared param has
+/// no data-driven fallback to dispatch to for a user call.
+fn sig_of_fnchip(
+    name: &str,
+    sig: &FnOrChipSig,
+    subst: Option<&crate::types::infer::Subst>,
+) -> CallSignature {
+    let params = sig
+        .params
+        .iter()
+        .map(|p| {
+            let ty = match subst {
+                Some(s) => substitute(&p.ty, s),
+                None => p.ty.clone(),
+            };
+            Param {
+                name: p.name.clone(),
+                ty,
+                optional: false,
+                kind: ParamKind::Wire,
+            }
+        })
+        .collect();
+    CallSignature {
+        name: name.to_string(),
+        params,
+        config_gate: None,
+    }
+}
+
 /// Reject a non-constant value for a scalar/asset config param — it has no wire
 /// pin, so a variable or computed value would otherwise lower to a broken wire
 /// (a silent "Failed to connect wire" at load) with the config never applied.
-/// Uses the same fold check (`expr_to_literal`) the config lowering path uses.
+/// Uses the same fold check (`expr_to_literal_in`, against the scoped-or-top-level
+/// constant environment) the config lowering path uses — so a `let`-bound
+/// constant (body-local or top-level) resolves here too, while a genuine `var`
+/// or computed value still folds to `None` and stays WS028.
+///
+/// Takes `gate_class` + `display_name` + `port_name` (rather than a
+/// `&CallParam`) so the `sig::check_args` port can call it from a bare `Param`.
+/// `display_name` — the source-level surface name — is what the WS028 message
+/// shows; `gate_class`/`port_name` are unused by the constant check itself
+/// (kept for signature symmetry with `validate_composite_config_arg` /
+/// `validate_data_driven_config`, and for any future per-port scalar rule).
 fn validate_scalar_config_arg(
     ctx: &mut TypeCheckCtx,
-    param: &crate::catalog::calls::CallParam,
+    gate_class: &str,
+    display_name: &str,
+    port_name: &str,
     e: &Expr,
 ) {
-    if crate::lower::expr_to_literal(e).is_none() {
+    let _ = (gate_class, port_name);
+    if crate::lower::expr_to_literal_in(e, &ctx.const_lookup()).is_none() {
         ctx.emit(
             "WS028",
             format!(
-                "'{}' is constant-only gate config and cannot take a variable or computed value",
-                param.name
+                "'{display_name}' is constant-only gate config and cannot take a variable or computed value"
             ),
             e.range().clone(),
         );
@@ -4169,8 +3522,6 @@ fn validate_handler_config(
 fn check_handler_input_wires(
     ctx: &mut TypeCheckCtx,
     h: &Handler,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     let name = match &h.trigger {
         Trigger::Ident { name, .. } => name,
@@ -4195,7 +3546,7 @@ fn check_handler_input_wires(
         else {
             continue;
         };
-        let vty = unwrap_ref(&ctx.in_pure(|ctx| infer_expr(ctx, value, tmap, omap)));
+        let vty = unwrap_ref(&ctx.in_pure(|ctx| infer::infer(ctx, value)));
         if coerce(&vty, port_ty) == CoerceRule::Mismatch {
             ctx.emit(
                 "WS003",
@@ -4220,128 +3571,6 @@ fn emit_event_config_const_error(ctx: &mut TypeCheckCtx, field: &str, e: &Expr) 
     );
 }
 
-fn check_call_args(
-    ctx: &mut TypeCheckCtx,
-    spec: &crate::catalog::calls::CallSpec,
-    args: &[CallArg],
-    range: &SourceRange,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
-) {
-    let positional: Vec<&Expr> = args
-        .iter()
-        .filter_map(|a| match a {
-            CallArg::Positional(e) => Some(e),
-            _ => None,
-        })
-        .collect();
-    let required_count = spec.params.iter().filter(|p| !p.optional).count();
-    if positional.len() > spec.params.len() {
-        ctx.emit(
-            "WS011",
-            format!(
-                "'{}' expects at most {} positional arg{}, got {}",
-                spec.name,
-                spec.params.len(),
-                if spec.params.len() == 1 { "" } else { "s" },
-                positional.len(),
-            ),
-            range.clone(),
-        );
-    } else if positional.len() < required_count {
-        ctx.emit(
-            "WS011",
-            format!(
-                "'{}' requires {} arg{}, got {}",
-                spec.name,
-                required_count,
-                if required_count == 1 { "" } else { "s" },
-                positional.len(),
-            ),
-            range.clone(),
-        );
-    }
-    for (i, arg_expr) in positional.iter().enumerate() {
-        if i >= spec.params.len() {
-            break;
-        }
-        let param = &spec.params[i];
-        // An enum-typed config arg is a bare member name or int — validate it
-        // against the schema here instead of inferring it as a value (a bare
-        // member would otherwise read as an unknown identifier).
-        if let Some(enum_type) = call_param_config_enum(spec, param) {
-            validate_enum_config_arg(ctx, enum_type, arg_expr);
-            continue;
-        }
-        // Composite constant-only config (meshColors/ammoOverride): validate the
-        // constant shape here instead of the generic value coerce below.
-        if is_composite_config_param(spec, param) {
-            validate_composite_config_arg(ctx, param, arg_expr);
-            continue;
-        }
-        // Plain scalar/asset config (bool/int/float/string/asset settings-menu
-        // fields): must be a constant — it bakes into the gate's data.
-        if is_scalar_config_param(spec, param) {
-            validate_scalar_config_arg(ctx, param, arg_expr);
-            continue;
-        }
-        let arg_ty = unwrap_ref(&infer_expr(ctx, arg_expr, tmap, omap));
-        if coerce(&arg_ty, &param.ty) == CoerceRule::Mismatch {
-            ctx.emit(
-                "WS003",
-                format!(
-                    "argument '{}': expected {}, got {}",
-                    param.name,
-                    crate::analysis::types::type_str(&param.ty),
-                    crate::analysis::types::type_str(&arg_ty),
-                ),
-                arg_expr.range().clone(),
-            );
-        }
-    }
-    // Named args: config params validate against the schema (enum member,
-    // composite shape, or constant scalar); a named arg bound to a real
-    // wire-input param is type-checked against the param type with the same
-    // coerce the positional path applies — otherwise a wrong-typed named wire
-    // arg (`target = 5` on an entity port) would wire an incompatible value in
-    // with no diagnostic.
-    for a in args {
-        if let CallArg::Named { name, value } = a {
-            if let Some(param) = spec.params.iter().find(|p| p.name == name) {
-                if let Some(enum_type) = call_param_config_enum(spec, param) {
-                    validate_enum_config_arg(ctx, enum_type, value);
-                } else if is_composite_config_param(spec, param) {
-                    validate_composite_config_arg(ctx, param, value);
-                } else if is_scalar_config_param(spec, param) {
-                    validate_scalar_config_arg(ctx, param, value);
-                } else {
-                    let arg_ty = unwrap_ref(&infer_expr(ctx, value, tmap, omap));
-                    if coerce(&arg_ty, &param.ty) == CoerceRule::Mismatch {
-                        ctx.emit(
-                            "WS003",
-                            format!(
-                                "argument '{}': expected {}, got {}",
-                                param.name,
-                                crate::analysis::types::type_str(&param.ty),
-                                crate::analysis::types::type_str(&arg_ty),
-                            ),
-                            value.range().clone(),
-                        );
-                    }
-                }
-            } else if let Some(cfg) =
-                crate::catalog::scalar_config_field(spec.gate_class, name)
-            {
-                // Data-driven config attribute: a settings-menu field set by its
-                // raw name (`bOnlyHitPlayerBodyParts = true`), not a declared
-                // param. Enum fields validate their member; other scalars must be
-                // compile-time constants (they bake into the gate's data).
-                validate_data_driven_config(ctx, spec.gate_class, cfg, value);
-            }
-        }
-    }
-}
-
 /// Validate a data-driven config attribute (a settings-menu config field set via
 /// `<FieldName> = value`, resolved from the inventory `config` array). Enum
 /// fields validate their member against the schema; other scalars must be
@@ -4354,7 +3583,7 @@ fn validate_data_driven_config(
 ) {
     if let Some(enum_type) = crate::catalog::config_field_enum_type(gate_class, &cfg.name) {
         validate_enum_config_arg(ctx, enum_type, e);
-    } else if crate::lower::expr_to_literal(e).is_none() {
+    } else if crate::lower::expr_to_literal_in(e, &ctx.const_lookup()).is_none() {
         ctx.emit(
             "WS028",
             format!(
@@ -4366,26 +3595,10 @@ fn validate_data_driven_config(
     }
 }
 
-fn expect_coerce(ctx: &mut TypeCheckCtx, from: &Type, to: &Type, range: &SourceRange) {
-    if coerce(from, to) == CoerceRule::Mismatch {
-        ctx.emit(
-            "WS003",
-            format!(
-                "expected {}, got {}",
-                crate::analysis::types::type_str(to),
-                crate::analysis::types::type_str(from),
-            ),
-            range.clone(),
-        );
-    }
-}
-
 fn check_let_type_annotation(
     ctx: &mut TypeCheckCtx,
     l: &crate::ast::LetDecl,
     inferred: &Type,
-    tmap: &mut HashMap<(Arc<str>, usize, usize), Type>,
-    omap: &mut HashMap<(Arc<str>, usize, usize), OpRule>,
 ) {
     if let Some(ref te) = l.typ {
         // Record literals: validate field names against the expected record type.
@@ -4417,7 +3630,7 @@ fn check_let_type_annotation(
                             }
                         }
                         RecordLitField::Spread { value, range } => {
-                            let spread_ty = infer_expr(ctx, value, tmap, omap);
+                            let spread_ty = infer::infer(ctx, value);
                             if let Type::Record(spread_fields) = &spread_ty {
                                 let extras: Vec<&str> = spread_fields
                                     .iter()

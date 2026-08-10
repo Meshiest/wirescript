@@ -38,6 +38,7 @@ fn type_eq(a: &Type, b: &Type) -> bool {
         | (Controller, Controller)
         | (Zone, Zone)
         | (Teleport, Teleport)
+        | (PrefabRef, PrefabRef)
         | (Exec, Exec)
         | (Any, Any)
         | (Opaque, Opaque)

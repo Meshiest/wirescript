@@ -288,11 +288,62 @@ pub fn partition_anon_chips(module: &mut Module) {
     };
     let mut parent_wires: Vec<Wire> = Vec::with_capacity(module.wires.len());
     let mut seen_layout_edges: HashSet<(NodeId, NodeId)> = HashSet::default();
-    // Dedupe of Literal nodes cloned into a chip, per (chip, literal).
-    let mut literal_clones: HashMap<(NodeId, NodeId), NodeId> = HashMap::default();
+    // Dedupe of Literal nodes cloned into a target module, per (target, literal)
+    // where the target is `Some(chip)` or `None` for the parent.
+    let mut literal_clones: HashMap<(Option<NodeId>, NodeId), NodeId> = HashMap::default();
     for w in std::mem::take(&mut module.wires) {
         let src_chip = chip_of(&w.source.node_id);
         let tgt_chip = chip_of(&w.target.node_id);
+        // A `_Literal` source feeding a target in a DIFFERENT module can't be
+        // delivered as a wire: `_Literal` is a compiler placeholder, not a real
+        // component — emit inlines it into its SAME-module consumers, so a
+        // cross-module literal wire leaves its far end reading the port default
+        // (0). Clone the literal into the TARGET's module and keep the wire
+        // internal there, so every module inlines its own copy. Vars cross a
+        // boundary via a Ref port; a literal has none. This covers all cross-
+        // module directions — parent->child, chip->chip, AND chip->parent —
+        // e.g. a `let k = 20` declared in one chip and referenced in another.
+        if src_chip != tgt_chip {
+            let src_is_literal = match src_chip {
+                Some(a) => &children[&a].nodes,
+                None => &module.nodes,
+            }
+            .get(&w.source.node_id)
+            .is_some_and(|n| n.gate_class == gc::LITERAL);
+            if src_is_literal {
+                let key = (tgt_chip, w.source.node_id);
+                let clone_id = match literal_clones.get(&key) {
+                    Some(&id) => id,
+                    None => {
+                        let mut cl = match src_chip {
+                            Some(a) => children[&a].nodes[&w.source.node_id].clone(),
+                            None => module.nodes[&w.source.node_id].clone(),
+                        };
+                        let nid = NodeId::fresh();
+                        cl.id = nid;
+                        cl.chip_id = None;
+                        match tgt_chip {
+                            Some(b) => {
+                                children.get_mut(&b).expect("chip module").nodes.insert(nid, cl);
+                            }
+                            None => {
+                                module.nodes.insert(nid, cl);
+                            }
+                        }
+                        cloned_literal_sources.insert(w.source.node_id);
+                        literal_clones.insert(key, nid);
+                        nid
+                    }
+                };
+                let mut w2 = w;
+                w2.source.node_id = clone_id;
+                match tgt_chip {
+                    Some(b) => children.get_mut(&b).expect("chip module").wires.push(w2),
+                    None => parent_wires.push(w2),
+                }
+                continue;
+            }
+        }
         match (src_chip, tgt_chip) {
             (Some(a), Some(b)) if a == b => {
                 children.get_mut(&a).expect("chip module").wires.push(w);
@@ -305,35 +356,6 @@ pub fn partition_anon_chips(module: &mut Module) {
                 parent_wires.push(w);
             }
             (None, Some(b)) => {
-                // A parent-side constant `Literal` feeding a node that moved
-                // into this chip: keeping the plain data wire in the parent
-                // leaves it dangling (its target is now in the child), so the
-                // chip-side input silently reads the port default (0). Vars
-                // cross the boundary via a Ref port; a Literal has none — so
-                // clone it into the child and keep the wire internal.
-                let is_literal = module
-                    .nodes
-                    .get(&w.source.node_id)
-                    .map(|n| n.gate_class == gc::LITERAL)
-                    .unwrap_or(false);
-                if is_literal {
-                    let child = children.get_mut(&b).expect("chip module");
-                    let clone_id = *literal_clones
-                        .entry((b, w.source.node_id))
-                        .or_insert_with(|| {
-                            let mut cl = module.nodes[&w.source.node_id].clone();
-                            let nid = NodeId::fresh();
-                            cl.id = nid;
-                            cl.chip_id = None;
-                            child.nodes.insert(nid, cl);
-                            cloned_literal_sources.insert(w.source.node_id);
-                            nid
-                        });
-                    let mut w2 = w;
-                    w2.source.node_id = clone_id;
-                    child.wires.push(w2);
-                    continue;
-                }
                 if seen_layout_edges.insert((w.source.node_id, b)) {
                     parent_wires.push(layout_edge(w.source.node_id, b));
                 }

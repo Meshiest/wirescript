@@ -155,6 +155,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         // Module-level `@nofold` (top of file + blank line) marks everything.
         nofold_depth: input.ast.no_fold as u32,
         mono_stack: Vec::new(),
+        scoped_consts: Vec::new(),
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -1313,6 +1314,7 @@ pub fn compile_chip_template(
         doc_comments: &empty_docs,
         nofold_depth: 0,
         mono_stack: Vec::new(),
+        scoped_consts: Vec::new(),
     };
 
     // Create input ports

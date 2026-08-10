@@ -485,34 +485,36 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         ctx.connect(src, port_ref(event_node, port));
     }
 
-    ctx.scope.push(crate::scope::ScopeTag::BLOCK);
-    for (i, pname) in h.params.iter().enumerate() {
-        if let Some(data) = evt.data.get(i) {
-            ctx.scope.insert(
-                &pname.name,
-                Binding::EventParam(port_ref(event_node, data.port)),
-            );
-        }
-    }
-
     let saved_exec = ctx.current_exec;
     let saved_entry = ctx.handler_entry_exec;
     ctx.current_exec = Some(port_ref(event_node, evt.exec_out));
     ctx.handler_entry_exec = Some(port_ref(event_node, evt.exec_out));
     reset_var_get_caches(ctx);
 
+    // Typed event-data params (`on CustomEvent("x", a: int) { ... a ... }`)
+    // are bound INSIDE the closure — after `with_scope`'s own push — so they
+    // live in the handler-body frame it pushes/pops, not the enclosing one.
     ctx.with_scope(
         ScopeKind::HandlerBody {
             trigger_label: trigger_name.clone(),
         },
         h.range.clone(),
-        |ctx| lower_block(ctx, &h.body),
+        |ctx| {
+            for (i, pname) in h.params.iter().enumerate() {
+                if let Some(data) = evt.data.get(i) {
+                    ctx.scope.insert(
+                        &pname.name,
+                        Binding::EventParam(port_ref(event_node, data.port)),
+                    );
+                }
+            }
+            lower_block(ctx, &h.body)
+        },
     );
 
     let this_end = ctx.current_exec;
     ctx.current_exec = saved_exec;
     ctx.handler_entry_exec = saved_entry;
-    ctx.scope.pop();
     ctx.builder.current_chain_id = saved_chain;
     ctx.handler_end_execs = saved_handler_ends;
     if let Some(e) = this_end {
