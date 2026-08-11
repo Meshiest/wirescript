@@ -10,9 +10,9 @@ type State = { counter: *int, step: int }
 // Record literal with named fields
 let origin: Point = { x: 0, y: 0 }
 
-// Shorthand - captures var by name
+// A ref field captures `&score`, so mutations through the record write back to it
 var score: int = 0
-let game: State = { counter: score, step: 1 }
+let game: State = { counter: &score, step: 1 }
 
 // Spread - copy fields, override some
 let offset: Point = { ...origin, y: 10 }

@@ -2,7 +2,7 @@
 // which zone it watches. Declare an `in` port, wire it to a Zone brick in-game,
 // then bind it into each gate with `zone = <port>` — one wire drives both the
 // Entered and Left gate for that zone.
-in room: entity // wire this to a Zone brick
+in room: zone // wire this to a Zone brick
 
 var inside: int = 0
 

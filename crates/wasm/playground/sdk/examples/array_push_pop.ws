@@ -1,5 +1,5 @@
 // Array operations
-array items: int[]
+var items: int[]
 
 on RoundStart {
   items.clear()
