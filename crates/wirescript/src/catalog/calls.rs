@@ -557,15 +557,16 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             name: "Sleep",
             gate_class: gc::BUFFER_SECONDS,
             params: vec![
-                CallParam::req("input", WirePort::Input, Type::Any),
+                CallParam::req("input", WirePort::Input, Type::Param("T".into())),
                 CallParam::opt("delay", WirePort::SecondsToWait, Type::Float),
                 CallParam::opt("hold", WirePort::ZeroSecondsToWait, Type::Float),
             ],
             exec: false,
+            // Passthrough: the delayed output carries the input's type.
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Output,
-                ty: Type::Any,
+                ty: Type::Param("T".into()),
             }],
             receiver: None,
         },
@@ -576,15 +577,16 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             name: "SleepTicks",
             gate_class: gc::BUFFER_TICKS,
             params: vec![
-                CallParam::req("input", WirePort::Input, Type::Any),
+                CallParam::req("input", WirePort::Input, Type::Param("T".into())),
                 CallParam::opt("delay", WirePort::TicksToWait, Type::Int),
                 CallParam::opt("hold", WirePort::ZeroTicksToWait, Type::Int),
             ],
             exec: false,
+            // Passthrough: the delayed output carries the input's type.
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Output,
-                ty: Type::Any,
+                ty: Type::Param("T".into()),
             }],
             receiver: None,
         },
@@ -1155,14 +1157,15 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::SELECT,
             params: vec![
                 CallParam::req("cond", WirePort::BSelectB, Type::Bool),
-                CallParam::req("a", WirePort::InputA, Type::Any),
-                CallParam::req("b", WirePort::InputB, Type::Any),
+                CallParam::req("a", WirePort::InputA, Type::Param("T".into())),
+                CallParam::req("b", WirePort::InputB, Type::Param("T".into())),
             ],
             exec: false,
+            // Generic: picks `a` or `b`, so the result carries their shared type.
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::Output,
-                ty: Type::Any,
+                ty: Type::Param("T".into()),
             }],
             receiver: None,
         },
@@ -1174,18 +1177,18 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::SWAP,
             params: vec![
                 CallParam::req("cond", WirePort::BSwap, Type::Bool),
-                CallParam::req("a", WirePort::InputA, Type::Any),
-                CallParam::req("b", WirePort::InputB, Type::Any),
+                CallParam::req("a", WirePort::InputA, Type::Param("T".into())),
+                CallParam::req("b", WirePort::InputB, Type::Param("T".into())),
             ],
             exec: false,
-            // Auto-unwraps to the first (possibly swapped) value; `.OutputB` is
-            // the other one.
+            // Generic: auto-unwraps to the first (possibly swapped) value;
+            // `.OutputB` is the other one. Both carry `a`/`b`'s shared type.
             outputs: vec![CallOutput {
                 field: None,
                 port: WirePort::Output,
                 ty: Type::Record(vec![
-                    ("Output".into(), Type::Any),
-                    ("OutputB".into(), Type::Any),
+                    ("Output".into(), Type::Param("T".into())),
+                    ("OutputB".into(), Type::Param("T".into())),
                 ]),
             }],
             receiver: None,

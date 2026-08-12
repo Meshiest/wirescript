@@ -2583,6 +2583,13 @@ fn union_output_type(
     range: &SourceRange,
 ) -> Type {
     let declared = c.outputs[out_index].ty.clone();
+    // Generic passthrough builtins (`Sleep`/`SleepTicks`/`Select`/`Swap`): a
+    // `Type::Param(name)` output — bare or as a Record field — resolves to the
+    // widening join of the args at that same param's positions, so
+    // `Select(cond, a: T, b: T) -> T` yields the args' type instead of `any`.
+    if type_has_param(&declared) {
+        return resolve_param_output(ctx, c, args, &declared);
+    }
     // The output rides the input variant when it is a union directly (Blend /
     // lerp / Easing) OR contains one as a Record FIELD (a stateful gate like
     // `Tween`, whose `{ Value: <variant>, Arrived: exec }` should give a float
@@ -2653,6 +2660,52 @@ fn union_output_type(
                 .collect(),
         ),
         other => other,
+    }
+}
+
+/// Resolve a `Type::Param(name)` output (bare or nested in a Record/Array/Tuple)
+/// to the widening join of the arguments passed to the same-named `Param` params
+/// — the monomorphization for a generic builtin (`Sleep`/`Select`/`Swap`). An
+/// unresolved param (no concrete positional arg, or args with no common
+/// widening) falls back to `Any`, never `Param` — a `Param` must never reach
+/// emit. Non-`Param` leaves are returned unchanged.
+fn resolve_param_output(
+    ctx: &mut TypeCheckCtx,
+    c: &crate::catalog::calls::CallSpec,
+    args: &[CallArg],
+    ty: &Type,
+) -> Type {
+    match ty {
+        Type::Param(name) => {
+            let mut joined: Option<Type> = None;
+            for (i, p) in c.params.iter().enumerate() {
+                if let Type::Param(pn) = &p.ty
+                    && pn == name
+                    && let Some(CallArg::Positional(e)) = args.get(i)
+                {
+                    let t = unwrap_ref(&infer::infer(ctx, e));
+                    if matches!(t, Type::Any) {
+                        continue;
+                    }
+                    joined = Some(match joined {
+                        None => t,
+                        Some(prev) => widening_join_all([prev, t]).unwrap_or(Type::Any),
+                    });
+                }
+            }
+            joined.unwrap_or(Type::Any)
+        }
+        Type::Record(fields) => Type::Record(
+            fields
+                .iter()
+                .map(|(k, ft)| (k.clone(), resolve_param_output(ctx, c, args, ft)))
+                .collect(),
+        ),
+        Type::Array(inner) => Type::Array(Box::new(resolve_param_output(ctx, c, args, inner))),
+        Type::Tuple(elems) => {
+            Type::Tuple(elems.iter().map(|t| resolve_param_output(ctx, c, args, t)).collect())
+        }
+        other => other.clone(),
     }
 }
 

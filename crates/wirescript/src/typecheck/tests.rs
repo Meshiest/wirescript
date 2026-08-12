@@ -398,6 +398,31 @@
     }
 
     #[test]
+    fn generic_builtins_carry_arg_type() {
+        // Select/Swap/Sleep/SleepTicks resolve their `Type::Param` output to the
+        // args' concrete type, not `any`. Discriminator: if the output stayed
+        // `any`, none of these annotated-let mismatches (WS016) would fire, since
+        // `any` matches every annotation.
+        let cases = [
+            ("in go: exec\non go { let v: vector = Select(true, 1, 2) }\n", "int"),
+            ("in go: exec\non go { let v: vector = Select(false, \"x\", \"y\") }\n", "string"),
+            (
+                "in go: exec\non go { let s = Swap(true, 1, 2)\n  let v: vector = s.Output }\n",
+                "int",
+            ),
+            ("in go: exec\non go { let v: vector = SleepTicks(5, delay = 1) }\n", "int"),
+        ];
+        for (src, ty) in cases {
+            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+            assert!(
+                r.diagnostics.iter().any(|d| d.code == "WS016" && d.message.contains(ty)),
+                "generic output should resolve to `{ty}`, not `any`: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
     fn tween_value_output_rides_input_variant() {
         // Tween's `{ Value: <variant>, Arrived: exec }` output resolves the
         // `Value` field to the target's concrete type, not the full
