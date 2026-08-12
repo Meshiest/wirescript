@@ -27,6 +27,17 @@ pub(crate) fn infer(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     t
 }
 
+/// An array or map is already a reference (it wires `ArrayVarRef`/`MapVarRef`),
+/// so a `Ref` around one is redundant — and `*T[]` is actively broken (it
+/// silently drops writes). Collapse `Ref(Array)`/`Ref(Map)` to the container;
+/// a scalar `*T` (a ref to a mutable cell) is meaningful and left untouched.
+fn collapse_container_ref(t: Type) -> Type {
+    match t {
+        Type::Ref(inner) if matches!(&*inner, Type::Array(_) | Type::Map(_, _)) => *inner,
+        other => other,
+    }
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     match e {
@@ -189,7 +200,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 );
             }
             let t = infer(ctx, operand);
-            if matches!(t, Type::Ref(_)) {
+            // An array/map is already a reference, so `&arr` is a no-op — never
+            // `*T[]` (which is redundant and drops writes).
+            if t.is_reference_backed() {
                 t
             } else {
                 Type::Ref(Box::new(t))
@@ -441,10 +454,13 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         }
                     }
                     RecordLitField::Shorthand { name, .. } => {
+                        // `{ arr }` captures the array/map var by its container
+                        // ref, not `*T[]` (a var's symbol type is `Ref(T)`, but
+                        // an array/map is already a ref). A scalar `*int` stays.
                         let ty = ctx
                             .scope
                             .lookup(name)
-                            .map(|s| s.ty.clone())
+                            .map(|s| collapse_container_ref(s.ty.clone()))
                             .unwrap_or(Type::Any);
                         if let Some(existing) = rec_fields.iter_mut().find(|(n, _)| n == name) {
                             existing.1 = ty;

@@ -475,6 +475,41 @@
     }
 
     #[test]
+    fn array_record_field_is_never_ref_wrapped() {
+        // An array is already a reference, so a shorthand `{ arr }` field (and
+        // `&arr`) types as `int[]`, never the redundant, write-dropping `*int[]`.
+        // A mixed record built from vars matches a `{ int[], *int }` type
+        // EXACTLY (plain array field, ref scalar field) — no coercion.
+        let ok = "var regs: int[]\nvar cpsr: int = 0\n\
+                  type Cpu = { regs: int[], cpsr: *int }\n\
+                  mod f(c: Cpu) { }\n\
+                  on RoundStart() {\n  let cpu = { regs, cpsr }\n  f(cpu)\n}\n";
+        let r = typecheck(&parse(ok, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "shorthand `int[]` + scalar `*int` must match `Cpu` exactly: {:?}",
+            r.diagnostics
+        );
+
+        // A genuine field mismatch renders the array field as `int[]`, not `*int[]`.
+        let bad = "var regs: int[]\n\
+                   type Bad = { regs: string }\n\
+                   mod g(b: Bad) { }\n\
+                   on RoundStart() {\n  let rr = { regs }\n  g(rr)\n}\n";
+        let rb = typecheck(&parse(bad, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        let ws003 = rb
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS003")
+            .expect("field mismatch should be WS003");
+        assert!(
+            ws003.message.contains("regs: int[]") && !ws003.message.contains("*int[]"),
+            "array field should render as `int[]`, never `*int[]`: {}",
+            ws003.message
+        );
+    }
+
+    #[test]
     fn record_field_value_mismatch_still_errors() {
         // Ref-insensitivity must NOT loosen genuine value-type mismatches: an
         // `int` field where a `string` field is expected is still WS003.

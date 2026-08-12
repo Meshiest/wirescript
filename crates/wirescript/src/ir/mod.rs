@@ -146,6 +146,17 @@ pub enum Type {
     Param(String),
 }
 
+impl Type {
+    /// Whether this type already carries a reference: a `ref T`, or an array/map
+    /// (which wire an `ArrayVarRef`/`MapVarRef` port). Taking `&` of such a value
+    /// is a no-op, and wrapping one in another `Ref` (`*T[]`) is redundant and
+    /// drops writes. Distinct from the `is_reference_type` helper, which is the
+    /// reference-ONLY set (`ref`/zone/teleport/prefab — not storable/selectable).
+    pub fn is_reference_backed(&self) -> bool {
+        matches!(self, Type::Ref(_) | Type::Array(_) | Type::Map(_, _))
+    }
+}
+
 /// The source-language spelling of a type. Compound variants render by
 /// recursion (`*int`, `int[]`, `Map<string, int>`, …), which is exactly why
 /// this is `Display` and not `AsRef<str>`: those strings are built on the fly,

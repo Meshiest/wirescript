@@ -21,10 +21,15 @@ fn diag_report(label: &str, source: &str, file: &str) {
 
 #[test]
 fn real_project_files_typecheck() {
+    // Local-only debug probe over the wirescript repo's input files (it only
+    // prints diagnostics, no assertions). Those absolute paths don't exist in
+    // CI or on other machines, so skip a missing file instead of panicking.
     let base = r"C:\Users\cake\dev\brickadia\wirescript\projects\input";
     for name in ["lib.ws", "cursor.ws", "calibrate.ws", "test_cursor.ws"] {
         let path = format!("{base}\\{name}");
-        let src = std::fs::read_to_string(&path).expect("read source");
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         diag_report(name, &src, &path);
     }
 }
