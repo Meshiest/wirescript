@@ -47,6 +47,9 @@ pub(super) fn binding_to_port(
             if var_rec.storage == VarStorage::Array {
                 return Some(var_rec.node_id.port(WirePort::ArrayVarRef));
             }
+            if var_rec.storage == VarStorage::Map {
+                return Some(var_rec.node_id.port(WirePort::MapVarRef));
+            }
             if let Some(exec) = ctx.current_exec {
                 if let Some(cached) = var_rec.get_node_for_handler {
                     return Some(cached.port(WirePort::Value));
@@ -478,25 +481,41 @@ fn array_exec_op(
     node_id.port(ret)
 }
 
-/// Resolve a positional argument that names another array variable to its
-/// `ArrayVarRef` port (for the dual-array ops append/copyFrom/slice).
+/// Resolve a positional argument that names another array — a `var` array or an
+/// `in X: T[]` input — to its ref port (for the dual-array ops
+/// append/copyFrom/slice). A var array exposes `ArrayVarRef`; an input array's
+/// ref rides its `RER_Output`.
 fn resolve_array_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
     if let Some(CallArg::Positional(Expr::Ident { name, .. })) = arg {
-        let vr = ctx.lookup_var(name)?;
-        if vr.storage == VarStorage::Array {
+        if let Some(vr) = ctx.lookup_var(name)
+            && vr.storage == VarStorage::Array
+        {
             return Some(vr.node_id.port(WirePort::ArrayVarRef));
+        }
+        if let Some(Binding::Input(inp)) = ctx.scope.get(name)
+            && matches!(inp.ty, Type::Array(_))
+        {
+            return Some(inp.node_id.port(WirePort::RerOutput));
         }
     }
     None
 }
 
-/// Resolve a positional argument that names another map variable to its
-/// `MapVarRef` port (for `copyFrom`).
+/// Resolve a positional argument that names another map — a `var` map or an
+/// `in X: Map<K,V>` input — to its ref port (for `copyFrom`). A var map exposes
+/// `MapVarRef`; an input map's ref rides its `RER_Output` (mirrors the array
+/// case).
 fn resolve_map_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRef> {
     if let Some(CallArg::Positional(Expr::Ident { name, .. })) = arg {
-        let vr = ctx.lookup_var(name)?;
-        if vr.storage == VarStorage::Map {
+        if let Some(vr) = ctx.lookup_var(name)
+            && vr.storage == VarStorage::Map
+        {
             return Some(vr.node_id.port(WirePort::MapVarRef));
+        }
+        if let Some(Binding::Input(inp)) = ctx.scope.get(name)
+            && matches!(inp.ty, Type::Map(_, _))
+        {
+            return Some(inp.node_id.port(WirePort::RerOutput));
         }
     }
     None

@@ -899,6 +899,75 @@ fn custom_event_isobject_config_is_case_insensitive() {
 }
 
 #[test]
+fn map_containers_lower_without_unsupported() {
+    // Regression for the `Map<K,V>`-as-param/port/record-field silent
+    // miscompile: a map used as a mod param, a record field, an `in`/`out`
+    // port, and a `copyFrom` source must all lower to real MapVar gates wiring
+    // `MapVarRef`, never `_Unsupported`. (Preferred fix: maps work wherever
+    // arrays do.)
+    let src = "var m: Map<int, int>\n\
+               var m2: Map<int, int>\n\
+               type Bag = { counts: Map<int, int> }\n\
+               let bag: Bag = { counts: m2 }\n\
+               out mapOut: Map<int, int> = m\n\
+               in tick: exec\n\
+               in inMap: Map<int, int>\n\
+               mod useMap(x: Map<int, int>) { x.set(1, 2) }\n\
+               mod useBag(b: Bag) { b.counts.set(3, 4) }\n\
+               on tick {\n  useMap(m)\n  useBag(bag)\n  m2.copyFrom(inMap)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class == crate::ir::gate_class::UNSUPPORTED),
+        "no _Unsupported gate for map param / record field / in-out port / copyFrom source"
+    );
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.source.port == crate::ir::port_registry::WirePort::MapVarRef),
+        "map operations must wire MapVarRef (the way arrays wire ArrayVarRef)"
+    );
+}
+
+#[test]
+fn map_param_double_call_shares_one_map_gate() {
+    // A mod taking a map param, called twice on the same file-scope map, wires
+    // BOTH call sites to the SAME MapVar gate (mods inline per call site but the
+    // container binding is captured by reference, not copied).
+    let src = "var m: Map<int, int>\n\
+               in go: exec\n\
+               mod bump(mm: Map<int, int>, k: int) { mm.set(k, 5) }\n\
+               on go {\n  bump(m, 1)\n  bump(m, 2)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let map_gates: Vec<_> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == crate::ir::gate_class::PSEUDO_MAP_VAR)
+        .collect();
+    assert_eq!(map_gates.len(), 1, "one MapVar gate for the single `var m`");
+    let map_id = *map_gates[0].0;
+    let from_map = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| {
+            w.source.node_id == map_id
+                && w.source.port == crate::ir::port_registry::WirePort::MapVarRef
+        })
+        .count();
+    assert!(
+        from_map >= 2,
+        "both `bump` call sites must wire to the same MapVar's MapVarRef, got {from_map}"
+    );
+}
+
+#[test]
 fn exec_after_mod_ending_in_emit_signal_lowers() {
     // A mod whose body ends with an unbuffered `emit sig` is a FORK, not a
     // chain terminator — it fires the signal and the exec continues. When such

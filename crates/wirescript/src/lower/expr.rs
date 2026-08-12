@@ -231,6 +231,9 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
             if var_rec.storage == VarStorage::Array {
                 return var_rec.node_id.port(WirePort::ArrayVarRef);
             }
+            if var_rec.storage == VarStorage::Map {
+                return var_rec.node_id.port(WirePort::MapVarRef);
+            }
             if let Some(exec) = ctx.current_exec {
                 if let Some(cached) = var_rec.get_node_for_handler {
                     return cached.port(WirePort::Value);

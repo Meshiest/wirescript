@@ -7,6 +7,12 @@
 - **Event output capture (`on ... -> ...`)** - an event handler binds its data outputs in a trailing capture instead of inside the event call: `on Foo() -> (a, b)` (tuple, positional - the cleanest form, for any event) or `on Foo() -> { field: local }` (record, by field name - named events, for subset/rename). `on <call> -> ...` also triggers on any exec-producing call - a `mod`/`chip` call, or a gate driven by `on Foo(exec = x) -> (...)` - auto-extracting the call's exec output; a general call that exposes no exec (or an `exec =` with nowhere to attach) is a `WS043` error. A single untyped output may drop the parens: `-> who` is shorthand for `-> (who)`.
 - **Custom-event data-type inference** - an unannotated custom-event receiver slot takes its type from the matching in-unit `SendCustomEvent` on that channel; when none is inferable the slot defaults to `float` and warns `WS042` (which replaces the old `WS029` "annotate this param" lint). A written type goes in the tuple capture: `on CustomEvent("ch") -> (x: int)`.
 - **Whole-grid interaction events** - `on WholeGridInteracted() -> (character, held)` fires when the grid is interacted with; `on WholeGridTargeted() -> (character, damage, weapon, weaponName)` fires when it is hit.
+- **Maps work wherever arrays do** - a `Map<K, V>` can now be a `mod`/`chip` parameter, an `in`/`out` port, or a record field (not just a file-scope `var`). A container method whose receiver isn't a container is `WS044`, not a silent no-op.
+- **Generic value builtins** - `Select`, `Swap`, `Sleep`, `SleepTicks`, and `Tween` carry their argument's type instead of `any`, so `Select(c, 1, 2)` is an `int`.
+- **Tuple arguments match tuple parameters** - passing a tuple value or literal to a `(A, B)`-typed parameter type-checks.
+- **Ref-insensitive record fields** - a record value matches a record type when fields differ only in ref/array exposure (a `*T` field and a plain `T` are interchangeable at a call boundary, as parameters already are).
+- **Tighter builtin argument types** - `DisplayText`/`PrintToConsole`/`Fmt`/`SetTag` take `string`, `SetLeaderboard`/`IncLeaderboard` take `int`, and `SpawnPrefab` takes a `prefab` reference.
+- **Fixed: exec after an emitting mod** - a statement following a `mod` whose body ends in `emit` no longer drops to an unsupported placeholder.
 
 ### Migrating to 1.1.0
 

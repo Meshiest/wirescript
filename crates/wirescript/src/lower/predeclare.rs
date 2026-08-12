@@ -1099,40 +1099,21 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
         for field in &fields {
             let port_name = format!("{}_{}", d.name, field.name);
             let ft = type_of_type_expr(&field.typ);
-            let is_array = matches!(&field.typ, TypeExpr::Array { .. });
-            let is_ref = matches!(&field.typ, TypeExpr::Ref { .. });
             let node_id = ctx.add_input(&port_name, ft.clone(), d.range.clone());
-            let binding = if is_array {
-                let inner = match &ft {
-                    Type::Array(inner) => inner.as_ref().clone(),
-                    Type::Ref(inner) => match inner.as_ref() {
-                        Type::Array(inner) => inner.as_ref().clone(),
-                        _ => ft.clone(),
-                    },
-                    _ => ft.clone(),
-                };
-                Binding::Var(VarRecord {
+            // Array / Map / ref fields of a record-typed input port bind a
+            // container ref-port (see `container_binding`); a scalar field is a
+            // plain by-value input.
+            let binding = match super::context::container_binding(&field.typ, &ft) {
+                Some((storage, inner)) => Binding::Var(VarRecord {
                     node_id,
                     inner_type: inner,
                     get_node_for_handler: None,
-                    storage: VarStorage::Array,
-                })
-            } else if is_ref {
-                let inner = match &ft {
-                    Type::Ref(inner) => inner.as_ref().clone(),
-                    _ => ft.clone(),
-                };
-                Binding::Var(VarRecord {
-                    node_id,
-                    inner_type: inner,
-                    get_node_for_handler: None,
-                    storage: VarStorage::Var,
-                })
-            } else {
-                Binding::Input(NodeRecord {
+                    storage,
+                }),
+                None => Binding::Input(NodeRecord {
                     node_id,
                     ty: ft.clone(),
-                })
+                }),
             };
             record_fields.insert(crate::intern::intern(&field.name), binding);
         }

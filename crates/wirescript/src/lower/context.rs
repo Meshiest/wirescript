@@ -19,6 +19,57 @@ pub(super) enum VarStorage {
     Map,
 }
 
+/// Classify a param/field type that binds a *container* — one whose value wires
+/// a ref port (`ArrayVarRef`/`MapVarRef`) or is a scalar `ref T` — rather than a
+/// plain by-value input. Returns the backing [`VarStorage`] and the
+/// `inner_type` to record: the element type for arrays, the referent for a
+/// scalar `ref T`, and the WHOLE `Type::Map(K,V)` for maps (matching
+/// `pre_declare_map`). `None` for a by-value scalar.
+///
+/// Classifying containers in ONE place — instead of each binding site
+/// re-deriving `is_array`/`is_ref` by pattern-match — is what keeps `Map<K,V>`
+/// (and any future container) from silently falling through the `Array`/`Ref`
+/// matches into a scalar `Var_Get` + `_Unsupported` method lowering.
+/// The backing [`VarStorage`] for a param/field type, or `None` for a by-value
+/// scalar. Depends only on the syntactic type (no resolution), so it can gate a
+/// binding site; [`container_binding`] adds the `inner_type`.
+pub(super) fn container_storage(typ: &crate::ast::TypeExpr) -> Option<VarStorage> {
+    use crate::ast::TypeExpr as TE;
+    let is_map = |t: &TE| matches!(t, TE::Generic { name, .. } if name == "Map");
+    Some(match typ {
+        TE::Array { .. } => VarStorage::Array,
+        t if is_map(t) => VarStorage::Map,
+        TE::Ref { inner, .. } if is_map(inner) => VarStorage::Map,
+        TE::Ref { .. } => VarStorage::Var,
+        _ => return None,
+    })
+}
+
+pub(super) fn container_binding(
+    typ: &crate::ast::TypeExpr,
+    resolved: &Type,
+) -> Option<(VarStorage, Type)> {
+    let storage = container_storage(typ)?;
+    let inner = match storage {
+        VarStorage::Array => match resolved {
+            Type::Array(i) => (**i).clone(),
+            Type::Ref(i) => match &**i {
+                Type::Array(e) => (**e).clone(),
+                _ => resolved.clone(),
+            },
+            _ => resolved.clone(),
+        },
+        // A map's `inner_type` carries the whole `Type::Map(K,V)`; a `*Map`
+        // unwraps its outer ref to the same.
+        VarStorage::Map | VarStorage::Var => match resolved {
+            Type::Ref(i) => (**i).clone(),
+            _ => resolved.clone(),
+        },
+        VarStorage::Buffer => resolved.clone(),
+    };
+    Some((storage, inner))
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct NodeRecord {
     pub(super) node_id: NodeId,
@@ -542,6 +593,20 @@ impl<'a> LowerCtx<'a> {
         self.diagnostics.push(Diagnostic {
             severity: crate::diagnostic::Severity::Warning,
             code: "WSP001".into(),
+            message: msg.into(),
+            range: range.clone(),
+        });
+    }
+
+    pub(super) fn error(
+        &mut self,
+        code: &'static str,
+        msg: impl Into<String>,
+        range: &SourceRange,
+    ) {
+        self.diagnostics.push(Diagnostic {
+            severity: crate::diagnostic::Severity::Error,
+            code: code.into(),
             message: msg.into(),
             range: range.clone(),
         });

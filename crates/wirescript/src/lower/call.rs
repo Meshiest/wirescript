@@ -146,6 +146,23 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 e,
             );
         }
+        // Map method on an `in X: Map<K,V>` input — mirrors the array-input case
+        // (the map ref rides the input's RER_Output).
+        if let Expr::Ident { name, .. } = obj.as_ref()
+            && crate::catalog::maps::is_map_method(field)
+            && let Some(Binding::Input(inp)) = ctx.scope.get(name).cloned()
+            && matches!(inp.ty, Type::Map(_, _))
+        {
+            return lower_map_method(
+                ctx,
+                inp.node_id.port(WirePort::RerOutput),
+                inp.ty.clone(),
+                field,
+                args,
+                range,
+                e,
+            );
+        }
         // Record-resolved var methods: cpu.regs.push(val)
         if crate::catalog::arrays::is_array_method(field)
             && let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
@@ -154,6 +171,21 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             return lower_array_method(
                 ctx,
                 var_rec.node_id.port(WirePort::ArrayVarRef),
+                var_rec.inner_type.clone(),
+                field,
+                args,
+                range,
+                e,
+            );
+        }
+        // Record-resolved var map methods: b.counts.set(k, v)
+        if crate::catalog::maps::is_map_method(field)
+            && let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
+            && var_rec.storage == VarStorage::Map
+        {
+            return lower_map_method(
+                ctx,
+                var_rec.node_id.port(WirePort::MapVarRef),
                 var_rec.inner_type.clone(),
                 field,
                 args,
@@ -193,6 +225,25 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             recv_args.push(CallArg::Positional(obj.as_ref().clone()));
             recv_args.extend(args.iter().cloned());
             return lower_chip_call(ctx, &chip_decl, &recv_args, type_args, range);
+        }
+        // Backstop for the whole container-method class: `field` IS an array/map
+        // method, but its receiver resolved to none of the container bindings
+        // above. Without this it would fall through to a silent `_Unsupported`
+        // gate (the exact `Map<K,V>`-passed-by-value failure mode). Report it so
+        // a future container type that misses a binding site can't ship a
+        // no-diagnostic miscompile.
+        if crate::catalog::arrays::is_array_method(field)
+            || crate::catalog::maps::is_map_method(field)
+        {
+            ctx.error(
+                "WS044",
+                format!(
+                    "`.{field}()` is an array/map method, but its receiver did not \
+                     resolve to an array or map here (e.g. a container in an \
+                     unsupported position) — the operation would be silently dropped"
+                ),
+                range,
+            );
         }
     }
     synthesise_unsupported(ctx, e)
@@ -294,7 +345,12 @@ pub(super) fn lower_chip_call_inline(
             continue;
         }
         match &param.typ {
-            TypeExpr::Ref { .. } | TypeExpr::Array { .. } => {
+            // A container param (`T[]`, `Map<K,V>`, `ref T`) captures the
+            // caller's var/input binding by reference, so the mod body resolves
+            // the param to the same ArrayVar/MapVar ref instead of lowering the
+            // arg to a scalar value (which would then fail the container-method
+            // lowering to `_Unsupported`).
+            pt if super::context::container_storage(pt).is_some() => {
                 let var_rec = if let Expr::Ident { name, .. } = arg_expr {
                     ctx.lookup_var(name).cloned()
                 } else if let Some(Binding::Var(v)) = resolve_field_chain(ctx, arg_expr).cloned() {
@@ -1103,10 +1159,15 @@ fn build_chip_module(
                 } else {
                     type_of_type_expr(&field.typ)
                 };
-                let is_array = matches!(&field.typ, TypeExpr::Array { .. });
-                let is_ref = matches!(&field.typ, TypeExpr::Ref { .. });
+                // Array / Map / ref fields bind a container ref-port; a scalar
+                // field is a plain by-value input. Classifying via
+                // `container_binding` (not an `Array`/`Ref`-only match) is what
+                // lets a `Map<K,V>` record field wire its `MapVarRef` instead of
+                // silently lowering its methods to `_Unsupported`.
+                let container = super::context::container_binding(&field.typ, &ft);
 
-                if let Some(captured) = (is_array || is_ref)
+                if let Some(captured) = container
+                    .is_some()
                     .then(|| caller_captures.get(&port_name))
                     .flatten()
                 {
@@ -1123,44 +1184,24 @@ fn build_chip_module(
                 }
 
                 let node_id = child_ctx.add_input(&port_name, ft.clone(), chip_decl.range.clone());
-                let binding = if is_array {
-                    let inner = match &ft {
-                        Type::Array(inner) => inner.as_ref().clone(),
-                        Type::Ref(inner) => match inner.as_ref() {
-                            Type::Array(inner) => inner.as_ref().clone(),
-                            _ => ft.clone(),
-                        },
-                        _ => ft.clone(),
-                    };
-                    Binding::Var(VarRecord {
+                let binding = match container {
+                    Some((storage, inner)) => Binding::Var(VarRecord {
                         node_id,
                         inner_type: inner,
                         get_node_for_handler: None,
-                        storage: VarStorage::Array,
-                    })
-                } else if is_ref {
-                    let inner = match &ft {
-                        Type::Ref(inner) => inner.as_ref().clone(),
-                        _ => ft.clone(),
-                    };
-                    Binding::Var(VarRecord {
-                        node_id,
-                        inner_type: inner,
-                        get_node_for_handler: None,
-                        storage: VarStorage::Var,
-                    })
-                } else {
-                    Binding::Input(NodeRecord {
+                        storage,
+                    }),
+                    None => Binding::Input(NodeRecord {
                         node_id,
                         ty: ft.clone(),
-                    })
+                    }),
                 };
                 record_fields.insert(crate::intern::intern(&field.name), binding);
             }
             child_ctx
                 .scope
                 .insert(&inp.name, Binding::Record(record_fields));
-        } else if matches!(&inp.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
+        } else if super::context::container_storage(&inp.typ).is_some() {
             if let Some(captured) = caller_captures.get(&inp.name) {
                 child_ctx.scope.insert(
                     &inp.name,
@@ -1177,12 +1218,8 @@ fn build_chip_module(
                 } else {
                     type_of_type_expr(&inp.typ)
                 };
-                let is_array = matches!(&inp.typ, TypeExpr::Array { .. });
-                let inner = match &t {
-                    Type::Ref(inner) => inner.as_ref().clone(),
-                    Type::Array(inner) => inner.as_ref().clone(),
-                    _ => t.clone(),
-                };
+                let (storage, inner) = super::context::container_binding(&inp.typ, &t)
+                    .expect("gated by container_storage");
                 let node_id = child_ctx.add_input(&inp.name, t.clone(), chip_decl.range.clone());
                 child_ctx.scope.insert(
                     &inp.name,
@@ -1190,11 +1227,7 @@ fn build_chip_module(
                         node_id,
                         inner_type: inner,
                         get_node_for_handler: None,
-                        storage: if is_array {
-                            VarStorage::Array
-                        } else {
-                            VarStorage::Var
-                        },
+                        storage,
                     }),
                 );
             }
