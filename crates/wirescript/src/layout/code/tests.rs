@@ -7,7 +7,7 @@
     fn lowered(src: &str) -> Module {
         let parsed = crate::parser::parse(src, "test");
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+        let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
         let r = crate::lower::lower(crate::lower::LowerInput {
             ast: &parsed.ast,
             type_of_expr: &tc.type_of_expr,
@@ -17,6 +17,7 @@
             template_cache: Arc::new(crate::template_cache::TemplateCache::new()),
             doc_comments: &parsed.doc_comments,
             fold_mode: crate::lower::FoldMode::Auto,
+            ce_slots: &crate::typecheck::CeSlotMap::default(),
         });
         r.module
     }
@@ -40,7 +41,7 @@
             "{:?}",
             resolved.diagnostics
         );
-        let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws");
+        let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         let r = crate::lower::lower(crate::lower::LowerInput {
             ast: &resolved.ast,
             type_of_expr: &tc.type_of_expr,
@@ -50,6 +51,7 @@
             template_cache: Arc::new(crate::template_cache::TemplateCache::new()),
             doc_comments: &resolved.doc_comments,
             fold_mode: crate::lower::FoldMode::Auto,
+            ce_slots: &crate::typecheck::CeSlotMap::default(),
         });
         let opts = LayoutOptions {
             source_map: Some(resolved.source_map.clone()),
@@ -251,7 +253,7 @@
         // The event node and the statement it fires share line 2, joined by
         // an exec wire — read as an operand edge, that wire pushes the
         // trigger to the right of its own body.
-        let src = "var a: int = 0\non RoundStart { a = 1 }\n";
+        let src = "var a: int = 0\non RoundStart() { a = 1 }\n";
         let m = lowered(src);
         let l = layout_code(&m, &opts_with_map(src), false);
         let y_of = |kind: NodeKind| -> i32 {
@@ -1694,7 +1696,7 @@ on go { PrintToConsole(\"${table[0]}\") }
     /// lands in column 0 and rotates, and it is 8×5, so the swap moves
     /// real geometry. Its line also carries a `Var_Get` feeding a
     /// `FormatText`, both of which stay in the value columns.
-    pub(super) const WIDE_EXEC_SRC: &str = "var a: int = 1\non ControllerJoined(c) {\n  a = a + 1\n  c.DisplayText(\"hi ${a}\")\n  a = a + 2\n}\n";
+    pub(super) const WIDE_EXEC_SRC: &str = "var a: int = 1\non ControllerJoined() -> (c) {\n  a = a + 1\n  c.DisplayText(\"hi ${a}\")\n  a = a + 2\n}\n";
 
     /// A square gate's swap is a no-op, so a fixture of 5×5 gates cannot
     /// tell a correct reservation from a missing one. `DisplayText` is 8×5
@@ -3667,7 +3669,7 @@ on t {
     const NO_PIN_BAND_SRC: &str = "var a: int = 1
 var b: int = 2
 var log: string[]
-on ControllerJoined(who) {
+on ControllerJoined() -> (who) {
   log.push(\"${a}\")
   PrintToConsole(\"${a}${b}\")
   log.push(\"${b}\")

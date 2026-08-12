@@ -95,7 +95,13 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             let inner_diags: Vec<Diagnostic> = if has_imports {
                 inner.diagnostics
             } else {
-                let inner_tc = crate::typecheck::typecheck(&inner.ast, &range.file);
+                // Run the same two-phase inference the compile path uses for a
+                // prefab unit, so a self-contained block's custom-event slots
+                // infer from its in-block senders (and default to float + WS042
+                // when uninferable) — otherwise the block type-checks cleaner
+                // here than it compiles, hiding real `got float` errors until
+                // emit time.
+                let inner_tc = crate::typecheck::typecheck_with_inference(&inner.ast, &range.file).0;
                 inner
                     .diagnostics
                     .into_iter()
@@ -633,6 +639,24 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         return Type::Any;
                     }
                     return c.params.first().map(|p| p.ty.clone()).unwrap_or(Type::Any);
+                }
+                // An event called as an expression (`RoundStart()`,
+                // `Clock(interval = 2.0)`, `CharacterSpawned()`) emits the event
+                // gate: a data-less event yields its exec signal (so it composes,
+                // `Union(RoundStart(), other)`); a data-carrying event yields a
+                // record with the exec FIRST (a bare call auto-unwraps to exec)
+                // plus each data output (`CharacterSpawned().character`). The
+                // `on RoundStart() { … }` trigger form is unaffected — that path
+                // never reaches this call resolution.
+                if let Some(evt) = crate::catalog::events::find_event(name) {
+                    if evt.data.is_empty() {
+                        return Type::Exec;
+                    }
+                    let mut fields = vec![(evt.exec_out.to_string(), Type::Exec)];
+                    for d in &evt.data {
+                        fields.push((d.name.to_string(), d.ty.clone()));
+                    }
+                    return Type::Record(fields);
                 }
                 let Some(sym) = ctx.scope.lookup(name).cloned() else {
                     ctx.emit(

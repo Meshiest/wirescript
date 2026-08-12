@@ -15,7 +15,7 @@
             "parse diags: {:?}",
             parsed.diagnostics
         );
-        let tc = typecheck(&parsed.ast, "test");
+        let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
         let r = lower(LowerInput {
             ast: &parsed.ast,
             type_of_expr: &tc.type_of_expr,
@@ -25,6 +25,7 @@
             template_cache: Arc::new(TemplateCache::new()),
             doc_comments: &parsed.doc_comments,
             fold_mode: crate::lower::FoldMode::Auto,
+            ce_slots: &crate::typecheck::CeSlotMap::default(),
         });
         r.module
     }
@@ -44,7 +45,7 @@
 
     #[test]
     fn every_node_gets_a_placement() {
-        let src = "var n: int = 0\non RoundStart { n = n + 1 }";
+        let src = "var n: int = 0\non RoundStart() { n = n + 1 }";
         let m = compile(src);
         let root = super::super::region::build_region_tree(&m);
         let out = layout_region(&root, &m.wires);
@@ -59,7 +60,7 @@
 
     #[test]
     fn no_two_placements_overlap() {
-        let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+        let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
         let m = compile(src);
         let root = super::super::region::build_region_tree(&m);
         let out = layout_region(&root, &m.wires);
@@ -77,7 +78,7 @@
 
     #[test]
     fn if_branches_are_horizontally_separated() {
-        let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+        let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
         let m = compile(src);
         let root = super::super::region::build_region_tree(&m);
         let out = layout_region(&root, &m.wires);
@@ -124,7 +125,7 @@
 
     #[test]
     fn layout_is_deterministic() {
-        let src = "var n: int = 0\non RoundStart { n = n + 1 }";
+        let src = "var n: int = 0\non RoundStart() { n = n + 1 }";
         let m = compile(src);
         let root = super::super::region::build_region_tree(&m);
         let a = layout_region(&root, &m.wires);

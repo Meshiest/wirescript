@@ -193,7 +193,7 @@ fn string_equality_lowers_to_native_compare() {
 #[test]
 fn string_var_stores_and_assigns() {
     // Strings can be stored in vars now (WireGraphVariant `str`).
-    let r = compile("static var s: string = \"init\"\non RoundStart { s = \"hello\" }");
+    let r = compile("static var s: string = \"init\"\non RoundStart() { s = \"hello\" }");
     assert_no_errors(&r);
     assert!(
         has_gate(&r, "BrickComponentType_WireGraphPseudo_Var"),

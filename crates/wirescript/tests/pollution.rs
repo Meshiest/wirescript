@@ -40,7 +40,7 @@ fn collect_ids_by_chip(module: &Module, path: &str) -> Vec<(String, NodeId)> {
 /// Parse → typecheck → lower a source string (no file imports).
 fn lower_source(src: &str) -> wirescript::lower::LowerResult {
     let resolved = ws_resolve(src, "test.ws", &FsLoader);
-    let tc = typecheck(&resolved.ast, "test.ws");
+    let tc = typecheck(&resolved.ast, "test.ws", &wirescript::typecheck::CeSlotMap::default());
     lower(LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -50,6 +50,7 @@ fn lower_source(src: &str) -> wirescript::lower::LowerResult {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     })
 }
 

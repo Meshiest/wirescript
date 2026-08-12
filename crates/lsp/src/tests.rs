@@ -3,7 +3,7 @@
     fn doc_state(source: &str) -> DocState {
         let pre_resolve = wirescript::parse(source, "test");
         let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck(&resolved.ast, "test");
+        let tc = typecheck_with_inference(&resolved.ast, "test").0;
         DocState {
             source: source.to_string(),
             symbols: Vec::new(),
@@ -59,7 +59,7 @@
 
     fn symbols_for(source: &str) -> Vec<SymbolDef> {
         let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck(&resolved.ast, "test");
+        let tc = typecheck_with_inference(&resolved.ast, "test").0;
         collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"))
     }
 
@@ -204,6 +204,22 @@
         assert!(ls.iter().any(|l| l == "Y_Negative"), "enum member missing: {ls:?}");
         // The sentinel is never offered.
         assert!(!ls.iter().any(|l| l == "MAX"), "sentinel leaked: {ls:?}");
+    }
+
+    #[test]
+    fn plain_value_slot_offers_in_scope_idents_not_arg_names() {
+        // In a non-enum / non-asset value slot (`textId = <here>`), completion
+        // offers in-scope identifiers, NOT the call's argument names.
+        let src = "in c: controller\nlet myVal = 7\nin go: exec\non go {\n  c.DisplayText(\"hi\", textId = )\n}";
+        let line = 4; // the DisplayText line
+        let col =
+            src.lines().nth(line).unwrap().find("textId = ").unwrap() + "textId = ".len();
+        let ls = labels(src, line, col);
+        assert!(ls.iter().any(|l| l == "myVal"), "in-scope ident missing: {ls:?}");
+        assert!(
+            !ls.iter().any(|l| l == "positionX = "),
+            "argument names must not be offered in a value slot: {ls:?}"
+        );
     }
 
     #[test]

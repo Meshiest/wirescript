@@ -22,7 +22,7 @@ use crate::ir::{
     ScopeInfo, ScopeKind, Type, port_registry::WirePort,
 };
 use crate::template_cache::TemplateCache;
-use crate::typecheck::TypeCheckResult;
+use crate::typecheck::{CeSlotMap, TypeCheckResult};
 
 mod context;
 use context::*;
@@ -86,6 +86,11 @@ pub struct LowerInput<'a> {
     /// module-level `@nofold` (`input.ast.no_fold`) always disables it on
     /// top of this, regardless of mode.
     pub fold_mode: FoldMode,
+    /// Inferred custom-event data-slot types (Task 1-3's `CeSlotMap`), keyed
+    /// by the receiver handler's `ce_slot_key`. Consulted by `lower_handler`
+    /// so an unannotated `on CustomEvent(...)` param's `DataOut` port takes
+    /// the inferred type instead of defaulting to `Type::Float`.
+    pub ce_slots: &'a CeSlotMap,
 }
 
 /// Whether the certified constant-fold pass runs. `Auto` (production
@@ -116,6 +121,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         diagnostics,
         type_of_expr: input.type_of_expr,
         op_resolutions: input.op_resolutions,
+        ce_slots: input.ce_slots,
         file: input.file.to_string(),
         scope: crate::scope::Scope::new(),
         handler_end_execs: Vec::new(),
@@ -1268,8 +1274,12 @@ pub fn compile_chip_template(
     );
 
     // Resource-estimation templates don't need real doc text (DOC_TEXT is
-    // display-only) — an empty map keeps the LowerCtx lifetime local.
+    // display-only) — an empty map keeps the LowerCtx lifetime local. Same
+    // for `ce_slots`: this builds an isolated per-chip template purely for
+    // gate-count estimation, not the final emitted graph, so an unresolved
+    // custom-event slot here just estimates as `float`.
     let empty_docs: HashMap<usize, String> = HashMap::default();
+    let empty_ce_slots = CeSlotMap::default();
 
     let mut ctx = LowerCtx {
         builder,
@@ -1277,6 +1287,7 @@ pub fn compile_chip_template(
         diagnostics: Vec::new(),
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
+        ce_slots: &empty_ce_slots,
         file: file.to_string(),
         scope: crate::scope::Scope::new(),
         handler_end_execs: Vec::new(),

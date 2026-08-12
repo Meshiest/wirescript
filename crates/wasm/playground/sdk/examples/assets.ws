@@ -15,7 +15,7 @@
 
 static var lastWeapon: entity
 
-on CharacterDamaged(victim, damage, attacker, weapon, weaponName) {
+on CharacterDamaged() -> (victim, damage, attacker, weapon, weaponName) {
   lastWeapon = weapon
 
   // `weapon` is the attacker's weapon (an entity); compare it to an item asset.

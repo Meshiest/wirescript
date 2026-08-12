@@ -914,7 +914,7 @@ fn top_level_array_with_non_literal_or_spread_errors() {
         "var base: int[] = [1, 2]\nvar foo: int[] = [...base, 3]\n",
     ] {
         let parsed = parse(src, "test");
-        let tc = typecheck(&parsed.ast, "test");
+        let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
         assert!(
             tc.diagnostics
                 .iter()
@@ -1030,7 +1030,7 @@ fn empty_map_literal_initializes_an_empty_map() {
         "static var m: Map<int, int> = {}\nin t: exec\non t {}\n",     // static
         "in t: exec\non t {\n  var m: Map<int, int> = {}\n}\n",        // handler-local var
     ] {
-        let tc = crate::typecheck::typecheck(&parse(src, "test").ast, "test");
+        let tc = crate::typecheck::typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
         let errs: Vec<_> = tc
             .diagnostics
             .iter()
@@ -1064,7 +1064,7 @@ fn empty_map_literal_initializes_an_empty_map() {
 #[test]
 fn map_key_type_must_be_int_string_or_object() {
     let errs = |src: &str| {
-        crate::typecheck::typecheck(&parse(src, "test").ast, "test")
+        crate::typecheck::typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default())
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == crate::diagnostic::Severity::Error)
@@ -1135,7 +1135,7 @@ fn map_literal_typechecks_against_declared_map() {
             "parse diags for {src:?}: {:?}",
             parsed.diagnostics
         );
-        let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+        let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
         let errs: Vec<_> = tc
             .diagnostics
             .iter()
@@ -1164,7 +1164,7 @@ fn map_literal_outside_map_context_errors() {
     // errors, so check typecheck directly (see
     // `top_level_array_with_non_literal_or_spread_errors` above).
     let parsed = parse("let x = { 1 => 2 }\n", "test");
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics
             .iter()
@@ -1301,7 +1301,7 @@ fn out_binding_creates_output_node() {
 
 #[test]
 fn handler_creates_event_and_exec_chain() {
-    let r = compile("on RoundStart { }");
+    let r = compile("on RoundStart() { }");
     let has_event = r.module.nodes.values().any(|n| n.kind == NodeKind::Event);
     assert!(has_event, "expected event node for RoundStart");
 }
@@ -1345,7 +1345,7 @@ fn chat_command_config_args_set_gate_data() {
     // Positional config fills CommandName/HelpText; identifier params bind
     // the controller/arguments outputs.
     let r = compile(
-        "on ChatCommand(\"greet\", \"Greets the player\", player, args) {\n  player.DisplayText(\"hi ${args}\")\n}",
+        "on ChatCommand(\"greet\", \"Greets the player\") -> { controller: player, arguments: args } {\n  player.DisplayText(\"hi ${args}\")\n}",
     );
     assert_no_errors(&r);
     let evt = r
@@ -1627,7 +1627,7 @@ fn inventory_family_carries_asset_properties() {
 #[test]
 fn damage_and_zone_events_lower_to_event_gates() {
     let r = compile(
-        "on CharacterDamaged(char, dmg) {\n  char.DisplayText(\"ouch ${dmg}\")\n}\non EntityZoneEntered(e) {\n  e.SetTag(\"inside\")\n}\non ProjectileZoneEntered(shooter) {\n  shooter.DisplayText(\"hit!\")\n}",
+        "on CharacterDamaged() -> { character: char, damage: dmg } {\n  char.DisplayText(\"ouch ${dmg}\")\n}\non EntityZoneEntered() -> { entity: e } {\n  e.SetTag(\"inside\")\n}\non ProjectileZoneEntered() -> { character: shooter } {\n  shooter.DisplayText(\"hit!\")\n}",
     );
     assert_no_errors(&r);
     for class in [
@@ -1851,15 +1851,16 @@ fn detector_builtins_map_to_split_gate_classes() {
     ));
 }
 
-/// `on ControllerLeft(controller, userId)` exposes the gate's `UserId` output
-/// as a second positional param. The gate is a pure source, so a wire SOURCED
-/// from its `UserId` port into the handler body proves the id is bound.
+/// `on ControllerLeft() -> { controller: controller, userId: userId }` exposes
+/// the gate's `UserId` output via the second record field. The gate is a pure
+/// source, so a wire SOURCED from its `UserId` port into the handler body
+/// proves the id is bound.
 #[test]
 fn controller_left_exposes_user_id() {
     let r = compile(
         "\
 var lastLeft: string
-on ControllerLeft(controller, userId) {
+on ControllerLeft() -> { controller: controller, userId: userId } {
   lastLeft = userId
 }",
     );
@@ -1885,15 +1886,16 @@ on ControllerLeft(controller, userId) {
     );
 }
 
-/// `on ZoneEntered(character, zone = zoneA)` wires the `zoneA` value into the
-/// event gate's `Zone` input port. Event gates are otherwise pure sources, so
-/// an input wire into the gate — sourced from the `in` port — proves the bind.
+/// `on ZoneEntered(zone = zoneA) -> { character: character }` wires the
+/// `zoneA` value into the event gate's `Zone` input port. Event gates are
+/// otherwise pure sources, so an input wire into the gate — sourced from the
+/// `in` port — proves the bind.
 #[test]
 fn zone_event_input_binding() {
     let r = compile(
         "\
 in zoneA: entity
-on ZoneEntered(character, zone = zoneA) {
+on ZoneEntered(zone = zoneA) -> { character: character } {
   PrintToConsole(\"entered\")
 }",
     );

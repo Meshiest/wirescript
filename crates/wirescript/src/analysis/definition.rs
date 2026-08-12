@@ -49,7 +49,7 @@ pub fn definition_at(
     }
 
     // Cursor on a `SendCustomEvent("name", …)` channel-name string → jump to the
-    // matching `on CustomEvent("name", …)` receiver in this file.
+    // matching `on CustomEvent("name") -> (…)` receiver in this file.
     if let Some(loc) = custom_event_send_definition(pre_resolve_ast, source, line, col) {
         return Some(loc);
     }

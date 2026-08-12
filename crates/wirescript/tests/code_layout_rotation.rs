@@ -22,7 +22,7 @@ use wirescript::{CompileInput, FoldMode, compile_to_world};
 /// compiler runs, so it describes the very build the assertions measure.
 fn bus_cells(src: &str, file: &str) -> Vec<(i32, i32, i32)> {
     let resolved = wirescript::resolve::resolve(src, file, &wirescript::resolve::FsLoader);
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, file);
+    let tc = wirescript::typecheck::typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
     let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -32,6 +32,7 @@ fn bus_cells(src: &str, file: &str) -> Vec<(i32, i32, i32)> {
         template_cache: Arc::new(wirescript::template_cache::TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
     let layout = wirescript::layout::layout_with_opts(
         &lowered.module,
@@ -59,7 +60,7 @@ const SRC: &str = "@layout(\"code\")\n\
                    \n\
                    // a counter, bumped twice per join\n\
                    var a: int = 1\n\
-                   on ControllerJoined(c) {\n\
+                   on ControllerJoined() -> (c) {\n\
                      // the first bump\n\
                      a = a + 1\n\
                      c.DisplayText(\"hi ${a}\")\n\

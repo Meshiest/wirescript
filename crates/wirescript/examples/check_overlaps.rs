@@ -48,7 +48,7 @@ fn main() {
 
     let t = Instant::now();
     let resolved = wirescript::resolve::resolve(&source, &file, &wirescript::resolve::FsLoader);
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, &file);
+    let tc = wirescript::typecheck::typecheck(&resolved.ast, &file, &wirescript::typecheck::CeSlotMap::default());
     let cache = std::sync::Arc::new(wirescript::template_cache::TemplateCache::new());
     let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
         ast: &resolved.ast,
@@ -59,6 +59,7 @@ fn main() {
         template_cache: cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: wirescript::lower::FoldMode::Auto,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
     let lr = wirescript::layout::layout_with_opts(
         &lowered.module,

@@ -82,9 +82,9 @@
     #[test]
     fn hover_display_text_has_docs() {
         let h = hover_value(
-            "var ctrl: controller\non RoundStart { ctrl.DisplayText(\"hi\") }",
+            "var ctrl: controller\non RoundStart() { ctrl.DisplayText(\"hi\") }",
             1,
-            21,
+            23,
         )
         .unwrap();
         assert!(h.contains("DisplayText"), "got: {h}");
@@ -95,7 +95,7 @@
     fn hover_named_param() {
         // fontSize at col 24-31 on line 2
         let src =
-            "var ctrl: controller\non RoundStart {\n  DisplayText(ctrl, \"hi\", fontSize = 20)\n}";
+            "var ctrl: controller\non RoundStart() {\n  DisplayText(ctrl, \"hi\", fontSize = 20)\n}";
         // Try hovering on the 'f' of fontSize
         if let Some(h) = hover_value(src, 2, 24) {
             assert!(h.contains("fontSize") || h.contains("Font"), "got: {h}");
@@ -114,7 +114,7 @@
     // ---- event hover ----
     #[test]
     fn hover_event() {
-        let h = hover_value("on RoundStart { }", 0, 3).unwrap();
+        let h = hover_value("on RoundStart() { }", 0, 3).unwrap();
         assert!(h.contains("RoundStart"), "got: {h}");
         // Should show `on RoundStart` (using `on`, not fictional `event` keyword)
         assert!(
@@ -125,7 +125,7 @@
 
     #[test]
     fn hover_event_with_params() {
-        let h = hover_value("on CharacterDied(character) { }", 0, 3).unwrap();
+        let h = hover_value("on CharacterDied() -> (character) { }", 0, 3).unwrap();
         assert!(h.contains("CharacterDied"), "got: {h}");
         assert!(h.contains("character"), "got: {h}");
         // Should show `on CharacterDied(...)` using `on`, not `event`
@@ -138,7 +138,7 @@
     #[test]
     fn hover_event_mid_name() {
         // Hovering at any position within the event name should show the same info
-        let h = hover_value("on CharacterDied(a) { }", 0, 10).unwrap();
+        let h = hover_value("on CharacterDied() -> (a) { }", 0, 10).unwrap();
         assert!(
             h.contains("CharacterDied"),
             "mid-name hover should show event, got: {h}"
@@ -152,7 +152,7 @@
     // ---- array method hover ----
     #[test]
     fn hover_array_push() {
-        let h = hover_value("var items: int[]\non RoundStart { items.push(1) }", 1, 22).unwrap();
+        let h = hover_value("var items: int[]\non RoundStart() { items.push(1) }", 1, 24).unwrap();
         assert!(h.contains("push"), "got: {h}");
     }
 
@@ -363,7 +363,7 @@
 
     #[test]
     fn diagnostics_unknown_ident() {
-        let items = parse_diags(&diagnostics("on RoundStart { x = 1 }", "{}"));
+        let items = parse_diags(&diagnostics("on RoundStart() { x = 1 }", "{}"));
         assert!(items.iter().any(|i| i["code"] == "WS002"));
     }
 
@@ -371,7 +371,7 @@
     fn diagnostics_import_with_files() {
         let files = r#"{"lib.ws": "mod foo(v: *int) { v = v + 1 }"}"#;
         let items = parse_diags(&diagnostics(
-            "import \"lib\"\nvar x: int = 0\non RoundStart { foo(x) }",
+            "import \"lib\"\nvar x: int = 0\non RoundStart() { foo(x) }",
             files,
         ));
         assert!(items.is_empty(), "unexpected diags: {:?}", items);
@@ -479,7 +479,7 @@
 
     #[test]
     fn definition_var() {
-        let d = def_loc("var x: int = 0\non RoundStart { x = 1 }", 1, 16).unwrap();
+        let d = def_loc("var x: int = 0\non RoundStart() { x = 1 }", 1, 18).unwrap();
         assert_eq!(d["startLine"], 0);
         assert_eq!(d["startCol"], 4, "should point to 'x', not 'var'");
         assert_eq!(d["endCol"], 5);
@@ -509,9 +509,9 @@
     #[test]
     fn definition_mod() {
         let d = def_loc(
-            "mod inc(v: *int) { v = v + 1 }\non RoundStart { inc(x) }",
+            "mod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }",
             1,
-            16,
+            18,
         );
         assert!(d.is_some(), "should find definition of inc");
         assert_eq!(d.unwrap()["startLine"], 0);
@@ -537,7 +537,7 @@
 
     #[test]
     fn definition_array() {
-        let d = def_loc("var items: int[]\non RoundStart { items.push(1) }", 1, 16);
+        let d = def_loc("var items: int[]\non RoundStart() { items.push(1) }", 1, 18);
         assert!(d.is_some(), "should find definition of items");
         assert_eq!(d.unwrap()["startLine"], 0);
     }
@@ -552,9 +552,9 @@
     fn definition_imported_symbol() {
         let files = r#"{"lib.ws": "mod foo(v: *int) { v = v + 1 }"}"#;
         let d = def_loc_files(
-            "import \"lib\"\nvar x: int = 0\non RoundStart { foo(x) }",
+            "import \"lib\"\nvar x: int = 0\non RoundStart() { foo(x) }",
             2,
-            16,
+            18,
             files,
         );
         assert!(d.is_some(), "should find definition of imported foo");
@@ -607,14 +607,14 @@
 
     #[test]
     fn definition_builtin_returns_none() {
-        let d = def_loc("on RoundStart { }", 0, 3);
+        let d = def_loc("on RoundStart() { }", 0, 3);
         assert!(d.is_none(), "builtins have no source definition");
     }
 
     // ---- references ----
     #[test]
     fn references_var() {
-        let r = references("var x: int = 0\non RoundStart { x = x + 1 }", 0, 4);
+        let r = references("var x: int = 0\non RoundStart() { x = x + 1 }", 0, 4);
         let refs: Vec<serde_json::Value> = serde_json::from_str(&r.unwrap()).unwrap();
         assert!(
             refs.len() >= 3,
@@ -626,7 +626,7 @@
     #[test]
     fn references_mod() {
         let r = references(
-            "mod inc(v: *int) { v = v + 1 }\non RoundStart { inc(x) }",
+            "mod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }",
             0,
             4,
         );

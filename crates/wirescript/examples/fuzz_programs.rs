@@ -365,7 +365,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
     record_diags(&mut out, &resolved.diagnostics);
 
     // typecheck
-    let tc = match catch_unwind(AssertUnwindSafe(|| typecheck(&resolved.ast, file))) {
+    let tc = match catch_unwind(AssertUnwindSafe(|| typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default()))) {
         Ok(r) => r,
         Err(p) => {
             out.panic = Some(("typecheck".into(), panic_msg(p)));
@@ -391,6 +391,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
             // dedicated differential mode that exercises fold on/off
             // agreement.
             fold_mode: FoldMode::ForceOff,
+            ce_slots: &wirescript::typecheck::CeSlotMap::default(),
         })
     })) {
         Ok(r) => r,
@@ -2940,6 +2941,7 @@ fn lower_variant(
             template_cache: cache,
             doc_comments: &resolved.doc_comments,
             fold_mode,
+            ce_slots: &wirescript::typecheck::CeSlotMap::default(),
         })
     })) {
         Ok(r) => {
@@ -2970,7 +2972,7 @@ fn prepare_diff_inner(src: &str) -> DiffPrep {
         return DiffPrep { pair: None, panic: None };
     }
 
-    let tc = match catch_unwind(AssertUnwindSafe(|| typecheck(&resolved.ast, file))) {
+    let tc = match catch_unwind(AssertUnwindSafe(|| typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default()))) {
         Ok(r) => r,
         Err(p) => return DiffPrep { pair: None, panic: Some(format!("PANIC typecheck: {}", panic_msg(p))) },
     };

@@ -111,6 +111,11 @@ const EVENT_ALLOWED_GAPS: &[&str] = &[
     // chains from it via the event's `exec_out`), not a data payload — the dump
     // types it `any` rather than `exec`, so it needs an explicit allowance here.
     "Clock.Pulse",
+    // The whole-grid gates have no `ExecOut`; their trigger output doubles as the
+    // exec (the event's `exec_out`). `WholeGridInteracted` fires from `Character`
+    // which is also bound as data (so no gap needed); `WholeGridTargeted` fires
+    // from `Targeted` (typed `any`), which is exec-only.
+    "WholeGridTargeted.Targeted",
 ];
 
 #[test]

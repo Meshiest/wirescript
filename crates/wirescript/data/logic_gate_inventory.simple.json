@@ -9128,6 +9128,115 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_WholeGridInteracted",
+      "brickDisplayName": "Whole Grid Interaction",
+      "brickSummary": "Makes otherwise non-interactable bricks on this gate's movable grid clickable and stays held while a player uses one. Inside a microchip it affects the outer entity grid, not the microchip's internal bricks; individual interactions still override it.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_WholeGridInteracted",
+        "displayName": "Whole Grid Interaction",
+        "description": "Makes otherwise non-interactable bricks on this gate's movable grid clickable and stays held while a player uses one. Inside a microchip it affects the outer entity grid, not the microchip's internal bricks; individual interactions still override it.",
+        "searchTags": "entire whole grid interacted interaction click use press hold held button event prefab build vehicle",
+        "kind": "exec",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "bHeld",
+            "displayName": "Held",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          }
+        ],
+        "config": [
+          {
+            "name": "bAllowNearbyInteraction",
+            "displayName": "Allow Nearby Interaction",
+            "type": "bool"
+          },
+          {
+            "name": "bHiddenInteraction",
+            "displayName": "Hidden Interaction",
+            "type": "bool"
+          },
+          {
+            "name": "PromptCustomLabel",
+            "displayName": "Prompt Custom Label",
+            "type": "struct"
+          }
+        ]
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_WholeGridTargeted",
+      "brickDisplayName": "Whole Grid Targeted Event",
+      "brickSummary": "Pulses when a brick on this gate's movable grid without its own Target component is hit. Inside a microchip it affects the outer entity grid, not the microchip's internal bricks.",
+      "halfSize": {
+        "X": 6,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_WholeGridTargeted",
+        "displayName": "Whole Grid Targeted Event",
+        "description": "Pulses when a brick on this gate's movable grid without its own Target component is hit. Inside a microchip it affects the outer entity grid, not the microchip's internal bricks.",
+        "searchTags": "entire whole grid target targeted hit shot damage event prefab build vehicle",
+        "kind": "exec",
+        "family": "",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "CharacterThatJustHit",
+            "displayName": "Character That Just Hit",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Damage",
+            "displayName": "Damage",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "Targeted",
+            "displayName": "Targeted",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "WeaponNameThatJustHit",
+            "displayName": "Weapon Name That Just Hit",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          },
+          {
+            "name": "WeaponThatJustHit",
+            "displayName": "Weapon That Just Hit",
+            "tooltip": "",
+            "type": "entity",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_Zone_GetEntities",
       "brickDisplayName": "Get Entities In Zone",
       "brickSummary": "Replaces an object array with permitted entities currently inside the connected zone, optionally filtered by exact tag; use it for area effects.",

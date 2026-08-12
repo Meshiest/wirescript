@@ -22,6 +22,32 @@ fn same_ref_inner(a: &Type, b: &Type) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b) && type_eq(a, b)
 }
 
+/// Strip one layer of `Ref`, so ref-ness compares as an exposure mode rather
+/// than a distinct value type (matching how params/out/assignment treat it).
+fn peel_ref(t: &Type) -> &Type {
+    match t {
+        Type::Ref(inner) => inner,
+        other => other,
+    }
+}
+
+/// The ordered element types of `t` viewed as a tuple: `Tuple([T0,T1])`
+/// directly, or an index-keyed `Record([("0",T0),("1",T1)])` — the form a tuple
+/// LITERAL desugars to (a tuple annotation resolves to `Tuple`). Field names
+/// can't begin with a digit, so an all-index-keyed record is unambiguously a
+/// tuple, never a user record.
+fn as_tuple_elems(t: &Type) -> Option<Vec<&Type>> {
+    match t {
+        Type::Tuple(fs) => Some(fs.iter().collect()),
+        Type::Record(fs)
+            if !fs.is_empty() && fs.iter().enumerate().all(|(i, (k, _))| *k == i.to_string()) =>
+        {
+            Some(fs.iter().map(|(_, v)| v).collect())
+        }
+        _ => None,
+    }
+}
+
 fn type_eq(a: &Type, b: &Type) -> bool {
     use Type::*;
     match (a, b) {
@@ -202,6 +228,47 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     // "numeric → vector" is explicitly disallowed (broadcast only happens
     // inside specific gates at the wire level, not at the type-coercion level).
     let _ = same_ref_inner; // keep helper alive for future extensions
+
+    // Two records match field-wise treating ref-ness as an exposure mode, the
+    // same way params/out/assignment unwrap refs before comparing (`out y: *int
+    // = x` compares int to int). A record literal built from vars exposes scalar
+    // fields as refs and array fields plainly, so a `*T` field and a plain `T`
+    // field are interchangeable at the boundary — this is what lets a
+    // `let cpu: Cpu = { regs, cpsr }` (mixed plain-array + ref-scalar) pass to a
+    // mod taking `Cpu`. Field sets must match and each pair must be equal AFTER
+    // unwrapping refs, so genuine value-type mismatches (`int` vs `string`
+    // fields) are still rejected. Reached only when the exact `type_eq` above
+    // already failed, i.e. some field differs solely in ref exposure.
+    if let (Record(fa), Record(fb)) = (from, to)
+        && as_tuple_elems(from).is_none()
+    {
+        // Named records: match by field name, ref-insensitively.
+        if fa.len() == fb.len()
+            && fa.iter().all(|(k1, t1)| {
+                fb.iter()
+                    .any(|(k2, t2)| k1 == k2 && type_eq(peel_ref(t1), peel_ref(t2)))
+            })
+        {
+            return CoerceRule::Same;
+        }
+    }
+
+    // Tuples match by position, ref-insensitively — and a tuple LITERAL (an
+    // index-keyed record `{"0":T0,"1":T1}`) is interchangeable with a tuple TYPE
+    // annotation (`Tuple([T0,T1])`), which `type_str` renders identically. Both
+    // sides normalize to their element list; lengths and element types (after
+    // unwrapping refs) must match, so a genuine arity/element mismatch still
+    // fails.
+    if let (Some(ea), Some(eb)) = (as_tuple_elems(from), as_tuple_elems(to)) {
+        if ea.len() == eb.len()
+            && ea
+                .iter()
+                .zip(&eb)
+                .all(|(a, b)| type_eq(peel_ref(a), peel_ref(b)))
+        {
+            return CoerceRule::Same;
+        }
+    }
 
     // A record auto-unwraps to a member when used where a non-record value is
     // expected: it coerces to `to` if any field does. Lets a multi-output gate

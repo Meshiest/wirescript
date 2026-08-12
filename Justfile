@@ -28,6 +28,10 @@ lsp:
 check-bin:
     cargo build --release -p wirescript --bin wirescript-check
 
+# Type-check every ```wirescript example in docs/wirescript (CI gate)
+doc-check: check-bin
+    node crates/wirescript/scripts/check_docs.mjs
+
 # Build WASM module (for playground/SDK)
 wasm:
     wasm-pack build crates/wasm --target nodejs --release --out-dir playground/sdk/pkg
@@ -78,15 +82,17 @@ treesitter:
 treesitter:
     cd editors/tree-sitter-wirescript && npm install && npx tree-sitter generate && npx tree-sitter test
 
-# Copy wirescript docs into playground for serving
+# Copy wirescript docs (+ the CHANGELOG) into playground for serving
 [windows]
 playground-docs:
     Copy-Item -Path docs/wirescript/*.md -Destination crates/wasm/playground/docs/ -Force
+    Copy-Item -Path CHANGELOG.md -Destination crates/wasm/playground/docs/ -Force
 
-# Copy wirescript docs into playground for serving
+# Copy wirescript docs (+ the CHANGELOG) into playground for serving
 [unix]
 playground-docs:
     cp -f docs/wirescript/*.md crates/wasm/playground/docs/
+    cp -f CHANGELOG.md crates/wasm/playground/docs/
 
 # Build everything (lib + lsp + cli + wasm + vscode)
 all: release wasm vscode

@@ -98,7 +98,7 @@ in z: zone
 in e: entity
 in p: teleport
 
-on ZoneEntered(character, zone = z) {   // wire the zone into the event
+on ZoneEntered(zone = z) -> (character) {   // wire the zone into the event
   e.Teleport(p)                         // teleport `e` to the teleport point `p`
 }
 ```
@@ -212,7 +212,7 @@ Records are a compile-time abstraction -- they do not generate wire graph gates.
 type State = { val: *int }
 var n: int = 0
 let s: State = { val: n }
-on RoundStart { s.val = 42 }  // writes to n
+on RoundStart() { s.val = 42 }  // writes to n
 ```
 
 Nested records work as expected -- field access chains resolve through each level:
@@ -223,7 +223,7 @@ type Outer = { inner: Inner }
 var x: int = 0
 let i: Inner = { x }
 let o: Outer = { inner: i }
-on RoundStart { o.inner.x = 42 }  // writes to x
+on RoundStart() { o.inner.x = 42 }  // writes to x
 ```
 
 ### Tuple Types (`(A, B, C)`)

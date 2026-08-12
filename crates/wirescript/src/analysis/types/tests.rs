@@ -59,7 +59,7 @@
                    mod inc(self: int) -> int { return self + 1 }\n\
                    mod plain(a: vector) -> float { return 0.0 }\n";
         let resolved = resolve(src, "test", &FsLoader);
-        let tc = crate::typecheck::typecheck(&resolved.ast, "test");
+        let tc = crate::typecheck::typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
 
         let on_vec: Vec<String> = user_receiver_methods("vector", &symbols)

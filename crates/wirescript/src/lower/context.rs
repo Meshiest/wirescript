@@ -72,6 +72,8 @@ pub(super) struct LowerCtx<'a> {
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
     pub(super) op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+    /// Inferred custom-event data-slot types — see `LowerInput::ce_slots`.
+    pub(super) ce_slots: &'a CeSlotMap,
     pub(super) file: String,
     pub(super) scope: crate::scope::Scope<Binding>,
     pub(super) handler_end_execs: Vec<PortRef>,

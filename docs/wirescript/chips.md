@@ -114,7 +114,7 @@ chip on moved {
 
 Named chips define reusable components with explicit inputs and outputs. They create an isolated scope -- the chip body cannot see the parent scope's variables (except what is passed through parameters).
 
-```wirescript
+```wirescript ignore
 chip Name(params) -> outputs {
   // body
 }
@@ -239,7 +239,7 @@ let mm2 = MinMax(5, 20)  // independent from mm1
 ### Exec Chips
 
 A chip whose body contains statement-level exec calls (array methods,
-`DisplayText`, `emit output = expr`, ...) is an **exec chip** — the body runs
+`DisplayText`, `emit signal`, ...) is an **exec chip** — the body runs
 as one exec chain. How it gets its trigger depends on the call site:
 
 - **Called inside a handler**, the body joins the caller's exec chain
@@ -256,7 +256,7 @@ var vals: int[]
 chip InitTables() -> (count: int) {
   vals.clear()
   vals.push(1)
-  emit count = 1
+  out count = 1
 }
 
 let t = InitTables(exec = reset)  // body runs whenever reset fires
@@ -420,7 +420,7 @@ on a `mod` is an error.
 
 The `mod` keyword declares a chip that is always **inlined** at call sites. Instead of creating a separate microchip brick, the `mod`'s gates are expanded directly into the caller's grid.
 
-```wirescript
+```wirescript ignore
 mod Name(params) {
   // body -- no output
 }

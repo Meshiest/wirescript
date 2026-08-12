@@ -18,7 +18,7 @@ const REROUTER: &str = "Component_Internal_Rerouter";
 /// resolve → typecheck → lower → layout, mirroring `examples/check_overlaps.rs`.
 fn lowered_and_laid_out(src: &str) -> (Module, LayoutResult) {
     let resolved = wirescript::resolve::resolve(src, FILE, &wirescript::resolve::FsLoader);
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, FILE);
+    let tc = wirescript::typecheck::typecheck(&resolved.ast, FILE, &wirescript::typecheck::CeSlotMap::default());
     let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -28,6 +28,7 @@ fn lowered_and_laid_out(src: &str) -> (Module, LayoutResult) {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: wirescript::lower::FoldMode::Auto,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
     let layout = wirescript::layout::layout_with_opts(
         &lowered.module,

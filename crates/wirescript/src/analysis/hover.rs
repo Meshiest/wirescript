@@ -547,36 +547,39 @@ fn hover_map_method(word: &str, map_display: &str) -> Option<String> {
 }
 
 /// Built-in event names like `RoundStart`, `CharacterSpawned`, `Clock`, etc.
-/// Shows the destructure params (event data) when present, otherwise the wired
-/// inputs / config args that events like `Clock` / `ChatCommand` carry.
+/// Shows the call's config/input args in the parens and, when the event
+/// carries data, the `-> (…)` tuple capture that binds it.
 fn hover_builtin_event(word: &str) -> Option<String> {
     let evt = find_event(word)?;
+    // Config/inputs are the only things allowed inside the call parens now;
+    // event data outputs are bound via the trailing `-> (…)` tuple capture.
+    let is_custom = matches!(evt.surface_name, "CustomEvent" | "GlobalCustomEvent");
+    let mut cfg_parts: Vec<String> = Vec::new();
+    if is_custom {
+        // Custom events lead with a positional channel-name string, shown as the
+        // `"name"` placeholder. It IS the `EventName` config_positional slot, so
+        // skip that below to avoid rendering the channel twice.
+        cfg_parts.push("\"name\"".to_string());
+    }
+    cfg_parts.extend(evt.input_named.iter().map(|(s, _, _)| (*s).to_string()));
+    if !is_custom {
+        cfg_parts.extend(evt.config_positional.iter().map(|s| (*s).to_string()));
+    }
+    cfg_parts.extend(evt.config_named.iter().map(|(s, _)| (*s).to_string()));
+    let call_sig = format!("({})", cfg_parts.join(", "));
+
     let data_parts: Vec<String> = evt
         .data
         .iter()
         .map(|d| format!("{}: {}", d.name, type_str(&d.ty)))
         .collect();
-    let sig = if !data_parts.is_empty() {
-        // Custom events lead with a positional channel-name string (`config`),
-        // which isn't in `evt.data` — surface it so the generic hover still
-        // shows the full call shape (`on CustomEvent("name", data1: any, …)`).
-        if matches!(evt.surface_name, "CustomEvent" | "GlobalCustomEvent") {
-            format!("(\"name\", {})", data_parts.join(", "))
-        } else {
-            format!("({})", data_parts.join(", "))
-        }
+    // e.g. `on CustomEvent("name") -> (data1: any, …)`.
+    let arrow = if data_parts.is_empty() {
+        String::new()
     } else {
-        // Config-only / input events (Clock, ChatCommand): show their arg names.
-        let mut surfs: Vec<&str> = evt.input_named.iter().map(|(s, _, _)| *s).collect();
-        surfs.extend(evt.config_positional.iter().copied());
-        surfs.extend(evt.config_named.iter().map(|(s, _)| *s));
-        if surfs.is_empty() {
-            String::new()
-        } else {
-            format!("({})", surfs.join(", "))
-        }
+        format!(" -> ({})", data_parts.join(", "))
     };
-    let mut out = format!("```wirescript\non {}{}\n```", evt.surface_name, sig);
+    let mut out = format!("```wirescript\non {}{}{}\n```", evt.surface_name, call_sig, arrow);
     if !evt.input_named.is_empty() {
         let wired: Vec<&str> = evt.input_named.iter().map(|(s, _, _)| *s).collect();
         out += &format!("\n\n**Wired input:** {}", wired.join(", "));
@@ -593,7 +596,7 @@ fn hover_builtin_event(word: &str) -> Option<String> {
 /// (`SendCustomEvent` / `SendGlobalCustomEvent`, including the receiver form
 /// `e.SendCustomEvent(…)`). Resolves the channel's data slots (names + types)
 /// from every receiver declaration and matching sender in the file, and renders
-/// the full typed signature — e.g. `on CustomEvent("init", p: character)` or
+/// the full typed signature — e.g. `on CustomEvent("init") -> (p: character)` or
 /// `SendCustomEvent("init", p: character)`. Returns `None` when the word is not a
 /// CE word with a resolvable channel under the cursor, so the generic hovers
 /// handle that case.
@@ -629,14 +632,22 @@ fn hover_custom_event(
     };
     let slots = resolve_ce_channel_slots(script, ns_word, &channel, type_map, file);
 
-    let mut parts = vec![format!("\"{channel}\"")];
-    for (name, ty) in &slots {
-        parts.push(format!("{name}: {ty}"));
-    }
+    let data_parts: Vec<String> = slots.iter().map(|(name, ty)| format!("{name}: {ty}")).collect();
     let sig = if is_send {
+        // A send call is a plain call: the data values stay in the parens
+        // alongside the channel name, e.g. `SendCustomEvent("dmg", amount)`.
+        let mut parts = vec![format!("\"{channel}\"")];
+        parts.extend(data_parts);
         format!("{word}({})", parts.join(", "))
     } else {
-        format!("on {word}({})", parts.join(", "))
+        // A trigger's parens hold config/inputs only (here, just the channel
+        // name); the data slots bind via the `-> (…)` tuple capture.
+        let arrow = if data_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" -> ({})", data_parts.join(", "))
+        };
+        format!("on {word}(\"{channel}\"){arrow}")
     };
     Some(format!(
         "```wirescript\n{sig}\n```\n\n\
@@ -873,8 +884,7 @@ fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -
     }
     let trigger = find_enclosing_call(source, line, col)?;
     let evt = find_event(&trigger)?;
-    let key = word.to_ascii_lowercase();
-    if let Some((_, field)) = evt.config_named.iter().find(|(k, _)| *k == key) {
+    if let Some((_, field)) = evt.config_named.iter().find(|(k, _)| k.eq_ignore_ascii_case(word)) {
         let enum_ty = crate::catalog::config_field_enum_type(evt.gate_class, field);
         let ty_label = enum_ty.unwrap_or("config value");
         let mut v = format!(

@@ -235,6 +235,24 @@ fn trigger_to_expr(t: &Trigger) -> Expr {
     }
 }
 
+/// Whether a general expression trigger's expression is a call carrying an
+/// `exec = <x>` named arg (`on doWork(5, exec = s)`). A trailing postfix
+/// (`on doWork(5, exec = s).field`) is unwrapped to the underlying call so the
+/// `exec =` intent is still seen. Used to flag the `Handler` so lowering can
+/// reject an `exec =` whose callee has no completion exec (WS043) instead of
+/// silently orphaning it.
+fn expr_call_has_exec_arg(e: &Expr) -> bool {
+    match e {
+        Expr::Call { args, .. } => args
+            .iter()
+            .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec")),
+        Expr::FieldAccess { obj, .. }
+        | Expr::TuplePick { obj, .. }
+        | Expr::IndexAccess { obj, .. } => expr_call_has_exec_arg(obj),
+        _ => false,
+    }
+}
+
 // ---------- parser state ----------
 
 /// Annotations consumed before a declaration. Each keeps its source range
@@ -1495,10 +1513,27 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::Op, Some("="));
-        // `let name = on Trigger { ... }` → EventDecl (captured event)
+        // `let name = on Trigger() { ... }` → EventDecl (captured event)
         if self.check(TokenKind::Kw, Some("on")) {
             self.advance();
             let trigger = self.parse_trigger();
+            // Events are called here too: `let x = on RoundStart()`. Require and
+            // consume the `()` on an event-name trigger, matching the handler form.
+            self.require_event_call_parens(&trigger);
+            if self.check(TokenKind::LParen, None) {
+                // Consume the event call's balanced `( ... )` (config args; the
+                // capture form does not currently thread config through).
+                self.advance();
+                let mut depth = 1usize;
+                while depth > 0 && self.peek().kind != TokenKind::Eof {
+                    match self.peek().kind {
+                        TokenKind::LParen => depth += 1,
+                        TokenKind::RParen => depth -= 1,
+                        _ => {}
+                    }
+                    self.advance();
+                }
+            }
             if self.check(TokenKind::LBrace, None) {
                 let captured_body = Some(self.parse_block());
                 let end = captured_body.as_ref().unwrap().range.end;
@@ -2155,16 +2190,22 @@ impl<'a> Parser<'a> {
                 .unwrap_or_else(|| self.tokens.last().unwrap())
         };
 
-        // `on Foo(...)` where `Foo` is a builtin CALL that is NOT an event is a
-        // call-expression trigger — `on ServerUptime()` fires whenever the call's
-        // value changes, desugared like any other expr trigger into
-        // `let _on_expr_N = Foo(...)` + `on _on_expr_N`. This is distinct from the
-        // event-with-args form (`on Clock(...)`, `on CustomEvent(...)`), whose name
-        // resolves as an event and stays a plain trigger with config/data args.
+        // `on Foo(...)` where `Foo` is NOT a known event is a call-expression
+        // trigger — `on ServerUptime()` fires whenever a builtin's pure value
+        // changes, and `on myMod(x, exec = go)` (Task 6: general/mod-exec
+        // triggers) fires on the call's own exec-typed output. Both desugar the
+        // same way, like any other expr trigger: `let _on_expr_N = Foo(...)` +
+        // `on _on_expr_N`. The parser can't tell a builtin call from a
+        // user-declared chip/mod call from a genuinely unknown name here (chips
+        // and mods aren't tracked by the parser — they may be declared later in
+        // the file, or imported), so ANY non-event `Ident(...)` is routed
+        // through the expr-trigger desugar; lowering resolves what `Foo`
+        // actually is. This is distinct from the event-with-args form (`on
+        // Clock(...)`, `on CustomEvent(...)`), whose name resolves as an event
+        // and stays a plain trigger with config/data args.
         if get(i).kind == TokenKind::Ident
             && get(i + 1).kind == TokenKind::LParen
             && crate::catalog::events::find_event(&get(i).text).is_none()
-            && crate::catalog::calls::calls().get(get(i).text.as_str()).is_some()
         {
             return true;
         }
@@ -2272,12 +2313,17 @@ impl<'a> Parser<'a> {
         // queued in `pending_stmts` AFTER the body is parsed.  This avoids
         // the body's own `parse_block` call draining the pending queue early.
         let mut pending_let: Option<LetDecl> = None;
+        // Whether a general expression trigger's call carried an `exec = <x>`
+        // arg — set below and stored on the `Handler` so lowering can reject
+        // (WS043) an `exec =` whose callee exposes no completion exec.
+        let mut expr_trigger_has_exec_arg = false;
 
         let trigger = if self.looks_like_expr_trigger() {
             // `on <expr> { body }` — desugar into:
             //   let _on_expr_N = <expr>
             //   on _on_expr_N { body }
             let expr = self.parse_expr();
+            expr_trigger_has_exec_arg = expr_call_has_exec_arg(&expr);
             let expr_range = expr.range().clone();
             let n = self.expr_trigger_counter;
             self.expr_trigger_counter += 1;
@@ -2302,26 +2348,39 @@ impl<'a> Parser<'a> {
             self.parse_trigger()
         };
 
-        // Trigger args: bare identifiers bind the event's data outputs;
-        // string/number literals and `name = value` pairs configure the event
-        // gate (e.g. `on ChatCommand("greet", Description = "Greets you")`).
+        // Task 10: an event trigger is a CALL, uniform with `on <call> ->
+        // (…)` — `on RoundStart { }` must be written `on RoundStart() { }`.
+        // Recover as if `()` were present so the rest of the handler parses.
+        self.require_event_call_parens(&trigger);
+
+        // Trigger args: the event call's parens hold config ONLY — string/
+        // number literals and `name = value` pairs (e.g. `on ChatCommand("greet",
+        // Description = "Greets you")`). Binding the event's data outputs is
+        // done exclusively via a trailing `-> <pattern>` capture, parsed below.
         let mut params: Vec<HandlerParam> = Vec::new();
         let mut config: Vec<HandlerConfigArg> = Vec::new();
         if self.match_tok(TokenKind::LParen, None).is_some() {
             while !self.check(TokenKind::RParen, None) {
                 if self.check(TokenKind::Ident, None) {
                     let tok = self.expect(TokenKind::Ident, None);
-                    let prange = self.make_range(tok.start, tok.end);
                     let name = tok.text;
                     if self.match_tok(TokenKind::Op, Some("=")).is_some() {
                         let value = self.parse_expr();
                         config.push(HandlerConfigArg::Named { name, value });
-                    } else if self.match_tok(TokenKind::Colon, None).is_some() {
-                        // Typed data param: `on CustomEvent(a: int, b: float)`.
-                        let typ = self.parse_type();
-                        params.push(HandlerParam { name, ty: Some(typ), range: prange });
                     } else {
-                        params.push(HandlerParam { name, ty: None, range: prange });
+                        // A bare ident or `name: type` here used to bind the
+                        // event's data outputs inline; that form is removed —
+                        // steer to the `->` capture instead.
+                        let mut end = tok.end;
+                        if self.match_tok(TokenKind::Colon, None).is_some() {
+                            end = self.parse_type().range().end;
+                        }
+                        self.error(
+                            "bind event outputs with `-> (a, b)`, not inside the event call \
+                             (`E(a) { }` is now `E() -> (a) { }`)",
+                            tok.start,
+                            end,
+                        );
                     }
                 } else {
                     let value = self.parse_expr();
@@ -2333,6 +2392,15 @@ impl<'a> Parser<'a> {
             }
             self.expect(TokenKind::RParen, None);
         }
+
+        // Optional `-> <pattern>` output capture (Task 5): binds the event's
+        // data outputs from a trailing tuple/record pattern. `->` is already a
+        // lexer token (mod/chip outputs use it) — this is grammar extension
+        // only. It is now the ONLY way to bind handler params (Task 8).
+        if self.match_tok(TokenKind::Arrow, None).is_some() {
+            self.parse_handler_arrow_pattern(&trigger, &mut params);
+        }
+
         let body = self.parse_block();
         let end = body.range.end;
 
@@ -2348,7 +2416,240 @@ impl<'a> Parser<'a> {
             config,
             body,
             no_fold,
+            expr_trigger_has_exec_arg,
             range: self.make_range(start, end),
+        }
+    }
+
+    /// Parses `(a: int, b)` (tuple — positional, for ANY event; per-slot type
+    /// optional, inferred for custom events, catalog-typed for named events) or
+    /// `{ name, name: alias }` (record — by field name, named-data events only;
+    /// subset + rename) after `on <EventCall> ->`, replacing `params` with the
+    /// capture's bindings. `trigger` is the already-parsed handler trigger (used
+    /// to reject records on custom events and, for records, to resolve field
+    /// names against `catalog::events::find_event`'s data order).
+    fn parse_handler_arrow_pattern(&mut self, trigger: &Trigger, params: &mut Vec<HandlerParam>) {
+        // `params` is always empty on entry: the trigger-args loop above can
+        // no longer produce params (Task 8 removed inline data-param
+        // parsing), so there is nothing here to guard against.
+        let trigger_name = match trigger {
+            Trigger::Ident { name, .. } => Some(name.as_str()),
+            _ => None,
+        };
+        let is_custom = matches!(trigger_name, Some("CustomEvent") | Some("GlobalCustomEvent"));
+        let event_spec = trigger_name.and_then(crate::catalog::events::find_event);
+
+        if self.check(TokenKind::LParen, None) {
+            self.advance(); // consume `(` — tuple capture binds positionally for
+            // any event (named events are catalog-typed, custom events typed or
+            // inferred); no per-event restriction.
+            let mut new_params = Vec::new();
+            self.eat_newlines();
+            while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
+                let name_tok = self.expect(TokenKind::Ident, None);
+                let prange = self.make_range(name_tok.start, name_tok.end);
+                let ty = if self.match_tok(TokenKind::Colon, None).is_some() {
+                    Some(self.parse_type())
+                } else {
+                    None
+                };
+                new_params.push(HandlerParam {
+                    name: name_tok.text,
+                    ty,
+                    range: prange,
+                    source_field: None,
+                });
+                self.eat_newlines();
+                if self.match_tok(TokenKind::Comma, None).is_none() {
+                    break;
+                }
+                self.eat_newlines();
+            }
+            self.expect(TokenKind::RParen, None);
+            *params = new_params;
+            return;
+        }
+
+        // Bare single capture: `-> p` is shorthand for `-> (p)` — one untyped
+        // positional binding. A type needs the parenthesized form (`-> (p: T)`);
+        // a `:` here is reported and swallowed so the handler body still parses.
+        if self.check(TokenKind::Ident, None) {
+            let name_tok = self.expect(TokenKind::Ident, None);
+            let prange = self.make_range(name_tok.start, name_tok.end);
+            if self.check(TokenKind::Colon, None) {
+                let (cs, ce) = (self.peek().start, self.peek().end);
+                self.error(
+                    "a typed single capture needs parens: write `-> (name: T)`",
+                    cs,
+                    ce,
+                );
+                self.advance(); // consume `:`
+                let _ = self.parse_type(); // swallow the type for clean recovery
+            }
+            *params = vec![HandlerParam {
+                name: name_tok.text,
+                ty: None,
+                range: prange,
+                source_field: None,
+            }];
+            return;
+        }
+
+        if self.check(TokenKind::LBrace, None) {
+            let lbrace_start = self.advance().start; // consume `{`
+            if is_custom {
+                self.error(
+                    "record `{ }` output capture is for named-data events; \
+                     CustomEvent/GlobalCustomEvent use `( )`",
+                    lbrace_start,
+                    lbrace_start,
+                );
+            }
+            let mut fields: Vec<RecordDestructField> = Vec::new();
+            self.eat_newlines();
+            while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+                if self.check(TokenKind::Op, Some("...")) {
+                    // There is no record value to spread here — only a parse
+                    // error, not a silently-accepted no-op.
+                    let spread_start = self.advance().start;
+                    let rest_tok = self.expect(TokenKind::Ident, None);
+                    self.error(
+                        "`...` rest capture is not valid in an event output pattern",
+                        spread_start,
+                        rest_tok.end,
+                    );
+                    self.eat_newlines();
+                    break;
+                }
+                let name_tok = self.expect(TokenKind::Ident, None);
+                let alias = if self.match_tok(TokenKind::Colon, None).is_some() {
+                    Some(self.expect(TokenKind::Ident, None).text)
+                } else {
+                    None
+                };
+                let field_end = self.peek().start;
+                fields.push(RecordDestructField::Named {
+                    name: name_tok.text,
+                    alias,
+                    range: self.make_range(name_tok.start, field_end),
+                });
+                self.eat_newlines();
+                if self.match_tok(TokenKind::Comma, None).is_none() {
+                    break;
+                }
+                self.eat_newlines();
+            }
+            let rbrace_end = self.expect(TokenKind::RBrace, None).end;
+            let fill_range = self.make_range(lbrace_start, rbrace_end);
+
+            *params = match (event_spec, trigger_name) {
+                (Some(spec), Some(event_name)) => {
+                    self.resolve_arrow_record_capture(event_name, spec, &fields, &fill_range)
+                }
+                // Non-catalog trigger (a general expression — mod/chip call):
+                // the field ORDER/shape isn't known at parse time (mod/chip
+                // signatures aren't tracked by the parser — forward decls,
+                // imports), so resolution by name happens at LOWERING time
+                // against the call's actual result record (see the general-expr
+                // trigger case in `lower/handler.rs`). `name` carries the local
+                // bound name (the alias when given); `source_field` preserves the
+                // ORIGINAL field name to look up when it differs — set
+                // unconditionally here so lowering always has it, even when no
+                // alias was written (`name == source_field` then).
+                _ => fields
+                    .into_iter()
+                    .filter_map(|f| match f {
+                        RecordDestructField::Named { name, alias, range } => Some(HandlerParam {
+                            name: alias.unwrap_or_else(|| name.clone()),
+                            ty: None,
+                            range,
+                            source_field: Some(name),
+                        }),
+                        RecordDestructField::Rest { .. } => None,
+                    })
+                    .collect(),
+            };
+        }
+    }
+
+    /// Resolves a `-> { name, name: alias, … }` record capture's fields
+    /// against `spec.data`'s binding names into a POSITIONAL `HandlerParam`
+    /// list — built-in event params bind by slot index, not by name. Each
+    /// matched field lands at its event data-slot index; any leading gap
+    /// (an uncaptured slot before the highest captured index) is filled with
+    /// a fresh unused name so the positional shape stays intact. An unknown
+    /// field name is a parse error listing the event's valid data names.
+    fn resolve_arrow_record_capture(
+        &mut self,
+        event_name: &str,
+        spec: &crate::catalog::events::EventSpec,
+        fields: &[RecordDestructField],
+        fill_range: &SourceRange,
+    ) -> Vec<HandlerParam> {
+        let mut resolved: Vec<Option<HandlerParam>> = vec![None; spec.data.len()];
+        let mut max_index: Option<usize> = None;
+        for f in fields {
+            let (name, alias, range) = match f {
+                RecordDestructField::Named { name, alias, range } => (name, alias, range),
+                RecordDestructField::Rest { .. } => continue,
+            };
+            match spec.data.iter().position(|d| d.name == name.as_str()) {
+                Some(idx) => {
+                    let local = alias.clone().unwrap_or_else(|| name.clone());
+                    resolved[idx] = Some(HandlerParam {
+                        name: local,
+                        ty: None,
+                        range: range.clone(),
+                        source_field: None,
+                    });
+                    max_index = Some(max_index.map_or(idx, |m| m.max(idx)));
+                }
+                None => {
+                    let valid: Vec<&str> = spec.data.iter().map(|d| d.name).collect();
+                    self.error(
+                        format!(
+                            "event `{}` has no data output `{}` (valid: {})",
+                            event_name,
+                            name,
+                            valid.join(", ")
+                        ),
+                        range.start,
+                        range.end,
+                    );
+                }
+            }
+        }
+        match max_index {
+            Some(max_idx) => (0..=max_idx)
+                .map(|i| {
+                    resolved[i].take().unwrap_or_else(|| HandlerParam {
+                        name: format!("_arrow_unused_{}", i),
+                        ty: None,
+                        range: fill_range.clone(),
+                        source_field: None,
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Task 10: an event trigger is a CALL — `on RoundStart()` / `let x = on
+    /// RoundStart()`, never the bare `on RoundStart`. If `trigger` is a plain
+    /// event-name `Ident` not immediately followed by `(`, emit the "must be
+    /// called" error. Only built-in event idents are affected; non-event idents
+    /// (`on someVar`), `Field`/`Not`/`Union`, and desugared expr triggers are
+    /// left alone. The caller recovers as if `()` were present.
+    fn require_event_call_parens(&mut self, trigger: &Trigger) {
+        if let Trigger::Ident { name, range } = trigger
+            && crate::catalog::events::find_event(name).is_some()
+            && !self.check(TokenKind::LParen, None)
+        {
+            self.error(
+                format!("event `{name}` must be called: write `on {name}()`"),
+                range.start,
+                range.end,
+            );
         }
     }
 

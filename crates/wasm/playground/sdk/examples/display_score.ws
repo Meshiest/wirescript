@@ -7,7 +7,7 @@ on running {
   score = 0
 }
 
-on RoundStart {
+on RoundStart() {
   score = score + 10
 }
 

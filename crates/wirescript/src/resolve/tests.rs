@@ -237,7 +237,7 @@
             "'helper' must precede its caller 'game_step'; decls: {:?}",
             r.ast.decls.iter().filter_map(decl_name).collect::<Vec<_>>()
         );
-        let tc = crate::typecheck::typecheck(&r.ast, "main.ws");
+        let tc = crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         assert!(
             !tc.diagnostics.iter().any(|d| d.code == "WS021"),
             "transitive import must not produce use-before-declaration: {:?}",

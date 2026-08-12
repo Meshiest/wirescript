@@ -1,7 +1,7 @@
 /// Storage of prefabs by player id
 var prefabs: Map<string, entity>
 
-on CharacterSpawned(p) {
+on CharacterSpawned() -> (p) {
   // Spawn a prefab when the player spawns
   let e = SpawnPrefab(lifetime = 0, limit = 50, offset = Vec(0, 0, 10), $```
     // Label the microchip by the player's name
@@ -9,7 +9,7 @@ on CharacterSpawned(p) {
 
     var playerName =""
 
-    on CustomEvent("init", isObject = true, p: character) {
+    on CustomEvent("init", isObject = true) -> (p: character) {
       let name = p.GetDisplayName()
       let id = p.GetUserId()
       playerName = name

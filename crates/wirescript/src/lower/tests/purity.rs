@@ -185,7 +185,7 @@ on player { let r = { let a = x + 1; a } }");
 fn var_in_exec_emits_var_set() {
     let r = compile(
         "\
-on RoundStart {
+on RoundStart() {
   var x: int = 5
 }",
     );
@@ -212,7 +212,7 @@ on RoundStart {
 fn static_var_in_exec_no_var_set() {
     let r = compile(
         "\
-on RoundStart {
+on RoundStart() {
   static var x: int = 5
 }",
     );

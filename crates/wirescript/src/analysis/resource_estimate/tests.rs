@@ -4,7 +4,7 @@
 
     fn estimates_for(source: &str) -> HashMap<String, ResourceEstimate> {
         let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck(&resolved.ast, "test");
+        let tc = typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
         collect_estimates(&resolved.ast, &tc, "test")
     }
 

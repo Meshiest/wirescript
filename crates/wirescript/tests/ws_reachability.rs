@@ -13,6 +13,9 @@
 //! - `WS034` — a removed generic-chip guard; the code is retired.
 //! - `WS015` — the `fn`-deprecation warning; `fn` is now removed (rejected at
 //!   parse), so WS015 is retired.
+//! - `WS029` — the old "always annotate a custom-event param" lint; replaced
+//!   by inference from an in-unit sender (WS042 when none is inferable), so
+//!   WS029 is retired.
 //!
 //! Two codes (`WS012`, `WS014`) are RESOLVE-phase and fire only on
 //! multi-file programs (imports), so they can't go through the
@@ -121,7 +124,7 @@ fn ws010_is_reachable() {
 // WS011 - builtin call arity mismatch (SetLocation needs 2 args) [typecheck]
 #[test]
 fn ws011_is_reachable() {
-    let src = "in e: entity\non RoundStart { SetLocation(e) }\n";
+    let src = "in e: entity\non RoundStart() { SetLocation(e) }\n";
     assert!(diags(src).contains(&"WS011".to_string()));
 }
 
@@ -230,18 +233,21 @@ fn ws028_is_reachable() {
     assert!(diags(src).contains(&"WS028".to_string()));
 }
 
-// WS029 - untyped CustomEvent handler param (defaults to float on emit) [typecheck, warning]
+// WS042 - untyped CustomEvent handler param with no in-unit sender to infer its
+// type from (defaults to float on emit) [typecheck, warning]. Replaces the
+// retired WS029 ("always annotate"), now that unannotated slots are inferred
+// from a matching in-unit sender when one exists.
 #[test]
-fn ws029_is_reachable() {
-    let src = "static var n: int = 0\non CustomEvent(\"dmg\", amount) {\n  n = n + 1\n}\n";
-    assert!(diags(src).contains(&"WS029".to_string()));
+fn ws042_is_reachable() {
+    let src = "static var n: int = 0\non CustomEvent(\"dmg\") -> (amount) {\n  n = n + 1\n}\n";
+    assert!(diags(src).contains(&"WS042".to_string()));
 }
 
 // WS030 - custom-event sender/receiver data-type mismatch (needs both a typed
 // receiver and a mismatched-type sender in the same unit) [typecheck, warning]
 #[test]
 fn ws030_is_reachable() {
-    let src = "in go: exec\nvar last: int = 0\non CustomEvent(\"dmg\", amount: int) {\n  last = amount\n}\non go {\n  SendCustomEvent(\"dmg\", 1.5)\n}\n";
+    let src = "in go: exec\nvar last: int = 0\non CustomEvent(\"dmg\") -> (amount: int) {\n  last = amount\n}\non go {\n  SendCustomEvent(\"dmg\", 1.5)\n}\n";
     assert!(diags(src).contains(&"WS030".to_string()));
 }
 
@@ -300,7 +306,7 @@ fn ws037_is_reachable() {
 // WS038 - calling a non-callable symbol (e.g. an array var mistaken for indexing) [typecheck]
 #[test]
 fn ws038_is_reachable() {
-    let src = "on CharacterSpawned(ch) {\n  var xs: int[] = [1, 2, 3]\n  let r = xs(0)\n}\n";
+    let src = "on CharacterSpawned() -> (ch) {\n  var xs: int[] = [1, 2, 3]\n  let r = xs(0)\n}\n";
     assert!(diags(src).contains(&"WS038".to_string()));
 }
 
@@ -325,6 +331,16 @@ fn ws040_is_reachable() {
 fn ws041_is_reachable() {
     let src = "in c: controller\nin go: exec\non go {\n  c.DisplayText(\"hi\", bogusArg = 0.0)\n}\n";
     assert!(diags(src).contains(&"WS041".to_string()));
+}
+
+// WS043 - a general (non-event) `on <call> -> <pattern>` expr trigger whose
+// call has multiple data outputs but no exec-typed one to auto-extract
+// (a 2-output mod called without `exec = ...`, so its result record is
+// `{a, b}` with no `exec` field for `on` to trigger on) [lower]
+#[test]
+fn ws043_is_reachable() {
+    let src = "mod pair(x: int) -> (a: int, b: int) {\n  emit a = x\n  emit b = x\n}\non pair(5) -> (p, q) {\n}\n";
+    assert!(diags(src).contains(&"WS043".to_string()));
 }
 
 // WSP001 - lexer error: unexpected character [parse/lexer]

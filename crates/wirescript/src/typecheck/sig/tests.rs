@@ -57,7 +57,8 @@ fn two_int_args(ctx: &mut TypeCheckCtx) -> (Vec<CallArg>, SourceRange) {
 
 #[test]
 fn check_args_flags_arity_and_mismatch() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     let (args, range) = two_int_args(&mut ctx);
 
     // too few args -> WS011
@@ -94,7 +95,8 @@ fn check_args_flags_arity_and_mismatch() {
 
 #[test]
 fn check_args_too_many_positional_is_ws011() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     let (args, range) = two_int_args(&mut ctx);
 
     let sig1 = wire_sig("f", &[("x", Type::Int, false)]);
@@ -108,7 +110,8 @@ fn check_args_too_many_positional_is_ws011() {
 
 #[test]
 fn check_args_matching_types_is_clean() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     let (args, range) = two_int_args(&mut ctx);
 
     let sig2 = wire_sig("f", &[("x", Type::Int, false), ("y", Type::Int, false)]);
@@ -122,7 +125,8 @@ fn check_args_matching_types_is_clean() {
 
 #[test]
 fn check_args_optional_param_omitted_is_ok() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "a", Type::Int);
     let range = SourceRange::default();
     let args = vec![CallArg::Positional(ident("a"))];
@@ -149,7 +153,8 @@ const SWEEP_GATE: &str = crate::ir::gate_class::SWEEP_SIMPLE;
 // which is the end-to-end path that would have caught the Fix 1 name conflict.
 #[test]
 fn config_scalar_named_arg_nonconstant_is_ws028() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "live", Type::Bool);
     let range = SourceRange::default();
 
@@ -203,7 +208,8 @@ fn config_enum_arm_validates_bare_member() {
     };
 
     // A valid bare member -> no diagnostic.
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     let good = vec![CallArg::Positional(ident("Y_Positive"))];
     check_args(&mut ctx, &sig, &good, 0, true, &range);
     assert!(
@@ -233,7 +239,8 @@ fn config_enum_arm_validates_bare_member() {
 // raw schema field); a non-constant value there is WS028.
 #[test]
 fn named_arg_data_driven_config_fallback_is_ws028() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "live", Type::Bool);
     let range = SourceRange::default();
 
@@ -259,7 +266,8 @@ fn named_arg_data_driven_config_fallback_is_ws028() {
 // to the expected shape) with WS028, and the message names the SURFACE param.
 #[test]
 fn config_composite_arm_rejects_nonconstant() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "live", Type::Color);
     let range = SourceRange::default();
 
@@ -300,7 +308,8 @@ fn config_composite_arm_rejects_nonconstant() {
 // names the call and the unknown parameter.
 #[test]
 fn unknown_named_arg_is_ws041() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "a", Type::Int);
     let range = SourceRange::default();
     // `position` is the real param; `positionX` is the removed per-axis alias.
@@ -329,7 +338,8 @@ fn unknown_named_arg_is_ws041() {
 // a declared param — it must NOT be flagged unknown.
 #[test]
 fn exec_named_arg_is_not_ws041() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "go", Type::Any);
     let range = SourceRange::default();
     let sig = wire_sig("Get", &[("k", Type::Int, true)]);
@@ -351,7 +361,8 @@ fn exec_named_arg_is_not_ws041() {
 // named args in a fixed `Param` list, so no WS041 fires there.
 #[test]
 fn unknown_named_arg_skipped_when_arity_unchecked() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "d", Type::Bool);
     let range = SourceRange::default();
     let sig = wire_sig("sortMultiple", &[]);
@@ -372,7 +383,8 @@ fn unknown_named_arg_skipped_when_arity_unchecked() {
 // name — it is validated (WS028 here, for a non-constant value) but never WS041.
 #[test]
 fn known_config_named_arg_is_not_ws041() {
-    let mut ctx = crate::typecheck::TypeCheckCtx::new("t");
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     declare_var(&mut ctx, "live", Type::Bool);
     let range = SourceRange::default();
     let sig = CallSignature {

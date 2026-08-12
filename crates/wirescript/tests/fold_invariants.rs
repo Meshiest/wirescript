@@ -43,7 +43,7 @@ fn counts(file: &str, fold_mode: FoldMode) -> (usize, usize) {
         "resolve errors in {file}: {:?}",
         resolved.diagnostics
     );
-    let tc = typecheck(&resolved.ast, file);
+    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "typecheck errors in {file}: {:?}",
@@ -58,6 +58,7 @@ fn counts(file: &str, fold_mode: FoldMode) -> (usize, usize) {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
     assert!(
         lowered.diagnostics.iter().all(|d| d.severity != Severity::Error),

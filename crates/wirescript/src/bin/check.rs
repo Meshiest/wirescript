@@ -1,5 +1,5 @@
 use std::{env, fs, path::Path, process};
-use wirescript::{resolve, typecheck::typecheck, FsLoader, Severity};
+use wirescript::{resolve, typecheck::typecheck_with_inference, FsLoader, Severity};
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -29,7 +29,10 @@ fn main() {
         };
 
         let resolved = resolve(&source, &file_str, &FsLoader);
-        let tc = typecheck(&resolved.ast, &file_str);
+        // Match compile/LSP/wasm: run the two-phase inference so custom-event
+        // slot types are inferred from in-unit senders and WS042 is emitted for
+        // slots that stay uninferable.
+        let tc = typecheck_with_inference(&resolved.ast, &file_str).0;
 
         let diags: Vec<_> = resolved
             .diagnostics

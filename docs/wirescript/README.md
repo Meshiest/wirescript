@@ -24,13 +24,15 @@ Wirescript is a high-level language that compiles to Brickadia wire graphs. It r
 
 10. **[Diagnostics](diagnostics.md)** -- Every `WSxxx` diagnostic code the compiler emits, grouped by category (context, names, types, calls, generics, config, …), with a one-line meaning and trigger for each.
 
+11. **[Upgrading](upgrading.md)** -- Breaking changes and how to migrate existing `.ws` code across versions; links the full [`CHANGELOG.md`](../../CHANGELOG.md).
+
 ## Quick Example
 
 ```wirescript
 // A simple counter that increments on each round start
 var count: int = 0
 
-on RoundStart {
+on RoundStart() {
   count = count + 1
 }
 

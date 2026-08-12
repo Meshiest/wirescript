@@ -158,7 +158,7 @@ pub struct NsDeclInfo {
     pub params: Vec<EventDataField>,
 }
 
-pub struct TypeCheckCtx {
+pub struct TypeCheckCtx<'a> {
     pub diagnostics: Vec<Diagnostic>,
     pub scope: Scope,
     exec_stack: Vec<ExecMode>,
@@ -204,10 +204,16 @@ pub struct TypeCheckCtx {
     /// config arg (see `const_lookup`) can resolve it the same way a
     /// top-level `let` resolves through `const_env`.
     pub scoped_consts: Vec<crate::collections::HashMap<String, crate::ir::Literal>>,
+    /// Inferred custom-event receiver slot types (Task 2's `infer_custom_event_slots`
+    /// output), keyed by handler source range. Empty on pass 1 (nothing inferred
+    /// yet); populated on pass 2 by `typecheck_with_inference`. Consulted by
+    /// `bind_handler_trigger_params` for unannotated custom-event params and by
+    /// `check_custom_event_types`/`ce_receiver_of` for pass-2 WS030 checks.
+    pub ce_slots: &'a CeSlotMap,
 }
 
-impl TypeCheckCtx {
-    pub fn new(file: &str) -> Self {
+impl<'a> TypeCheckCtx<'a> {
+    pub fn new(file: &str, ce_slots: &'a CeSlotMap) -> Self {
         Self {
             diagnostics: Vec::new(),
             scope: Scope::new(),
@@ -223,6 +229,7 @@ impl TypeCheckCtx {
             const_env: crate::lower::ConstEnv::default(),
             active_combos: 1,
             scoped_consts: Vec::new(),
+            ce_slots,
         }
     }
     /// Push a new `scope` frame together with a matching empty `scoped_consts`
@@ -291,8 +298,48 @@ pub struct TypeCheckResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
-    let mut ctx = TypeCheckCtx::new(file);
+/// Which custom-event namespace a receiver belongs to. Personal (`CustomEvent` /
+/// `SendCustomEvent`, same-owner delivery) and Global (`GlobalCustomEvent` /
+/// `SendGlobalCustomEvent`, ownership-agnostic) are DISTINCT channels: a send in
+/// one namespace never resolves a receiver in the other. It is carried in the
+/// key so the namespace is explicit in the map, not inferred from context.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CeNamespace {
+    Personal,
+    Global,
+}
+
+impl CeNamespace {
+    /// The namespace for an event surface name, or `None` if it is not a custom
+    /// event (`"CustomEvent"` → Personal, `"GlobalCustomEvent"` → Global).
+    pub fn from_event_name(name: &str) -> Option<Self> {
+        match name {
+            "CustomEvent" => Some(CeNamespace::Personal),
+            "GlobalCustomEvent" => Some(CeNamespace::Global),
+            _ => None,
+        }
+    }
+}
+
+/// Key for a custom-event receiver's data slot: `(namespace, file, start.offset,
+/// end.offset)` — the namespace plus the handler's source range. The range shape
+/// mirrors `tmap`/`type_of_expr` because `SourceRange`/`Pos` do not derive `Hash`;
+/// the namespace keeps personal and global receivers in disjoint key spaces.
+pub type CeSlotKey = (CeNamespace, Arc<str>, usize, usize);
+/// Resolved types for custom-event receivers' data slots, keyed by `CeSlotKey`.
+/// `None` slot = declared (nothing to override); `Some(t)` = unannotated, resolve
+/// binding to `t`; `Some(Float)` = inference fallback.
+pub type CeSlotMap = HashMap<CeSlotKey, Vec<Option<Type>>>;
+
+/// Build the `CeSlotKey` for a custom-event receiver handler `h` in namespace `ns`.
+/// Public so lowering builds the identical key (namespace + range) when it reads
+/// resolved slot types back out of the `CeSlotMap`.
+pub fn ce_slot_key(ns: CeNamespace, h: &Handler) -> CeSlotKey {
+    (ns, h.range.file.clone(), h.range.start.offset, h.range.end.offset)
+}
+
+pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheckResult {
+    let mut ctx = TypeCheckCtx::new(file, ce_slots);
     register_builtin_events(&mut ctx);
 
     // Pre-pass: collect every generic type alias (`type Pair<T> = …`) before
@@ -363,12 +410,19 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
     check_dynamic_var_labels(&mut ctx, script);
 
     // Whole-program pass: `SendCustomEvent("name", …)` data whose wire types
-    // disagree with the `on CustomEvent("name", …)` receiver's declared params.
+    // disagree with the `on CustomEvent("name") -> (…)` receiver's declared
+    // params.
     // Runs last so every arg has an inferred type in `type_of_expr`.
     // The custom-event pass reads already-inferred arg types while emitting
     // diagnostics; move the map out to satisfy the borrow checker, then restore.
     let type_of_expr = std::mem::take(&mut ctx.type_of_expr);
-    check_custom_event_types(&mut ctx, script, &type_of_expr);
+    // `ce_slots` is `Copy` (a shared reference), so this doesn't hold `ctx`
+    // borrowed across the call below. On pass 1, `typecheck`'s `ce_slots` arg
+    // is empty, so unannotated receiver slots stay unresolved; pass 2 (driven
+    // by `typecheck_with_inference`) passes the real inferred map, so this
+    // WS030 check sees inferred receiver types too.
+    let ce_slots = ctx.ce_slots;
+    check_custom_event_types(&mut ctx, script, &type_of_expr, ce_slots);
     ctx.type_of_expr = type_of_expr;
 
     TypeCheckResult {
@@ -378,6 +432,29 @@ pub fn typecheck(script: &Script, file: &str) -> TypeCheckResult {
         var_read_contexts: ctx.var_read_contexts,
         diagnostics: ctx.diagnostics,
     }
+}
+
+/// Two-pass typecheck: pass 1 typechecks with no custom-event slot inference
+/// (matching plain `typecheck`'s historical behavior), then infers unannotated
+/// custom-event receiver slot types from in-unit senders
+/// (`infer_custom_event_slots`, Task 2) using pass 1's `type_of_expr`. If any
+/// slot was inferred, a pass 2 re-typechecks the whole script with the
+/// inferred map wired in, so bodies see the inferred types (not `any`) and
+/// WS030 compares against them too. Pass 2's diagnostics include the
+/// inference pass's own (WS042 for uninferable slots).
+///
+/// Returns the map alongside the result — Task 4 threads it into `lower` so
+/// emit can pick the right wire-port variant for each custom-event slot.
+pub fn typecheck_with_inference(script: &Script, file: &str) -> (TypeCheckResult, CeSlotMap) {
+    let empty = CeSlotMap::default();
+    let pass1 = typecheck(script, file, &empty);
+    let (map, infer_diags) = infer_custom_event_slots(script, &pass1.type_of_expr);
+    if map.is_empty() {
+        return (pass1, map); // no unannotated custom-event slots → single pass
+    }
+    let mut pass2 = typecheck(script, file, &map);
+    pass2.diagnostics.extend(infer_diags);
+    (pass2, map)
 }
 
 // ---------- `@label(expr)` constant-folding check (WS040) ----------
@@ -1943,8 +2020,9 @@ fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
             Some(s) if s.kind == SymbolKind::LetBinding
         );
         // A mod/chip param (`Param`) or an event data output bound by the
-        // enclosing handler (`EventParam`, e.g. `on CustomEvent(…, p: character)`)
-        // can trigger a nested handler on its value/edge — `on p` / `on !p`.
+        // enclosing handler (`EventParam`, e.g. `on CustomEvent("x") -> (p:
+        // character)`) can trigger a nested handler on its value/edge — `on p`
+        // / `on !p`.
         let known_param_trigger = matches!(
             &sym,
             Some(s) if matches!(s.kind, SymbolKind::Param | SymbolKind::EventParam)
@@ -1981,14 +2059,66 @@ fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
             return;
         }
         let Some(evt) = evt else {
-            // Unknown event: bind params as Any so they don't trip downstream lookups.
-            for pname in &h.params {
+            // Non-event trigger with `-> (…)`/`-> {…}` capture params — a
+            // general mod/chip CALL trigger (`on pair(5, exec = go) -> (a, b)`).
+            // Type each capture from the trigger call's OUTPUT RECORD instead of
+            // `Any`, or the captured names read as `Any` and arithmetic on them
+            // fails WS004. The record's single `Type::Exec` field is consumed by
+            // `on` (it drives the body) and is EXCLUDED — the pattern binds the
+            // remaining DATA fields.
+            //
+            // Record source: prefer the trigger binding's own type — the
+            // synthesized `_on_expr_N` let binds the call's `Type::Record`
+            // (declared before the handler, so it's in scope here). Only if that
+            // isn't a record (auto-unwrapped to exec, or a folded `.field`
+            // trigger) fall back to the trigger expr's recorded type; capture
+            // params only ever come from `-> ` on a plain call, so the binding
+            // source is the reliable one and the `type_of_expr` fallback avoids
+            // the `.field`-trigger key overlap seen in lowering.
+            let record_fields: Option<Vec<(String, Type)>> = match sym.as_ref().map(|s| &s.ty) {
+                Some(Type::Record(fs)) => Some(fs.clone()),
+                _ => {
+                    let key = (range.file.clone(), range.start.offset, range.end.offset);
+                    match ctx.type_of_expr.get(&key) {
+                        Some(Type::Record(fs)) => Some(fs.clone()),
+                        _ => None,
+                    }
+                }
+            };
+            let data_fields: Vec<(String, Type)> = record_fields
+                .map(|fs| {
+                    fs.into_iter()
+                        .filter(|(_, t)| !matches!(t, Type::Exec))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (i, pname) in h.params.iter().enumerate() {
+                // An explicit annotation wins; a record capture (`-> { f: a }`)
+                // resolves by the original field name; a tuple capture
+                // (`-> (a, b)`) is positional over the data fields; `Any` when
+                // nothing resolves (a genuinely-untyped trigger — unchanged).
+                let ty = if let Some(te) = &pname.ty {
+                    let t = resolve_type_expr(ctx, te);
+                    warn_any_annotation(ctx, &t, type_expr_range(te));
+                    t
+                } else if let Some(field) = &pname.source_field {
+                    data_fields
+                        .iter()
+                        .find(|(n, _)| n == field)
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or(Type::Any)
+                } else {
+                    data_fields
+                        .get(i)
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or(Type::Any)
+                };
                 ctx.scope.declare(
                     &pname.name,
                     SymbolInfo {
                         kind: SymbolKind::EventParam,
                         name: pname.name.clone(),
-                        ty: Type::Any,
+                        ty,
                         decl_range: h.range.clone(),
                         signature: None,
                         event_data: None,
@@ -2018,24 +2148,21 @@ fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
                     t
                 }
                 None => {
-                    let evt_ty = evt.data.get(i).map(|d| d.ty.clone()).unwrap_or(Type::Any);
-                    if matches!(evt_ty, Type::Any) {
-                        // Custom Event's data outputs are untyped in the catalog:
-                        // the receiver must declare each one's type, or the value
-                        // has no wire type and defaults to float on emit.
-                        ctx.diagnostics.push(Diagnostic {
-                            severity: Severity::Warning,
-                            code: "WS029".into(),
-                            message: format!(
-                                "custom event param '{0}' should have a type annotation \
-                                 (e.g. `{0}: int`) — untyped data has no wire type and \
-                                 defaults to float",
-                                pname.name
-                            ),
-                            range: pname.range.clone(),
-                        });
+                    // Custom Event's data outputs are untyped in the catalog, so an
+                    // unannotated param has no declared type to fall back on. Look
+                    // it up in `ce_slots` (Task 2's `infer_custom_event_slots`,
+                    // keyed by this handler's source range): pass 2 has it resolved
+                    // from an in-unit sender (or defaulted to float with a WS042
+                    // warning already emitted by the inference pass); pass 1 (and
+                    // any non-custom-event handler) has nothing there yet, so fall
+                    // back to the event's declared data type (Any for untyped events).
+                    let inferred = CeNamespace::from_event_name(evt.surface_name)
+                        .and_then(|ns| ctx.ce_slots.get(&ce_slot_key(ns, h)))
+                        .and_then(|v| v.get(i).cloned().flatten());
+                    match inferred {
+                        Some(t) => t,
+                        None => evt.data.get(i).map(|d| d.ty.clone()).unwrap_or(Type::Any),
                     }
-                    evt_ty
                 }
             };
             ctx.scope.declare(
@@ -2456,8 +2583,21 @@ fn union_output_type(
     range: &SourceRange,
 ) -> Type {
     let declared = c.outputs[out_index].ty.clone();
-    let Type::Union(mask) = &declared else {
-        return declared;
+    // The output rides the input variant when it is a union directly (Blend /
+    // lerp / Easing) OR contains one as a Record FIELD (a stateful gate like
+    // `Tween`, whose `{ Value: <variant>, Arrived: exec }` should give a float
+    // `Value` for a float target, not the full `float|int|vector|…` union). Grab
+    // that union's mask; nothing to resolve if there is no union.
+    let mask: Vec<Type> = match &declared {
+        Type::Union(m) => m.clone(),
+        Type::Record(fs) => match fs.iter().find_map(|(_, t)| match t {
+            Type::Union(m) => Some(m.clone()),
+            _ => None,
+        }) {
+            Some(m) => m,
+            None => return declared,
+        },
+        _ => return declared,
     };
     let mut joined: Option<Type> = None;
     for (i, p) in c.params.iter().enumerate() {
@@ -2491,13 +2631,28 @@ fn union_output_type(
             });
         }
     }
-    match joined {
+    let resolved = match joined {
         // Bool never appears as a math-variant on its own (the mask is
         // Float/Int/Vector/Rotator/Quat/Color) — an all-bool fold widens one
         // step further to Int, the mask's narrowest numeric member.
-        Some(Type::Bool) if !mask_contains(mask, &Type::Bool) => Type::Int,
+        Some(Type::Bool) if !mask_contains(&mask, &Type::Bool) => Type::Int,
         Some(t) => t,
-        None => declared,
+        None => return declared,
+    };
+    // Apply the resolved variant: replace the bare union, or each union-typed
+    // field of the Record output (leaving `Arrived: exec` and the like intact).
+    match declared {
+        Type::Union(_) => resolved,
+        Type::Record(fields) => Type::Record(
+            fields
+                .into_iter()
+                .map(|(k, ft)| {
+                    let nt = if matches!(ft, Type::Union(_)) { resolved.clone() } else { ft };
+                    (k, nt)
+                })
+                .collect(),
+        ),
+        other => other,
     }
 }
 
@@ -3016,8 +3171,14 @@ fn ce_param_type(te: &TypeExpr) -> Type {
 /// `(channel name, per-slot declared type)` for a handler that is a custom-event
 /// receiver of kind `event_name` (`"CustomEvent"` or `"GlobalCustomEvent"`) with
 /// a literal channel name. `None` for any other handler (or a dynamic channel
-/// name — nothing to key receivers by).
-fn ce_receiver_of(h: &Handler, event_name: &str) -> Option<(String, Vec<Option<Type>>)> {
+/// name — nothing to key receivers by). An unannotated slot falls back to
+/// `ce_slots`' inferred type for this handler (keyed by its source range) when
+/// present — pass 1 has no inference available yet, so it passes an empty map.
+fn ce_receiver_of(
+    h: &Handler,
+    event_name: &str,
+    ce_slots: &CeSlotMap,
+) -> Option<(String, Vec<Option<Type>>)> {
     if !matches!(&h.trigger, Trigger::Ident { name, .. } if name == event_name) {
         return None;
     }
@@ -3025,10 +3186,17 @@ fn ce_receiver_of(h: &Handler, event_name: &str) -> Option<(String, Vec<Option<T
         HandlerConfigArg::Positional(Expr::StringLit { value, .. }) => Some(value.clone()),
         _ => None,
     })?;
+    let ns = CeNamespace::from_event_name(event_name)?;
+    let inferred = ce_slots.get(&ce_slot_key(ns, h));
     let params = h
         .params
         .iter()
-        .map(|p| p.ty.as_ref().map(|te| ce_param_type(te)))
+        .enumerate()
+        .map(|(i, p)| match p.ty.as_ref() {
+            Some(te) => Some(ce_param_type(te)),
+            // Fill from inference when available (pass 2); else unresolved.
+            None => inferred.and_then(|v| v.get(i).cloned().flatten()),
+        })
         .collect();
     Some((name, params))
 }
@@ -3120,6 +3288,7 @@ fn check_custom_event_types(
     ctx: &mut TypeCheckCtx,
     script: &Script,
     tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+    ce_slots: &CeSlotMap,
 ) {
     // Personal and Global custom events are SEPARATE channel namespaces: a
     // `SendCustomEvent("x")` only reaches `on CustomEvent("x")`, and a
@@ -3133,9 +3302,9 @@ fn check_custom_event_types(
     crate::analysis::visit_program(
         script,
         &mut |h| {
-            if let Some((name, params)) = ce_receiver_of(h, "CustomEvent") {
+            if let Some((name, params)) = ce_receiver_of(h, "CustomEvent", ce_slots) {
                 ce_merge_receiver(&mut personal_recv, name, params);
-            } else if let Some((name, params)) = ce_receiver_of(h, "GlobalCustomEvent") {
+            } else if let Some((name, params)) = ce_receiver_of(h, "GlobalCustomEvent", ce_slots) {
                 ce_merge_receiver(&mut global_recv, name, params);
             }
         },
@@ -3221,6 +3390,120 @@ fn check_ce_namespace(
             }
         }
     }
+}
+
+/// Resolve every UNANNOTATED custom-event receiver slot to a concrete type from
+/// the matching in-unit sender, or `float` (with a WS042 warning) when none is
+/// inferable. Returns the map (keyed by handler range) plus the WS042
+/// diagnostics. Reads sender arg types from `tmap` (the pass-1 `type_of_expr`).
+///
+/// Handles both namespaces (`CustomEvent`/`SendCustomEvent` and
+/// `GlobalCustomEvent`/`SendGlobalCustomEvent`), keeping them separate exactly
+/// as `check_custom_event_types` does — a personal send must never resolve a
+/// global receiver's slot, or vice versa.
+fn infer_custom_event_slots(
+    ast: &Script,
+    tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+) -> (CeSlotMap, Vec<Diagnostic>) {
+    // 1. Collect senders → channel → slot → first concrete wire-typed value.
+    //    (personal vs global namespaces, mirroring check_custom_event_types.)
+    let mut personal: HashMap<String, HashMap<usize, Type>> = HashMap::default();
+    let mut global: HashMap<String, HashMap<usize, Type>> = HashMap::default();
+    let mut receivers: Vec<(&Handler, &'static str)> = Vec::new();
+    crate::analysis::visit_program(
+        ast,
+        &mut |h| {
+            if matches!(&h.trigger, Trigger::Ident { name, .. } if name == "CustomEvent") {
+                receivers.push((h, "CustomEvent"));
+            } else if matches!(&h.trigger, Trigger::Ident { name, .. } if name == "GlobalCustomEvent")
+            {
+                receivers.push((h, "GlobalCustomEvent"));
+            }
+        },
+        &mut |call| {
+            if let Expr::Call { callee, args, .. } = call {
+                let callee_name = match callee.as_ref() {
+                    Expr::Ident { name, .. } => Some(name.as_str()),
+                    Expr::FieldAccess { field, .. } => Some(field.as_str()),
+                    _ => None,
+                };
+                let bucket = match callee_name {
+                    Some("SendCustomEvent") => Some(&mut personal),
+                    Some("SendGlobalCustomEvent") => Some(&mut global),
+                    _ => None,
+                };
+                if let Some(bucket) = bucket
+                    && let Some(chan) = ce_send_event_name(args)
+                {
+                    let slots = bucket.entry(chan).or_default();
+                    for (slot, expr) in ce_send_data_args(args) {
+                        let r = expr.range();
+                        if let Some(t) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))
+                        {
+                            let t = unwrap_ref(t);
+                            if wire_class(&t).is_some() {
+                                slots.entry(slot).or_insert(t); // first sender wins
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    );
+
+    // 2. Resolve each receiver's UNANNOTATED slots.
+    let mut map = CeSlotMap::default();
+    let mut diags = Vec::new();
+    for (h, event_name) in receivers {
+        let Some(ns) = CeNamespace::from_event_name(event_name) else {
+            continue;
+        };
+        let bucket = match ns {
+            CeNamespace::Personal => &personal,
+            CeNamespace::Global => &global,
+        };
+        // Only constant-channel receivers can key against senders.
+        let chan = h.config.iter().find_map(|c| match c {
+            HandlerConfigArg::Positional(Expr::StringLit { value, .. }) => Some(value.clone()),
+            _ => None,
+        });
+        let has_unannotated = h.params.iter().any(|p| p.ty.is_none());
+        if !has_unannotated {
+            continue;
+        }
+        let key = ce_slot_key(ns, h);
+        let slots_out = map.entry(key).or_insert_with(|| vec![None; h.params.len()]);
+        for (i, p) in h.params.iter().enumerate() {
+            if p.ty.is_some() {
+                continue; // annotated: nothing to infer
+            }
+            let inferred = chan.as_ref().and_then(|c| bucket.get(c)).and_then(|m| m.get(&i)).cloned();
+            match inferred {
+                Some(t) => slots_out[i] = Some(t),
+                None => {
+                    slots_out[i] = Some(Type::Float);
+                    // No WS042 for a dynamic (non-constant) channel — nothing to key on.
+                    if chan.is_some() {
+                        diags.push(Diagnostic {
+                            severity: Severity::Warning,
+                            code: "WS042".into(),
+                            message: format!(
+                                "custom event '{}' data param '{}' (#{}): no in-unit sender \
+                                 to infer its type from; defaulting to float — annotate \
+                                 `{}: <type>` to silence",
+                                chan.as_deref().unwrap_or(""),
+                                p.name,
+                                i + 1,
+                                p.name,
+                            ),
+                            range: p.range.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    (map, diags)
 }
 
 /// Operand type for operator-overload resolution: unwrap a `ref`, then collapse
@@ -3504,8 +3787,7 @@ fn validate_handler_config(
                 {
                     continue;
                 }
-                let key = name.to_ascii_lowercase();
-                if evt.config_named.iter().any(|(k, _)| *k == key)
+                if evt.config_named.iter().any(|(k, _)| k.eq_ignore_ascii_case(name))
                     && crate::lower::expr_to_literal(value).is_none()
                 {
                     emit_event_config_const_error(ctx, name, value);
@@ -3516,7 +3798,7 @@ fn validate_handler_config(
 }
 
 /// Type-check the values wired into an event's `input_named` ports
-/// (`on ZoneEntered(character, zone = z)` — `z` must be a `zone`; Clock's
+/// (`on ZoneEntered(zone = z) -> (character)` — `z` must be a `zone`; Clock's
 /// `interval`/`enabled` must be float/bool). The value flows on a pure wire, so
 /// it is inferred in pure context.
 fn check_handler_input_wires(

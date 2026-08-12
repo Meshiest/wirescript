@@ -9,7 +9,7 @@ use wirescript::typecheck::typecheck;
 
 fn diag_report(label: &str, source: &str, file: &str) {
     let resolved = resolve(source, file, &FsLoader);
-    let tc = typecheck(&resolved.ast, file);
+    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
     eprintln!("=== {label}: {} resolve diags, {} tc diags", resolved.diagnostics.len(), tc.diagnostics.len());
     for d in resolved.diagnostics.iter().chain(tc.diagnostics.iter()).take(25) {
         eprintln!(
@@ -50,7 +50,7 @@ out y: int = t.r
     let loader = MemLoader { files };
 
     let resolved = resolve(main, "main.ws", &loader);
-    let tc = typecheck(&resolved.ast, "main.ws");
+    let tc = typecheck(&resolved.ast, "main.ws", &wirescript::typecheck::CeSlotMap::default());
     let all: Vec<String> = resolved
         .diagnostics
         .iter()
@@ -84,7 +84,7 @@ out y: int = t.r
     files.insert("lib.ws".to_string(), lib.to_string());
     let loader = MemLoader { files };
     let resolved = resolve(main, "main.ws", &loader);
-    let tc = typecheck(&resolved.ast, "main.ws");
+    let tc = typecheck(&resolved.ast, "main.ws", &wirescript::typecheck::CeSlotMap::default());
     let all: Vec<String> = resolved
         .diagnostics
         .iter()
@@ -109,7 +109,7 @@ let t = Triple(x)
 out y: int = t.r
 "#;
     let parsed = wirescript::parse(src, "t.ws");
-    let tc = typecheck(&parsed.ast, "t.ws");
+    let tc = typecheck(&parsed.ast, "t.ws", &wirescript::typecheck::CeSlotMap::default());
     let all: Vec<String> = parsed
         .diagnostics
         .iter()
@@ -140,7 +140,7 @@ out y: int = t.r
     let loader = MemLoader { files };
 
     let resolved = resolve(main, "main.ws", &loader);
-    let tc = typecheck(&resolved.ast, "main.ws");
+    let tc = typecheck(&resolved.ast, "main.ws", &wirescript::typecheck::CeSlotMap::default());
     let all: Vec<String> = resolved
         .diagnostics
         .iter()

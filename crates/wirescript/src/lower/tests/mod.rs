@@ -1,7 +1,7 @@
 use super::*;
 use crate::parser::parse;
 use crate::template_cache::TemplateCache;
-use crate::typecheck::typecheck;
+use crate::typecheck::{typecheck, typecheck_with_inference};
 
 mod annotations;
 mod basic;
@@ -33,7 +33,10 @@ pub(super) fn compile(src: &str) -> LowerResult {
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = typecheck(&parsed.ast, "test");
+    // Two-pass inference (Task 3), like the real `compile` pipeline, so CE
+    // receiver tests (e.g. `gate_config.rs`) see sender-inferred slot types
+    // instead of the always-empty default map.
+    let (tc, ce_slots) = typecheck_with_inference(&parsed.ast, "test");
     // Unfolded: existing lowering tests are structural microscopes that
     // assert on real gates, not on what the certified fold pass would leave
     // behind. `compile_folded` below is the fold-behavior twin. ForceOff
@@ -48,6 +51,7 @@ pub(super) fn compile(src: &str) -> LowerResult {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
         fold_mode: FoldMode::ForceOff,
+        ce_slots: &ce_slots,
     });
     r.diagnostics.extend(
         tc.diagnostics
@@ -68,7 +72,7 @@ pub(super) fn compile_folded(src: &str) -> LowerResult {
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = typecheck(&parsed.ast, "test");
+    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     let mut r = lower(LowerInput {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
@@ -78,6 +82,7 @@ pub(super) fn compile_folded(src: &str) -> LowerResult {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
         fold_mode: FoldMode::ForceOn,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     r.diagnostics.extend(
         tc.diagnostics
@@ -96,7 +101,7 @@ pub(super) fn compile_auto(src: &str) -> LowerResult {
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = typecheck(&parsed.ast, "test");
+    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     let mut r = lower(LowerInput {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
@@ -106,6 +111,7 @@ pub(super) fn compile_auto(src: &str) -> LowerResult {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     r.diagnostics.extend(
         tc.diagnostics
@@ -130,7 +136,7 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
             .collect(),
     };
     let resolved = resolve(entry_src, "main", &loader);
-    let tc = typecheck(&resolved.ast, "main");
+    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
     lower(LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -140,6 +146,7 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     })
 }
 

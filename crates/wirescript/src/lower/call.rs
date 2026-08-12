@@ -20,6 +20,54 @@ pub(super) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if let Some(spec) = find_call(name) {
             return lower_builtin_call(ctx, spec, None, args, range, e);
         }
+        // An event used as an expression (`RoundStart()`, `Clock(interval = 2.0)`,
+        // `CharacterSpawned()`): emit the event gate — wiring named args into its
+        // input ports and baking its config — and yield its exec output (data
+        // outputs are reachable by field access on the returned node, e.g.
+        // `CharacterSpawned().character`). Mirrors the `on <event>` handler path.
+        if let Some(evt) = crate::catalog::events::find_event(name) {
+            // Named args wired into a gate INPUT port (`interval`, `enabled`,
+            // `zone`, …); positional/named literals bake config below.
+            let mut input_wires: Vec<(&'static str, &Type, &Expr)> = Vec::new();
+            for (surf, port, ty) in &evt.input_named {
+                for arg in args {
+                    if let CallArg::Named { name: an, value, .. } = arg
+                        && an.eq_ignore_ascii_case(surf)
+                    {
+                        input_wires.push((port, ty, value));
+                    }
+                }
+            }
+            let inputs: Vec<PortSpec> = input_wires
+                .iter()
+                .map(|&(port, ty, _)| PortSpec {
+                    name: intern(port),
+                    ty: ty.clone(),
+                })
+                .collect();
+            let mut outputs = vec![PortSpec {
+                name: intern(evt.exec_out),
+                ty: Type::Exec,
+            }];
+            for d2 in &evt.data {
+                outputs.push(PortSpec {
+                    name: intern(d2.port),
+                    ty: d2.ty.clone(),
+                });
+            }
+            let event_node = ctx.add_event(AddNodeOpts {
+                gate_class: evt.gate_class,
+                source_range: range.clone(),
+                ports: GateIO { inputs, outputs },
+                properties: event_config_props_from_call_args(evt, args),
+                ..Default::default()
+            });
+            for &(port, _ty, value_expr) in &input_wires {
+                let src = lower_expr(ctx, value_expr);
+                ctx.connect(src, port_ref(event_node, port));
+            }
+            return port_ref(event_node, evt.exec_out);
+        }
         // An identifier callee that is neither an in-scope chip/mod nor a
         // builtin. If the name IS declared as a chip/mod somewhere in the
         // program, it's a use-before-declaration (chips/mods register in source
@@ -945,6 +993,7 @@ fn build_chip_module(
         diagnostics: Vec::new(),
         type_of_expr: ctx.type_of_expr,
         op_resolutions: ctx.op_resolutions,
+        ce_slots: ctx.ce_slots,
         file: ctx.file.clone(),
         scope: crate::scope::Scope::new(),
         handler_end_execs: Vec::new(),
@@ -1992,6 +2041,43 @@ pub(super) fn lower_builtin_call(
         return node_id.port(p.port);
     }
     node_id.port(WirePort::Output)
+}
+
+/// Bake an event's config args (`ChatCommand("greet", Description = "…")`) into
+/// its gate data-struct properties, for the event-as-expression form. Positional
+/// literals fill `config_positional` in order; a named arg targets a `config_named`
+/// field (case-insensitive). Non-matching or non-literal args are ignored — input
+/// wires (`config_named` is disjoint from `input_named`) and non-constant values
+/// are handled separately. Mirrors `handler::event_config_props`.
+fn event_config_props_from_call_args(
+    evt: &crate::catalog::events::EventSpec,
+    args: &[CallArg],
+) -> HashMap<crate::intern::Sym, Literal> {
+    let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
+    let mut positional = 0;
+    for arg in args {
+        let (field, value) = match arg {
+            CallArg::Positional(value) => {
+                let field = evt.config_positional.get(positional).copied();
+                positional += 1;
+                (field, value)
+            }
+            CallArg::Named { name, value, .. } => {
+                let key = name.to_ascii_lowercase();
+                let field = evt
+                    .config_named
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, f)| *f);
+                (field, value)
+            }
+            CallArg::Spread(_) => continue,
+        };
+        if let (Some(field), Some(lit)) = (field, expr_to_literal(value)) {
+            props.insert(intern(field), lit);
+        }
+    }
+    props
 }
 
 /// The registered default for one axis (`"X"`/`"Y"`) of a gate's `Vector2D` data

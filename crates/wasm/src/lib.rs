@@ -5,7 +5,7 @@ use wirescript::{
     lower::{lower, LowerInput},
     resolve::{resolve, MemLoader},
     template_cache::TemplateCache,
-    typecheck::typecheck,
+    typecheck::typecheck_with_inference,
     emit::{emit_brz, EmitOptions, PrefabResolver},
 };
 
@@ -89,7 +89,7 @@ pub fn wirescript_compile(source: String, module_name: Option<String>, files_jso
     let file = module_name.as_deref().unwrap_or("inline");
     let loader = make_loader(files_json.as_deref().unwrap_or("{}"));
     let resolved = resolve(&source, file, &loader);
-    let tc = typecheck(&resolved.ast, file);
+    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
     let template_cache = Arc::new(TemplateCache::new());
     let lowered = lower(LowerInput {
         ast: &resolved.ast,
@@ -100,6 +100,7 @@ pub fn wirescript_compile(source: String, module_name: Option<String>, files_jso
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: wirescript::FoldMode::Auto,
+        ce_slots: &ce_slots,
     });
 
     let errors: Vec<String> = resolved

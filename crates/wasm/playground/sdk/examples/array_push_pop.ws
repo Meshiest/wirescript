@@ -1,7 +1,7 @@
 // Array operations
 var items: int[]
 
-on RoundStart {
+on RoundStart() {
   items.clear()
   items.push(10)
   items.push(20)

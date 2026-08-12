@@ -35,7 +35,7 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
 
     // --- IR stats via lower ---
     let resolved = resolve(src, "test.ws", &FsLoader);
-    let tc = typecheck(&resolved.ast, "test.ws");
+    let tc = typecheck(&resolved.ast, "test.ws", &wirescript::typecheck::CeSlotMap::default());
     let lowered = lower(LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -45,6 +45,7 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::ForceOff,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
 
     fn count_recursive(module: &Module) -> (usize, usize, usize) {

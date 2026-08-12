@@ -146,7 +146,7 @@ fn namespace_import_buffer_initializer_is_wired() {
         "import should resolve: {:?}",
         resolved.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&resolved.ast, "test");
+    let tc = crate::typecheck::typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
     let r = crate::lower::lower(crate::lower::LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -156,6 +156,7 @@ fn namespace_import_buffer_initializer_is_wired() {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     let gates: Vec<_> = r.module.nodes.values().map(|n| n.gate_class).collect();
     let buffer = r

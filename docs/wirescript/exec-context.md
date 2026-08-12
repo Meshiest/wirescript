@@ -35,7 +35,7 @@ What runs in exec context:
 
 ```wirescript
 // This is exec context:
-on RoundStart {
+on RoundStart() {
   count = count + 1          // assignment requires exec
   let r = Random(0, 10)      // Random is an exec call
   if r == 0 {                // if statement requires exec
@@ -71,7 +71,7 @@ n = 1              // ERROR: WS007 -- var write 'n' outside an exec context
 The primary way to enter exec context is through an `on` handler:
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   // Everything in here is exec context
   count = 0
   score = 0
@@ -85,11 +85,11 @@ After a handler at the same scope level, subsequent statements automatically ent
 ```wirescript
 var count: int = 0
 
-on RoundStart {
+on RoundStart() {
   count = 0
 }
 
-on CharacterDied(c) {
+on CharacterDied() -> (c) {
   count = count + 1
 }
 
@@ -150,7 +150,7 @@ The behavior of a bare variable name depends on context:
 A `var x: int` has type `ref int` internally, but in exec context, the bare name `x` **auto-dereferences** to type `int` when used in expressions. When passed to a `*T` parameter (e.g., `inc(x)` where `inc` takes `*int`), it stays as a reference:
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   // x auto-derefs: reads as int, writes as int
   x = x + 1
   let doubled = x * 2   // x is int here
@@ -212,7 +212,7 @@ on changed {
 Handlers create exec chains -- sequences of exec gates connected by their exec output pins. Each statement in a handler body is a link in the chain:
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   count = 0            // Exec node 1
   score = 0            // Exec node 2 (chained after 1)
   let r = Random(0,5)  // Exec node 3 (chained after 2)
@@ -337,7 +337,7 @@ iterations, reset per call) or rides the signal as a ferried payload
 [statements — Loops](statements.md#loops) for the full pattern and its
 per-gate cost.
 
-```wirescript
+```wirescript ignore
 var index = 0
 let loop: exec
 emit loop

@@ -101,7 +101,7 @@ fn record_field_access_var_set() {
 type State = { val: *int }
 var n: int = 0
 let s: State = { val: n }
-on RoundStart { s.val = 42 }",
+on RoundStart() { s.val = 42 }",
     );
     assert_no_errors(&r);
     assert!(
@@ -151,7 +151,7 @@ type State = { counter: *int }
 var n: int = 0
 let s: State = { counter: n }
 mod bump(s: State) { s.counter = s.counter + 1 }
-on RoundStart { bump(s) }",
+on RoundStart() { bump(s) }",
     );
     assert_no_errors(&r);
 
@@ -193,7 +193,7 @@ fn record_array_field_push() {
 type Mem = { data: int[] }
 var arr: int[]
 let m: Mem = { data: arr }
-on RoundStart { m.data.push(42) }",
+on RoundStart() { m.data.push(42) }",
     );
     assert_no_errors(&r);
     assert!(
@@ -488,7 +488,7 @@ type State = { val: *int }
 var n: int = 0
 let s: State = { val: n }
 mod set_val({ val }: State) { val = 42 }
-on RoundStart { set_val(s) }",
+on RoundStart() { set_val(s) }",
     );
     assert_no_errors(&r);
     // Should have a Var_Set gate targeting n's PseudoVar
@@ -515,7 +515,7 @@ type Outer = { inner: Inner }
 var x: int = 0
 let i: Inner = { x }
 let o: Outer = { inner: i }
-on RoundStart { o.inner.x = 42 }",
+on RoundStart() { o.inner.x = 42 }",
     );
     assert_no_errors(&r);
     assert!(
@@ -875,7 +875,7 @@ on tick {
 #[test]
 fn builtin_multi_output_destructure_binds_gate_ports() {
     let r = compile(
-        "on CharacterSpawned(player) {\n\
+        "on CharacterSpawned() -> (player) {\n\
            let { Forward, Right, Up } = player.InputReader()\n\
            PrintToConsole(\"${Forward} ${Right} ${Up}\")\n\
          }",
@@ -909,7 +909,7 @@ fn builtin_multi_output_destructure_binds_gate_ports() {
 #[test]
 fn destructuring_an_unknown_field_errors_with_a_suggestion() {
     let r = compile(
-        "on CharacterSpawned(player) {\n\
+        "on CharacterSpawned() -> (player) {\n\
            let { forward } = player.InputReader()\n\
            PrintToConsole(\"${forward}\")\n\
          }",

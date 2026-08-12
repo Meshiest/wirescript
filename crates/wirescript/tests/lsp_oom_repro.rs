@@ -393,7 +393,7 @@ fn lsp_surface(label: &str, source: &str, file: &str, loader: &MemLoader, hover_
     let t = std::time::Instant::now();
     let pre = wirescript::parse(source, file);
     let resolved = resolve(source, file, loader);
-    let tc = typecheck(&resolved.ast, file);
+    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
     eprintln!("[{label}] parse+resolve+typecheck: {:?}", t.elapsed());
 
     let t = std::time::Instant::now();
@@ -561,7 +561,7 @@ fn broken_lib_typecheck_terminates() {
     let resolved = resolve(BROKEN_LIB, "lib.ws", &loader);
     let rt = t.elapsed();
     let t2 = std::time::Instant::now();
-    let tc = typecheck(&resolved.ast, "lib.ws");
+    let tc = typecheck(&resolved.ast, "lib.ws", &wirescript::typecheck::CeSlotMap::default());
     eprintln!(
         "resolve: {rt:?}, typecheck: {:?}, {} diags",
         t2.elapsed(),
@@ -574,7 +574,7 @@ fn broken_lib_estimates_terminate() {
     arm_watchdog(20, "collect_estimates(broken lib)");
     let loader = mem_loader();
     let resolved = resolve(BROKEN_LIB, "lib.ws", &loader);
-    let tc = typecheck(&resolved.ast, "lib.ws");
+    let tc = typecheck(&resolved.ast, "lib.ws", &wirescript::typecheck::CeSlotMap::default());
     let t = std::time::Instant::now();
     let est = collect_estimates(&resolved.ast, &tc, "lib.ws");
     eprintln!("estimates: {:?}, {} entries", t.elapsed(), est.len());
@@ -589,7 +589,7 @@ fn cursor_importing_broken_lib_full_lsp_path_terminates() {
     let resolved = resolve(CURSOR_WS, "cursor.ws", &loader);
     let rt = t.elapsed();
     let t2 = std::time::Instant::now();
-    let tc = typecheck(&resolved.ast, "cursor.ws");
+    let tc = typecheck(&resolved.ast, "cursor.ws", &wirescript::typecheck::CeSlotMap::default());
     let tt = t2.elapsed();
     let t3 = std::time::Instant::now();
     let est = collect_estimates(&resolved.ast, &tc, "cursor.ws");
@@ -619,7 +619,7 @@ fn cursor_importing_broken_lib_full_lsp_path_terminates() {
 const RECURSIVE_CHIP_WS: &str = r#"
 var items: controller[]
 
-on RoundStart {
+on RoundStart() {
   var index: int = 0
   chip loop() {
     Greet(items[index])
@@ -638,19 +638,19 @@ chip Greet(who: controller) {
 const MUTUAL_RECURSION_WS: &str = r#"
 chip Ping(n: int) { Pong(n + 1) }
 chip Pong(n: int) { Ping(n + 1) }
-on RoundStart { Ping(0) }
+on RoundStart() { Ping(0) }
 "#;
 
 /// Self-recursive inline mod (expanded at the call site, same blowup).
 const RECURSIVE_MOD_WS: &str = r#"
 mod Again(n: int) { Again(n + 1) }
-on RoundStart { Again(0) }
+on RoundStart() { Again(0) }
 "#;
 
 fn lower_source(src: &str, file: &str) -> wirescript::lower::LowerResult {
     let loader = MemLoader { files: HashMap::default() };
     let resolved = resolve(src, file, &loader);
-    let tc = typecheck(&resolved.ast, file);
+    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
     wirescript::lower::lower(wirescript::lower::LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -660,6 +660,7 @@ fn lower_source(src: &str, file: &str) -> wirescript::lower::LowerResult {
         template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: wirescript::lower::FoldMode::Auto,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     })
 }
 
@@ -699,7 +700,7 @@ fn recursive_chip_estimates_terminate() {
     arm_watchdog(20, "collect_estimates(recursive chip)");
     let loader = MemLoader { files: HashMap::default() };
     let resolved = resolve(RECURSIVE_CHIP_WS, "rec.ws", &loader);
-    let tc = typecheck(&resolved.ast, "rec.ws");
+    let tc = typecheck(&resolved.ast, "rec.ws", &wirescript::typecheck::CeSlotMap::default());
     let est = collect_estimates(&resolved.ast, &tc, "rec.ws");
     eprintln!("estimates: {} entries", est.len());
 }

@@ -6,7 +6,7 @@ Statements are the building blocks of Wirescript programs. They declare data, de
 
 Declares a mutable variable backed by a wire graph variable gate. In exec context (inside handlers or mods), the variable is **reset to its initial value** each time the code path executes.
 
-```wirescript
+```wirescript ignore
 var name: type = initializer
 var name: type              // default-initialized
 var name = initializer      // type inferred from annotation or usage
@@ -34,7 +34,7 @@ A `static var` keeps its value across handler/mod invocations. The initial value
 static var total: int = 0     // persists across calls
 static var highScore: int = 0
 
-on RoundStart {
+on RoundStart() {
   total = total + 1           // accumulates over time
 }
 ```
@@ -55,7 +55,7 @@ var count: int = 0
 out currentCount = count.Value
 
 // Exec context -- direct access auto-derefs
-on RoundStart {
+on RoundStart() {
   count = count + 1    // reads and writes the int value directly
 }
 ```
@@ -66,7 +66,7 @@ See [Execution Context](exec-context.md) for full details.
 
 Binds a name to a computed value. Unlike `var`, a `let` binding is not mutable storage -- it is a pure wire connection to an expression's output.
 
-```wirescript
+```wirescript ignore
 let name = expression
 let name: type = expression
 ```
@@ -92,7 +92,7 @@ let z: string = 42        // WS016 warning — int does not match string
 let maxScore = 100
 
 // Let inside a handler (evaluated in the exec context of the handler)
-on RoundStart {
+on RoundStart() {
   let r = Random(0, 15)
   if r == 0 { count = count + 1 }
 }
@@ -138,7 +138,7 @@ foo(...args)  // equivalent to foo(1, 2, 3)
 
 Declares a value that is delayed by one tick. Buffers are useful for creating feedback loops where a value depends on its own previous state without creating a circular dependency.
 
-```wirescript
+```wirescript ignore
 buffer name = expression
 buffer name: type = expression
 ```
@@ -292,7 +292,7 @@ use `m.copyFrom(src)` (**WS027**). See
 
 Declares an input port for the current scope. At the top level, `in` creates an external input that other wire graphs can connect to. Inside a chip, `in` creates a chip input port.
 
-```wirescript
+```wirescript ignore
 in name: type
 ```
 
@@ -328,11 +328,11 @@ out greeting = "Score: ${count}"
 
 An output port can have both a type annotation and a value expression. The annotation is a checked assertion (like on `let`):
 
-```wirescript
+```wirescript ignore
 out name: type = expression
 ```
 
-```wirescript
+```wirescript ignore
 out score: int = count.Value     // type asserted + value
 out ratio: float = hits / total
 out ref: *int = myVar            // ref output — exposes the variable reference
@@ -347,7 +347,7 @@ The typed form without a value declares an exec output port. Use `emit` inside a
 ```wirescript
 out done: exec
 
-on RoundStart {
+on RoundStart() {
   count = count + 1
   emit done  // fires the 'done' output after incrementing
 }
@@ -698,7 +698,7 @@ if condition {
 ```
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   if score > highScore {
     highScore = score
   }
@@ -736,21 +736,21 @@ on trigger {
 ### Triggering on Built-in Events
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   score = 0
 }
 
-on CharacterDied(character) {
+on CharacterDied() -> (character) {
   lives = lives - 1
 }
 ```
 
-Event parameters are bound by listing names in parentheses after the event name. The number and types of parameters are determined by the event (see [Built-in Events](#built-in-events) below).
+Event data is bound with a trailing `-> (…)` tuple capture (or `-> { field: local }` record capture) after the call — see [Binding Event Data](#binding-event-data) below for the full capture model. The number and types of values available are determined by the event (see [Built-in Events](#built-in-events) below).
 
-Some events also accept **config args** that configure the event gate itself. String literals (and `Name = value` named args) set the gate's config fields, while bare identifiers still bind data outputs. `ChatCommand` uses this for its command name and help text:
+Some events also accept **config args** that configure the event gate itself, written *inside* the call parens. String literals (and `Name = value` named args) set the gate's config fields — the parens hold config/inputs only, never event data. `ChatCommand` uses this for its command name and help text:
 
 ```wirescript
-on ChatCommand("greet", "Greets the player", player, args) {
+on ChatCommand("greet", "Greets the player") -> (player, args) {
   // "greet" -> command name, "Greets the player" -> help text
   // player -> controller output, args -> arguments output
   player.DisplayText("Hello ${args}")
@@ -764,14 +764,105 @@ The zone events — `ZoneEntered`, `ZoneLeft`, `EntityZoneEntered`, `EntityZoneL
 
 ```wirescript
 in room: entity                             // wire to a Zone brick in-game
-on ZoneEntered(character, zone = room) { }  // room feeds the gate's Zone input
-on ZoneLeft(character, zone = room) { }
+on ZoneEntered(zone = room) -> (character) { }  // room feeds the gate's Zone input
+on ZoneLeft(zone = room) -> (character) { }
 ```
 
 > **Frozen entities still fire entity zone events** — `SetFrozen(true)` does not
 > suppress `EntityZoneEntered`. But an entry only fires on a **boundary crossing**:
 > `SetLocation`-ing an entity to a zone it is *already* inside does **not** re-fire
 > the event. To force a fresh entry, move it out of the zone and back in.
+
+### Binding Event Data
+
+`on <call>(config…) -> <pattern> { }` is the general capture form: the call's
+parens hold **config/inputs only**, and a trailing `->` binds whatever data
+the call produces. It works the same way whether `<call>` is a built-in event,
+a custom event, or an ordinary `mod`/`chip` call.
+
+**Tuple capture** — `-> (a, b)` — binds outputs positionally under local
+names of your choosing. It works for *any* call that produces data, built-in
+or custom, and is the cleanest form when you don't need to rename or skip
+fields:
+
+```wirescript
+on CharacterSpawned() -> (who) {
+  who.ShowStatusMessage("Welcome!")
+}
+```
+
+When you're binding a *single, untyped* output, the parens are optional —
+`-> who` is shorthand for `-> (who)`:
+
+```wirescript
+on CharacterSpawned() -> who {
+  who.ShowStatusMessage("Welcome!")
+}
+```
+
+(Annotating the slot still needs the parenthesized form, `-> (who: character)`.)
+
+**Record capture** — `-> { field: local }` — binds outputs *by field name*
+instead of position, for events with named data. Rename a field with
+`field: local`, or write the bare name (`field`) to keep it as-is; list only
+the fields you need — it's fine to bind a subset:
+
+```wirescript
+on CharacterDied() -> { character: victim, killer } {
+  victim.ShowStatusMessage("You were killed")
+  killer.ShowStatusMessage("You got a kill!")
+}
+```
+
+Record capture only works for events whose data outputs are named fields
+(built-in events); a call with positional-only data (e.g. a custom event or a
+plain chip/mod) requires tuple capture.
+
+**Binding inside the call parens is an error.** The old `on Event(a, b) { }`
+form — where identifiers inside the parens bound data — no longer parses;
+the parser points you at `->` instead. Parens are reserved for config and
+wired inputs: a literal/named config arg (`"greet"`, `Description = "..."`),
+or a `name = value` wired input (`zone = room`, `interval = secs`).
+
+**Custom events** write their data types in the tuple capture:
+
+```wirescript
+on CustomEvent("dmg") -> (amount: int, source: character) {
+  // ...
+}
+```
+
+A slot's type can be omitted and is then **inferred** from a matching in-unit
+`SendCustomEvent`/`SendGlobalCustomEvent` on the same channel; when no sender
+supplies a type either, the slot defaults to `float` and emits `WS042`. See
+[Custom Events](builtins.md#custom-events) for the full send/receive contract.
+
+**General triggers** extend the same `-> <pattern>` capture to any
+exec-producing call — not just built-in/custom events. `on` auto-extracts the
+call's exec output, so this works for a `mod`/`chip` call outside an exec
+context, driven by an explicit `exec = ...` input (the same convention as
+`Random(0, 10, exec = trigger)`):
+
+```wirescript
+var log: string[]
+
+chip Note(msg: string) -> (count: int) {
+  log.push(msg)
+  out count = log.length()
+}
+
+in go: exec
+var last: int = 0
+
+on Note("hello", exec = go) -> (count) {
+  last = count
+}
+```
+
+If the callee has no exec-typed output for `on` to auto-extract — a plain
+value-only call with no `exec = ...` — that's `WS043`. See
+[Exec Chips](chips.md#exec-chips) for how `exec = ...` and the resulting
+`.exec` field work on user-defined chips/mods.
 
 ### Triggering on Input Ports
 
@@ -848,10 +939,21 @@ on !running {
 
 ### Union Triggers
 
-Multiple triggers can be combined with `|` to fire the handler on any of them:
+To fire a handler on any of several execs, prefer the `Union(...)` builtin — it
+reads as an ordinary call in the unified `on <expr>` model and composes with
+`->` output capture and `exec =` inputs:
 
 ```wirescript
-on eventA | eventB {
+on Union(eventA, eventB) {
+  // Fires on either exec
+}
+```
+
+The older `|` trigger-union syntax still parses but is discouraged in favor of
+`Union(...)`:
+
+```wirescript
+on eventA | eventB {   // deprecated — use `on Union(eventA, eventB)`
   // Fires on either event
 }
 ```
@@ -875,7 +977,7 @@ Event declarations create named triggers using `let ... = on ...`. The `event` k
 Creates a new name for an existing event or trigger:
 
 ```wirescript
-let died = on CharacterDied
+let died = on CharacterDied()
 ```
 
 The alias can then be used as a trigger:
@@ -901,15 +1003,15 @@ let bumped = on Bumped {
 
 Fires an exec signal to an output port or local exec signal. Bare `emit` requires exec context; `emit target = expr` also works in pure context.
 
-```wirescript
+```wirescript ignore
 emit eventName              // bare exec signal (exec context only)
-emit target = expr          // set value + fire exec (any context)
+emit sig = value            // fire a signal carrying a value (payload for `await`)
 ```
 
 ```wirescript
 out scored: exec
 
-on CharacterDied(c) {
+on CharacterDied() -> (c) {
   score = score + 1
   emit scored
 }
@@ -919,19 +1021,23 @@ on scored {
 }
 ```
 
-### Value Emit
+### Setting an output value
 
-`emit target = expr` wires `expr` to the output's value input and fires the exec signal:
+To set a data output's value, use **`out name = value`** (in a handler or a
+chip/mod body) or **`return value`** (a single-output `mod`). `emit` is for exec
+signals, not data — don't use it to assign a plain output.
 
 ```wirescript
 out result: int
 
 on trigger {
-  emit result = computed_value    // exec context: wires value + routes exec
+  out result = computed_value    // set the output's value
 }
-
-emit status = some_expr           // pure context: continuous wire
 ```
+
+The `emit name = value` form is reserved for carrying a **payload alongside an
+exec signal** — a local signal you later `await` (see below): it fires the signal
+*and* ferries the value, so use it only when you actually want the exec to route.
 
 ### Local Exec Signals
 
@@ -948,7 +1054,7 @@ on start { await ready }        // continues when ready fires
 
 `buffer emit sig` routes the emit's exec through a **Buffer** gate, delaying delivery by one tick. This is the tick-crossing barrier that makes emit/await **loops** legal: a back-edge `emit` after an `await` closes a wire-graph cycle, and every cycle must cross a Buffer or the compile errors (**WS005**).
 
-```wirescript
+```wirescript ignore
 buffer emit loop            // 1 tick (default)
 buffer(3) emit loop         // 3 ticks (BufferTicks)
 buffer(0.5s) emit loop      // 0.5 seconds (BufferSeconds)
@@ -964,7 +1070,7 @@ buffer(0, 1s) emit sig      // delay 0, hold output 1s after the input drops
 
 `emit sig = value` on a **local** exec signal ferries the value with the signal: each emitted value is written into a hidden per-signal store var on the emit chain, and `await sig` reads it back on the resumed chain — so the value survives the buffered tick crossing.
 
-```wirescript
+```wirescript ignore
 let loop: exec
 
 emit loop = 0                        // scalar payload
@@ -1032,7 +1138,7 @@ Semantics worth knowing:
 
 Suspends the current exec chain and resumes from the awaited expression's exec output. Everything after the `await` runs when that exec fires. Only valid in exec context.
 
-```wirescript
+```wirescript ignore
 await signal                         // resume when signal fires
 let val = await signal               // capture the signal's ferried payload
 let { a, b } = await signal          // destructure a record payload
@@ -1104,7 +1210,7 @@ target = expression
 ```
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   count = count + 1
   score = 0
   name = "Player " .. playerId
@@ -1154,7 +1260,7 @@ on tick {
 Any expression can be used as a statement. This is primarily useful for calling exec functions that have side effects:
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   DisplayText(ctrl, "Round Started!", fontSize = 30)
   SetLocation(entity, newPos)
 }
@@ -1162,7 +1268,7 @@ on RoundStart {
 
 ## Built-in Events
 
-These events are available as handler triggers. Parameters listed can be bound using the `on Event(param)` syntax.
+These events are available as handler triggers. Parameters listed can be bound using the `on Event() -> (param)` tuple capture (or `-> { field: local }` record capture) — see [Binding Event Data](#binding-event-data).
 
 | Event | Parameters | Description |
 |-------|-----------|-------------|
@@ -1196,14 +1302,14 @@ The `return` statement terminates the current exec chain early. It can be used i
 - `mod` bodies (when called from exec context)
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   if score > 100 {
     return  // skip the rest of this handler
   }
   score = score + 1
 }
 
-chip on CharacterDied(character) {
+chip on CharacterDied() -> (character) {
   lives = lives - 1
   if lives <= 0 {
     return  // don't process further

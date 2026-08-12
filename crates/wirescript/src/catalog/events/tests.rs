@@ -2,8 +2,10 @@
 
     #[test]
     fn all_events_registered() {
-        assert_eq!(events().len(), 22);
+        assert_eq!(events().len(), 24);
         assert!(find_event("RoundStart").is_some());
+        assert!(find_event("WholeGridInteracted").is_some());
+        assert!(find_event("WholeGridTargeted").is_some());
         assert!(find_event("Clock").is_some());
         assert!(find_event("GlobalCustomEvent").is_some());
         assert!(find_event("ControllerJoinedTeam").is_some());

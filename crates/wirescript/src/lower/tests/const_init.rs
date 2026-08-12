@@ -30,7 +30,7 @@ fn baked_array(src: &str) -> Vec<Literal> {
 /// Typecheck errors only (the gate that rejects a non-constant element).
 fn errors(src: &str) -> Vec<String> {
     let parsed = crate::parser::parse(src, "test");
-    typecheck(&parsed.ast, "test")
+    typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default())
         .diagnostics
         .into_iter()
         .filter(|d| d.severity == crate::diagnostic::Severity::Error)

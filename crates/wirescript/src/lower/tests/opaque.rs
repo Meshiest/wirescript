@@ -62,7 +62,7 @@ fn any_fallback_still_rejected_by_operators() {
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics
             .iter()
@@ -169,7 +169,7 @@ fn nofold_captured_event_marks_nodes() {
     // tag it instead of silently dropping the annotation. `compile()` itself
     // asserts parse diagnostics are empty, so a clean compile also proves no
     // "@nofold has no effect" warning fired.
-    let r = compile("@nofold let c = on RoundStart { PrintToConsole(\"hi\") }");
+    let r = compile("@nofold let c = on RoundStart() { PrintToConsole(\"hi\") }");
     no_errors(&r);
     let marked = r.module.nodes.values()
         .filter(|n| n.properties.contains_key(&*crate::intern::sym::NO_FOLD))

@@ -8,7 +8,7 @@
             "parse diagnostics: {:?}",
             p.diagnostics
         );
-        typecheck(&p.ast, "test")
+        typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
     }
 
     fn assert_no_diags(r: &TypeCheckResult) {
@@ -318,7 +318,7 @@
         // A syntax error INSIDE the block must surface (not be dropped), remapped
         // into the block's outer-file span (not left at the inner offset 0).
         let src = "in go: exec\non go { SpawnPrefab($```on q { let y = }```) }\n";
-        let r = typecheck(&parse(src, "test").ast, "test");
+        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
         let err = r.diagnostics.iter().find(|d| d.severity == Severity::Error);
         assert!(err.is_some(), "inner error should surface: {:?}", r.diagnostics);
         let block = src.find("$```").unwrap();
@@ -332,15 +332,148 @@
     }
 
     #[test]
+    fn nested_prefab_custom_event_slot_defaults_to_float_and_warns() {
+        // A self-contained prefab block runs the same two-phase inference the
+        // compile path uses: an unannotated custom-event slot with no in-block
+        // sender defaults to float (WS042) and its typed use surfaces WS003 —
+        // in the editor / `just check`, not just at emit time. Both remap into
+        // the block's outer span.
+        let src =
+            "in go: exec\non go { SpawnPrefab($```on CustomEvent(\"init\") -> p { let n = p.GetUserId() }```) }\n";
+        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        let block = src.find("$```").unwrap();
+        let ws042 = r
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS042")
+            .expect("WS042 for the uninferable slot should surface");
+        assert!(
+            ws042.range.start.offset >= block,
+            "WS042 should remap into the block span (offset {} vs block {})",
+            ws042.range.start.offset,
+            block
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS003" && d.range.start.offset >= block),
+            "the float slot's typed use should surface WS003 inside the block: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn record_fields_match_ref_insensitively() {
+        // A record value's fields match an expected record type treating ref-ness
+        // as an exposure mode (like params/out/assign): a `let r: T = { shorthand }`
+        // built from vars exposes scalar fields as refs and array fields plainly,
+        // yet still passes to a mod whose record param mixes plain arrays and ref
+        // scalars. Reproduces the gba/chip8 (`*int[]` vs `int[]`) and
+        // secret-hitler/2raab data-model plumbing.
+        let cases = [
+            // Array field via shorthand: value exposes `*int[]`, param wants `int[]`.
+            "var regs: int[]\n\
+             type Cpu = { regs: int[] }\n\
+             mod cpu_init({ regs }: Cpu) { regs.push(0) }\n\
+             on RoundStart() {\n  let cpu: Cpu = { regs }\n  cpu_init(cpu)\n}\n",
+            // Scalar ref field: value exposes plain `int`, param wants `*int`.
+            "var counter_a: int = 0\n\
+             type State = { counter: *int, label: int }\n\
+             mod bump({ counter }: State) { counter = counter + 1 }\n\
+             on RoundStart() {\n  let sa: State = { counter: counter_a, label: 1 }\n  bump(sa)\n}\n",
+            // Mixed: arrays plain + scalars ref, all via shorthand (the gba `Cpu`).
+            "var regs: int[]\nvar cpsr: int = 0\nvar halted: bool = false\n\
+             type Cpu = { regs: int[], cpsr: *int, halted: *bool }\n\
+             mod cpu_init({ regs, cpsr, halted }: Cpu) { cpsr = 1 }\n\
+             on RoundStart() {\n  let cpu: Cpu = { regs, cpsr, halted }\n  cpu_init(cpu)\n}\n",
+        ];
+        for src in cases {
+            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+            assert!(
+                !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "ref-insensitive record field match should type-check cleanly: {:?}\nsrc:\n{src}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn tween_value_output_rides_input_variant() {
+        // Tween's `{ Value: <variant>, Arrived: exec }` output resolves the
+        // `Value` field to the target's concrete type, not the full
+        // `float|int|vector|…` union — so a float target yields a float `Value`
+        // that reads as a float and formats into a string (`${tw}`).
+        let src = "in target: float\n\
+                   let tw = Tween(target, 1.0)\n\
+                   out v: float = tw.Value\n\
+                   out s: string = \"${tw}\"\n";
+        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "a float Tween's Value should be float and format to string: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn tuple_value_matches_tuple_param() {
+        // A tuple literal is represented as an index-keyed record
+        // (`{"0":T0,"1":T1}`), but a tuple TYPE annotation resolves to
+        // `Type::Tuple([T0,T1])`. They describe the same shape and must be
+        // interchangeable — passing a tuple value/literal to a mod whose param
+        // is a tuple type must type-check.
+        let cases = [
+            "let w = (1, 2)\nmod f((a, b): (int, int)) -> int { return a + b }\nout o = f(w)\n",
+            "mod f((a, b): (int, int)) -> int { return a + b }\nout o = f((1, 2))\n",
+        ];
+        for src in cases {
+            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+            assert!(
+                !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "tuple value should match tuple param: {:?}\nsrc:\n{src}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn tuple_value_length_mismatch_still_errors() {
+        // Ref/representation-insensitivity must not accept a genuine arity or
+        // element-type mismatch.
+        let src = "mod f((a, b): (int, int)) -> int { return a + b }\nout o = f((1, 2, 3))\n";
+        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003" || d.code == "WS022"),
+            "a 3-tuple into a 2-tuple param should error: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn record_field_value_mismatch_still_errors() {
+        // Ref-insensitivity must NOT loosen genuine value-type mismatches: an
+        // `int` field where a `string` field is expected is still WS003.
+        let src = "type A = { x: int }\ntype B = { x: string }\n\
+                   mod take(b: B) { }\n\
+                   on RoundStart() {\n  let a: A = { x: 5 }\n  take(a)\n}\n";
+        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "int-field vs string-field record should still be WS003: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
     fn nested_handler_on_event_param_is_valid() {
         // A nested handler triggered by the enclosing handler's EVENT data param
-        // — `on CustomEvent(…, p: character) { on p { } }` and the negated
+        // — `on CustomEvent("x") -> (p: character) { on p { } }` and the negated
         // `on !p { }` — must type-check (the param is bound as EventParam).
         for src in [
-            "on CustomEvent(\"x\", p: character) {\n  on p { }\n}\n",
-            "on CustomEvent(\"x\", p: character) {\n  on !p { }\n}\n",
+            "on CustomEvent(\"x\") -> (p: character) {\n  on p { }\n}\n",
+            "on CustomEvent(\"x\") -> (p: character) {\n  on !p { }\n}\n",
         ] {
-            let r = typecheck(&parse(src, "test").ast, "test");
+            let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
             assert!(
                 !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
                 "`on (!)p` over an event data param should type-check: {:?}",
@@ -604,7 +737,7 @@
     #[test]
     fn handler_local_var_inferred() {
         assert_no_diags(&tc(
-            "on RoundStart { var v = Vec(1.0, 2.0, 3.0)\n let w = v + v }",
+            "on RoundStart() { var v = Vec(1.0, 2.0, 3.0)\n let w = v + v }",
         ));
     }
 
@@ -612,7 +745,7 @@
     fn var_inferred_type_catches_mismatch() {
         // Inference makes the var `int`, so assigning a vector is a real
         // WS003 — under the old `any` placeholder this passed silently.
-        let r = tc("var n = 0\non RoundStart { n = Vec(1.0, 1.0, 1.0) }");
+        let r = tc("var n = 0\non RoundStart() { n = Vec(1.0, 1.0, 1.0) }");
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS003"),
             "vector into inferred int var should be WS003, got {:?}",
@@ -658,13 +791,13 @@
         // Color() now returns `color` (was `any`), so the var refines and a
         // later color assignment typechecks.
         assert_no_diags(&tc(
-            "var tint = Color(1.0, 0.0, 0.0)\non RoundStart { tint = Color(0.0, 1.0, 0.0) }",
+            "var tint = Color(1.0, 0.0, 0.0)\non RoundStart() { tint = Color(0.0, 1.0, 0.0) }",
         ));
     }
 
     #[test]
     fn color_var_rejects_vector_assignment() {
-        let r = tc("var tint = Color(1.0, 0.0, 0.0)\non RoundStart { tint = Vec(1.0, 1.0, 1.0) }");
+        let r = tc("var tint = Color(1.0, 0.0, 0.0)\non RoundStart() { tint = Vec(1.0, 1.0, 1.0) }");
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS003"),
             "vector into color var should be WS003, got {:?}",
@@ -674,7 +807,7 @@
 
     #[test]
     fn var_string_in_handler_ok() {
-        assert_no_diags(&tc("on RoundStart { var x: string = \"hi\" }"));
+        assert_no_diags(&tc("on RoundStart() { var x: string = \"hi\" }"));
     }
 
     #[test]
@@ -691,7 +824,7 @@
 
     #[test]
     fn known_event_no_diag() {
-        let r = tc("on RoundStart { }");
+        let r = tc("on RoundStart() { }");
         assert_no_diags(&r);
     }
 
@@ -707,13 +840,13 @@
 
     #[test]
     fn handler_event_param_typed() {
-        let r = tc("on CharacterDied(c) { }");
+        let r = tc("on CharacterDied() -> { character: c } { }");
         assert_no_diags(&r);
     }
 
     #[test]
     fn assignment_in_handler_ok() {
-        let r = tc("var n: int = 0\non RoundStart { n = n + 1 }");
+        let r = tc("var n: int = 0\non RoundStart() { n = n + 1 }");
         assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
     }
 
@@ -734,7 +867,7 @@
 
     #[test]
     fn unknown_var_emits_diag() {
-        let r = tc("on RoundStart { x = 1 }");
+        let r = tc("on RoundStart() { x = 1 }");
         assert!(r.diagnostics.iter().any(|d| d.code == "WS002"));
     }
 
@@ -745,7 +878,7 @@
         // remain. None of the namespace/array/receiver branches match, so
         // without an explicit check the call silently lowers to an
         // `_Unsupported` gate that does nothing at runtime.
-        let r = tc("mod drawLobby(n: int) { }\non RoundStart { card.drawLobby(1) }");
+        let r = tc("mod drawLobby(n: int) { }\non RoundStart() { card.drawLobby(1) }");
         assert!(
             r.diagnostics
                 .iter()
@@ -757,13 +890,13 @@
 
     #[test]
     fn return_in_handler_no_error() {
-        let r = tc("var x: int = 0\non RoundStart { x = 1\nreturn\nx = 2 }");
+        let r = tc("var x: int = 0\non RoundStart() { x = 1\nreturn\nx = 2 }");
         assert_no_diags(&r);
     }
 
     #[test]
     fn return_in_exec_no_error() {
-        let r = tc("var x: int = 0\non RoundStart { if x > 5 { return } }");
+        let r = tc("var x: int = 0\non RoundStart() { if x > 5 { return } }");
         assert_no_diags(&r);
     }
 
@@ -791,7 +924,7 @@
     #[test]
     fn chip_single_output_exec() {
         let r = tc(
-            "chip Foo(x: int) -> (result: int) {\n  out result = x * 2\n}\nlet f = Foo(21)\nvar err: int = 0\non RoundStart {\n  if f != 42 { err = 1 }\n}",
+            "chip Foo(x: int) -> (result: int) {\n  out result = x * 2\n}\nlet f = Foo(21)\nvar err: int = 0\non RoundStart() {\n  if f != 42 { err = 1 }\n}",
         );
         assert_no_diags(&r);
     }
@@ -827,27 +960,27 @@
 
     #[test]
     fn mod_call_in_exec() {
-        let r = tc("var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart { inc(x) }");
+        let r = tc("var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }");
         assert_no_diags(&r);
     }
 
     // ---- anonymous chip ----
     #[test]
     fn anon_chip_shares_scope() {
-        let r = tc("var x: int = 0\nchip { var y: int = 0 }\non RoundStart { x = 1 }");
+        let r = tc("var x: int = 0\nchip { var y: int = 0 }\non RoundStart() { x = 1 }");
         assert_no_diags(&r);
     }
 
     #[test]
     fn chip_on_handler() {
-        let r = tc("var x: int = 0\nchip on RoundStart { x = 1 }");
+        let r = tc("var x: int = 0\nchip on RoundStart() { x = 1 }");
         assert_no_diags(&r);
     }
 
     // ---- emit ----
     #[test]
     fn emit_in_exec() {
-        let r = tc("var x: int = 0\nout result = x\non RoundStart { emit result }");
+        let r = tc("var x: int = 0\nout result = x\non RoundStart() { emit result }");
         assert_no_diags(&r);
     }
 
@@ -870,20 +1003,20 @@
     // ---- character to entity coercion ----
     #[test]
     fn character_coerces_to_entity() {
-        let r = tc("in ch: character\non RoundStart { ch.SetLocation(Vec(0.0, 0.0, 0.0)) }");
+        let r = tc("in ch: character\non RoundStart() { ch.SetLocation(Vec(0.0, 0.0, 0.0)) }");
         assert_no_diags(&r);
     }
 
     // ---- call arg validation ----
     #[test]
     fn call_too_many_args() {
-        let r = tc("on RoundStart { Random(1, 2, 3, 4, 5) }");
+        let r = tc("on RoundStart() { Random(1, 2, 3, 4, 5) }");
         assert!(r.diagnostics.iter().any(|d| d.code == "WS011"));
     }
 
     #[test]
     fn call_wrong_arg_type() {
-        let r = tc("on RoundStart { SetLocation(42, Vec(0.0, 0.0, 0.0)) }");
+        let r = tc("on RoundStart() { SetLocation(42, Vec(0.0, 0.0, 0.0)) }");
         assert!(
             r.diagnostics
                 .iter()
@@ -897,7 +1030,7 @@
         // Fewer positional args than a builtin requires — the "requires N
         // args" WS011 branch (call_too_many_args above exercises the
         // "expects at most" branch).
-        let r = tc("in e: entity\non RoundStart { SetLocation(e) }");
+        let r = tc("in e: entity\non RoundStart() { SetLocation(e) }");
         assert!(r.diagnostics.iter().any(|d| d.code == "WS011"));
     }
 
@@ -905,7 +1038,7 @@
     fn receiver_call_wrong_arg_type() {
         // A receiver-method arg mismatch (`e.SetLocation(5)` — `pos` expects
         // a vector) must fire the same WS003 the plain-call form does.
-        let r = tc("in e: entity\non RoundStart { e.SetLocation(5) }");
+        let r = tc("in e: entity\non RoundStart() { e.SetLocation(5) }");
         assert!(
             r.diagnostics
                 .iter()
@@ -915,7 +1048,7 @@
 
     #[test]
     fn receiver_call_valid_stays_clean() {
-        let r = tc("in e: entity\non RoundStart { e.SetLocation(Vec(0.0, 0.0, 0.0)) }");
+        let r = tc("in e: entity\non RoundStart() { e.SetLocation(Vec(0.0, 0.0, 0.0)) }");
         assert_no_diags(&r);
     }
 
@@ -942,7 +1075,7 @@
                 .collect(),
         };
         let resolved = resolve("import * as lib from \"lib\"", "main.ws", &loader);
-        let r = typecheck(&resolved.ast, "main.ws");
+        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         assert_no_diags(&r);
     }
 
@@ -965,11 +1098,11 @@
         use crate::resolve::resolve;
         let loader = ns_util_loader();
         let resolved = resolve(
-            "import * as u from \"util\"\non RoundStart { u.f(5) }",
+            "import * as u from \"util\"\non RoundStart() { u.f(5) }",
             "main.ws",
             &loader,
         );
-        let r = typecheck(&resolved.ast, "main.ws");
+        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS003"),
             "expected WS003 for namespaced call arg type mismatch: {:?}",
@@ -982,11 +1115,11 @@
         use crate::resolve::resolve;
         let loader = ns_util_loader();
         let resolved = resolve(
-            "import * as u from \"util\"\non RoundStart { u.f() }",
+            "import * as u from \"util\"\non RoundStart() { u.f() }",
             "main.ws",
             &loader,
         );
-        let r = typecheck(&resolved.ast, "main.ws");
+        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS011"),
             "expected WS011 for namespaced call arity mismatch: {:?}",
@@ -999,11 +1132,11 @@
         use crate::resolve::resolve;
         let loader = ns_util_loader();
         let resolved = resolve(
-            "import * as u from \"util\"\non RoundStart { u.f(Vec(0.0, 0.0, 0.0)) }",
+            "import * as u from \"util\"\non RoundStart() { u.f(Vec(0.0, 0.0, 0.0)) }",
             "main.ws",
             &loader,
         );
-        let r = typecheck(&resolved.ast, "main.ws");
+        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         assert_no_diags(&r);
     }
 
@@ -1025,11 +1158,11 @@
             .collect(),
         };
         let resolved = resolve(
-            "import * as g from \"gutil\"\non RoundStart { }",
+            "import * as g from \"gutil\"\non RoundStart() { }",
             "main.ws",
             &loader,
         );
-        let r = typecheck(&resolved.ast, "main.ws");
+        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         assert!(
             !r.diagnostics.iter().any(|d| d.code == "WS002"),
             "importing a namespace with an uncalled generic member must not \
@@ -1049,7 +1182,7 @@
     // ---- receiver call ----
     #[test]
     fn receiver_call_method() {
-        let r = tc("var ctrl: controller\non RoundStart { ctrl.DisplayText(\"hi\") }");
+        let r = tc("var ctrl: controller\non RoundStart() { ctrl.DisplayText(\"hi\") }");
         assert_no_diags(&r);
     }
 
@@ -1611,7 +1744,7 @@
         // there is an error, not a silent fall-back to the name.
         let r = tc(
             "in x: int\n\
-             on ControllerJoined(c, id, name) {\n\
+             on ControllerJoined() -> { controller: c, userId: id, userName: name } {\n\
              @label(x) var y: int = 0\n\
              }",
         );
@@ -1880,4 +2013,59 @@
             "mod identity<T>(v: T) -> T { return v }\n\
              in n: int\nout r: int = identity(n) + 1\n",
         ));
+    }
+
+    #[test]
+    fn infer_ce_slots_adopts_sender_type_and_warns_when_absent() {
+        // A receiver with unannotated `amount`; an in-unit send of an int → amount:int.
+        let src = "static var last: int = 0\n\
+                   in go: exec\n\
+                   on CustomEvent(\"dmg\") -> (amount) {\n  last = last + 1\n}\n\
+                   on go {\n  SendCustomEvent(\"dmg\", 42)\n}\n";
+        let p = parse(src, "test");
+        assert!(p.diagnostics.is_empty(), "parse: {:?}", p.diagnostics);
+        let pass1 = typecheck(&p.ast, "test", &CeSlotMap::default());
+        let (map, diags) = infer_custom_event_slots(&p.ast, &pass1.type_of_expr);
+        // The single receiver's slot 0 resolved to int.
+        let slots = map.values().next().expect("one custom-event receiver");
+        assert_eq!(slots.get(0).cloned().flatten(), Some(Type::Int));
+        assert!(diags.is_empty(), "no WS042 when a sender exists: {:?}", diags);
+
+        // No in-unit sender → float + WS042.
+        let src2 = "static var last: int = 0\n\
+                    on CustomEvent(\"ext\") -> (amount) {\n  last = last + 1\n}\n";
+        let p2 = parse(src2, "test");
+        let pass1b = typecheck(&p2.ast, "test", &CeSlotMap::default());
+        let (map2, diags2) = infer_custom_event_slots(&p2.ast, &pass1b.type_of_expr);
+        let slots2 = map2.values().next().expect("one receiver");
+        assert_eq!(slots2.get(0).cloned().flatten(), Some(Type::Float));
+        assert!(diags2.iter().any(|d| d.code == "WS042"), "expected WS042: {:?}", diags2);
+    }
+
+    #[test]
+    fn inferred_ce_slot_type_is_enforced_in_body() {
+        // `amount` inferred as int from the sender; using it where a vector is
+        // required is a WS003 (type error) — proving the body sees `int`, not
+        // `any` (which coerces to everything, including vector — `int` doesn't:
+        // numeric-to-vector has no coercion rule, see `types::coerce::coerce`).
+        let src = "static var v: vector = Vec(0.0, 0.0, 0.0)\n\
+                   in go: exec\n\
+                   on CustomEvent(\"dmg\") -> (amount) {\n  v = amount\n}\n\
+                   on go {\n  SendCustomEvent(\"dmg\", 42)\n}\n";
+        let p = parse(src, "test");
+        let (r, _map) = typecheck_with_inference(&p.ast, "test");
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "assigning int `amount` to vector var must be WS003: {:?}", r.diagnostics);
+        // And WS029 is gone entirely.
+        assert!(!r.diagnostics.iter().any(|d| d.code == "WS029"),
+            "WS029 is removed: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn uninferable_ce_slot_warns_ws042_not_ws029() {
+        let src = "static var n: int = 0\non CustomEvent(\"ext\") -> (amount) {\n  n = n + 1\n}\n";
+        let p = parse(src, "test");
+        let (r, _map) = typecheck_with_inference(&p.ast, "test");
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS042"), "{:?}", r.diagnostics);
+        assert!(!r.diagnostics.iter().any(|d| d.code == "WS029"), "{:?}", r.diagnostics);
     }

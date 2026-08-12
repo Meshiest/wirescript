@@ -4,7 +4,7 @@
     use crate::typecheck::typecheck;
     fn hover_for(source: &str, line: usize, col: usize) -> Option<String> {
         let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck(&resolved.ast, "test");
+        let tc = typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
         let estimates = crate::analysis::resource_estimate::collect_estimates(&resolved.ast, &tc, "test");
         hover_at(
@@ -32,6 +32,40 @@
         assert!(h.contains("**Defaults:**"), "expected a defaults table: {h}");
         assert!(h.contains("| Parameter | Type | Default |"), "expected table header: {h}");
         assert!(h.contains("fontSize"), "expected FontSize default row: {h}");
+    }
+
+    #[test]
+    fn builtin_event_hover_uses_arrow_capture_form() {
+        // Hovering a built-in event name shows the call + capture signature
+        // `on CharacterSpawned() -> (character: character)`, NOT the old inline
+        // `on CharacterSpawned(character: character)` form.
+        let src = "on CharacterSpawned() -> (ch) {\n}\n";
+        let col = src.lines().next().unwrap().find("CharacterSpawned").unwrap();
+        let h = hover_for(src, 0, col).expect("event should hover");
+        assert!(
+            h.contains("on CharacterSpawned() -> (character: character)"),
+            "event hover should use the arrow capture form: {h}"
+        );
+        assert!(
+            !h.contains("on CharacterSpawned(character"),
+            "event hover must not use the old inline form: {h}"
+        );
+    }
+
+    #[test]
+    fn custom_event_generic_hover_config_naming() {
+        // The generic (channel-less) CustomEvent hover shows the config-cased
+        // `isObject`, the channel as a single `"name"` placeholder (NOT also the
+        // internal `EventName` positional), and the untyped data slots.
+        let h = hover_builtin_event("CustomEvent").expect("CustomEvent should hover");
+        assert!(h.contains("isObject"), "config arg shown display-cased: {h}");
+        assert!(!h.contains("isobject"), "config arg not lowercased: {h}");
+        assert!(
+            !h.contains("EventName"),
+            "channel shown once as \"name\", not also as EventName: {h}"
+        );
+        assert!(h.contains("on CustomEvent(\"name\""), "channel placeholder: {h}");
+        assert!(h.contains("data1: any"), "untyped data slots: {h}");
     }
 
     #[test]
@@ -75,8 +109,8 @@
         // Hovering the `CustomEvent` trigger shows the channel name plus each
         // data slot's name/type: declared by the receiver, and filled from a
         // matching sender for the slot the receiver left untyped (`attacker`).
-        let src = "on CustomEvent(\"dmg\", amount: int, attacker) {\n  let x = amount\n}\n\
-                   on CharacterSpawned(ch) {\n  SendCustomEvent(\"dmg\", 5, ch)\n}\n";
+        let src = "on CustomEvent(\"dmg\") -> (amount: int, attacker) {\n  let x = amount\n}\n\
+                   on CharacterSpawned() -> (ch) {\n  SendCustomEvent(\"dmg\", 5, ch)\n}\n";
         let line0 = src.lines().next().unwrap();
         let col = line0.find("CustomEvent").unwrap();
         let h = hover_for(src, 0, col).expect("CustomEvent trigger should hover");
@@ -103,7 +137,7 @@
         // The global namespace resolves against `SendGlobalCustomEvent` senders,
         // not personal ones (separate channel namespaces), and fills an untyped
         // receiver slot from the sender's inferred arg type.
-        let src = "on GlobalCustomEvent(\"score\", points) {\n}\n\
+        let src = "on GlobalCustomEvent(\"score\") -> (points) {\n}\n\
                    on go {\n  SendGlobalCustomEvent(\"score\", 10)\n}\nin go: exec\n";
         let l0 = src.lines().next().unwrap();
         let c = l0.find("GlobalCustomEvent").unwrap();
@@ -116,7 +150,7 @@
     fn send_custom_event_call_hover_shows_channel_typings() {
         // Hovering `SendCustomEvent` on the SEND call shows the channel's typed
         // fields (resolved from the matching receiver declaration).
-        let src = "on CustomEvent(\"dmg\", amount: int, attacker: character) {\n}\n\
+        let src = "on CustomEvent(\"dmg\") -> (amount: int, attacker: character) {\n}\n\
                    on go {\n  SendCustomEvent(\"dmg\", 5, ch)\n}\nin go: exec\n";
         let send_line = 3usize; // the `SendCustomEvent(...)` line
         let l = src.lines().nth(send_line).unwrap();
@@ -142,9 +176,9 @@
             .into_iter()
             .collect(),
         };
-        let src = "import * as card from \"display\"\non RoundStart { card.drawCard(1, \"hi\") }";
+        let src = "import * as card from \"display\"\non RoundStart() { card.drawCard(1, \"hi\") }";
         let resolved = resolve(src, "main", &loader);
-        let tc = typecheck(&resolved.ast, "main");
+        let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main"));
         let estimates =
             crate::analysis::resource_estimate::collect_estimates(&resolved.ast, &tc, "main");
@@ -252,7 +286,7 @@
         };
         let src = "import * as card from \"display\"";
         let resolved = resolve(src, "main", &loader);
-        let tc = typecheck(&resolved.ast, "main");
+        let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main"));
         let estimates =
             crate::analysis::resource_estimate::collect_estimates(&resolved.ast, &tc, "main");
@@ -303,7 +337,7 @@ mod bump({ counter, step }: State) { counter = counter + step }";
         // `Sleep(_, delay = delay)`: only the LHS is the named arg; the RHS is
         // a user symbol that merely shares the param's name and must hover as
         // the symbol, not as the param docs.
-        let src = "let delay = 1.0\non RoundStart { await Sleep(_, delay = delay) }";
+        let src = "let delay = 1.0\non RoundStart() { await Sleep(_, delay = delay) }";
         let line1 = src.lines().nth(1).unwrap();
         let lhs = line1.find("delay").unwrap();
         let rhs = line1.rfind("delay").unwrap();
@@ -320,7 +354,7 @@ mod bump({ counter, step }: State) { counter = counter + step }";
         );
 
         // Same on a continuation line of a multi-line call.
-        let src2 = "let delay = 1.0\non RoundStart {\n  await Sleep(_,\n    delay = delay,\n  )\n}";
+        let src2 = "let delay = 1.0\non RoundStart() {\n  await Sleep(_,\n    delay = delay,\n  )\n}";
         let line3 = src2.lines().nth(3).unwrap();
         let hl2 = hover_for(src2, 3, line3.find("delay").unwrap())
             .expect("hover on the multi-line arg name should return something");

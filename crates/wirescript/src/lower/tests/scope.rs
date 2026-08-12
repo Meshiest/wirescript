@@ -15,7 +15,7 @@ fn module_has_root_scope_only_for_empty_program() {
 
 #[test]
 fn handler_allocates_handler_body_scope() {
-    let r = compile("on RoundStart { }");
+    let r = compile("on RoundStart() { }");
     let has_handler_body = r.module.scopes.values().any(|s| match &s.kind {
         ScopeKind::HandlerBody { trigger_label } => trigger_label == "RoundStart",
         _ => false,
@@ -36,7 +36,7 @@ fn handler_allocates_handler_body_scope() {
 
 #[test]
 fn if_creates_if_group_with_cond_then_else_children() {
-    let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+    let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
     let r = compile(src);
     let group_id = r
         .module
@@ -67,7 +67,7 @@ fn if_creates_if_group_with_cond_then_else_children() {
 
 #[test]
 fn every_node_has_a_valid_scope_id() {
-    let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+    let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
     let r = compile(src);
     for node in r.module.nodes.values() {
         assert!(
@@ -83,7 +83,7 @@ fn every_node_has_a_valid_scope_id() {
 fn if_branches_own_their_body_nodes() {
     // The Set gate for `n = 1` must live in the IfThen scope;
     // the Set gate for `n = 2` must live in the IfElse scope.
-    let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+    let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
     let r = compile(src);
 
     let then_id = r

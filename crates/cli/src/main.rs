@@ -126,7 +126,7 @@ fn run_wirescript(
 
     if dump_ir {
         let resolved = wirescript::resolve(&src, &file, &wirescript::FsLoader);
-        let tc = wirescript::typecheck::typecheck(&resolved.ast, &file);
+        let (tc, ce_slots) = wirescript::typecheck::typecheck_with_inference(&resolved.ast, &file);
         let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
             ast: &resolved.ast,
             type_of_expr: &tc.type_of_expr,
@@ -136,6 +136,7 @@ fn run_wirescript(
             template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
             doc_comments: &resolved.doc_comments,
             fold_mode,
+            ce_slots: &ce_slots,
         });
         wirescript::ir::dump_module_with_source(&lowered.module, 0, Some(&src));
     }

@@ -9,7 +9,7 @@ mod swap(x: *int, y: *int) {
   y = tmp
 }
 
-on RoundStart {
+on RoundStart() {
   swap(a, b)
   // Or use the built-in
   Swap(true, a, b)

@@ -17,7 +17,7 @@
             "parse diags: {:?}",
             parsed.diagnostics
         );
-        let tc = typecheck(&parsed.ast, "test");
+        let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
         let r = lower(LowerInput {
             ast: &parsed.ast,
             type_of_expr: &tc.type_of_expr,
@@ -27,6 +27,7 @@
             template_cache: Arc::new(TemplateCache::new()),
             doc_comments: &parsed.doc_comments,
             fold_mode: crate::lower::FoldMode::Auto,
+            ce_slots: &crate::typecheck::CeSlotMap::default(),
         });
         r.module
     }
@@ -42,7 +43,7 @@
 
     #[test]
     fn handler_gets_one_child_region() {
-        let m = compile("on RoundStart { }");
+        let m = compile("on RoundStart() { }");
         let root = build_region_tree(&m);
         assert_eq!(root.children.len(), 1);
         let handler = &root.children[0];
@@ -54,7 +55,7 @@
 
     #[test]
     fn if_else_builds_group_with_three_children() {
-        let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+        let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
         let m = compile(src);
         let root = build_region_tree(&m);
         // root > handler_body > if_group > (cond, then, else)
@@ -79,7 +80,7 @@
 
     #[test]
     fn node_count_matches_module_total() {
-        let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+        let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
         let m = compile(src);
         let root = build_region_tree(&m);
         assert_eq!(region_node_count(&root), m.nodes.len());
@@ -87,7 +88,7 @@
 
     #[test]
     fn scope_count_matches_module_total() {
-        let src = "var n: int = 0\non RoundStart { if (n > 0) { n = 1 } else { n = 2 } }";
+        let src = "var n: int = 0\non RoundStart() { if (n > 0) { n = 1 } else { n = 2 } }";
         let m = compile(src);
         let root = build_region_tree(&m);
         assert_eq!(region_scope_count(&root), m.scopes.len());

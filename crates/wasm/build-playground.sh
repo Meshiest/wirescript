@@ -23,6 +23,7 @@ cp playground/docs.js _site/
 echo "Copying docs + examples..."
 mkdir -p _site/docs _site/sdk/examples
 cp ../../docs/wirescript/*.md _site/docs/
+cp ../../CHANGELOG.md _site/docs/
 node playground/build-search-index.mjs _site/docs _site/docs/search-index.json
 cp playground/sdk/examples/*.ws _site/sdk/examples/
 
@@ -50,6 +51,14 @@ cp playground/share.js _sdk/wirescript-sdk/playground/
 cp playground/docs.js _sdk/wirescript-sdk/playground/
 cp pkg/wasm_bg.wasm _sdk/wirescript-sdk/playground/pkg/
 cp pkg/wasm.js _sdk/wirescript-sdk/playground/pkg/
+
+# Bundle the reference docs + CHANGELOG (with a search index) so the SDK's
+# playground is a self-contained docs viewer and cross-doc links (e.g. the
+# migration guide's link to the CHANGELOG) resolve offline.
+mkdir -p _sdk/wirescript-sdk/playground/docs
+cp ../../docs/wirescript/*.md _sdk/wirescript-sdk/playground/docs/
+cp ../../CHANGELOG.md _sdk/wirescript-sdk/playground/docs/
+node playground/build-search-index.mjs _sdk/wirescript-sdk/playground/docs _sdk/wirescript-sdk/playground/docs/search-index.json
 
 mkdir -p _sdk/wirescript-sdk/vscode/syntaxes _sdk/wirescript-sdk/vscode/pkg
 cp playground/sdk/vscode/extension.js _sdk/wirescript-sdk/vscode/

@@ -8,7 +8,7 @@ use crate::layout::{layout_options_for, layout_with_opts};
 use crate::lower::{LowerInput, lower};
 use crate::resolve::{FsLoader, resolve};
 use crate::template_cache::TemplateCache;
-use crate::typecheck::typecheck;
+use crate::typecheck::typecheck_with_inference;
 
 pub use crate::lower::FoldMode;
 
@@ -214,7 +214,7 @@ fn compile_with_opts_inner(
     });
     // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
     opts.invisible = resolved.ast.invisible;
-    let tc = typecheck(&resolved.ast, file);
+    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
 
     let template_cache = {
         let cache = TemplateCache::new();
@@ -231,6 +231,7 @@ fn compile_with_opts_inner(
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: input.fold_mode,
+        ce_slots: &ce_slots,
     });
 
     // Every wire-graph cycle must cross a tick barrier (Buffer/Queue) — an
@@ -325,7 +326,7 @@ fn compile_to_world_inner(
     });
     // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
     opts.invisible = resolved.ast.invisible;
-    let tc = typecheck(&resolved.ast, file);
+    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());
 
@@ -338,6 +339,7 @@ fn compile_to_world_inner(
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: input.fold_mode,
+        ce_slots: &ce_slots,
     });
 
     // Unbarriered wire-graph cycles error (WS005) — see compile_with_opts.

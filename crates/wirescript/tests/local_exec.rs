@@ -4,7 +4,7 @@ use wirescript::{compile, CompileInput, FoldMode};
 
 fn diag_codes(src: &str) -> Vec<String> {
     let resolved = resolve(src, "test", &FsLoader);
-    let tc = typecheck(&resolved.ast, "test");
+    let tc = typecheck(&resolved.ast, "test", &wirescript::typecheck::CeSlotMap::default());
     tc.diagnostics.iter().map(|d| d.code.clone()).collect()
 }
 

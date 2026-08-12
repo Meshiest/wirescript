@@ -10,7 +10,7 @@ use wirescript::catalog::calls::calls;
 use wirescript::catalog::events::events;
 use wirescript::lexer::KEYWORDS;
 use wirescript::resolve::{MemLoader, resolve};
-use wirescript::{parse, typecheck::typecheck};
+use wirescript::{parse, typecheck::typecheck_with_inference};
 
 #[derive(Serialize)]
 pub struct DiagnosticOut {
@@ -88,7 +88,7 @@ fn make_loader(files_json: &str) -> MemLoader {
 pub fn diagnostics(source: &str, files_json: &str) -> String {
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
-    let tc = typecheck(&resolved.ast, "editor");
+    let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let diags: Vec<DiagnosticOut> = resolved
         .diagnostics
         .iter()
@@ -166,7 +166,7 @@ pub fn completions(
 ) -> String {
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
-    let tc = typecheck(&resolved.ast, "editor");
+    let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let symbols = collect_symbols(&resolved.ast, &tc.type_of_expr);
     let mut items: Vec<CompletionOut> = Vec::new();
 
@@ -348,13 +348,12 @@ pub fn completions(
             // Enum-valued named arg (e.g. `justify = "Center"`): if the cursor
             // is in the value slot of a param whose data field is an enum,
             // offer the enum's variant names instead of param names.
-            if let Some((param_name, _value_so_far)) =
-                named_arg_value(source, line as usize, col as usize)
-            {
+            let value_ctx = named_arg_value(source, line as usize, col as usize);
+            if let Some((param_name, _value_so_far)) = value_ctx.as_ref() {
                 // Enum config value — works for a hand-coded param or a raw
                 // config field, via the unified call+event helper.
                 if let Some(et) =
-                    wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), &param_name)
+                    wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), param_name)
                 {
                     for v in wirescript::catalog::enum_member_names(et) {
                         items.push(CompletionOut {
@@ -368,7 +367,7 @@ pub fn completions(
                         return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
                     }
                 }
-                if let Some(param) = spec.params.iter().find(|p| p.name == param_name) {
+                if let Some(param) = spec.params.iter().find(|p| &p.name == param_name) {
                     // Asset-ref config param (`font = <here>`): offer full
                     // `$Type/Name` refs for the param's asset type. Constant-only
                     // params only (a wire-input Entity port takes a live value).
@@ -391,51 +390,57 @@ pub fn completions(
                     }
                 }
             }
-            for (i, p) in spec.params.iter().enumerate() {
-                // The receiver param (index 0 on a method call) is already
-                // supplied via the `x.Method(` syntax — don't offer it.
-                if i == 0 && spec.receiver.is_some() {
-                    continue;
+            // Argument-NAME completions: only when NOT completing a value. In a
+            // `name = <here>` value slot that wasn't an enum/asset value, skip the
+            // arg names and fall through to the in-scope identifier list below.
+            if value_ctx.is_none() {
+                for (i, p) in spec.params.iter().enumerate() {
+                    // The receiver param (index 0 on a method call) is already
+                    // supplied via the `x.Method(` syntax — don't offer it.
+                    if i == 0 && spec.receiver.is_some() {
+                        continue;
+                    }
+                    // A config param surfaced as a plain int but backed by a schema
+                    // enum shows the enum's name instead of `int`.
+                    let ty_label = wirescript::field_enum_type(spec.gate_class, p.port.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| type_str(&p.ty));
+                    if p.optional {
+                        items.push(CompletionOut {
+                            label: format!("{} = ", p.name),
+                            kind: "field",
+                            detail: Some(format!("{ty_label} (optional)")),
+                            insert_text: Some(format!("{} = ", p.name)),
+                        });
+                    } else {
+                        items.push(CompletionOut {
+                            label: p.name.to_string(),
+                            kind: "field",
+                            detail: Some(format!("{ty_label} (required)")),
+                            insert_text: None,
+                        });
+                    }
                 }
-                // A config param surfaced as a plain int but backed by a schema
-                // enum shows the enum's name instead of `int`.
-                let ty_label = wirescript::field_enum_type(spec.gate_class, p.port.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| type_str(&p.ty));
-                if p.optional {
+                // Data-driven config attributes: the gate's raw settings-menu field
+                // names (those without a hand-coded alias param).
+                for cfg in wirescript::catalog::scalar_config_fields(spec.gate_class) {
+                    if spec.params.iter().any(|p| p.name == cfg.name) {
+                        continue;
+                    }
+                    let ty_label =
+                        wirescript::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| cfg.ty.clone());
                     items.push(CompletionOut {
-                        label: format!("{} = ", p.name),
+                        label: format!("{} = ", cfg.name),
                         kind: "field",
-                        detail: Some(format!("{ty_label} (optional)")),
-                        insert_text: Some(format!("{} = ", p.name)),
-                    });
-                } else {
-                    items.push(CompletionOut {
-                        label: p.name.to_string(),
-                        kind: "field",
-                        detail: Some(format!("{ty_label} (required)")),
-                        insert_text: None,
+                        detail: Some(format!("{ty_label} (config)")),
+                        insert_text: Some(format!("{} = ", cfg.name)),
                     });
                 }
-            }
-            // Data-driven config attributes: the gate's raw settings-menu field
-            // names (those without a hand-coded alias param).
-            for cfg in wirescript::catalog::scalar_config_fields(spec.gate_class) {
-                if spec.params.iter().any(|p| p.name == cfg.name) {
-                    continue;
+                if !items.is_empty() {
+                    return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
                 }
-                let ty_label = wirescript::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| cfg.ty.clone());
-                items.push(CompletionOut {
-                    label: format!("{} = ", cfg.name),
-                    kind: "field",
-                    detail: Some(format!("{ty_label} (config)")),
-                    insert_text: Some(format!("{} = ", cfg.name)),
-                });
-            }
-            if !items.is_empty() {
-                return serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
             }
         } else if let Some(evt) =
             wirescript::catalog::events::find_event(call_name.as_str())
@@ -587,7 +592,7 @@ pub fn completions(
 pub fn hover(source: &str, line: u32, col: u32, files_json: &str) -> Option<String> {
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
-    let tc = typecheck(&resolved.ast, "editor");
+    let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let symbols = collect_symbols(&resolved.ast, &tc.type_of_expr);
     let estimates = wirescript::analysis::collect_estimates(&resolved.ast, &tc, "editor");
     let value = hover_at(
@@ -619,7 +624,7 @@ pub fn definition_with_files(
     let loader = make_loader(files_json);
     let pre_resolve = parse(source, "editor");
     let resolved = resolve(source, "editor", &loader);
-    let tc = typecheck(&resolved.ast, "editor");
+    let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let symbols = collect_symbols(&resolved.ast, &tc.type_of_expr);
 
     let loc = definition_at(
@@ -714,7 +719,7 @@ struct InlayHintOut {
 pub fn inlay_hints(source: &str, files_json: &str) -> String {
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
-    let tc = typecheck(&resolved.ast, "editor");
+    let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let hints = wirescript::analysis::collect_inlay_hints(source, &resolved.ast, &tc.type_of_expr, "editor");
     let out: Vec<InlayHintOut> = hints
         .into_iter()

@@ -20,12 +20,12 @@ mod clamp(val: *int, lo: int, hi: int) {
 }
 
 // chip on = handler inside a physical microchip
-chip on RoundStart {
+chip on RoundStart() {
   health = 100
   armor = 50
 }
 
-chip on CharacterDied(character) {
+chip on CharacterDied() -> (character) {
   health = health - 25
   armor = armor - 10
   clamp(health, 0, 100)

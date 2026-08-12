@@ -121,7 +121,7 @@ let point = {
 Blocks are enclosed in curly braces `{ }` and contain a sequence of statements. They are used for handler bodies, chip bodies, `if`/`else` branches, and named chip declarations.
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   count = count + 1
   score = 0
 }

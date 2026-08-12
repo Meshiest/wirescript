@@ -324,7 +324,7 @@ out c: color = lut.get(i, exec = i + 1).Value
 
 ```wirescript
 var scores: int[]
-on RoundEnd {
+on RoundEnd() {
   scores.push(currentScore)
   scores.sort(true)          // descending
   let best = scores.max()
@@ -377,7 +377,7 @@ CharacterOf(controller: controller) -> character
 Get character from controller. Receiver on `controller`.
 
 ```wirescript
-on CharacterSpawned(character) {
+on CharacterSpawned() -> (character) {
   let ctrl = character.ControllerOf()
   ctrl.DisplayText("Welcome!", fontSize = 24)
 }
@@ -454,7 +454,7 @@ are constant-only data fields (not wire inputs).
 | `font` | asset ref | No | Font asset reference (constant only) |
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   ctrl.DisplayText("Round Start!", fontSize = 48, lifetime = 3.0)
 }
 
@@ -728,7 +728,7 @@ Read, set, or add to a team-scoped leaderboard value. Receiver on the team
 `entity` (also callable as free functions with `team` as the first argument).
 
 ```wirescript
-on CharacterDied(character) {
+on CharacterDied() -> (character) {
   let ctrl = character.ControllerOf()
   ctrl.IncLeaderboard("deaths", 1)
   let score = ctrl.GetLeaderboard("score")
@@ -746,7 +746,7 @@ ShowHint(character: character, title: string, text: string)
 Display a hint popup to a character. Receiver on `character`.
 
 ```wirescript
-on CharacterSpawned(character) {
+on CharacterSpawned() -> (character) {
   character.ShowHint("Welcome", "Press E to interact")
 }
 ```
@@ -790,7 +790,7 @@ speed/scale multipliers, a display-name override, and a projectile override.
 All receive on `character`.
 
 ```wirescript
-on CharacterSpawned(character) {
+on CharacterSpawned() -> (character) {
   character.GiveWeapon($BRItemBase/Weapon_Pistol, 0)
   character.AddInventoryItemAdv($BRItemBase/Weapon_Bow,
     damage = 2.0, itemName = "Longbow of Doom")
@@ -808,7 +808,7 @@ ShowStatusMessage(controller: controller, message: string)
 Display a status bar message to a player. Receiver on `controller`.
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   ctrl.ShowStatusMessage("Round started!")
 }
 ```
@@ -881,7 +881,7 @@ arg is a `$BrickOneShotAudioDescriptor/...` asset reference. `PlayAudioAt`
 receives on `entity` (characters work too).
 
 ```wirescript
-on ZoneEntered(character) {
+on ZoneEntered() -> (character) {
   character.PlayAudioAt($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press)
 }
 ```
@@ -1012,17 +1012,17 @@ on Clock(interval = 2.0, enabled = running, pulseOn = false, onTime = 0.5, offTi
 
 ## ChatCommand (Event)
 
-Registers a chat command. The trigger takes both **config args** (the command
-name and an optional description) and **binding params** (the event's data
-outputs), distinguished by form:
+Registers a chat command. The call parens hold only **config args** (the
+command name and an optional description); the event's data outputs are bound
+by a trailing `-> (…)` tuple capture (or `-> { field: local }` record):
 
 - **String literals** fill the config fields in order: `CommandName`, then
   `HelpText`. The description can also be given by name as `Description = "..."`.
-- **Bare identifiers** bind the event's data outputs, in order: `controller`
+- The `->` capture binds the event's data outputs, in order: `controller`
   (the player who typed it), then `arguments` (the command text as a string).
 
 ```wirescript
-on ChatCommand("greet", "Greets the player", controller, arguments) {
+on ChatCommand("greet", "Greets the player") -> (controller, arguments) {
   // CommandName = "greet", HelpText = "Greets the player"
   // controller: the player who typed the command
   // arguments: the command text as a string
@@ -1062,17 +1062,20 @@ on hit {
 
 ### on CustomEvent (Event)
 
-The receiver's first argument is the channel name (positional), and the
-remaining params are the **typed data outputs**. The type annotations are
-**required** — the game stores each data slot as a typed value, not `any`, so a
-receiver param without a type is a **`WS029`** lint. Unused slots default to
-`float`. `isObject = true` is constant config that scopes the receiver to a
-specific grid/object (an **object event**) instead of firing grid-wide.
+The receiver's call parens hold only the channel name (positional) and any
+config (`isObject = true`); the **typed data outputs** are bound by a trailing
+`-> (…)` tuple capture. Each data slot's type can be given explicitly
+(`amount: int`) or **inferred from a matching in-unit
+`SendCustomEvent`** on the same channel; when neither is available the slot
+defaults to `float` and a **`WS042`** warning is emitted (the game stores each
+data slot as a typed value, not `any`). Unused slots default to `float`.
+`isObject = true` is constant config that scopes the receiver to a specific
+grid/object (an **object event**) instead of firing grid-wide.
 
 ```wirescript
 var lastDamage: int = 0   // a top-level var is already persistent — no `static`
 
-on CustomEvent("damage", amount: int, attacker: character) {
+on CustomEvent("damage") -> (amount: int, attacker: character) {
   lastDamage = amount
   attacker.ShowStatusMessage("You took ${amount} damage")
 }
@@ -1090,7 +1093,7 @@ optional `target` entity, `isObject` config), on a channel namespace that is
 ```wirescript
 var total: int = 0
 
-on GlobalCustomEvent("score", points: int) { total = total + points }
+on GlobalCustomEvent("score") -> (points: int) { total = total + points }
 on hit { SendGlobalCustomEvent("score", 10) }
 ```
 
@@ -1257,7 +1260,7 @@ on trigger {
 | `Random(min, max)` | `(min: T, max: T) -> T`, `T` ∈ `vector`/`rotator`/`quat`/`color` | Per-component random of the same type |
 
 ```wirescript
-on RoundStart {
+on RoundStart() {
   let r = Random(0, 15)
   if r == 0 { specialEvent = true }
 }

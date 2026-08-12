@@ -66,7 +66,7 @@ let y = x + 1                                     // computed binding (pure)
 buffer prev = x                                   // one-tick delayed value
 in trigger: bool                                  // input port
 out result = x                                    // output port
-on RoundStart { x = 0 }                           // event handler (exec)
+on RoundStart() { x = 0 }                           // event handler (exec)
 chip { var a: int = 0 }                           // visual microchip grouping
 mod inc(v: *int) { v = v+1 }                      // inline macro with ref params
 return                                            // early return from handler/mod

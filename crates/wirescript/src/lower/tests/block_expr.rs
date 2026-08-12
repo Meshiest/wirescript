@@ -185,7 +185,7 @@ out y = x");
 #[test]
 fn block_expr_var_not_accessible() {
     let r = compile("\
-on RoundStart {
+on RoundStart() {
   var temp: int = 5
   let result = { let t = temp; t }
 }");

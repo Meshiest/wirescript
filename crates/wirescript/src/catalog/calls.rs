@@ -309,7 +309,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::PLAYERSTATE_DISPLAY_TEXT,
             params: vec![
                 CallParam::req("target", WirePort::PlayerState, Type::Controller),
-                CallParam::req("text", WirePort::Text, Type::Any),
+                CallParam::req("text", WirePort::Text, Type::String),
                 // 2D layout ports are Vector2D composites (X/Y sub-ports): set
                 // each axis with a float. A constant axis bakes the parent
                 // Vector2D data field (unset axis from STRUCT_DEFAULTS); a
@@ -1032,7 +1032,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             name: "Fmt",
             gate_class: gc::STRING_FORMAT_TEXT,
             params: vec![
-                CallParam::req("format", WirePort::FormatString, Type::Any),
+                CallParam::req("format", WirePort::FormatString, Type::String),
                 CallParam::opt("a", WirePort::InputA, Type::Any),
                 CallParam::opt("b", WirePort::InputB, Type::Any),
                 CallParam::opt("c", WirePort::InputC, Type::Any),
@@ -1403,7 +1403,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             vec![
                 CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("key", WirePort::Key, Type::String),
-                CallParam::req("value", WirePort::Value, Type::Any),
+                CallParam::req("value", WirePort::Value, Type::Int),
             ],
             vec![],
         ),
@@ -1416,7 +1416,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             vec![
                 CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("key", WirePort::Key, Type::String),
-                CallParam::req("value", WirePort::Value, Type::Any),
+                CallParam::req("value", WirePort::Value, Type::Int),
             ],
             vec![],
         ),
@@ -2185,7 +2185,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
         CallSpec {
             name: "PrintToConsole",
             gate_class: gc::PRINT_TO_CONSOLE,
-            params: vec![CallParam::req("text", WirePort::Text, Type::Any)],
+            params: vec![CallParam::req("text", WirePort::Text, Type::String)],
             exec: true,
             outputs: vec![],
             receiver: None,
@@ -2439,9 +2439,10 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gate_class: gc::PREFAB_SPAWNER,
             params: vec![
                 // The prefab to spawn: a `$./file.brz` / `$/abs/file.brz`
-                // reference. Embedded into the bundle at emit; the gate's
-                // `Prefab` bundle_path_ref property gets the resulting path.
-                CallParam::opt("prefab", WirePort::Prefab, Type::Any),
+                // reference (or nested `$``` … ``` `). Embedded into the bundle at
+                // emit; the gate's `Prefab` bundle_path_ref property gets the
+                // resulting path. Compile-time reference-only, hence `PrefabRef`.
+                CallParam::opt("prefab", WirePort::Prefab, Type::PrefabRef),
                 CallParam::opt("offset", WirePort::SpawnOffset, Type::Vector),
                 CallParam::opt("rotation", WirePort::SpawnOffsetRotation, Type::Rotator),
                 CallParam::opt("velocity", WirePort::SpawnVelocity, Type::Vector),
@@ -2746,7 +2747,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             gc::ENTITY_SET_TAG,
             vec![
                 CallParam::req("entity", WirePort::Entity, Type::Entity),
-                CallParam::req("tag", WirePort::Tag, Type::Any),
+                CallParam::req("tag", WirePort::Tag, Type::String),
             ],
             vec![],
         ),

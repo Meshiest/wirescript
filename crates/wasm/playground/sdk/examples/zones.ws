@@ -6,14 +6,14 @@ in room: zone // wire this to a Zone brick
 
 var inside: int = 0
 
-on ZoneEntered(player, zone = room) {
+on ZoneEntered(zone = room) -> (player) {
   inside = inside + 1
   player.DisplayText("inside (${inside})",
     positionX = 0.0, positionY = -200.0,
     fontSize = 30, lifetime = 3.0, textId = 1)
 }
 
-on ZoneLeft(player, zone = room) {
+on ZoneLeft(zone = room) -> (player) {
   inside = inside - 1
   player.DisplayText("outside (${inside})",
     positionX = 0.0, positionY = -200.0,

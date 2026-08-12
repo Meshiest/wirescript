@@ -11,7 +11,7 @@ fn lowered(src: &str) -> LowerResult {
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     let r = lower(LowerInput {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
@@ -21,6 +21,7 @@ fn lowered(src: &str) -> LowerResult {
         template_cache: std::sync::Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     assert!(
         r.diagnostics

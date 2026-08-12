@@ -20,7 +20,7 @@ fn main() {
     eprintln!("resolve (lex+parse+imports): {:>8.2?}", t.elapsed());
 
     let t = Instant::now();
-    let tc = typecheck(&resolved.ast, &file);
+    let tc = typecheck(&resolved.ast, &file, &wirescript::typecheck::CeSlotMap::default());
     eprintln!("typecheck:                   {:>8.2?}", t.elapsed());
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());
@@ -34,6 +34,7 @@ fn main() {
         template_cache: template_cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
     eprintln!("lower:                       {:>8.2?}", t.elapsed());
     eprintln!(

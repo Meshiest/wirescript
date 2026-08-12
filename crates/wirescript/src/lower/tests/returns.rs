@@ -648,7 +648,7 @@ on player {
 fn return_in_handler_not_mod() {
     let r = compile("\
 var x: int = 0
-on RoundStart {
+on RoundStart() {
   if x > 0 { return }
   x = 1
 }");

@@ -421,7 +421,7 @@ fn module_nofold_beats_fold() {
     assert!(parsed.ast.fold, "the @fold annotation should still be recorded");
     assert!(parsed.ast.no_fold, "@nofold should win but is still recorded on the AST");
 
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     let lower_with = |fold_mode: FoldMode| {
         lower(LowerInput {
             ast: &parsed.ast,
@@ -432,6 +432,7 @@ fn module_nofold_beats_fold() {
             template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
             doc_comments: &parsed.doc_comments,
             fold_mode,
+            ce_slots: &crate::typecheck::CeSlotMap::default(),
         })
     };
 

@@ -69,6 +69,8 @@ const DOC_MANIFEST = {
   'Best Practices': 'docs/best-practices.md',
   'Constant Folding': 'docs/folding.md',
   Diagnostics: 'docs/diagnostics.md',
+  Upgrading: 'docs/upgrading.md',
+  Changelog: 'docs/CHANGELOG.md',
 };
 
 // List of doc pages in display order
@@ -85,6 +87,8 @@ export const DOC_PAGES = [
   'Best Practices',
   'Constant Folding',
   'Diagnostics',
+  'Upgrading',
+  'Changelog',
 ];
 
 // Display names for the navigation
@@ -101,6 +105,8 @@ export const DOC_TITLES = {
   'Best Practices': 'Best Practices',
   'Constant Folding': 'Constant Folding',
   Diagnostics: 'Diagnostics (WS Codes)',
+  Upgrading: 'Upgrading',
+  Changelog: 'Changelog',
 };
 
 async function loadDoc(page) {

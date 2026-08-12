@@ -8,7 +8,7 @@
         let loader = MemLoader { files };
         let pre = crate::parse(main, "main.ws");
         let resolved = resolve(main, "main.ws", &loader);
-        let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws");
+        let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main.ws"));
         definition_at(main, &pre.ast, &symbols, "main.ws", &loader, line, col)
     }
@@ -48,7 +48,7 @@
     fn send_custom_event_name_jumps_to_receiver() {
         // Cursor on the channel-name string of a `SendCustomEvent(...)` jumps to
         // the matching `on CustomEvent(...)` receiver in the same file.
-        let main = "on CustomEvent(\"dmg\", amount: int) {\n  let x = amount\n}\nin go: exec\non go {\n  SendCustomEvent(\"dmg\", 5)\n}\n";
+        let main = "on CustomEvent(\"dmg\") -> (amount: int) {\n  let x = amount\n}\nin go: exec\non go {\n  SendCustomEvent(\"dmg\", 5)\n}\n";
         let send_line = 5; // the SendCustomEvent line (0-based)
         let line_str = main.lines().nth(send_line).unwrap();
         let col = line_str.find("dmg").unwrap() + 1; // inside the "dmg" string
@@ -56,7 +56,7 @@
         assert_eq!(loc.file, None, "receiver is in the same file: {loc:?}");
         assert_eq!(
             loc.start_line, 0,
-            "receiver `on CustomEvent(\"dmg\", …)` is on line 0, got {loc:?}"
+            "receiver `on CustomEvent(\"dmg\") -> (…)` is on line 0, got {loc:?}"
         );
     }
 
@@ -65,7 +65,7 @@
         // A `SendGlobalCustomEvent(...)` channel jumps to `on GlobalCustomEvent`
         // (line 0), NOT the same-named personal `on CustomEvent` (line 2) — they
         // are separate namespaces.
-        let main = "on GlobalCustomEvent(\"score\", pts: int) {\n}\non CustomEvent(\"score\", x: int) {\n}\nin go: exec\non go {\n  SendGlobalCustomEvent(\"score\", 5)\n}\n";
+        let main = "on GlobalCustomEvent(\"score\") -> (pts: int) {\n}\non CustomEvent(\"score\") -> (x: int) {\n}\nin go: exec\non go {\n  SendGlobalCustomEvent(\"score\", 5)\n}\n";
         let send_line = 6; // the SendGlobalCustomEvent line (0-based)
         let line_str = main.lines().nth(send_line).unwrap();
         let col = line_str.find("score").unwrap() + 1;

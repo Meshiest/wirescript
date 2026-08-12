@@ -271,8 +271,8 @@ fn generic_body_invalid_for_a_member_is_rejected_above_the_combo_cap() {
     // monomorphized it into a broken gate. `a + b` is not a valid op for every
     // instantiation, so the decl must be rejected even above the cap.
     let src = "mod combine<A, B>(a: A, b: B) -> A {\n  var x: A = a\n  x = a + b\n  return x\n}\n\
-               on CharacterSpawned(ch) {\n  let e: entity = ch\n  let r = combine(e, e)\n}\n";
-    let tc = typecheck(&parse(src, "test").ast, "test");
+               on CharacterSpawned() -> (ch) {\n  let e: entity = ch\n  let r = combine(e, e)\n}\n";
+    let tc = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().any(|d| d.code == "WS004"),
         "a generic body op invalid for some mask member must be rejected even \
@@ -283,8 +283,8 @@ fn generic_body_invalid_for_a_member_is_rejected_above_the_combo_cap() {
     // must still type-check clean above the cap. `first<A, B>` also has 121
     // combos (> cap) but its body only returns `a`, so no combo can fail.
     let ok = "mod first<A, B>(a: A, b: B) -> A {\n  return a\n}\n\
-              on CharacterSpawned(ch) {\n  let r = first(ch, 1)\n}\n";
-    let tco = typecheck(&parse(ok, "test").ast, "test");
+              on CharacterSpawned() -> (ch) {\n  let r = first(ch, 1)\n}\n";
+    let tco = typecheck(&parse(ok, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         !tco.diagnostics.iter().any(|d| d.severity == crate::diagnostic::Severity::Error),
         "a generic with an always-valid body must type-check clean above the cap, got {:?}",
@@ -400,7 +400,7 @@ fn generic_chip_monomorphizes_per_instantiation() {
 
     // WS034 is gone: the program type-checks clean (no errors at all).
     let parsed = crate::parser::parse(src, "test");
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     let errs: Vec<String> = tc
         .diagnostics
         .iter()
@@ -672,7 +672,7 @@ fn non_self_mod_method_call_is_a_typecheck_error() {
     let src = "mod f(a: vector, o: vector) -> float { return a.Dot(o) }\n\
                in v: vector\nin w: vector\nin go: exec\n\
                on go { let d = v.f(w) }\n";
-    let tc = typecheck(&parse(src, "test").ast, "test");
+    let tc = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().any(|d| d.code == "WS036"),
         "a non-self method call must be WS036; got {:?}",
@@ -818,7 +818,7 @@ fn explicit_type_args_pin_return_only_type_param() {
 #[test]
 fn explicit_type_args_error_cases() {
     let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == crate::diagnostic::Severity::Error)
@@ -841,7 +841,7 @@ fn type_args_do_not_break_comparison_parsing() {
     // The `<...>(` type-argument form must NOT hijack a `<`/`>` comparison. A
     // plain `a < b` and a `(a < b)` chain still parse + typecheck as comparisons.
     let ok = "in a: int\nin b: int\nin c: int\nout r: bool = (a < b)\nout s: bool = a < b\n";
-    let d = crate::typecheck::typecheck(&crate::parser::parse(ok, "t").ast, "t");
+    let d = crate::typecheck::typecheck(&crate::parser::parse(ok, "t").ast, "t", &crate::typecheck::CeSlotMap::default());
     assert!(
         d.diagnostics.iter().all(|x| x.severity != crate::diagnostic::Severity::Error),
         "comparison must still parse+check clean: {:?}",
@@ -852,7 +852,7 @@ fn type_args_do_not_break_comparison_parsing() {
 #[test]
 fn non_callable_call_errors_ws038() {
     let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == crate::diagnostic::Severity::Error)
@@ -862,13 +862,13 @@ fn non_callable_call_errors_ws038() {
     // Calling a non-callable value (a var / let / array / input) is a hard
     // error, not a silent `_Unsupported` gate reading 0. An index typo is the
     // common trigger.
-    let typo = "on CharacterSpawned(ch) {\n  var xs: int[] = [1, 2, 3]\n  let r = xs(0)\n}\n";
+    let typo = "on CharacterSpawned() -> (ch) {\n  var xs: int[] = [1, 2, 3]\n  let r = xs(0)\n}\n";
     assert!(errs(typo).contains(&"WS038".to_string()), "xs(i) must be WS038: {:?}", errs(typo));
     // `a < b > (c)` parses as an explicit-type-argument call on `a`; since `a`
     // is not callable it now surfaces as a clear WS038 instead of a silently
     // dropped comparison. (`a < b` / `(a < b)` without a trailing `(` stay
     // comparisons — see `type_args_do_not_break_comparison_parsing`.)
-    let misparse = "on CharacterSpawned(ch) {\n  let a = 1\n  let b = 2\n  let c = 3\n  let r = a < b > (c)\n}\n";
+    let misparse = "on CharacterSpawned() -> (ch) {\n  let a = 1\n  let b = 2\n  let c = 3\n  let r = a < b > (c)\n}\n";
     assert!(errs(misparse).contains(&"WS038".to_string()), "a<b>(c) must surface as WS038: {:?}", errs(misparse));
     // A real callable is unaffected.
     let ok = "mod dbl(n: int) -> int { return n * 2 }\nin x: int\nstatic var rv: int = 0\nout r: int = rv\nin go: exec\non go { rv = dbl(x) }\n";
@@ -897,7 +897,7 @@ fn builtins_and_types_program_compiles() {
 #[test]
 fn receiver_call_validates_receiver_type() {
     let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t")
+        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == crate::diagnostic::Severity::Error)
@@ -925,7 +925,7 @@ fn receiver_call_validates_receiver_type() {
 fn type_args_on_builtin_warn() {
     let r = crate::typecheck::typecheck(
         &crate::parser::parse("in a: float\nin b: float\nout r: float = Blend<int>(a, b, 0.5)\n", "t").ast,
-        "t",
+        "t", &crate::typecheck::CeSlotMap::default(),
     );
     assert!(
         r.diagnostics.iter().any(|d| d.code == "WS037"
@@ -936,7 +936,7 @@ fn type_args_on_builtin_warn() {
     // A plain builtin call does NOT warn.
     let r2 = crate::typecheck::typecheck(
         &crate::parser::parse("in a: float\nin b: float\nout r: float = Blend(a, b, 0.5)\n", "t").ast,
-        "t",
+        "t", &crate::typecheck::CeSlotMap::default(),
     );
     assert!(!r2.diagnostics.iter().any(|d| d.code == "WS037"));
 }
@@ -1007,7 +1007,7 @@ fn truncated_combo_check_still_catches_single_param_op_error() {
     // truncation is a coverage optimization, not a soundness hole.
     let src = "mod combo3<A: Numeric, B: Numeric, C: Numeric>(a: A, b: B, c: C) -> A { let x = a & a\n return a }\n\
                in go: exec\nin n: int\non go { let r = combo3(n, n, n) }\n";
-    let tc = typecheck(&parse(src, "test").ast, "test");
+    let tc = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().any(|d| d.code == "WS011"),
         "a single-param-only op invalid for some Numeric member must be \

@@ -4,7 +4,7 @@
 
     fn hints_for(source: &str) -> Vec<InlayHintInfo> {
         let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck(&resolved.ast, "test");
+        let tc = typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
         collect_inlay_hints(source, &resolved.ast, &tc.type_of_expr, "test")
     }
 

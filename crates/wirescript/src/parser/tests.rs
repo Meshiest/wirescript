@@ -149,7 +149,7 @@
 
     #[test]
     fn handler_with_param() {
-        let s = parse_ok("on CharacterDied(char) { emit died }");
+        let s = parse_ok("on CharacterDied() -> (char) { emit died }");
         match &s.decls[0] {
             TopDecl::Handler(h) => {
                 assert_eq!(h.params.len(), 1);
@@ -161,6 +161,45 @@
             }
             _ => panic!("expected Handler"),
         }
+    }
+
+    #[test]
+    fn event_trigger_requires_parens() {
+        // Task 10: an event trigger is a CALL -- `on RoundStart { }` (no
+        // parens) must error, steering to `on RoundStart() { }`.
+        let r = crate::parser::parse("on RoundStart { }", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("must be called") || d.message.contains("()")),
+            "no-parens event trigger should error: {:?}",
+            r.diagnostics
+        );
+        // parenned form is fine
+        assert!(crate::parser::parse("on RoundStart() { }", "test")
+            .diagnostics
+            .is_empty());
+        // a non-event value trigger is unaffected
+        assert!(
+            crate::parser::parse("var x: int = 0\non x { }", "test")
+                .diagnostics
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn let_capture_event_requires_parens() {
+        // The captured-event form calls the event too: `let x = on RoundStart()`.
+        assert!(crate::parser::parse("let s = on RoundStart()\non s { }", "test")
+            .diagnostics
+            .is_empty());
+        // The bare no-parens capture must error, matching the handler form.
+        let r = crate::parser::parse("let s = on RoundStart\non s { }", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("must be called")),
+            "no-parens event capture should error: {:?}",
+            r.diagnostics
+        );
     }
 
     #[test]
@@ -1185,4 +1224,205 @@
             },
             other => panic!("expected an ExprStmt, got {other:?}"),
         }
+    }
+
+    // ---- `on <Event> -> <pattern>` output capture (Task 5, additive) -----
+
+    #[test]
+    fn on_arrow_tuple_on_named_event_binds_positionally() {
+        // Tuple `( )` binds positionally for ANY event, named events included —
+        // the cleaner form for `on CharacterDied() -> (character, killer)`.
+        let r = crate::parser::parse("on CharacterDied() -> (character, killer) { }", "test");
+        assert!(
+            r.diagnostics.is_empty(),
+            "tuple on a named event should parse cleanly: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn on_arrow_record_on_custom_event_is_error() {
+        // Record `{ }` is only valid for named-data (built-in) events.
+        let r = crate::parser::parse("on CustomEvent(\"x\") -> { a } { }", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("named-data") && d.message.contains("( )")),
+            "record on a custom event should error: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn on_arrow_record_unknown_field_is_error() {
+        let r = crate::parser::parse("on CharacterDied() -> { foo } { }", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("CharacterDied")
+                && d.message.contains("foo")
+                && d.message.contains("killer")),
+            "unknown record field should error and list valid names: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn on_arrow_and_inline_params_both_present_is_error() {
+        // Inline data params are unconditionally an error now (Task 8), so
+        // this is no longer a special "both present" case in the parser —
+        // the dead `parse_handler_arrow_pattern` guard for it was removed.
+        // Kept as regression coverage that a leftover inline param still
+        // errors even when a `->` capture is also present, and that the
+        // `->` capture still binds correctly despite the leftover.
+        let r = crate::parser::parse(
+            "on CustomEvent(\"dmg\", amount: int) -> (amount) { }",
+            "test",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("->")),
+            "inline data param combined with `->` should error: {:?}",
+            r.diagnostics
+        );
+        let handler = r
+            .ast
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(
+            handler.params.len(),
+            1,
+            "the `->` capture should still bind params despite the inline error: {:?}",
+            handler.params
+        );
+        assert_eq!(handler.params[0].name, "amount");
+    }
+
+    #[test]
+    fn inline_event_data_param_is_error_with_arrow_hint() {
+        let r = crate::parser::parse("on CharacterDied(character) { }", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("->")),
+            "inline output binding should error and point to `->`: {:?}",
+            r.diagnostics
+        );
+        let r2 = crate::parser::parse("on CustomEvent(\"dmg\", amount: int) { }", "test");
+        assert!(
+            r2.diagnostics.iter().any(|d| d.message.contains("->")),
+            "inline typed custom-event param should error: {:?}",
+            r2.diagnostics
+        );
+    }
+
+    #[test]
+    fn on_arrow_absent_binds_nothing() {
+        // No `->` — unchanged behavior, no params.
+        let s = parse_ok("on RoundStart() { }");
+        let handler = s
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert!(handler.params.is_empty());
+    }
+
+    #[test]
+    fn on_arrow_record_binds_positionally_with_gap_fill() {
+        // `-> { killer }` on CharacterDied (data: character, killer, killerWeapon,
+        // killerWeaponName) fills slot 0 with a synthesized unused name and binds
+        // `killer` at slot 1; nothing past slot 1 is materialized.
+        let s = parse_ok("on CharacterDied() -> { killer } { }");
+        let handler = s
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(handler.params.len(), 2, "params: {:?}", handler.params);
+        assert!(handler.params[0].name.starts_with("_arrow_unused_"));
+        assert_eq!(handler.params[1].name, "killer");
+    }
+
+    #[test]
+    fn on_arrow_record_rename_binds_alias() {
+        let s = parse_ok("on CharacterSpawned() -> { character: c } { }");
+        let handler = s
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(handler.params.len(), 1);
+        assert_eq!(handler.params[0].name, "c");
+    }
+
+    #[test]
+    fn on_arrow_bare_single_capture_parses() {
+        // `-> p` (no parens) is shorthand for `-> (p)`: one untyped positional
+        // capture. Works the same on named and custom events.
+        let s = parse_ok("on CharacterDied() -> character { }");
+        let handler = s
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(handler.params.len(), 1);
+        assert_eq!(handler.params[0].name, "character");
+        assert!(handler.params[0].ty.is_none());
+        assert!(
+            handler.params[0].source_field.is_none(),
+            "bare capture binds positionally like a tuple, not by field name"
+        );
+
+        let s2 = parse_ok("on CustomEvent(\"dmg\") -> amount { }");
+        let h2 = s2
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(h2.params.len(), 1);
+        assert_eq!(h2.params[0].name, "amount");
+    }
+
+    #[test]
+    fn on_arrow_bare_typed_single_capture_steers_to_parens() {
+        // A type on the bare form needs parens (`-> (name: T)`); the `:` is
+        // reported and swallowed so the handler body still parses.
+        let r = crate::parser::parse("on CustomEvent(\"dmg\") -> amount: int { }", "test");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("parens")),
+            "typed bare capture should steer to parens: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn on_arrow_tuple_untyped_slot_parses() {
+        let s = parse_ok("on CustomEvent(\"dmg\") -> (amount) { }");
+        let handler = s
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(handler.params.len(), 1);
+        assert_eq!(handler.params[0].name, "amount");
+        assert!(handler.params[0].ty.is_none());
     }

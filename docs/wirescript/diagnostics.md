@@ -36,6 +36,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS013` | Duplicate declaration, or an output that is never assigned. | two `var x: int = 0` in one scope |
 | `WS014` | *(warning)* Unused import. | `import { clamp } from "u"`, `clamp` never used |
 | `WS021` | Use before declaration — a chip/mod is called above the point where it's declared (declarations register in source order). | `helper()` above `mod helper() { }` |
+| `WS043` | An `on <call> -> <pattern>` general (non-event) trigger's call has no exec-typed output for `on` to auto-extract — it needs an event, or a call whose result includes an exec field (e.g. via `exec = ...`). | `on pair(5) -> (p, q) { }` where `pair` has two plain (non-exec) outputs and no `exec =` arg |
 
 ## Types & operators
 
@@ -99,8 +100,8 @@ wiring in as ports — see [Built-in Events](statements.md#built-in-events) and
 | Code | Meaning | Trigger |
 |------|---------|---------|
 | `WS028` | Invalid gate/event config — an unknown enum member, an out-of-range int, a missing required config field, or a non-constant value for constant-only config. | `on Clock(pulseOn = someVar)` |
-| `WS029` | *(warning)* A `CustomEvent`/`GlobalCustomEvent` handler param has no type annotation — untyped data has no wire type and defaults to float. | `on CustomEvent("dmg", amount) { }` |
 | `WS030` | *(warning)* Custom-event sender/receiver type mismatch — a send's data value type disagrees with the receiver's declared type on the same channel. | sender sends `float`, receiver declares `amount: int` |
+| `WS042` | *(warning)* A `CustomEvent`/`GlobalCustomEvent` handler param has no type annotation and no in-unit sender to infer its type from — data defaults to `float`. Annotate the param, or add a matching `SendCustomEvent`/`SendGlobalCustomEvent` in the same unit, to silence. | `on CustomEvent("dmg") -> (amount) { }` with no in-unit `SendCustomEvent("dmg", …)` |
 
 ## `any`
 

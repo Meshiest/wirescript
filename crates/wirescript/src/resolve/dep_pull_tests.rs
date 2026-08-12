@@ -31,7 +31,7 @@
             "resolve diags: {:?}",
             r.diagnostics
         );
-        let tc = crate::typecheck::typecheck(&r.ast, "main.ws");
+        let tc = crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
         let errors: Vec<_> = tc
             .diagnostics
             .iter()

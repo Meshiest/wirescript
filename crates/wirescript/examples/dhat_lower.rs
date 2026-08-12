@@ -15,7 +15,7 @@ fn main() {
         let source = std::fs::read_to_string(&file).expect("read source");
 
         let resolved = wirescript::resolve::resolve(&source, &file, &wirescript::resolve::FsLoader);
-        let tc = wirescript::typecheck::typecheck(&resolved.ast, &file);
+        let tc = wirescript::typecheck::typecheck(&resolved.ast, &file, &wirescript::typecheck::CeSlotMap::default());
         let cache = std::sync::Arc::new(wirescript::template_cache::TemplateCache::new());
 
         let _profiler = dhat::Profiler::new_heap();

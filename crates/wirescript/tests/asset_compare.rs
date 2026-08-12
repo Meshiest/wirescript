@@ -8,7 +8,7 @@ use wirescript::{compile_to_world, CompileInput, FoldMode};
 
 #[test]
 fn asset_compare_registers_asset() {
-    let src = "on CharacterDamaged(c, dmg, atk, weapon, wname) {\n\
+    let src = "on CharacterDamaged() -> (c, dmg, atk, weapon, wname) {\n\
                if weapon == $BRItemBase/Weapon_Pickaxe {\n\
                }\n\
                }";

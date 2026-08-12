@@ -35,7 +35,7 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         name,
         parsed.diagnostics
     );
-    let tc = typecheck(&parsed.ast, name);
+    let tc = typecheck(&parsed.ast, name, &wirescript::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.is_empty(),
         "typecheck diagnostics in {}: {:?}",
@@ -53,6 +53,7 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
         fold_mode: FoldMode::ForceOff,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
     lr.module
 }

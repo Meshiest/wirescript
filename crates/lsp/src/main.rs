@@ -23,7 +23,7 @@ use wirescript::catalog::calls::calls;
 use wirescript::catalog::events::events;
 use wirescript::lexer::KEYWORDS;
 use wirescript::resolve::{resolve, FsLoader};
-use wirescript::typecheck::typecheck;
+use wirescript::typecheck::typecheck_with_inference;
 use wirescript::FoldMode;
 
 struct CompileProgressNotification;
@@ -238,7 +238,7 @@ impl Backend {
 
         let pre_resolve = wirescript::parse(source, &file);
         let resolved = resolve(source, &file, &FsLoader);
-        let tc = typecheck(&resolved.ast, &file);
+        let tc = typecheck_with_inference(&resolved.ast, &file).0;
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
         let resource_estimates = collect_estimates(&resolved.ast, &tc, &file);
 
@@ -536,7 +536,7 @@ impl LanguageServer for Backend {
                         nested_block_at(&doc.source, &uri_to_file_string(uri), line, col)
                     {
                         let resolved = resolve(&inner, "nested", &FsLoader);
-                        let tc = typecheck(&resolved.ast, "nested");
+                        let tc = typecheck_with_inference(&resolved.ast, "nested").0;
                         let syms = collect_symbols_for_file(
                             &resolved.ast,
                             &tc.type_of_expr,
@@ -1405,20 +1405,21 @@ fn build_completions(
             // Enum-valued named arg (e.g. `justify = Center`): complete the
             // enum's member names when the cursor is in the value slot. Members
             // insert bare (the idiomatic form; a quoted string also works).
-            if let Some((param_name, value_so_far)) = named_arg_value(source, line, col) {
+            let value_ctx = named_arg_value(source, line, col);
+            if let Some((param_name, value_so_far)) = value_ctx.as_ref() {
                 // Enum config value — works for both a hand-coded param
                 // (`justify = …`) and a raw config field (`Justification = …`),
                 // resolved through the unified call+event helper.
                 if let Some(et) = wirescript::catalog::config_enum_for_named_arg(
                     call_name.as_str(),
-                    &param_name,
+                    param_name,
                 ) {
-                    push_enum_member_completions(&mut items, et, &value_so_far);
+                    push_enum_member_completions(&mut items, et, value_so_far);
                     if !items.is_empty() {
                         return items;
                     }
                 }
-                if let Some(param) = spec.params.iter().find(|p| p.name == param_name) {
+                if let Some(param) = spec.params.iter().find(|p| &p.name == param_name) {
                     // Asset-ref config param (`font = <here>`, `weapon = <here>`):
                     // offer full `$Type/Name` refs for the param's asset type, so
                     // the author needn't know the type name. (Once they type `$`,
@@ -1445,90 +1446,102 @@ fn build_completions(
                     }
                 }
             }
-            for (i, p) in spec.params.iter().enumerate() {
-                // The receiver param (index 0 on a method call) is already
-                // supplied via the `x.Method(` syntax — don't offer it.
-                if i == 0 && spec.receiver.is_some() {
-                    continue;
+            // Argument-NAME completions: only when NOT completing a value. In a
+            // `name = <here>` value slot that wasn't an enum/asset value, skip the
+            // arg names and fall through to the in-scope identifier list below.
+            if value_ctx.is_none() {
+                for (i, p) in spec.params.iter().enumerate() {
+                    // The receiver param (index 0 on a method call) is already
+                    // supplied via the `x.Method(` syntax — don't offer it.
+                    if i == 0 && spec.receiver.is_some() {
+                        continue;
+                    }
+                    // A config param surfaced as a plain int but backed by a schema
+                    // enum shows the enum's name instead of `int`.
+                    let ty_label = wirescript::field_enum_type(spec.gate_class, p.port.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| type_str(&p.ty));
+                    if p.optional {
+                        items.push(CompletionItem {
+                            label: format!("{} = ", p.name),
+                            kind: Some(CompletionItemKind::FIELD),
+                            detail: Some(format!("{ty_label} (optional)")),
+                            insert_text: Some(format!("{} = ", p.name)),
+                            ..Default::default()
+                        });
+                    } else {
+                        items.push(CompletionItem {
+                            label: p.name.to_string(),
+                            kind: Some(CompletionItemKind::FIELD),
+                            detail: Some(format!("{ty_label} (required)")),
+                            ..Default::default()
+                        });
+                    }
                 }
-                // A config param surfaced as a plain int but backed by a schema
-                // enum shows the enum's name instead of `int`.
-                let ty_label = wirescript::field_enum_type(spec.gate_class, p.port.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| type_str(&p.ty));
-                if p.optional {
+                // Data-driven config attributes: the gate's raw settings-menu field
+                // names (those without a hand-coded alias param).
+                for cfg in wirescript::catalog::scalar_config_fields(spec.gate_class) {
+                    if spec.params.iter().any(|p| p.name == cfg.name) {
+                        continue;
+                    }
+                    let ty_label =
+                        wirescript::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| cfg.ty.clone());
                     items.push(CompletionItem {
-                        label: format!("{} = ", p.name),
+                        label: format!("{} = ", cfg.name),
                         kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(format!("{ty_label} (optional)")),
-                        insert_text: Some(format!("{} = ", p.name)),
+                        detail: Some(format!("{ty_label} (config)")),
+                        insert_text: Some(format!("{} = ", cfg.name)),
                         ..Default::default()
                     });
-                } else {
-                    items.push(CompletionItem {
-                        label: p.name.to_string(),
-                        kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(format!("{ty_label} (required)")),
-                        ..Default::default()
-                    });
                 }
-            }
-            // Data-driven config attributes: the gate's raw settings-menu field
-            // names (those without a hand-coded alias param).
-            for cfg in wirescript::catalog::scalar_config_fields(spec.gate_class) {
-                if spec.params.iter().any(|p| p.name == cfg.name) {
-                    continue;
+                if !items.is_empty() {
+                    return items;
                 }
-                let ty_label = wirescript::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| cfg.ty.clone());
-                items.push(CompletionItem {
-                    label: format!("{} = ", cfg.name),
-                    kind: Some(CompletionItemKind::FIELD),
-                    detail: Some(format!("{ty_label} (config)")),
-                    insert_text: Some(format!("{} = ", cfg.name)),
-                    ..Default::default()
-                });
-            }
-            if !items.is_empty() {
-                return items;
             }
         } else if let Some(evt) = wirescript::catalog::events::find_event(call_name.as_str()) {
             // Event trigger config (`on Clock(<here>)`): the call-param path has
             // no CallSpec, so resolve names/enum values from the EventSpec.
-            if let Some((param_name, value_so_far)) = named_arg_value(source, line, col) {
+            let value_ctx = named_arg_value(source, line, col);
+            if let Some((param_name, value_so_far)) = value_ctx.as_ref() {
                 if let Some(et) =
-                    wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), &param_name)
+                    wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), param_name)
                 {
-                    push_enum_member_completions(&mut items, et, &value_so_far);
+                    push_enum_member_completions(&mut items, et, value_so_far);
                     if !items.is_empty() {
                         return items;
                     }
                 }
             }
-            for (surf, _, _) in &evt.input_named {
-                items.push(CompletionItem {
-                    label: format!("{surf} = "),
-                    kind: Some(CompletionItemKind::FIELD),
-                    detail: Some("wired input".to_string()),
-                    insert_text: Some(format!("{surf} = ")),
-                    ..Default::default()
-                });
-            }
-            for (surf, field) in &evt.config_named {
-                let ty_label = wirescript::catalog::config_field_enum_type(evt.gate_class, field)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| "config".to_string());
-                items.push(CompletionItem {
-                    label: format!("{surf} = "),
-                    kind: Some(CompletionItemKind::FIELD),
-                    detail: Some(format!("{ty_label} (config)")),
-                    insert_text: Some(format!("{surf} = ")),
-                    ..Default::default()
-                });
-            }
-            if !items.is_empty() {
-                return items;
+            // Argument-NAME completions only when NOT completing a value; in a
+            // value slot, fall through to the in-scope identifier list below.
+            if value_ctx.is_none() {
+                for (surf, _, _) in &evt.input_named {
+                    items.push(CompletionItem {
+                        label: format!("{surf} = "),
+                        kind: Some(CompletionItemKind::FIELD),
+                        detail: Some("wired input".to_string()),
+                        insert_text: Some(format!("{surf} = ")),
+                        ..Default::default()
+                    });
+                }
+                for (surf, field) in &evt.config_named {
+                    let ty_label =
+                        wirescript::catalog::config_field_enum_type(evt.gate_class, field)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| "config".to_string());
+                    items.push(CompletionItem {
+                        label: format!("{surf} = "),
+                        kind: Some(CompletionItemKind::FIELD),
+                        detail: Some(format!("{ty_label} (config)")),
+                        insert_text: Some(format!("{surf} = ")),
+                        ..Default::default()
+                    });
+                }
+                if !items.is_empty() {
+                    return items;
+                }
             }
         } else if let Some(sig) = symbols
             .iter()

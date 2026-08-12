@@ -16,7 +16,7 @@
             .collect(),
         };
         let resolved = resolve("import * as u from \"lib\"", "main", &loader);
-        let tc = typecheck(&resolved.ast, "main");
+        let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
         let syms = collect_symbols(&resolved.ast, &tc.type_of_expr);
         assert!(
             syms.iter().any(|s| s.name == "u" && s.kind == "namespace"),
@@ -34,7 +34,7 @@
     /// The `exec` flag the LSP hover shows for the mod/chip named `name`.
     fn mod_exec(source: &str, name: &str) -> bool {
         let resolved = resolve(source, "test", &FsLoader);
-        let tc = typecheck(&resolved.ast, "test");
+        let tc = typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
         collect_symbols(&resolved.ast, &tc.type_of_expr)
             .into_iter()
             .find(|s| s.name == name && (s.kind == "mod" || s.kind == "chip"))

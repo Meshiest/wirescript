@@ -476,23 +476,43 @@ pub struct HandlerParam {
     pub ty: Option<TypeExpr>,
     /// Range of the param name (for diagnostics).
     pub range: SourceRange,
+    /// For a GENERAL-expression trigger's `-> { field: alias }` record capture
+    /// (a mod/chip call, not a built-in event — see `lower/handler.rs`'s
+    /// general-expr trigger case): the ORIGINAL field name to look up on the
+    /// trigger's result record, when it differs from `name` (the local bound
+    /// name written as the alias). `None` everywhere else — built-in event
+    /// records and tuple patterns resolve positionally (by index) and never
+    /// need a by-name lookup at lowering time.
+    pub source_field: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Handler {
     pub trigger: Trigger,
-    /// `on Event(a, b) { ... }` — params that bind the event's data outputs
-    /// (e.g. `controller`, `arguments`), optionally typed (`on CustomEvent(a:
-    /// int, b: float)`).
+    /// `on Event() -> (a, b) { ... }` — the trailing tuple capture's params,
+    /// binding the event's data outputs (e.g. `controller`, `arguments`),
+    /// optionally typed (`on CustomEvent("x") -> (a: int, b: float)`). A
+    /// `-> { field: local }` record capture desugars to this same list (see
+    /// `HandlerParam::source_field`).
     pub params: Vec<HandlerParam>,
     /// Literal/named config args that configure the event gate itself, e.g.
     /// `on ChatCommand("greet", Description = "Greets you") { ... }`. These map
-    /// to the gate's data-struct fields (not output bindings).
+    /// to the gate's data-struct fields (not output bindings) — the call
+    /// parens hold config/inputs only; data outputs bind via `params` above.
     pub config: Vec<HandlerConfigArg>,
     pub body: Block,
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
+    /// For a GENERAL expression trigger (`on <call>(…) [-> <pattern>]`,
+    /// desugared to a synthetic `_on_expr_N` trigger): whether the originating
+    /// call carried an `exec = <x>` named arg. `exec =` is explicit "drive this
+    /// as an exec" intent — so `on` must trigger on the call's completion exec;
+    /// if the callee exposes none (e.g. an inline `mod`), lowering emits WS043
+    /// rather than silently orphaning `exec =` and firing on a value edge.
+    /// `false` for plain triggers and for expr triggers with no `exec =` arg
+    /// (a bare `on <call> { }` value-change trigger, left untouched).
+    pub expr_trigger_has_exec_arg: bool,
     pub range: SourceRange,
 }
 

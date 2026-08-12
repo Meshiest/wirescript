@@ -14,7 +14,7 @@ fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diag
         .collect();
     let loader = crate::resolve::MemLoader { files };
     let resolved = crate::resolve::resolve(main_src, "main.ws", &loader);
-    let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws");
+    let tc = crate::typecheck::typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
     let lowered = lower(LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -24,6 +24,7 @@ fn lower_with_imports(main_src: &str, files: &[(&str, &str)]) -> Vec<crate::diag
         template_cache: std::sync::Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     let mut diags = resolved.diagnostics;
     diags.extend(tc.diagnostics);
@@ -282,7 +283,7 @@ fn chip_call_compiles_to_brz() {
 
 #[test]
 fn mod_still_inlines() {
-    let src = "var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart { inc(x) }";
+    let src = "var x: int = 0\nmod inc(v: *int) { v = v + 1 }\non RoundStart() { inc(x) }";
     let r = compile(src);
     assert!(
         r.module.chips.is_empty(),
@@ -292,7 +293,7 @@ fn mod_still_inlines() {
 
 #[test]
 fn prune_dead_unions_removes_chains() {
-    let src = "var x: int = 0\non RoundStart { x = 1 }\non Bumped { x = 2 }\non Bumped { x = 3 }";
+    let src = "var x: int = 0\non RoundStart() { x = 1 }\non Bumped { x = 2 }\non Bumped { x = 3 }";
     let r = compile(src);
     let union_count = r
         .module
@@ -310,7 +311,7 @@ fn prune_dead_unions_removes_chains() {
 
 #[test]
 fn inline_literals_folded() {
-    let src = "var x: int = 0\non RoundStart { x = x + 1 }";
+    let src = "var x: int = 0\non RoundStart() { x = x + 1 }";
     let r = compile(src);
     let literal_count = r
         .module
@@ -661,7 +662,7 @@ fn namespace_chip_call_resolves() {
         "import should resolve: {:?}",
         resolved.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&resolved.ast, "test");
+    let tc = crate::typecheck::typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics
             .iter()
@@ -678,6 +679,7 @@ fn namespace_chip_call_resolves() {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     assert!(
         lr.diagnostics
@@ -1111,7 +1113,7 @@ fn emit_value_inside_chip_handler_assigns_outputs() {
     let src = "chip Init(t: exec) -> (code: int, done: exec) {\n  on t {\n    emit code = 7\n    emit done\n  }\n}\nin s: exec\nlet r = Init(s)\nout v = r.code";
     let parsed = crate::parser::parse(src, "test");
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics
             .iter()
@@ -1446,7 +1448,7 @@ fn namespaced_mod_resolves_siblings() {
           ctrl.DisplayText(\"hi\", positionX = v, fontSize = h)\n\
         }";
     let diags = lower_with_imports(
-        "import * as lib from \"lib\"\non ControllerJoined(c, uid) { lib.draw(c, 0) }",
+        "import * as lib from \"lib\"\non ControllerJoined() -> { controller: c, userId: uid } { lib.draw(c, 0) }",
         &[("lib", lib)],
     );
     assert!(

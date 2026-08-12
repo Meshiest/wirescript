@@ -46,7 +46,7 @@ fn main() {
     let resolved = wirescript::resolve::resolve(&source, &file, &wirescript::resolve::FsLoader);
     snap("resolve", &mut last);
 
-    let tc = wirescript::typecheck::typecheck(&resolved.ast, &file);
+    let tc = wirescript::typecheck::typecheck(&resolved.ast, &file, &wirescript::typecheck::CeSlotMap::default());
     snap("typecheck", &mut last);
 
     let cache = std::sync::Arc::new(wirescript::template_cache::TemplateCache::new());
@@ -59,6 +59,7 @@ fn main() {
         template_cache: cache.clone(),
         doc_comments: &resolved.doc_comments,
         fold_mode: wirescript::lower::FoldMode::Auto,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     });
     snap("lower", &mut last);
 

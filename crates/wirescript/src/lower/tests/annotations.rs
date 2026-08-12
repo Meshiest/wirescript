@@ -10,7 +10,7 @@ fn lower_src(src: &str) -> crate::ir::Module {
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    let tc = crate::typecheck::typecheck(&parsed.ast, "test");
+    let tc = crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
     let r = crate::lower::lower(crate::lower::LowerInput {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
@@ -20,6 +20,7 @@ fn lower_src(src: &str) -> crate::ir::Module {
         template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
         fold_mode: crate::lower::FoldMode::Auto,
+        ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     assert!(
         r.diagnostics

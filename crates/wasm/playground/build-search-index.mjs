@@ -26,6 +26,8 @@ const MANIFEST = {
   'best-practices.md': 'Best Practices',
   'folding.md': 'Constant Folding',
   'diagnostics.md': 'Diagnostics',
+  'upgrading.md': 'Upgrading',
+  'CHANGELOG.md': 'Changelog',
 };
 
 // ── Stop words (common English words that add no search value) ──

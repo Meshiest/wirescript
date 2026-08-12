@@ -360,6 +360,12 @@ pub fn named_arg_value(source: &str, line: usize, col: usize) -> Option<(String,
     if value.contains(',') {
         return None;
     }
+    // An unclosed `(` in the value means the cursor descended into a nested call
+    // that opened AFTER this `=` (e.g. `let v = Vec(‸)`, `foo(a = bar(‸))`), so
+    // this `=` is an outer binding/arg, not the value slot the cursor sits in.
+    if value.matches('(').count() > value.matches(')').count() {
+        return None;
+    }
     let head = before[..eq].trim_end();
     let start = head
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')

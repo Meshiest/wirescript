@@ -329,10 +329,62 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     ty: Type::String,
                 },
             ],
-            // `on ChatCommand("greet", "Greets you", player, args)`
+            // `on ChatCommand("greet", "Greets you") -> (player, args)`
             vec!["CommandName", "HelpText"],
             // `on ChatCommand("greet", Description = "Greets you")`
             vec![("description", "HelpText"), ("helptext", "HelpText")],
+        ),
+        // Whole-grid interaction/targeting events. These `WireGraph_Exec_*` gates
+        // have NO `ExecOut`; their trigger is a differently-named output that acts
+        // as the exec (like Clock's `Pulse`): `WholeGridInteracted` fires from
+        // `Character` (the interacting character) — which is ALSO bound as the
+        // `character` data param — exposing `held` (`bHeld`, true while held);
+        // `WholeGridTargeted` fires from `Targeted` (typed `any` in the dump,
+        // semantically the exec) exposing the hit character/damage/weapon. The
+        // exec-only port (`WholeGridTargeted.Targeted`) is in EVENT_ALLOWED_GAPS.
+        (
+            "WholeGridInteracted",
+            EventSpec {
+                surface_name: "WholeGridInteracted",
+                gate_class: "BrickComponentType_WireGraph_Exec_WholeGridInteracted",
+                data: vec![
+                    character("character", "Character"),
+                    EventDataBinding {
+                        name: "held",
+                        port: "bHeld",
+                        ty: Type::Bool,
+                    },
+                ],
+                config_positional: vec![],
+                config_named: vec![],
+                input_named: vec![],
+                exec_out: "Character",
+            },
+        ),
+        (
+            "WholeGridTargeted",
+            EventSpec {
+                surface_name: "WholeGridTargeted",
+                gate_class: "BrickComponentType_WireGraph_Exec_WholeGridTargeted",
+                data: vec![
+                    character("character", "CharacterThatJustHit"),
+                    EventDataBinding {
+                        name: "damage",
+                        port: "Damage",
+                        ty: Type::Float,
+                    },
+                    entity("weapon", "WeaponThatJustHit"),
+                    EventDataBinding {
+                        name: "weaponName",
+                        port: "WeaponNameThatJustHit",
+                        ty: Type::String,
+                    },
+                ],
+                config_positional: vec![],
+                config_named: vec![],
+                input_named: vec![],
+                exec_out: "Targeted",
+            },
         ),
         // The Clock event auto-emits an exec pulse at a configured interval; the
         // handler body chains from its `Pulse` output. `interval` and `enabled`
@@ -366,7 +418,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         // config that scopes the event to a specific grid/object instead of firing
         // grid-wide. Delivery is same-owner only — the ownership-agnostic
         // counterpart is `on GlobalCustomEvent(...)`.
-        // `on CustomEvent("dmg", amount: int, source: character) { last = amount }`.
+        // `on CustomEvent("dmg") -> (amount: int, source: character) { last = amount }`.
         (
             "CustomEvent",
             EventSpec {
@@ -383,7 +435,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
                 ],
                 config_positional: vec!["EventName"],
-                config_named: vec![("isobject", "bIsObjectEvent")],
+                config_named: vec![("isObject", "bIsObjectEvent")],
                 input_named: vec![],
                 exec_out: "ExecOut",
             },
@@ -408,7 +460,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     EventDataBinding { name: "data8", port: "DataOut8", ty: Type::Any },
                 ],
                 config_positional: vec!["EventName"],
-                config_named: vec![("isobject", "bIsObjectEvent")],
+                config_named: vec![("isObject", "bIsObjectEvent")],
                 input_named: vec![],
                 exec_out: "ExecOut",
             },
