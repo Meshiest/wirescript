@@ -61,6 +61,12 @@ pub fn hover_at(
         return Some(h);
     }
 
+    // `:name` atom literals aren't identifier words either — show the
+    // compile-time `int` they hash to.
+    if let Some(h) = hover_atom(source, file, line, col) {
+        return Some(h);
+    }
+
     let word = word_at(source, line, col)?;
 
     None
@@ -120,6 +126,21 @@ fn hover_type_or_class(word: &str) -> Option<String> {
     }
     let desc = builtin_type_desc(word)?;
     Some(format!("```wirescript\n{word}\n```\n{desc}"))
+}
+
+/// Hover for a `:name` atom literal under the cursor: the compile-time `int`
+/// constant it hashes to (xxHash64 of the name), shown in decimal and hex.
+fn hover_atom(source: &str, file: &str, line: usize, col: usize) -> Option<String> {
+    let a = super::atoms::atom_at(source, file, line, col)?;
+    Some(format!(
+        "**Atom** `:{name}`\n\nA compile-time **64-bit `int`** constant — the xxHash64 of the \
+         name, resolved at compile time (never a runtime string). Every `:{name}` is this value:\n\n\
+         - `{dec}` — the signed `int` it is in code (negative when the hash's top bit is set)\n\
+         - `{hex:#018x}` — the 64-bit hash (16 hex digits)",
+        name = a.name,
+        dec = a.value,
+        hex = a.value as u64,
+    ))
 }
 
 /// Hover for a `$` reference token under the cursor: a prefab file reference

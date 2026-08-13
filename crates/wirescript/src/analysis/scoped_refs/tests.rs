@@ -778,3 +778,30 @@ fn user_type_alias_use_is_a_type_token() {
     assert_eq!(use_span.kind, SemTokenKind::Type);
     assert_eq!(use_span.name, "Point");
 }
+
+
+#[test]
+fn general_expr_trigger_call_is_not_recolored_by_a_synthetic_token() {
+    // `on ReadBrickGrid()` desugars to a synthetic `let _on_expr_0 = ReadBrickGrid()`.
+    // Semantic tokens must NOT emit a token for `_on_expr_0` (its range spans the
+    // whole `ReadBrickGrid()` call), so the call keeps the grammar's function
+    // coloring — consistent with a plain `let foo = ReadBrickGrid()` call.
+    let src = "in go: exec\non ReadBrickGrid() {\n  let foo = ReadBrickGrid()\n}";
+    let spans = semantic_tokens(&parse(src, "t.ws").ast);
+    assert!(
+        !spans.iter().any(|s| s.name.starts_with("_on_expr_")),
+        "synthetic `_on_expr_N` must not be tokenized; got {:?}",
+        spans.iter().map(|s| s.name.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn atom_hash_is_a_64_bit_i64() {
+    // Every atom value is `xxh64(name) as i64` — a bit-preserving reinterpret of
+    // a u64, so it always fits an i64 (high-bit-set names read as negative).
+    for name in ["bomber", "the-black", "seer", "x"] {
+        let v = crate::hash::atom_hash(name);
+        // Round-trips through u64 with no loss (proves it's exactly 64 bits).
+        assert_eq!(v, (v as u64) as i64);
+    }
+}

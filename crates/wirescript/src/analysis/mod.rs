@@ -9,6 +9,7 @@ pub mod gate_docs;
 pub mod format;
 pub mod resource_estimate;
 pub mod inlay_hints;
+pub mod atoms;
 pub mod visit;
 pub mod scoped_refs;
 
@@ -31,5 +32,6 @@ pub use gate_docs::gate_docs;
 pub use format::format_wirescript;
 pub use resource_estimate::{ResourceEstimate, collect_estimates, lookup_estimate};
 pub use inlay_hints::{collect_inlay_hints, InlayHintInfo, InlayHintKind};
+pub use atoms::{atom_at, atom_references, AtomRef};
 pub use visit::visit_program;
 pub use scoped_refs::{field_name_at, prepare_rename_at, references_at, references_to_export, semantic_tokens, CrossFile, RefNs, RefSite, RefTarget, SemSpan, SemTokenKind};

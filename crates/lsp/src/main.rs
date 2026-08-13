@@ -353,6 +353,52 @@ fn collect_references_across_files(
     sort_and_dedup(results)
 }
 
+/// Find-references for an atom `:name`: every `:name` occurrence in every open
+/// document plus every `.ws` file in the referencing file's directory. Atoms
+/// are global (a name hashes to one xxHash64 value, with no scope), so this is
+/// a plain name match across the workspace — no resolution needed.
+fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str) -> Vec<Location> {
+    let mut out: Vec<Location> = Vec::new();
+    for (doc_uri, doc_state) in docs.iter() {
+        let file = uri_to_file_string(doc_uri);
+        for r in wirescript::analysis::atom_references(&doc_state.source, &file, name) {
+            out.push(Location { uri: doc_uri.clone(), range: range_to_lsp(&r) });
+        }
+    }
+    // Same-directory disk scan, skipping already-open docs (canonical-path
+    // keyed, matching `collect_references_across_files`).
+    let open_paths: std::collections::HashSet<std::path::PathBuf> = docs
+        .keys()
+        .filter_map(|u| u.to_file_path().ok())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .collect();
+    if let Ok(file_path) = uri.to_file_path() {
+        if let Some(dir) = file_path.parent() {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if !path.extension().map_or(false, |e| e == "ws") {
+                    continue;
+                }
+                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if open_paths.contains(&canonical) {
+                    continue;
+                }
+                let Ok(entry_uri) = Url::from_file_path(&path) else {
+                    continue;
+                };
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let file = path.to_string_lossy().to_string();
+                for r in wirescript::analysis::atom_references(&src, &file, name) {
+                    out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&r) });
+                }
+            }
+        }
+    }
+    out
+}
+
 fn uri_to_file_string(uri: &Url) -> String {
     uri.to_file_path()
         .map(|p| p.to_string_lossy().to_string())
@@ -931,6 +977,12 @@ impl LanguageServer for Backend {
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
                 let file = uri_to_file_string(uri);
+                // Atom `:name` find-references — atoms are global (one xxHash64
+                // value per name, no scope), so gather every `:name` occurrence
+                // across the workspace.
+                if let Some(a) = wirescript::analysis::atom_at(&doc.source, &file, line, col) {
+                    return Ok(Some(collect_atom_references(&docs, uri, &a.name)));
+                }
                 if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
                     return Ok(None);
                 }

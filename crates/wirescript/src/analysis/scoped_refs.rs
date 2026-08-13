@@ -1400,6 +1400,16 @@ fn record_sem_span(
 ///   deferral), so classifying them here would be a guess, not a fact the
 ///   resolver actually knows; the grammar's own coloring stands instead.
 ///
+/// A compiler-synthesized identifier that stands in for real user source (its
+/// range overlaps user code, so coloring it would mis-paint that code). The
+/// general-expression handler trigger `on <call>()` desugars to a synthetic
+/// `let _on_expr_N = <call>` + `on _on_expr_N`, whose binding + trigger use
+/// both span the whole `<call>` — semantic tokens must skip it so the call
+/// keeps its own coloring.
+fn is_synthetic_ident(name: &str) -> bool {
+    name.starts_with("_on_expr_")
+}
+
 /// The result is unsorted and safe to contain no duplicate-position spans
 /// (deduped by [`record_sem_span`]) — the LSP wiring sorts before
 /// delta-encoding into the protocol's token stream.
@@ -1417,6 +1427,9 @@ pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
     // builtin/global (a real `round(...)` call, `DisplayText`, …) — left to the
     // grammar's function coloring.
     for u in &model.uses {
+        if is_synthetic_ident(&u.name) {
+            continue;
+        }
         match u.ns {
             RefNs::Type => {
                 record_sem_span(&mut spans, &mut seen, u.range.clone(), u.name.clone(), SemTokenKind::Type, u.coarse)
@@ -1430,7 +1443,7 @@ pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
     }
 
     for b in &model.bindings {
-        if b.kind == "import" {
+        if b.kind == "import" || is_synthetic_ident(&b.name) {
             continue;
         }
         let kind = match b.ns {

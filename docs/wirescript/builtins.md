@@ -1373,7 +1373,7 @@ GetOwnTransform() -> { Location: vector, Rotation: rotator }
 SweepSimple(distance: float, radius?: float, spreadConeAngle?: float)
   -> { HitDistance, HitEntity, HitLocation, HitNormal, Hit, Miss }
 ```
-
+  
 `SweepSimple` sweeps **from its own brick** (the containing microchip's brick, or the
 gate's own brick if not in a microchip), in the configured `direction`. It has no origin
 input and **takes no receiver**. To sweep from an arbitrary point, use

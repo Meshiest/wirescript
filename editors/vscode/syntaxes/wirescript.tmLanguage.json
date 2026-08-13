@@ -117,6 +117,11 @@
     "numbers": {
       "patterns": [
         {
+          "comment": "Atom literal `:name` — a compile-time int constant (xxHash64 of the name), so it colors as an integer. Names are kebab-case-capable (`:the-black`, matching the lexer). The negative look-behind mirrors the lexer's rule that a `:` after a value-completing token is a plain colon, so a type annotation (`x: T`, `x:T`), a string map key (`\"k\": v`), and a `):`/`]:`/`}:` never match.",
+          "name": "constant.numeric.integer.wirescript",
+          "match": "(?<![A-Za-z0-9_\")\\]}]):[A-Za-z_][A-Za-z0-9_-]*"
+        },
+        {
           "name": "constant.numeric.float.wirescript",
           "match": "\\b\\d+\\.\\d*\\b"
         },
