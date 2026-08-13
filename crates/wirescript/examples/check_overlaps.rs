@@ -66,7 +66,7 @@ fn main() {
         &wirescript::layout_options_for(&resolved.ast, Some(resolved.source_map.clone())),
     );
     let mut opts = wirescript::EmitOptions::default();
-    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file));
+    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file, wirescript::lower::FoldMode::Auto));
     let world = wirescript::build_world(&lowered.module, &lr, &opts, &cache).expect("emit");
     eprintln!("compiled in {:?}", t.elapsed());
 

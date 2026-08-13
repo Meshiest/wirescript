@@ -99,7 +99,7 @@ fn builtin_type_desc(word: &str) -> Option<&'static str> {
         "exec" => "Execution trigger signal — not a data value.",
         "zone" => "Reference to a Zone brick (rerouter-only, like a var ref).",
         "teleport" => "Reference to a Teleport Destination (rerouter-only, like a var ref).",
-        "prefab" => "Reference to a prefab (a `$./file.brz` file or an inline prefab block) — a compile-time constant, not stored.",
+        "prefab" => "Reference to a prefab (a `$./file.brz` archive, a `$./file.ws` source compiled on reference, or an inline prefab block) — a compile-time constant, not stored.",
         "any" => "Wildcard type — works anywhere but erases the type; prefer a generic `<T>`.",
         "never" => "Bottom type — no value inhabits it.",
         _ => return None,
@@ -149,11 +149,16 @@ fn render_prefab_file_hover(path: &str, file: &str) -> String {
         base.map_or_else(|| PathBuf::from(path), |b| b.join(path))
     };
 
-    let mut out = String::from("**Prefab file reference**\n\nEmbeds a `.brz` archive into `SpawnPrefab`.\n\n");
+    let kind = if path.ends_with(".ws") {
+        "Compiles a `.ws` source file and embeds the result"
+    } else {
+        "Embeds a `.brz` archive"
+    };
+    let mut out = format!("**Prefab file reference**\n\n{kind} into `SpawnPrefab`.\n\n");
     out += &format!("- Reference: `${path}`\n");
     out += &format!("- Resolves to: `{}`\n", resolved.display());
-    if !path.ends_with(".brz") {
-        out += "\nNote: prefab references must end in `.brz` (WS019).\n";
+    if !path.ends_with(".brz") && !path.ends_with(".ws") {
+        out += "\nNote: prefab references must end in `.brz` (a prebuilt archive) or `.ws` (a source file) (WS019).\n";
     }
     #[cfg(not(target_arch = "wasm32"))]
     match std::fs::metadata(&resolved) {

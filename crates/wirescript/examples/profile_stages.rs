@@ -68,7 +68,7 @@ fn main() {
     eprintln!("layout:                      {:>8.2?}", t.elapsed());
 
     let mut opts = EmitOptions::default();
-    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file));
+    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file, wirescript::lower::FoldMode::Auto));
     let t = Instant::now();
     let world = wirescript::build_world(&lowered.module, &lr, &opts, &template_cache)
         .expect("emit");

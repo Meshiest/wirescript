@@ -70,7 +70,7 @@ fn main() {
     snap("layout", &mut last);
 
     let mut opts = wirescript::EmitOptions::default();
-    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file));
+    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(&file, wirescript::lower::FoldMode::Auto));
     let world = wirescript::build_world(&lowered.module, &lr, &opts, &cache).expect("emit");
     snap("build_world", &mut last);
 

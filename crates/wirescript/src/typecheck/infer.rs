@@ -19,6 +19,81 @@ use super::{
     type_user_symbol_call, CallSignature, ExecMode, Param, ParamKind, SymbolKind, TypeCheckCtx,
 };
 
+/// Bound on how deep `$./….ws` source-prefab references are followed while
+/// type-checking (the editor pass). The compile pipeline's own
+/// `MAX_PREFAB_WS_DEPTH` is authoritative for emission; this only stops the
+/// in-editor check from recursing forever on a self- or mutually-referential
+/// `.ws` prefab.
+const MAX_WS_PREFAB_CHECK_DEPTH: usize = 4;
+
+thread_local! {
+    static WS_PREFAB_CHECK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Type-check a `$./file.ws` source-prefab reference: read the referenced file,
+/// parse + infer it as its own program, and surface each of its diagnostics on
+/// the reference `range` — so `control.ws`'s own errors underline
+/// `$./control.ws` in the editor. The compile pipeline separately reads +
+/// compiles the same file (see `disk_prefab_resolver`); this is the in-editor
+/// mirror, analogous to the inline `$```…```` block's diagnostic surfacing.
+fn check_ws_prefab_ref(ctx: &mut TypeCheckCtx, path: &str, range: &SourceRange) {
+    let depth = WS_PREFAB_CHECK_DEPTH.with(|d| d.get());
+    if depth >= MAX_WS_PREFAB_CHECK_DEPTH {
+        return;
+    }
+    // Resolve `./rel` / `/abs` / `rel` against the referencing file's directory,
+    // the same way `disk_prefab_resolver` does at compile time.
+    let base = std::path::Path::new(&*range.file)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let full = if let Some(rel) = path.strip_prefix("./") {
+        base.join(rel)
+    } else if path.starts_with('/') {
+        std::path::PathBuf::from(path)
+    } else {
+        base.join(path)
+    };
+    let src = match std::fs::read_to_string(&full) {
+        Ok(s) => s,
+        Err(e) => {
+            ctx.emit(
+                "WS019",
+                format!("cannot read prefab source `${path}`: {e}"),
+                range.clone(),
+            );
+            return;
+        }
+    };
+    let inner_file: std::sync::Arc<str> = std::sync::Arc::from(full.to_string_lossy().as_ref());
+    let inner = crate::parser::parse(&src, &inner_file);
+    // A prefab that imports needs the compile driver's loader to resolve them;
+    // this editor pass has none, so surface only its PARSE diagnostics (its
+    // type-check would false-positive on unresolved imports). A self-contained
+    // prefab (the common case) is fully checked.
+    let has_imports = inner
+        .ast
+        .decls
+        .iter()
+        .any(|d| matches!(d, crate::ast::TopDecl::Import(_)));
+    let inner_diags: Vec<Diagnostic> = if has_imports {
+        inner.diagnostics
+    } else {
+        WS_PREFAB_CHECK_DEPTH.with(|d| d.set(depth + 1));
+        let tc = crate::typecheck::typecheck_with_inference(&inner.ast, &inner_file).0;
+        WS_PREFAB_CHECK_DEPTH.with(|d| d.set(depth));
+        inner.diagnostics.into_iter().chain(tc.diagnostics).collect()
+    };
+    // The inner diagnostics live in a different file, so there's no in-file
+    // position to shift to (unlike an inline block) — re-attribute each to the
+    // reference span, keeping its code and prefixing the prefab path.
+    for mut d in inner_diags {
+        d.message = format!("in prefab `{path}`: {}", d.message);
+        d.range = range.clone();
+        ctx.diagnostics.push(d);
+    }
+}
+
 pub(crate) fn infer(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     let t = infer_node(ctx, e);
     let r = e.range();
@@ -71,13 +146,22 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // A prefab file reference flows into a `bundle_path_ref` gate
             // property; typed `Type::PrefabRef` (a compile-time-constant
             // reference — reaches the `any`-typed `prefab=` param via the
-            // universal `Any` coercion rule). The `.brz` extension is required
-            // (the file resolution + embedding happens at emit); flag it early
-            // so the error points at the reference.
-            if !path.ends_with(".brz") {
+            // universal `Any` coercion rule). `.brz` is a prebuilt archive
+            // (resolved + embedded at emit); `.ws` is a SOURCE prefab the
+            // compile path reads + compiles (see `disk_prefab_resolver`). For a
+            // `.ws` reference, type-check the referenced file and surface its
+            // diagnostics on THIS reference span, so an error inside
+            // `control.ws` underlines the `$./control.ws` reference in the
+            // editor (mirrors the inline `$```…```` block below).
+            if path.ends_with(".ws") {
+                check_ws_prefab_ref(ctx, path, range);
+            } else if !path.ends_with(".brz") {
                 ctx.emit(
                     "WS019",
-                    format!("prefab reference `${path}` must end in `.brz`"),
+                    format!(
+                        "prefab reference `${path}` must end in `.brz` (a prebuilt archive) \
+                         or `.ws` (a source file compiled on reference)"
+                    ),
                     range.clone(),
                 );
             }
@@ -961,6 +1045,31 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                          named `self`, so it can't be called as `x.{field}(…)`. Call \
                          `{field}(<receiver>, …)` directly, or rename its first parameter \
                          to `self` to allow method syntax."
+                    ),
+                    fa_range.clone(),
+                );
+                return Type::Any;
+            }
+            // A method call `obj.field(...)` where `field` is a KNOWN BUILTIN
+            // that takes NO receiver — `Sweep`/`SweepSimple` act on their own
+            // brick, not a receiver object, so there's nowhere to bind `obj`.
+            // Without this the call falls through to `any` and lowers to an
+            // `_Unsupported` no-op (typecheck/lowering divergence). Flag it so
+            // `x.SweepSimple(…)` fails loudly instead of silently doing nothing.
+            if let Expr::FieldAccess {
+                obj,
+                field,
+                range: fa_range,
+            } = callee.as_ref()
+                && find_call(field).is_some_and(|c| c.receiver.is_none())
+            {
+                infer(ctx, obj); // keep the receiver's type in the map (hover/goto)
+                ctx.emit(
+                    "WS036",
+                    format!(
+                        "`{field}` takes no receiver — it acts on its own brick, not a \
+                         receiver object. Call it as `{field}(…)` directly, not \
+                         `x.{field}(…)`."
                     ),
                     fa_range.clone(),
                 );

@@ -3703,7 +3703,7 @@ impl<'a> Parser<'a> {
                         None => {
                             self.error(
                                 String::from(
-                                    "asset reference must be `$AssetType/AssetName` or a prefab path `$./file.brz`",
+                                    "asset reference must be `$AssetType/AssetName` or a prefab path `$./file.brz` / `$./file.ws`",
                                 ),
                                 t.start,
                                 t.end,

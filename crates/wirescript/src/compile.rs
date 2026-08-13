@@ -84,11 +84,22 @@ fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     f()
 }
 
-/// A [`PrefabResolver`] that reads `.brz` files from disk. `$./rel.brz`
-/// resolves relative to `entry_file`'s directory; `$/abs.brz` is a
-/// filesystem-absolute path. (Relative refs in imported files also resolve
-/// against the entry file's directory.)
-pub fn disk_prefab_resolver(entry_file: &str) -> PrefabResolver {
+/// Maximum depth of `$./file.ws` source-prefab compilation before it refuses
+/// (a runaway guard against a `.ws` prefab that references itself).
+const MAX_PREFAB_WS_DEPTH: usize = 8;
+
+/// A [`PrefabResolver`] that resolves `$./file` prefab references from disk.
+/// A `.brz` path is read as raw prefab bytes; a `.ws` path is **compiled on the
+/// spot** (its own source → `.brz` bytes), so `$./control.ws` embeds the
+/// compiled result of `control.ws` exactly like `$./control.brz` embeds a
+/// prebuilt one. `$./rel` resolves relative to `entry_file`'s directory;
+/// `$/abs` is filesystem-absolute. (Relative refs in imported files also
+/// resolve against the entry file's directory.)
+pub fn disk_prefab_resolver(entry_file: &str, fold_mode: FoldMode) -> PrefabResolver {
+    disk_prefab_resolver_depth(entry_file, fold_mode, 1)
+}
+
+fn disk_prefab_resolver_depth(entry_file: &str, fold_mode: FoldMode, depth: usize) -> PrefabResolver {
     let base = std::path::Path::new(entry_file)
         .parent()
         .map(|p| p.to_path_buf())
@@ -101,6 +112,33 @@ pub fn disk_prefab_resolver(entry_file: &str) -> PrefabResolver {
         } else {
             base.join(path)
         };
+        // A `.ws` reference is a SOURCE prefab: compile it here and embed the
+        // result, mirroring `default_nested_compiler` for inline `$```…````
+        // blocks (its own `$./…` refs resolve relative to the `.ws` file).
+        if full.extension().is_some_and(|e| e.eq_ignore_ascii_case("ws")) {
+            if depth > MAX_PREFAB_WS_DEPTH {
+                return Err(format!(
+                    "`$./….ws` source-prefab references are nested too deeply (limit {MAX_PREFAB_WS_DEPTH})"
+                ));
+            }
+            let src = std::fs::read_to_string(&full)
+                .map_err(|e| format!("cannot read prefab source {}: {e}", full.display()))?;
+            let full_str = full.to_string_lossy().into_owned();
+            let inner_opts = EmitOptions {
+                prefab_resolver: Some(disk_prefab_resolver_depth(&full_str, fold_mode, depth + 1)),
+                nested_compiler: Some(default_nested_compiler(1, full_str.clone(), fold_mode)),
+                ..Default::default()
+            };
+            let result = compile_to_world(
+                CompileInput { source: &src, file: &full_str, module_name: None, fold_mode },
+                inner_opts,
+            )
+            .map_err(|e| format!("prefab {} failed to compile: {e}", full.display()))?;
+            return result
+                .world
+                .to_brz_vec()
+                .map_err(|e| format!("prefab {} .brz encode failed: {e}", full.display()));
+        }
         std::fs::read(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))
     })
 }
@@ -193,7 +231,7 @@ fn compile_with_opts_inner(
     // Default to disk-backed prefab resolution unless a caller (e.g. the wasm
     // sandbox) supplied its own resolver.
     if opts.prefab_resolver.is_none() {
-        opts.prefab_resolver = Some(disk_prefab_resolver(file));
+        opts.prefab_resolver = Some(disk_prefab_resolver(file, input.fold_mode));
     }
     if opts.nested_compiler.is_none() {
         opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
@@ -309,7 +347,7 @@ fn compile_to_world_inner(
     let file = input.file;
     let module_name = input.module_name;
     if opts.prefab_resolver.is_none() {
-        opts.prefab_resolver = Some(disk_prefab_resolver(file));
+        opts.prefab_resolver = Some(disk_prefab_resolver(file, input.fold_mode));
     }
     if opts.nested_compiler.is_none() {
         opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));

@@ -359,10 +359,10 @@ fn uri_to_file_string(uri: &Url) -> String {
         .unwrap_or_else(|_| uri.path().to_string())
 }
 
-/// Candidate prefab-reference strings for `$./…brz` completion: every `.brz`
-/// file under the document's directory, as `./relative/path.brz` (forward
-/// slashes, the wirescript reference form). Bounded depth so large trees don't
-/// stall completion.
+/// Candidate prefab-reference strings for `$./…` completion: every `.brz`
+/// archive and `.ws` source file under the document's directory, as
+/// `./relative/path.ext` (forward slashes, the wirescript reference form).
+/// Bounded depth so large trees don't stall completion.
 fn scan_prefab_paths(uri: &Url) -> Vec<String> {
     let Ok(file_path) = uri.to_file_path() else {
         return Vec::new();
@@ -378,7 +378,7 @@ fn scan_prefab_paths(uri: &Url) -> Vec<String> {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, base, depth + 1, out);
-            } else if path.extension().is_some_and(|e| e == "brz") {
+            } else if path.extension().is_some_and(|e| e == "brz" || e == "ws") {
                 if let Ok(rel) = path.strip_prefix(base) {
                     let rel = rel.to_string_lossy().replace('\\', "/");
                     out.push(format!("./{rel}"));
@@ -408,7 +408,7 @@ fn resolve_prefab_path(entry_file: &str, path: &str) -> std::path::PathBuf {
 }
 
 /// LSP diagnostics for prefab file references that don't resolve: a missing
-/// `.brz` on disk, or a ref without the required `.brz` extension.
+/// file on disk, or a ref without the required `.brz`/`.ws` extension.
 fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for r in find_asset_refs(source).into_iter().filter(AssetRef::is_file) {
@@ -416,13 +416,16 @@ fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
             start: Position { line: r.line as u32, character: r.start_col as u32 },
             end: Position { line: r.line as u32, character: r.end_col as u32 },
         };
-        if !r.path.ends_with(".brz") {
+        if !r.path.ends_with(".brz") && !r.path.ends_with(".ws") {
             out.push(Diagnostic {
                 range,
                 severity: Some(DiagnosticSeverity::WARNING),
                 code: Some(NumberOrString::String("prefab-ext".into())),
                 source: Some("wirescript".into()),
-                message: format!("prefab reference `${}` must end in `.brz`", r.path),
+                message: format!(
+                    "prefab reference `${}` must end in `.brz` (a prebuilt archive) or `.ws` (a source file)",
+                    r.path
+                ),
                 ..Default::default()
             });
             continue;

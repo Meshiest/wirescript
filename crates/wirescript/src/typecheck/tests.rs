@@ -1733,6 +1733,78 @@
     }
 
     #[test]
+    fn no_receiver_builtin_called_with_receiver_is_ws036() {
+        // `Sweep`/`SweepSimple` take no receiver — they act on their own brick.
+        // `body.SweepSimple(...)` has nowhere to bind `body`, so before this it
+        // silently typed as `any` and lowered to an `_Unsupported` placeholder.
+        // It must be a hard WS036 error instead.
+        let r = tc(
+            "in body: character\nin go: exec\n\
+             on go { let hit = body.SweepSimple(500.0, detectPlayers1 = true) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS036"),
+            "a no-receiver builtin called with method syntax must emit WS036; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn no_receiver_builtin_plain_call_stays_clean() {
+        // The correct form — no receiver, positional distance — type-checks and
+        // yields the hit record (so WS036 above isn't over-firing on the gate).
+        let r = tc(
+            "in go: exec\n\
+             on go { let hit = SweepSimple(500.0, detectPlayers1 = true)\n let d = hit.HitDistance }",
+        );
+        assert!(
+            r.diagnostics.is_empty(),
+            "plain SweepSimple(...) must type-check clean; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn prefab_ref_wrong_extension_is_ws019() {
+        // A `$./…` prefab reference must be a `.brz` archive or a `.ws` source;
+        // anything else is WS019.
+        let r = tc("in go: exec\non go { SpawnPrefab(prefab = $./x.png) }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS019"),
+            "a non-.brz/.ws prefab reference must be WS019; got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ws_source_prefab_ref_surfaces_inner_errors_on_span() {
+        // `$./child.ws` is a SOURCE prefab: the type-checker reads + checks the
+        // referenced file and surfaces its diagnostics on the reference span, so
+        // a broken child underlines `$./child.ws` in the parent (not a silent
+        // failure discovered only at emit).
+        let dir = std::env::temp_dir().join(format!("ws_prefab_ref_span_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("broken_child.ws"),
+            "in go: exec\non go { let x = undefinedThing + 1 }",
+        )
+        .unwrap();
+        let parent_path = dir.join("parent.ws").to_string_lossy().into_owned();
+        let src = "in go: exec\non go { SpawnPrefab(prefab = $./broken_child.ws) }";
+        let p = parse(src, &parent_path);
+        let result = crate::typecheck::typecheck_with_inference(&p.ast, &parent_path).0;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "WS002" && d.message.contains("in prefab")),
+            "a broken $./child.ws must surface its WS002 on the reference span; got {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
     fn unknown_base_method_call_stays_ws002_not_ws036() {
         // An unknown receiver base is the primary problem — it stays WS002 and
         // must NOT be masked by the non-self-mod WS036 check, even when the

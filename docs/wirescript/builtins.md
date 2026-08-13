@@ -1374,6 +1374,12 @@ SweepSimple(distance: float, radius?: float, spreadConeAngle?: float)
   -> { HitDistance, HitEntity, HitLocation, HitNormal, Hit, Miss }
 ```
 
+`SweepSimple` sweeps **from its own brick** (the containing microchip's brick, or the
+gate's own brick if not in a microchip), in the configured `direction`. It has no origin
+input and **takes no receiver**. To sweep from an arbitrary point, use
+the full `Sweep(origin, direction, distance, ...)` gate, which has a `vector` `origin` input.
+`distance` is positional (`SweepSimple(500.0, ...)`).
+
 ### Zone array fills (Exec) — array methods
 ```
 arr.fillFromZoneEntities(zone, tagFilter?)   // entities inside a zone
