@@ -227,6 +227,15 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
     // `MathAdd(n, 0)`-style carrier feeding a boundary port nobody reads.
     cleanup_boundary_feeds(root, &known, &infos);
 
+    // Runtime `@label(<expr>)` sources (per-var `dynamic_labels` + the module
+    // `root_dynamic_label`) are consumed ONLY by a wire that emit materializes
+    // later (pass 3.5, into the label's `Component_TextDisplay.Text`). In the
+    // IR they therefore look like a pure node with zero outgoing wires — which
+    // is exactly what the demand sweep prunes. Protect them so the label
+    // survives folding instead of being silently dropped at emit.
+    let mut protected: HashSet<NodeId> = HashSet::default();
+    collect_label_source_nodes(root, &mut protected);
+
     // ---------------- cleanup sweeps ----------------
     // Order matters: a truncated Branch can strand its untaken side (exec
     // cleanup), which can orphan a pure feeder that only fed the stranded
@@ -234,9 +243,24 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
     // Union (union cleanup) before a named-chip instance emptied by all of
     // the above is considered for whole-chip elision.
     sweep_dead_exec(root);
-    sweep_dead_pure(root);
+    sweep_dead_pure(root, &protected);
     super::prune_dead_exec_unions(root);
     elide_empty_chips(root);
+}
+
+/// Node ids that must survive the demand sweep despite having no outgoing IR
+/// wire, because their only consumer is a label wire materialized at emit time
+/// (see the `dynamic_labels`/`root_dynamic_label` handling in `emit.rs` pass
+/// 3.5). Recurses chips so a label source in any sub-module is covered too,
+/// though in practice these are only ever recorded on the root module.
+fn collect_label_source_nodes(module: &Module, out: &mut HashSet<NodeId>) {
+    out.extend(module.dynamic_labels.values().map(|p| p.node_id));
+    if let Some(p) = &module.root_dynamic_label {
+        out.insert(p.node_id);
+    }
+    for child in module.chips.values() {
+        collect_label_source_nodes(child, out);
+    }
 }
 
 fn collect_infos(module: &Module, infos: &mut HashMap<NodeId, Info>) {
@@ -1110,12 +1134,12 @@ fn collect_dead_exec(
 /// non-`Layout` wires has no consumer left; remove it and its incoming
 /// wires. Rerouters/boundary nodes are never `Expr_*`-classed, so the
 /// opaque-probe barrier is preserved automatically.
-fn sweep_dead_pure(root: &mut Module) {
+fn sweep_dead_pure(root: &mut Module, protected: &HashSet<NodeId>) {
     loop {
         let mut out_counts: HashMap<NodeId, usize> = HashMap::default();
         tally_outgoing(root, &mut out_counts);
         let mut dead: HashSet<NodeId> = HashSet::default();
-        collect_dead_pure(root, &out_counts, &mut dead);
+        collect_dead_pure(root, &out_counts, protected, &mut dead);
         if dead.is_empty() {
             break;
         }
@@ -1137,10 +1161,16 @@ fn tally_outgoing(module: &Module, counts: &mut HashMap<NodeId, usize>) {
 fn collect_dead_pure(
     module: &Module,
     out_counts: &HashMap<NodeId, usize>,
+    protected: &HashSet<NodeId>,
     dead: &mut HashSet<NodeId>,
 ) {
     for (id, n) in &module.nodes {
         if n.kind != NodeKind::Gate || n.properties.contains_key(&*sym::NO_FOLD) {
+            continue;
+        }
+        // A label source has no IR consumer (its wire is added at emit); keep
+        // it and, transitively, everything feeding it via real wires.
+        if protected.contains(id) {
             continue;
         }
         let is_pure_class =
@@ -1153,7 +1183,7 @@ fn collect_dead_pure(
         }
     }
     for child in module.chips.values() {
-        collect_dead_pure(child, out_counts, dead);
+        collect_dead_pure(child, out_counts, protected, dead);
     }
 }
 

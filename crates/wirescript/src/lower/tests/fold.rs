@@ -1251,3 +1251,50 @@ fn string_condition_coercion_gate_blocks_folding_for_now() {
         );
     }
 }
+
+#[test]
+fn fold_keeps_dynamic_root_label_source() {
+    // A module-level runtime `@label(<expr>)` is consumed only by a wire that
+    // EMIT materializes later (into the root shell's `Text` port, pass 3.5), so
+    // the fold demand sweep must treat its source node as live — otherwise the
+    // node is pruned as "unconsumed" and emit silently drops the label.
+    // The blank line after `@label(...)` is what makes it a ROOT label rather
+    // than one attached to the `var who` decl below it.
+    let r = compile_folded(
+        "@label(\"root: ${who}\")\n\nvar who: string = \"\"\nin go: exec\non go { who = \"alice\" }",
+    );
+    no_errors(&r);
+    let src = r
+        .module
+        .root_dynamic_label
+        .as_ref()
+        .expect("root dynamic label recorded during lowering");
+    assert!(
+        r.module.nodes.contains_key(&src.node_id),
+        "root label source {:?} was pruned by the fold pass",
+        src.node_id
+    );
+}
+
+#[test]
+fn fold_keeps_dynamic_var_label_source() {
+    // Same hazard for a per-var runtime `@label` whose source is a FormatText
+    // gate (not a bare Variable): the emit-time label wire is its only consumer,
+    // so fold's demand sweep must not prune it.
+    let r = compile_folded(
+        "var who: string = \"\"\n@label(\"m: ${who}\") var mirror: string = \"\"\n\
+         in go: exec\non go { who = \"alice\" mirror = \"alice\" }",
+    );
+    no_errors(&r);
+    assert!(
+        !r.module.dynamic_labels.is_empty(),
+        "per-var dynamic label recorded during lowering"
+    );
+    for src in r.module.dynamic_labels.values() {
+        assert!(
+            r.module.nodes.contains_key(&src.node_id),
+            "var label source {:?} was pruned by the fold pass",
+            src.node_id
+        );
+    }
+}
