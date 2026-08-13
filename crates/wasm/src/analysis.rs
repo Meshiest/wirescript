@@ -1,9 +1,9 @@
 
 use serde::Serialize;
 use wirescript::analysis::{
-    Location, TextRange, TypeMap, collect_symbols, definition_at, find_all_references,
-    find_enclosing_call, format_wirescript, hover_at, named_arg_value, receiver_methods, type_str,
-    word_at,
+    Location, TextRange, TypeMap, collect_symbols, definition_at, find_enclosing_call,
+    find_name_range, format_wirescript, hover_at, named_arg_value, receiver_methods,
+    references_at, type_str,
 };
 use wirescript::ast::*;
 use wirescript::catalog::calls::calls;
@@ -652,10 +652,30 @@ pub fn references_with_files(
     col: u32,
     _files_json: &str,
 ) -> Option<String> {
-    let word = word_at(source, line as usize, col as usize)?;
-    let refs: Vec<LocationOut> = find_all_references(source, &word)
+    // The playground is single-file, so `_files_json` is unused — `references_at`
+    // only ever returns same-file sites (cross-file rename lives in the LSP).
+    let parsed = parse(source, "editor");
+    let (target, sites) =
+        references_at(&parsed.ast, source, "editor", line as usize, col as usize)?;
+    let refs: Vec<LocationOut> = sites
         .into_iter()
-        .map(LocationOut::from)
+        .map(|site| {
+            // A coarse site's range spans the whole declaration/statement, not
+            // just the name — narrow it to the name token, same as the LSP
+            // wiring layer (falls back to the coarse range if narrowing fails).
+            let range = if site.coarse {
+                find_name_range(source, &site.range, &target.name).unwrap_or(site.range)
+            } else {
+                site.range
+            };
+            LocationOut {
+                start_line: range.start.line.saturating_sub(1) as usize,
+                start_col: range.start.col.saturating_sub(1) as usize,
+                end_line: range.end.line.saturating_sub(1) as usize,
+                end_col: range.end.col.saturating_sub(1) as usize,
+                file: None,
+            }
+        })
         .collect();
     Some(serde_json::to_string(&refs).unwrap_or_else(|_| "[]".into()))
 }

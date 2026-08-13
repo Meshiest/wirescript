@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 1.1.1
+
+- **Scope-aware rename & find-references** - rename/`textDocument/references` now resolve the identifier under the cursor to its exact binding instead of matching the name as text, so they never touch comments, strings, a same-named type, another scope's binding, or an unrelated file; renaming an exported symbol updates its importers (and a local alias stays local). (This replaced the old textual scan.)
+- **Semantic type highlighting** - the LSP emits semantic tokens so a name in type position highlights as a type (including user `type` aliases the grammar's builtin list can't know), while every value identifier is highlighted uniformly - so a binding whose name collides with a type keyword (a `character` capture) or a builtin function (a value named `round`) reads as a plain identifier, not a type or a call. Genuine builtin calls are unaffected.
+
 ## 1.1.0
 
 - **Events as expressions** - an event called as an expression emits its gate and yields its exec, so an event composes in expressions like `Union(RoundStart(), other)`. It takes the same inputs as the `on` form (`Clock(interval = 2.0)`), and a data-carrying event exposes its outputs by field access (`CharacterSpawned().character`); a bare call auto-unwraps to the exec. The `on E { ... }` trigger form is unchanged.

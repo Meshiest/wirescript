@@ -1,127 +1,56 @@
     use super::*;
 
-    /// Apply a rename over `source` exactly the way the LSP does: collect the
-    /// sites with [`find_all_references`], then replace each with
-    /// [`rename_edit_text`] (right-to-left so earlier ranges stay valid).
-    fn apply_rename(source: &str, old: &str, new: &str) -> String {
-        let mut lines: Vec<String> = source.lines().map(str::to_string).collect();
-        let mut sites = find_all_references(source, old);
-        sites.sort_by(|a, b| (b.start_line, b.start_col).cmp(&(a.start_line, a.start_col)));
-        for site in sites {
-            lines[site.start_line]
-                .replace_range(site.start_col..site.end_col, &rename_edit_text(&site, old, new));
-        }
-        lines.join("\n")
-    }
-
     #[test]
-    fn rename_at_definition_renames_all_uses() {
-        let src = "mod foo(v: int) {\n}\nin go: exec\non go {\n  foo(1)\n  foo(2)\n}";
-        let out = apply_rename(src, "foo", "bar");
-        assert_eq!(
-            out,
-            "mod bar(v: int) {\n}\nin go: exec\non go {\n  bar(1)\n  bar(2)\n}"
-        );
-    }
-
-    #[test]
-    fn rename_from_use_site_renames_definition_and_all_uses() {
-        // Start from a *use* site the way the LSP does (word under cursor),
-        // and confirm the definition site is part of the renamed set.
-        let src = "let foo = 1\nout a = foo + foo";
-        let col = src.lines().nth(1).unwrap().rfind("foo").unwrap();
-        let word = crate::analysis::word_at(src, 1, col).expect("word under cursor");
-        assert_eq!(word, "foo");
-        let out = apply_rename(src, &word, "bar");
-        assert_eq!(out, "let bar = 1\nout a = bar + bar");
-    }
-
-    #[test]
-    fn rename_does_not_touch_longer_identifiers() {
-        let src = "let foo = 1\nlet foobar = foo + food";
-        let out = apply_rename(src, "foo", "bar");
-        assert_eq!(out, "let bar = 1\nlet foobar = bar + food");
-    }
-
-    #[test]
-    fn rename_imported_symbol_updates_import_specifier_and_definition() {
-        use crate::resolve::{resolve, MemLoader};
-
-        // Renaming `foo` from the importing file must rewrite BOTH the
-        // `import { foo }` specifier here and the definition in the source
-        // file — the same two-file site set find-references returns.
-        let main_src = "import { foo } from \"util\"\nin go: exec\non go { foo() }";
-        let util_src = "mod foo() {\n}";
-
-        let renamed_main = apply_rename(main_src, "foo", "bar");
-        let renamed_util = apply_rename(util_src, "foo", "bar");
-
-        assert!(
-            renamed_main.contains("import { bar } from \"util\""),
-            "import specifier not renamed: {renamed_main}"
-        );
-        assert!(renamed_main.contains("on go { bar() }"), "{renamed_main}");
-        assert!(renamed_util.contains("mod bar()"), "definition not renamed: {renamed_util}");
-
-        // The renamed pair still resolves cleanly end-to-end.
-        let loader = MemLoader {
-            files: [("util.ws".to_string(), renamed_util)].into_iter().collect(),
+    fn rename_edit_text_shorthand_expands_to_field_colon_new_name() {
+        let site = TextRange {
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 3,
+            is_shorthand: true,
         };
-        let resolved = resolve(&renamed_main, "main", &loader);
-        let errors: Vec<_> = resolved
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .collect();
-        assert!(errors.is_empty(), "renamed sources no longer resolve: {errors:?}");
+        assert_eq!(rename_edit_text(&site, "foo", "bar"), "foo: bar");
     }
 
     #[test]
-    fn rename_covers_namespace_qualified_uses() {
-        let src = "import * as u from \"util\"\nin go: exec\non go { u.foo() }";
-        let out = apply_rename(src, "foo", "bar");
-        assert!(out.contains("u.bar()"), "qualified use not renamed: {out}");
+    fn rename_edit_text_plain_site_replaces_outright() {
+        let site = TextRange {
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 3,
+            is_shorthand: false,
+        };
+        assert_eq!(rename_edit_text(&site, "foo", "bar"), "bar");
+    }
+
+    fn range(file: &str, start_line: u32, start_col: u32, end_line: u32, end_col: u32) -> SourceRange {
+        SourceRange {
+            file: file.into(),
+            start: crate::diagnostic::Pos { offset: 0, line: start_line, col: start_col },
+            end: crate::diagnostic::Pos { offset: 0, line: end_line, col: end_col },
+        }
     }
 
     #[test]
-    fn record_shorthand_rename_keeps_field_name() {
-        // `{ foo }` binds field `foo` to the value of `foo`; renaming the
-        // value must keep the field name: `{ foo: bar }` (NOT `{ bar: foo }`).
-        let src = "let p = { foo, other: 1 }";
-        let out = apply_rename(src, "foo", "bar");
-        assert_eq!(out, "let p = { foo: bar, other: 1 }");
+    fn find_name_range_is_word_boundary_aware() {
+        // `helper` must not match inside `helperX` or `myhelper` — only the
+        // whole-token occurrence counts.
+        let source = "let helperX = 1\nlet myhelper = 2\nlet helper = 3\n";
+        let decl_range = range("t.ws", 1, 1, 3, 1); // spans the whole snippet
+        let found = find_name_range(source, &decl_range, "helper").expect("match found");
+        assert_eq!(found.start.line, 3, "must skip helperX/myhelper and land on the real token");
+        assert_eq!(found.start.col, 5); // "let " is 4 chars, 1-based col 5
     }
 
     #[test]
-    fn record_shorthand_after_comma_expands_too() {
-        let src = "let p = { other: 1, foo }";
-        let out = apply_rename(src, "foo", "bar");
-        assert_eq!(out, "let p = { other: 1, foo: bar }");
-    }
-
-    #[test]
-    fn record_value_position_is_not_shorthand() {
-        // `{ x: foo }` binds field `x` to the value `foo` — renaming `foo`
-        // must not fabricate a shorthand expansion (`{ x: foo: bar }`).
-        let src = "let p = { x: foo }";
-        let out = apply_rename(src, "foo", "bar");
-        assert_eq!(out, "let p = { x: bar }");
-    }
-
-    #[test]
-    fn import_specifier_is_not_shorthand() {
-        // The braces of an import are a specifier list, not a record literal;
-        // renaming `foo` must yield `import { bar, other }`, never the
-        // corrupted `import { foo: bar, other }`.
-        let sites = find_all_references("import { foo, other } from \"util\"", "foo");
-        assert_eq!(sites.len(), 1);
-        assert!(!sites[0].is_shorthand, "import specifier misread as record shorthand");
-    }
-
-    #[test]
-    fn record_field_position_renames_plainly() {
-        // The explicit `foo:` field name is a plain (non-shorthand) site.
-        let src = "let p = { foo: 1 }";
-        let out = apply_rename(src, "foo", "bar");
-        assert_eq!(out, "let p = { bar: 1 }");
+    fn find_name_range_searches_every_line_of_a_multiline_range() {
+        // A coarse decl/import range can span several lines; the name may
+        // not be on the range's FIRST line.
+        let source = "import {\n  helperX,\n  helper\n} from \"lib\"\n";
+        let decl_range = range("t.ws", 1, 1, 4, 14); // the whole `import { … }` span
+        let found = find_name_range(source, &decl_range, "helper").expect("match found");
+        assert_eq!(found.start.line, 3, "must search past line 1 to find the real token");
+        assert_eq!(found.start.col, 3);
+        assert_eq!(found.end.col, 9);
     }

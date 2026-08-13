@@ -648,3 +648,26 @@
             refs.len()
         );
     }
+
+    #[test]
+    fn references_capture_is_scope_aware_not_textual() {
+        // The `character` capture must resolve only within its own handler —
+        // not the `: character` type annotation (a separate, type-position
+        // namespace) and not a `// character` comment (not AST at all).
+        // Regression guard: the scope-aware resolver walks AST use sites
+        // only, so comments and other-namespace occurrences are never
+        // candidates in the first place.
+        let src = "in target: character\n// character comment\non CharacterSpawned() -> (character) {\n  character.DisplayText(\"hi\")\n}";
+        let r = references(src, 2, 29);
+        let refs: Vec<serde_json::Value> = serde_json::from_str(&r.unwrap()).unwrap();
+        let lines: Vec<u64> = refs
+            .iter()
+            .map(|l| l["startLine"].as_u64().unwrap())
+            .collect();
+        assert_eq!(refs.len(), 2, "expected decl + 1 use, got {:?}", lines);
+        assert!(
+            lines.iter().all(|&l| l == 2 || l == 3),
+            "leaked outside the capture's own handler (comment/annotation): {:?}",
+            lines
+        );
+    }

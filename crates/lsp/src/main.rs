@@ -10,19 +10,21 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    collection_kind, find_all_references, find_asset_refs, find_enclosing_call, find_name_range,
-    format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names, receiver_methods,
-    record_field_names, rename_edit_text, resolve_symbol, swizzle_fields, type_str,
-    user_receiver_methods, word_at, AssetRef, CollectionKind, InlayHintKind, ResourceEstimate,
-    SymbolDef, TextRange, TypeMap, VarReadContextMap,
+    collection_kind, field_name_at, find_asset_refs, find_enclosing_call, find_name_range,
+    format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names,
+    prepare_rename_at, receiver_methods, record_field_names, references_at, references_to_export,
+    rename_edit_text, resolve_symbol, semantic_tokens, swizzle_fields, type_str,
+    user_receiver_methods, word_at, AssetRef, CollectionKind, CrossFile, InlayHintKind, RefNs,
+    RefSite, RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange, TypeMap,
+    VarReadContextMap,
 };
-use wirescript::ast::Script;
+use wirescript::ast::{ImportKind, LetBinding, Script, TopDecl};
 use wirescript::catalog::arrays::ARRAY_METHODS;
 use wirescript::catalog::maps::MAP_METHODS;
 use wirescript::catalog::calls::calls;
 use wirescript::catalog::events::events;
 use wirescript::lexer::KEYWORDS;
-use wirescript::resolve::{resolve, FsLoader};
+use wirescript::resolve::{resolve, FileLoader, FsLoader};
 use wirescript::typecheck::typecheck_with_inference;
 use wirescript::FoldMode;
 
@@ -59,16 +61,248 @@ fn text_range_to_lsp(r: &TextRange) -> Range {
     }
 }
 
+/// One [`RefSite`] converted to the LSP-facing [`TextRange`] the edit path
+/// uses: a coarse site (a whole-declaration/whole-statement span) is first
+/// narrowed to the precise name token via `find_name_range` against ITS OWN
+/// file's `source` — the only place source text enters this module, and a
+/// bounded narrowing of one already-resolved site, never a textual search
+/// (see the plan's Global Constraints). A precise site converts directly.
+fn ref_site_to_text_range(source: &str, name: &str, site: &RefSite) -> TextRange {
+    let range = if site.coarse {
+        find_name_range(source, &site.range, name).unwrap_or_else(|| site.range.clone())
+    } else {
+        site.range.clone()
+    };
+    TextRange {
+        start_line: range.start.line.saturating_sub(1) as usize,
+        start_col: range.start.col.saturating_sub(1) as usize,
+        end_line: range.end.line.saturating_sub(1) as usize,
+        end_col: range.end.col.saturating_sub(1) as usize,
+        is_shorthand: site.is_shorthand,
+    }
+}
+
+/// The same field-name / keyword refusal `prepare_rename_at` applies before
+/// it ever calls `references_at`, reused here so `references`/`rename` don't
+/// fall through to `references_at`'s own (coarser) dispatch and return the
+/// enclosing declaration's whole reference set for a cursor that's actually
+/// on a record FIELD name or a lexer keyword — mirrors the `field_name_at`
+/// guard `goto_definition` already applies for the same reason.
+fn is_field_or_keyword(ast: &Script, source: &str, line: usize, col: usize) -> bool {
+    if let Some(word) = word_at(source, line, col) {
+        if KEYWORDS.contains(&word.as_str()) {
+            return true;
+        }
+    }
+    field_name_at(ast, line, col)
+}
+
+/// Deterministic order + belt-and-braces dedup: rename must never hand the
+/// client two edits for the same site.
+fn sort_and_dedup(mut results: Vec<(Url, TextRange)>) -> Vec<(Url, TextRange)> {
+    results.sort_by(|a, b| {
+        (a.0.as_str(), a.1.start_line, a.1.start_col, a.1.end_line, a.1.end_col).cmp(&(
+            b.0.as_str(),
+            b.1.start_line,
+            b.1.start_col,
+            b.1.end_line,
+            b.1.end_col,
+        ))
+    });
+    results.dedup();
+    results
+}
+
+/// The top-level declaration in `ast` binding `name` in namespace `ns`, if
+/// any — mirrors `analysis::definition::top_decl_name`'s construct coverage
+/// (chip/mod, fn, `let <ident>`, event) plus `type` (importable per the
+/// plan's Global Constraints, but not a target of that private helper since
+/// `definition.rs` never jumps to a type-position use). Returns the whole
+/// declaration's own range; callers narrow it to the name token via
+/// `find_name_range`, exactly like `find_import_definition` does for
+/// goto-definition.
+fn top_level_decl_range(
+    ast: &Script,
+    name: &str,
+    ns: RefNs,
+) -> Option<wirescript::diagnostic::SourceRange> {
+    for d in &ast.decls {
+        match d {
+            TopDecl::Chip(c) if ns == RefNs::Value && c.name == name => return Some(c.range.clone()),
+            TopDecl::Fn(f) if ns == RefNs::Value && f.name == name => return Some(f.range.clone()),
+            TopDecl::Let(l) if ns == RefNs::Value => {
+                if let LetBinding::Ident { name: n, .. } = &l.binding {
+                    if n == name {
+                        return Some(l.range.clone());
+                    }
+                }
+            }
+            TopDecl::Event(e) if ns == RefNs::Value && e.name == name => return Some(e.range.clone()),
+            TopDecl::TypeAlias(t) if ns == RefNs::Type && t.name == name => {
+                return Some(t.range.clone());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// For an `Imported` target: find the `import { … }` specifier in the
+/// CURRENT file that brought in `export_name`, resolve + parse the source
+/// file it points at (mirrors `definition.rs::find_import_definition`'s path
+/// resolution), then run `references_at` on the ORIGINAL declaration's own
+/// name span there — giving the defining file's URI, source, and its own
+/// decl + local-use sites. `None` when the current doc isn't open, no
+/// matching import specifier exists, or the target file/decl can't be
+/// resolved (e.g. deleted from disk).
+fn find_defining_file_sites(
+    docs: &HashMap<Url, DocState>,
+    uri: &Url,
+    export_name: &str,
+    ns: RefNs,
+) -> Option<(Url, String, Vec<RefSite>)> {
+    let doc = docs.get(uri)?;
+    let current_file = uri_to_file_string(uri);
+
+    let import_path = doc.pre_resolve_ast.decls.iter().find_map(|d| {
+        let TopDecl::Import(imp) = d else { return None };
+        let ImportKind::Named(bindings) = &imp.kind else { return None };
+        bindings.iter().any(|b| b.name == export_name).then(|| imp.path.clone())
+    })?;
+
+    let resolved_path = FsLoader.canonical_path(&import_path, &current_file);
+    let d_file = if resolved_path.ends_with(".ws") {
+        resolved_path
+    } else {
+        format!("{import_path}.ws")
+    };
+
+    // Prefer an already-open buffer for `D` over its on-disk content — it may
+    // hold unsaved edits, and reusing its own `Url` (rather than a freshly
+    // built `Url::from_file_path`) avoids tagging edits with a differently-
+    // spelled URI for a file the client already has open under another
+    // spelling (the same class of bug the respelled-URI dedup elsewhere in
+    // this file guards against).
+    let d_canonical = std::path::Path::new(&d_file)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(&d_file));
+    if let Some((open_uri, open_doc)) = docs.iter().find(|(u, _)| {
+        u.to_file_path().ok().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).as_ref()
+            == Some(&d_canonical)
+    }) {
+        let decl_range = top_level_decl_range(&open_doc.pre_resolve_ast, export_name, ns)?;
+        let name_range =
+            find_name_range(&open_doc.source, &decl_range, export_name).unwrap_or(decl_range);
+        let line = name_range.start.line.saturating_sub(1) as usize;
+        let col = name_range.start.col.saturating_sub(1) as usize;
+        let open_file = uri_to_file_string(open_uri);
+        let (_target, sites) =
+            references_at(&open_doc.pre_resolve_ast, &open_doc.source, &open_file, line, col)?;
+        return Some((open_uri.clone(), open_doc.source.clone(), sites));
+    }
+
+    let d_source = FsLoader.load(&import_path, &current_file).ok()?;
+    let d_ast = wirescript::parse(&d_source, &d_file).ast;
+
+    let decl_range = top_level_decl_range(&d_ast, export_name, ns)?;
+    let name_range = find_name_range(&d_source, &decl_range, export_name).unwrap_or(decl_range);
+    let line = name_range.start.line.saturating_sub(1) as usize;
+    let col = name_range.start.col.saturating_sub(1) as usize;
+
+    let (_target, sites) = references_at(&d_ast, &d_source, &d_file, line, col)?;
+    let d_uri = Url::from_file_path(&d_file).ok()?;
+    Some((d_uri, d_source, sites))
+}
+
+/// Cross-file site collection for `references`/`rename`, driven entirely by
+/// the AST-based resolver (`references_at`/`references_to_export`) — never a
+/// textual scan. `target`/`current_sites` come from an initial
+/// `references_at` call at the LSP cursor; `current_sites` already IS the
+/// current file's own decl + local-use set.
+///
+/// - `Local`: only `current_sites`, tagged to `uri` — no cross-file scan runs
+///   at all (locals never cross files per the plan's Global Constraints).
+/// - `Exported`: the current file already IS the defining file `D`, so
+///   `current_sites` doubles as `D`'s sites; every other `.ws` file (open
+///   docs, regardless of directory, plus a same-directory disk scan for
+///   closed ones — mirroring the pre-resolver behavior) is scanned via
+///   `references_to_export` for import-specifier + import-bound uses.
+/// - `Imported`: `find_defining_file_sites` resolves the real defining file
+///   `D` (which may not be `uri`, and may not even be open) and its own
+///   sites; the same sibling scan then runs over every other file, which
+///   naturally includes the current (importer) file recomputing to the same
+///   `current_sites` — cheap and correct, since `D` itself never matches
+///   `references_to_export` (its binding has no `import_export` tag).
 fn collect_references_across_files(
     docs: &HashMap<Url, DocState>,
     uri: &Url,
-    word: &str,
+    target: &RefTarget,
+    current_sites: &[RefSite],
 ) -> Vec<(Url, TextRange)> {
-    let mut results = Vec::new();
+    let current_source = docs.get(uri).map(|d| d.source.as_str()).unwrap_or("");
 
+    let export_name = match &target.cross_file {
+        CrossFile::Local => {
+            let results: Vec<(Url, TextRange)> = current_sites
+                .iter()
+                .map(|s| (uri.clone(), ref_site_to_text_range(current_source, &target.name, s)))
+                .collect();
+            return sort_and_dedup(results);
+        }
+        CrossFile::Exported { export_name } | CrossFile::Imported { export_name } => {
+            export_name.clone()
+        }
+    };
+
+    // The defining file `D`'s own decl + local-use sites.
+    let defining = match &target.cross_file {
+        CrossFile::Exported { .. } => {
+            Some((uri.clone(), current_source.to_string(), current_sites.to_vec()))
+        }
+        CrossFile::Imported { .. } => find_defining_file_sites(docs, uri, &export_name, target.ns),
+        CrossFile::Local => unreachable!("handled above"),
+    };
+    let Some((d_uri, d_source, d_sites)) = defining else {
+        // Couldn't resolve the defining file (e.g. the imported file is
+        // missing on disk) — degrade to this file's own sites rather than
+        // returning nothing.
+        let results: Vec<(Url, TextRange)> = current_sites
+            .iter()
+            .map(|s| (uri.clone(), ref_site_to_text_range(current_source, &target.name, s)))
+            .collect();
+        return sort_and_dedup(results);
+    };
+
+    // CRITICAL: narrow every cross-file coarse site against `export_name`, not
+    // `target.name`. `D`'s text (and a sibling's specifier) spells the ORIGINAL
+    // export name; narrowing a coarse `mod helper(){…}` decl against the
+    // cursor's LOCAL name (e.g. an alias `assist`) would fail `find_name_range`
+    // and fall back to the whole-decl range — replacing the entire declaration.
+    // After the aliased-import-is-`Local` classification, `target.name` already
+    // equals `export_name` on every path that reaches here, but binding to
+    // `export_name` makes that invariant explicit and corruption-proof.
+    let mut results: Vec<(Url, TextRange)> = d_sites
+        .iter()
+        .map(|s| (d_uri.clone(), ref_site_to_text_range(&d_source, &export_name, s)))
+        .collect();
+
+    let d_canonical = d_uri.to_file_path().ok().map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+
+    // Every OPEN document that isn't `D` itself: scan for import-specifier +
+    // import-bound uses of `export_name`. (`D` naturally yields nothing here
+    // even when left in, since its own binding carries no `import_export`
+    // tag — the explicit skip is just to avoid the redundant parse.)
     for (doc_uri, doc_state) in docs.iter() {
-        for r in find_all_references(&doc_state.source, word) {
-            results.push((doc_uri.clone(), r));
+        if let Some(dc) = &d_canonical {
+            let doc_canon = doc_uri.to_file_path().ok().map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+            if doc_canon.as_ref() == Some(dc) {
+                continue;
+            }
+        }
+        let file = uri_to_file_string(doc_uri);
+        let ast = wirescript::parse(&doc_state.source, &file).ast;
+        for s in references_to_export(&ast, &file, &export_name, target.ns) {
+            results.push((doc_uri.clone(), ref_site_to_text_range(&doc_state.source, &export_name, &s)));
         }
     }
 
@@ -96,6 +330,9 @@ fn collect_references_across_files(
                 if open_paths.contains(&canonical) {
                     continue;
                 }
+                if d_canonical.as_ref() == Some(&canonical) {
+                    continue;
+                }
                 let entry_uri = match Url::from_file_path(&path) {
                     Ok(u) => u,
                     Err(_) => continue,
@@ -104,27 +341,16 @@ fn collect_references_across_files(
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                for r in find_all_references(&src, word) {
-                    results.push((entry_uri.clone(), r));
+                let file = path.to_string_lossy().to_string();
+                let ast = wirescript::parse(&src, &file).ast;
+                for s in references_to_export(&ast, &file, &export_name, target.ns) {
+                    results.push((entry_uri.clone(), ref_site_to_text_range(&src, &export_name, &s)));
                 }
             }
         }
     }
 
-    // Deterministic order + belt-and-braces dedup: rename must never hand the
-    // client two edits for the same site.
-    results.sort_by(|a, b| {
-        (a.0.as_str(), a.1.start_line, a.1.start_col, a.1.end_line, a.1.end_col).cmp(&(
-            b.0.as_str(),
-            b.1.start_line,
-            b.1.start_col,
-            b.1.end_line,
-            b.1.end_col,
-        ))
-    });
-    results.dedup();
-
-    results
+    sort_and_dedup(results)
 }
 
 fn uri_to_file_string(uri: &Url) -> String {
@@ -417,6 +643,23 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                     work_done_progress_options: Default::default(),
                 }),
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+                    SemanticTokensOptions {
+                        legend: SemanticTokensLegend {
+                            token_types: vec![
+                                SemanticTokenType::TYPE,
+                                SemanticTokenType::FUNCTION,
+                                SemanticTokenType::PARAMETER,
+                                SemanticTokenType::VARIABLE,
+                                SemanticTokenType::NAMESPACE,
+                            ],
+                            token_modifiers: vec![],
+                        },
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        range: Some(false),
+                        work_done_progress_options: Default::default(),
+                    },
+                )),
                 ..Default::default()
             },
             ..Default::default()
@@ -613,15 +856,23 @@ impl LanguageServer for Backend {
                     return Ok(None);
                 }
 
-                // Type field → show all references
+                // Type field → show all references. A cursor on a record FIELD
+                // NAME is deliberately excluded: it must fall through to the
+                // `definition_at` field-resolution path below, not resolve to
+                // the enclosing `type X = {…}` binding (whose coarse range spans
+                // the whole decl and would otherwise surface the type's own
+                // references instead of the clicked field's definition).
                 let in_type_def = doc.symbols.iter().any(|s| {
                     s.kind == "type"
                         && s.range.start.line.saturating_sub(1) as usize <= line
                         && s.range.end.line.saturating_sub(1) as usize >= line
                 });
-                if in_type_def {
-                    if let Some(word) = word_at(&doc.source, line, col) {
-                        let refs = collect_references_across_files(&docs, uri, &word);
+                if in_type_def && !field_name_at(&doc.pre_resolve_ast, line, col) {
+                    let file = uri_to_file_string(uri);
+                    if let Some((target, current_sites)) =
+                        references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
+                    {
+                        let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
                         if !refs.is_empty() {
                             let locations: Vec<Location> = refs
                                 .iter()
@@ -671,12 +922,19 @@ impl LanguageServer for Backend {
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
+        let line = pos.line as usize;
+        let col = pos.character as usize;
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
-                if let Some(word) = word_at(&doc.source, pos.line as usize, pos.character as usize)
+                let file = uri_to_file_string(uri);
+                if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
+                    return Ok(None);
+                }
+                if let Some((target, current_sites)) =
+                    references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
                 {
-                    let refs = collect_references_across_files(&docs, uri, &word);
+                    let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
                     let locations: Vec<Location> = refs
                         .iter()
                         .map(|(u, r)| Location {
@@ -702,67 +960,13 @@ impl LanguageServer for Backend {
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
-                if let Some(word) = word_at(&doc.source, line, col) {
-                    if calls().contains_key(word.as_str())
-                        || KEYWORDS.contains(&word.as_str())
-                        || events().contains_key(word.as_str())
-                    {
-                        return Ok(None);
-                    }
-                    // The word's own range on this line (text-based).
-                    let word_range = || {
-                        let l = doc.source.lines().nth(line).unwrap_or("");
-                        let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
-                        let ws = l[..c]
-                            .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-                            .map(|i| i + 1)
-                            .unwrap_or(0);
-                        let we = l[c..]
-                            .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
-                            .map(|i| c + i)
-                            .unwrap_or(l.len());
-                        Range {
-                            start: Position {
-                                line: line as u32,
-                                character: ws as u32,
-                            },
-                            end: Position {
-                                line: line as u32,
-                                character: we as u32,
-                            },
-                        }
-                    };
-                    // Type fields: use text-based range
-                    let in_type = doc.symbols.iter().any(|s| {
-                        s.kind == "type"
-                            && s.range.start.line.saturating_sub(1) as usize <= line
-                            && s.range.end.line.saturating_sub(1) as usize >= line
-                    });
-                    if in_type {
-                        return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                            range: word_range(),
-                            placeholder: word,
-                        }));
-                    }
-                    // Symbols: use name range within declaration
-                    for sym in &doc.symbols {
-                        if sym.name == word {
-                            let name_range = find_name_range(&doc.source, &sym.range, &sym.name)
-                                .map(|r| range_to_lsp(&r))
-                                .unwrap_or_else(|| range_to_lsp(&sym.range));
-                            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                                range: name_range,
-                                placeholder: word,
-                            }));
-                        }
-                    }
-                    // Anything else find-references can see — a namespace-
-                    // qualified member (`u.foo`), a record field in a literal,
-                    // a shorthand binding — is renameable too. Refusing here
-                    // blocked rename from exactly the sites references finds.
+                let file = uri_to_file_string(uri);
+                if let Some((range, placeholder)) =
+                    prepare_rename_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
+                {
                     return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                        range: word_range(),
-                        placeholder: word,
+                        range: range_to_lsp(&range),
+                        placeholder,
                     }));
                 }
             }
@@ -774,18 +978,25 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let new_name = &params.new_name;
+        let line = pos.line as usize;
+        let col = pos.character as usize;
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
-                if let Some(word) = word_at(&doc.source, pos.line as usize, pos.character as usize)
+                let file = uri_to_file_string(uri);
+                if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
+                    return Ok(None);
+                }
+                if let Some((target, current_sites)) =
+                    references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
                 {
-                    let refs = collect_references_across_files(&docs, uri, &word);
+                    let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
 
                     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
                     for (file_uri, r) in &refs {
                         changes.entry(file_uri.clone()).or_default().push(TextEdit {
                             range: text_range_to_lsp(r),
-                            new_text: rename_edit_text(r, &word, new_name),
+                            new_text: rename_edit_text(r, &target.name, new_name),
                         });
                     }
 
@@ -809,6 +1020,87 @@ impl LanguageServer for Backend {
             }
         }
         Ok(None)
+    }
+
+    /// Corrective semantic-token overrides layered atop the TextMate
+    /// grammar's position-blind `support.type` coloring (see
+    /// `wirescript::analysis::semantic_tokens`'s doc comment) — a name in
+    /// type position highlights as a type (including a user `type` alias the
+    /// grammar's fixed builtin list can't know about), while a value binding
+    /// that merely shares a type's spelling (a `character` capture, a
+    /// capitalized `var`) highlights as its own kind instead.
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = &params.text_document.uri;
+
+        let docs = match self.docs.lock() {
+            Ok(d) => d,
+            Err(_) => return Ok(None),
+        };
+        let Some(doc) = docs.get(uri) else {
+            return Ok(None);
+        };
+
+        struct Tok {
+            line: u32,
+            start_char: u32,
+            length: u32,
+            token_type: u32,
+        }
+
+        let spans = semantic_tokens(&doc.pre_resolve_ast);
+        let mut toks: Vec<Tok> = Vec::with_capacity(spans.len());
+        for span in &spans {
+            // A coarse span (a whole-declaration/whole-type-expr range) must
+            // be narrowed to its precise name token first — an un-narrowable
+            // one is skipped rather than tokenizing its whole container.
+            let range = if span.coarse {
+                match find_name_range(&doc.source, &span.range, &span.name) {
+                    Some(r) => r,
+                    None => continue,
+                }
+            } else {
+                span.range.clone()
+            };
+            let token_type = match span.kind {
+                SemTokenKind::Type => 0,
+                SemTokenKind::Function => 1,
+                SemTokenKind::Parameter => 2,
+                SemTokenKind::Variable => 3,
+                SemTokenKind::Namespace => 4,
+            };
+            toks.push(Tok {
+                line: range.start.line.saturating_sub(1),
+                start_char: range.start.col.saturating_sub(1),
+                length: range.end.col.saturating_sub(range.start.col),
+                token_type,
+            });
+        }
+        toks.sort_by_key(|t| (t.line, t.start_char));
+
+        let mut data = Vec::with_capacity(toks.len());
+        let mut prev_line = 0u32;
+        let mut prev_start = 0u32;
+        for t in &toks {
+            let delta_line = t.line - prev_line;
+            let delta_start = if delta_line == 0 { t.start_char - prev_start } else { t.start_char };
+            data.push(SemanticToken {
+                delta_line,
+                delta_start,
+                length: t.length,
+                token_type: t.token_type,
+                token_modifiers_bitset: 0,
+            });
+            prev_line = t.line;
+            prev_start = t.start_char;
+        }
+
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data,
+        })))
     }
 
     async fn execute_command(
