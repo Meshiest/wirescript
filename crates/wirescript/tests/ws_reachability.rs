@@ -251,6 +251,57 @@ fn ws030_is_reachable() {
     assert!(diags(src).contains(&"WS030".to_string()));
 }
 
+// WS045 - a custom-event data arg with no concrete type (`any` / `Opaque(...)`),
+// which leaves the send port untyped so it emits the float variant and cannot
+// match a receiver that declares a real type [typecheck, warning]. Unlike WS030
+// this needs NO in-unit receiver: the untyped send is wrong on its own, and the
+// receiver is usually in another file (a spawned chip) where WS030 is blind.
+#[test]
+fn ws045_is_reachable() {
+    let src = "in go: exec
+var who: character
+on go {
+  SendGlobalCustomEvent(\"a\", who, Opaque(true))
+}
+";
+    assert!(diags(src).contains(&"WS045".to_string()));
+}
+
+// WS045 must reach the TYPECHECK-ONLY entry point, which is what `wirescript-check`
+// and the LSP call (`check.rs` never lowers). A diagnostic that only appears in a
+// full compile is invisible in the editor, which is where it is most useful.
+#[test]
+fn ws045_reaches_typecheck_only_path() {
+    let src = "in go: exec
+var who: character
+on go {
+  SendGlobalCustomEvent(\"a\", who, Opaque(true))
+}
+";
+    let resolved = wirescript::resolve(src, "t.ws", &wirescript::FsLoader);
+    let tc = wirescript::typecheck::typecheck_with_inference(&resolved.ast, "t.ws").0;
+    assert!(
+        tc.diagnostics.iter().any(|d| d.code == "WS045"
+            && matches!(d.severity, wirescript::Severity::Warning)),
+        "expected a WS045 warning from typecheck_with_inference: {:?}",
+        tc.diagnostics.iter().map(|d| &d.code).collect::<Vec<_>>()
+    );
+}
+
+// WS045 must NOT fire when every data arg carries a concrete type — otherwise it
+// would flag the correct spelling it is trying to steer people toward.
+#[test]
+fn ws045_quiet_when_typed() {
+    let src = "in go: exec
+var who: character
+var flag: bool = true
+on go {
+  SendGlobalCustomEvent(\"a\", who, flag)
+}
+";
+    assert!(!diags(src).contains(&"WS045".to_string()));
+}
+
 // WS031 - a reference (var ref / zone / teleport) used as an if-then-else branch
 // (Select routes a value, not a reference) [typecheck]
 // NOTE: a bare `*int` param reads back auto-dereferenced (its symbol is

@@ -257,7 +257,7 @@
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Average",
         "displayName": "Average Array",
-        "description": "Outputs the average of every value in the connected numeric or vector array. Is Empty reports when there are no values; use it for mean scores, positions, or speeds.",
+        "description": "Outputs the average of every value in the connected numeric or vector array. Is Empty reports when there are no values and Value is its default; use it for mean scores, positions, or speeds.",
         "searchTags": "",
         "kind": "exec",
         "family": "ArrayVar",
@@ -526,7 +526,7 @@
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Get",
         "displayName": "Get Array Element",
-        "description": "Outputs the element at Index without changing the array and reports Out Of Bounds for an invalid index. Indices start at 0, so use 0 for the first element.",
+        "description": "Outputs the element at Index without changing the array and reports Out Of Bounds for an invalid index. Value is its default when out of bounds. Indices start at 0, so use 0 for the first element.",
         "searchTags": "",
         "kind": "exec",
         "family": "ArrayVar",
@@ -707,7 +707,7 @@
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Max",
         "displayName": "Array Maximum",
-        "description": "Outputs the highest value in the connected array. Is Empty reports when there is no result; use this to find the best score, greatest speed, or largest amount.",
+        "description": "Outputs the highest value in the connected array. Is Empty reports when there is no result and Value is its default; use this to find the best score, greatest speed, or largest amount.",
         "searchTags": "",
         "kind": "exec",
         "family": "ArrayVar",
@@ -765,7 +765,7 @@
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Min",
         "displayName": "Array Minimum",
-        "description": "Outputs the lowest value in the connected array. Is Empty reports when there is no result; use this to find the shortest time, lowest score, or nearest limit.",
+        "description": "Outputs the lowest value in the connected array. Is Empty reports when there is no result and Value is its default; use this to find the shortest time, lowest score, or nearest limit.",
         "searchTags": "",
         "kind": "exec",
         "family": "ArrayVar",
@@ -823,7 +823,7 @@
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_ArrayVar_Pop",
         "displayName": "Pop From Array",
-        "description": "Removes and outputs the last element of the connected array. Is Empty reports whether the array has no entries afterward, which is useful for stack-like lists.",
+        "description": "Removes and outputs the last element of the connected array. Is Empty reports whether the array had no entries to remove, in which case Value is its default.",
         "searchTags": "",
         "kind": "exec",
         "family": "ArrayVar",
@@ -5741,6 +5741,13 @@
             "composite": null
           },
           {
+            "name": "bIncludeBuilderMode",
+            "displayName": "Include Builder Mode",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
             "name": "Exec",
             "displayName": "Exec",
             "tooltip": "",
@@ -6718,7 +6725,7 @@
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_MapVar_Get",
         "displayName": "Get Map Element",
-        "description": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed, which is useful before using saved player or object data.",
+        "description": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed; a missing key outputs the default Value. Use this before consuming saved player or object data.",
         "searchTags": "",
         "kind": "exec",
         "family": "MapVar",
@@ -7960,7 +7967,7 @@
       "component": {
         "class": "BrickComponentType_WireGraph_Exec_PlayerState_ShowMessageBox",
         "displayName": "Show Message Box",
-        "description": "Opens a titled, one-button dialog for one player; use it for important rules, announcements, or confirmations.",
+        "description": "Opens a titled dialog for one player; use it for important rules, announcements, or confirmations.",
         "searchTags": "",
         "kind": "exec",
         "family": "PlayerState",

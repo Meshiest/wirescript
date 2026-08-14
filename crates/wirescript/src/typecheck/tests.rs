@@ -434,6 +434,26 @@
     }
 
     #[test]
+    fn find_player_returns_controller_not_character() {
+        // FindPlayer emits the found player's persistent PlayerState (modeled as
+        // `controller`), NOT a character — its output was mistyped `Type::Character`
+        // before the PlayerState upgrade. A minimal program's only object-typed
+        // expression is the call, so its inferred type must be Controller.
+        let r = tc("in go: exec\non go { let p = FindPlayer(\"id\") }");
+        assert_no_diags(&r);
+        assert!(
+            r.type_of_expr.values().any(|t| *t == Type::Controller),
+            "FindPlayer must type as controller/PlayerState: {:?}",
+            r.type_of_expr.values().collect::<Vec<_>>()
+        );
+        assert!(
+            !r.type_of_expr.values().any(|t| *t == Type::Character),
+            "FindPlayer must not type as character: {:?}",
+            r.type_of_expr.values().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn swap_conflict_reports_ws033_once() {
         // Swap's output is `Record[("Output", T), ("OutputB", T)]` — both fields
         // share `T`. A conflict must be reported exactly ONCE, not once per

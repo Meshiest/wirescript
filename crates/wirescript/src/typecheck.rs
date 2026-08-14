@@ -3625,6 +3625,31 @@ fn check_ce_namespace(
         let Some(name) = ce_send_event_name(args) else {
             continue; // dynamic channel name — not linted
         };
+        // A data arg with NO wire class — `any`, or an `Opaque(...)` that erased
+        // its input's type — leaves the send port untyped, so it emits the float
+        // variant and cannot match a receiver that declares a real type. Report it
+        // whether or not a receiver is visible here: the receiver is usually in
+        // another file (a spawned chip), which is exactly where WS030 below is
+        // blind, and where the mismatch is fatal rather than merely wrong.
+        for (slot, expr) in ce_send_data_args(args) {
+            let r = expr.range();
+            let Some(t) = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)) else {
+                continue;
+            };
+            let t = unwrap_ref(t);
+            if wire_class(&t).is_none() {
+                ctx.diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    code: "WS045".into(),
+                    message: format!(
+                        "custom event '{name}' data #{} has no concrete type (it is {t}), so the                          send emits the float variant and will not match a receiver that declares                          int/bool/string/entity/… — give the value a typed binding (e.g. a `var` of                          that type) rather than `any` or `Opaque(...)`, which erases it",
+                        slot + 1,
+                    ),
+                    range: r.clone(),
+                });
+            }
+        }
+
         let Some(slots) = receivers.get(&name) else {
             continue; // no in-unit receiver to compare against
         };

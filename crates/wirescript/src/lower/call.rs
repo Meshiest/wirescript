@@ -1796,6 +1796,7 @@ pub(super) fn lower_builtin_call(
         val_port: PortRef,
     }
     let mut wires: Vec<WireEntry> = Vec::new();
+    let mut arg_types: Vec<(WirePort, Option<Type>)> = Vec::new();
     let mut properties: HashMap<crate::intern::Sym, Literal> = HashMap::default();
     // Vector2D composite layout ports (`positionX` -> "Position.X"): constant
     // axes accumulate here (keyed by parent, e.g. "Position") and bake the parent
@@ -1898,6 +1899,17 @@ pub(super) fn lower_builtin_call(
         // a controller param (or vice versa). The old char->controller adapter
         // used `GetFromEntity` ("Get Player (Persistent)"), an admin-only gate
         // that gets blocked on paste for non-admins — wire straight through.
+        // Remember the argument's typechecked type. It is strictly better than the
+        // wired node's port type for typing an `any` port: a mod return (`aimHit()
+        // -> entity`) or a gate output the catalog declares loosely both reach emit
+        // as `any`, while typecheck has already resolved them to the real type.
+        let arg_ty = {
+            let r = arg_expr.range();
+            ctx.type_of_expr
+                .get(&(r.file.clone(), r.start.offset, r.end.offset))
+                .cloned()
+        };
+        arg_types.push((p.port, arg_ty));
         wires.push(WireEntry {
             port: p.port,
             val_port,
@@ -1977,10 +1989,50 @@ pub(super) fn lower_builtin_call(
             ty: Type::Exec,
         });
     }
+    // A custom-event send declares its eight data params as `any` (the channel
+    // accepts anything), but the RECEIVER types its DataOut ports from the
+    // handler's annotation. If the send keeps `any`, emit falls through to the
+    // float variant and the two gates disagree on every payload that is not a
+    // float — invisible for strings, fatal when an object reference arrives as
+    // a number.
+    //
+    // Take the port's type from the value actually wired into it. Only a port
+    // that HAS a wire is retyped: an unused data slot must keep `any` so it
+    // still emits float, which is what the receiver's unused slots default to —
+    // retyping those would just move the mismatch to slots n+1..8.
+    //
+    // When the wired value has NO concrete type of its own (`any`, or an
+    // `Opaque(...)` that erased it) there is nothing to propagate. Warn rather
+    // than guess: inventing a type here would silently pick a variant the
+    // receiver may not declare, which is the same class of bug in a new coat.
+    let is_event_send = spec.gate_class == gc::PSEUDO_SEND_CUSTOM_EVENT
+        || spec.gate_class == gc::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL;
     for p in spec.params.iter() {
+        let mut ty = p.ty.clone();
+        if is_event_send
+            && matches!(ty, Type::Any)
+            && let Some(w) = wires.iter().find(|w| w.port == p.port)
+        {
+            // Prefer typecheck's view of the argument, falling back to the wired
+            // node's port type. Nothing to propagate when BOTH are untyped: leave
+            // `any` (float) and let typecheck's WS045 report it, rather than
+            // guessing a variant the receiver may not declare.
+            let concrete = |t: &Type| !matches!(t, Type::Any | Type::Opaque | Type::Exec);
+            let from_arg = arg_types
+                .iter()
+                .find(|(port, _)| *port == p.port)
+                .and_then(|(_, t)| t.clone())
+                .map(|t| unwrap_ref(&t))
+                .filter(concrete);
+            if let Some(t) = from_arg.or_else(|| {
+                ctx.source_port_type(w.val_port).filter(concrete)
+            }) {
+                ty = t;
+            }
+        }
         ports.inputs.push(PortSpec {
             name: intern(p.port.as_str()),
-            ty: p.ty.clone(),
+            ty,
         });
     }
     for out in &spec.outputs {

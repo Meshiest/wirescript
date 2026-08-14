@@ -160,23 +160,37 @@ fn run_wirescript(
     if is_brdb {
         let result = wirescript::compile_to_world(input, opts)
             .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
-        if verbose {
-            for d in &result.diagnostics {
-                eprintln!("[{}] {} ({}:{}:{})", d.code, d.message, d.range.file, d.range.start.line, d.range.start.col);
-            }
-        }
+        report_diagnostics(&result.diagnostics, verbose);
         result.world.write_brdb(&out_path)?;
     } else {
         let result = wirescript::compile_with_opts(input, opts)
             .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
-        if verbose {
-            for d in &result.diagnostics {
-                eprintln!("[{}] {} ({}:{}:{})", d.code, d.message, d.range.file, d.range.start.line, d.range.start.col);
-            }
-        }
+        report_diagnostics(&result.diagnostics, verbose);
         std::fs::write(&out_path, &result.brz)?;
     }
 
     eprintln!("wrote {}", out_path.display());
     Ok(())
+}
+
+/// Print compile diagnostics. Warnings and errors ALWAYS print: a successful
+/// compile that silently swallows a warning is how a miscompile ships. `verbose`
+/// additionally prints lower-severity notes.
+fn report_diagnostics(diags: &[wirescript::Diagnostic], verbose: bool) {
+    use wirescript::Severity;
+    for d in diags {
+        let show = verbose || matches!(d.severity, Severity::Error | Severity::Warning);
+        if !show {
+            continue;
+        }
+        let (label, color) = match d.severity {
+            Severity::Error => ("ERROR", "[31m"),
+            Severity::Warning => ("WARN", "[33m"),
+            _ => ("NOTE", "[36m"),
+        };
+        eprintln!(
+            "{color}{label}[0m [{}] {} ({}:{}:{})",
+            d.code, d.message, d.range.file, d.range.start.line, d.range.start.col
+        );
+    }
 }

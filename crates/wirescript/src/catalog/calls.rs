@@ -2757,7 +2757,10 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
     );
 
     // ---- Player lookup (exec gate) ------------------------------------------
-    // Has Exec/ExecOut ports and emits the found player's character.
+    // Has Exec/ExecOut ports and emits the found player on its `Player` output —
+    // the game's persistent PlayerState, modeled here as `controller` (same type
+    // the join/left events and every PlayerState gate use), NOT a character. Get
+    // the body from it with `CharacterOf(FindPlayer(...))`.
     m.insert(
         "FindPlayer",
         CallSpec {
@@ -2766,9 +2769,9 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![CallParam::req("query", WirePort::Query, Type::Any)],
             exec: true,
             outputs: vec![CallOutput {
-            field: None,
+                field: None,
                 port: WirePort::Player,
-                ty: Type::Character,
+                ty: Type::Controller,
             }],
             receiver: None,
         },

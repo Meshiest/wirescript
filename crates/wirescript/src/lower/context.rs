@@ -258,6 +258,26 @@ impl<'a> LowerCtx<'a> {
         id
     }
 
+    /// The declared type of the OUTPUT port `src` refers to — the type of the
+    /// value that flows out of it.
+    ///
+    /// Used to give a port whose catalog type is `any` the type of whatever is
+    /// actually wired into it, so the emitted wire variant matches. Recurses
+    /// into chips because the source may live in a nested module; NodeIds come
+    /// from one allocator and are globally unique.
+    pub(super) fn source_port_type(&self, src: PortRef) -> Option<Type> {
+        fn find_node(m: &crate::ir::Module, id: NodeId) -> Option<&crate::ir::Node> {
+            if let Some(n) = m.nodes.get(&id) {
+                return Some(n);
+            }
+            m.chips.values().find_map(|c| find_node(c, id))
+        }
+        let n = find_node(&self.builder.module, src.node_id)?;
+        n.ports
+            .find_output(intern(src.port.as_str()))
+            .map(|p| p.ty.clone())
+    }
+
     /// Resolve a surface name to its exec-signal key, via the scope binding
     /// (name → hub port → key). `None` when the name isn't a local exec
     /// signal in the current scope.
