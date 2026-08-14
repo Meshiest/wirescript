@@ -775,6 +775,52 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
 
     if let Some(ref value_expr) = s.value {
         if let Some(out) = ctx.lookup_output(&s.name).cloned() {
+            // P0-4: an output value-driven from more than one `emit` site is
+            // backed by a PseudoVar (allocated by the pre-scan in `lower`). Each
+            // site does a Var_Set into it on its own exec chain; the var's value
+            // feeds the output once, after all handlers (so no fan-in). Never
+            // direct-wire a backed output — that wire would fan in with the
+            // var→output wire.
+            if let Some(backing) = ctx.output_backing_vars.get(&s.name).cloned() {
+                if let Some(exec) = ctx.current_exec {
+                    let inner = backing.inner_type.clone();
+                    let value_port = lower_expr(ctx, value_expr);
+                    let set_node = ctx.add_gate(AddNodeOpts {
+                        gate_class: gc::VAR_SET,
+                        source_range: SourceRange::default(),
+                        note: Some("out_set"),
+                        ports: GateIO {
+                            inputs: vec![
+                                PortSpec {
+                                    name: *sym::EXEC,
+                                    ty: Type::Exec,
+                                },
+                                PortSpec {
+                                    name: *sym::VAR_REF,
+                                    ty: Type::Ref(Box::new(inner.clone())),
+                                },
+                                PortSpec {
+                                    name: *sym::VALUE,
+                                    ty: inner.clone(),
+                                },
+                            ],
+                            outputs: vec![PortSpec {
+                                name: *sym::EXEC_OUT,
+                                ty: Type::Exec,
+                            }],
+                        },
+                        ..Default::default()
+                    });
+                    ctx.connect(exec, set_node.port(WirePort::Exec));
+                    ctx.connect(
+                        backing.node_id.port(WirePort::VarRef),
+                        set_node.port(WirePort::VarRef),
+                    );
+                    ctx.connect(value_port, set_node.port(WirePort::Value));
+                    ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
+                }
+                return;
+            }
             let value_port = lower_expr(ctx, value_expr);
             ctx.connect(value_port, out.node_id.port(WirePort::RerInput));
             // A value output's RerInput carries the value, and the value update is

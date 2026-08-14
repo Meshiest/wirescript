@@ -105,6 +105,36 @@ pub enum FoldMode {
     ForceOff,
 }
 
+/// Count `emit <output> = <expr>` sites per output name across the top-level
+/// handler bodies (recursing into `if` branches, but NOT into chip / anon-chip
+/// bodies — those emit to their own outputs). An output reached from more than
+/// one site can't take a wire per site (fan-in) and needs a backing store (P0-4).
+fn count_output_value_emits(ast: &Script) -> HashMap<String, usize> {
+    fn walk(block: &Block, counts: &mut HashMap<String, usize>) {
+        for s in &block.stmts {
+            match s {
+                Stmt::Emit(e) if e.value.is_some() => {
+                    *counts.entry(e.name.clone()).or_insert(0) += 1;
+                }
+                Stmt::If(i) => {
+                    walk(&i.then_block, counts);
+                    if let Some(eb) = &i.else_block {
+                        walk(eb, counts);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut counts = HashMap::default();
+    for d in &ast.decls {
+        if let TopDecl::Handler(h) = d {
+            walk(&h.body, &mut counts);
+        }
+    }
+    counts
+}
+
 pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let ids = IdAllocator::default();
     // Root module name is on the top-level chip's emitted text label.
@@ -143,6 +173,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         },
         generic_type_aliases: collect_generic_type_aliases(&input.ast.decls),
         pending_emits: HashMap::default(),
+        output_backing_vars: HashMap::default(),
         exec_signal_hubs: HashMap::default(),
         exec_signal_keys: HashMap::default(),
         next_scope_id: ROOT_SCOPE_ID + 1,
@@ -167,6 +198,49 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // Pass 1: register I/O + vars + buffers.
     for d in &input.ast.decls {
         pre_declare_decl(&mut ctx, d);
+    }
+    // Pass 1b (P0-4): an output value-driven from more than one `emit` site
+    // can't take a wire per site (two wires into the output rerouter is a
+    // load-time fan-in) — give it a backing PseudoVar. `lower_emit` does a
+    // Var_Set into it at each site; the var feeds the output once at the end
+    // (finalized just before `flush_pending_emits`). Single-site outputs keep
+    // the direct value→output wire.
+    for (name, count) in count_output_value_emits(input.ast) {
+        if count < 2 {
+            continue;
+        }
+        let Some(out) = ctx.lookup_output(&name).cloned() else {
+            continue;
+        };
+        let inner = out.ty.clone();
+        let var_id = ctx.add_gate(AddNodeOpts {
+            gate_class: gc::PSEUDO_VAR,
+            source_range: SourceRange::default(),
+            ports: GateIO {
+                inputs: vec![],
+                outputs: vec![
+                    PortSpec {
+                        name: *sym::VALUE,
+                        ty: inner.clone(),
+                    },
+                    PortSpec {
+                        name: *sym::VAR_REF,
+                        ty: Type::Ref(Box::new(inner.clone())),
+                    },
+                ],
+            },
+            note: Some("out_backing"),
+            ..Default::default()
+        });
+        ctx.output_backing_vars.insert(
+            name,
+            VarRecord {
+                node_id: var_id,
+                inner_type: inner,
+                get_node_for_handler: None,
+                storage: VarStorage::Var,
+            },
+        );
     }
     // Pass 2: lower bodies.
     for d in &input.ast.decls {
@@ -199,6 +273,22 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // A module-level `@label(<expr>)` labels the ROOT chip (same pass, so it may
     // forward-reference declarations below it).
     resolve_module_label(&mut ctx, input.ast.module_label.as_ref());
+
+    // P0-4: feed each multi-emit output's backing PseudoVar value into its
+    // output rerouter — one wire, placed after every handler's Var_Set exists.
+    let backings: Vec<(String, VarRecord)> = ctx
+        .output_backing_vars
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (name, backing) in backings {
+        if let Some(out) = ctx.lookup_output(&name).cloned() {
+            ctx.connect(
+                backing.node_id.port(WirePort::Value),
+                out.node_id.port(WirePort::RerInput),
+            );
+        }
+    }
 
     flush_pending_emits(&mut ctx);
 
@@ -1304,6 +1394,7 @@ pub fn compile_chip_template(
         // `type_aliases` above — keep the generic map empty for parity.
         generic_type_aliases: HashMap::default(),
         pending_emits: HashMap::default(),
+        output_backing_vars: HashMap::default(),
         exec_signal_hubs: HashMap::default(),
         exec_signal_keys: HashMap::default(),
         next_scope_id: ROOT_SCOPE_ID + 1,

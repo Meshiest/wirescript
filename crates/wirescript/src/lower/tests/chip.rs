@@ -1614,3 +1614,232 @@ on t {
         assert!(has_gate(&r, cls), "expected gate {cls} from a fill builtin");
     }
 }
+
+// ── P0-1: template cache must key on call-site context, not the bare name ──
+
+/// No input port anywhere (top-level module or any nested chip body) may take
+/// more than one incoming wire. Two wires into one port is a load-time fan-in
+/// failure in-game — never a valid program — so this is a universal invariant.
+fn assert_no_port_fanin(r: &LowerResult) {
+    fn check(m: &crate::ir::Module, path: &str) {
+        let mut counts: crate::collections::HashMap<(crate::ir::NodeId, WirePort), usize> =
+            crate::collections::HashMap::default();
+        for w in &m.wires {
+            *counts.entry((w.target.node_id, w.target.port)).or_insert(0) += 1;
+        }
+        for ((node, port), count) in &counts {
+            assert!(
+                *count <= 1,
+                "fan-in in {path}: {count} wires into {node:?}.{port:?}"
+            );
+        }
+        for (id, child) in &m.chips {
+            check(child, &format!("{path}/chip[{id:?}]"));
+        }
+    }
+    check(&r.module, "root");
+}
+
+#[test]
+fn pure_then_exec_chip_call_gets_its_own_exec_body() {
+    // P0-1a: a chip called first in a PURE context (built with no exec boundary
+    // pins) then in an EXEC context must NOT have the exec call reuse the pure
+    // body. The template cache keyed on the bare chip name, so the exec call got
+    // the pin-less body and its exec was wired into a data pin (dropped at
+    // emit). Keying on (range, auto_exec, captures) rebuilds for the exec call.
+    let src = "\
+chip Double(v: int) -> (y: int) { out y = v * 2 }
+let pure = Double(3)
+in go: exec
+var r: int = 0
+on go { r = Double(4) }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    // Two Double instances: the pure one exposes only `y`; the exec one also
+    // carries an `_exec_out` boundary pin. (Assert on OUTPUTS, not inputs — both
+    // calls pass a constant, so const-folding drops the `v` input pin either
+    // way.) Before the fix both share the pin-less body, so both have one output.
+    let mut out_counts: Vec<usize> = r
+        .module
+        .chips
+        .values()
+        .filter(|c| crate::intern::resolve(c.name).contains("Double"))
+        .map(|c| c.outputs.len())
+        .collect();
+    out_counts.sort_unstable();
+    assert_eq!(
+        out_counts,
+        vec![1, 2],
+        "the exec-context call must get an `_exec_out` pin (2 outputs) while the pure one stays pin-less (1); got {out_counts:?}"
+    );
+    assert_no_port_fanin(&r);
+}
+
+#[test]
+fn captured_var_then_input_arg_chip_call_no_fanin() {
+    // P0-1b: `SumInto(xs)` captures a var (no pin); `SumInto(ys)` pins an input.
+    // Sharing one name-keyed body handed the 2nd call the 1st's (pin-less) body,
+    // fanning ys's ref and the exec chain into a single pin. Keying on the
+    // capture set gives each call the right body.
+    let src = "\
+var xs: int[]
+in ys: int[]
+static var total: int = 0
+chip SumInto(src: int[]) { total = total + src.length() }
+in go: exec
+on go {
+  SumInto(xs)
+  SumInto(ys)
+}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert_no_port_fanin(&r);
+}
+
+#[test]
+fn same_named_chip_in_two_namespaces_get_distinct_bodies() {
+    // P0-1c: two `chip Helper` in different modules share a name-keyed cache
+    // slot, so the 2nd call instantiates the 1st module's body. Keying on the
+    // decl's source range (file + span) keeps them distinct.
+    let one = "chip Helper() -> (v: int) { out v = 100 }";
+    let two = "chip Helper() -> (v: int) { out v = GetUnixTime() }";
+    let main = "\
+import * as one from \"one\"
+import * as two from \"two\"
+in go: exec
+var r1: int = 0
+var r2: int = 0
+on go {
+  r1 = one.Helper()
+  r2 = two.Helper()
+}";
+    let r = compile_multi(main, &[("one", one), ("two", two)]);
+    assert_no_errors(&r);
+    // ns_two's body calls GetUnixTime (gate class `..._GetUnixEpoch`); if the
+    // 2nd call wrongly got ns_one's const-100 body, no such gate exists anywhere.
+    let has_unix = r
+        .module
+        .chips
+        .values()
+        .any(|c| c.nodes.values().any(|n| n.gate_class.contains("UnixEpoch")));
+    assert!(
+        has_unix,
+        "ns_two.Helper's GetUnixTime (GetUnixEpoch) must be present; the 2nd call got ns_one's body"
+    );
+}
+
+// ── P0-3: two `return expr` in a non-inline chip must not fan in on the output ──
+
+#[test]
+fn standalone_chip_two_returns_route_through_pseudovar() {
+    // P0-3: a standalone (non-inline) chip with two `return expr` must route both
+    // through a return PseudoVar (Var_Set per return, one Var_Get after the union
+    // → a single output wire), exactly like the inline path. `build_chip_module`
+    // never set `mod_return_var`, so both returns wired straight into the output
+    // pin — a load-time fan-in failure with no diagnostic.
+    let src = "\
+in c: bool
+in go: exec
+var r: int = 0
+chip pick() -> (v: int) {
+  if c { return 1 }
+  return 2
+}
+on go { r = pick() }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert_no_port_fanin(&r);
+    let chip = r
+        .module
+        .chips
+        .values()
+        .find(|c| crate::intern::resolve(c.name).contains("pick"))
+        .expect("pick chip instance");
+    // The value output (declared first) takes exactly one incoming wire, fed by
+    // the return PseudoVar's Var_Get — not two (one per return).
+    let val_out = chip.outputs[0];
+    let into_val: Vec<_> = chip
+        .wires
+        .iter()
+        .filter(|w| w.target.node_id == val_out)
+        .collect();
+    assert_eq!(
+        into_val.len(),
+        1,
+        "value output must have exactly one incoming wire (via the return PseudoVar), got {}: {into_val:?}",
+        into_val.len()
+    );
+    let feeder = &chip.nodes[&into_val[0].source.node_id];
+    assert!(
+        feeder.gate_class.contains("Var_Get"),
+        "value output must be fed by the return Var_Get, got {}",
+        feeder.gate_class
+    );
+    // A Var_Set per return (2), tagged `ret_set`.
+    let set_count = chip
+        .nodes
+        .values()
+        .filter(|n| n.note == Some("ret_set"))
+        .count();
+    assert!(
+        set_count >= 2,
+        "expected a Var_Set per return (>=2), got {set_count}"
+    );
+}
+
+// ── P0-4: multiple `emit out = v` sites must not fan in on the output ──
+
+#[test]
+fn multiple_emit_sites_to_one_output_route_through_backing_var() {
+    // P0-4: two handlers each `emit result = <v>` used to wire each value
+    // straight into the output rerouter — a load-time fan-in with no diagnostic.
+    // They must instead share a backing PseudoVar (a Var_Set per site), the var
+    // feeding the output once (last-writer-wins).
+    let src = "\
+out result: int
+in a: exec
+in b: exec
+on a { emit result = 1 }
+on b { emit result = 2 }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert_no_port_fanin(&r);
+    // A backing PseudoVar, written by a Var_Set on each handler (2).
+    let set_count = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.note == Some("out_set"))
+        .count();
+    assert!(
+        set_count >= 2,
+        "expected a Var_Set per emit site (>=2), got {set_count}"
+    );
+    assert!(
+        r.module
+            .nodes
+            .values()
+            .any(|n| n.note == Some("out_backing")),
+        "expected an out_backing PseudoVar for the multi-emit output"
+    );
+}
+
+#[test]
+fn single_emit_to_output_keeps_direct_wire() {
+    // A single-site value-emit must keep the direct value→output wire and NOT
+    // grow a backing PseudoVar (no extra gate, unchanged behavior).
+    let src = "\
+out result: int
+in a: exec
+on a { emit result = 42 }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert_no_port_fanin(&r);
+    assert!(
+        !r.module
+            .nodes
+            .values()
+            .any(|n| n.note == Some("out_backing")),
+        "a single-emit output must not get a backing PseudoVar"
+    );
+}

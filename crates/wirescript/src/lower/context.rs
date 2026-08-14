@@ -159,6 +159,11 @@ pub(super) struct LowerCtx<'a> {
     /// lets flush route same-chain emits through an `await`'s arm (sequenced
     /// before the hub — a parallel arm races the awaiting `Var_Get`).
     pub(super) pending_emits: HashMap<String, Vec<(PortRef, Option<u32>)>>,
+    /// Outputs value-driven from more than one `emit out = v` site get a backing
+    /// PseudoVar (name → its var record): each site does a `Var_Set` into it and
+    /// the var's value feeds the output once (no fan-in). Populated by a pre-scan
+    /// before handler lowering; empty for single-site outputs and chip bodies.
+    pub(super) output_backing_vars: HashMap<String, VarRecord>,
     /// Local `let x: exec` signals declared with a stable Union "hub" gate,
     /// keyed by a per-declaration unique key (`name#hubId`) — NOT the bare
     /// name, so two mods/handlers declaring the same signal name get separate

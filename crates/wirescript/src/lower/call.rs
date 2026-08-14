@@ -1063,6 +1063,7 @@ fn build_chip_module(
         type_aliases: ctx.type_aliases.clone(),
         generic_type_aliases: ctx.generic_type_aliases.clone(),
         pending_emits: HashMap::default(),
+        output_backing_vars: HashMap::default(),
         exec_signal_hubs: HashMap::default(),
         exec_signal_keys: HashMap::default(),
         next_scope_id: ROOT_SCOPE_ID + 1,
@@ -1298,6 +1299,46 @@ fn build_chip_module(
             _ => {}
         }
     }
+    // Multi-return chips hold the returned value in a PseudoVar: each `return
+    // expr` does a Var_Set into it, and a single Var_Get after the return union
+    // (below) feeds the value output. The inline-mod path does the same
+    // (`lower_chip_call_inline`); without it here two `return`s each wired
+    // straight into the output pin — a load-time fan-in with no diagnostic
+    // (P0-3). Only meaningful with an exec context (returns fire on exec chains)
+    // and exactly one declared output.
+    if auto_exec && count_return_values(&chip_decl.body) > 1 && chip_decl.outputs.len() == 1 {
+        let out_type = if is_generic {
+            child_ctx.resolve_local_type(&chip_decl.outputs[0].typ)
+        } else {
+            type_of_type_expr(&chip_decl.outputs[0].typ)
+        };
+        let var_id = child_ctx.add_gate(AddNodeOpts {
+            gate_class: gc::PSEUDO_VAR,
+            source_range: chip_decl.body.range.clone(),
+            ports: GateIO {
+                inputs: vec![],
+                outputs: vec![
+                    PortSpec {
+                        name: *sym::VALUE,
+                        ty: out_type.clone(),
+                    },
+                    PortSpec {
+                        name: *sym::VAR_REF,
+                        ty: Type::Ref(Box::new(out_type.clone())),
+                    },
+                ],
+            },
+            note: Some("ret_val"),
+            ..Default::default()
+        });
+        child_ctx.mod_return_var = Some(VarRecord {
+            node_id: var_id,
+            inner_type: out_type,
+            get_node_for_handler: None,
+            storage: VarStorage::Var,
+        });
+    }
+
     for stmt in &chip_decl.body.stmts {
         lower_stmt(&mut child_ctx, stmt);
     }
@@ -1339,6 +1380,56 @@ fn build_chip_module(
                 None => ret,
             };
             child_ctx.current_exec = Some(merged);
+        }
+        // Multi-return: Var_Get the accumulated return value on the merged exec
+        // and wire it to the single value output — one wire, no fan-in. Mirrors
+        // the inline path's post-union Var_Get. Runs before `_exec_out` so the
+        // Var_Get's exec becomes the chip's exec tail.
+        if let Some(ret_var) = child_ctx.mod_return_var.clone()
+            && let Some(exec) = child_ctx.current_exec
+        {
+            let inner = ret_var.inner_type.clone();
+            let get_id = child_ctx.add_gate(AddNodeOpts {
+                gate_class: gc::VAR_GET,
+                source_range: SourceRange::default(),
+                note: Some("ret_get"),
+                ports: GateIO {
+                    inputs: vec![
+                        PortSpec {
+                            name: *sym::EXEC,
+                            ty: Type::Exec,
+                        },
+                        PortSpec {
+                            name: *sym::VAR_REF,
+                            ty: Type::Ref(Box::new(inner.clone())),
+                        },
+                    ],
+                    outputs: vec![
+                        PortSpec {
+                            name: *sym::VALUE,
+                            ty: inner.clone(),
+                        },
+                        PortSpec {
+                            name: *sym::EXEC_OUT,
+                            ty: Type::Exec,
+                        },
+                    ],
+                },
+                ..Default::default()
+            });
+            child_ctx.connect(exec, get_id.port(WirePort::Exec));
+            child_ctx.connect(
+                ret_var.node_id.port(WirePort::VarRef),
+                get_id.port(WirePort::VarRef),
+            );
+            child_ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
+            if child_ctx.output_count() == 1 {
+                let out = child_ctx.first_output().unwrap().1.clone();
+                child_ctx.connect(
+                    get_id.port(WirePort::Value),
+                    out.node_id.port(WirePort::RerInput),
+                );
+            }
         }
         if let Some(tail_exec) = child_ctx.current_exec {
             let exec_out = child_ctx.add_output("_exec_out", Type::Exec, chip_decl.range.clone());
@@ -1385,13 +1476,46 @@ pub(super) fn lower_chip_call_instance(
             CallArg::Named { .. } | CallArg::Spread(_) => None,
         })
         .collect();
-    let (mono_frame, key) = if chip_decl.type_params.is_empty() {
+    let first_param_is_exec = chip_decl
+        .inputs
+        .first()
+        .map(|p| matches!(&p.typ, TypeExpr::Name { name, .. } if name == "exec"))
+        .unwrap_or(false);
+    // Auto-exec boundary pins are created when the call has (or is handed) an
+    // exec context and the chip doesn't take exec as its first param. Compute it
+    // here — BEFORE the cache lookup — because it decides the compiled body's pin
+    // shape and so must be part of the cache key (below). `build_chip_module`
+    // recomputes the identical predicate internally.
+    let auto_exec = (ctx.current_exec.is_some() || exec_arg.is_some()) && !first_param_is_exec;
+
+    let (mono_frame, base_key) = if chip_decl.type_params.is_empty() {
         (None, chip_decl.name.clone())
     } else {
         let frame = build_mono_frame(ctx, chip_decl, &positional_args, type_args);
         let key = mono_key(chip_decl, &frame);
         (Some(frame), key)
     };
+    // The compiled body's shape is set by call-site context that the bare name
+    // omits: the DECLARATION identity (two same-named chips in different
+    // namespaces collapse to one name), whether auto-exec pins exist, and which
+    // params were CAPTURED (no `MicrochipInput` pin) vs. pinned. Two calls may
+    // share the cached body only when ALL of these match — otherwise a second
+    // call in a different context reuses the first's body and mis-wires against a
+    // stale pin list (the P0-1 a/b/c miscompiles). The `chip_call_stack`
+    // recursion guard already keys on `chip_decl.range` for the same reason. This
+    // key doubles as the instance `template_key` (grid dedup) and `fold_key`
+    // base; making it more specific only ever makes those safer.
+    let mut cap_names: Vec<&str> = caller_captures.keys().map(String::as_str).collect();
+    cap_names.sort_unstable();
+    let dr = &chip_decl.range;
+    let key = format!(
+        "{base_key}\u{1}@{}:{}:{}\u{1}e{}\u{1}c[{}]",
+        dr.file,
+        dr.start.offset,
+        dr.end.offset,
+        auto_exec as u8,
+        cap_names.join(",")
+    );
 
     let mut child_module = if let Some(template) = ctx.template_cache.get(&key) {
         // Build remap: for each param name in the template's capture_names,
@@ -1427,13 +1551,7 @@ pub(super) fn lower_chip_call_instance(
 
     // All wiring goes directly to child MicrochipInput/Output nodes.
     // The chip node exists only for layout grouping + microchip link.
-    let first_param_is_exec = chip_decl
-        .inputs
-        .first()
-        .map(|p| matches!(&p.typ, TypeExpr::Name { name, .. } if name == "exec"))
-        .unwrap_or(false);
-    let auto_exec = (ctx.current_exec.is_some() || exec_arg.is_some()) && !first_param_is_exec;
-
+    // (`first_param_is_exec` / `auto_exec` were computed above for the cache key.)
     let chip_node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::MICROCHIP,
         source_range: range.clone(),
