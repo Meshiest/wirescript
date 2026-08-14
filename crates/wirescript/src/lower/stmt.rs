@@ -329,6 +329,32 @@ pub(super) fn match_increment_self(s: &Assign) -> Option<&Expr> {
 
 pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     if let Expr::IndexAccess { obj, index, .. } = &s.target {
+        // Map subscript `m[k] = v` desugars to a MapVar_Set (the same gate
+        // `m.set(k, v)` lowers to) — mirrors the read desugar in
+        // `lower_index_access`, via the shared `resolve_map_target` (storage-
+        // based dispatch; see its doc comment for why `ctx.type_of(obj)`
+        // doesn't work here). Falls through to the array path below for
+        // non-map subscript targets.
+        if let Some((map_ref, Type::Map(k, v))) = resolve_map_target(ctx, obj) {
+            if ctx.current_exec.is_none() {
+                return;
+            }
+            let key = lower_expr(ctx, index);
+            let val = lower_expr(ctx, &s.value);
+            map_exec_op(
+                ctx,
+                &s.range,
+                map_ref,
+                gc::MAP_SET,
+                vec![
+                    (WirePort::Key, k.as_ref().clone(), key),
+                    (WirePort::Value, v.as_ref().clone(), val),
+                ],
+                vec![],
+                WirePort::ExecOut,
+            );
+            return;
+        }
         lower_array_set(ctx, obj, index, &s.value, &s.range);
         return;
     }
@@ -1301,6 +1327,10 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
 
     // 7. Continuation: everything after await runs from reset_set's ExecOut
     ctx.current_exec = Some(reset_set.port(WirePort::ExecOut));
+    // A var can change while the exec is suspended, so the resumed chain must
+    // re-read from a fresh Var_Get rather than reuse the pre-await gate — the
+    // same invalidation lower_if does at its branch boundaries.
+    reset_var_get_caches(ctx);
 
     // 8. Bind the value if `let x = await ...`. For a local signal carrying a
     // ferried payload, read the payload store on the resumed chain (the emit

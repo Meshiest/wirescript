@@ -423,6 +423,27 @@
     }
 
     #[test]
+    fn generic_builtin_arg_conflict_is_ws033() {
+        let r = tc("in c: bool\nout y = Select(c, 5, \"hello\")");
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS033"),
+            "conflicting Select args must error WS033: {:?}", r.diagnostics);
+        // Legitimate joins MUST STILL compile clean (do not over-reject):
+        assert_no_diags(&tc("in c: bool\nout y = Select(c, 1, 2)"));
+        assert_no_diags(&tc("in c: bool\nvar i: int = 0\nvar f: float = 0.0\nout y = Select(c, i, f)"));
+        assert_no_diags(&tc("in c: bool\nin z: zone\nlet w = Select(c, z, z)"));
+    }
+
+    #[test]
+    fn swap_conflict_reports_ws033_once() {
+        // Swap's output is `Record[("Output", T), ("OutputB", T)]` — both fields
+        // share `T`. A conflict must be reported exactly ONCE, not once per
+        // field; this guards the `resolved` memoization that makes that true.
+        let r = tc("in c: bool\nout y = Swap(c, 5, \"hello\")");
+        let ws033 = r.diagnostics.iter().filter(|d| d.code == "WS033").count();
+        assert_eq!(ws033, 1, "Swap conflict must emit exactly one WS033: {:?}", r.diagnostics);
+    }
+
+    #[test]
     fn tween_value_output_rides_input_variant() {
         // Tween's `{ Value: <variant>, Arrived: exec }` output resolves the
         // `Value` field to the target's concrete type, not the full
@@ -1289,6 +1310,27 @@
         let r =
             tc("mod process(arr: int[], idx: int) {\n  let old = arr[idx].value\n  out r = old\n}");
         assert_no_diags(&r);
+    }
+
+    // ---- map index ----
+    #[test]
+    fn map_index_returns_value_type() {
+        // Map subscript reads require exec context (compile to
+        // Exec_MapVar_Get) and type to the map's VALUE type.
+        let r = tc(
+            "var m: Map<int, int>\nin trigger: exec\non trigger { let x: int = m[1]\nlet ok = x + 1 }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn map_index_outside_exec_is_ws007() {
+        // Map index read in pure context should emit WS007, mirroring arrays.
+        let r = tc("var m: Map<int, int>\nlet x = m[1]");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "expected WS007 for map index read outside exec context"
+        );
     }
 
     // ---- array methods ----
@@ -2200,4 +2242,139 @@
         let (r, _map) = typecheck_with_inference(&p.ast, "test");
         assert!(r.diagnostics.iter().any(|d| d.code == "WS042"), "{:?}", r.diagnostics);
         assert!(!r.diagnostics.iter().any(|d| d.code == "WS029"), "{:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn statement_out_annotation_is_type_checked() {
+        let r = tc("chip { out x: int = \"s\" }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "annotated out value must be checked: {:?}",
+            r.diagnostics
+        );
+        assert_no_diags(&tc("chip { out x: int = 5 }")); // ok
+        assert_no_diags(&tc("chip { out s: string = 5 }")); // ViaString, still clean
+    }
+
+    // ---- Task 4: return / emit / unannotated out checked against declared outputs ----
+
+    #[test]
+    fn return_value_checked_against_declared_output() {
+        let r = tc("mod f() -> (r: int) { return \"hello\" }\nout y = f()");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "return must be checked vs declared output: {:?}",
+            r.diagnostics
+        );
+        assert_no_diags(&tc("mod f() -> (r: int) { return 7 }\nout y = f()"));
+    }
+
+    #[test]
+    fn emit_payload_checked_against_output() {
+        let r = tc("out o: int\nin go: exec\non go { emit o = \"nope\" }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "emit payload must be checked vs output type: {:?}",
+            r.diagnostics
+        );
+        assert_no_diags(&tc("out o: int\nin go: exec\non go { emit o = 7 }"));
+        // A local exec signal (not an output) must NOT be checked/rejected:
+        assert_no_diags(&tc("in go: exec\non go { let s: exec\n emit s = 7 }"));
+    }
+
+    #[test]
+    fn unannotated_out_checked_against_declared_output() {
+        // named chip whose signature declares `r: int`; body does `out r = "s"`.
+        let r = tc("chip Foo() -> (r: int) { out r = \"s\" }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "unannotated out must be checked vs declared output: {:?}",
+            r.diagnostics
+        );
+        assert_no_diags(&tc("chip Foo() -> (r: int) { out r = 5 }"));
+    }
+
+    #[test]
+    fn return_in_handler_with_single_output_is_checked() {
+        // Lowering wires `return <value>` into the single enclosing output
+        // (`output_count() == 1`) even from a top-level handler — so a
+        // wrong-typed value must still error (it would otherwise wire a string
+        // straight into an int output's port).
+        let r = tc("out o: int\nin go: exec\nvar flag: bool = false\non go { if flag { return \"bail\" } }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "return of wrong type in a single-output handler must error: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn return_not_checked_when_more_than_one_output_exists() {
+        // With >1 total output, lowering DROPS a bare `return <value>`
+        // (`output_count() != 1`), so it must not be checked — even if exactly
+        // one of the outputs is annotated. The module frame counts ALL outs
+        // (unannotated as `Any`) so its length matches `output_count()`.
+        assert_no_diags(&tc(
+            "out o: int\nout y = 5\nin go: exec\nvar flag: bool = false\n\
+             on go { if flag { return \"bail\" } }",
+        ));
+    }
+
+    #[test]
+    fn out_to_output_shadowed_by_same_named_local_is_checked() {
+        // A local `var r` sharing the output's name does NOT shadow the output:
+        // `out r = v` lowering resolves the output via `lookup_output` (a
+        // disjoint namespace), so a wrong-typed value still wires into the
+        // int output and must error. (Guards against a bogus "local shadows
+        // output → skip check" rule.)
+        let r = tc("chip Foo() -> (r: int) { var r: int = 0\n out r = \"bad\" }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "out to an output shadowed by a same-named local must still be checked: {:?}",
+            r.diagnostics
+        );
+        // ...and the idiomatic same-type case (`out r = r`) stays clean.
+        assert_no_diags(&tc("chip Foo() -> (r: int) { var r: int = 0\n out r = r }"));
+    }
+
+    #[test]
+    fn emit_to_output_shadowed_by_same_named_local_is_checked() {
+        // Same disjoint-namespace rule for `emit`: `emit o = go` (go is exec)
+        // wires into the int output `o` even with a same-named `let o: exec`,
+        // so the type mismatch must error.
+        let r = tc("out o: int\nin go: exec\non go { let o: exec\n emit o = go }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "emit to an output shadowed by a same-named local must still be checked: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn module_output_frame_build_does_not_double_report_unknown_type() {
+        // Building the module-level `out_ctx` frame calls `resolve_type_expr`,
+        // which emits WS002 for an unknown type — but that annotation is ALSO
+        // resolved+reported by the canonical `TopDecl::Out` check, so the frame
+        // build must discard its own diagnostics. Exactly ONE WS002.
+        let r = tc("out o: BadType = 0");
+        assert_eq!(
+            r.diagnostics.iter().filter(|d| d.code == "WS002").count(),
+            1,
+            "bad module output type must be reported exactly once: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn chip_output_frame_build_does_not_double_report_unknown_type() {
+        // Same for the per-combo chip output frame: `register_decl` already
+        // resolves+reports the chip's output annotations, so the frame build in
+        // the body-check loop must discard its own. Exactly ONE WS002.
+        let r = tc("chip Foo() -> (r: BadType) {\n out r = 0\n}\nlet z = Foo()");
+        assert_eq!(
+            r.diagnostics.iter().filter(|d| d.code == "WS002").count(),
+            1,
+            "bad chip output type must be reported exactly once: {:?}",
+            r.diagnostics
+        );
     }

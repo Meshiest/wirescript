@@ -429,6 +429,19 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     }
                     inner.as_ref().clone()
                 }
+                Type::Map(_, v) => {
+                    if ctx.exec_mode() != ExecMode::Exec {
+                        ctx.emit(
+                            "WS007",
+                            format!(
+                                "map index read '{}[...]' outside an exec context",
+                                target_name(obj).unwrap_or("<expr>".into())
+                            ),
+                            range.clone(),
+                        );
+                    }
+                    v.as_ref().clone()
+                }
                 _ => Type::Any,
             }
         }

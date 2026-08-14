@@ -677,3 +677,47 @@
             (WireMapKeyData::Int64(atom_hash), WireMapValueData::Bool(true))
         );
     }
+
+    #[test]
+    fn build_world_rejects_an_unresolvable_wire() {
+        // A module wire whose endpoint never got a brick used to be logged to
+        // stderr and dropped, laundering a lowering miscompile into a
+        // format-valid `.brz` with a silently-missing wire. Emit must now fail.
+        // Synthetic on purpose: it guards the emit backstop itself, so it stays
+        // valid even after the lowering bugs that produce such wires are fixed.
+        use crate::ir::Wire;
+        use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder, port_ref};
+
+        let mut builder = ModuleBuilder::new("drop_guard");
+        let mut ids = IdAllocator::default();
+        // One real gate so the build proceeds normally up to the wire pass.
+        builder.add_gate(
+            &mut ids,
+            AddNodeOpts {
+                gate_class: "BrickComponentType_WireGraph_Expr_MathAdd",
+                ..Default::default()
+            },
+        );
+
+        // Lay out the clean module, THEN dangle a wire onto a node that was
+        // never placed — so layout/wall assignment only ever see the real node,
+        // and the phantom surfaces solely in emit's pass-3 resolution.
+        let lr = crate::layout::layout(&builder.module);
+        let phantom = crate::ir::NodeId::fresh();
+        builder.module.wires.push(Wire {
+            source: port_ref(phantom, "Value"),
+            target: port_ref(phantom, "Value"),
+        });
+
+        // `World` isn't `Debug`, so match the Result rather than `expect_err`.
+        match build_world(
+            &builder.module,
+            &lr,
+            &EmitOptions::default(),
+            &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+        ) {
+            Ok(_) => panic!("a wire to an unplaced node must fail emit, not ship a bad save"),
+            Err(EmitError::DroppedWire(_)) => {}
+            Err(other) => panic!("expected DroppedWire, got {other:?}"),
+        }
+    }

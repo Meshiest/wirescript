@@ -210,6 +210,14 @@ pub struct TypeCheckCtx<'a> {
     /// `bind_handler_trigger_params` for unannotated custom-event params and by
     /// `check_custom_event_types`/`ce_receiver_of` for pass-2 WS030 checks.
     pub ce_slots: &'a CeSlotMap,
+    /// Stack of the enclosing decl's declared outputs, one frame per
+    /// currently-checked module/chip/mod body — `out_ctx.last()` is the
+    /// CURRENT (innermost) frame. Consulted by `current_output_ty` so
+    /// `return`/`emit`/an unannotated statement-level `out` can be checked
+    /// against the declared output type they're implicitly targeting (see
+    /// the module-level push in `typecheck` and the per-combo push in the
+    /// `TopDecl::Chip` body-check loop).
+    out_ctx: Vec<Vec<EventDataField>>,
 }
 
 impl<'a> TypeCheckCtx<'a> {
@@ -230,6 +238,7 @@ impl<'a> TypeCheckCtx<'a> {
             active_combos: 1,
             scoped_consts: Vec::new(),
             ce_slots,
+            out_ctx: Vec::new(),
         }
     }
     /// Push a new `scope` frame together with a matching empty `scoped_consts`
@@ -365,6 +374,46 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // different call paths below (top-level, nested in chip/anon-chip bodies,
     // statement-level).
     check_label_exprs(&mut ctx, &script.decls);
+    // Module-level output frame: the declared types of every ANNOTATED
+    // top-level `out o: T`, so a body statement targeting it (`emit o = v`)
+    // can be checked against `T` via `current_output_ty`. An unannotated
+    // `out y = x` has no declared type to check against — it's excluded here
+    // and stays exactly as before (handled by `TopDecl::Out` directly).
+    // Pushed once for both check loops below (including the deferred named
+    // chips, which see it as their enclosing scope's frame — a chip pushes
+    // its own frame on top per combo, so the nearest-wins lookup still finds
+    // the chip's own outputs first).
+    //
+    // Include EVERY top-level `out` (an unannotated `out y = x` as `Any`), not
+    // just the annotated ones, so this frame's length equals lowering's
+    // `output_count()`. `return <value>` only wires into a lone output when
+    // `output_count() == 1` (`lower/stmt.rs`), so the `Stmt::Return` arm's
+    // single-output check must key on the SAME total count — otherwise a lone
+    // annotated out sitting beside an unannotated one would be checked here
+    // while lowering drops the value. An `Any` frame entry coerces to Same, so
+    // `emit`/`out` to an unannotated output stays unchecked as before.
+    //
+    // `resolve_type_expr` is NOT pure — it emits (e.g. WS002 "unknown type").
+    // Each annotation is resolved (and any error reported) again by the
+    // canonical `TopDecl::Out` check below, so DISCARD any diagnostics this
+    // frame build produces: snapshot the length first, then truncate back to it.
+    let diag_mark = ctx.diagnostics.len();
+    let module_outs: Vec<EventDataField> = script
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            TopDecl::Out(b) => Some(EventDataField {
+                name: b.name.clone(),
+                ty: match &b.typ {
+                    Some(te) => resolve_type_expr(&mut ctx, te),
+                    None => Type::Any,
+                },
+            }),
+            _ => None,
+        })
+        .collect();
+    ctx.diagnostics.truncate(diag_mark);
+    ctx.out_ctx.push(module_outs);
     let mut saw_handler = false;
     // Named chip/mod bodies are checked AFTER everything else: top-level
     // `let` types are only inferred (and thus declared) during this pass, so
@@ -403,6 +452,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
             check_decl(&mut ctx, d);
         }
     }
+    ctx.out_ctx.pop();
 
     // Runtime `@label(expr)` on a top-level `var`: type-check the expression
     // now that every top-level symbol is declared (an undefined ref or a bad
@@ -1886,6 +1936,32 @@ fn check_decl(
                         );
                     }
                 }
+                // Push this combo's declared-output frame (nearest wins over
+                // the module frame) so `return`/`emit`/an unannotated `out`
+                // inside the body can be checked against it. Built AFTER the
+                // param binding above so a generic output type (`-> (r: T)`)
+                // resolves against THIS combo's concrete type param bindings,
+                // not a leftover `Type::Param`.
+                //
+                // `resolve_type_expr` emits (e.g. WS002 "unknown type"); these
+                // same output annotations are already resolved+reported by
+                // `register_decl`, so DISCARD this frame build's diagnostics by
+                // truncating back to the pre-build length. The snapshot is taken
+                // AFTER the input-param loop's `before` baseline, so this only
+                // drops the frame build's own diagnostics — the later
+                // `split_off(before)` dedup window (which still starts at
+                // `before`) keeps every real input-param and body diagnostic.
+                let chip_diag_mark = ctx.diagnostics.len();
+                let chip_outs: Vec<EventDataField> = c
+                    .outputs
+                    .iter()
+                    .map(|o| EventDataField {
+                        name: o.name.clone(),
+                        ty: resolve_type_expr(ctx, &o.typ),
+                    })
+                    .collect();
+                ctx.diagnostics.truncate(chip_diag_mark);
+                ctx.out_ctx.push(chip_outs);
                 ctx.in_exec(|ctx| check_block(ctx, &c.body));
                 // Warn if outputs are declared but never assigned. Assignments
                 // count anywhere in the body, including nested if blocks and
@@ -1914,6 +1990,7 @@ fn check_decl(
                         }
                     }
                 }
+                ctx.out_ctx.pop();
                 ctx.pop_scope();
             }
             ctx.active_combos = saved_active_combos;
@@ -2250,6 +2327,22 @@ fn block_has_return_value(block: &Block) -> bool {
     false
 }
 
+/// The declared type of output `name` in the CURRENT (innermost) `out_ctx`
+/// frame — the enclosing module/chip/mod's declared outputs, nearest wins.
+/// `None` when `name` isn't a declared output of that frame (e.g. a local
+/// exec signal, or an unannotated top-level `out`), meaning there's nothing
+/// to check against.
+///
+/// Note: a same-named local `var`/`let` does NOT shadow the output here, and
+/// must not — `emit`/`out` lowering resolves the target via `lookup_output`
+/// (a disjoint namespace) BEFORE any local, so `out r = v` inside
+/// `chip … -> (r: T) { var r: … }` still wires `v` into output `r`. Checking
+/// against the output type is therefore correct even when a local shares the
+/// name.
+fn current_output_ty(ctx: &TypeCheckCtx, name: &str) -> Option<Type> {
+    ctx.out_ctx.last()?.iter().find(|f| f.name == name).map(|f| f.ty.clone())
+}
+
 fn check_block(
     ctx: &mut TypeCheckCtx,
     block: &Block,
@@ -2404,14 +2497,41 @@ fn check_stmt(
             // An anon-chip's statement-level `out` carries a type annotation
             // too (`chip { @bottom out done: any = 5 }`); mirror the top-level
             // `TopDecl::Out` any-warn so `any` there is flagged like anywhere
-            // else. (This path predates — and still lacks — the top-level
-            // decl's WS003 value/annotation check; that gap is out of scope.)
+            // else.
             if let Some(te) = &b.typ {
                 let resolved = resolve_type_expr(ctx, te);
                 warn_any_annotation(ctx, &resolved, type_expr_range(te));
-            }
-            if let Some(value) = &b.value {
-                infer::infer(ctx, value);
+                if let Some(value) = &b.value {
+                    // An annotated out must accept its value (WS003 on a
+                    // genuine mismatch; coercions — including string → bool
+                    // and primitive → string — pass). Both sides unwrap refs
+                    // so the ref-ness is treated as exposure mode rather
+                    // than a value-type difference; mirrors `TopDecl::Out`
+                    // at ~1624.
+                    let value_ty = infer::infer(ctx, value);
+                    infer::coerce_or_emit(
+                        ctx,
+                        &unwrap_ref(&value_ty),
+                        &unwrap_ref(&resolved),
+                        value.range(),
+                    );
+                }
+            } else if let Some(value) = &b.value {
+                // No annotation: `b.name`'s declared type comes from the
+                // enclosing decl's signature (`out r = v` inside `chip Foo(..)
+                // -> (r: T)`) — check the value against it via the current
+                // `out_ctx` frame. Both sides unwrap refs, same as the
+                // annotated branch above. Not an output (e.g. shadowed by
+                // something else) → nothing to check against, same as before.
+                let vty = infer::infer(ctx, value);
+                if let Some(out_ty) = current_output_ty(ctx, &b.name) {
+                    infer::coerce_or_emit(
+                        ctx,
+                        &unwrap_ref(&vty),
+                        &unwrap_ref(&out_ty),
+                        value.range(),
+                    );
+                }
             }
         }
         Stmt::Emit(e) => {
@@ -2424,6 +2544,14 @@ fn check_stmt(
             }
             if let Some(ref val) = e.value {
                 let t = infer::infer(ctx, val);
+                // If `e.name` is a declared output (not a local exec
+                // signal), its payload must match the declared type — both
+                // sides unwrap refs, matching every other coercion check.
+                // A local signal (no `out_ctx` entry for the name) is left
+                // alone: nothing to check against.
+                if let Some(out_ty) = current_output_ty(ctx, &e.name) {
+                    infer::coerce_or_emit(ctx, &unwrap_ref(&t), &unwrap_ref(&out_ty), val.range());
+                }
                 // Remember the ferried payload type so a later
                 // `let { .. } = await sig` can type its destructured fields.
                 ctx.signal_payload_types.insert(e.name.clone(), t);
@@ -2544,7 +2672,38 @@ fn check_stmt(
                 );
             }
             if let Some(expr) = value {
-                infer::infer(ctx, expr);
+                // `return <value>` wires into the enclosing single output (see
+                // lowering's `output_count() == 1` path) — this fires the same
+                // whether the `return` is in a mod/chip body OR a top-level
+                // handler with one module output, so it's checked in both.
+                // Clone the frame out first: `ctx.out_ctx.last()` borrows `ctx`
+                // immutably, but `infer::check`/`infer::infer` below need
+                // `&mut ctx`.
+                let frame: Option<Vec<EventDataField>> = ctx.out_ctx.last().cloned();
+                match frame.as_deref() {
+                    Some([only]) => {
+                        infer::check(ctx, expr, &unwrap_ref(&only.ty));
+                    }
+                    // Zero outputs, or multiple: nothing to check `return`'s
+                    // value against for zero (there's no declared output);
+                    // for multiple, a bare `Type::Tuple` of the outputs'
+                    // types is the wrong shape to check against — the
+                    // working multi-output mechanism is `return { a: .., b:
+                    // .. }` (a NAME-keyed record, special-cased earlier in
+                    // lowering's `Stmt::Return`, forwarded per-field rather
+                    // than through a single value port), and `coerce`'s
+                    // tuple/record-shape matching (`as_tuple_elems`) only
+                    // treats an INDEX-keyed record (an actual tuple literal)
+                    // as tuple-shaped — a name-keyed record return would
+                    // false-positive WS003 against a positional
+                    // `Type::Tuple`. Left unchecked rather than risk
+                    // rejecting the legitimate case.
+                    // TODO(P0-11): multi-output `return` value not yet
+                    // checked.
+                    _ => {
+                        infer::infer(ctx, expr);
+                    }
+                }
             }
         }
     }
@@ -2588,7 +2747,7 @@ fn union_output_type(
     // widening join of the args at that same param's positions, so
     // `Select(cond, a: T, b: T) -> T` yields the args' type instead of `any`.
     if type_has_param(&declared) {
-        return resolve_param_output(ctx, c, args, &declared);
+        return resolve_param_output(ctx, c, args, &declared, range);
     }
     // The output rides the input variant when it is a union directly (Blend /
     // lerp / Easing) OR contains one as a Record FIELD (a stateful gate like
@@ -2666,18 +2825,42 @@ fn union_output_type(
 /// Resolve a `Type::Param(name)` output (bare or nested in a Record/Array/Tuple)
 /// to the widening join of the arguments passed to the same-named `Param` params
 /// — the monomorphization for a generic builtin (`Sleep`/`Select`/`Swap`). An
-/// unresolved param (no concrete positional arg, or args with no common
-/// widening) falls back to `Any`, never `Param` — a `Param` must never reach
-/// emit. Non-`Param` leaves are returned unchanged.
+/// unresolved param (no concrete positional arg) falls back to `Any`, never
+/// `Param` — a `Param` must never reach emit. Args with no common widening
+/// (e.g. `Select(c, 5, "hello")`) are a genuine conflict — the same failure
+/// `union_output_type` reports for math-variant params and the generic-mod
+/// solver reports for a user type parameter — so it's reported the same way:
+/// emit `WS033` and fall back to `Any` so the conflict doesn't cascade.
+/// Delegates to `resolve_param_output_inner`, which memoizes each param name
+/// in `resolved` so a name referenced more than once in the output type
+/// (`Swap`'s `Output`/`OutputB` both share `T`) is only joined — and any
+/// conflict only reported — once.
 fn resolve_param_output(
     ctx: &mut TypeCheckCtx,
     c: &crate::catalog::calls::CallSpec,
     args: &[CallArg],
     ty: &Type,
+    range: &SourceRange,
+) -> Type {
+    let mut resolved = HashMap::default();
+    resolve_param_output_inner(ctx, c, args, ty, range, &mut resolved)
+}
+
+fn resolve_param_output_inner(
+    ctx: &mut TypeCheckCtx,
+    c: &crate::catalog::calls::CallSpec,
+    args: &[CallArg],
+    ty: &Type,
+    range: &SourceRange,
+    resolved: &mut HashMap<String, Type>,
 ) -> Type {
     match ty {
         Type::Param(name) => {
+            if let Some(t) = resolved.get(name) {
+                return t.clone();
+            }
             let mut joined: Option<Type> = None;
+            let mut conflict = false;
             for (i, p) in c.params.iter().enumerate() {
                 if let Type::Param(pn) = &p.ty
                     && pn == name
@@ -2687,24 +2870,50 @@ fn resolve_param_output(
                     if matches!(t, Type::Any) {
                         continue;
                     }
-                    joined = Some(match joined {
-                        None => t,
-                        Some(prev) => widening_join_all([prev, t]).unwrap_or(Type::Any),
-                    });
+                    match joined.take() {
+                        None => joined = Some(t),
+                        Some(prev) => match widening_join_all([prev.clone(), t.clone()]) {
+                            Some(j) => joined = Some(j),
+                            None => {
+                                ctx.emit(
+                                    "WS033",
+                                    format!(
+                                        "'{}': '{name}' is {} from one argument but {} from \
+                                         another — all '{name}' arguments must be the same type",
+                                        c.name,
+                                        crate::analysis::types::type_str(&prev),
+                                        crate::analysis::types::type_str(&t),
+                                    ),
+                                    range.clone(),
+                                );
+                                conflict = true;
+                                break;
+                            }
+                        },
+                    }
                 }
             }
-            joined.unwrap_or(Type::Any)
+            let result = if conflict { Type::Any } else { joined.unwrap_or(Type::Any) };
+            resolved.insert(name.clone(), result.clone());
+            result
         }
         Type::Record(fields) => Type::Record(
             fields
                 .iter()
-                .map(|(k, ft)| (k.clone(), resolve_param_output(ctx, c, args, ft)))
+                .map(|(k, ft)| {
+                    (k.clone(), resolve_param_output_inner(ctx, c, args, ft, range, resolved))
+                })
                 .collect(),
         ),
-        Type::Array(inner) => Type::Array(Box::new(resolve_param_output(ctx, c, args, inner))),
-        Type::Tuple(elems) => {
-            Type::Tuple(elems.iter().map(|t| resolve_param_output(ctx, c, args, t)).collect())
-        }
+        Type::Array(inner) => Type::Array(Box::new(resolve_param_output_inner(
+            ctx, c, args, inner, range, resolved,
+        ))),
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|t| resolve_param_output_inner(ctx, c, args, t, range, resolved))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -2930,6 +3139,13 @@ fn infer_assign_target(
         infer::infer(ctx, index);
         match obj_ty {
             Type::Array(inner) => *inner,
+            // A map subscript write's value type is the map's VALUE type —
+            // mirrors the array arm above and the read-position
+            // `Expr::IndexAccess` arm in `infer.rs` (which also unwraps to
+            // the value type). Without this arm `m[k] = <wrong type>`
+            // type-checked clean (nothing to coerce the RHS against below),
+            // silently miscompiling the MapVar_Set wire.
+            Type::Map(_, v) => *v,
             _ => Type::Any,
         }
     } else {

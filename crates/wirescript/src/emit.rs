@@ -177,6 +177,18 @@ pub enum EmitError {
         to: String,
         cause: String,
     },
+    /// A module wire (pass 3) or a runtime-`@label` wire (pass 3.5) whose
+    /// endpoint could not be resolved to a brick port.
+    ///
+    /// Fatal. A wire that can't be drawn is not a cosmetic gap — it is the
+    /// signature of a lowering miscompile (a stranded `return`/`emit` fan-in, a
+    /// template-cache mixup, a phantom node) that would otherwise slip into a
+    /// format-valid `.brz` and silently misbehave in-game. This path used to log
+    /// to stderr and continue, laundering every such bug into a shippable save;
+    /// erroring here converts the whole class into a compile failure. (The
+    /// gutter-bus equivalent is `BusWireUnresolved`.)
+    #[error("dropped wire: {0}")]
+    DroppedWire(String),
 }
 
 /// IR + placements → in-memory `brdb::World`. The core build step; the two
@@ -1652,6 +1664,9 @@ fn emit_module(
         match wire_to_connection_indexed(w, &ctx.node_brick_ids, &ctx.class_index, &port_index) {
             Ok(conn) => world.add_wire(conn),
             Err(e) => {
+                // FATAL — see `EmitError::DroppedWire`. A wire that can't be
+                // drawn means a value never arrives and nothing downstream can
+                // tell; better a compile error than a silently-wrong `.brz`.
                 // `seen` distinguishes "node exists but never got a brick"
                 // (its module was visited; the node is non-spawnable or
                 // skipped) from "its module was never emitted at all" —
@@ -1665,15 +1680,15 @@ fn emit_module(
                         "never-visited"
                     }
                 };
-                eprintln!(
-                    "[wire] dropped: {} → {} (port {}→{}): {e:?} (src: {}, dst: {})",
+                return Err(EmitError::DroppedWire(format!(
+                    "{} → {} (port {}→{}): {e} (src: {}, dst: {})",
                     w.source.node_id,
                     w.target.node_id,
                     w.source.port.as_str(),
                     w.target.port.as_str(),
                     seen(&w.source.node_id),
                     seen(&w.target.node_id),
-                );
+                )));
             }
         }
     }
@@ -1698,9 +1713,14 @@ fn emit_module(
                 &port_index,
             ) {
                 Ok(s) => s,
+                // FATAL — same class as a dropped module wire: a `@label` that
+                // asks for a runtime value but silently gets none is exactly
+                // the miscompile-laundering `EmitError::DroppedWire` guards.
                 Err(e) => {
-                    eprintln!("[label-wire] dropped source for {}: {e:?}", src.node_id);
-                    continue;
+                    return Err(EmitError::DroppedWire(format!(
+                        "@label source for {}: {e}",
+                        src.node_id
+                    )));
                 }
             };
             let Some(&host_brick) = ctx.node_brick_ids.get(host) else {
@@ -1737,7 +1757,13 @@ fn emit_module(
                             port_name: BString::Static("Text"),
                         },
                     }),
-                    Err(e) => eprintln!("[label-wire] dropped root label source: {e:?}"),
+                    // FATAL — a root `@label` that loses its runtime source
+                    // would ship a chip with a blank title and no diagnostic.
+                    Err(e) => {
+                        return Err(EmitError::DroppedWire(format!(
+                            "root @label source: {e}"
+                        )));
+                    }
                 }
             }
         }

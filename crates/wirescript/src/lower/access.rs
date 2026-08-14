@@ -343,6 +343,25 @@ pub(super) fn lower_index_access(
         Some(e) => e,
         None => return synthesise_unsupported(ctx, e),
     };
+    // Map subscript `m[k]` desugars to a MapVar_Get (the same gate `m.get(k)`
+    // lowers to), auto-unwrapping to the Value port. The Key/Value ports
+    // carry the map's CONCRETE k/v types (not `any`) — see the comment at
+    // `lower_map_method` on why a generic `any` Key would bake a bad default.
+    if let Some((map_ref, Type::Map(k, v))) = resolve_map_target(ctx, obj) {
+        let key = lower_expr(ctx, index);
+        return map_exec_op(
+            ctx,
+            range,
+            map_ref,
+            gc::MAP_GET,
+            vec![(WirePort::Key, k.as_ref().clone(), key)],
+            vec![
+                (WirePort::Value, v.as_ref().clone()),
+                (WirePort::BFound, Type::Bool),
+            ],
+            WirePort::Value,
+        );
+    }
     let array_ref = if let Expr::Ident { name, .. } = obj {
         if let Some(var_rec) = ctx.lookup_var(name).cloned() {
             if var_rec.storage == VarStorage::Array {
@@ -521,10 +540,56 @@ fn resolve_map_ref_arg(ctx: &LowerCtx, arg: Option<&CallArg>) -> Option<PortRef>
     None
 }
 
+/// Resolve `obj` to a map's ref port AND its whole `Type::Map(K, V)` — the
+/// shared dispatch used by both the `m[k]` read (`lower_index_access`) and
+/// `m[k] = v` write (`lower_assign` in `stmt.rs`) subscript desugars.
+/// Dispatches on the var/input's OWN storage — mirroring the array-ref
+/// resolution in `lower_index_access`'s array path / `lower_array_set` —
+/// rather than on typecheck's `type_of_expr`: unlike a read position,
+/// `infer_assign_target` (the assignment-target typer in `typecheck.rs`)
+/// never records a `type_of_expr` entry for an assignment target's object,
+/// so `ctx.type_of(obj)` would always come back `Any` on the write side.
+/// A `var` map exposes `MapVarRef` and carries the whole map type as
+/// `inner_type`; an `in m: Map<K,V>` input rides its `RER_Output` and carries
+/// the map type directly in `.ty`; a record field chain resolving to a map
+/// var also exposes `MapVarRef`. `None` when `obj` doesn't resolve to a map
+/// var/input.
+pub(super) fn resolve_map_target(ctx: &LowerCtx, obj: &Expr) -> Option<(PortRef, Type)> {
+    if let Expr::Ident { name, .. } = obj {
+        if let Some(var_rec) = ctx.lookup_var(name) {
+            if var_rec.storage == VarStorage::Map {
+                return Some((
+                    var_rec.node_id.port(WirePort::MapVarRef),
+                    var_rec.inner_type.clone(),
+                ));
+            }
+            return None;
+        }
+        if let Some(inp) = ctx.lookup_input(name) {
+            if matches!(inp.ty, Type::Map(_, _)) {
+                return Some((inp.node_id.port(WirePort::RerOutput), inp.ty.clone()));
+            }
+            return None;
+        }
+        return None;
+    }
+    if let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj)
+        && var_rec.storage == VarStorage::Map
+    {
+        return Some((
+            var_rec.node_id.port(WirePort::MapVarRef),
+            var_rec.inner_type.clone(),
+        ));
+    }
+    None
+}
+
 /// A `MapVar_*` exec op: wires the current exec + the map's `MapVarRef` plus
 /// `extra_in`, exposes `extra_out`, advances exec, and returns the `ret` port.
-/// The map analogue of [`array_exec_op`].
-fn map_exec_op(
+/// The map analogue of [`array_exec_op`]. `pub(super)` so the `m[k] = v`
+/// write desugar in `stmt.rs::lower_assign` can call it directly, mirroring
+/// the read desugar in `lower_index_access` below.
+pub(super) fn map_exec_op(
     ctx: &mut LowerCtx,
     range: &SourceRange,
     map_ref: PortRef,

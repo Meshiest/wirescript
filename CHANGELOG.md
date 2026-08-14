@@ -1,5 +1,14 @@
 # Wirescript Changelog
 
+## 1.2.0
+
+- **`map[key]` subscript syntax** - `m[k]` and `m[k] = v` now work on a `Map<K, V>`, desugaring to the same get/set the `m.get(k)` / `m.set(k, v)` methods use (`m[k]` reads the value, auto-unwrapping the found flag; `m[k] = v` writes it). The read types as the value type `V` and, like array indexing, only works in an exec context. Previously this parsed and type-checked but silently did nothing (the read produced 0, the write was dropped).
+- **Output values are checked against their declared type** - a `return`, `emit out = …`, or statement-level `out name = …` whose value doesn't match the enclosing `mod`/`chip`/module's declared output type now reports `WS003` instead of silently baking a mismatched value into the output wire. Legal coercions (bool→int, int→float, primitive→string, ref exposure) still pass.
+- **Conflicting generic-builtin arguments are an error** - `Select(c, 5, "hello")` (and `Swap`) now report `WS033` when their shared-type arguments disagree, instead of silently widening to `any`. Arguments that legitimately share a type (`Select(c, 1, 2)`, int/float promotion, identical types) still compile.
+- **Fixed: a variable read after `await` saw a stale value** - a `var` read in the continuation after an `await` now re-reads the variable fresh, so a value changed during the wait is visible (previously it reused the pre-suspension read).
+
+- **A wire that can't be drawn is now a compile error, not a silent drop** - if emit can't resolve a wire's endpoint to a brick (the fingerprint of a lowering bug), it fails the compile instead of logging to stderr and shipping a format-valid save with the wire missing.
+
 ## 1.1.1
 
 - **Scope-aware rename & find-references** - rename/`textDocument/references` now resolve the identifier under the cursor to its exact binding instead of matching the name as text, so they never touch comments, strings, a same-named type, another scope's binding, or an unrelated file; renaming an exported symbol updates its importers (and a local alias stays local). (This replaced the old textual scan.)

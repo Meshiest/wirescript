@@ -72,6 +72,54 @@ fn body_local_exec_signal_emit_await_connects() {
 }
 
 #[test]
+fn await_continuation_reads_a_fresh_var_get() {
+    // A var can change while an exec is suspended on `await`, so the resumed
+    // chain must re-read from a fresh Var_Get rather than reuse the
+    // pre-await gate — the same invalidation `lower_if` already does at its
+    // branch boundaries.
+    let src = "static var n: int = 0\n\
+               in go: exec\n\
+               let done: exec\n\
+               on go {\n\
+                 let a = n\n\
+                 await done\n\
+                 let b = n\n\
+                 emit done = go\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    // A raw Var_Get count is too loose: `await` also allocates its own
+    // internal "armed" pseudo-var, whose guard read is a second, unrelated
+    // Var_Get. Instead, find `n`'s own pseudo-var node (by its NAME_LABEL
+    // property) and count the DISTINCT Var_Get nodes wired to its VarRef
+    // output — that isolates reads of `n` specifically.
+    let n_var = r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.gate_class == crate::ir::gate_class::PSEUDO_VAR
+                && node.properties.get(&*crate::intern::sym::NAME_LABEL)
+                    == Some(&crate::ir::Literal::String("n".to_string()))
+        })
+        .map(|(id, _)| *id)
+        .expect("`n`'s pseudo-var node must exist");
+    let n_readers: crate::collections::HashSet<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.node_id == n_var && w.source.port == WirePort::VarRef)
+        .map(|w| w.target.node_id)
+        .collect();
+    assert!(
+        n_readers.len() >= 2,
+        "post-await read of `n` must mint a fresh Var_Get instead of reusing the pre-await one, got {} reader(s): {:?}",
+        n_readers.len(),
+        n_readers
+    );
+}
+
+#[test]
 fn buffered_emit_parses() {
     // `buffer(1) emit sig` must parse as a buffered emit (the `buffer(` form
     // is the emit modifier; `buffer name = ...` stays the value declaration).
@@ -1266,6 +1314,77 @@ fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
         "no wire may source a nonexistent VarRef port off a Pseudo_MapVar node; wires: {:?}",
         r.module.wires
     );
+}
+
+#[test]
+fn map_subscript_read_lowers_to_map_get() {
+    // `m[k]` must desugar to the same MapVar_Get gate `m.get(k)` lowers to
+    // (not a dangling `_Unsupported`).
+    let r = compile("var m: Map<int, int>\nin t: exec\non t {\n  let v = m[1]\n}\n");
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "map[k] read must not lower to _Unsupported"
+    );
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Get"),
+        "m[k] must lower to MapVar_Get"
+    );
+}
+
+#[test]
+fn map_subscript_write_lowers_to_map_set() {
+    // `m[k] = v` must desugar to the same MapVar_Set gate `m.set(k, v)`
+    // lowers to (not vanish with no gate at all).
+    let r = compile("var m: Map<int, int>\nin t: exec\non t {\n  m[1] = 5\n}\n");
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        "m[k] = v must lower to MapVar_Set"
+    );
+}
+
+#[test]
+fn map_subscript_key_value_ports_carry_concrete_types() {
+    // The Key/Value ports MUST carry the map's CONCRETE k/v types, not
+    // `any` — a port's declared type drives the baked DATA-field default,
+    // and a generic `any` Key bakes a float `0.0` that the game rejects for
+    // a string-keyed map at load (see the comment at `lower_map_method`).
+    let r = compile(
+        "var m: Map<string, bool>\nin t: exec\non t {\n  m[\"a\"] = true\n  let v = m[\"a\"]\n}\n",
+    );
+    assert_no_errors(&r);
+    let key_sym = crate::intern::intern("Key");
+    let value_sym = crate::intern::intern("Value");
+    let mut checked = 0;
+    for n in r.module.nodes.values() {
+        let is_get = n.gate_class == "BrickComponentType_WireGraph_Exec_MapVar_Get";
+        let is_set = n.gate_class == "BrickComponentType_WireGraph_Exec_MapVar_Set";
+        if !is_get && !is_set {
+            continue;
+        }
+        checked += 1;
+        let key_port = n.ports.inputs.iter().find(|p| p.name == key_sym);
+        assert_eq!(
+            key_port.map(|p| &p.ty),
+            Some(&Type::String),
+            "{} Key port must be Type::String, not any: {:?}",
+            n.gate_class,
+            n.ports.inputs
+        );
+        let value_port = if is_set {
+            n.ports.inputs.iter().find(|p| p.name == value_sym)
+        } else {
+            n.ports.outputs.iter().find(|p| p.name == value_sym)
+        };
+        assert_eq!(
+            value_port.map(|p| &p.ty),
+            Some(&Type::Bool),
+            "{} Value port must be Type::Bool, not any",
+            n.gate_class
+        );
+    }
+    assert_eq!(checked, 2, "expected one MapVar_Get and one MapVar_Set node");
 }
 
 #[test]
