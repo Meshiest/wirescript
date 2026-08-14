@@ -9,6 +9,8 @@
 
 - **A wire that can't be drawn is now a compile error, not a silent drop** - if emit can't resolve a wire's endpoint to a brick (the fingerprint of a lowering bug), it fails the compile instead of logging to stderr and shipping a format-valid save with the wire missing.
 
+- **Fixed: the formatter split a kebab-case atom in two** - a long line holding a `:kebab-case` atom literal (e.g. `:foo-bar`) is no longer broken at the atom's hyphen, which had wrapped it into invalid code (`:foo` and `-bar` on separate lines). The formatter now treats an atom literal as a single token when choosing where to wrap.
+
 ## 1.1.1
 
 - **Scope-aware rename & find-references** - rename/`textDocument/references` now resolve the identifier under the cursor to its exact binding instead of matching the name as text, so they never touch comments, strings, a same-named type, another scope's binding, or an unrelated file; renaming an exported symbol updates its importers (and a local alias stays local). (This replaced the old textual scan.)

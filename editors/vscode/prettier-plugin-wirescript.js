@@ -534,6 +534,21 @@ function topLevelBinops(code) {
       i++;
       continue;
     }
+    // Atom literal `:name` (value position only). The name may contain '-',
+    // which must NOT be read as a binary minus and split the atom apart. `:`
+    // starts an atom when the previous significant char does not complete an
+    // operand (mirrors the lexer's `prev_tok_completes_value`); a `:` after a
+    // value is an annotation / map-key / field separator instead. Skip the
+    // whole `:name` run so its interior operators are never split points.
+    if (ch === ":" && !endsOperand(prevSig)) {
+      let j = i + 1;
+      while (j < n && (isIdent(code[j]) || code[j] === "-")) j++;
+      if (j > i + 1) {
+        prevSig = code[j - 1];
+        i = j;
+        continue;
+      }
+    }
     if (ch === " " || ch === "\t") {
       i++;
       continue;
