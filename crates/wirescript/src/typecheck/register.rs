@@ -2,6 +2,78 @@
 
 use super::*;
 
+/// A namespace value member built from a `let`, with `ty` as its value type.
+fn ns_let_member(ty: Option<Type>) -> NsDeclInfo {
+    NsDeclInfo {
+        kind: SymbolKind::LetBinding,
+        return_type: None,
+        params: Vec::new(),
+        value_type: ty,
+    }
+}
+
+/// Field `name` of `t`, when `t` is a known record that has it.
+fn ns_record_field(t: Option<&Type>, name: &str) -> Option<Type> {
+    match t? {
+        Type::Record(fields) => fields.iter().find(|(k, _)| k == name).map(|(_, ft)| ft.clone()),
+        _ => None,
+    }
+}
+
+/// The type of a namespace value member's initializer, for the members that
+/// carry no annotation. `literal_expr_type` stops at primitives, so a
+/// record-valued export (`let origin = { x: 0.0, y: 0.0 }`), one that names
+/// another member, or one that projects a field off another all read as `any`
+/// from the importing module — and every use of them against a concrete type
+/// then finds no overload.
+///
+/// Deliberately all-or-nothing: a record types only when every field does, so
+/// a member this can't derive keeps the `any` it has today rather than
+/// acquiring a half-known type that could reject a use that works now.
+///
+/// Members resolve against `ns_map` as built so far — source order. A forward
+/// reference yields `None` and stays `any`, as before. Spread and duplicate
+/// keys follow the same last-wins rule as `infer`'s record-literal arm.
+fn ns_value_type(ns_map: &HashMap<String, NsDeclInfo>, e: &Expr) -> Option<Type> {
+    if let Some(t) = literal_expr_type(e) {
+        return Some(t);
+    }
+    let member = |name: &str| ns_map.get(name).and_then(|i| i.value_type.clone());
+    match e {
+        Expr::Ident { name, .. } => member(name),
+        Expr::FieldAccess { obj, field, .. } => {
+            ns_record_field(ns_value_type(ns_map, obj).as_ref(), field)
+        }
+        Expr::RecordLit { fields, .. } => {
+            let mut rec: Vec<(String, Type)> = Vec::new();
+            let mut set = |name: &str, ty: Type| {
+                match rec.iter_mut().find(|(n, _)| n == name) {
+                    Some(existing) => existing.1 = ty,
+                    None => rec.push((name.to_string(), ty)),
+                }
+            };
+            for f in fields {
+                match f {
+                    RecordLitField::Named { name, value, .. } => {
+                        set(name, ns_value_type(ns_map, value)?)
+                    }
+                    RecordLitField::Shorthand { name, .. } => set(name, member(name)?),
+                    RecordLitField::Spread { value, .. } => match ns_value_type(ns_map, value)? {
+                        Type::Record(inner) => {
+                            for (n, ty) in inner {
+                                set(&n, ty);
+                            }
+                        }
+                        _ => return None,
+                    },
+                }
+            }
+            Some(Type::Record(rec))
+        }
+        _ => None,
+    }
+}
+
 /// Populate `ctx.generic_type_aliases` from every `type Name<T, …> = …`
 /// declaration in `decls` (top-level and namespaced). Deliberately does NOT
 /// resolve the alias body here — it's still parametric (references its own
@@ -550,11 +622,11 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     // Only a simple `let name = …` has a single qualified name;
                     // a destructuring `let` binds several and isn't reachable
                     // as one `ns.member`.
-                    TopDecl::Let(l) => {
-                        if let LetBinding::Ident { name, .. } = &l.binding {
+                    TopDecl::Let(l) => match &l.binding {
+                        LetBinding::Ident { name, .. } => {
                             let ty = match &l.typ {
                                 Some(te) => Some(resolve_type_expr(ctx, te)),
-                                None => literal_expr_type(&l.value),
+                                None => ns_value_type(&ns_map, &l.value),
                             };
                             ns_map.insert(
                                 name.clone(),
@@ -566,7 +638,34 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 },
                             );
                         }
-                    }
+                        // A destructuring `let { a, b } = rect` binds several
+                        // names, each reachable as its own `ns.a`. Project them
+                        // off the initializer's record type so they carry the
+                        // field's type rather than `any`.
+                        LetBinding::Record { names, .. } => {
+                            let src = ns_value_type(&ns_map, &l.value);
+                            for name in names {
+                                let ty = ns_record_field(src.as_ref(), name);
+                                ns_map.insert(name.clone(), ns_let_member(ty));
+                            }
+                        }
+                        LetBinding::RecordDestruct { fields, .. } => {
+                            let src = ns_value_type(&ns_map, &l.value);
+                            for f in fields {
+                                // `{ a: x }` binds `x` to field `a`; a `...rest`
+                                // binds a record of whatever is left, which this
+                                // doesn't reconstruct — it stays `any`, as before.
+                                if let RecordDestructField::Named { name, alias, .. } = f {
+                                    let ty = ns_record_field(src.as_ref(), name);
+                                    let bound = alias.as_ref().unwrap_or(name);
+                                    ns_map.insert(bound.clone(), ns_let_member(ty));
+                                }
+                            }
+                        }
+                        // Tuple destructuring binds a multi-output call's
+                        // results, which have no single initializer type here.
+                        LetBinding::Tuple { .. } => {}
+                    },
                     TopDecl::Var(v) => {
                         let ty = match &v.typ {
                             Some(te) => Some(resolve_type_expr(ctx, te)),

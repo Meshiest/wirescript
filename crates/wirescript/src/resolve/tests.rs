@@ -290,6 +290,125 @@
         );
     }
 
+    /// Resolve imports, then type-check the result — the errors a user sees.
+    fn check(main: &str, files: &[(&str, &str)]) -> Vec<crate::diagnostic::Diagnostic> {
+        let r = resolve(main, "main.ws", &mem(files));
+        let tc =
+            crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+        r.diagnostics
+            .into_iter()
+            .chain(tc.diagnostics)
+            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+            .collect()
+    }
+
+    /// An alias body naming another alias (`type Rect = { a: Point, … }`) has
+    /// to expand all the way down. A namespace import declares the module's
+    /// aliases to the importer only as `Ns.Rect`, so a bare `Point` left inside
+    /// the body resolved to nothing and the field silently typed `any` — every
+    /// use of it then failed with "no overload for '==' on Any, Float".
+    #[test]
+    fn nested_alias_bodies_expand_through_a_namespace_import() {
+        let lib = "type Point = { x: float, y: float }\n\
+                   type Rect = { a: Point, b: Point }\n\
+                   let corner: Point = { x: 1.0, y: 2.0 }\n\
+                   let rect: Rect = { a: corner, b: corner }\n\
+                   mod mk(p: Point) -> (r: Rect) { return { a: p, b: p } }";
+        let errs = check(
+            "import * as o from \"lib\"\n\
+             let a = o.rect.a.x == 1.0\n\
+             let b = o.mk({ x: 1.0, y: 2.0 }).b.y == 2.0",
+            &[("lib.ws", lib)],
+        );
+        assert!(errs.is_empty(), "expected no errors, got {errs:?}");
+    }
+
+    /// A namespace member with no annotation used to type as `any` unless its
+    /// initializer was a bare literal, and a destructuring `let` was not
+    /// indexed at all — so `ns.origin.x` read as `any` even though lowering
+    /// resolved the field and emitted the right value.
+    #[test]
+    fn unannotated_and_destructured_namespace_members_keep_their_types() {
+        let lib = "let origin = { x: 1.0, y: 2.0 }\n\
+                   let shifted = { ...origin, y: 9.0 }\n\
+                   let ox = origin.x\n\
+                   let { x, y } = origin";
+        let errs = check(
+            "import * as o from \"lib\"\n\
+             let a = o.origin.x == 1.0\n\
+             let b = o.shifted.y == 9.0\n\
+             let c = o.ox == 1.0\n\
+             let d = o.x == 1.0\n\
+             let e = o.y == 2.0",
+            &[("lib.ws", lib)],
+        );
+        assert!(errs.is_empty(), "expected no errors, got {errs:?}");
+    }
+
+    /// Expansion substitutes alias bodies into one another, so a
+    /// self-referential or mutually recursive alias has to stop rather than
+    /// expand forever. Reaching the assertions at all is most of the test:
+    /// without the cycle guard this hangs or overflows the stack first.
+    ///
+    /// The recursive field is left unexpanded and so still fails to resolve in
+    /// the importing module (WS002) — unchanged from the single-pass expansion
+    /// this replaced, which left the same name behind. What must hold is that
+    /// everything *around* the cycle still types.
+    #[test]
+    fn recursive_alias_expansion_terminates() {
+        let lib = "type Node = { v: int, next: Node }\n\
+                   type A = { b: B, n: int }\n\
+                   type B = { a: A, m: int }\n\
+                   mod useNode(n: Node) -> (v: int) { return n.v }\n\
+                   mod useA(x: A) -> (v: int) { return x.n }";
+        let r = resolve("import * as o from \"lib\"", "main.ws", &mem(&[("lib.ws", lib)]));
+
+        // The param of a namespaced `mod`, by name.
+        let param = |mod_name: &str| {
+            r.ast
+                .decls
+                .iter()
+                .find_map(|d| match d {
+                    TopDecl::Namespace(ns) => Some(&ns.decls),
+                    _ => None,
+                })
+                .expect("namespace")
+                .iter()
+                .find_map(|d| match d {
+                    TopDecl::Chip(c) if c.name == mod_name => Some(c.inputs[0].typ.clone()),
+                    _ => None,
+                })
+                .expect("mod")
+        };
+        let field = |t: &TypeExpr, name: &str| match t {
+            TypeExpr::Record { fields, .. } => fields
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| f.typ.clone())
+                .expect("field"),
+            other => panic!("expected a record, got {other:?}"),
+        };
+
+        // One level of `Node`, then the cycle stops with the name intact.
+        let node = param("useNode");
+        assert!(matches!(field(&node, "v"), TypeExpr::Name { ref name, .. } if name == "int"));
+        assert!(
+            matches!(field(&node, "next"), TypeExpr::Name { ref name, .. } if name == "Node"),
+            "recursive field should be left unexpanded, got {:?}",
+            field(&node, "next")
+        );
+
+        // Mutual recursion: `A` → `B` → back to `A`, which stops.
+        let a = param("useA");
+        let b = field(&a, "b");
+        assert!(matches!(field(&b, "m"), TypeExpr::Name { ref name, .. } if name == "int"));
+        assert!(
+            matches!(field(&b, "a"), TypeExpr::Name { ref name, .. } if name == "A"),
+            "mutual cycle should stop at the repeated name, got {:?}",
+            field(&b, "a")
+        );
+    }
+
     /// A file with no imports reports an empty set, so an unrelated open
     /// document is never re-analyzed on someone else's keystroke.
     #[test]

@@ -3,6 +3,8 @@
 ## 1.3.0
 
 - An array/map method on a record field (`g.ready.sum()`) now types its result instead of `any`, so arithmetic on it works. Args are checked through the chain too.
+- A type alias whose body names another alias (`type Rect = { a: Point, ... }`) now expands all the way down when imported, so `ns.rect.a.x` keeps its type instead of reading as `any`.
+- Namespace members (`import * as ns`) written without an annotation, or bound by a destructuring `let`, now carry their record type across the import too.
 - Compiler source reorganised
 
 ## 1.2.0

@@ -699,6 +699,17 @@ fn collect_idents_in_type_expr(t: &TypeExpr, idents: &mut HashSet<String>) {
 
 fn expand_type_aliases_in_decl(d: &mut TopDecl, aliases: &HashMap<String, TypeExpr>) {
     match d {
+        // An alias body may name another alias (`type Rect = { a: Point, b: Point }`).
+        // Expanding it here makes the alias self-contained, which is what a
+        // namespace import needs: the module's aliases are declared to the
+        // importer only under their qualified name (`Ns.Rect`), so a bare
+        // `Point` surviving inside the body has nothing to resolve against.
+        // Seeded with its own name so a self-referential alias stops after one
+        // level instead of expanding forever.
+        TopDecl::TypeAlias(t) => {
+            let mut active = vec![t.name.clone()];
+            expand_aliases(&mut t.typ, aliases, &mut active);
+        }
         TopDecl::Chip(c) => {
             for p in &mut c.inputs { expand_type_aliases_in_type_expr(&mut p.typ, aliases); }
             for o in &mut c.outputs { expand_type_aliases_in_type_expr(&mut o.typ, aliases); }
@@ -727,26 +738,45 @@ fn expand_type_aliases_in_decl(d: &mut TopDecl, aliases: &HashMap<String, TypeEx
 }
 
 fn expand_type_aliases_in_type_expr(t: &mut TypeExpr, aliases: &HashMap<String, TypeExpr>) {
+    expand_aliases(t, aliases, &mut Vec::new());
+}
+
+/// Substitute alias names by their bodies, *including inside a body just
+/// substituted in* — an alias whose body names another alias (`type Rect = {
+/// a: Point, b: Point }`) otherwise leaves the inner name behind, unresolvable
+/// in the importing module, and the field silently types as `any`.
+///
+/// `active` is the chain of aliases being substituted on the current path. A
+/// name already on it is left alone, so a self-referential or mutually
+/// recursive alias expands one level and stops rather than looping forever.
+fn expand_aliases(t: &mut TypeExpr, aliases: &HashMap<String, TypeExpr>, active: &mut Vec<String>) {
     match t {
         TypeExpr::Name { name, .. } => {
-            if let Some(expanded) = aliases.get(name.as_str()) {
-                *t = expanded.clone();
+            if active.iter().any(|a| a == name) {
+                return;
             }
+            let Some(mut body) = aliases.get(name.as_str()).cloned() else {
+                return;
+            };
+            active.push(name.clone());
+            expand_aliases(&mut body, aliases, active);
+            active.pop();
+            *t = body;
         }
         TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => {
-            expand_type_aliases_in_type_expr(inner, aliases);
+            expand_aliases(inner, aliases, active);
         }
         TypeExpr::Tuple { fields, .. } => {
-            for f in fields { expand_type_aliases_in_type_expr(f, aliases); }
+            for f in fields { expand_aliases(f, aliases, active); }
         }
         TypeExpr::Record { fields, .. } => {
-            for f in fields { expand_type_aliases_in_type_expr(&mut f.typ, aliases); }
+            for f in fields { expand_aliases(&mut f.typ, aliases, active); }
         }
         TypeExpr::Union { options, .. } => {
-            for o in options { expand_type_aliases_in_type_expr(o, aliases); }
+            for o in options { expand_aliases(o, aliases, active); }
         }
         TypeExpr::Generic { args, .. } => {
-            for a in args { expand_type_aliases_in_type_expr(a, aliases); }
+            for a in args { expand_aliases(a, aliases, active); }
         }
     }
 }
