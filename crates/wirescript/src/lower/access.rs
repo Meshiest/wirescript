@@ -1,19 +1,28 @@
 use super::*;
 
 /// Walk a chain of `Ident` / `FieldAccess` nodes, resolving through
-/// `Binding::Record` maps. Returns the final `Binding` if every step
-/// resolved to a record field, or `None` when the chain isn't entirely
-/// record-based (e.g. the root ident isn't a record, or a field is
-/// missing).
+/// `Binding::Record` maps (and one `Binding::Namespace` hop). Returns the final
+/// `Binding` if every step resolved, or `None` when the chain isn't entirely
+/// record-based (e.g. the root ident isn't a record, or a field is missing).
 pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<&'a Binding> {
     match expr {
         Expr::Ident { name, .. } => ctx.scope.get(name),
         Expr::FieldAccess { obj, field, .. } => {
             let parent = resolve_field_chain(ctx, obj)?;
-            if let Binding::Record(fields) = parent {
-                fields.get(&crate::intern::intern(field))
-            } else {
-                None
+            match parent {
+                Binding::Record(fields) => fields.get(&crate::intern::intern(field)),
+                // `ns.member` where `ns` came from `import * as ns`. The
+                // Namespace binding itself only carries the module's chips, but
+                // its VALUE members (`let`/`var`/`array`/`map`/`buffer`) are
+                // lowered into THIS scope under their bare name, so that a
+                // namespaced mod's inlined body can reach them (see
+                // `lower_namespace_decls`). Resolve to that same binding —
+                // otherwise the namespace parent matched no record field and the
+                // reference dropped to an `_Unsupported` placeholder reading 0,
+                // even though the identical value worked through a named import.
+                // A chained `ns.rec.field` continues through the Record arm.
+                Binding::Namespace(_) => ctx.scope.get(field),
+                _ => None,
             }
         }
         Expr::TuplePick { obj, index, .. } => {

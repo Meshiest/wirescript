@@ -351,6 +351,21 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
         }
         Expr::FieldAccess { obj, field, range } => {
+            // `ns.member` on an `import * as ns` namespace: the namespace symbol
+            // itself is typeless (`any`), so without this the whole reference
+            // typed `any` and every use of it against a concrete type was a
+            // spurious mismatch. Read the member's indexed type instead.
+            // (`ns.f(args)` calls are handled in the Call arm, before this.)
+            if let Expr::Ident { name: ns_name, .. } = obj.as_ref()
+                && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
+                && let Some(ty) = ctx
+                    .namespaces
+                    .get(ns_name.as_str())
+                    .and_then(|m| m.get(field.as_str()))
+                    .and_then(|info| info.value_type.clone())
+            {
+                return ty;
+            }
             let ot = infer(ctx, obj);
             if let Type::Ref(inner) = &ot {
                 if field == "Value" || field == "prev" {

@@ -21,6 +21,7 @@
 - An out-of-range integer literal reports a parse error instead of compiling to `0`.
 - A captured event inside a handler (`let x = on Clock(1.0) { … }`) reports one clear "top level only" error instead of misleading tail-parse errors.
 - A `var` read after `await` re-reads fresh, so a value changed during the wait is visible.
+- **Reading a value through a namespace import now works.** `ns.myValue` (from `import * as ns`) typed as `any` and compiled to a placeholder that read 0 — only `ns.f(...)` calls worked. It now resolves to the member's real value and type, so `ns.myValue`, `ns.myRecord.field`, and passing one to a typed parameter all behave like the named-import form. A qualified value used where its type doesn't fit now reports the mismatch instead of passing silently as `any`.
 - A chip that writes a global variable no longer leaves a stale read after the call — a variable read before and after the chip runs now re-reads fresh, instead of the second read seeing the pre-call value. (Inline `mod`s were already correct.)
 - A chip called in two contexts (pure-then-exec, captured-vs-passed arg, or same name in two modules) compiles a separate body per context instead of reusing the first's mis-wired one.
 - A chip with multiple `return`s, and an output emitted from multiple sites, each route through one holder variable instead of fanning two wires into one pin (a load failure).

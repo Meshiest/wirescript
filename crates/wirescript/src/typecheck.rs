@@ -156,6 +156,13 @@ pub struct NsDeclInfo {
     /// call-site `subst` here to resolve them against); `check_args`'s own
     /// `type_has_param` guard skips those, same as it does elsewhere.
     pub params: Vec<EventDataField>,
+    /// For a VALUE member (`let`/`var`/`array`/`map`/`buffer`), its resolved
+    /// type — what `ns.member` evaluates to when read rather than called.
+    /// `None` for callables, and for a value whose type can't be determined at
+    /// registration time (an unannotated non-literal initializer), which reads
+    /// as `any` exactly as before. Without this a namespaced value reference
+    /// typed `any`, so passing it anywhere typed was a spurious mismatch.
+    pub value_type: Option<Type>,
 }
 
 pub struct TypeCheckCtx<'a> {
@@ -1347,6 +1354,7 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 kind: SymbolKind::Chip,
                                 return_type,
                                 params,
+                                value_type: None,
                             },
                         );
                     }
@@ -1365,6 +1373,48 @@ fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                                 kind: SymbolKind::Fn,
                                 return_type: f.return_type.clone(),
                                 params,
+                                value_type: None,
+                            },
+                        );
+                    }
+                    // VALUE members. Lowering already puts these in the
+                    // importing scope under their bare name (so an inlined
+                    // namespaced mod body can reach them); index their type here
+                    // so a qualified read (`ns.myValue`) types as the value
+                    // instead of `any`. An annotation is authoritative;
+                    // otherwise fall back to a literal initializer's type.
+                    // Only a simple `let name = …` has a single qualified name;
+                    // a destructuring `let` binds several and isn't reachable
+                    // as one `ns.member`.
+                    TopDecl::Let(l) => {
+                        if let LetBinding::Ident { name, .. } = &l.binding {
+                            let ty = match &l.typ {
+                                Some(te) => Some(resolve_type_expr(ctx, te)),
+                                None => literal_expr_type(&l.value),
+                            };
+                            ns_map.insert(
+                                name.clone(),
+                                NsDeclInfo {
+                                    kind: SymbolKind::LetBinding,
+                                    return_type: None,
+                                    params: Vec::new(),
+                                    value_type: ty,
+                                },
+                            );
+                        }
+                    }
+                    TopDecl::Var(v) => {
+                        let ty = match &v.typ {
+                            Some(te) => Some(resolve_type_expr(ctx, te)),
+                            None => v.init.as_ref().and_then(literal_expr_type),
+                        };
+                        ns_map.insert(
+                            v.name.clone(),
+                            NsDeclInfo {
+                                kind: SymbolKind::Var,
+                                return_type: None,
+                                params: Vec::new(),
+                                value_type: ty,
                             },
                         );
                     }
