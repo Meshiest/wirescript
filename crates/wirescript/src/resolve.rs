@@ -77,6 +77,12 @@ pub struct ResolveResult {
     /// is only read off the entry file. Shared behind an `Arc` because the
     /// layout options that carry it are cloned per chip.
     pub source_map: Arc<SourceMap>,
+    /// Canonical paths of every file this resolve loaded, TRANSITIVELY (an
+    /// import's own imports included) — the entry file is not listed. Lets a
+    /// caller tell whether a given file feeds this one, e.g. so the LSP
+    /// re-analyzes only the open documents a changed file actually reaches
+    /// instead of every open document on every keystroke.
+    pub imported_files: Vec<String>,
 }
 
 fn is_importable(d: &TopDecl) -> bool {
@@ -427,7 +433,14 @@ fn rename_decl(d: &mut TopDecl, new_name: &str) {
 }
 
 pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResult {
-    let parsed = parse(source, file);
+    resolve_parsed(parse(source, file), file, loader)
+}
+
+/// `resolve` for a caller that ALREADY parsed the entry file. The LSP keeps the
+/// pre-resolve AST for local analysis and used to parse the same buffer a second
+/// time in here on every keystroke — measured at ~21% of a keystroke on a
+/// 2.5k-line file. Consumes the `ParseResult`; clone it first if you need it.
+pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) -> ResolveResult {
     let mut diagnostics = parsed.diagnostics.clone();
     let mut doc_comments = parsed.doc_comments.clone();
 
@@ -507,6 +520,10 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
         diagnostics,
         doc_comments,
         source_map: Arc::new(parsed.source_map),
+        // `cache` is keyed by canonical path and filled by `resolve_import` as
+        // it walks imports depth-first, so its keys are exactly the transitive
+        // import set.
+        imported_files: cache.into_keys().collect(),
     }
 }
 

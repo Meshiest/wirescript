@@ -225,6 +225,15 @@ pub struct TypeCheckCtx<'a> {
     /// the module-level push in `typecheck` and the per-combo push in the
     /// `TopDecl::Chip` body-check loop).
     out_ctx: Vec<Vec<EventDataField>>,
+    /// `let f = Foo(…)` where `Foo` is a chip/mod with exactly ONE output:
+    /// binding name -> that output's name. A single-output call types as the
+    /// bare output value (the name is dropped), but `f.result` stays legal for
+    /// readability — so this records the one field name a scalar binding may be
+    /// projected by, letting `infer` tell that projection apart from a typo
+    /// (`f.reslt`) instead of silently typing both as `any`. A `None` value
+    /// means "known to be a single-output call result, but its output name
+    /// isn't indexed here" — any field is accepted, never a false typo.
+    pub single_output_alias: crate::collections::HashMap<String, Option<String>>,
 }
 
 impl<'a> TypeCheckCtx<'a> {
@@ -246,6 +255,7 @@ impl<'a> TypeCheckCtx<'a> {
             scoped_consts: Vec::new(),
             ce_slots,
             out_ctx: Vec::new(),
+            single_output_alias: crate::collections::HashMap::default(),
         }
     }
     /// Push a new `scope` frame together with a matching empty `scoped_consts`
@@ -1751,6 +1761,7 @@ fn check_decl(
         TopDecl::Let(l) => {
             let t = ctx.in_pure(|ctx| infer::infer(ctx, &l.value));
             check_let_type_annotation(ctx, l, &t);
+            record_single_output_alias(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
         }
         TopDecl::Fn(f) => {
@@ -2506,6 +2517,7 @@ fn check_stmt(
         Stmt::Let(l) => {
             let t = infer::infer(ctx, &l.value);
             check_let_type_annotation(ctx, l, &t);
+            record_single_output_alias(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
             // A body-local `let name = <constant>` is recorded in the
             // innermost `scoped_consts` frame (mirroring how a top-level
@@ -3008,6 +3020,54 @@ fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
             .map(|(i, (key, ft))| (*key == i.to_string()).then(|| ft.clone()))
             .collect(),
         _ => None,
+    }
+}
+
+/// Record `let f = Foo(…)` -> the sole output's name, when `Foo` is a user
+/// chip/mod (plain or namespaced) with exactly one output. A single-output call
+/// types as the bare output value, so `f.result` would otherwise be
+/// indistinguishable from a typo; see `TypeCheckCtx::single_output_alias`.
+/// Also propagates through a plain re-binding (`let g = f`) so an aliased
+/// result keeps its projectable name.
+fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding, value: &Expr) {
+    let LetBinding::Ident { name, .. } = b else {
+        return;
+    };
+    // `Some(entry)` = this binding IS a single-output call result;
+    // `entry` names the one legal projection, or `None` if unindexed.
+    let entry: Option<Option<String>> = match value {
+        // `let g = f` — inherit whatever `f` may be projected by.
+        Expr::Ident { name: src, .. } => ctx.single_output_alias.get(src).cloned(),
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Ident { name: callee_name, .. } => ctx
+                .scope
+                .lookup(callee_name)
+                .and_then(|s| s.signature.as_ref())
+                .filter(|sig| sig.outputs.len() == 1)
+                .map(|sig| Some(sig.outputs[0].name.clone())),
+            // `let r = ns.Foo(…)`. A multi-output member's return type is a
+            // record (its fields are checked the normal way); a single-output
+            // member's is the output type itself, whose NAME isn't indexed —
+            // so mark it unindexed rather than risk calling a valid
+            // projection a typo.
+            Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
+                Expr::Ident { name: ns, .. } => ctx
+                    .namespaces
+                    .get(ns.as_str())
+                    .and_then(|m| m.get(field.as_str()))
+                    .and_then(|info| info.return_type.as_ref())
+                    .and_then(|te| match te {
+                        TypeExpr::Record { .. } => None,
+                        _ => Some(None),
+                    }),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(out) = entry {
+        ctx.single_output_alias.insert(name.clone(), out);
     }
 }
 

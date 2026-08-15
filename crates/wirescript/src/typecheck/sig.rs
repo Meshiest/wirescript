@@ -119,9 +119,19 @@ pub fn check_args(
 
     if check_arity {
         let avail = sig.params.len().saturating_sub(pos_base);
+        // A required param supplied BY NAME (`Sweep(o, d, distance = 100.0)`) is
+        // satisfied, so it must not also be demanded positionally — counting
+        // only positionals reported "requires 3 args, got 2" for a complete call.
+        let named: Vec<&str> = args
+            .iter()
+            .filter_map(|a| match a {
+                CallArg::Named { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
         let required_count = sig.params[pos_base..]
             .iter()
-            .filter(|p| !p.optional)
+            .filter(|p| !p.optional && !named.contains(&p.name.as_str()))
             .count();
         if positional.len() > avail {
             ctx.emit(
@@ -189,9 +199,18 @@ pub fn check_args(
         {
             validate_data_driven_config(ctx, gate_class, cfg, value);
         } else if check_named && name != "exec" {
+            // Point at a param that differs only by case — named-arg matching is
+            // case-sensitive, so a casing slip otherwise reads as "no such
+            // parameter" for a parameter that plainly exists.
+            let suggestion = sig
+                .params
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(name))
+                .map(|p| format!(" (did you mean '{}'?)", p.name))
+                .unwrap_or_default();
             ctx.emit(
                 "WS041",
-                format!("'{}' has no parameter '{}'", sig.name, name),
+                format!("'{}' has no parameter '{}'{suggestion}", sig.name, name),
                 name_range.clone(),
             );
         }

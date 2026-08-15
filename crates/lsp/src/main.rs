@@ -24,7 +24,7 @@ use wirescript::catalog::maps::MAP_METHODS;
 use wirescript::catalog::calls::calls;
 use wirescript::catalog::events::events;
 use wirescript::lexer::KEYWORDS;
-use wirescript::resolve::{resolve, FileLoader, FsLoader};
+use wirescript::resolve::{resolve, resolve_parsed, FileLoader, FsLoader};
 use wirescript::typecheck::typecheck_with_inference;
 use wirescript::FoldMode;
 
@@ -500,6 +500,9 @@ struct DocState {
     var_read_contexts: VarReadContextMap,
     resource_estimates: wirescript::collections::HashMap<String, ResourceEstimate>,
     pre_resolve_ast: Script,
+    /// Canonical paths this doc imports, transitively — used to decide whether
+    /// a change to another file can affect it.
+    imported_files: Vec<String>,
 }
 
 struct Backend {
@@ -508,14 +511,37 @@ struct Backend {
 }
 
 impl Backend {
-    fn analyze(&self, uri: &Url, source: &str) -> Vec<Diagnostic> {
+    /// Typecheck-only analysis for one document, publishing its diagnostics.
+    ///
+    /// `with_estimates` controls the resource estimates that feed hover. Those
+    /// require REAL lowering of every chip/handler body (`collect_estimates` ->
+    /// `compile_chip_template`), which is the one thing this server is built not
+    /// to do per keystroke, so `did_change` passes `false` and reuses the
+    /// previous doc's estimates; `did_open`/`did_save` recompute them. Hover
+    /// numbers can therefore trail the buffer by an edit — they are approximate
+    /// by nature, and the alternative is paying a lowering pass per character.
+    fn analyze(&self, uri: &Url, source: &str, with_estimates: bool) -> Vec<Diagnostic> {
         let file = uri_to_file_string(uri);
 
+        // Parse ONCE and hand the result to resolve — it used to re-parse the
+        // same buffer internally, paying the entry parse twice per keystroke.
+        // The pre-resolve AST (kept for local analysis: references, semantic
+        // tokens, rename) is cloned off before resolve consumes the parse.
         let pre_resolve = wirescript::parse(source, &file);
-        let resolved = resolve(source, &file, &FsLoader);
+        let pre_resolve_ast = pre_resolve.ast.clone();
+        let resolved = resolve_parsed(pre_resolve, &file, &FsLoader);
         let tc = typecheck_with_inference(&resolved.ast, &file).0;
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
-        let resource_estimates = collect_estimates(&resolved.ast, &tc, &file);
+        let resource_estimates = if with_estimates {
+            collect_estimates(&resolved.ast, &tc, &file)
+        } else {
+            // Carry the previous estimates forward rather than re-lowering.
+            self.docs
+                .lock()
+                .ok()
+                .and_then(|d| d.get(uri).map(|s| s.resource_estimates.clone()))
+                .unwrap_or_default()
+        };
 
         if let Ok(mut docs) = self.docs.lock() {
             docs.insert(
@@ -528,7 +554,8 @@ impl Backend {
                     if_contexts: tc.if_contexts,
                     var_read_contexts: tc.var_read_contexts,
                     resource_estimates,
-                    pre_resolve_ast: pre_resolve.ast,
+                    pre_resolve_ast,
+                    imported_files: resolved.imported_files.clone(),
                 },
             );
         }
@@ -629,7 +656,13 @@ impl Backend {
         out
     }
 
+    /// Re-analyze the other open documents that the changed file can actually
+    /// affect — i.e. those importing it (transitively). Previously EVERY open
+    /// document was re-analyzed on EVERY keystroke, so a keystroke cost
+    /// (open tabs + 1) full analyses; an unrelated open file paid the whole
+    /// bill for every character typed elsewhere.
     async fn reanalyze_other_docs(&self, changed_uri: &Url) {
+        let changed = FsLoader.canonical_path(&uri_to_file_string(changed_uri), ".");
         let others: Vec<(Url, String)> = {
             let docs = match self.docs.lock() {
                 Ok(d) => d,
@@ -637,11 +670,12 @@ impl Backend {
             };
             docs.iter()
                 .filter(|(uri, _)| *uri != changed_uri)
+                .filter(|(_, doc)| doc.imported_files.iter().any(|p| p == &changed))
                 .map(|(uri, doc)| (uri.clone(), doc.source.clone()))
                 .collect()
         };
         for (uri, source) in others {
-            let diags = self.analyze(&uri, &source);
+            let diags = self.analyze(&uri, &source, /*with_estimates=*/ false);
             self.client.publish_diagnostics(uri, diags, None).await;
         }
     }
@@ -761,7 +795,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let diags = self.analyze(&params.text_document.uri, &params.text_document.text);
+        let diags =
+            self.analyze(&params.text_document.uri, &params.text_document.text, true);
         self.client
             .publish_diagnostics(params.text_document.uri, diags, None)
             .await;
@@ -770,7 +805,7 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Some(change) = params.content_changes.first() {
-            let diags = self.analyze(&uri, &change.text);
+            let diags = self.analyze(&uri, &change.text, /*with_estimates=*/ false);
             self.client
                 .publish_diagnostics(uri.clone(), diags, None)
                 .await;
@@ -793,7 +828,7 @@ impl LanguageServer for Backend {
         // Republish the typecheck set together with the lowering set, so the
         // save-only diagnostics do not wipe the live ones (a publish replaces
         // everything for the file).
-        let mut diags = self.analyze(&uri, &source);
+        let mut diags = self.analyze(&uri, &source, /*with_estimates=*/ true);
         for d in self.lowering_diagnostics(&uri, &source).await {
             // compile re-runs parse/typecheck, so its output overlaps analyze's.
             let dup = diags

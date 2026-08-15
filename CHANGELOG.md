@@ -28,6 +28,7 @@
 - A `chip … -> (sig: exec)` that does `emit sig` now wires the emit to the output (was silently dropped).
 - A wire whose endpoint can't be resolved is now a compile error, not a silently dropped wire in a shipped save.
 - The formatter no longer splits a `:kebab-case` atom literal at its hyphen.
+- A field access on a scalar (`x.whatever` where `x` is an `int`) reports `WS010` instead of typing as `any` and silently reading the whole value. Projecting a single-output `chip`/`mod` result by its output name (`let f = Foo(); f.result`) still works — a mis-typed output name is now caught too.
 
 ### Performance
 
@@ -35,6 +36,7 @@ Fewer gates, same behavior:
 
 - **Repeated calculations build one gate and share it.** Write `x + 1` in three outputs, or call the same `mod` twice, and you get one gate instead of a copy per use. (State-holding and `@nofold` gates are left alone.)
 - **A variable read is reused across an `if`** when the branch doesn't touch it, instead of being re-read afterward. A variable a branch writes still re-reads fresh, so it's never stale.
+- **The editor keeps up better while you type.** Each keystroke used to parse the file twice, rebuild gate-count estimates by fully lowering every chip and handler, and re-analyze *every* other open file. Now it parses once, defers estimates to open/save (they only feed hover), and re-analyzes only the open files that actually import what you changed — about 20% less work per keystroke, and no longer multiplied by your open tab count.
 
 ## 1.1.1
 

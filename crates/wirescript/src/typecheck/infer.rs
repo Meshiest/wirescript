@@ -424,15 +424,40 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 // the element type and this would fall through to Any. Lowering
                 // already maps these names to the gate's bOutOfBounds port.
                 (_, "OutOfBounds" | "bOutOfBounds") => Type::Bool,
-                // NOTE (P0-16c, deferred): an unknown field on a scalar (e.g. a
-                // typo `c.whatever` on an `int`) silently types `Any` and
-                // lowering reads the whole base value. Flagging it here would
-                // also break the single-output projection compat (`let f =
-                // Foo(); f.result`, where `f` is typed as the bare output but
-                // `.result` rides this same lenient passthrough) — the two are
-                // indistinguishable without tracking each value's call origin.
-                // Catching the typo needs origin-aware field validation, not a
-                // blanket scalar reject.
+                // A scalar has no fields, so `c.whatever` on an `int` is a typo
+                // — it used to type `any` silently while lowering read the whole
+                // base value (`b = c.whatever` behaved as `b = c`). The one
+                // legal exception is projecting a single-output call result by
+                // its output name (`let f = Foo(); f.result`), which types as
+                // the bare output; `single_output_alias` records exactly which
+                // bindings those are and what name each accepts, so a genuine
+                // projection passes and only a real typo is flagged. A binding
+                // of unknown origin keeps the permissive `any`.
+                (Type::Int | Type::Float | Type::Bool | Type::String, _) => {
+                    let projectable = match obj.as_ref() {
+                        Expr::Ident { name, .. } => match ctx.single_output_alias.get(name) {
+                            // Unindexed origin, or the declared output name.
+                            Some(None) => true,
+                            Some(Some(out)) => out == field,
+                            None => false,
+                        },
+                        // Any other shape (a param, an element, a call result
+                        // used inline) has no recorded origin — stay silent
+                        // rather than risk calling valid code a typo.
+                        _ => true,
+                    };
+                    if !projectable {
+                        ctx.emit(
+                            "WS010",
+                            format!(
+                                "no field `{field}` on {}",
+                                crate::analysis::types::type_str(&ot)
+                            ),
+                            range.clone(),
+                        );
+                    }
+                    unwrap_ref(&ot)
+                }
                 _ => Type::Any,
             }
         }

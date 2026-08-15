@@ -2436,6 +2436,40 @@
         );
     }
 
+    // P0-16c: a scalar has no fields, so a field access on one is a typo — it
+    // used to type `any` and lowering read the whole base value. The single
+    // exception is projecting a single-output call result by its output name.
+    #[test]
+    fn unknown_field_on_a_scalar_is_ws010() {
+        let r = tc("in go: exec\nvar a: int = 5\nvar b: int = 0\non go {\n  let c = a\n  b = c.whatever\n}");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS010"),
+            "a field on an int must be WS010, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn single_output_projection_and_its_typo() {
+        // Projecting by the declared output name stays legal...
+        assert_no_diags(&tc(
+            "chip Foo(x: int) -> (result: int) {\n out result = x * 2\n}\nlet f = Foo(21)\nlet ok = f.result\nout o = ok",
+        ));
+        // ...and so does an aliased re-binding of that result.
+        assert_no_diags(&tc(
+            "chip Foo(x: int) -> (result: int) {\n out result = x * 2\n}\nlet f = Foo(21)\nlet g = f\nlet ok = g.result\nout o = ok",
+        ));
+        // But a mis-typed output name is caught.
+        let bad = tc(
+            "chip Foo(x: int) -> (result: int) {\n out result = x * 2\n}\nlet f = Foo(21)\nlet bad = f.reslt\nout o = bad",
+        );
+        assert!(
+            bad.diagnostics.iter().any(|d| d.code == "WS010"),
+            "a mis-typed output name must be WS010, got {:?}",
+            bad.diagnostics
+        );
+    }
+
     // P0-9: a typo'd event config/input arg matches no slot and silently no-ops
     // at lowering — flag it WS041 (`on Clock(intreval = 2.0)`).
     #[test]

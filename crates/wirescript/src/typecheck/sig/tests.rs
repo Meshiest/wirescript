@@ -379,6 +379,59 @@ fn unknown_named_arg_skipped_when_arity_unchecked() {
     );
 }
 
+// (f2) A REQUIRED param supplied by name satisfies arity — it must not also be
+// demanded positionally (`Sweep(origin, dir, distance = 100.0)` is complete).
+#[test]
+fn required_param_given_by_name_satisfies_arity() {
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
+    declare_var(&mut ctx, "d", Type::Float);
+    let range = SourceRange::default();
+    let sig = wire_sig("Sweep", &[("origin", Type::Float, false), ("distance", Type::Float, false)]);
+    let args = vec![
+        CallArg::Positional(ident("d")),
+        CallArg::Named {
+            name_range: SourceRange::default(),
+            name: "distance".into(),
+            value: ident("d"),
+        },
+    ];
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
+    assert!(
+        !ctx.diagnostics.iter().any(|d| d.code == "WS011"),
+        "a required param passed by name must not trip the arity check, got {:?}",
+        ctx.diagnostics
+    );
+}
+
+// (f3) A named arg that differs from a real param only by case gets a pointer to
+// the right spelling — matching is case-sensitive, so the bare "no parameter"
+// message was misleading for a parameter that plainly exists.
+#[test]
+fn miscased_named_arg_suggests_the_real_param() {
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
+    declare_var(&mut ctx, "r", Type::Float);
+    let range = SourceRange::default();
+    let sig = wire_sig("Sweep", &[("radius", Type::Float, true)]);
+    let args = vec![CallArg::Named {
+        name_range: SourceRange::default(),
+        name: "Radius".into(),
+        value: ident("r"),
+    }];
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
+    let d = ctx
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS041")
+        .expect("WS041 for the mis-cased name");
+    assert!(
+        d.message.contains("did you mean 'radius'"),
+        "the message should point at the correct casing, got {:?}",
+        d.message
+    );
+}
+
 // (g2) A user mod/chip call passes `check_arity = false` (its count is checked as
 // WS022 upstream) but `check_named = true` — its full param list IS known, so an
 // unknown named arg (`g(1, bogus = 5)`) must still be flagged WS041 (P0-16d).

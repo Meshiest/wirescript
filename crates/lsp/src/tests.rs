@@ -13,6 +13,7 @@
             var_read_contexts: tc.var_read_contexts,
             resource_estimates: Default::default(),
             pre_resolve_ast: pre_resolve.ast,
+            imported_files: resolved.imported_files.clone(),
         }
     }
 

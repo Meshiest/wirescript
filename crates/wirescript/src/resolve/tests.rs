@@ -262,3 +262,43 @@
             "TypeAlias 'Cpu' should NOT be pulled transitively into the importing file's AST"
         );
     }
+
+    /// `imported_files` must list every file a resolve pulled in, TRANSITIVELY,
+    /// keyed the same way `canonical_path` keys them — the LSP compares a
+    /// changed file's canonical path against this to decide which open
+    /// documents still need re-analysis.
+    #[test]
+    fn imported_files_lists_the_transitive_import_set() {
+        let loader = mem(&[
+            ("mid.ws", "import { deep } from \"deep\"\nlet mid = deep + 1"),
+            ("deep.ws", "let deep = 7"),
+        ]);
+        let r = resolve("import { mid } from \"mid\"\nout o = mid", "main.ws", &loader);
+        assert!(r.diagnostics.is_empty(), "resolve diags: {:?}", r.diagnostics);
+        let canon_mid = loader.canonical_path("mid", "main.ws");
+        let canon_deep = loader.canonical_path("deep", "mid.ws");
+        assert!(
+            r.imported_files.contains(&canon_mid),
+            "direct import missing from {:?}",
+            r.imported_files
+        );
+        assert!(
+            r.imported_files.contains(&canon_deep),
+            "TRANSITIVE import missing from {:?} — an edit to it must still \
+             re-analyze the importer",
+            r.imported_files
+        );
+    }
+
+    /// A file with no imports reports an empty set, so an unrelated open
+    /// document is never re-analyzed on someone else's keystroke.
+    #[test]
+    fn imported_files_is_empty_without_imports() {
+        let loader = mem(&[]);
+        let r = resolve("let x = 1\nout o = x", "main.ws", &loader);
+        assert!(
+            r.imported_files.is_empty(),
+            "expected no imports, got {:?}",
+            r.imported_files
+        );
+    }

@@ -2579,7 +2579,7 @@ fn build_calls() -> HashMap<&'static str, CallSpec> {
             params: vec![
                 CallParam::req("origin", WirePort::Origin, Type::Vector),
                 CallParam::req("direction", WirePort::Direction, Type::Vector),
-                CallParam::req("Distance", WirePort::Distance, Type::Float),
+                CallParam::req("distance", WirePort::Distance, Type::Float),
                 CallParam::opt("radius", WirePort::Radius, Type::Float),
                 CallParam::opt("relative", WirePort::BRelative, Type::Bool),
                 CallParam::opt("ignore", WirePort::IgnoreEntity, Type::Entity),
