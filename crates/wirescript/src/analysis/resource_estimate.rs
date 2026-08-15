@@ -96,6 +96,25 @@ pub fn collect_estimates(
         expanded.insert(key.clone(), est);
     }
 
+    // Phase 3: alias each `import * as ns` member under its qualified name.
+    // Members are collected (and call-graph-keyed) by their BARE name, but a
+    // namespaced symbol is stored — and looked up by hover — as `ns.member`,
+    // so without this alias every `ns.f()` rendered its signature with no gate
+    // count. Aliased after expansion so the qualified key carries the callee
+    // totals too, not just the member's own body.
+    for decl in &ast.decls {
+        let TopDecl::Namespace(ns) = decl else { continue };
+        for d in &ns.decls {
+            let TopDecl::Chip(c) = d else { continue };
+            if c.name.is_empty() {
+                continue;
+            }
+            if let Some(est) = expanded.get(&c.name).cloned() {
+                expanded.insert(format!("{}.{}", ns.name, c.name), est);
+            }
+        }
+    }
+
     expanded
 }
 

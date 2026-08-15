@@ -42,3 +42,27 @@ chip Wrap(a: *int) -> () {
             double.gates
         );
     }
+
+    /// A `import * as ns` member is stored in `symbols` — and looked up by
+    /// hover — under its qualified `ns.member` name, while estimates are
+    /// collected under the bare one. Without the qualified alias, hovering
+    /// `card.draw(...)` rendered the signature with no gate count at all.
+    #[test]
+    fn namespaced_member_is_reachable_by_its_qualified_name() {
+        let dir = std::env::temp_dir().join("ws_est_ns_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.ws"), "mod draw(v: *int) { v = v + v + 1 }\n").unwrap();
+        let main = dir.join("main.ws");
+        std::fs::write(&main, "import * as card from \"lib\"\nvar x: int = 0\non RoundStart { card.draw(x) }\n").unwrap();
+
+        let src = std::fs::read_to_string(&main).unwrap();
+        let f = main.to_string_lossy().to_string();
+        let resolved = resolve(&src, &f, &FsLoader);
+        let tc = typecheck(&resolved.ast, &f, &crate::typecheck::CeSlotMap::default());
+        let est = collect_estimates(&resolved.ast, &tc, &f);
+
+        let bare = est.get("draw").expect("bare member key").gates;
+        let qualified = est.get("card.draw").expect("qualified member key missing").gates;
+        assert_eq!(bare, qualified, "qualified alias must carry the expanded estimate");
+        assert!(qualified > 0, "member should have gates, got {qualified}");
+    }

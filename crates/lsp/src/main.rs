@@ -541,14 +541,20 @@ impl FileLoader for OpenDocLoader {
 impl Backend {
     /// Typecheck-only analysis for one document, publishing its diagnostics.
     ///
-    /// `with_estimates` controls the resource estimates that feed hover. Those
-    /// require REAL lowering of every chip/handler body (`collect_estimates` ->
-    /// `compile_chip_template`), which is the one thing this server is built not
-    /// to do per keystroke, so `did_change` passes `false` and reuses the
-    /// previous doc's estimates; `did_open`/`did_save` recompute them. Hover
-    /// numbers can therefore trail the buffer by an edit — they are approximate
-    /// by nature, and the alternative is paying a lowering pass per character.
-    fn analyze(&self, uri: &Url, source: &str, with_estimates: bool) -> Vec<Diagnostic> {
+    /// Resource estimates (the gate counts hover shows) are recomputed here on
+    /// every analysis, including per keystroke. They were previously computed
+    /// only on open/save, with `did_change` carrying the previous map forward,
+    /// because `collect_estimates` lowers every chip/handler body. But
+    /// [`lookup_estimate`] keys by NAME, so a carried-forward map has no entry
+    /// at all for a mod added or renamed since the last save — it rendered with
+    /// no gate count while its neighbours had one, which reads as the estimate
+    /// being broken rather than stale.
+    ///
+    /// Recomputing costs ~11% of one analysis (measured on the largest program
+    /// to hand: ~4ms of a ~39ms analyze, and well under 1ms on smaller files),
+    /// which the template cache keeps flat. That is worth paying for a hover
+    /// that matches the buffer.
+    fn analyze(&self, uri: &Url, source: &str) -> Vec<Diagnostic> {
         let file = uri_to_file_string(uri);
 
         // Parse ONCE and hand the result to resolve — it used to re-parse the
@@ -579,16 +585,7 @@ impl Backend {
         let resolved = resolve_parsed(pre_resolve, &file, &loader);
         let tc = typecheck_with_inference(&resolved.ast, &file).0;
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
-        let resource_estimates = if with_estimates {
-            collect_estimates(&resolved.ast, &tc, &file)
-        } else {
-            // Carry the previous estimates forward rather than re-lowering.
-            self.docs
-                .lock()
-                .ok()
-                .and_then(|d| d.get(uri).map(|s| s.resource_estimates.clone()))
-                .unwrap_or_default()
-        };
+        let resource_estimates = collect_estimates(&resolved.ast, &tc, &file);
 
         if let Ok(mut docs) = self.docs.lock() {
             docs.insert(
@@ -722,7 +719,7 @@ impl Backend {
                 .collect()
         };
         for (uri, source) in others {
-            let diags = self.analyze(&uri, &source, /*with_estimates=*/ false);
+            let diags = self.analyze(&uri, &source);
             self.client.publish_diagnostics(uri, diags, None).await;
         }
     }
@@ -843,7 +840,7 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let diags =
-            self.analyze(&params.text_document.uri, &params.text_document.text, true);
+            self.analyze(&params.text_document.uri, &params.text_document.text);
         self.client
             .publish_diagnostics(params.text_document.uri, diags, None)
             .await;
@@ -852,7 +849,7 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Some(change) = params.content_changes.first() {
-            let diags = self.analyze(&uri, &change.text, /*with_estimates=*/ false);
+            let diags = self.analyze(&uri, &change.text);
             self.client
                 .publish_diagnostics(uri.clone(), diags, None)
                 .await;
@@ -875,7 +872,7 @@ impl LanguageServer for Backend {
         // Republish the typecheck set together with the lowering set, so the
         // save-only diagnostics do not wipe the live ones (a publish replaces
         // everything for the file).
-        let mut diags = self.analyze(&uri, &source, /*with_estimates=*/ true);
+        let mut diags = self.analyze(&uri, &source);
         for d in self.lowering_diagnostics(&uri, &source).await {
             // compile re-runs parse/typecheck, so its output overlaps analyze's.
             let dup = diags

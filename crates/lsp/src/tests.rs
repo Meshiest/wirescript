@@ -1130,3 +1130,54 @@ on CharacterSpawned() -> (character) {
             r.diagnostics
         );
     }
+
+    /// A mod added since the last save must get a gate estimate immediately.
+    ///
+    /// `did_change` used to carry the previous estimate map forward instead of
+    /// recomputing, and estimates are looked up by NAME — so a newly typed mod
+    /// had no entry and hovered with no gate count while its neighbours showed
+    /// one, which reads as the feature being broken rather than stale.
+    #[tokio::test]
+    async fn a_mod_added_since_the_last_save_still_gets_a_gate_estimate() {
+        let dir = scratch_dir("estimate-freshness");
+        let file = dir.join("main.ws");
+        let opened = "mod alpha(v: *int) { v = v + 1 }\n";
+        std::fs::write(&file, opened).unwrap();
+        let uri = Url::from_file_path(&file).unwrap();
+
+        let service = build_backend();
+        service
+            .inner()
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "wirescript".into(),
+                    version: 1,
+                    text: opened.into(),
+                },
+            })
+            .await;
+
+        // Type a second mod — a change only, never saved to disk.
+        let edited = "mod alpha(v: *int) { v = v + 1 }\nmod beta(v: *int) { v = v * 3 + 2 }\n";
+        service
+            .inner()
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier { uri: uri.clone(), version: 2 },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: edited.into(),
+                }],
+            })
+            .await;
+
+        let docs = service.inner().docs.lock().unwrap();
+        let est = &docs.get(&uri).expect("doc state").resource_estimates;
+        assert!(
+            est.contains_key("beta"),
+            "a mod added by an unsaved edit must have an estimate; keys: {:?}",
+            est.keys().collect::<Vec<_>>()
+        );
+        assert!(est.contains_key("alpha"), "the pre-existing mod must keep its estimate");
+    }
