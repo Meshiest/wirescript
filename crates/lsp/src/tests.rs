@@ -1075,3 +1075,58 @@ on CharacterSpawned() -> (character) {
             ": character annotation should tokenize as Type: {abs:?}"
         );
     }
+
+    /// An import must resolve against an OPEN EDITOR BUFFER, not the last bytes
+    /// saved to disk. Otherwise a file importing something you are currently
+    /// editing reports diagnostics for a version you can no longer see, until
+    /// you hit save.
+    #[test]
+    fn open_buffer_shadows_disk_for_imports() {
+        let dir = std::env::temp_dir().join(format!("ws-lsp-openimp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = dir.join("lib.ws");
+        // On DISK the export is named `OLD`.
+        std::fs::write(&lib, "let OLD: int = 1\n").unwrap();
+
+        // The unsaved editor buffer for that same file renames it to `FRESH`.
+        let mut open = HashMap::new();
+        open.insert(
+            FsLoader.canonical_path(&lib.to_string_lossy(), "."),
+            "let FRESH: int = 2\n".to_string(),
+        );
+        let loader = OpenDocLoader { open };
+
+        let main_path = dir.join("main.ws");
+        let r = resolve(
+            "import { FRESH } from \"lib\"\nout o = FRESH",
+            &main_path.to_string_lossy(),
+            &loader,
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            r.diagnostics.is_empty(),
+            "the unsaved buffer's export must be visible, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// The fallback still reaches disk for a file that is not open.
+    #[test]
+    fn unopened_import_still_loads_from_disk() {
+        let dir = std::env::temp_dir().join(format!("ws-lsp-diskimp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.ws"), "let ONDISK: int = 1\n").unwrap();
+        let loader = OpenDocLoader { open: HashMap::new() };
+        let main_path = dir.join("main.ws");
+        let r = resolve(
+            "import { ONDISK } from \"lib\"\nout o = ONDISK",
+            &main_path.to_string_lossy(),
+            &loader,
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            r.diagnostics.is_empty(),
+            "a closed import must still load from disk, got {:?}",
+            r.diagnostics
+        );
+    }

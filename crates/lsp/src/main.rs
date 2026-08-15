@@ -510,6 +510,34 @@ struct Backend {
     docs: Mutex<HashMap<Url, DocState>>,
 }
 
+/// A loader that serves imports from the OPEN EDITOR BUFFERS first, falling back
+/// to disk. `analyze` previously resolved every import straight off disk, so an
+/// unsaved edit in an imported file was invisible to the files importing it —
+/// their diagnostics described the last SAVED version until you hit save. It
+/// also skips a disk read per import per keystroke for files already in memory.
+///
+/// Holds a snapshot (canonical path -> source) taken before `resolve` rather
+/// than the live `docs` mutex, since `analyze` re-locks that mutex afterwards.
+struct OpenDocLoader {
+    open: HashMap<String, String>,
+}
+
+impl FileLoader for OpenDocLoader {
+    // `Result` in this file is tower-lsp's single-parameter alias, so spell the
+    // std one out.
+    fn load(&self, path: &str, relative_to: &str) -> std::result::Result<String, String> {
+        let canon = self.canonical_path(path, relative_to);
+        if let Some(src) = self.open.get(&canon) {
+            return Ok(src.clone());
+        }
+        FsLoader.load(path, relative_to)
+    }
+
+    fn canonical_path(&self, path: &str, relative_to: &str) -> String {
+        FsLoader.canonical_path(path, relative_to)
+    }
+}
+
 impl Backend {
     /// Typecheck-only analysis for one document, publishing its diagnostics.
     ///
@@ -529,7 +557,26 @@ impl Backend {
         // tokens, rename) is cloned off before resolve consumes the parse.
         let pre_resolve = wirescript::parse(source, &file);
         let pre_resolve_ast = pre_resolve.ast.clone();
-        let resolved = resolve_parsed(pre_resolve, &file, &FsLoader);
+        // Snapshot the other open buffers so imports resolve against unsaved
+        // edits (and skip a disk read); the lock is released before resolve.
+        let loader = OpenDocLoader {
+            open: self
+                .docs
+                .lock()
+                .map(|docs| {
+                    docs.iter()
+                        .filter(|(u, _)| *u != uri)
+                        .map(|(u, d)| {
+                            (
+                                FsLoader.canonical_path(&uri_to_file_string(u), "."),
+                                d.source.clone(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let resolved = resolve_parsed(pre_resolve, &file, &loader);
         let tc = typecheck_with_inference(&resolved.ast, &file).0;
         let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
         let resource_estimates = if with_estimates {
