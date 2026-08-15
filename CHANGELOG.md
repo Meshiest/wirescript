@@ -21,11 +21,19 @@
 - An out-of-range integer literal reports a parse error instead of compiling to `0`.
 - A captured event inside a handler (`let x = on Clock(1.0) { … }`) reports one clear "top level only" error instead of misleading tail-parse errors.
 - A `var` read after `await` re-reads fresh, so a value changed during the wait is visible.
+- A chip that writes a global variable no longer leaves a stale read after the call — a variable read before and after the chip runs now re-reads fresh, instead of the second read seeing the pre-call value. (Inline `mod`s were already correct.)
 - A chip called in two contexts (pure-then-exec, captured-vs-passed arg, or same name in two modules) compiles a separate body per context instead of reusing the first's mis-wired one.
 - A chip with multiple `return`s, and an output emitted from multiple sites, each route through one holder variable instead of fanning two wires into one pin (a load failure).
 - A `chip … -> (sig: exec)` that does `emit sig` now wires the emit to the output (was silently dropped).
 - A wire whose endpoint can't be resolved is now a compile error, not a silently dropped wire in a shipped save.
 - The formatter no longer splits a `:kebab-case` atom literal at its hyphen.
+
+### Performance
+
+Fewer gates, same behavior:
+
+- **Repeated calculations build one gate and share it.** Write `x + 1` in three outputs, or call the same `mod` twice, and you get one gate instead of a copy per use. (State-holding and `@nofold` gates are left alone.)
+- **A variable read is reused across an `if`** when the branch doesn't touch it, instead of being re-read afterward. A variable a branch writes still re-reads fresh, so it's never stale.
 
 ## 1.1.1
 

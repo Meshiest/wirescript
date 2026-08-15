@@ -1831,35 +1831,15 @@ fn wire_chip_args_and_outputs(
         ctx.connect(val_port, mc_input.port(WirePort::RerInput));
     }
 
-    // Invalidate var caches for ref/array params — the chip body may have
-    // written to these vars, so subsequent reads need fresh Var_Gets.
-    for (i, param) in chip_decl.inputs.iter().enumerate() {
-        if matches!(&param.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. })
-            && let Some(arg_expr) = positional_args.get(i)
-            && let Expr::Ident { name, .. } = arg_expr
-        {
-            if let Some(v) = ctx.lookup_var_mut(name.as_str()) {
-                v.get_node_for_handler = None;
-            }
-        }
-    }
-    // Also invalidate for dissolved record fields
-    for (i, _param) in chip_decl.inputs.iter().enumerate() {
-        let Some(arg_expr) = positional_args.get(i) else {
-            continue;
-        };
-        if let Some(Binding::Record(rec_fields)) = resolve_field_chain(ctx, arg_expr).cloned() {
-            for (field_sym, binding) in &rec_fields {
-                if let Binding::Var(var_rec) = binding {
-                    if var_rec.storage == VarStorage::Array || var_rec.storage == VarStorage::Var {
-                        if let Some(v) = ctx.lookup_var_mut(&crate::intern::resolve(*field_sym)) {
-                            v.get_node_for_handler = None;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // The chip body may have written to caller-visible vars — through a ref/
+    // array param, a dissolved record field, OR a top-level var it references
+    // directly (e.g. `chip Bump() { g = g + 1 }` incrementing a global). Only
+    // the param cases were cleared before, so a global a chip wrote left the
+    // caller's cached Var_Get stale, and a read after the call saw the
+    // pre-call value. The instance body is a separate module, so we can't
+    // cheaply tell which caller vars it touched — blanket-reset every cache,
+    // exactly as the inline-mod path does after its body.
+    reset_var_get_caches(ctx);
 
     if !child_outputs.is_empty() {
         child_outputs[0].port(WirePort::RerOutput)

@@ -751,3 +751,92 @@ fn invalidate_cache_in_binding(binding: &mut Binding, target_node_id: &NodeId) {
         _ => {}
     }
 }
+
+/// A snapshot of every in-scope var's `Var_Get` cache (recursing into record
+/// bindings), keyed by the var's gate node id. `lower_if` takes one before its
+/// branches so that, at the join, only the vars a branch actually TOUCHED are
+/// invalidated — an unwritten var's pre-branch read survives, instead of the
+/// whole cache being blanket-cleared.
+pub(super) type VarCacheSnapshot = HashMap<NodeId, Option<NodeId>>;
+
+pub(super) fn snapshot_var_caches(ctx: &LowerCtx) -> VarCacheSnapshot {
+    let mut out = VarCacheSnapshot::default();
+    for (_, binding) in ctx.scope.iter() {
+        snapshot_cache_in_binding(binding, &mut out);
+    }
+    out
+}
+
+fn snapshot_cache_in_binding(binding: &Binding, out: &mut VarCacheSnapshot) {
+    match binding {
+        Binding::Var(v) => {
+            out.insert(v.node_id, v.get_node_for_handler);
+        }
+        Binding::Record(fields) => {
+            for b in fields.values() {
+                snapshot_cache_in_binding(b, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The var node ids whose `Var_Get` cache CHANGED versus `snap` — every var a
+/// branch invalidated, no matter which code path cleared it (a direct write, a
+/// nested `if`'s join, an inline mod's blanket reset, or a chip instance's
+/// ref-arg reset). Comparing actual cache state — rather than trusting each
+/// write site to journal — is what makes the branch merge safe: a stale
+/// pre-branch read can only survive when the cache is provably unchanged. A var
+/// absent from `snap` (declared inside the branch) is ignored — it's
+/// block-scoped and gone at the join.
+pub(super) fn cache_touched_since(ctx: &LowerCtx, snap: &VarCacheSnapshot) -> HashSet<NodeId> {
+    let mut out = HashSet::default();
+    for (_, binding) in ctx.scope.iter() {
+        cache_touched_in_binding(binding, snap, &mut out);
+    }
+    out
+}
+
+fn cache_touched_in_binding(binding: &Binding, snap: &VarCacheSnapshot, out: &mut HashSet<NodeId>) {
+    match binding {
+        Binding::Var(v) => {
+            if let Some(&pre) = snap.get(&v.node_id)
+                && pre != v.get_node_for_handler
+            {
+                out.insert(v.node_id);
+            }
+        }
+        Binding::Record(fields) => {
+            for b in fields.values() {
+                cache_touched_in_binding(b, snap, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Reset every in-scope var's `Var_Get` cache back to `snap` — used to discard a
+/// branch's scratch cache state (its own fresh reads live on that branch's exec
+/// chain and can't be reused elsewhere) before lowering the next branch and
+/// after the join.
+pub(super) fn restore_var_caches(ctx: &mut LowerCtx, snap: &VarCacheSnapshot) {
+    for binding in ctx.scope.values_mut() {
+        restore_cache_in_binding(binding, snap);
+    }
+}
+
+fn restore_cache_in_binding(binding: &mut Binding, snap: &VarCacheSnapshot) {
+    match binding {
+        Binding::Var(v) => {
+            if let Some(&pre) = snap.get(&v.node_id) {
+                v.get_node_for_handler = pre;
+            }
+        }
+        Binding::Record(fields) => {
+            for b in fields.values_mut() {
+                restore_cache_in_binding(b, snap);
+            }
+        }
+        _ => {}
+    }
+}

@@ -10,6 +10,7 @@ mod boundary_pins;
 mod chip;
 mod compound;
 mod const_init;
+mod cse;
 mod flatten;
 mod fold;
 mod fusion;
@@ -24,6 +25,7 @@ mod returns;
 mod scope;
 mod string;
 mod types;
+mod varget_cache;
 mod wire_completeness;
 
 pub(super) fn compile(src: &str) -> LowerResult {

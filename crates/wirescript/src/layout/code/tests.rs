@@ -3662,7 +3662,11 @@ on t {
 
     /// A body dense enough to exercise the band: two variables read across
     /// six rows, some of them twice on one row.
-    const BAND_SRC: &str = "var a: int = 1\nvar b: int = 2\nvar log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
+    // The interpolations are deliberately all distinct: CSE merges two identical
+    // pure FormatText gates into one, which would collapse this fixture's
+    // per-value lanes (the `PrintToConsole("a=${a}")` differs from the earlier
+    // `"${a}"` so both survive as separate travelling values).
+    const BAND_SRC: &str = "var a: int = 1\nvar b: int = 2\nvar log: string[]\nin go: exec\non go {\n  log.push(\"${a}\")\n  PrintToConsole(\"${a}${b}\")\n  log.push(\"${b}\")\n  PrintToConsole(\"a=${a}\")\n  b = a + b\n  log.push(\"y${b}\")\n}\n";
 
     /// The same band with no declared input port, so nothing stacks further
     /// left than the gutter and the band itself is the plane's left edge.
@@ -3673,7 +3677,7 @@ on ControllerJoined() -> (who) {
   log.push(\"${a}\")
   PrintToConsole(\"${a}${b}\")
   log.push(\"${b}\")
-  PrintToConsole(\"${a}\")
+  PrintToConsole(\"a=${a}\")
   b = a + b
   log.push(\"y${b}\")
 }

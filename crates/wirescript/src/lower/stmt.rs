@@ -676,6 +676,14 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
     ctx.connect(cond_port, branch.port(WirePort::BCond));
 
+    // Snapshot every var's Var_Get cache before the branches. At the join only
+    // the vars a branch actually wrote get invalidated, so an unwritten var's
+    // pre-branch read survives instead of the whole cache being blanket-cleared
+    // — Var_Get is the single most common gate, and this drops the redundant
+    // re-reads. `cache_touched_since` compares actual cache state, so any write
+    // (direct, nested-if, inline mod, chip-instance ref arg) is caught.
+    let pre_branch_caches = snapshot_var_caches(ctx);
+
     // Snapshot scope before branches so that declarations in one
     // branch don't leak into the other (each branch gets its own scope).
     ctx.push_scope(crate::scope::ScopeTag::BLOCK);
@@ -688,6 +696,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     ctx.exec_branch_depth += 1;
     lower_block(ctx, &s.then_block);
     let then_end = ctx.current_exec;
+    let then_touched = cache_touched_since(ctx, &pre_branch_caches);
 
     // Restore scope so the else branch starts from the same state.
     ctx.pop_scope();
@@ -704,15 +713,18 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let else_id = ctx.alloc_scope(ScopeKind::IfElse, else_range);
     ctx.builder.current_scope_id = else_id;
     ctx.current_exec = Some(branch.port(WirePort::ExecOutB));
-    // A Var_Get emitted in the THEN branch lives on the ExecOutA chain, so it must
-    // not be reused on the ELSE chain (ExecOutB) - it never fires there, so the read
-    // would be stale. Drop the cache so the else branch takes its own fresh reads.
-    reset_var_get_caches(ctx);
+    // A Var_Get emitted in the THEN branch lives on the ExecOutA chain, so it
+    // must not be reused on the ELSE chain (ExecOutB) - it never fires there.
+    // Restoring the pre-branch caches drops exactly those THEN-created reads
+    // while KEEPING the pre-branch reads, which fired before the split and so
+    // dominate the ELSE chain too - the else branch can reuse them.
+    restore_var_caches(ctx, &pre_branch_caches);
     if let Some(else_b) = &s.else_block {
         lower_block(ctx, else_b);
     }
     ctx.exec_branch_depth -= 1;
     let else_end = ctx.current_exec;
+    let else_touched = cache_touched_since(ctx, &pre_branch_caches);
 
     // Restore scope so post-if code sees the pre-branch state.
     // Variables declared inside branches are not visible after the if.
@@ -749,12 +761,18 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
         ctx.connect(e, union.port(WirePort::ExecB));
     }
     ctx.current_exec = Some(union.port(WirePort::ExecOut));
-    // Var_Gets created inside either branch only fire when that branch is taken, so
-    // they must not be reused after the join. A post-if read gets a fresh Var_Get on
-    // the (dominating) post-join chain - otherwise it reads a stale value whenever the
-    // branch that created the Var_Get wasn't taken (e.g. `gamblersTotal` first read in
-    // an `if phase == P_SNIPER` block and re-read in a later `if phase == P_GATHER`).
-    reset_var_get_caches(ctx);
+    // Post-join cache state: restore the pre-branch reads (a Var_Get created
+    // inside either branch only fires when that branch is taken, so it can't be
+    // reused after the join — restoring drops them), then invalidate every var
+    // EITHER branch wrote. A var neither branch touched keeps its pre-branch
+    // read; a written one re-reads fresh on the (dominating) post-join chain —
+    // otherwise it would read a stale value whenever the writing branch wasn't
+    // taken (a total first read in one `if phase == …` block and re-read in a
+    // later one).
+    restore_var_caches(ctx, &pre_branch_caches);
+    for id in then_touched.iter().chain(else_touched.iter()) {
+        invalidate_var_cache(ctx, id);
+    }
 }
 
 pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {

@@ -333,6 +333,12 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // wrapper repeated per use, a multi-consumer literal) so an identical
     // constant is emitted once and fans out, per chip.
     dedup_constant_gates(&mut module);
+    // Common-subexpression elimination: the same generalized merge, extended to
+    // pure `Expr_*` gates WITH wired inputs — a repeated `x + 1`, a duplicated
+    // inline-`mod` body — collapse to one gate that fans out. Runs after all the
+    // literal-inlining/fold passes so properties are final, and before
+    // partition so keepers stay in their consumers' chip.
+    cse_pure_gates(&mut module);
     // `@flat` inlines every chip body onto one grid. It stands in for the
     // anon-chip partition rather than following it — that pass moves nodes
     // INTO child modules, which is what flattening undoes (see
@@ -1051,34 +1057,136 @@ fn dedup_constant_gates(root: &mut Module) {
     if redirect.is_empty() {
         return;
     }
+    apply_gate_redirect(root, &redirect);
+}
 
-    fn apply(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) {
-        module.wires.retain_mut(|w| {
-            if let Some(&keeper) = redirect.get(&w.source.node_id) {
-                w.source.node_id = keeper;
+/// Rewrite the module tree after a set of gates has been merged: every wire
+/// sourced from a dropped dup now sources from its keeper, wires targeting a
+/// dropped dup (its own now-dead incoming feeds, or a Layout edge) are removed,
+/// collapsed source→target duplicates are deduped, and `scope_captures`
+/// referencing a dup become its keeper. Node ids are globally unique, so one
+/// `redirect` map applies across the whole tree. Shared by
+/// `dedup_constant_gates` (zero-incoming constants) and `cse_pure_gates`
+/// (expression gates with wired inputs) — for the latter a dropped dup's
+/// incoming feeds are genuinely dead (its keeper carries the identical feeds).
+fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) {
+    module.wires.retain_mut(|w| {
+        if let Some(&keeper) = redirect.get(&w.source.node_id) {
+            w.source.node_id = keeper;
+        }
+        !redirect.contains_key(&w.target.node_id)
+    });
+    // Redirection can collapse two wires onto the same source→target pair.
+    let mut seen: HashSet<(PortRef, PortRef)> = HashSet::default();
+    module.wires.retain(|w| seen.insert((w.source, w.target)));
+    // A dropped dup referenced as an external capture becomes its keeper.
+    if !module.scope_captures.is_empty() {
+        let mut seen_caps = HashSet::default();
+        module.scope_captures = module
+            .scope_captures
+            .iter()
+            .map(|id| *redirect.get(id).unwrap_or(id))
+            .filter(|id| seen_caps.insert(*id))
+            .collect();
+    }
+    for child in module.chips.values_mut() {
+        apply_gate_redirect(child, redirect);
+    }
+}
+
+/// Common-subexpression elimination for pure expression gates: within each chip,
+/// merge `Expr_*` gates that compute the same value — same gate class, same
+/// config properties, and the same set of incoming `(input port ← source
+/// node/port)` wires — so a repeated pure subexpression (`x + 1` used in three
+/// outputs) or a duplicated inline-`mod` body is emitted once and fans out to
+/// its consumers instead of once per use.
+///
+/// Runs to a fixpoint: merging two gates makes their consumers' incoming-source
+/// sets structurally equal, which exposes the next layer of duplicates. Keyed on
+/// `chip_id` (like `dedup_constant_gates`) so a keeper never lands in a
+/// different partition module than a consumer.
+///
+/// Excludes anything whose output isn't a pure function of its current inputs:
+/// non-`Expr_*` classes (the rerouter, exec/IO gates), the stateful
+/// change/edge detectors (output depends on eval history), and `_nofold` gates
+/// (a deliberate optimization barrier). Merging only ever redirects wire
+/// SOURCES onto a shared keeper — it never creates fan-in — so it's always
+/// legal for a pure gate.
+fn cse_pure_gates(root: &mut Module) {
+    fn eligible(n: &crate::ir::Node) -> bool {
+        n.kind == NodeKind::Gate
+            && n.gate_class
+                .starts_with("BrickComponentType_WireGraph_Expr_")
+            && !n.gate_class.contains("ChangeDetector")
+            && !n.gate_class.contains("EdgeDetector")
+            && !n.properties.contains_key(&*sym::NO_FOLD)
+    }
+
+    // A pure gate's behaviour is fully determined by (class, properties, the set
+    // of wires feeding its input ports). Format a stable, order-independent key.
+    fn cse_key(n: &crate::ir::Node, incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>) -> String {
+        let mut props: Vec<(&str, String)> = n
+            .properties
+            .iter()
+            .map(|(k, v)| (crate::intern::resolve(*k), format!("{v:?}")))
+            .collect();
+        props.sort_unstable();
+        let mut ins: Vec<String> = incoming
+            .map(|v| {
+                v.iter()
+                    .map(|(tp, sid, sp)| format!("{tp:?}<-{sid:?}.{sp:?}"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ins.sort_unstable();
+        format!("{}\u{1}{props:?}\u{1}{ins:?}", n.gate_class)
+    }
+
+    fn collect(module: &mut Module, redirect: &mut HashMap<NodeId, NodeId>) {
+        // Per-node incoming data wires (skip Layout edges — they're not inputs).
+        let mut incoming: HashMap<NodeId, Vec<(WirePort, NodeId, WirePort)>> = HashMap::default();
+        for w in &module.wires {
+            if w.target.port == WirePort::Layout {
+                continue;
             }
-            // A removed dup has no incoming data wire, so it can only appear as a
-            // target via a (not-yet-created) Layout edge — drop such a wire.
-            !redirect.contains_key(&w.target.node_id)
-        });
-        // Redirection can collapse two wires onto the same source→target pair.
-        let mut seen: HashSet<(PortRef, PortRef)> = HashSet::default();
-        module.wires.retain(|w| seen.insert((w.source, w.target)));
-        // A dropped dup referenced as an external capture becomes its keeper.
-        if !module.scope_captures.is_empty() {
-            let mut seen_caps = HashSet::default();
-            module.scope_captures = module
-                .scope_captures
-                .iter()
-                .map(|id| *redirect.get(id).unwrap_or(id))
-                .filter(|id| seen_caps.insert(*id))
-                .collect();
+            incoming
+                .entry(w.target.node_id)
+                .or_default()
+                .push((w.target.port, w.source.node_id, w.source.port));
+        }
+        let mut groups: HashMap<(Option<NodeId>, String), Vec<NodeId>> = HashMap::default();
+        for (id, n) in &module.nodes {
+            if eligible(n) {
+                groups
+                    .entry((n.chip_id, cse_key(n, incoming.get(id))))
+                    .or_default()
+                    .push(*id);
+            }
+        }
+        for mut group in groups.into_values() {
+            if group.len() < 2 {
+                continue;
+            }
+            group.sort_unstable(); // deterministic keeper (lowest id)
+            let keeper = group[0];
+            for dup in &group[1..] {
+                redirect.insert(*dup, keeper);
+                module.nodes.remove(dup);
+            }
         }
         for child in module.chips.values_mut() {
-            apply(child, redirect);
+            collect(child, redirect);
         }
     }
-    apply(root, &redirect);
+
+    loop {
+        let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
+        collect(root, &mut redirect);
+        if redirect.is_empty() {
+            break;
+        }
+        apply_gate_redirect(root, &redirect);
+    }
 }
 
 /// Remove pure, side-effect-free expression gates that are fully disconnected —
