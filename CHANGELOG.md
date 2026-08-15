@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 1.3.0
+
+- Compiler source reorganised
+
 ## 1.2.0
 
 - **`map[key]` subscript syntax** - `m[k]` and `m[k] = v` now work on a `Map<K, V>`, desugaring to the same get/set the `m.get(k)` / `m.set(k, v)` methods use (`m[k]` reads the value, auto-unwrapping the found flag; `m[k] = v` writes it). The read types as the value type `V` and, like array indexing, only works in an exec context. Previously this parsed and type-checked but silently did nothing (the read produced 0, the write was dropped).
