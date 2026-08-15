@@ -1437,6 +1437,14 @@ fn build_chip_module(
         }
     }
 
+    // Flush the chip body's own pending emits — a chip that emits a declared
+    // exec output (`-> (next: exec)` + `emit next`) or a body-local exec signal
+    // queues into `child_ctx.pending_emits`, which is otherwise discarded with
+    // the child ctx, silently dropping the emit and leaving the output dead (an
+    // awaiting caller never resumes). The root module flushes in `lower`; each
+    // chip body must flush its own, since its emits target its own outputs/hubs.
+    super::stmt::flush_pending_emits(&mut child_ctx);
+
     ctx.diagnostics.extend(child_ctx.diagnostics);
     let mut module = child_ctx.builder.module;
     module.scope_captures = compute_scope_captures(&module);

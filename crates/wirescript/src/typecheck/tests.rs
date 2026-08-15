@@ -60,6 +60,43 @@
     }
 
     #[test]
+    fn let_tuple_and_record_annotation_checks_element_types() {
+        // A `let` with a tuple/record annotation must validate its value like
+        // `var`/params/returns do. Previously the `let` path checked record
+        // field NAMES only and skipped tuple annotations entirely (a tuple
+        // literal parses as an index-keyed record, whose expected type is a
+        // `Type::Tuple` the name-check branch bailed on), so malformed elements
+        // slipped through with no diagnostic.
+        let ws003 = |src: &str| tc(src).diagnostics.iter().any(|d| d.code == "WS003");
+        // Tuple element type mismatch + arity.
+        assert!(ws003("let t: (int, int) = (\"s\", 5)"), "tuple element type");
+        assert!(ws003("let t: (int, int) = (1, 2, 3)"), "tuple arity");
+        // Malformed record inside a tuple (missing field / wrong field type).
+        assert!(
+            ws003("type Card = { baz: int }\nlet t: (Card, int) = ({}, 5)"),
+            "record-in-tuple missing field"
+        );
+        assert!(
+            ws003("type Card = { baz: int }\nlet t: (Card, int) = ({ baz: \"s\" }, 5)"),
+            "record-in-tuple wrong field type"
+        );
+        // A record field's VALUE type is now checked (was names-only), incl. nested.
+        assert!(
+            ws003("type Card = { baz: int }\nlet c: Card = { baz: \"s\" }"),
+            "record field value type"
+        );
+        assert!(
+            ws003("type C = { bar: { baz: int } }\nlet c: C = { bar: { baz: \"s\" } }"),
+            "nested record field type"
+        );
+        // Valid tuples/records stay clean; the nice missing-field message and the
+        // string coercion (`let s: string = 5`) are preserved.
+        assert_no_diags(&tc("let t: (int, int) = (1, 2)"));
+        assert_no_diags(&tc("type Card = { baz: int }\nlet c: Card = { baz: 1 }"));
+        assert_no_diags(&tc("let s: string = 5"));
+    }
+
+    #[test]
     fn map_method_missing_args_are_ws011() {
         // Map methods have fixed params (no variadics), so a MISSING arg must
         // be caught by arity (WS011) — the old ad-hoc validator only coerced

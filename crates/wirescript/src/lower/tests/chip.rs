@@ -1825,6 +1825,44 @@ on b { emit result = 2 }";
 }
 
 #[test]
+fn chip_emit_to_its_exec_output_is_wired() {
+    // A chip that emits its own declared exec output (`-> (next: exec)` + `emit
+    // next`) must wire the emit to that output. `build_chip_module` never flushed
+    // the child's pending emits, so `emit next` was silently dropped and the
+    // `next` output stayed dead — an awaiting caller could never resume.
+    let src = "\
+chip Emitter() -> (next: exec) {
+  emit next
+}
+in go: exec
+static var n: int = 0
+on go {
+  await Emitter()
+  n = 1
+}";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let chip = r
+        .module
+        .chips
+        .values()
+        .find(|c| crate::intern::resolve(c.name).contains("Emitter"))
+        .expect("Emitter chip instance");
+    // `next` (declared) is added before the auto `_exec_out`, so it's outputs[0].
+    assert_eq!(
+        chip.outputs.len(),
+        2,
+        "Emitter has a declared `next` plus the auto `_exec_out`, got {}",
+        chip.outputs.len()
+    );
+    let next_out = chip.outputs[0];
+    assert!(
+        chip.wires.iter().any(|w| w.target.node_id == next_out),
+        "`emit next` must feed the chip's `next` output — build_chip_module must flush pending emits"
+    );
+}
+
+#[test]
 fn single_emit_to_output_keeps_direct_wire() {
     // A single-site value-emit must keep the direct value→output wire and NOT
     // grow a backing PseudoVar (no extra gate, unchanged behavior).

@@ -4182,6 +4182,7 @@ fn check_let_type_annotation(
         if let Expr::RecordLit { fields, .. } = &l.value {
             let expected = resolve_type_expr(ctx, te);
             warn_any_annotation(ctx, &expected, type_expr_range(te));
+            let before = ctx.diagnostics.len();
             if let Type::Record(expected_fields) = &expected {
                 let type_name = crate::analysis::types::type_expr_str(te);
                 // Check each field/spread for extra fields
@@ -4240,6 +4241,18 @@ fn check_let_type_annotation(
                         }
                     }
                 }
+            }
+            // A record literal is also how a tuple literal parses (index-keyed
+            // fields `{"0": …, "1": …}`), so `expected` may be a `Type::Tuple`
+            // the checks above skip entirely; and for a record target those
+            // checks only cover field PRESENCE, not value types. If none fired,
+            // run the full structural coercion so a wrong element/field value
+            // type, a wrong tuple arity, or a record literal against a
+            // non-record target is caught (WS003, like every other annotated
+            // position). Guarded on the diag count so a missing/extra-field
+            // error isn't duplicated by a whole-type mismatch.
+            if ctx.diagnostics.len() == before {
+                infer::coerce_or_emit(ctx, inferred, &expected, &l.range);
             }
             return;
         }

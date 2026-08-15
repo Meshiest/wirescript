@@ -1458,6 +1458,165 @@ fn split_record_fields(s: &str) -> Vec<&str> {
     parts
 }
 
+/// A "fill record fields" code-action result: the missing field lines to insert
+/// (`text`) and the 0-based `line`/`col` to insert them at (the cursor).
+pub struct RecordFill {
+    pub line: usize,
+    pub col: usize,
+    pub text: String,
+}
+
+/// A type-checking default literal for a record field of type `ty` (a stringified
+/// type, e.g. `int`, `{baz: int}`, `int[]`). Nested records recurse; containers
+/// are empty; scalars get their zero/empty literal. Unknown types fall back to
+/// `0` (a placeholder the user replaces, like Rust's `todo!()`).
+fn default_for_type(ty: &str) -> String {
+    let ty = ty.trim().trim_start_matches('*').trim();
+    if let Some(inner) = ty.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let fields: Vec<String> = split_record_fields(inner)
+            .iter()
+            .filter_map(|f| {
+                let f = f.trim();
+                let c = f.find(':')?;
+                Some(format!("{}: {}", f[..c].trim(), default_for_type(f[c + 1..].trim())))
+            })
+            .collect();
+        return if fields.is_empty() {
+            "{}".to_string()
+        } else {
+            format!("{{ {} }}", fields.join(", "))
+        };
+    }
+    if ty.ends_with("[]") || ty.starts_with("Array<") {
+        return "[]".to_string();
+    }
+    if ty.starts_with("Map<") {
+        return "{}".to_string();
+    }
+    match ty {
+        "string" => "\"\"".to_string(),
+        "float" => "0.0".to_string(),
+        "bool" => "false".to_string(),
+        "vector" => "Vec(0.0, 0.0, 0.0)".to_string(),
+        _ => "0".to_string(),
+    }
+}
+
+/// Field names already present in the record literal opened on `brace_line`
+/// (a top-level `name:` per line until the matching close brace).
+fn present_field_names(lines: &[&str], brace_line: usize) -> Vec<String> {
+    let mut present = Vec::new();
+    let mut depth = 0i32;
+    for l in lines.iter().skip(brace_line) {
+        let trimmed = l.trim();
+        // A top-level `name:` field entry (depth 1, inside the outer braces).
+        if depth == 1
+            && let Some(colon) = trimmed.find(':')
+            && trimmed[..colon]
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_')
+            && !trimmed[..colon].is_empty()
+        {
+            present.push(trimmed[..colon].trim().to_string());
+        }
+        for c in l.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return present;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    present
+}
+
+/// Compute a "fill record fields" edit for a cursor inside a record literal whose
+/// expected type is a record. Scans upward for `let name: Type = {` (an inline
+/// `{ … }` record type or a named alias resolved via `symbols`), then returns the
+/// missing fields (present ones are skipped, so partial literals complete too),
+/// each with a type-appropriate default. `None` if the cursor isn't inside such a
+/// literal or every field is already present.
+pub fn fill_record_at(
+    source: &str,
+    symbols: &[SymbolDef],
+    line: usize,
+    col: usize,
+) -> Option<RecordFill> {
+    let lines: Vec<&str> = source.lines().collect();
+    // Find the enclosing `let name: Type = {` at or above the cursor.
+    let mut record_ty: Option<String> = None;
+    let mut brace_line = 0usize;
+    for scan in (0..=line.min(lines.len().saturating_sub(1))).rev() {
+        let trimmed = lines[scan].trim();
+        if let Some(rest) = trimmed.strip_prefix("let ")
+            && let Some(colon) = rest.find(':')
+        {
+            let type_part = rest[colon + 1..].split('=').next()?.trim();
+            let resolved = if type_part.starts_with('{') {
+                Some(type_part.to_string())
+            } else {
+                let tn = type_part.split_whitespace().next().unwrap_or("");
+                symbols
+                    .iter()
+                    .find(|s| s.kind == "type" && s.name == tn)
+                    .and_then(|s| s.ty.clone())
+            };
+            if let Some(rs) = resolved
+                && rs.trim_start().starts_with('{')
+            {
+                record_ty = Some(rs);
+                brace_line = scan;
+                break;
+            }
+        }
+        // Stop once a line can't be part of the record literal interior.
+        let interior = trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("...")
+            || trimmed.contains(':')
+            || trimmed.contains(',')
+            || trimmed.ends_with('{')
+            || trimmed.ends_with('}');
+        if !interior {
+            return None;
+        }
+    }
+    let record_ty = record_ty?;
+    let inner = record_ty.trim().strip_prefix('{')?.strip_suffix('}')?;
+    let expected: Vec<(String, String)> = split_record_fields(inner)
+        .iter()
+        .filter_map(|f| {
+            let f = f.trim();
+            let c = f.find(':')?;
+            Some((f[..c].trim().to_string(), f[c + 1..].trim().to_string()))
+        })
+        .collect();
+    if expected.is_empty() {
+        return None;
+    }
+    let present = present_field_names(&lines, brace_line);
+    let missing: Vec<&(String, String)> = expected
+        .iter()
+        .filter(|(n, _)| !present.contains(n))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let base_indent = lines[brace_line].len() - lines[brace_line].trim_start().len();
+    let indent = " ".repeat(base_indent + 2);
+    let text = missing
+        .iter()
+        .map(|(n, t)| format!("{indent}{n}: {},", default_for_type(t)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(RecordFill { line, col, text })
+}
+
 pub(super) fn resolve_record_param_field_type(script: &crate::ast::Script, param_type: &crate::ast::TypeExpr, field: &str) -> Option<String> {
     let record_fields = match param_type {
         crate::ast::TypeExpr::Record { fields, .. } => fields,

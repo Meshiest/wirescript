@@ -10,7 +10,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    collection_kind, field_name_at, find_asset_refs, find_enclosing_call, find_name_range,
+    collection_kind, field_name_at, fill_record_at, find_asset_refs, find_enclosing_call, find_name_range,
     format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names,
     prepare_rename_at, receiver_methods, record_field_names, references_at, references_to_export,
     rename_edit_text, resolve_symbol, semantic_tokens, swizzle_fields, type_str,
@@ -676,6 +676,7 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
@@ -844,6 +845,47 @@ impl LanguageServer for Backend {
             Err(_) => build_completions("", &[], line, col, &prefab_paths),
         };
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        // "Fill record fields": inside a record literal whose expected type is a
+        // record, offer to insert the missing fields with type-appropriate
+        // defaults (recursing into nested records). Reuses the server's resolved
+        // symbols, so nested / aliased / imported record types work.
+        let uri = &params.text_document.uri;
+        let pos = params.range.start;
+        let (line, col) = (pos.line as usize, pos.character as usize);
+        let fill = match self.docs.lock() {
+            Ok(docs) => docs
+                .get(uri)
+                .and_then(|doc| fill_record_at(&doc.source, &doc.symbols, line, col)),
+            Err(_) => None,
+        };
+        let Some(fill) = fill else {
+            return Ok(None);
+        };
+        let at = Position {
+            line: fill.line as u32,
+            character: fill.col as u32,
+        };
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        changes.insert(
+            uri.clone(),
+            vec![TextEdit {
+                range: Range { start: at, end: at },
+                new_text: fill.text,
+            }],
+        );
+        let action = CodeAction {
+            title: "Fill record fields".into(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {

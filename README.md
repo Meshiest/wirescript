@@ -66,7 +66,7 @@ out doubled = count.Value * 2
   broadcast
 - `$asset` syntax and near-full coverage of Brickadia's logic gates
 - LSP + VS Code extension: diagnostics, hover, completions, go-to-definition,
-  formatting, rename, organize imports, and inlay hints
+  formatting, rename, organize imports, fill-record-fields, and inlay hints
 
 The language reference lives in [docs/wirescript/](docs/wirescript/). The
 compiler is `crates/wirescript`, the LSP server is `crates/lsp`, the browser
@@ -79,6 +79,12 @@ for diagnostics, hover, completions, go-to-definition, rename, organize
 imports, and inlay hints, plus a Prettier-based formatter and a
 **Compile and Copy Path** command (`Ctrl+Shift+B`) that compiles the current
 file to a `.brz` and copies its path for Brickadia's load dialog.
+
+A **Fill record fields** code action (the lightbulb / `Ctrl+.`) is offered
+when the cursor is inside a record literal whose expected type is a record —
+`let x: Card = { … }`. It inserts every *missing* field (so partial literals
+complete too) with a type-appropriate default, recursing into nested records:
+`{ foo: "", bar: { baz: 0 } }`.
 
 Building it requires [Node.js](https://nodejs.org/):
 

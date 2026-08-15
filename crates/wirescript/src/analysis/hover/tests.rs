@@ -22,6 +22,30 @@
     }
 
     #[test]
+    fn fill_record_generates_missing_fields_recursively() {
+        let src = "type Card = { foo: string, bar: { baz: int }, baq: { fred: string } }\nlet c: Card = {\n\n}";
+        let resolved = resolve(src, "test", &FsLoader);
+        let tc = typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
+        let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
+        // Cursor on the empty line (0-based line 2) inside the `{ }`.
+        let fill = fill_record_at(src, &symbols, 2, 0).expect("fill available inside record literal");
+        assert!(fill.text.contains("foo: \"\""), "foo default: {}", fill.text);
+        assert!(fill.text.contains("bar: { baz: 0 }"), "nested record filled: {}", fill.text);
+        assert!(fill.text.contains("baq: { fred: \"\" }"), "nested record filled: {}", fill.text);
+    }
+
+    #[test]
+    fn fill_record_skips_already_present_fields() {
+        let src = "type Card = { foo: string, bar: int }\nlet c: Card = {\n  foo: \"x\",\n\n}";
+        let resolved = resolve(src, "test", &FsLoader);
+        let tc = typecheck(&resolved.ast, "test", &crate::typecheck::CeSlotMap::default());
+        let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
+        let fill = fill_record_at(src, &symbols, 3, 0).expect("fill for a partial literal");
+        assert!(!fill.text.contains("foo:"), "present field foo skipped: {}", fill.text);
+        assert!(fill.text.contains("bar: 0"), "missing field bar filled: {}", fill.text);
+    }
+
+    #[test]
     fn builtin_hover_shows_default_values_table() {
         // A gate hover surfaces its registered defaults (from brdb
         // STRUCT_DEFAULTS) in a table — e.g. DisplayText's FontSize default.
