@@ -2,6 +2,7 @@
 
 ## 1.3.0
 
+- An array/map method on a record field (`g.ready.sum()`) now types its result instead of `any`, so arithmetic on it works. Args are checked through the chain too.
 - Compiler source reorganised
 
 ## 1.2.0

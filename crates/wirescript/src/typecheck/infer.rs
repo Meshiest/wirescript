@@ -113,6 +113,41 @@ fn collapse_container_ref(t: Type) -> Type {
     }
 }
 
+/// The container a method receiver denotes: a bare `ids`, or a record field
+/// chain reaching one (`g.ready`, `a.b.counts`).
+///
+/// Resolved by walking scope and record types rather than inferring `obj`, so a
+/// receiver that turns out to be neither an array nor a map falls through to the
+/// remaining call arms without having emitted anything.
+///
+/// The reach here must match lowering's `resolve_field_chain` (see the
+/// record-resolved container methods in `lower/call/dispatch.rs`): while this
+/// only accepted a bare identifier, `g.ready.sum()` lowered to a real
+/// `ArrayVar_Sum` gate but typed as `any`, so arithmetic on the result had no
+/// overload.
+fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
+    match e {
+        Expr::Ident { name, .. } => {
+            let sym = ctx.scope.lookup(name)?;
+            let t = unwrap_ref(&sym.ty);
+            // An `array` decl whose symbol carries no element type still reads
+            // as an array here; the method's element type falls back to `any`.
+            if sym.kind == SymbolKind::Array && !matches!(t, Type::Array(_)) {
+                return Some(Type::Array(Box::new(Type::Any)));
+            }
+            Some(t)
+        }
+        Expr::FieldAccess { obj, field, .. } => match container_receiver_type(ctx, obj)? {
+            Type::Record(fields) => fields
+                .iter()
+                .find(|(k, _)| k == field)
+                .map(|(_, t)| unwrap_ref(t)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     match e {
@@ -932,22 +967,18 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 }
             }
             // Array method call: arr.push(val), arr.length(), arr.pop(), etc.
-            // Any array-typed value works (an `array` decl or a `var ids: T[]`),
-            // gated on the field actually being an array method.
+            // Any array-typed receiver works — a bare `var ids: T[]`, an `array`
+            // decl, or a record field holding one (`g.ready.sum()`) — gated on
+            // the field actually being an array method.
             if let Expr::FieldAccess {
                 obj,
                 field,
                 range: fa_range,
             } = callee.as_ref()
-                && let Expr::Ident { name, .. } = obj.as_ref()
-                && let Some(sym) = ctx.scope.lookup(name)
-                && (sym.kind == SymbolKind::Array || matches!(unwrap_ref(&sym.ty), Type::Array(_)))
                 && let Some(method) = crate::catalog::arrays::array_method(field)
+                && let Some(Type::Array(inner)) = container_receiver_type(ctx, obj)
             {
-                let elem = match unwrap_ref(&sym.ty) {
-                    Type::Array(inner) => inner.as_ref().clone(),
-                    _ => Type::Any,
-                };
+                let elem = inner.as_ref().clone();
                 // sortMultiple is a true variadic (empty params → opt out of
                 // arity, else "expects at most 0, got N" would wrongly fire).
                 // Every other method arity-checks normally.
@@ -970,21 +1001,17 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 return crate::catalog::arrays::array_return_type(field, &elem)
                     .unwrap_or(Type::Any);
             }
-            // Map method call: m.get(k), m.set(k, v), m.has(k), etc.
+            // Map method call: m.get(k), m.set(k, v), m.has(k), etc. Same
+            // receiver reach as the array methods above.
             if let Expr::FieldAccess {
                 obj,
                 field,
                 range: fa_range,
             } = callee.as_ref()
-                && let Expr::Ident { name, .. } = obj.as_ref()
-                && let Some(sym) = ctx.scope.lookup(name)
-                && matches!(unwrap_ref(&sym.ty), Type::Map(_, _))
                 && let Some(method) = crate::catalog::maps::map_method(field)
+                && let Some(Type::Map(k, v)) = container_receiver_type(ctx, obj)
             {
-                let (key, value) = match unwrap_ref(&sym.ty) {
-                    Type::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
-                    _ => (Type::Any, Type::Any),
-                };
+                let (key, value) = (k.as_ref().clone(), v.as_ref().clone());
                 check_args(
                     ctx,
                     &method.signature(&key, &value),

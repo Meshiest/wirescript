@@ -144,6 +144,33 @@
     }
 
     #[test]
+    fn container_method_on_a_record_field_types_its_result() {
+        // The array/map method arms only accepted a BARE IDENTIFIER receiver,
+        // while lowering resolves a whole field chain (`resolve_field_chain`)
+        // and emits a real ArrayVar gate. So `g.ready.sum()` lowered correctly
+        // but typed as `any`, and arithmetic on the result reported the
+        // baffling "no overload for '*' on Any, Int".
+        assert_no_diags(&tc(
+            "type G = { ready: int[] }\nmod f(g: G) { let n = g.ready.sum() * 4 }",
+        ));
+        // Maps reach through the same way.
+        assert_no_diags(&tc(
+            "type G = { counts: Map<int, int> }\nmod f(g: G) { let n = g.counts.get(1) + 1 }",
+        ));
+        // And so does a nested record.
+        assert_no_diags(&tc(
+            "type G = { ready: int[] }\ntype O = { g: G }\nmod f(o: O) { let n = o.g.ready.sum() * 2 }",
+        ));
+        // The element type survives the chain, so args are still checked.
+        let r = tc("type G = { ready: int[] }\nmod f(g: G) { g.ready.push(\"nope\") }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "element type must be checked through a record field: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
     fn array_method_args_are_type_checked() {
         // Array-method call arguments were never routed through `check_args`,
         // so a mismatched arg (e.g. a string pushed onto an `int[]`) type
