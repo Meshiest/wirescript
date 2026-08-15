@@ -4,16 +4,28 @@
 
 - **`map[key]` subscript syntax** - `m[k]` and `m[k] = v` now work on a `Map<K, V>`, desugaring to the same get/set the `m.get(k)` / `m.set(k, v)` methods use (`m[k]` reads the value, auto-unwrapping the found flag; `m[k] = v` writes it). The read types as the value type `V` and, like array indexing, only works in an exec context. Previously this parsed and type-checked but silently did nothing (the read produced 0, the write was dropped).
 - **Fill record fields (editor code action)** - inside a record literal whose expected type is a record (`let x: Card = { … }`), the lightbulb / `Ctrl+.` offers **Fill record fields**, inserting every *missing* field with a type-appropriate default and recursing into nested records — e.g. `{ foo: "", bar: { baz: 0 } }`. Present fields are kept, so a partial literal completes; nested, aliased, and imported record types are resolved server-side.
-- **Output values are checked against their declared type** - a `return`, `emit out = …`, or statement-level `out name = …` whose value doesn't match the enclosing `mod`/`chip`/module's declared output type now reports `WS003` instead of silently baking a mismatched value into the output wire. Legal coercions (bool→int, int→float, primitive→string, ref exposure) still pass.
-- **Conflicting generic-builtin arguments are an error** - `Select(c, 5, "hello")` (and `Swap`) now report `WS033` when their shared-type arguments disagree, instead of silently widening to `any`. Arguments that legitimately share a type (`Select(c, 1, 2)`, int/float promotion, identical types) still compile.
-- **Fixed: a `let` with a tuple or record annotation skipped checking its value** - `let t: (A, B) = …` wasn't type-checked at all (wrong element types, wrong arity, and a malformed record inside the tuple all passed silently), and `let x: R = { … }` on a record type checked only that the field *names* matched, never their values. Both now validate the value against the annotation the way `var`, parameters, and returns already do (`WS003`); the precise "missing field" message and the `let s: string = 5` string coercion are unchanged.
-- **Fixed: a variable read after `await` saw a stale value** - a `var` read in the continuation after an `await` now re-reads the variable fresh, so a value changed during the wait is visible (previously it reused the pre-suspension read).
-- **Fixed: a chip reused the wrong compiled body across call sites** - a chip invoked in two different contexts (a pure expression then an exec handler, a captured variable argument then a passed input, or two same-named chips imported from different modules) shared one body cached by name alone, so the second call inherited the first's pin shape and mis-wired its arguments or exec chain (silently, or as a dropped or fanned-in wire). The compiled-body cache now keys on the declaration plus its call-site context, so each context compiles its own body.
-- **Fixed: a chip with two `return`s fanned in on its output** - a non-inlined chip with more than one `return <value>` wired every return straight into its single output pin (two wires into one pin fails to load in-game). The returns now flow through a shared holder variable read once after the branches merge — the same shape inlined `mod`s already used — so the output takes one wire.
-- **Fixed: an output emitted from more than one site fanned in** - `emit out = <value>` from two or more handlers wired each value straight into the output (again two wires into one pin, a load failure). Such an output now gets a backing variable that each site writes on its own exec chain, feeding the output once (last write wins); a single-site emit still wires its value directly.
-- **Fixed: a chip emitting its own exec output was silently dropped** - a `chip … -> (sig: exec)` whose body does `emit sig` (or emits a body-local `let s: exec` signal) now wires the emit to that output. The chip body's pending emits were never flushed, so the emit vanished and the output stayed dead — an `await`ing caller never resumed and nothing downstream fired, with no diagnostic.
-- **A wire that can't be drawn is now a compile error, not a silent drop** - if emit can't resolve a wire's endpoint to a brick (the fingerprint of a lowering bug), it fails the compile instead of logging to stderr and shipping a format-valid save with the wire missing.
-- **Fixed: the formatter split a kebab-case atom in two** - a long line holding a `:kebab-case` atom literal (e.g. `:foo-bar`) is no longer broken at the atom's hyphen, which had wrapped it into invalid code (`:foo` and `-bar` on separate lines). The formatter now treats an atom literal as a single token when choosing where to wrap.
+
+### Fixes
+
+- Output values (`return`, `emit out = …`, statement-level `out name = …`) are now checked against the declared output type (`WS003`) instead of baking a mismatch into the wire.
+- Conflicting generic-builtin arguments (`Select(c, 5, "hello")`, `Swap`) now error (`WS033`) instead of widening to `any`.
+- `let t: (A, B) = …` and `let x: R = { … }` now check the value against the annotation (`WS003`), not just field names.
+- A multi-output result used as a scalar unwraps only through its first field — a later-field match wired the wrong port (now `WS003`).
+- A tuple literal no longer collapses to a scalar (`let x: int = (1, "abc")` is `WS003`).
+- A heterogeneous array literal in a handler (`xs = [1, "hello", 2]`) reports `WS003` on the odd element.
+- An `any[]` / `Map<any, …>` parameter now accepts a concrete array/map argument.
+- `==` / `!=` on two `vector`/`rotator`/`quat`/`color` values is now accepted (ordering stays scalar-only).
+- Assigning to a scalar `let` reports `WS007` instead of silently emitting no gate.
+- An unknown named argument on a `mod`/`chip` call reports `WS041` instead of being dropped.
+- A typo'd event config/input name (`on Clock(intreval = …)`) reports `WS041` instead of no-opping.
+- An out-of-range integer literal reports a parse error instead of compiling to `0`.
+- A captured event inside a handler (`let x = on Clock(1.0) { … }`) reports one clear "top level only" error instead of misleading tail-parse errors.
+- A `var` read after `await` re-reads fresh, so a value changed during the wait is visible.
+- A chip called in two contexts (pure-then-exec, captured-vs-passed arg, or same name in two modules) compiles a separate body per context instead of reusing the first's mis-wired one.
+- A chip with multiple `return`s, and an output emitted from multiple sites, each route through one holder variable instead of fanning two wires into one pin (a load failure).
+- A `chip … -> (sig: exec)` that does `emit sig` now wires the emit to the output (was silently dropped).
+- A wire whose endpoint can't be resolved is now a compile error, not a silently dropped wire in a shipped save.
+- The formatter no longer splits a `:kebab-case` atom literal at its hyphen.
 
 ## 1.1.1
 

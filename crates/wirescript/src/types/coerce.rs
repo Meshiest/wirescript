@@ -270,18 +270,46 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         }
     }
 
+    // Container congruence for `any`-parameterized containers: an `any[]` /
+    // `Map<any, …>` parameter accepts any concrete array/map of the matching
+    // shape, because `any`/`Opaque` inside a container is a wildcard — the same
+    // universality it has at top level (see the early return above). This is the
+    // ONLY element coercion a container allows: a concrete `int[]` still may NOT
+    // flow into a concrete `float[]` (their backing wire variants differ, so it
+    // would miscompile at load), and the wildcard must be on the TARGET side
+    // (a concrete arg into an `any[]` sink) — the reverse narrowing stays a
+    // Mismatch. Recurse so `any[][]` etc. also match.
+    if let (Array(_), Array(te)) = (from, to)
+        && matches!(**te, Any | Opaque)
+    {
+        return CoerceRule::Same;
+    }
+    if let (Map(fk, fv), Map(tk, tv)) = (from, to) {
+        let wild = |t: &Type| matches!(t, Any | Opaque);
+        let k_ok = wild(tk) || type_eq(fk, tk);
+        let v_ok = wild(tv) || type_eq(fv, tv);
+        if (wild(tk) || wild(tv)) && k_ok && v_ok {
+            return CoerceRule::Same;
+        }
+    }
+
     // A record auto-unwraps to a member when used where a non-record value is
-    // expected: it coerces to `to` if any field does. Lets a multi-output gate
-    // result (e.g. `find`'s `{ Index, Found, Value }`) be used directly as the
-    // field that matches the context (here, the `int` Index). First match wins.
+    // expected. Only the FIRST field may drive the unwrap, because lowering
+    // always wires the multi-output gate's `outputs[0]` port into the scalar
+    // sink (`lower/call.rs`), and the record's field order mirrors that port
+    // order. Letting a LATER field satisfy the coercion here accepts a program
+    // the wire layer then miscompiles — e.g. `let r: rotator = e.GetVelocity()`
+    // ({Vector, Rotation}) coerces via `.Rotation`, but `.Vector` gets wired
+    // into `SetRotation`. A tuple literal (an index-keyed record) never
+    // scalar-unwraps: `(1, "x")` is not an `int`, it has no primary member.
     if let Record(fields) = from
         && !matches!(to, Record(_))
+        && as_tuple_elems(from).is_none()
+        && let Some((_, ft)) = fields.first()
     {
-        for (_, ft) in fields {
-            let rule = coerce(ft, to);
-            if rule != CoerceRule::Mismatch {
-                return rule;
-            }
+        let rule = coerce(ft, to);
+        if rule != CoerceRule::Mismatch {
+            return rule;
         }
     }
 

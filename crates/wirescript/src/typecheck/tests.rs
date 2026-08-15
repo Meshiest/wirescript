@@ -2435,3 +2435,120 @@
             r.diagnostics
         );
     }
+
+    // P0-9: a typo'd event config/input arg matches no slot and silently no-ops
+    // at lowering — flag it WS041 (`on Clock(intreval = 2.0)`).
+    #[test]
+    fn unknown_event_config_arg_is_ws041() {
+        let r = tc("on Clock(intreval = 2.0) { BroadcastChatMessage(\"t\") }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS041"),
+            "an unknown event config arg must be WS041, got {:?}",
+            r.diagnostics
+        );
+        // The real config name still validates without WS041.
+        let ok = tc("on Clock(enabled = true) { BroadcastChatMessage(\"t\") }");
+        assert!(
+            !ok.diagnostics.iter().any(|d| d.code == "WS041"),
+            "a real config name must not be flagged unknown, got {:?}",
+            ok.diagnostics
+        );
+    }
+
+    // P0-13: `let r: rotator = c.GetVelocity()` unwraps a `{Vector, Rotation}`
+    // record — lowering wires outputs[0] (Vector) into a rotator sink, so it must
+    // be rejected, not silently miscompiled.
+    #[test]
+    fn record_unwrap_to_wrong_scalar_is_rejected() {
+        let r = tc(
+            "on CharacterSpawned() -> (c) {\n  let rot: rotator = c.GetVelocity()\n  c.SetRotation(rot)\n}",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error),
+            "a record unwrapping to a non-first field must error, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // P0-14: assigning to a scalar `let` binding type-checked clean then emitted
+    // no gate (the write vanished) — flag it WS007.
+    #[test]
+    fn assign_to_scalar_let_is_ws007() {
+        let r = tc("in start: exec\nvar x: int = 3\nlet y = x + 1\non start { y = 5 }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "assigning a scalar `let` must be WS007, got {:?}",
+            r.diagnostics
+        );
+        // An array `let` (reference-backed) stays writable through its methods.
+        let ok = tc("in start: exec\nvar xs: int[] = []\nlet ys = xs\non start { ys.push(1) }");
+        assert!(
+            !ok.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an array `let` must stay usable, got {:?}",
+            ok.diagnostics
+        );
+    }
+
+    // P0-16a: a tuple literal must never scalar-unwrap (`let x: int = (1, "abc")`).
+    #[test]
+    fn tuple_literal_as_scalar_is_ws003() {
+        let r = tc("let x: int = (1, \"abc\")\nout o = x");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a tuple used as a scalar must be WS003, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // P0-16b: a heterogeneous array literal in an exec-context assignment was
+    // typed from element 0 and pushed the odd element with no check.
+    #[test]
+    fn heterogeneous_array_literal_is_ws003() {
+        let r = tc("in start: exec\nvar xs: int[] = []\non start { xs = [1, \"hello\", 2] }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a heterogeneous array literal must be WS003, got {:?}",
+            r.diagnostics
+        );
+        // A homogeneous (numeric-coercible) literal still passes.
+        let ok = tc("in start: exec\nvar xs: int[] = []\non start { xs = [1, 2, 3] }");
+        assert!(
+            !ok.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "a homogeneous array literal must pass, got {:?}",
+            ok.diagnostics
+        );
+    }
+
+    // P0-17a: `==`/`!=` on the certified composite value variants
+    // (vector/rotator/quat/color) must be accepted; ordering stays scalar-only.
+    #[test]
+    fn composite_equality_is_accepted_ordering_is_not() {
+        assert_no_diags(&tc(
+            "let a = Vec(1.0, 2.0, 3.0)\nlet b = Vec(1.0, 2.0, 3.0)\nout eq = a == b",
+        ));
+        assert_no_diags(&tc(
+            "let a = Color(1.0, 0.0, 0.0, 1.0)\nlet b = Color(0.0, 1.0, 0.0, 1.0)\nout ne = a != b",
+        ));
+        // Ordering on vectors has no certified gate — still WS004.
+        let lt = tc("let a = Vec(1.0, 2.0, 3.0)\nlet b = Vec(1.0, 2.0, 3.0)\nout o = a < b");
+        assert!(
+            lt.diagnostics.iter().any(|d| d.code == "WS004"),
+            "vector ordering must stay rejected, got {:?}",
+            lt.diagnostics
+        );
+    }
+
+    // P0-17b: an `any[]` parameter must accept a concrete array argument.
+    #[test]
+    fn any_array_param_accepts_concrete_array() {
+        let r = tc(
+            "in start: exec\nmod firstlen(xs: any[]) { BroadcastChatMessage(\"x\") }\nvar ns: int[] = []\non start { firstlen(ns) }",
+        );
+        assert!(
+            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an any[] param must accept a concrete int[] arg, got {:?}",
+            r.diagnostics
+        );
+    }

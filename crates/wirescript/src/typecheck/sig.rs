@@ -93,6 +93,12 @@ pub struct CallSignature {
 /// before reaching here, so they pass `false` to avoid double-reporting a
 /// mismatched call under two different codes; every other caller (builtins,
 /// receivers) passes `true` and keeps WS011 exactly as before.
+///
+/// `check_named` gates the WS041 unknown-named-arg check independently: user
+/// mod/chip calls DO know their full param list, so they pass `true` (catching
+/// `g(1, bogus = 5)`) even though `check_arity` is `false`. Only true variadics
+/// whose fixed `Param` list can't enumerate their legal names (e.g.
+/// `arr.sortMultiple(other, descending = true)`) pass `false` for both.
 #[allow(clippy::too_many_arguments)]
 pub fn check_args(
     ctx: &mut TypeCheckCtx,
@@ -100,6 +106,7 @@ pub fn check_args(
     args: &[CallArg],
     pos_base: usize,
     check_arity: bool,
+    check_named: bool,
     range: &SourceRange,
 ) {
     let positional: Vec<&Expr> = args
@@ -181,7 +188,7 @@ pub fn check_args(
             && let Some(cfg) = crate::catalog::scalar_config_field(gate_class, name)
         {
             validate_data_driven_config(ctx, gate_class, cfg, value);
-        } else if check_arity && name != "exec" {
+        } else if check_named && name != "exec" {
             ctx.emit(
                 "WS041",
                 format!("'{}' has no parameter '{}'", sig.name, name),

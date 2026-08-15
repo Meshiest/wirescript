@@ -409,6 +409,15 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 // the element type and this would fall through to Any. Lowering
                 // already maps these names to the gate's bOutOfBounds port.
                 (_, "OutOfBounds" | "bOutOfBounds") => Type::Bool,
+                // NOTE (P0-16c, deferred): an unknown field on a scalar (e.g. a
+                // typo `c.whatever` on an `int`) silently types `Any` and
+                // lowering reads the whole base value. Flagging it here would
+                // also break the single-output projection compat (`let f =
+                // Foo(); f.result`, where `f` is typed as the bare output but
+                // `.result` rides this same lenient passthrough) — the two are
+                // indistinguishable without tracking each value's call origin.
+                // Catching the typo needs origin-aware field validation, not a
+                // blanket scalar reject.
                 _ => Type::Any,
             }
         }
@@ -602,6 +611,28 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 };
                 if i == 0 {
                     elem = et;
+                } else if !matches!(elem, Type::Any)
+                    && coerce(&et, &elem) == CoerceRule::Mismatch
+                {
+                    // A literal's elements must be homogeneous — every element
+                    // has to coerce into the first element's type, because they
+                    // all share one backing array-variant gate. Without this a
+                    // `[1, "hello", 2]` typed the array `int[]` from element 0
+                    // and pushed the string constant into the int variant with
+                    // no diagnostic. (Top-level `var` initializers are checked
+                    // against the DECLARED element type in
+                    // `check_top_level_array_init`; this covers exec-context
+                    // assignments, which reach `infer` + a whole-array coerce
+                    // that only inspects element 0.)
+                    ctx.emit(
+                        "WS003",
+                        format!(
+                            "array element: expected {}, got {}",
+                            crate::analysis::types::type_str(&elem),
+                            crate::analysis::types::type_str(&et),
+                        ),
+                        el.expr().range().clone(),
+                    );
                 }
             }
             Type::Array(Box::new(elem))
@@ -744,7 +775,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                             return t;
                         }
                     }
-                    check_args(ctx, &sig_of_callspec(c), args, 0, true, range);
+                    check_args(ctx, &sig_of_callspec(c), args, 0, true, true, range);
                     if !c.outputs.is_empty() {
                         return output_record_type(ctx, c, args, range);
                     }
@@ -843,7 +874,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                                     .collect(),
                                 config_gate: None,
                             };
-                            check_args(ctx, &sig, args, 0, true, fa_range);
+                            check_args(ctx, &sig, args, 0, true, true, fa_range);
                         }
                         match ret {
                             Some(ret) => return resolve_type_expr(ctx, &ret),
@@ -887,6 +918,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     args,
                     0,
                     check_arity,
+                    // sortMultiple's variadic list can't enumerate its named
+                    // args either, so its named check follows arity.
+                    check_arity,
                     fa_range,
                 );
                 // Return type is derived from the method's gate
@@ -917,6 +951,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     args,
                     0,
                     /*check_arity=*/ true,
+                    /*check_named=*/ true,
                     fa_range,
                 );
                 return crate::catalog::maps::map_return_type(field, &key, &value)
@@ -947,7 +982,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     v.extend(args.iter().cloned());
                     v
                 };
-                check_args(ctx, &sig_of_callspec(c), &recv_args, 0, true, fa_range);
+                check_args(ctx, &sig_of_callspec(c), &recv_args, 0, true, true, fa_range);
                 if !c.outputs.is_empty() {
                     return output_record_type(ctx, c, &recv_args, fa_range);
                 }

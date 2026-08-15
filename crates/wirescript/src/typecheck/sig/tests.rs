@@ -70,7 +70,7 @@ fn check_args_flags_arity_and_mismatch() {
             ("z", Type::Int, false),
         ],
     );
-    check_args(&mut ctx, &sig3, &args, 0, true, &range);
+    check_args(&mut ctx, &sig3, &args, 0, true, true, &range);
     assert!(
         ctx.diagnostics.iter().any(|d| d.code == "WS011"),
         "expected WS011 for too-few args, got {:?}",
@@ -83,7 +83,7 @@ fn check_args_flags_arity_and_mismatch() {
         "f",
         &[("x", Type::Int, false), ("y", Type::Vector, false)],
     );
-    check_args(&mut ctx, &sig2, &args, 0, true, &range);
+    check_args(&mut ctx, &sig2, &args, 0, true, true, &range);
     assert!(
         ctx.diagnostics
             .iter()
@@ -100,7 +100,7 @@ fn check_args_too_many_positional_is_ws011() {
     let (args, range) = two_int_args(&mut ctx);
 
     let sig1 = wire_sig("f", &[("x", Type::Int, false)]);
-    check_args(&mut ctx, &sig1, &args, 0, true, &range);
+    check_args(&mut ctx, &sig1, &args, 0, true, true, &range);
     assert!(
         ctx.diagnostics.iter().any(|d| d.code == "WS011"),
         "expected WS011 for too-many args, got {:?}",
@@ -115,7 +115,7 @@ fn check_args_matching_types_is_clean() {
     let (args, range) = two_int_args(&mut ctx);
 
     let sig2 = wire_sig("f", &[("x", Type::Int, false), ("y", Type::Int, false)]);
-    check_args(&mut ctx, &sig2, &args, 0, true, &range);
+    check_args(&mut ctx, &sig2, &args, 0, true, true, &range);
     assert!(
         ctx.diagnostics.is_empty(),
         "expected no diagnostics, got {:?}",
@@ -135,7 +135,7 @@ fn check_args_optional_param_omitted_is_ok() {
         "f",
         &[("x", Type::Int, false), ("y", Type::Int, true)],
     );
-    check_args(&mut ctx, &sig, &args, 0, true, &range);
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
     assert!(
         ctx.diagnostics.is_empty(),
         "omitting a trailing optional param should not error, got {:?}",
@@ -174,7 +174,7 @@ fn config_scalar_named_arg_nonconstant_is_ws028() {
         name: "bodyPartsOnly".into(),
         value: ident("live"),
     }];
-    check_args(&mut ctx, &sig, &args, 0, true, &range);
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
     let diag = ctx.diagnostics.iter().find(|d| d.code == "WS028");
     assert!(
         diag.is_some(),
@@ -211,7 +211,7 @@ fn config_enum_arm_validates_bare_member() {
     let ce_slots = crate::typecheck::CeSlotMap::default();
     let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
     let good = vec![CallArg::Positional(ident("Y_Positive"))];
-    check_args(&mut ctx, &sig, &good, 0, true, &range);
+    check_args(&mut ctx, &sig, &good, 0, true, true, &range);
     assert!(
         ctx.diagnostics.is_empty(),
         "a valid enum member should not error, got {:?}",
@@ -221,7 +221,7 @@ fn config_enum_arm_validates_bare_member() {
     // An unknown member -> WS028, not WS002 (must not read as a variable).
     ctx.diagnostics.clear();
     let bad = vec![CallArg::Positional(ident("Nope"))];
-    check_args(&mut ctx, &sig, &bad, 0, true, &range);
+    check_args(&mut ctx, &sig, &bad, 0, true, true, &range);
     assert!(
         ctx.diagnostics.iter().any(|d| d.code == "WS028"),
         "unknown enum member should be WS028, got {:?}",
@@ -254,7 +254,7 @@ fn named_arg_data_driven_config_fallback_is_ws028() {
         name: "bOnlyHitPlayerBodyParts".into(),
         value: ident("live"),
     }];
-    check_args(&mut ctx, &sig, &args, 0, true, &range);
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
     assert!(
         ctx.diagnostics.iter().any(|d| d.code == "WS028"),
         "non-constant data-driven config should be WS028, got {:?}",
@@ -287,7 +287,7 @@ fn config_composite_arm_rejects_nonconstant() {
         name: "meshColors".into(),
         value: ident("live"),
     }];
-    check_args(&mut ctx, &sig, &args, 0, true, &range);
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
     let diag = ctx.diagnostics.iter().find(|d| d.code == "WS028");
     assert!(
         diag.is_some(),
@@ -319,7 +319,7 @@ fn unknown_named_arg_is_ws041() {
         name: "positionX".into(),
         value: ident("a"),
     }];
-    check_args(&mut ctx, &sig, &args, 0, true, &range);
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
     let diag = ctx.diagnostics.iter().find(|d| d.code == "WS041");
     assert!(
         diag.is_some(),
@@ -348,7 +348,7 @@ fn exec_named_arg_is_not_ws041() {
         name: "exec".into(),
         value: ident("go"),
     }];
-    check_args(&mut ctx, &sig, &args, 0, true, &range);
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
     assert!(
         !ctx.diagnostics.iter().any(|d| d.code == "WS041"),
         "the `exec =` override must not be flagged unknown, got {:?}",
@@ -371,10 +371,33 @@ fn unknown_named_arg_skipped_when_arity_unchecked() {
         name: "descending".into(),
         value: ident("d"),
     }];
-    check_args(&mut ctx, &sig, &args, 0, /*check_arity=*/ false, &range);
+    check_args(&mut ctx, &sig, &args, 0, /*check_arity=*/ false, /*check_named=*/ false, &range);
     assert!(
         !ctx.diagnostics.iter().any(|d| d.code == "WS041"),
         "a variadic (arity-unchecked) call must not flag its named args, got {:?}",
+        ctx.diagnostics
+    );
+}
+
+// (g2) A user mod/chip call passes `check_arity = false` (its count is checked as
+// WS022 upstream) but `check_named = true` — its full param list IS known, so an
+// unknown named arg (`g(1, bogus = 5)`) must still be flagged WS041 (P0-16d).
+#[test]
+fn unknown_named_arg_flagged_when_arity_off_but_named_on() {
+    let ce_slots = crate::typecheck::CeSlotMap::default();
+    let mut ctx = crate::typecheck::TypeCheckCtx::new("t", &ce_slots);
+    declare_var(&mut ctx, "v", Type::Int);
+    let range = SourceRange::default();
+    let sig = wire_sig("g", &[("a", Type::Int, false)]);
+    let args = vec![CallArg::Named {
+        name_range: SourceRange::default(),
+        name: "bogus".into(),
+        value: ident("v"),
+    }];
+    check_args(&mut ctx, &sig, &args, 0, /*check_arity=*/ false, /*check_named=*/ true, &range);
+    assert!(
+        ctx.diagnostics.iter().any(|d| d.code == "WS041"),
+        "a user call's unknown named arg must be WS041 even with arity off, got {:?}",
         ctx.diagnostics
     );
 }
@@ -397,7 +420,7 @@ fn known_config_named_arg_is_not_ws041() {
         name: "bOnlyHitPlayerBodyParts".into(),
         value: ident("live"),
     }];
-    check_args(&mut ctx, &sig, &args, 0, true, &range);
+    check_args(&mut ctx, &sig, &args, 0, true, true, &range);
     assert!(
         !ctx.diagnostics.iter().any(|d| d.code == "WS041"),
         "a known config field must not be flagged unknown, got {:?}",

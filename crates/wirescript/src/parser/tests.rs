@@ -1426,3 +1426,53 @@
         assert_eq!(handler.params[0].name, "amount");
         assert!(handler.params[0].ty.is_none());
     }
+
+    // P0-6: a captured event `let x = on E { }` at statement level used to be
+    // parsed then silently dropped, and its trailing tokens re-parsed into two
+    // unrelated errors. Now it reports one diagnostic that names the cause.
+    #[test]
+    fn captured_event_as_statement_reports_top_level_only() {
+        let r = parse(
+            "in go: exec\non go {\n  let tick = on Clock(1.0) { BroadcastChatMessage(\"hi\") }\n}",
+            "test",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("captured events")),
+            "a statement-level captured event must be reported clearly: {:?}",
+            r.diagnostics
+        );
+        // The misleading fallthrough errors are gone.
+        assert!(
+            !r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("unknown identifier ''")),
+            "no garbage tail re-parse should remain: {:?}",
+            r.diagnostics
+        );
+    }
+
+    // P0-7: an integer literal out of i64 range used to compile to 0 silently.
+    #[test]
+    fn int_literal_overflow_is_reported() {
+        let dec = parse("let big = 99999999999999999999", "test");
+        assert!(
+            dec.diagnostics.iter().any(|d| d.message.contains("out of range")),
+            "a decimal overflow must be reported: {:?}",
+            dec.diagnostics
+        );
+        let hex = parse("let h = 0xFFFFFFFFFFFFFFFFF", "test");
+        assert!(
+            hex.diagnostics.iter().any(|d| d.message.contains("out of range")),
+            "a hex overflow must be reported: {:?}",
+            hex.diagnostics
+        );
+        // i64::MIN still folds cleanly (its positive magnitude overflows i64).
+        let min = parse("let m = -9223372036854775808", "test");
+        assert!(
+            min.diagnostics.is_empty(),
+            "i64::MIN must still parse: {:?}",
+            min.diagnostics
+        );
+    }

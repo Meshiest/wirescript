@@ -183,3 +183,48 @@
         // no common widening anywhere in the sequence -> None
         assert_eq!(widening_join_all(vec![Type::Int, Type::Float, Type::Vector]), None);
     }
+
+    #[test]
+    fn record_unwrap_only_drives_from_first_field() {
+        // GetVelocity's `{Vector, Rotation}`: lowering always wires outputs[0]
+        // (Vector), so a `rotator` target must NOT unwrap via the later Rotation
+        // field — that produced a Vector-into-Rotation miscompile (P0-13).
+        let vel = Type::Record(vec![
+            ("Vector".into(), Type::Vector),
+            ("Rotation".into(), Type::Rotator),
+        ]);
+        assert_eq!(coerce(&vel, &Type::Rotator), CoerceRule::Mismatch);
+        // Field 0 still drives a valid unwrap.
+        assert_eq!(coerce(&vel, &Type::Vector), CoerceRule::Same);
+    }
+
+    #[test]
+    fn tuple_literal_never_scalar_unwraps() {
+        // An index-keyed record is a tuple literal; `(1, "abc")` is not an int.
+        let tup = Type::Record(vec![("0".into(), Type::Int), ("1".into(), Type::String)]);
+        assert_eq!(coerce(&tup, &Type::Int), CoerceRule::Mismatch);
+    }
+
+    #[test]
+    fn any_container_param_accepts_concrete_but_not_reverse() {
+        use Type::*;
+        let ai = || Array(Box::new(Int));
+        let aa = || Array(Box::new(Any));
+        // A concrete array flows into an `any[]` sink (the P0-17b trap).
+        assert_eq!(coerce(&ai(), &aa()), CoerceRule::Same);
+        // But an `any[]` does NOT narrow into a concrete `int[]` (backing
+        // variant differs — would miscompile), and `int[]` != `float[]`.
+        assert_eq!(coerce(&aa(), &ai()), CoerceRule::Mismatch);
+        assert_eq!(
+            coerce(&ai(), &Array(Box::new(Float))),
+            CoerceRule::Mismatch
+        );
+        // Map<any, any> accepts a concrete map; concrete->concrete mismatch stays.
+        let mii = Map(Box::new(Int), Box::new(Int));
+        let maa = Map(Box::new(Any), Box::new(Any));
+        assert_eq!(coerce(&mii, &maa), CoerceRule::Same);
+        assert_eq!(
+            coerce(&mii, &Map(Box::new(Float), Box::new(Int))),
+            CoerceRule::Mismatch
+        );
+    }

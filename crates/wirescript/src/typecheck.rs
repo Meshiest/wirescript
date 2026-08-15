@@ -3085,10 +3085,13 @@ fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
 pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     match e {
         Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
-            Some(s) => matches!(
-                s.kind,
-                SymbolKind::Var | SymbolKind::Array | SymbolKind::Map | SymbolKind::LetBinding
-            ) || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
+            Some(s) => matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                // A `let` is only writable/ref-able when it's reference-backed
+                // (an array/map binding); a scalar `let` is a computed wire, so
+                // `&scalarLet` (and `scalarLet = …`) would silently no-op.
+                || (s.kind == SymbolKind::LetBinding
+                    && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)))
+                || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
                 || (s.kind == SymbolKind::In && matches!(&s.ty, Type::Array(_))),
             None => false,
         },
@@ -3118,7 +3121,26 @@ fn infer_assign_target(
             Some(s) if s.kind == SymbolKind::Var => unwrap_ref(&s.ty),
             Some(s) if s.kind == SymbolKind::Array => unwrap_ref(&s.ty),
             Some(s) if s.kind == SymbolKind::Map => unwrap_ref(&s.ty),
-            Some(s) if s.kind == SymbolKind::LetBinding => unwrap_ref(&s.ty),
+            // A `let` is only a writable target when it's reference-backed
+            // (an array/map binding it aliases). A scalar `let` is a computed
+            // wire, not storage: `y = 5` on a `let y = x + 1` type-checked
+            // clean and then emitted NO gate (the write vanished).
+            Some(s)
+                if s.kind == SymbolKind::LetBinding
+                    && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)) =>
+            {
+                unwrap_ref(&s.ty)
+            }
+            Some(s) if s.kind == SymbolKind::LetBinding => {
+                ctx.emit(
+                    "WS007",
+                    format!(
+                        "'{name}' is a `let` binding and can't be assigned — declare it `var` to make it mutable"
+                    ),
+                    range.clone(),
+                );
+                Type::Any
+            }
             Some(s) if s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)) => {
                 unwrap_ref(&s.ty)
             }
@@ -3337,6 +3359,10 @@ fn type_user_symbol_call(
             args,
             0,
             /* check_arity */ false,
+            // A user mod/chip DOES know its full param list, so flag an unknown
+            // named arg (`g(1, bogus = 5)`) as WS041 — the arity check is off
+            // only to avoid double-reporting count against WS022 above.
+            /* check_named */ true,
             call_range,
         );
     }
@@ -4073,18 +4099,29 @@ fn validate_handler_config(
                 }
             }
             HandlerConfigArg::Named { name, value } => {
-                // A named arg that wires into a gate input port may be dynamic.
-                if evt
-                    .input_named
-                    .iter()
-                    .any(|(surf, _, _)| surf.eq_ignore_ascii_case(name))
-                {
-                    continue;
-                }
-                if evt.config_named.iter().any(|(k, _)| k.eq_ignore_ascii_case(name))
-                    && crate::lower::expr_to_literal(value).is_none()
-                {
-                    emit_event_config_const_error(ctx, name, value);
+                use crate::catalog::events::EventArgKind;
+                match evt.classify_arg(name) {
+                    // A named arg that wires into a gate input port may be dynamic.
+                    EventArgKind::InputWire(..) => {}
+                    EventArgKind::ConfigField(..) => {
+                        if crate::lower::expr_to_literal(value).is_none() {
+                            emit_event_config_const_error(ctx, name, value);
+                        }
+                    }
+                    // Matches no input port and no config field: nothing lowers
+                    // it (both typecheck and emit silently drop it), so `on
+                    // Clock(intreval = 2.0)` quietly no-ops. Flag the typo — the
+                    // handler analog of WS041 on calls.
+                    EventArgKind::Unknown => {
+                        ctx.emit(
+                            "WS041",
+                            format!(
+                                "'{}' has no config or input '{name}'",
+                                evt.surface_name
+                            ),
+                            value.range().clone(),
+                        );
+                    }
                 }
             }
         }

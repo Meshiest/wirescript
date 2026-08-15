@@ -36,6 +36,45 @@ pub struct EventSpec {
     pub exec_out: &'static str,
 }
 
+/// How a NAMED handler arg (`on E(name = value)`) classifies against an event's
+/// declared slots. The single source of truth for "is this arg name meaningful",
+/// so typecheck (diagnostics), lowering (wire vs bake), and hover agree instead
+/// of each re-deriving the answer and drifting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventArgKind {
+    /// Wires the value into a gate INPUT port (may be dynamic).
+    /// `(surface name, gate port name)`.
+    InputWire(&'static str, &'static str),
+    /// Bakes the value into a constant-only settings field.
+    /// `(surface name, gate data-struct field)`.
+    ConfigField(&'static str, &'static str),
+    /// Matches no declared slot — a typo. Nothing lowers it, so it silently
+    /// no-ops; typecheck flags it (WS041).
+    Unknown,
+}
+
+impl EventSpec {
+    /// Classify a NAMED handler arg (case-insensitive) as an input wire, a
+    /// constant config field, or unknown.
+    pub fn classify_arg(&self, name: &str) -> EventArgKind {
+        if let Some((surf, port, _)) = self
+            .input_named
+            .iter()
+            .find(|(surf, _, _)| surf.eq_ignore_ascii_case(name))
+        {
+            return EventArgKind::InputWire(surf, port);
+        }
+        if let Some((surf, field)) = self
+            .config_named
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        {
+            return EventArgKind::ConfigField(surf, field);
+        }
+        EventArgKind::Unknown
+    }
+}
+
 /// Every built-in event. Order matches the TS reference for deterministic
 /// iteration.
 fn build_events() -> HashMap<&'static str, EventSpec> {

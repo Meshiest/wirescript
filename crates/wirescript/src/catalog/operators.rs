@@ -413,11 +413,27 @@ fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
     const VARIANT_TYPES: &[Type] = &[
         Int, Float, Bool, String, Entity, Controller, Character,
     ];
+    // Equality (`==`/`!=`) additionally compares the composite value variants by
+    // content: the game's CompareEqual/CompareNotEqual gates are certified for
+    // same-type vector/rotator/quat/color operands (`data/gate_semantics.json`).
+    // Ordering (`<`/`>`/`<=`/`>=`) stays scalar-only — those composites have no
+    // certified ordering cases.
+    const EQ_ONLY_TYPES: &[Type] = &[Vector, Rotator, Quat, Color];
     let mut rules = Vec::new();
     for a in VARIANT_TYPES {
         for b in VARIANT_TYPES {
             rules.push(OpRule {
                 operands: Box::leak(Box::new([a.clone(), b.clone()])),
+                result: Bool,
+                gate_class,
+                ports: COMPARE_PORTS,
+            });
+        }
+    }
+    if matches!(op, "==" | "!=") {
+        for t in EQ_ONLY_TYPES {
+            rules.push(OpRule {
+                operands: Box::leak(Box::new([t.clone(), t.clone()])),
                 result: Bool,
                 gate_class,
                 ports: COMPARE_PORTS,

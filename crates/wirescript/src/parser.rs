@@ -3053,6 +3053,15 @@ impl<'a> Parser<'a> {
                     return match decl {
                         TopDecl::Let(v) => Some(Stmt::Let(v)),
                         TopDecl::Await(a) => Some(Stmt::Await(a)),
+                        TopDecl::Event(e) => {
+                            self.error(
+                                "captured events (`let x = on Event { … }`) are only allowed at the top level"
+                                    .to_string(),
+                                e.range.start,
+                                e.range.end,
+                            );
+                            None
+                        }
                         _ => None,
                     };
                 }
@@ -3119,6 +3128,20 @@ impl<'a> Parser<'a> {
                     match decl {
                         TopDecl::Let(v) => return Some(Stmt::Let(v)),
                         TopDecl::Await(a) => return Some(Stmt::Await(a)),
+                        // A captured event parsed here has already consumed its
+                        // whole body; without an explicit `return None` control
+                        // fell through to the expression-statement fallback,
+                        // which re-parsed the trailing tokens into two unrelated
+                        // errors that never named the real problem.
+                        TopDecl::Event(e) => {
+                            self.error(
+                                "captured events (`let x = on Event { … }`) are only allowed at the top level"
+                                    .to_string(),
+                                e.range.start,
+                                e.range.end,
+                            );
+                            return None;
+                        }
                         _ => {}
                     }
                 }
@@ -3427,9 +3450,31 @@ impl<'a> Parser<'a> {
                 if next.kind == TokenKind::Int {
                     self.advance(); // consume '-'
                     let num = self.advance();
-                    let val: i64 = num.text.parse().unwrap_or(0);
+                    let cleaned: String = num.text.chars().filter(|c| *c != '_').collect();
+                    // Prefer negating the parsed magnitude; fall back to parsing
+                    // the whole "-<n>" so i64::MIN (whose positive magnitude
+                    // overflows i64) still folds. A genuine overflow reports a
+                    // diagnostic instead of baking `0`.
+                    let value = match parse_int_literal(&cleaned) {
+                        Some(v) => Some(-v),
+                        None => format!("-{cleaned}").parse::<i64>().ok(),
+                    };
+                    let value = match value {
+                        Some(v) => v,
+                        None => {
+                            self.error(
+                                format!(
+                                    "integer literal '-{}' is out of range for a 64-bit int",
+                                    num.text
+                                ),
+                                t.start,
+                                num.end,
+                            );
+                            0
+                        }
+                    };
                     return Expr::IntLit {
-                        value: -val,
+                        value,
                         text: format!("-{}", num.text),
                         range: self.make_range(t.start, num.end),
                     };
@@ -3656,7 +3701,17 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let text = t.text.clone();
                 let cleaned: String = text.chars().filter(|c| *c != '_').collect();
-                let value = parse_int_literal(&cleaned);
+                let value = match parse_int_literal(&cleaned) {
+                    Some(v) => v,
+                    None => {
+                        self.error(
+                            format!("integer literal '{text}' is out of range for a 64-bit int"),
+                            t.start,
+                            t.end,
+                        );
+                        0
+                    }
+                };
                 Expr::IntLit {
                     value,
                     text,
@@ -4213,24 +4268,28 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn parse_int_literal(cleaned: &str) -> i64 {
+/// Parse an integer literal's (underscore-stripped) text as an `i64`. Returns
+/// `None` when the value is out of range for a 64-bit int — the caller reports a
+/// diagnostic rather than silently baking `0` (an out-of-range user constant
+/// reading `0` with no error is exactly the class of bug this project fights).
+fn parse_int_literal(cleaned: &str) -> Option<i64> {
     if let Some(hex) = cleaned
         .strip_prefix("0x")
         .or_else(|| cleaned.strip_prefix("0X"))
     {
-        i64::from_str_radix(hex, 16).unwrap_or(0)
+        i64::from_str_radix(hex, 16).ok()
     } else if let Some(bin) = cleaned
         .strip_prefix("0b")
         .or_else(|| cleaned.strip_prefix("0B"))
     {
-        i64::from_str_radix(bin, 2).unwrap_or(0)
+        i64::from_str_radix(bin, 2).ok()
     } else if let Some(oct) = cleaned
         .strip_prefix("0o")
         .or_else(|| cleaned.strip_prefix("0O"))
     {
-        i64::from_str_radix(oct, 8).unwrap_or(0)
+        i64::from_str_radix(oct, 8).ok()
     } else {
-        cleaned.parse().unwrap_or(0)
+        cleaned.parse().ok()
     }
 }
 
