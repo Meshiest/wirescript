@@ -1417,7 +1417,7 @@ var names: string[]
 on tick {
   scores.set("alice", 10)                 // insert / overwrite
   let g = scores.get("alice")             // { Value, Found } — auto-unwraps to Value
-  if g.Found { PrintToConsole("${g.Value}") }
+  if g.Found { PrintToConsole(g.Value) }
   if scores.has("bob") { ... }
   scores.remove("bob")                    // -> bool (was present)
   let n = scores.length()

@@ -16,6 +16,11 @@ pub struct SymbolDef {
     pub range: SourceRange,
     pub ty: Option<String>,
     pub exec: bool,
+    /// `const x = …` / a `const mod`'s declaration / a `const`-marked
+    /// parameter — as opposed to a plain `let`/`mod`/param. Drives hover's
+    /// `const` keyword and, for a `let`, whether hover attempts to show the
+    /// binding's compile-time VALUE (see `hover::render_decl_hover`).
+    pub is_const: bool,
 }
 
 /// Resolve which declaration of `name` is visible at a cursor position. The same
@@ -135,6 +140,7 @@ fn collect_param_symbols(syms: &mut Vec<SymbolDef>, params: &[Param], script: &S
                         let ty = resolve_record_param_field_type(script, &p.typ, orig_name);
                         syms.push(SymbolDef {
                             name: field_name, kind: "param", range: p.range.clone(), ty, exec: false,
+                            is_const: p.is_const,
                         });
                     }
                 }
@@ -143,6 +149,7 @@ fn collect_param_symbols(syms: &mut Vec<SymbolDef>, params: &[Param], script: &S
                         let ty = resolve_record_param_field_type(script, &p.typ, &i.to_string());
                         syms.push(SymbolDef {
                             name: name.clone(), kind: "param", range: p.range.clone(), ty, exec: false,
+                            is_const: p.is_const,
                         });
                     }
                 }
@@ -154,6 +161,7 @@ fn collect_param_symbols(syms: &mut Vec<SymbolDef>, params: &[Param], script: &S
                 range: p.range.clone(),
                 ty: Some(type_expr_str(&p.typ)),
                 exec: false,
+                is_const: p.is_const,
             });
         }
     }
@@ -195,6 +203,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: v.range.clone(),
                 ty,
                 exec: false,
+                is_const: false,
             });
         }
         TopDecl::Array(a) => syms.push(SymbolDef {
@@ -203,6 +212,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
             range: a.range.clone(),
             ty: Some(format!("{}[]", type_expr_str(&a.element_type))),
             exec: false,
+            is_const: false,
         }),
         TopDecl::Buffer(b) => {
             let ty = b
@@ -216,6 +226,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: b.range.clone(),
                 ty,
                 exec: false,
+                is_const: false,
             });
         }
         TopDecl::Fn(f) => {
@@ -235,16 +246,28 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: f.range.clone(),
                 ty: Some(format!("({}) -> {}", params.join(", "), ret)),
                 exec: false,
+                is_const: false,
             });
             if is_local(&f.range) {
                 collect_param_symbols(syms, &f.params, script);
             }
         }
         TopDecl::Chip(c) => {
+            // A `const mod`'s parameters are ALL const (the parser sets
+            // `is_const` on every one), so this also carries the marker
+            // through to hovering the mod's own NAME, not just hovering an
+            // individual parameter directly.
             let params: Vec<String> = c
                 .inputs
                 .iter()
-                .map(|p| format!("{}: {}", p.name, type_expr_str(&p.typ)))
+                .map(|p| {
+                    let ty = type_expr_str(&p.typ);
+                    if p.is_const {
+                        format!("{}: const {}", p.name, ty)
+                    } else {
+                        format!("{}: {}", p.name, ty)
+                    }
+                })
                 .collect();
             let ret_suffix = match c.outputs.as_slice() {
                 [] => String::new(),
@@ -279,6 +302,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: c.range.clone(),
                 ty: Some(format!("{}({}){}", generics, params.join(", "), ret_suffix)),
                 exec: block_has_exec(&c.body),
+                is_const: c.is_const,
             });
             if is_local(&c.range) {
                 for tp in &c.type_params {
@@ -288,6 +312,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                         range: tp.range.clone(),
                         ty: tp.bound.as_ref().map(|b| type_expr_str(b)),
                         exec: false,
+                        is_const: false,
                     });
                 }
                 collect_param_symbols(syms, &c.inputs, script);
@@ -302,6 +327,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
             range: i.range.clone(),
             ty: Some(type_expr_str(&i.typ)),
             exec: false,
+            is_const: false,
         }),
         TopDecl::Let(l) => {
             collect_let_symbols(syms, l, tmap);
@@ -312,6 +338,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
             range: e.range.clone(),
             ty: None,
             exec: false,
+            is_const: false,
         }),
         TopDecl::Out(o) => {
             let ty = o
@@ -325,6 +352,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: o.range.clone(),
                 ty,
                 exec: false,
+                is_const: false,
             });
         }
         TopDecl::Handler(h) => {
@@ -337,6 +365,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: ac.range.clone(),
                 ty: None,
                 exec: block_has_exec(&ac.body),
+                is_const: false,
             });
             for s in &ac.body.stmts {
                 collect_stmt(syms, s, tmap, file, script);
@@ -359,6 +388,7 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: t.range.clone(),
                 ty: Some(type_expr_str(&t.typ)),
                 exec: false,
+                is_const: false,
             });
         }
         TopDecl::Namespace(ns) => {
@@ -372,28 +402,31 @@ pub fn collect_decl(syms: &mut Vec<SymbolDef>, d: &TopDecl, tmap: &TypeMap, file
                 range: ns.range.clone(),
                 ty: None,
                 exec: false,
+                is_const: false,
             });
             for d in &ns.decls {
                 if let Some((mname, mkind)) = namespace_member_decl(d) {
-                    // Compute the member's real signature + exec-ness by running
-                    // the normal decl collection into a scratch buffer, then
-                    // re-key it under the qualified `ns.member` name. The member
-                    // decl lives in the imported file (not local), so this yields
-                    // just its one signature symbol; any extras are discarded
-                    // here. Without a `ty`, hover on `ns.member` shows nothing.
+                    // Compute the member's real signature + exec-ness (and
+                    // constness) by running the normal decl collection into a
+                    // scratch buffer, then re-key it under the qualified
+                    // `ns.member` name. The member decl lives in the imported
+                    // file (not local), so this yields just its one signature
+                    // symbol; any extras are discarded here. Without a `ty`,
+                    // hover on `ns.member` shows nothing.
                     let mut scratch = Vec::new();
                     collect_decl(&mut scratch, d, tmap, file, script);
-                    let (ty, exec) = scratch
+                    let (ty, exec, is_const) = scratch
                         .iter()
                         .find(|s| s.name == mname && s.kind == mkind)
-                        .map(|s| (s.ty.clone(), s.exec))
-                        .unwrap_or((None, false));
+                        .map(|s| (s.ty.clone(), s.exec, s.is_const))
+                        .unwrap_or((None, false, false));
                     syms.push(SymbolDef {
                         name: format!("{}.{}", ns.name, mname),
                         kind: mkind,
                         range: ns.range.clone(),
                         ty,
                         exec,
+                        is_const,
                     });
                 }
             }
@@ -449,6 +482,7 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
                             range: h.range.clone(),
                             ty,
                             exec: false,
+                            is_const: false,
                         });
                     }
                 } else {
@@ -459,6 +493,7 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
                             range: h.range.clone(),
                             ty: handler_param_type_str(pname).or_else(|| Some("any".into())),
                             exec: false,
+                            is_const: false,
                         });
                     }
                 }
@@ -474,6 +509,7 @@ pub fn collect_stmt(syms: &mut Vec<SymbolDef>, s: &Stmt, tmap: &TypeMap, file: O
                 range: ac.range.clone(),
                 ty: None,
                 exec: block_has_exec(&ac.body),
+                is_const: false,
             });
             for s in &ac.body.stmts {
                 collect_stmt(syms, s, tmap, file, script);
@@ -506,6 +542,7 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                 range: l.range.clone(),
                 ty,
                 exec: false,
+                is_const: l.is_const,
             });
         }
         LetBinding::Tuple { names, .. } | LetBinding::Record { names, .. } => {
@@ -516,6 +553,7 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                 let ty = value_field_type(&l.value, tmap, Some(i), name);
                 syms.push(SymbolDef {
                     name: name.clone(), kind: "let", range: l.range.clone(), ty, exec: false,
+                    is_const: l.is_const,
                 });
             }
         }
@@ -531,6 +569,7 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                 };
                 syms.push(SymbolDef {
                     name, kind: "let", range: l.range.clone(), ty, exec: false,
+                    is_const: l.is_const,
                 });
             }
         }

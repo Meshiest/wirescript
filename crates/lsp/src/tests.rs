@@ -11,6 +11,7 @@
             type_map: tc.type_of_expr,
             if_contexts: tc.if_contexts,
             var_read_contexts: tc.var_read_contexts,
+            dropped_ranges: tc.dropped_ranges,
             resource_estimates: Default::default(),
             pre_resolve_ast: pre_resolve.ast,
             imported_files: resolved.imported_files.clone(),
@@ -356,9 +357,9 @@
         // `import * as u` exposes qualified `u.member` symbols; `u.` lists the
         // members by their bare names, and they never leak into the global list.
         let symbols = vec![
-            SymbolDef { name: "u".into(), kind: "namespace", range: Default::default(), ty: None, exec: false },
-            SymbolDef { name: "u.swap".into(), kind: "mod", range: Default::default(), ty: None, exec: false },
-            SymbolDef { name: "u.clamp".into(), kind: "fn", range: Default::default(), ty: None, exec: false },
+            SymbolDef { name: "u".into(), kind: "namespace", range: Default::default(), ty: None, exec: false, is_const: false },
+            SymbolDef { name: "u.swap".into(), kind: "mod", range: Default::default(), ty: None, exec: false, is_const: false },
+            SymbolDef { name: "u.clamp".into(), kind: "fn", range: Default::default(), ty: None, exec: false, is_const: false },
         ];
         let src = "let a = u.";
         let ls: Vec<String> = build_completions(src, &symbols, 0, src.len(), &[])
@@ -1180,4 +1181,28 @@ on CharacterSpawned() -> (character) {
             est.keys().collect::<Vec<_>>()
         );
         assert!(est.contains_key("alpha"), "the pre-existing mod must keep its estimate");
+    }
+
+    /// `if constexpr` semantics mean an untaken branch is never checked, so it
+    /// can silently rot. Making it visible in the editor is the compensation.
+    #[tokio::test]
+    async fn hovering_dropped_code_says_it_was_removed_at_compile_time() {
+        let dir = scratch_dir("const-dropped");
+        let file = dir.join("main.ws");
+        let src = "const MODE = 1\nvar x: int = 0\nin go: exec\non go {\n  if MODE == 1 { x = 1 } else { x = 2 }\n}\n";
+        std::fs::write(&file, src).unwrap();
+        let uri = Url::from_file_path(&file).unwrap();
+        let service = build_backend();
+        service.inner().did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem { uri: uri.clone(), language_id: "wirescript".into(), version: 1, text: src.into() },
+        }).await;
+
+        // column inside the `x = 2` else-block body
+        let col = src.lines().nth(4).unwrap().find("x = 2").unwrap() as u32 + 1;
+        let h = service.inner().hover(HoverParams {
+            text_document_position_params: text_document_position(&uri, 4, col),
+            work_done_progress_params: Default::default(),
+        }).await.unwrap().expect("hover");
+        let HoverContents::Markup(m) = h.contents else { panic!("expected markup") };
+        assert!(m.value.contains("Removed at compile time"), "got {:?}", m.value);
     }

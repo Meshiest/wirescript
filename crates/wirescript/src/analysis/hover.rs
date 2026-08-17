@@ -1,8 +1,10 @@
 use crate::collections::HashMap;
-use crate::ast::{CallArg, Expr, Handler, HandlerConfigArg, Script, Trigger};
+use crate::ast::{CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Script, Stmt, TopDecl, Trigger};
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
-use crate::ir::Type;
+use crate::diagnostic::SourceRange;
+use crate::ir::{Literal, Type};
+use crate::lower::ConstEnv;
 use super::{TypeMap, IfContextMap, VarReadContextMap};
 use super::types::{type_str, collection_kind, CollectionKind};
 use super::text::{word_at, find_enclosing_call};
@@ -29,6 +31,15 @@ fn word_start_in_line(line_str: &str, col: usize) -> usize {
 }
 
 fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
+    // A `const mod` called from a const-required position is answered entirely
+    // by the compile-time interpreter and contributes NO gates. The signature
+    // line above already shows `const mod`, so this line only has to carry the
+    // count — the caveat (a call from a NON-const position falls back to an
+    // ordinary inlined mod and does emit gates) lives in the docs rather than
+    // in every hover, which a reader sees hundreds of times.
+    if est.is_const_eval {
+        return "*const — 0 gates*".to_string();
+    }
     let chips = match kind {
         EstimateKind::Chip => est.total_microchips + 1,
         _ => est.total_microchips,
@@ -43,6 +54,216 @@ fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
     format!("*{}*", parts.join(", "))
 }
 
+/// Render a [`Literal`] roughly the way its wirescript literal syntax would
+/// read, for hover's `const NAME: TYPE = VALUE` display. Long
+/// containers/records are capped so hover can't dump an enormous table — a
+/// truncated tail says "there's more" rather than pretending to be exact.
+fn literal_display(lit: &Literal) -> String {
+    const MAX_CHARS: usize = 200;
+    let s = literal_display_inner(lit);
+    if s.chars().count() > MAX_CHARS {
+        format!("{}…", s.chars().take(MAX_CHARS).collect::<String>())
+    } else {
+        s
+    }
+}
+
+fn literal_display_inner(lit: &Literal) -> String {
+    match lit {
+        Literal::Bool(b) => b.to_string(),
+        Literal::Int(n) => n.to_string(),
+        // Same 3-decimal / trailing-zero-trimmed rendering `@label(expr)` and
+        // FormatText use elsewhere — a const float hovers the way it would
+        // actually display in-game, not with raw `f64` precision.
+        Literal::Float(f) => {
+            crate::lower::fold::eval::render_for_format(&crate::lower::fold::eval::Value::Float(*f))
+        }
+        Literal::String(s) => format!("{s:?}"),
+        Literal::Vector { x, y, z } => format!("Vec({x}, {y}, {z})"),
+        Literal::Rotator { pitch, yaw, roll } => format!("Rotation({pitch}, {yaw}, {roll})"),
+        Literal::Quat { x, y, z, w } => format!("Quat({x}, {y}, {z}, {w})"),
+        Literal::Color { r, g, b, a } => format!("Color({r}, {g}, {b}, {a})"),
+        Literal::LinearColor { r, g, b, a } => format!("Color({r}, {g}, {b}, {a})"),
+        Literal::Object => "null".to_string(),
+        Literal::Array(items) => {
+            let parts: Vec<String> = items.iter().map(literal_display_inner).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Literal::Map(pairs) => {
+            let parts: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{} => {}", literal_display_inner(k), literal_display_inner(v)))
+                .collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+        Literal::Record(fields) => {
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", literal_display_inner(v)))
+                .collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+        Literal::Asset { asset_type, asset_name } => format!("${asset_type}/{asset_name}"),
+        Literal::PrefabRef { path } => format!("${path}"),
+        Literal::NestedPrefab { .. } => "$```…```".to_string(),
+    }
+}
+
+/// Best-effort compile-time VALUE of a `const` binding, for hover's
+/// `const NAME: TYPE = VALUE` display — "the single most useful thing hover
+/// can say about a compile-time constant" (see the task that added this).
+///
+/// Hover works from a flat [`SymbolDef`], which doesn't carry enough AST
+/// structure to walk sibling declarations, so this RE-PARSES `source` (the
+/// same trick [`hover_custom_event`] already uses) and locates the `LetDecl`
+/// whose own range starts at `target_off` — exactly the range
+/// `collect_let_symbols` stored on the `SymbolDef`, so a fresh parse of the
+/// same source always lands on the same node.
+///
+/// A TOP-LEVEL const's value comes from [`crate::lower::build_const_env`] —
+/// the very fixpoint lowering itself runs, so hover can never disagree with
+/// what actually gets baked. A const declared inside a `mod`/`chip` BODY is
+/// evaluated by walking that body's OWN statements up to the target in
+/// source order, seeding the running environment from each earlier sibling
+/// `let`/`const` that itself evaluates (best-effort: one this walk can't
+/// resolve is simply left out, so a later sibling that doesn't depend on it
+/// can still resolve). Entering a nested NAMED `mod`/`chip` resets the
+/// environment to the module env alone (mirrors `const_eval::interp::eval_call`'s
+/// own scoping); an anonymous `chip { }` keeps the running environment (it
+/// shares its parent's scope, per the language).
+///
+/// Crucially, a `mod`/`chip`'s own PARAMETERS are never bound to anything
+/// here — unlike typecheck's per-call placeholder zero
+/// (`typecheck/decl.rs`), which exists only so a body can type-check with no
+/// call site in hand. A body const that reads a parameter therefore simply
+/// fails to evaluate (an unresolved name), and this returns `None` — never
+/// the placeholder, which would be a wrong value dressed up as a real one.
+fn const_hover_value(source: &str, file: &str, target_off: usize) -> Option<Literal> {
+    let parsed = crate::parser::parse(source, file);
+    let script = &parsed.ast;
+    let module_env = crate::lower::build_const_env(&script.decls);
+    let mods = const_mod_table(&script.decls);
+    let lookup_mod = |name: &str| mods.get(name).cloned();
+    eval_const_at(&script.decls, target_off, &module_env, &module_env, &lookup_mod)
+}
+
+/// Every top-level `const mod`, by name — mirrors the table
+/// `crate::lower::build_const_env` builds internally, so a const initializer
+/// that CALLS a const mod resolves here the same way it resolves for real.
+fn const_mod_table(decls: &[TopDecl]) -> HashMap<String, std::sync::Arc<ChipDecl>> {
+    decls
+        .iter()
+        .filter_map(|d| match d {
+            TopDecl::Chip(c) if c.is_const => Some((c.name.clone(), std::sync::Arc::new(c.clone()))),
+            _ => None,
+        })
+        .collect()
+}
+
+type LookupMod<'a> = dyn Fn(&str) -> Option<std::sync::Arc<ChipDecl>> + 'a;
+
+/// Evaluate one expression against `env`/`module_env`, discarding any error —
+/// hover has no diagnostic to attach a reason to, so "couldn't evaluate" and
+/// "evaluated to something surprising" are both just `None`.
+fn eval_one(expr: &Expr, env: &ConstEnv, module_env: &ConstEnv, lookup_mod: &LookupMod) -> Option<Literal> {
+    let cx = crate::const_eval::ConstCtx {
+        consts: env.clone(),
+        module_consts: module_env.clone(),
+        lookup_mod: Some(lookup_mod),
+    };
+    let mut budget = crate::const_eval::Budget::default();
+    crate::const_eval::eval_expr(expr, &cx, &mut budget).ok()
+}
+
+fn range_contains_offset(range: &SourceRange, off: usize) -> bool {
+    range.start.offset <= off && off < range.end.offset
+}
+
+/// Search `decls` (top-level, or a namespace's) for the `LetDecl` whose range
+/// starts at `target_off`, evaluating const siblings along the way — see
+/// [`const_hover_value`]'s doc comment for the full scoping rules.
+fn eval_const_at(
+    decls: &[TopDecl],
+    target_off: usize,
+    env0: &ConstEnv,
+    module_env: &ConstEnv,
+    lookup_mod: &LookupMod,
+) -> Option<Literal> {
+    let mut env = env0.clone();
+    for d in decls {
+        match d {
+            TopDecl::Let(l) => {
+                if l.range.start.offset == target_off {
+                    return l.is_const.then(|| eval_one(&l.value, &env, module_env, lookup_mod)).flatten();
+                }
+                if let LetBinding::Ident { name, .. } = &l.binding {
+                    if let Some(v) = eval_one(&l.value, &env, module_env, lookup_mod) {
+                        env.insert(name.clone(), v);
+                    }
+                }
+            }
+            // A named mod/chip body is its OWN scope: reset to the module
+            // env alone (no outer locals, and — deliberately — no params).
+            TopDecl::Chip(c) if range_contains_offset(&c.range, target_off) => {
+                return eval_const_in_block(&c.body, target_off, module_env, module_env, lookup_mod);
+            }
+            // An anonymous chip shares its parent's scope.
+            TopDecl::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
+                return eval_const_in_block(&ac.body, target_off, &env, module_env, lookup_mod);
+            }
+            TopDecl::Namespace(ns) if range_contains_offset(&ns.range, target_off) => {
+                return eval_const_at(&ns.decls, target_off, env0, module_env, lookup_mod);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Same walk as [`eval_const_at`], over a statement block (a mod/chip/anon-chip
+/// body, or an `if` arm).
+fn eval_const_in_block(
+    block: &crate::ast::Block,
+    target_off: usize,
+    env0: &ConstEnv,
+    module_env: &ConstEnv,
+    lookup_mod: &LookupMod,
+) -> Option<Literal> {
+    let mut env = env0.clone();
+    for s in &block.stmts {
+        match s {
+            Stmt::Let(l) => {
+                if l.range.start.offset == target_off {
+                    return l.is_const.then(|| eval_one(&l.value, &env, module_env, lookup_mod)).flatten();
+                }
+                if let LetBinding::Ident { name, .. } = &l.binding {
+                    if let Some(v) = eval_one(&l.value, &env, module_env, lookup_mod) {
+                        env.insert(name.clone(), v);
+                    }
+                }
+            }
+            Stmt::ChipDecl(c) if range_contains_offset(&c.range, target_off) => {
+                return eval_const_in_block(&c.body, target_off, module_env, module_env, lookup_mod);
+            }
+            Stmt::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
+                return eval_const_in_block(&ac.body, target_off, &env, module_env, lookup_mod);
+            }
+            Stmt::If(i) if range_contains_offset(&i.then_block.range, target_off) => {
+                return eval_const_in_block(&i.then_block, target_off, &env, module_env, lookup_mod);
+            }
+            Stmt::If(i) => {
+                if let Some(eb) = &i.else_block {
+                    if range_contains_offset(&eb.range, target_off) {
+                        return eval_const_in_block(eb, target_off, &env, module_env, lookup_mod);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub fn hover_at(
     source: &str,
     file: &str,
@@ -51,10 +272,22 @@ pub fn hover_at(
     doc_comments: &HashMap<usize, String>,
     if_contexts: &IfContextMap,
     var_read_contexts: &VarReadContextMap,
+    dropped_ranges: &[(SourceRange, String)],
     resource_estimates: &HashMap<String, ResourceEstimate>,
     line: usize,
     col: usize,
 ) -> Option<String> {
+    // Dropped (never type-checked) code reports FIRST, and — like the two
+    // non-word hovers below — before `word_at`, which returns `None` for any
+    // position that isn't an identifier. A dropped block must report at EVERY
+    // position inside it, braces and whitespace and operators included: it is
+    // a warning about a region, and someone skimming a block hovers the block,
+    // not necessarily a name in it. Behind `word_at` the warning silently
+    // vanished on `{`, `}`, `=` and every space.
+    if let Some(h) = hover_dropped_range(file, dropped_ranges, line, col) {
+        return Some(h);
+    }
+
     // `$` references (prefab files / external assets) aren't identifier words,
     // so detect them from the raw line before the word-based lookups.
     if let Some(h) = hover_asset_ref(source, file, line, col) {
@@ -200,6 +433,42 @@ fn render_asset_hover(path: &str) -> String {
         out += &format!("- Asset: `{path}`\n");
     }
     out
+}
+
+/// Cursor position inside a block `if constexpr` dropped before type-checking
+/// (see `TypeCheckCtx::dropped_ranges`). Runs FIRST in `hover_at` — ahead of
+/// every other hover AND ahead of its `word_at` early return — because the
+/// untaken branch was never type-checked at all: a stale reference or type
+/// error in there is invisible to diagnostics, so this hover is the only place
+/// that surfaces it. Being a warning about a whole REGION rather than about a
+/// symbol, it must answer at every position in that region (`{`, `}`, `=`,
+/// whitespace included), which is exactly what sitting behind `word_at` broke.
+///
+/// `line`/`col` are 0-based (the `hover_at` convention); `SourceRange`
+/// positions are 1-based, so the cursor is converted before comparing.
+/// Containment is half-open (`start <= pos < end`), matching the lexer's
+/// snapshot-before/snapshot-after token convention that
+/// `scoped_refs::range_contains_cursor` also follows — a block's `end` is one
+/// past its closing `}`, so the brace itself is inside.
+fn hover_dropped_range(
+    file: &str,
+    dropped_ranges: &[(SourceRange, String)],
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    let pos = (line as u32 + 1, col as u32 + 1);
+    dropped_ranges.iter().find_map(|(range, reason)| {
+        if &*range.file != file {
+            return None;
+        }
+        let start = (range.start.line, range.start.col);
+        let end = (range.end.line, range.end.col);
+        if start <= pos && pos < end {
+            Some(format!("**Removed at compile time** — {reason}."))
+        } else {
+            None
+        }
+    })
 }
 
 /// `if` keyword: show exec (Branch gate) vs pure (Select gate) context.
@@ -1134,8 +1403,9 @@ fn hover_chip_or_mod_keyword(
         {
             let context = if sym.exec { "exec" } else { "pure" };
             let name = if sym.name.is_empty() || sym.name.starts_with('_') { "(anonymous)" } else { &sym.name };
+            let const_kw = if sym.is_const { "const " } else { "" };
             let mut hover = format!(
-                "```wirescript\n{} {} ({})\n```\n\n{} context - {}",
+                "```wirescript\n{const_kw}{} {} ({})\n```\n\n{} context - {}",
                 sym.kind, name, context,
                 if sym.exec { "Exec" } else { "Pure" },
                 if sym.exec { "body runs as sequential exec chain" } else { "body is evaluated as signal-flow (combinational)" },
@@ -1248,7 +1518,7 @@ fn hover_user_symbol(
         return Some(v);
     }
 
-    let mut v = render_decl_hover(sym, doc_comments, resource_estimates);
+    let mut v = render_decl_hover(sym, doc_comments, resource_estimates, Some((source, file)));
 
     // For var reads: show exec/pure context at the hovered location
     if sym.kind == "var" {
@@ -1271,12 +1541,21 @@ fn hover_user_symbol(
 /// show `(exec, params) -> ret`; everything else `kind name: type`), followed by
 /// its doc comment and, for callables, a resource estimate. Shared by plain
 /// symbol hover and namespace-member hover.
+///
+/// `value_ctx`, when given, is `(source, file)` of the file the symbol's OWN
+/// declaration lives in — used only to look up a `const` `let`'s computed
+/// VALUE (see [`const_hover_value`]). Namespace-member hover passes `None`:
+/// the member's declaration lives in a DIFFERENT (imported) file, so
+/// re-parsing the CURRENT file could never find it — showing no value there
+/// is correct, not a shortcut.
 fn render_decl_hover(
     sym: &SymbolDef,
     doc_comments: &HashMap<usize, String>,
     resource_estimates: &HashMap<String, ResourceEstimate>,
+    value_ctx: Option<(&str, &str)>,
 ) -> String {
     let ty_str = sym.ty.as_deref().unwrap_or("unknown");
+    let const_kw = if sym.is_const { "const " } else { "" };
     let mut v = match sym.kind {
         "mod" | "chip" | "fn" => {
             // The signature may carry a leading `<T>` generics prefix, so insert
@@ -1294,7 +1573,7 @@ fn render_decl_hover(
                     None => ty_str.to_string(),
                 }
             } else { ty_str.to_string() };
-            format!("```wirescript\n{} {}{}\n```", sym.kind, sym.name, sig)
+            format!("```wirescript\n{const_kw}{} {}{}\n```", sym.kind, sym.name, sig)
         }
         "typeparam" => {
             // Show the bound; if it's a named constraint class (`Scalar` /
@@ -1316,6 +1595,26 @@ fn render_decl_hover(
                 "```wirescript\n{}{}  (generic type parameter)\n```\nA generic type parameter — resolved to a concrete type per call site{detail}.",
                 sym.name, bound
             )
+        }
+        // `name: const string` — the keyword sits before the TYPE, mirroring
+        // how the parameter is spelled in the signature itself.
+        "param" => {
+            let ty_display = if sym.is_const { format!("const {ty_str}") } else { ty_str.to_string() };
+            format!("```wirescript\nparam {}: {}\n```", sym.name, ty_display)
+        }
+        // A `const` binding: show `const`, not `let`, and — the single most
+        // useful thing hover can say about a compile-time constant — its
+        // computed VALUE, when `value_ctx` lets us attempt one. A value that
+        // can't be determined at hover time (needs a call site, or genuinely
+        // fails to evaluate) is simply omitted rather than guessed at.
+        "let" if sym.is_const => {
+            let value = value_ctx
+                .and_then(|(source, file)| const_hover_value(source, file, sym.range.start.offset))
+                .map(|lit| literal_display(&lit));
+            match value {
+                Some(val) => format!("```wirescript\nconst {}: {} = {}\n```", sym.name, ty_str, val),
+                None => format!("```wirescript\nconst {}: {}\n```", sym.name, ty_str),
+            }
         }
         _ => format!("```wirescript\n{} {}: {}\n```", sym.kind, sym.name, ty_str),
     };
@@ -1367,7 +1666,7 @@ fn hover_namespace_member(
     }
     let qualified = format!("{obj_name}.{word}");
     let sym = symbols.iter().find(|s| s.name == qualified)?;
-    Some(render_decl_hover(sym, doc_comments, resource_estimates))
+    Some(render_decl_hover(sym, doc_comments, resource_estimates, None))
 }
 
 fn resolve_record_lit_field(source: &str, symbols: &[SymbolDef], field: &str, line: usize) -> Option<String> {

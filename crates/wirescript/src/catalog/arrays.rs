@@ -35,6 +35,18 @@ pub struct ArrayMethod {
     /// have no config-only params). `array_return_type` is the source of truth
     /// for the return type — `CallSignature` doesn't carry one.
     pub params: fn(&Type) -> Vec<crate::typecheck::Param>,
+    /// Does this method CHANGE the receiver's contents?
+    ///
+    /// Stored per-entry as DATA for the same reason `params` is: a method added
+    /// to `ARRAY_METHODS` must state its own answer rather than inherit a
+    /// default that could be silently wrong. Deriving it from the gate class
+    /// would be a second, drift-prone spelling of the same fact.
+    ///
+    /// Read by the `const` container path in `lower::access` — a `const` array
+    /// is a compile-time value AND a runtime container, and the two can only
+    /// stay one source of truth while nothing mutates it. "Read-only" is meant
+    /// with respect to the RECEIVER; no array method writes anywhere else.
+    pub mutates: bool,
 }
 
 /// Build one `ParamKind::Wire` parameter (shared by the `params` builders).
@@ -61,41 +73,41 @@ impl ArrayMethod {
 
 /// Every method callable on an array, in a stable display order.
 pub static ARRAY_METHODS: &[ArrayMethod] = &[
-    ArrayMethod { name: "push", gate: gc::ARRAY_PUSH, signature: "(value)", doc: "Append an element to the end of the array", params: |t| vec![p("value", t.clone(), false)] },
-    ArrayMethod { name: "pop", gate: gc::ARRAY_POP, signature: "()", doc: "Remove and return the last element", params: |_| vec![] },
-    ArrayMethod { name: "length", gate: gc::ARRAY_GET_LENGTH, signature: "() -> int", doc: "Return the number of elements", params: |_| vec![] },
-    ArrayMethod { name: "remove", gate: gc::ARRAY_REMOVE_AT_INDEX, signature: "(index)", doc: "Remove the element at the given index", params: |_| vec![p("index", Type::Int, false)] },
-    ArrayMethod { name: "insert", gate: gc::ARRAY_INSERT, signature: "(index, value)", doc: "Insert an element at the given index", params: |t| vec![p("index", Type::Int, false), p("value", t.clone(), false)] },
-    ArrayMethod { name: "clear", gate: gc::ARRAY_CLEAR, signature: "()", doc: "Remove all elements from the array", params: |_| vec![] },
-    ArrayMethod { name: "get", gate: gc::ARRAY_GET, signature: "(index)", doc: "Read the element at index; gives its Value (default) and OutOfBounds", params: |_| vec![p("index", Type::Int, false)] },
-    ArrayMethod { name: "find", gate: gc::ARRAY_FIND, signature: "(value)", doc: "Find the first matching element; gives its Index (default, -1 if absent), Found, and Value", params: |t| vec![p("value", t.clone(), false)] },
-    ArrayMethod { name: "sort", gate: gc::ARRAY_SORT, signature: "(descending?)", doc: "Sort the array in place", params: |_| vec![p("descending", Type::Bool, true)] },
-    ArrayMethod { name: "reverse", gate: gc::ARRAY_REVERSE, signature: "()", doc: "Reverse the element order in place", params: |_| vec![] },
-    ArrayMethod { name: "shuffle", gate: gc::ARRAY_SHUFFLE, signature: "()", doc: "Randomly reorder all elements", params: |_| vec![] },
-    ArrayMethod { name: "swap", gate: gc::ARRAY_SWAP, signature: "(a, b)", doc: "Swap the elements at indices a and b", params: |_| vec![p("a", Type::Int, false), p("b", Type::Int, false)] },
-    ArrayMethod { name: "fill", gate: gc::ARRAY_FILL, signature: "(value)", doc: "Set every element to value", params: |t| vec![p("value", t.clone(), false)] },
-    ArrayMethod { name: "resize", gate: gc::ARRAY_RESIZE, signature: "(size, value)", doc: "Grow/shrink to size, filling new slots with value", params: |t| vec![p("size", Type::Int, false), p("value", t.clone(), false)] },
-    ArrayMethod { name: "sum", gate: gc::ARRAY_SUM, signature: "()", doc: "Sum of all elements", params: |_| vec![] },
-    ArrayMethod { name: "min", gate: gc::ARRAY_MIN, signature: "()", doc: "Smallest element", params: |_| vec![] },
-    ArrayMethod { name: "max", gate: gc::ARRAY_MAX, signature: "()", doc: "Largest element", params: |_| vec![] },
-    ArrayMethod { name: "average", gate: gc::ARRAY_AVERAGE, signature: "()", doc: "Mean of all elements", params: |_| vec![] },
-    ArrayMethod { name: "append", gate: gc::ARRAY_APPEND, signature: "(source)", doc: "Append all elements of another array", params: |t| vec![p("source", Type::Array(Box::new(t.clone())), false)] },
-    ArrayMethod { name: "copyFrom", gate: gc::ARRAY_COPY_FROM, signature: "(source)", doc: "Replace contents with a copy of another array", params: |t| vec![p("source", Type::Array(Box::new(t.clone())), false)] },
-    ArrayMethod { name: "slice", gate: gc::ARRAY_SLICE, signature: "(source, start, count)", doc: "Copy source[start..start+count] into this array", params: |t| vec![p("source", Type::Array(Box::new(t.clone())), false), p("start", Type::Int, false), p("count", Type::Int, false)] },
-    ArrayMethod { name: "fillFromPlayers", gate: gc::GAMEMODE_FILL_FROM_PLAYERS, signature: "()", doc: "Fill this array with all current players", params: |_| vec![] },
-    ArrayMethod { name: "fillFromTeam", gate: gc::GAMEMODE_FILL_FROM_TEAM, signature: "(team)", doc: "Fill this array with the members of a team", params: |_| vec![p("team", Type::Entity, false)] },
+    ArrayMethod { name: "push", mutates: true, gate: gc::ARRAY_PUSH, signature: "(value)", doc: "Append an element to the end of the array", params: |t| vec![p("value", t.clone(), false)] },
+    ArrayMethod { name: "pop", mutates: true, gate: gc::ARRAY_POP, signature: "()", doc: "Remove and return the last element", params: |_| vec![] },
+    ArrayMethod { name: "length", mutates: false, gate: gc::ARRAY_GET_LENGTH, signature: "() -> int", doc: "Return the number of elements", params: |_| vec![] },
+    ArrayMethod { name: "remove", mutates: true, gate: gc::ARRAY_REMOVE_AT_INDEX, signature: "(index)", doc: "Remove the element at the given index", params: |_| vec![p("index", Type::Int, false)] },
+    ArrayMethod { name: "insert", mutates: true, gate: gc::ARRAY_INSERT, signature: "(index, value)", doc: "Insert an element at the given index", params: |t| vec![p("index", Type::Int, false), p("value", t.clone(), false)] },
+    ArrayMethod { name: "clear", mutates: true, gate: gc::ARRAY_CLEAR, signature: "()", doc: "Remove all elements from the array", params: |_| vec![] },
+    ArrayMethod { name: "get", mutates: false, gate: gc::ARRAY_GET, signature: "(index)", doc: "Read the element at index; gives its Value (default) and OutOfBounds", params: |_| vec![p("index", Type::Int, false)] },
+    ArrayMethod { name: "find", mutates: false, gate: gc::ARRAY_FIND, signature: "(value)", doc: "Find the first matching element; gives its Index (default, -1 if absent), Found, and Value", params: |t| vec![p("value", t.clone(), false)] },
+    ArrayMethod { name: "sort", mutates: true, gate: gc::ARRAY_SORT, signature: "(descending?)", doc: "Sort the array in place", params: |_| vec![p("descending", Type::Bool, true)] },
+    ArrayMethod { name: "reverse", mutates: true, gate: gc::ARRAY_REVERSE, signature: "()", doc: "Reverse the element order in place", params: |_| vec![] },
+    ArrayMethod { name: "shuffle", mutates: true, gate: gc::ARRAY_SHUFFLE, signature: "()", doc: "Randomly reorder all elements", params: |_| vec![] },
+    ArrayMethod { name: "swap", mutates: true, gate: gc::ARRAY_SWAP, signature: "(a, b)", doc: "Swap the elements at indices a and b", params: |_| vec![p("a", Type::Int, false), p("b", Type::Int, false)] },
+    ArrayMethod { name: "fill", mutates: true, gate: gc::ARRAY_FILL, signature: "(value)", doc: "Set every element to value", params: |t| vec![p("value", t.clone(), false)] },
+    ArrayMethod { name: "resize", mutates: true, gate: gc::ARRAY_RESIZE, signature: "(size, value)", doc: "Grow/shrink to size, filling new slots with value", params: |t| vec![p("size", Type::Int, false), p("value", t.clone(), false)] },
+    ArrayMethod { name: "sum", mutates: false, gate: gc::ARRAY_SUM, signature: "()", doc: "Sum of all elements", params: |_| vec![] },
+    ArrayMethod { name: "min", mutates: false, gate: gc::ARRAY_MIN, signature: "()", doc: "Smallest element", params: |_| vec![] },
+    ArrayMethod { name: "max", mutates: false, gate: gc::ARRAY_MAX, signature: "()", doc: "Largest element", params: |_| vec![] },
+    ArrayMethod { name: "average", mutates: false, gate: gc::ARRAY_AVERAGE, signature: "()", doc: "Mean of all elements", params: |_| vec![] },
+    ArrayMethod { name: "append", mutates: true, gate: gc::ARRAY_APPEND, signature: "(source)", doc: "Append all elements of another array", params: |t| vec![p("source", Type::Array(Box::new(t.clone())), false)] },
+    ArrayMethod { name: "copyFrom", mutates: true, gate: gc::ARRAY_COPY_FROM, signature: "(source)", doc: "Replace contents with a copy of another array", params: |t| vec![p("source", Type::Array(Box::new(t.clone())), false)] },
+    ArrayMethod { name: "slice", mutates: true, gate: gc::ARRAY_SLICE, signature: "(source, start, count)", doc: "Copy source[start..start+count] into this array", params: |t| vec![p("source", Type::Array(Box::new(t.clone())), false), p("start", Type::Int, false), p("count", Type::Int, false)] },
+    ArrayMethod { name: "fillFromPlayers", mutates: true, gate: gc::GAMEMODE_FILL_FROM_PLAYERS, signature: "()", doc: "Fill this array with all current players", params: |_| vec![] },
+    ArrayMethod { name: "fillFromTeam", mutates: true, gate: gc::GAMEMODE_FILL_FROM_TEAM, signature: "(team)", doc: "Fill this array with the members of a team", params: |_| vec![p("team", Type::Entity, false)] },
     // `fillFromZone*` take a `zone` rerouter reference ONLY (`in z: zone` →
     // `Type::Zone`). The `Zone` slot never accepts a plain entity — only a
     // zone. (The `Type::Entity` seen at the wire layer in `lower::access` is
     // the internal object-wire type a `ZoneRef` connection carries, not a
     // source-level entity input.)
-    ArrayMethod { name: "fillFromZoneEntities", gate: gc::ZONE_GET_ENTITIES, signature: "(zone, tagFilter?)", doc: "Fill this array with the entities inside a zone", params: |_| vec![p("zone", Type::Zone, false), p("tagFilter", Type::String, true)] },
-    ArrayMethod { name: "fillFromZonePlayers", gate: gc::ZONE_GET_PLAYERS, signature: "(zone, tagFilter?)", doc: "Fill this array with the players inside a zone", params: |_| vec![p("zone", Type::Zone, false), p("tagFilter", Type::String, true)] },
+    ArrayMethod { name: "fillFromZoneEntities", mutates: true, gate: gc::ZONE_GET_ENTITIES, signature: "(zone, tagFilter?)", doc: "Fill this array with the entities inside a zone", params: |_| vec![p("zone", Type::Zone, false), p("tagFilter", Type::String, true)] },
+    ArrayMethod { name: "fillFromZonePlayers", mutates: true, gate: gc::ZONE_GET_PLAYERS, signature: "(zone, tagFilter?)", doc: "Fill this array with the players inside a zone", params: |_| vec![p("zone", Type::Zone, false), p("tagFilter", Type::String, true)] },
     // `sortMultiple` is a true variadic (this array + up to 7 parallel arrays,
     // then an optional `descending?`) that `Param`'s fixed arity can't express;
     // empty params opts it out of `check_args`'s arity/type checking rather
     // than rejecting valid calls against a fake fixed arity.
-    ArrayMethod { name: "sortMultiple", gate: gc::ARRAY_SORT_MULTIPLE, signature: "(other, ..., descending?)", doc: "Sort this array and up to 7 parallel arrays together, by this array's order", params: |_| vec![] },
+    ArrayMethod { name: "sortMultiple", mutates: true, gate: gc::ARRAY_SORT_MULTIPLE, signature: "(other, ..., descending?)", doc: "Sort this array and up to 7 parallel arrays together, by this array's order", params: |_| vec![] },
 ];
 
 /// All array methods.

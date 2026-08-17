@@ -63,7 +63,33 @@ fn check_one_chip_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
     }
 }
 
+/// Whether this statement carries `@nofold`. Mirrors the set of
+/// `ctx.with_nofold(<stmt>.no_fold, …)` wraps in `lower::stmt::lower_stmt`
+/// (Await, OutBinding, Handler, Let, Var) plus `ChipDecl`, whose body lowering
+/// marks via `build_chip_module`'s own `nofold_depth` seed. Wrapping the whole
+/// dispatch on this — rather than per arm — is what keeps the two stages from
+/// drifting as arms are added: a variant with no `no_fold` field simply
+/// reports `false` and behaves exactly as before.
+fn stmt_no_fold(s: &Stmt) -> bool {
+    match s {
+        Stmt::Await(a) => a.no_fold,
+        Stmt::OutBinding(b) => b.no_fold,
+        Stmt::Handler(h) => h.no_fold,
+        Stmt::Let(l) => l.no_fold,
+        Stmt::Var(v) => v.no_fold,
+        Stmt::ChipDecl(c) => c.no_fold,
+        _ => false,
+    }
+}
+
 pub(super) fn check_stmt(
+    ctx: &mut TypeCheckCtx,
+    s: &Stmt,
+) {
+    ctx.with_nofold(stmt_no_fold(s), |ctx| check_stmt_inner(ctx, s));
+}
+
+fn check_stmt_inner(
     ctx: &mut TypeCheckCtx,
     s: &Stmt,
 ) {
@@ -114,7 +140,7 @@ pub(super) fn check_stmt(
             check_decl(ctx, &TopDecl::Map(m.clone()));
         }
         Stmt::Let(l) => {
-            let t = infer::infer(ctx, &l.value);
+            let t = infer_let_init(ctx, l);
             check_let_type_annotation(ctx, l, &t);
             record_single_output_alias(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
@@ -124,11 +150,165 @@ pub(super) fn check_stmt(
             // elsewhere in this scope (or a nested one) can resolve `name`
             // via `ctx.const_lookup()`. Only the simple `Ident` binding form
             // can name a single constant — a destructured `let` can't.
-            if let LetBinding::Ident { name, .. } = &l.binding
-                && let Some(lit) = crate::lower::expr_to_literal_in(&l.value, &ctx.const_lookup())
-                && let Some(frame) = ctx.scoped_consts.last_mut()
-            {
-                frame.insert(name.clone(), lit);
+            //
+            // `let` folds OPPORTUNISTICALLY: a failed evaluation just leaves
+            // it as a runtime value, same as always. `const` is a GUARANTEE —
+            // the same failure is the evaluator's own error (WS046, or
+            // WS047/WS048 for a refused/budget-exceeded evaluation).
+            if let LetBinding::Ident { name, .. } = &l.binding {
+                // Evaluate against the FULL environment (unchanged behavior),
+                // and — for a value that does evaluate — probe again with
+                // placeholders removed. Placeholder-ness is TRANSITIVE:
+                // `const t = m + 1` inside a body with a `const` param `m`
+                // only evaluates because `m` is seeded as a type-shaped zero,
+                // so `t`'s value is just as fictional and must not be allowed
+                // to decide a branch either. Detecting it by re-evaluation
+                // rather than by scanning the expression for names keeps it
+                // exact: any read of a placeholder, however deeply nested,
+                // makes the clean probe fail. Both evaluations happen up
+                // front so their borrows of `ctx` end before the recording
+                // below needs `&mut ctx`.
+                let (evaluated, derives_from_placeholder) = {
+                    let lookup = |n: &str| ctx.resolve_mod(n);
+                    let mut budget = crate::const_eval::Budget::default();
+                    let evaluated =
+                        crate::const_eval::eval_expr(&l.value, &ctx.const_ctx(Some(&lookup)), &mut budget);
+                    let derived = evaluated.is_ok() && {
+                        let mut probe = crate::const_eval::Budget::default();
+                        crate::const_eval::eval_expr(
+                            &l.value,
+                            &ctx.const_ctx_without_placeholders(Some(&lookup)),
+                            &mut probe,
+                        )
+                        .is_err()
+                    };
+                    (evaluated, derived)
+                };
+                match evaluated {
+                    Ok(lit) => {
+                        // The value itself is still recorded from the full
+                        // environment — the presence-only readers this was
+                        // built for (e.g. `validate_scalar_config_arg`'s
+                        // WS028) must keep seeing `name` as constant.
+                        if let Some(frame) = ctx.scoped_consts.last_mut() {
+                            frame.insert(name.clone(), lit);
+                        }
+                        // Record whether THIS binding is spelled `const` —
+                        // see `const_declared`'s doc comment. Same
+                        // rebind-clears-the-mark discipline as the
+                        // placeholder set just below.
+                        if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+                            if l.is_const {
+                                frame.insert(name.clone());
+                            } else {
+                                frame.remove(name);
+                            }
+                        }
+                        if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
+                            // Re-binding the same name in the same frame must
+                            // be able to CLEAR the mark as well as set it.
+                            if derives_from_placeholder {
+                                frame.insert(name.clone());
+                            } else {
+                                frame.remove(name);
+                            }
+                        }
+                        check_const_recorded(ctx, l);
+                    }
+                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
+                    Err(_) => {}
+                }
+            } else {
+                // Same shape as the `Ident` arm above, generalized to every
+                // name a destructuring binding introduces: evaluate the WHOLE
+                // right-hand side once, split it via `bind_destructured`, and
+                // probe again with placeholders removed to detect whether the
+                // split-out values are themselves fictional. The same
+                // transitivity the `Ident` arm's comment describes applies
+                // here unchanged — every name THIS destructure binds comes
+                // from the SAME evaluated record, so they are all equally
+                // placeholder-derived (or not) together.
+                let (evaluated, derives_from_placeholder) = {
+                    let lookup = |n: &str| ctx.resolve_mod(n);
+                    let mut budget = crate::const_eval::Budget::default();
+                    let evaluated =
+                        crate::const_eval::eval_expr(&l.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
+                            .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
+                    let derived = evaluated.is_ok() && {
+                        let mut probe = crate::const_eval::Budget::default();
+                        crate::const_eval::eval_expr(
+                            &l.value,
+                            &ctx.const_ctx_without_placeholders(Some(&lookup)),
+                            &mut probe,
+                        )
+                        .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit))
+                        .is_err()
+                    };
+                    (evaluated, derived)
+                };
+                match evaluated {
+                    // ONLY a `const` destructure is recorded, mirroring
+                    // `lower::decl`'s own `if d.is_const` gate exactly.
+                    //
+                    // Recording a plain `let` here too (which this did
+                    // briefly) makes the two sides disagree in the one
+                    // direction that is never safe: typecheck would treat the
+                    // name as a compile-time constant while lowering — whose
+                    // non-`const` path is the NARROW `expr_to_literal_in`, and
+                    // which therefore cannot fold the record literal such a
+                    // binding destructures — would not. The name then
+                    // satisfies a constant-only config slot at check time and
+                    // is silently dropped at fold time
+                    // (`lower::call::builtin`), so
+                    // `let { chan } = { chan: "evt" }` + `SendCustomEvent(chan,
+                    // v)` compiled clean and shipped a gate with an EMPTY
+                    // channel name. Gating here restores the WS028 that
+                    // correctly rejected exactly that program before
+                    // destructuring `const` existed.
+                    //
+                    // Widening LOWERING to match instead would not work: its
+                    // non-`const` path is narrow by design (see
+                    // `lower::decl`'s own comment on why widening it changes
+                    // how a `const`-free program compiles), and the narrow
+                    // evaluator cannot fold a record literal at all — so the
+                    // value would still be dropped.
+                    Ok(pairs) if l.is_const => {
+                        for (name, lit) in pairs {
+                            if let Some(frame) = ctx.scoped_consts.last_mut() {
+                                frame.insert(name.clone(), lit);
+                            }
+                            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+                                frame.insert(name.clone());
+                            }
+                            if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
+                                if derives_from_placeholder {
+                                    frame.insert(name.clone());
+                                } else {
+                                    frame.remove(&name);
+                                }
+                            }
+                        }
+                        check_const_recorded(ctx, l);
+                    }
+                    // A plain `let` destructure re-binding a name must still
+                    // CLEAR any `const` mark and value it shadows, or the
+                    // outer constant would keep resolving through the shadow.
+                    Ok(pairs) => {
+                        for (name, _) in pairs {
+                            if let Some(frame) = ctx.scoped_consts.last_mut() {
+                                frame.remove(&name);
+                            }
+                            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+                                frame.remove(&name);
+                            }
+                            if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
+                                frame.remove(&name);
+                            }
+                        }
+                    }
+                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
+                    Err(_) => {}
+                }
             }
         }
         Stmt::Assign(a) => {
@@ -298,9 +478,75 @@ pub(super) fn check_stmt(
                 ctx.exec_mode() == ExecMode::Exec,
             );
             infer::infer(ctx, &i.cond);
-            check_block(ctx, &i.then_block);
-            if let Some(else_b) = &i.else_block {
-                check_block(ctx, else_b);
+            // `if constexpr` semantics: a const-evaluable condition is
+            // resolved right here, through the SAME evaluator lowering's
+            // `lower_if` uses, so the two stages agree on exactly which
+            // condition is decidable and which way it goes — see
+            // `dropped_ranges`'s doc comment for why that agreement matters.
+            // The untaken block is NOT type-checked at all: it may not even
+            // be valid code for this const value (e.g. a branch calling a mod
+            // that only exists for a different mode), which is the point of
+            // the feature.
+            //
+            // THREE guards keep the agreement exact, and all exist because
+            // dropping a block HERE that lowering still EMITS ships
+            // never-type-checked code:
+            //
+            // 1. `nofold_depth == 0` — the identical condition `lower_if`
+            //    gates its own elision on. Under `@nofold` lowering builds a
+            //    real `Branch` and lowers BOTH blocks, so this stage must
+            //    check both too.
+            // 2. Placeholder removal — a `const` PARAMETER is seeded into
+            //    `scoped_consts` as a type-shaped zero while a mod body is
+            //    checked (once, before any call site exists), and a
+            //    placeholder must never decide a branch: lowering inlines
+            //    the REAL argument and would pick the other way. Dropping
+            //    placeholders from the environment makes such a condition
+            //    simply unevaluable here, so both blocks are checked — the
+            //    safe over-checking direction, and exactly what this body did
+            //    before const `if` existed.
+            // 3. const-DECLARED-only — a plain `let` that merely happens to
+            //    fold (no `const` keyword anywhere) must NOT gain this
+            //    elision: the feature's own rule is that a program using no
+            //    `const` compiles identically to before. `if_cond_const_ctx`
+            //    restricts the environment to names actually spelled `const`
+            //    (see `const_declared`'s doc comment), so a condition built
+            //    from a plain `let` simply fails to evaluate here and falls
+            //    through to the general Branch path below, exactly as it did
+            //    before this feature existed.
+            let cond_result = if ctx.nofold_depth > 0 {
+                None
+            } else {
+                let lookup = |n: &str| ctx.resolve_mod(n);
+                let mut budget = crate::const_eval::Budget::default();
+                let cond_cx = ctx.if_cond_const_ctx(Some(&lookup));
+                crate::const_eval::eval_expr(&i.cond, &cond_cx, &mut budget).ok()
+            };
+            match cond_result {
+                Some(crate::ir::Literal::Bool(true)) => {
+                    check_block(ctx, &i.then_block);
+                    if let Some(else_b) = &i.else_block {
+                        ctx.dropped_ranges.push((
+                            else_b.range.clone(),
+                            format!("`{}` is true here", describe_cond(&i.cond)),
+                        ));
+                    }
+                }
+                Some(crate::ir::Literal::Bool(false)) => {
+                    ctx.dropped_ranges.push((
+                        i.then_block.range.clone(),
+                        format!("`{}` is false here", describe_cond(&i.cond)),
+                    ));
+                    if let Some(else_b) = &i.else_block {
+                        check_block(ctx, else_b);
+                    }
+                }
+                _ => {
+                    check_block(ctx, &i.then_block);
+                    if let Some(else_b) = &i.else_block {
+                        check_block(ctx, else_b);
+                    }
+                }
             }
         }
         Stmt::ExprStmt(es) => {
@@ -423,6 +669,29 @@ fn infer_assign_target(
             // (an array/map binding it aliases). A scalar `let` is a computed
             // wire, not storage: `y = 5` on a `let y = x + 1` type-checked
             // clean and then emitted NO gate (the write vanished).
+            // A `const` container is the one reference-backed `let` that is
+            // NOT a writable target. It is a compile-time value as well as a
+            // runtime container, and a write would make those two disagree —
+            // `xs[0] = 99` while `const z = xs[0]` still folds to the original
+            // element. (Before a `const` container had a runtime form at all
+            // this write type-checked clean and then lowered to nothing, so
+            // rejecting it replaces a silent drop, not a working feature.)
+            Some(s)
+                if s.kind == SymbolKind::LetBinding
+                    && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _))
+                    && ctx.is_const_container(name) =>
+            {
+                ctx.emit(
+                    "WS007",
+                    format!(
+                        "'{name}' is a `const` array/map and can't be written — a `const` \
+                         container is immutable so its compile-time value and its runtime \
+                         contents can never disagree; declare it `var` to make it mutable"
+                    ),
+                    range.clone(),
+                );
+                Type::Any
+            }
             Some(s)
                 if s.kind == SymbolKind::LetBinding
                     && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)) =>
@@ -470,5 +739,29 @@ fn infer_assign_target(
         }
     } else {
         Type::Any
+    }
+}
+
+/// Best-effort rendering of a const `if` condition for the dropped-block
+/// reason text (`` `N > 1` is true here ``) — NOT a general expression
+/// pretty-printer (there isn't one in this crate; the `.ws` formatter lives
+/// in a separate JS plugin), just enough to name the common shapes a
+/// const-evaluable condition actually takes: a bare name, a literal, a unary
+/// or binary operator over sub-expressions, and a `.field` read. Anything
+/// else (a call, an index, ...) falls back to a generic placeholder — this
+/// is purely explanatory text for a diagnostic, never parsed back.
+fn describe_cond(e: &Expr) -> String {
+    match e {
+        Expr::Ident { name, .. } => name.clone(),
+        Expr::BoolLit { value, .. } => value.to_string(),
+        Expr::IntLit { text, .. } => text.clone(),
+        Expr::FloatLit { text, .. } => text.clone(),
+        Expr::StringLit { value, .. } => format!("\"{value}\""),
+        Expr::UnOp { op, operand, .. } => format!("{op}{}", describe_cond(operand)),
+        Expr::BinOp { op, left, right, .. } => {
+            format!("{} {op} {}", describe_cond(left), describe_cond(right))
+        }
+        Expr::FieldAccess { obj, field, .. } => format!("{}.{field}", describe_cond(obj)),
+        _ => "the condition".to_string(),
     }
 }

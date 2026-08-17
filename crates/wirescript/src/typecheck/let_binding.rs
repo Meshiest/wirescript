@@ -3,17 +3,20 @@
 
 use super::*;
 
-/// The element types of `t` viewed as a tuple. A tuple literal desugars to a
-/// record keyed by element index, so `Record([("0", T0), ("1", T1)])` describes
-/// the same shape as `Tuple([T0, T1])` and destructures the same way.
+/// The element types of `t` viewed as a tuple, POSITIONALLY.
+///
+/// A tuple literal desugars to a record keyed by element index, so
+/// `Record([("0", T0), ("1", T1)])` describes the same shape as
+/// `Tuple([T0, T1])`. A multi-output `mod`'s result types as a NAME-keyed
+/// record instead (`output_record_type` in `typecheck::call`, keyed by the
+/// signature's own output names) — but its fields are in the signature's
+/// DECLARATION order, which is exactly what a positional pattern means, so a
+/// tuple pattern reads it the same way. Field NAMES are ignored here on
+/// purpose: `(a, b)` says "the first two, in order", and nothing else.
 fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
     match t {
         Type::Tuple(fields) => Some(fields.clone()),
-        Type::Record(fields) => fields
-            .iter()
-            .enumerate()
-            .map(|(i, (key, ft))| (*key == i.to_string()).then(|| ft.clone()))
-            .collect(),
+        Type::Record(fields) => Some(fields.iter().map(|(_, ft)| ft.clone()).collect()),
         _ => None,
     }
 }
@@ -66,6 +69,74 @@ pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding,
     }
 }
 
+/// The `const` post-binding assertion: after a `const` declaration's
+/// initializer has evaluated AND been recorded, every name it introduced must
+/// READ BACK as a compile-time constant at this point. If one does not, say so
+/// HERE, at the binding — reusing WS046.
+///
+/// This is deliberately NOT the "initializer failed to evaluate" check (the
+/// `Err(err) if l.is_const` arms in `typecheck::decl`/`typecheck::stmt` already
+/// do that, and run before this). It is the OPPOSITE failure: an initializer
+/// that evaluates perfectly well, whose value then lands nowhere any later
+/// statement can see, because no environment in scope accepted it.
+///
+/// That failure used to be invisible at the declaration and surfaced later, at
+/// some USE, blamed on a DIFFERENT binding — `const a = 1` recorded nowhere is
+/// silent, and only the `const b = a + 1` that reads it reports "'a' is a
+/// runtime value". Worse, a `const` whose only use is a constant-only slot
+/// (a custom-event channel name, gate config) reported nothing at all and
+/// baked an empty value; two silent miscompiles in this feature's history had
+/// exactly that shape.
+///
+/// The oracle is plain `const_lookup` — "is a value for this name readable
+/// here at all" — NOT `const_lookup_declared_only`. The stronger question
+/// ("is it marked const-DECLARED in this frame") looks like the better fit and
+/// is not: `typecheck::decl`'s `TopDecl::Let` arm records a value into
+/// `scoped_consts` without ever writing the matching `scoped_const_declared`
+/// mark, which is harmless at the top level (no frame is open there, so the
+/// insert is a no-op and the marks come from `build_const_declared_names`) but
+/// NOT inside the pushed scope `TopDecl::Namespace` checks a namespaced
+/// module's members in. Under the strict oracle every `import * as ns` of a
+/// module containing a top-level `const` reported here — measured: it made
+/// `compile` fail on programs `check` passed, the exact check-vs-compile split
+/// this feature is supposed to close.
+///
+/// The weaker oracle still catches every failure this assertion exists for,
+/// because those record the name NOWHERE at all rather than recording it
+/// without a mark. That asymmetry between the two recording sites is real and
+/// pre-existing; it errs in the safe direction (typecheck over-checks a block
+/// lowering elides) and is left alone here rather than fixed blind.
+///
+/// Ordering requirement: call this only AFTER the success arm has done its
+/// recording, and only on the success path (an initializer that failed to
+/// evaluate has already been reported, and would otherwise be reported twice).
+/// At the TOP level the recording that matters is not the local one — it is
+/// `build_const_env`'s whole-program fixpoint, which has already converged
+/// before any decl is checked, so a name still missing from it here is settled
+/// and not merely unresolved yet.
+pub(super) fn check_const_recorded(ctx: &mut TypeCheckCtx, l: &LetDecl) {
+    if !l.is_const {
+        return;
+    }
+    let env = ctx.const_lookup();
+    let missing: Vec<String> = crate::const_eval::bound_names(&l.binding)
+        .into_iter()
+        .filter(|n| !env.contains_key(n))
+        .collect();
+    for name in missing {
+        ctx.emit(
+            "WS046",
+            format!(
+                "not a compile-time constant: '{name}' is declared `const` and its value \
+                 evaluates, but it is not recorded as a constant in this scope — reading it \
+                 would give a runtime value, and passing it to a constant-only slot would \
+                 bake an empty one"
+            ),
+            l.range.clone(),
+        );
+    }
+}
+
 pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
     match b {
         LetBinding::Ident { name, range } => {
@@ -81,10 +152,31 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                 },
             );
         }
-        LetBinding::Tuple { names, range, .. } => {
+        LetBinding::Tuple { names, rest, range } => {
+            // `rest` takes everything past `names`, so the source only has to
+            // be AT LEAST as wide as the named positions when one is present.
             if let Some(fields) = as_tuple_fields(t)
-                && fields.len() == names.len()
+                && (fields.len() == names.len()
+                    || (rest.is_some() && fields.len() >= names.len()))
             {
+                if let Some(rest_name) = rest {
+                    let tail: Vec<(String, Type)> = fields[names.len()..]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, ft)| (i.to_string(), ft.clone()))
+                        .collect();
+                    ctx.scope.declare(
+                        rest_name,
+                        SymbolInfo {
+                            kind: SymbolKind::LetBinding,
+                            name: rest_name.clone(),
+                            ty: Type::Record(tail),
+                            decl_range: range.clone(),
+                            signature: None,
+                            event_data: None,
+                        },
+                    );
+                }
                 for (n, ft) in names.iter().zip(fields.iter()) {
                     ctx.scope.declare(
                         n,
@@ -100,16 +192,20 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                 }
                 return;
             }
+            let got = match as_tuple_fields(t) {
+                Some(fields) => format!("{} value(s)", fields.len()),
+                None => format!("{t:?}, which has no positional fields"),
+            };
             ctx.emit(
                 "WS010",
                 format!(
-                    "destructure shape: expected tuple[{}], got {:?}",
+                    "destructure shape: this pattern binds {} position(s){}, but the value has {got}",
                     names.len(),
-                    t
+                    if rest.is_some() { " plus a rest" } else { "" },
                 ),
                 range.clone(),
             );
-            for n in names {
+            for n in names.iter().chain(rest.iter()) {
                 ctx.scope.declare(
                     n,
                     SymbolInfo {
@@ -148,6 +244,18 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
             }
         }
         LetBinding::RecordDestruct { fields, range } => {
+            // Field names consumed by a `Named` SO FAR, grown as the pattern
+            // is walked. Incremental (prefix) rather than whole-pattern
+            // precisely so this stays a true mirror of
+            // `const_eval::bind_destructured`, which builds its own `consumed`
+            // the same way: a `Named` appearing AFTER a `Rest` is not excluded
+            // from that rest by either side. The parser currently forces
+            // `...rest` last (`parser/decl.rs`), so the two forms agree on
+            // every pattern that can be written today — but agreeing only by
+            // accident of the grammar is exactly the latent divergence that
+            // bites when the grammar relaxes.
+            let mut consumed: crate::collections::HashSet<&str> =
+                crate::collections::HashSet::default();
             for field in fields {
                 let (name, ty) = match field {
                     crate::ast::RecordDestructField::Named { name, alias, .. } => {
@@ -161,11 +269,33 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                         } else {
                             Type::Any
                         };
+                        consumed.insert(name.as_str());
                         (bind_name.clone(), field_ty)
                     }
                     crate::ast::RecordDestructField::Rest { name, .. } => {
-                        // Rest collects remaining fields into a new record
-                        (name.clone(), Type::Any)
+                        // `...rest` collects every field no `Named` consumed,
+                        // so its type is the record of exactly those fields —
+                        // the type-level mirror of `bind_destructured`'s
+                        // value-level rest rule, down to preserving the SOURCE
+                        // record's field order. Typing it `Any` (as this did
+                        // before) made `rest.y` type as `Any` too, so any use
+                        // of it — `rest.y == 222` — failed with WS004 "no
+                        // overload on Any, Int": `...rest` bound a value that
+                        // could not actually be read. Only a known
+                        // `Type::Record` source yields a precise type;
+                        // anything else stays `Any` exactly as before.
+                        let rest_ty = if let Type::Record(rec_fields) = t {
+                            Type::Record(
+                                rec_fields
+                                    .iter()
+                                    .filter(|(k, _)| !consumed.contains(k.as_str()))
+                                    .cloned()
+                                    .collect(),
+                            )
+                        } else {
+                            Type::Any
+                        };
+                        (name.clone(), rest_ty)
                     }
                 };
                 ctx.scope.declare(

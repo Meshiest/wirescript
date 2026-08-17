@@ -286,6 +286,13 @@ pub enum Literal {
     Array(Vec<Literal>),
     /// A map's constant initial entries (`map m = { :a => 1 }`) for the emitter.
     Map(Vec<(Literal, Literal)>),
+    /// A compile-time-only record built by a `const` record literal (`{ rooms:
+    /// 2, timer: 60 }`) or returned from a `const mod`. Unlike `Array`/`Map`,
+    /// this has **no wire representation** — a record exists only to be
+    /// consumed by field access during const evaluation, never emitted. It
+    /// must never reach the emitter; see the `unreachable!` in
+    /// `emit::variants` for why.
+    Record(Vec<(String, Literal)>),
     /// External asset reference `$AssetType/AssetName`. The emitter registers it
     /// in the world's external-asset table and writes the resulting index.
     Asset {

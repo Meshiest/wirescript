@@ -153,3 +153,212 @@ fn namespaced_mod_call_keeps_its_return_type() {
     );
     assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"));
 }
+
+// ---------- `const` across files ----------
+
+/// The `InitialValue` baked into the first array gate of a cross-file program,
+/// child chip modules included.
+fn baked_array_multi(entry: &str, deps: &[(&str, &str)]) -> Vec<crate::ir::Literal> {
+    let r = compile_multi(entry, deps);
+    assert_no_errors(&r);
+    fn find(m: &crate::ir::Module) -> Option<Vec<crate::ir::Literal>> {
+        for n in m.nodes.values() {
+            if let Some(crate::ir::Literal::Array(items)) =
+                n.properties.get(&crate::intern::intern_static("InitialValue"))
+            {
+                return Some(items.clone());
+            }
+        }
+        m.chips.values().find_map(find)
+    }
+    find(&r.module).expect("no array gate with a baked InitialValue")
+}
+
+/// The library every `const`-across-files test below imports from. `12345` is
+/// the control literal in each baked array: it proves the array itself really
+/// was baked, so a missing constant reads as a missing ELEMENT rather than as
+/// a whole gate that quietly never appeared.
+const CONST_LIB: &str = "\
+const SLOTS = 4
+const CHAN = \"libchan\"
+const mod triple(n: const int) -> int { return n * 3 }
+const P = { x: 11, y: 22 }
+const { x: PX, y: PY } = P";
+
+/// A named import of a top-level `const` is compile-time in the importer.
+#[test]
+fn a_named_imported_const_is_compile_time() {
+    assert_eq!(
+        baked_array_multi(
+            "import { SLOTS } from \"lib\"\nvar m: int[] = [SLOTS, 12345]",
+            &[("lib", CONST_LIB)]
+        ),
+        vec![crate::ir::Literal::Int(4), crate::ir::Literal::Int(12345)]
+    );
+}
+
+/// An imported `const mod` answers a call made from a constant-only position,
+/// rather than lowering as ordinary gates.
+#[test]
+fn an_imported_const_mod_answers_a_const_position_call() {
+    assert_eq!(
+        baked_array_multi(
+            "import { triple } from \"lib\"\nvar m: int[] = [triple(5), 12345]",
+            &[("lib", CONST_LIB)]
+        ),
+        vec![crate::ir::Literal::Int(15), crate::ir::Literal::Int(12345)]
+    );
+}
+
+/// A DESTRUCTURED top-level `const` crossing a named import. This could not be
+/// imported at all: `resolve::decl_name` answers "what is this declaration
+/// CALLED", which is `None` for every destructuring binding form, so the named
+/// import's lookup found nothing and reported WS012 "'PX' not found in 'lib'".
+/// `resolve::decl_names` answers the right question — every name it INTRODUCES
+/// — via the same `const_eval::bound_names` the constant environment uses.
+#[test]
+fn a_destructured_const_survives_a_named_import() {
+    assert_eq!(
+        baked_array_multi(
+            "import { PX, PY } from \"lib\"\nvar m: int[] = [PX, PY, 12345]",
+            &[("lib", CONST_LIB)]
+        ),
+        vec![
+            crate::ir::Literal::Int(11),
+            crate::ir::Literal::Int(22),
+            crate::ir::Literal::Int(12345)
+        ]
+    );
+}
+
+/// Aliasing one name out of a destructured `const` renames THAT name only and
+/// keeps it bound to its own field — an alias that renamed the wrong position
+/// would silently import the sibling's value.
+#[test]
+fn a_destructured_const_may_be_imported_under_an_alias() {
+    assert_eq!(
+        baked_array_multi(
+            "import { PX as QX } from \"lib\"\nvar m: int[] = [QX, 12345]",
+            &[("lib", CONST_LIB)]
+        ),
+        vec![crate::ir::Literal::Int(11), crate::ir::Literal::Int(12345)]
+    );
+}
+
+/// `import "lib"` (import-all) already worked — it pushes every importable
+/// declaration and only consults `decl_name` to skip duplicates — but it now
+/// shares the multi-name duplicate check, so pin it too.
+#[test]
+fn a_destructured_const_survives_an_import_all() {
+    assert_eq!(
+        baked_array_multi(
+            "import \"lib\"\nvar m: int[] = [PX, PY, 12345]",
+            &[("lib", CONST_LIB)]
+        ),
+        vec![
+            crate::ir::Literal::Int(11),
+            crate::ir::Literal::Int(22),
+            crate::ir::Literal::Int(12345)
+        ]
+    );
+}
+
+/// A constant-only slot (a custom-event channel name) fed by an imported
+/// `const`: the shape that silently baked an EMPTY value twice in this
+/// feature's history, so assert the baked string, not just that it compiled.
+#[test]
+fn an_imported_const_bakes_into_a_constant_only_slot() {
+    let r = compile_multi(
+        "import { CHAN } from \"lib\"\nin go: exec\non go { SendCustomEvent(CHAN, 1) }",
+        &[("lib", CONST_LIB)],
+    );
+    assert_no_errors(&r);
+    let baked: Vec<String> = r
+        .module
+        .nodes
+        .values()
+        .filter_map(|n| match n.properties.get(&crate::intern::intern_static("EventName")) {
+            Some(crate::ir::Literal::String(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(baked, vec!["libchan".to_string()]);
+}
+
+/// Nested imports: `main` imports `mid`, `mid` imports `leaf`. A `const` and a
+/// `const mod` from `leaf` — and a `const` in `mid` DERIVED from a leaf one —
+/// must all still be compile-time two files away, including through the
+/// constant-only slot.
+#[test]
+fn consts_stay_compile_time_through_a_nested_import() {
+    let leaf = "\
+const LEAF_N = 6
+const LEAF_CH = \"leafchan\"
+const mod leafDouble(n: const int) -> int { return n * 2 }";
+    let mid = "\
+import { LEAF_N, LEAF_CH, leafDouble } from \"leaf\"
+const MID_N = LEAF_N + 1
+const mod midTriple(n: const int) -> int { return leafDouble(n) + n }";
+    let entry = "\
+import { MID_N, midTriple, LEAF_N, LEAF_CH } from \"mid\"
+var m: int[] = [LEAF_N, MID_N, midTriple(4), 12345]
+in go: exec
+on go { SendCustomEvent(LEAF_CH, 1) }";
+    let deps = [("leaf", leaf), ("mid", mid)];
+    assert_eq!(
+        baked_array_multi(entry, &deps),
+        vec![
+            crate::ir::Literal::Int(6),
+            crate::ir::Literal::Int(7),
+            crate::ir::Literal::Int(12),
+            crate::ir::Literal::Int(12345)
+        ]
+    );
+    let r = compile_multi(entry, &deps);
+    assert!(
+        r.module.nodes.values().any(|n| matches!(
+            n.properties.get(&crate::intern::intern_static("EventName")),
+            Some(crate::ir::Literal::String(s)) if s == "leafchan"
+        )),
+        "a const two imports away must still bake into a constant-only slot"
+    );
+}
+
+/// NAMESPACE access to an imported constant (`import * as ns` then `ns.NAME`)
+/// is NOT compile-time: `const_eval` has no model for a namespace, so
+/// `eval_expr`'s `FieldAccess` arm evaluates the namespace itself and reports
+/// "'ns' is a runtime value". The value still works as a RUNTIME one (below),
+/// and every constant-only position rejects it loudly — WS003 here, WS028 for
+/// a channel name, WS040 for a label — rather than baking an empty value,
+/// which is why this is pinned as a known limit and not a silent miscompile.
+/// The named-import spelling above is the supported way to use one constantly.
+#[test]
+fn a_namespaced_const_is_not_compile_time() {
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader {
+        files: [("lib.ws".to_string(), CONST_LIB.to_string())]
+            .into_iter()
+            .collect(),
+    };
+    let resolved = resolve(
+        "import * as lib from \"lib\"\nvar m: int[] = [lib.SLOTS, 12345]",
+        "main",
+        &loader,
+    );
+    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
+    let codes: Vec<&str> = tc.diagnostics.iter().map(|d| d.code.as_ref()).collect();
+    assert!(codes.contains(&"WS003"), "expected a loud refusal, got {codes:?}");
+}
+
+/// The same namespaced constant used as a RUNTIME value is fine, which is what
+/// makes the limit above a missing const-eval feature rather than a broken
+/// import.
+#[test]
+fn a_namespaced_const_still_works_as_a_runtime_value() {
+    let r = compile_multi(
+        "import * as lib from \"lib\"\nout r = lib.SLOTS + 1",
+        &[("lib", CONST_LIB)],
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+}

@@ -27,6 +27,11 @@ pub enum SymbolKind {
 pub struct EventDataField {
     pub name: String,
     pub ty: Type,
+    /// Mirrors `ast::Param::is_const` for a mod/chip PARAMETER field (`name:
+    /// const T`, or every param of a `const mod`); always `false` for an
+    /// output, event-data, or `out` field — const-ness only ever constrains
+    /// an argument, never a produced value.
+    pub is_const: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -165,6 +170,12 @@ pub struct TypeCheckCtx<'a> {
     /// checking; must stay in step with lowering's own environment so both
     /// agree on exactly which initializers are constant.
     pub const_env: crate::lower::ConstEnv,
+    /// Every TOP-LEVEL name declared with the `const` keyword — see
+    /// [`build_const_declared_names`](crate::lower::build_const_declared_names)
+    /// and [`const_lookup_declared_only`](Self::const_lookup_declared_only).
+    /// Unlike `const_env` (every top-level `let` that happens to fold), this
+    /// only ever holds names actually spelled `const`.
+    pub const_declared: crate::collections::HashSet<String>,
     /// Product of the per-mask-member combo counts on the CURRENT nesting path
     /// of generic decls (1 at the top level). A nested generic `mod`/`chip`
     /// re-runs its whole body per outer combo, so without this the per-decl
@@ -181,6 +192,43 @@ pub struct TypeCheckCtx<'a> {
     /// config arg (see `const_lookup`) can resolve it the same way a
     /// top-level `let` resolves through `const_env`.
     pub scoped_consts: Vec<crate::collections::HashMap<String, crate::ir::Literal>>,
+    /// [`const_declared`](Self::const_declared)'s scoped counterpart: which
+    /// `scoped_consts` entries, in the SAME frame, were bound with `const`
+    /// rather than a plain `let` — one frame per `scoped_consts` frame,
+    /// pushed/popped in lockstep by `push_scope`/`pop_scope`. A name present
+    /// in a `scoped_consts` frame but ABSENT from this set at that frame is a
+    /// plain `let`: still resolvable through the ordinary `const_lookup`
+    /// (config args, WS028, …), but excluded by
+    /// [`const_lookup_declared_only`](Self::const_lookup_declared_only).
+    pub(super) scoped_const_declared: Vec<crate::collections::HashSet<String>>,
+    /// Which `scoped_consts` entries are type-shaped PLACEHOLDERS rather than
+    /// real constants — one frame per `scoped_consts` frame, pushed/popped in
+    /// lockstep by `push_scope`/`pop_scope`. Two things land here: a `const`
+    /// PARAMETER seeded by the `TopDecl::Chip` body-check
+    /// (`const_param_placeholder`, a type-shaped zero, because a body is
+    /// checked ONCE — before any call site exists — so there is no correct
+    /// value to use), and any `let`/`const` binding whose own value derives
+    /// from one (see the `Stmt::Let` arm).
+    ///
+    /// A placeholder's VALUE means only "some constant is here"; it must never
+    /// DECIDE anything. [`const_ctx_without_placeholders`](Self::const_ctx_without_placeholders)
+    /// is the enforcement: the `Stmt::If` const-elision arm evaluates its
+    /// condition against an environment with these removed, so a condition
+    /// reading one simply fails to evaluate and BOTH branches get checked —
+    /// the safe over-checking direction, and exactly what the body did before
+    /// const `if` existed. Without it, `mod f(m: const int) { if m == 1 {…}
+    /// else {…} }` type-checks whichever branch the placeholder zero selects
+    /// while lowering — which inlines the REAL argument — ships the other one.
+    pub(super) scoped_const_placeholders: Vec<crate::collections::HashSet<String>>,
+    /// Depth of enclosing `@nofold` declaration subtrees, mirroring
+    /// `lower::LowerCtx::nofold_depth` 1:1 — same module-level seed
+    /// (`Script::no_fold`) and the same per-declaration annotation sites.
+    /// `@nofold` promises "nothing folded or elided", and `lower_if` honors
+    /// that by still building a real `Branch` for a constant condition, so
+    /// this stage must stop eliding there too — otherwise typecheck skips a
+    /// block that lowering emits. A depth counter rather than a bool for the
+    /// same reason lowering uses one: annotated declarations nest.
+    pub(super) nofold_depth: u32,
     /// Inferred custom-event receiver slot types (Task 2's `infer_custom_event_slots`
     /// output), keyed by handler source range. Empty on pass 1 (nothing inferred
     /// yet); populated on pass 2 by `typecheck_with_inference`. Consulted by
@@ -204,6 +252,40 @@ pub struct TypeCheckCtx<'a> {
     /// means "known to be a single-output call result, but its output name
     /// isn't indexed here" — any field is accepted, never a false typo.
     pub single_output_alias: crate::collections::HashMap<String, Option<String>>,
+    /// Every `mod`/`chip` declaration seen so far (top-level AND nested,
+    /// registered by `register_decl`'s `TopDecl::Chip` arm — the same site
+    /// that declares the symbol into `scope`), keyed by bare name. `scope`
+    /// only carries a `FnOrChipSig` (params/outputs/generics) for a chip
+    /// symbol, not the AST — `resolve_mod` needs the full `ChipDecl` (body
+    /// included) to hand a `const mod` CALL to `const_eval::interp::eval_call`.
+    /// A FRAME STACK mirroring `scoped_consts` 1:1 (`push_scope`/`pop_scope`
+    /// push and pop both together) — see `lower::LowerCtx::pass1_chips` for
+    /// the mirrored lowering-side design this now matches. The base frame
+    /// (index 0, always present) holds every top-level decl, populated by the
+    /// pass-1 registration loop that runs before any scope is pushed; a
+    /// nested `const mod` registers into the innermost open frame, so it
+    /// shadows a same-named outer declaration only inside the body that
+    /// declares it and is gone the moment that body's scope pops.
+    ///
+    /// Before this was a stack, two DIFFERENT decls sharing a name (an outer
+    /// mod shadowed by a same-named nested one) collided in a single flat
+    /// map: whichever was registered LAST silently won everywhere, including
+    /// at a call site that should have resolved the other one — typecheck and
+    /// lowering (which already resolved through scope) then evaluated
+    /// different `const mod` bodies for the same call, so one branch of a
+    /// dependent `if` was type-checked while lowering emitted the other,
+    /// unchecked. See `resolve_mod`.
+    pub mod_decls: Vec<HashMap<String, Arc<ChipDecl>>>,
+    /// Source ranges of `if`/`else` blocks a const-evaluable condition
+    /// dropped (`Stmt::If`'s const-elision arm), paired with a human-readable
+    /// reason (`` `N > 1` is true here ``). These blocks are NOT type-checked
+    /// — `if constexpr` semantics, so a branch that wouldn't even compile for
+    /// this const value never gets checked. Mirrors `lower::LowerCtx`'s own
+    /// `dropped_ranges`; the two MUST agree on exactly which ranges they drop
+    /// (see `typecheck_and_lowering_drop_exactly_the_same_ranges` in
+    /// `typecheck::tests`) — a disagreement means code gets type-checked but
+    /// not lowered, or lowered without ever being checked.
+    pub dropped_ranges: Vec<(SourceRange, String)>,
 }
 
 impl<'a> TypeCheckCtx<'a> {
@@ -221,11 +303,20 @@ impl<'a> TypeCheckCtx<'a> {
             signal_payload_types: HashMap::default(),
             generic_type_aliases: HashMap::default(),
             const_env: crate::lower::ConstEnv::default(),
+            const_declared: crate::collections::HashSet::default(),
             active_combos: 1,
             scoped_consts: Vec::new(),
+            scoped_const_declared: Vec::new(),
+            scoped_const_placeholders: Vec::new(),
+            nofold_depth: 0,
             ce_slots,
             out_ctx: Vec::new(),
             single_output_alias: crate::collections::HashMap::default(),
+            // Always non-empty: the base frame holds the module's top-level
+            // declarations, registered before any scope is ever pushed (see
+            // `mod_decls`'s own doc comment).
+            mod_decls: vec![HashMap::default()],
+            dropped_ranges: Vec::new(),
         }
     }
     /// Push a new `scope` frame together with a matching empty `scoped_consts`
@@ -235,11 +326,40 @@ impl<'a> TypeCheckCtx<'a> {
     pub fn push_scope(&mut self) {
         self.scope.push();
         self.scoped_consts.push(crate::collections::HashMap::default());
+        self.scoped_const_declared
+            .push(crate::collections::HashSet::default());
+        self.scoped_const_placeholders
+            .push(crate::collections::HashSet::default());
+        self.mod_decls.push(HashMap::default());
     }
     /// Pop the frame pushed by `push_scope`.
     pub fn pop_scope(&mut self) {
         self.scope.pop();
         self.scoped_consts.pop();
+        self.scoped_const_declared.pop();
+        self.scoped_const_placeholders.pop();
+        // Never pop the base frame — it holds the module's top-level
+        // declarations and must outlive every scope opened inside the
+        // module (mirrors `lower::LowerCtx::pop_scope`'s guard on
+        // `pass1_chips`).
+        if self.mod_decls.len() > 1 {
+            self.mod_decls.pop();
+        }
+    }
+    /// Run `f` with `nofold_depth` incremented for its duration when `active`
+    /// is true (the enclosing declaration was `@nofold`-annotated). Mirrors
+    /// `lower::LowerCtx::with_nofold` exactly — including being safe against
+    /// an early `return` inside `f`, since a `return` in a closure only
+    /// unwinds the closure, so the decrement always runs.
+    pub(super) fn with_nofold<R>(&mut self, active: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        if active {
+            self.nofold_depth += 1;
+        }
+        let r = f(self);
+        if active {
+            self.nofold_depth -= 1;
+        }
+        r
     }
     /// The constant environment visible at the current point: the top-level
     /// `const_env` overlaid by every currently-open `scoped_consts` frame,
@@ -254,6 +374,171 @@ impl<'a> TypeCheckCtx<'a> {
             }
         }
         env
+    }
+    /// [`const_lookup`](Self::const_lookup), restricted to names DECLARED
+    /// `const` — see [`const_declared`](Self::const_declared)'s doc comment.
+    /// The `if`-condition elision's own environment (via
+    /// [`if_cond_const_ctx`](Self::if_cond_const_ctx)): a plain `let` that
+    /// merely happens to fold must not participate in the generalised
+    /// const-eval elision, only a real `const`.
+    ///
+    /// Built the same outer-to-inner way as `const_lookup`, but a frame's
+    /// binding either PROMOTES a name into the result (declared `const` in
+    /// THIS frame) or EVICTS it (a plain `let` here shadows whatever an
+    /// outer frame said, const or not) — so an inner non-const shadow of an
+    /// outer `const` correctly drops out, and an inner `const` shadow of an
+    /// outer plain `let` correctly appears.
+    pub(super) fn const_lookup_declared_only(&self) -> crate::lower::ConstEnv {
+        let mut env = crate::lower::ConstEnv::default();
+        for name in &self.const_declared {
+            if let Some(lit) = self.const_env.get(name) {
+                env.insert(name.clone(), lit.clone());
+            }
+        }
+        for (frame, declared) in self.scoped_consts.iter().zip(self.scoped_const_declared.iter()) {
+            for (name, lit) in frame {
+                if declared.contains(name) {
+                    env.insert(name.clone(), lit.clone());
+                } else {
+                    env.remove(name);
+                }
+            }
+        }
+        env
+    }
+    /// Is `name` a `const`-declared binding holding an array or map?
+    ///
+    /// The typecheck-side counterpart of `LowerCtx::const_container_literal`,
+    /// built from the same `const_lookup_declared_only` environment so both
+    /// stages agree on which names are `const` containers. Such a binding is
+    /// IMMUTABLE: it is a compile-time value and (once something reads it at
+    /// runtime) a container gate, and only the immutability keeps those two
+    /// from answering the same question differently.
+    pub(super) fn is_const_container(&self, name: &str) -> bool {
+        matches!(
+            self.const_lookup_declared_only().get(name),
+            Some(crate::ir::Literal::Array(_) | crate::ir::Literal::Map(_))
+        )
+    }
+    /// The `ConstCtx` for `const_eval::eval_expr`, built from [`const_lookup`](Self::const_lookup)
+    /// so every evaluation site (typecheck, and lowering's own matching helper)
+    /// agrees on what's constant at this point. `module_consts` is the
+    /// UNMERGED top-level `const_env`: a `const mod` body is evaluated
+    /// against the module's constants plus its own parameters, never the
+    /// call site's scope frames (see `const_eval::interp::eval_call`).
+    ///
+    /// `lookup_mod` is supplied by the CALLER, built from [`resolve_mod`](Self::resolve_mod)
+    /// — a `&dyn Fn` borrowing `self` can't be packaged into a value THIS
+    /// method returns (the closure would have to outlive the call that
+    /// builds it, but `self` only lives as long as the caller's own borrow),
+    /// so every const-evaluating call site builds its own short-lived
+    /// closure over `ctx` and passes it straight through.
+    pub fn const_ctx<'b>(
+        &self,
+        lookup_mod: Option<&'b dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
+    ) -> crate::const_eval::ConstCtx<'b> {
+        crate::const_eval::ConstCtx {
+            consts: self.const_lookup(),
+            module_consts: self.const_env.clone(),
+            lookup_mod,
+        }
+    }
+
+    /// Every currently-visible PLACEHOLDER name (see
+    /// [`scoped_const_placeholders`](Self::scoped_const_placeholders)),
+    /// resolved with the same outer-to-inner shadowing
+    /// [`const_lookup`](Self::const_lookup) applies: an inner frame binding
+    /// the name to a REAL constant un-poisons it, because that inner binding
+    /// is what a lookup would find.
+    fn placeholder_names(&self) -> crate::collections::HashSet<String> {
+        let mut out: crate::collections::HashSet<String> = crate::collections::HashSet::default();
+        for (frame, placeholders) in self
+            .scoped_consts
+            .iter()
+            .zip(self.scoped_const_placeholders.iter())
+        {
+            for name in frame.keys() {
+                if placeholders.contains(name) {
+                    out.insert(name.clone());
+                } else {
+                    out.remove(name);
+                }
+            }
+        }
+        out
+    }
+
+    /// [`const_ctx`](Self::const_ctx) with every visible PLACEHOLDER binding
+    /// REMOVED from `consts`, so an expression that reads one fails to
+    /// evaluate (`NotConstant`) instead of silently evaluating against a
+    /// type-shaped zero. This is structural rather than a syntactic scan of
+    /// the expression: a placeholder read anywhere inside — an operand, a
+    /// constructor argument, an interpolation slot — is caught, because the
+    /// name simply is not in the environment.
+    ///
+    /// `module_consts` is deliberately left alone: it holds top-level
+    /// `const`/`let` bindings only, which are always real values, and it is
+    /// what a `const mod` BODY is evaluated against — a callee cannot see the
+    /// caller's scope frames at all (`const_eval::interp::eval_call`), so a
+    /// const-mod call can never reach a placeholder either way.
+    pub(super) fn const_ctx_without_placeholders<'b>(
+        &self,
+        lookup_mod: Option<&'b dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
+    ) -> crate::const_eval::ConstCtx<'b> {
+        let mut consts = self.const_lookup();
+        for name in self.placeholder_names() {
+            consts.remove(&name);
+        }
+        crate::const_eval::ConstCtx {
+            consts,
+            module_consts: self.const_env.clone(),
+            lookup_mod,
+        }
+    }
+    /// [`const_ctx_without_placeholders`](Self::const_ctx_without_placeholders),
+    /// additionally restricted to const-DECLARED names (see
+    /// [`const_lookup_declared_only`](Self::const_lookup_declared_only)) —
+    /// the `Stmt::If` condition-elision arm's own environment. A name must be
+    /// BOTH a real constant (not a placeholder) AND actually spelled `const`
+    /// (not a plain `let` that merely happens to fold) to make its reader
+    /// eligible for the generalised const-eval elision; everything else
+    /// falls through to the narrower pre-feature paths (a literal
+    /// `true`/`false`, or `ident_literal_bool`'s ident-bound-to-a-literal-
+    /// bool-gate fallback on the lowering side), which are unaffected by
+    /// this restriction.
+    pub(super) fn if_cond_const_ctx<'b>(
+        &self,
+        lookup_mod: Option<&'b dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
+    ) -> crate::const_eval::ConstCtx<'b> {
+        let mut consts = self.const_lookup_declared_only();
+        for name in self.placeholder_names() {
+            consts.remove(&name);
+        }
+        crate::const_eval::ConstCtx {
+            consts,
+            module_consts: self.const_env.clone(),
+            lookup_mod,
+        }
+    }
+    /// Resolve `name` to its `ChipDecl` for a `const mod` CALL: `name` must
+    /// currently resolve in `scope` to a chip/mod symbol (exactly the check
+    /// an ordinary call to it would pass — an out-of-scope or shadowed-by-a-
+    /// non-chip name is `None`, not a stale hit from `mod_decls`), and only
+    /// then is the full declaration looked up by scanning `mod_decls`
+    /// INNERMOST-frame-first — the same shadowing `const_lookup` gives scoped
+    /// constants, and the same scan order as `lower::LowerCtx::resolve_mod_pass1`.
+    /// A nested `const mod` therefore wins only for the duration of its own
+    /// scope, matching how lowering already resolves the ordinary (non-const)
+    /// call path through `ctx.scope`. The caller (every const-evaluating site
+    /// in `decl.rs`/`stmt.rs`/`sig.rs`) wraps this in a closure and hands it
+    /// to [`const_ctx`](Self::const_ctx) as `lookup_mod`.
+    pub(super) fn resolve_mod(&self, name: &str) -> Option<Arc<ChipDecl>> {
+        match self.scope.lookup(name) {
+            Some(info) if info.kind == SymbolKind::Chip => {
+                self.mod_decls.iter().rev().find_map(|frame| frame.get(name)).cloned()
+            }
+            _ => None,
+        }
     }
     pub fn exec_mode(&self) -> ExecMode {
         *self.exec_stack.last().unwrap_or(&ExecMode::Pure)
@@ -292,6 +577,9 @@ pub struct TypeCheckResult {
     /// Exec/pure context for each var identifier read; key is (file, start_offset). true = exec.
     pub var_read_contexts: HashMap<(Arc<str>, usize), bool>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Source ranges of `if`/`else` blocks a const-evaluable condition
+    /// dropped (never type-checked) — see `TypeCheckCtx::dropped_ranges`.
+    pub dropped_ranges: Vec<(SourceRange, String)>,
 }
 
 /// The declared type of output `name` in the CURRENT (innermost) `out_ctx`

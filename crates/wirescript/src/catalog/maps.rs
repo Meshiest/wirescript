@@ -26,6 +26,11 @@ pub struct MapMethod {
     /// `map_return_type` is the source of truth for the return type —
     /// `CallSignature` doesn't carry one.
     pub params: fn(&Type, &Type) -> Vec<crate::typecheck::Param>,
+    /// Does this method CHANGE the receiver's contents? Same per-entry-data
+    /// rule and the same reader as [`super::arrays::ArrayMethod::mutates`].
+    /// `keys`/`values` are read-only here because what they write is a
+    /// caller-supplied destination ARRAY, not the map they are called on.
+    pub mutates: bool,
 }
 
 /// Build one `ParamKind::Wire` parameter (shared by the `params` builders).
@@ -52,19 +57,19 @@ impl MapMethod {
 
 /// Every method callable on a map, in a stable display order.
 pub static MAP_METHODS: &[MapMethod] = &[
-    MapMethod { name: "get", gate: gc::MAP_GET, signature: "(key)", doc: "Read the value at key; gives its Value (default) and Found", params: |k, _| vec![p("key", k.clone(), false)] },
-    MapMethod { name: "set", gate: gc::MAP_SET, signature: "(key, value)", doc: "Insert or overwrite the value at key", params: |k, v| vec![p("key", k.clone(), false), p("value", v.clone(), false)] },
-    MapMethod { name: "has", gate: gc::MAP_HAS, signature: "(key)", doc: "Whether the map contains key", params: |k, _| vec![p("key", k.clone(), false)] },
-    MapMethod { name: "remove", gate: gc::MAP_REMOVE, signature: "(key)", doc: "Remove key; gives whether it was present", params: |k, _| vec![p("key", k.clone(), false)] },
-    MapMethod { name: "clear", gate: gc::MAP_CLEAR, signature: "()", doc: "Remove all entries", params: |_, _| vec![] },
-    MapMethod { name: "copyFrom", gate: gc::MAP_COPY_FROM, signature: "(source)", doc: "Replace contents with a copy of another map", params: |k, v| vec![p("source", Type::Map(Box::new(k.clone()), Box::new(v.clone())), false)] },
-    MapMethod { name: "length", gate: gc::MAP_GET_LENGTH, signature: "() -> int", doc: "Number of entries", params: |_, _| vec![] },
+    MapMethod { name: "get", mutates: false, gate: gc::MAP_GET, signature: "(key)", doc: "Read the value at key; gives its Value (default) and Found", params: |k, _| vec![p("key", k.clone(), false)] },
+    MapMethod { name: "set", mutates: true, gate: gc::MAP_SET, signature: "(key, value)", doc: "Insert or overwrite the value at key", params: |k, v| vec![p("key", k.clone(), false), p("value", v.clone(), false)] },
+    MapMethod { name: "has", mutates: false, gate: gc::MAP_HAS, signature: "(key)", doc: "Whether the map contains key", params: |k, _| vec![p("key", k.clone(), false)] },
+    MapMethod { name: "remove", mutates: true, gate: gc::MAP_REMOVE, signature: "(key)", doc: "Remove key; gives whether it was present", params: |k, _| vec![p("key", k.clone(), false)] },
+    MapMethod { name: "clear", mutates: true, gate: gc::MAP_CLEAR, signature: "()", doc: "Remove all entries", params: |_, _| vec![] },
+    MapMethod { name: "copyFrom", mutates: true, gate: gc::MAP_COPY_FROM, signature: "(source)", doc: "Replace contents with a copy of another map", params: |k, v| vec![p("source", Type::Map(Box::new(k.clone()), Box::new(v.clone())), false)] },
+    MapMethod { name: "length", mutates: false, gate: gc::MAP_GET_LENGTH, signature: "() -> int", doc: "Number of entries", params: |_, _| vec![] },
     // `keys`/`values` fill a caller-supplied destination array in place (see
     // `lower::access::lower_map_method`, which reads the first arg as the
     // array-ref destination); their own return is `Any` (`map_return_type`),
     // so the `out: K[]`/`V[]` array is a PARAMETER, not the result.
-    MapMethod { name: "keys", gate: gc::MAP_GET_KEYS, signature: "(destArray)", doc: "Fill an array with the map's keys", params: |k, _| vec![p("out", Type::Array(Box::new(k.clone())), false)] },
-    MapMethod { name: "values", gate: gc::MAP_GET_VALUES, signature: "(destArray)", doc: "Fill an array with the map's values", params: |_, v| vec![p("out", Type::Array(Box::new(v.clone())), false)] },
+    MapMethod { name: "keys", mutates: false, gate: gc::MAP_GET_KEYS, signature: "(destArray)", doc: "Fill an array with the map's keys", params: |k, _| vec![p("out", Type::Array(Box::new(k.clone())), false)] },
+    MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, signature: "(destArray)", doc: "Fill an array with the map's values", params: |_, v| vec![p("out", Type::Array(Box::new(v.clone())), false)] },
 ];
 
 /// All map methods.

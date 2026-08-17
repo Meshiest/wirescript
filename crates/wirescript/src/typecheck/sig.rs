@@ -47,6 +47,11 @@ pub enum ParamKind {
     /// symmetry / future per-port rules; the constant check itself needs only
     /// the value).
     ConfigScalar(&'static str),
+    /// A user `const` parameter (`name: const string`, or any parameter of a
+    /// `const mod`). The argument must evaluate at compile time; it is ALSO
+    /// type-checked exactly like a `Wire` param, since a const value still has
+    /// a type.
+    Const,
 }
 
 /// One parameter of a `CallSignature`.
@@ -243,53 +248,71 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
                 arg_expr,
             );
         }
-        ParamKind::Wire => {
-            // A param whose type still carries a `Type::Param` is an
-            // uninferable generic — left to the caller's own WS033
-            // inference diagnostics, not this concrete coercion check (see
-            // `crate::typecheck::type_has_param`). Builtin/receiver params
-            // never contain `Type::Param`, so this is a no-op for them.
-            if crate::typecheck::type_has_param(&param.ty) {
-                return;
-            }
-            // The Call-arm preamble already inferred every wire arg into
-            // ctx.type_of_expr (via infer::infer) in THIS pass, immediately before
-            // check_args runs — read that back instead of re-inferring, so an arg
-            // with its own error (e.g. an undefined ident) reports it once, not
-            // twice. Fall back to inferring for the rare arg the preamble didn't
-            // visit (e.g. a builtin receiver's object, prepended after the preamble).
-            // Safe w.r.t. "don't memoize type_of_expr across re-visits": the preamble
-            // re-runs and overwrites every pass, so within this pass the entry is
-            // this-pass-fresh; we only skip the redundant SECOND inference.
-            let key = {
-                let r = arg_expr.range();
-                (r.file.clone(), r.start.offset, r.end.offset)
-            };
-            let raw = match ctx.type_of_expr.get(&key).cloned() {
-                Some(t) => t,
-                None => crate::typecheck::infer::infer(ctx, arg_expr),
-            };
-            let arg_ty = unwrap_ref(&raw);
-            // Unwrap a leading `Ref` off the param type too: a `*T` param
-            // resolves to `Ref(T)`, but (like `arg_ty` above) the argument
-            // itself infers to its already-auto-derefed inner type, so the
-            // ref annotation must not participate in the coercion. Builtin/
-            // receiver params are never `Ref`-typed, so this is a no-op for
-            // them (mirrors `type_user_symbol_call`'s former inline check).
-            let param_ty = unwrap_ref(&param.ty);
-            if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch {
-                ctx.emit(
-                    "WS003",
-                    format!(
-                        "argument '{}': expected {}, got {}",
-                        param.name,
-                        crate::analysis::types::type_str(&param_ty),
-                        crate::analysis::types::type_str(&arg_ty),
-                    ),
-                    arg_expr.range().clone(),
-                );
+        ParamKind::Wire => check_wire_arg(ctx, arg_expr, param),
+        ParamKind::Const => {
+            // A const value still has a type, so the ordinary wire check
+            // applies (this also covers `g("not an int")` against a
+            // `const int` param with the usual WS003, rather than that being
+            // silently subsumed by the constant check below).
+            check_wire_arg(ctx, arg_expr, param);
+            let lookup = |n: &str| ctx.resolve_mod(n);
+            let mut budget = crate::const_eval::Budget::default();
+            let cx = ctx.const_ctx(Some(&lookup));
+            if let Err(err) = crate::const_eval::eval_expr(arg_expr, &cx, &mut budget) {
+                ctx.emit(err.code(), err.message(), err.range.clone());
             }
         }
+    }
+}
+
+/// The ordinary wire-argument check shared by `ParamKind::Wire` and
+/// `ParamKind::Const`: infer `arg_expr`'s type and `coerce` it against
+/// `param.ty` (WS003 on mismatch).
+fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
+    // A param whose type still carries a `Type::Param` is an
+    // uninferable generic — left to the caller's own WS033
+    // inference diagnostics, not this concrete coercion check (see
+    // `crate::typecheck::type_has_param`). Builtin/receiver params
+    // never contain `Type::Param`, so this is a no-op for them.
+    if crate::typecheck::type_has_param(&param.ty) {
+        return;
+    }
+    // The Call-arm preamble already inferred every wire arg into
+    // ctx.type_of_expr (via infer::infer) in THIS pass, immediately before
+    // check_args runs — read that back instead of re-inferring, so an arg
+    // with its own error (e.g. an undefined ident) reports it once, not
+    // twice. Fall back to inferring for the rare arg the preamble didn't
+    // visit (e.g. a builtin receiver's object, prepended after the preamble).
+    // Safe w.r.t. "don't memoize type_of_expr across re-visits": the preamble
+    // re-runs and overwrites every pass, so within this pass the entry is
+    // this-pass-fresh; we only skip the redundant SECOND inference.
+    let key = {
+        let r = arg_expr.range();
+        (r.file.clone(), r.start.offset, r.end.offset)
+    };
+    let raw = match ctx.type_of_expr.get(&key).cloned() {
+        Some(t) => t,
+        None => crate::typecheck::infer::infer(ctx, arg_expr),
+    };
+    let arg_ty = unwrap_ref(&raw);
+    // Unwrap a leading `Ref` off the param type too: a `*T` param
+    // resolves to `Ref(T)`, but (like `arg_ty` above) the argument
+    // itself infers to its already-auto-derefed inner type, so the
+    // ref annotation must not participate in the coercion. Builtin/
+    // receiver params are never `Ref`-typed, so this is a no-op for
+    // them (mirrors `type_user_symbol_call`'s former inline check).
+    let param_ty = unwrap_ref(&param.ty);
+    if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch {
+        ctx.emit(
+            "WS003",
+            format!(
+                "argument '{}': expected {}, got {}",
+                param.name,
+                crate::analysis::types::type_str(&param_ty),
+                crate::analysis::types::type_str(&arg_ty),
+            ),
+            arg_expr.range().clone(),
+        );
     }
 }
 

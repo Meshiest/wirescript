@@ -5,6 +5,22 @@ use crate::types::mono::unwrap_ref;
 
 // ---------- decl checking (2nd pass) ----------
 
+/// A type-shaped stand-in for a `const` parameter's real (call-site-only)
+/// value, used solely to seed `scoped_consts` so structural constant checks
+/// (WS028 and friends, via `expr_to_literal_in`) see the param as constant
+/// during a mod/chip body's one-time check. Never observed by anything that
+/// cares about the actual value — see the call site in the `TopDecl::Chip`
+/// body-check loop.
+///
+/// Delegates to lowering's zero-value table so the placeholder's TYPE is
+/// always right (a `const vector` param gets a `Vector`, not a `Float`).
+/// Harmless while every reader is presence-only, but a landmine for any
+/// future check that inspects the literal's type — and sharing the one table
+/// keeps the two from drifting as types are added.
+fn const_param_placeholder(t: &Type) -> crate::ir::Literal {
+    crate::lower::default_literal_for_var_type(t).unwrap_or(crate::ir::Literal::Float(0.0))
+}
+
 /// Validate a top-level (non-exec) var initializer: every element must be a
 /// constant literal whose type coerces to the array's element type. Spreads and
 /// non-literal values are only meaningful when the array is built at runtime, so
@@ -24,7 +40,7 @@ fn check_top_level_array_init(
                 "spread `...` in an array initializer is only allowed when building the array inside an exec handler",
                 e.range().clone(),
             );
-        } else if let Some(lit) = crate::lower::expr_to_literal_in(e, &ctx.const_env) {
+        } else if let Some(lit) = fold_array_init_element(ctx, e) {
             // Asset / prefab references are object references — they lower to
             // their own reference gate (e.g. AudioReference) whose output must be
             // WIRED into the array, so they can't be baked into the initializer's
@@ -55,12 +71,71 @@ fn check_top_level_array_init(
                     e.range().clone(),
                 );
             }
-        } else {
-            ctx.emit(
-                "WS003",
-                "array initializer elements must be constant literals — assign the array inside an exec handler to build it from runtime values",
-                e.range().clone(),
-            );
+        }
+    }
+}
+
+/// Fold one array-initializer element to a constant, EMITTING the diagnostic
+/// itself when it can't. Returns `None` after emitting, so the caller has
+/// nothing left to report — which is the point: the two failure kinds want
+/// different messages and must not both fire.
+///
+/// `expr_to_literal_in` alone only resolves literals, named constants and
+/// operators over them — it has no notion of a `const mod` CALL. The full
+/// const evaluator runs as a fallback (it retries `expr_to_literal_in` first
+/// internally, so every element that already folded keeps folding exactly the
+/// same way; this only ADDS the const-mod-call surface), which is what lets an
+/// element like `size(1)` be recognised as constant HERE — without it, the
+/// bake in `lower::predeclare` never runs at all, because this check rejects
+/// the initializer before lowering ever sees it.
+///
+/// On failure the reason decides the message. An out-of-range index, a
+/// missing map key, or a missing record field describes a collection/record
+/// that IS fully constant but was subscripted/accessed past what it has, so
+/// the evaluator's own wording is emitted verbatim — telling the user to
+/// "build the array in an exec handler" is actively misleading advice for
+/// `[[1, 2][9]]`, whose problem is the index.
+///
+/// Every OTHER reason keeps the generic WS003, deliberately — including
+/// `Refused` (e.g. `[1 << 64]`, an operator declining its operands), whose
+/// WS003 is pinned by `lower::tests::const_init::out_of_range_shift_is_not_folded`.
+/// Widening this to `Refused`/`BudgetExceeded` does produce a more accurate
+/// message, but it changes a diagnostic code that test deliberately asserts,
+/// so it is left alone as a separate call rather than folded into this fix.
+fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir::Literal> {
+    if let Some(lit) = crate::lower::expr_to_literal_in(e, &ctx.const_env) {
+        return Some(lit);
+    }
+    let evaluated = {
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let mut budget = crate::const_eval::Budget::default();
+        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget)
+    };
+    match evaluated {
+        Ok(lit) => Some(lit),
+        Err(err) => {
+            use crate::const_eval::ConstReason as R;
+            match err.reason {
+                R::ArrayIndexOutOfRange { .. }
+                | R::MapKeyNotFound
+                | R::RecordFieldNotFound(_)
+                | R::TupleArityMismatch { .. } => {
+                    ctx.emit(err.code(), err.message(), err.range.clone())
+                }
+                R::NotConstant(_)
+                | R::NotAConstMod(_)
+                | R::NestedConstModCall(_)
+                | R::Unsupported(_)
+                | R::UnsupportedMessage(_)
+                | R::UnsupportedMethod(_)
+                | R::Refused(_)
+                | R::BudgetExceeded => ctx.emit(
+                    "WS003",
+                    "array initializer elements must be constant literals — assign the array inside an exec handler to build it from runtime values",
+                    e.range().clone(),
+                ),
+            }
+            None
         }
     }
 }
@@ -89,49 +164,130 @@ pub(super) fn map_init_entries(init: &Expr) -> Option<&[MapLitEntry]> {
     }
 }
 
+/// One side (key or value) of a map literal entry, checked against the map's
+/// declared type for that side.
+///
+/// A map literal entry has no gate to run a coercion through (e.g.
+/// `ViaString`'s `FormatText` gate) — only coercions that hold at the literal
+/// itself (`Same`/`Coerce`) are valid; anything else (notably `ViaString`) would
+/// silently corrupt every non-matching entry at emit.
+fn check_map_entry_side(
+    ctx: &mut TypeCheckCtx,
+    got: &Type,
+    want: &Type,
+    side: &str,
+    at: &Expr,
+) {
+    if matches!(coerce(got, want), CoerceRule::Same | CoerceRule::Coerce) {
+        return;
+    }
+    ctx.emit(
+        "WS003",
+        format!(
+            "map literal {side}: expected {}, got {} — a map literal entry \
+             can't be string-formatted; write a matching-type literal",
+            crate::analysis::types::type_str(want),
+            crate::analysis::types::type_str(got),
+        ),
+        at.range().clone(),
+    );
+}
+
 pub(super) fn check_map_literal(
     ctx: &mut TypeCheckCtx,
     entries: &[MapLitEntry],
     k: &Type,
     v: &Type,
 ) {
-    // A map literal entry has no gate to run a coercion through (e.g.
-    // `ViaString`'s `FormatText` gate) — only coercions that hold at the
-    // literal itself (`Same`/`Coerce`) are valid; anything else (notably
-    // `ViaString`) would silently corrupt every non-matching entry at emit.
     for MapLitEntry { key, value, .. } in entries {
         let kt = infer::infer(ctx, key);
-        let key_rule = coerce(&kt, k);
-        if !matches!(key_rule, CoerceRule::Same | CoerceRule::Coerce) {
-            ctx.emit(
-                "WS003",
-                format!(
-                    "map literal key: expected {}, got {} — a map literal entry \
-                     can't be string-formatted; write a matching-type literal",
-                    crate::analysis::types::type_str(k),
-                    crate::analysis::types::type_str(&kt),
-                ),
-                key.range().clone(),
-            );
-        }
+        check_map_entry_side(ctx, &kt, k, "key", key);
         let vt = infer::infer(ctx, value);
-        let value_rule = coerce(&vt, v);
-        if !matches!(value_rule, CoerceRule::Same | CoerceRule::Coerce) {
-            ctx.emit(
-                "WS003",
-                format!(
-                    "map literal value: expected {}, got {} — a map literal entry \
-                     can't be string-formatted; write a matching-type literal",
-                    crate::analysis::types::type_str(v),
-                    crate::analysis::types::type_str(&vt),
-                ),
-                value.range().clone(),
-            );
-        }
+        check_map_entry_side(ctx, &vt, v, "value", value);
+    }
+}
+
+/// The `Map<K, V>` a `const m = { … }` binds, with its entries validated.
+///
+/// A `const` binding is a THIRD valid slot for a map literal, alongside a `var`
+/// initializer and an assignment RHS — those two route through
+/// [`check_map_literal`] rather than the generic `Expr::MapLit` arm in `infer`,
+/// which is a POSITION GUARD (WS026) and would report a valid position as an
+/// error. This is the same routing for the slot the other two can't serve:
+/// a `const` carries no declared container type, so K and V are inferred from
+/// the first entry (mirroring the array literal's element-type inference) and
+/// every entry is then checked against them with the same per-side rule, so a
+/// heterogeneous entry is still rejected.
+///
+/// The guard itself is untouched: a map literal in a genuinely invalid position
+/// still reaches `infer` and still reports WS026.
+pub(super) fn check_const_map_literal(ctx: &mut TypeCheckCtx, entries: &[MapLitEntry]) -> Type {
+    // Every entry is inferred ONCE, up front — inferring the first entry
+    // separately to source K/V would report any diagnostic inside it twice.
+    let inferred: Vec<(Type, Type)> = entries
+        .iter()
+        .map(|e| (infer::infer(ctx, &e.key), infer::infer(ctx, &e.value)))
+        .collect();
+    let (k, v) = inferred
+        .first()
+        .cloned()
+        .unwrap_or((Type::Any, Type::Any));
+    for (entry, (kt, vt)) in entries.iter().zip(inferred.iter()) {
+        check_map_entry_side(ctx, kt, &k, "key", &entry.key);
+        check_map_entry_side(ctx, vt, &v, "value", &entry.value);
+    }
+    Type::Map(Box::new(k), Box::new(v))
+}
+
+/// The type of a `let`/`const` initializer. Shared by the `TopDecl::Let` and
+/// `Stmt::Let` arms so the two scopes can't drift.
+///
+/// `infer`, except for the one position `infer`'s map-literal guard would
+/// wrongly reject: `const m = { … }` (see [`check_const_map_literal`]).
+pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) -> Type {
+    if l.is_const
+        && let Expr::MapLit { entries, range } = &l.value
+    {
+        let t = check_const_map_literal(ctx, entries);
+        // `infer` records every node it types; this replaces one `infer` call,
+        // so it owes the same record.
+        ctx.type_of_expr.insert(
+            (range.file.clone(), range.start.offset, range.end.offset),
+            t.clone(),
+        );
+        return t;
+    }
+    infer::infer(ctx, &l.value)
+}
+
+/// Whether this declaration carries `@nofold`. Mirrors the set of
+/// `ctx.with_nofold(<decl>.no_fold, …)` wraps in `lower::decl::lower_decl` (Out,
+/// Handler, Event, Let, Var) plus `ChipDecl`, whose body lowering marks via
+/// `build_chip_module`'s own `nofold_depth` seed. Wrapping the whole dispatch
+/// on this — rather than per arm — is what keeps the two stages from drifting
+/// as arms are added: a variant with no `no_fold` field simply reports `false`
+/// and behaves exactly as before.
+pub(super) fn decl_no_fold(d: &TopDecl) -> bool {
+    match d {
+        TopDecl::Out(b) => b.no_fold,
+        TopDecl::Handler(h) => h.no_fold,
+        TopDecl::Event(e) => e.no_fold,
+        TopDecl::Let(l) => l.no_fold,
+        TopDecl::Var(v) => v.no_fold,
+        TopDecl::Chip(c) => c.no_fold,
+        TopDecl::Await(a) => a.no_fold,
+        _ => false,
     }
 }
 
 pub(super) fn check_decl(
+    ctx: &mut TypeCheckCtx,
+    d: &TopDecl,
+) {
+    ctx.with_nofold(decl_no_fold(d), |ctx| check_decl_inner(ctx, d));
+}
+
+fn check_decl_inner(
     ctx: &mut TypeCheckCtx,
     d: &TopDecl,
 ) {
@@ -283,10 +439,60 @@ pub(super) fn check_decl(
             }
         }
         TopDecl::Let(l) => {
-            let t = ctx.in_pure(|ctx| infer::infer(ctx, &l.value));
+            let t = ctx.in_pure(|ctx| infer_let_init(ctx, l));
             check_let_type_annotation(ctx, l, &t);
             record_single_output_alias(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
+            // Same is_const/let split as the `Stmt::Let` arm (typecheck/stmt.rs):
+            // `let` folds opportunistically, `const` must fold or it's an error.
+            // A top-level constant is already recorded in `ctx.const_env` by the
+            // whole-program fixpoint pass (`typecheck()`, run before any decl is
+            // checked) — `scoped_consts` is empty at top level, so the success
+            // arm below is a no-op there; this re-evaluation exists to surface
+            // the WS046/WS047/WS048 a `const` binding failed with.
+            if let LetBinding::Ident { name, .. } = &l.binding {
+                let lookup = |n: &str| ctx.resolve_mod(n);
+                let mut budget = crate::const_eval::Budget::default();
+                let cx = ctx.const_ctx(Some(&lookup));
+                match crate::const_eval::eval_expr(&l.value, &cx, &mut budget) {
+                    Ok(lit) => {
+                        if let Some(frame) = ctx.scoped_consts.last_mut() {
+                            frame.insert(name.clone(), lit);
+                        }
+                        check_const_recorded(ctx, l);
+                    }
+                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
+                    Err(_) => {}
+                }
+            } else {
+                // Same as the `Ident` arm above, generalized to every name a
+                // destructuring binding introduces: evaluate the whole
+                // right-hand side once, then split it via `bind_destructured`
+                // (shared with `typecheck::stmt`'s block-scope site and
+                // `const_eval::interp`'s const-mod-body site, so all three
+                // agree on what a given binding form means). Top-level
+                // `scoped_consts` is empty (see this arm's own doc comment
+                // above), so the success path is a no-op here just like the
+                // `Ident` arm's — this exists to surface the WS046/047/048 a
+                // top-level destructuring `const` failed with.
+                let lookup = |n: &str| ctx.resolve_mod(n);
+                let mut budget = crate::const_eval::Budget::default();
+                let cx = ctx.const_ctx(Some(&lookup));
+                let result = crate::const_eval::eval_expr(&l.value, &cx, &mut budget)
+                    .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
+                match result {
+                    Ok(pairs) => {
+                        if let Some(frame) = ctx.scoped_consts.last_mut() {
+                            for (name, lit) in pairs {
+                                frame.insert(name, lit);
+                            }
+                        }
+                        check_const_recorded(ctx, l);
+                    }
+                    Err(err) if l.is_const => ctx.emit(err.code(), err.message(), err.range.clone()),
+                    Err(_) => {}
+                }
+            }
         }
         TopDecl::Fn(f) => {
             ctx.push_scope();
@@ -420,6 +626,42 @@ pub(super) fn check_decl(
                 let before = ctx.diagnostics.len();
                 for p in &c.inputs {
                     let pt = resolve_type_expr(ctx, &p.typ);
+                    // `name: const T` means "inside the body the parameter
+                    // reads as [a compile-time constant]" (ast.rs's own doc
+                    // comment on `Param::is_const`) — a mod is inlined per
+                    // call site with the real argument value, so any call
+                    // site's actual constant is always literal by the time it
+                    // reaches a config port (see `lower/call/inline.rs`). This
+                    // one-time, non-generic body-check can't know that value,
+                    // so it seeds a type-shaped PLACEHOLDER into the body
+                    // scope's `scoped_consts` frame instead — just enough for
+                    // `expr_to_literal_in`/`ctx.const_lookup()`-based checks
+                    // (e.g. `validate_scalar_config_arg`'s WS028) to see the
+                    // param as "some constant" and accept it structurally.
+                    // Its VALUE must never be used for anything beyond that
+                    // presence check; lowering discards it entirely in favor
+                    // of the real argument. Recording the name in
+                    // `scoped_const_placeholders` alongside is what ENFORCES
+                    // that: the `Stmt::If` const-elision arm evaluates against
+                    // an environment with placeholders removed, so this zero
+                    // can never select a branch (which lowering, holding the
+                    // real argument, would then pick the other way — shipping
+                    // a block this pass never checked).
+                    if p.is_const {
+                        if let Some(frame) = ctx.scoped_consts.last_mut() {
+                            frame.insert(p.name.clone(), const_param_placeholder(&pt));
+                        }
+                        // `name: const T` IS a `const` declaration — mark it
+                        // so `const_lookup_declared_only` sees it (though the
+                        // placeholder removal just below already excludes it
+                        // from the `if`-condition environment either way).
+                        if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+                            frame.insert(p.name.clone());
+                        }
+                        if let Some(frame) = ctx.scoped_const_placeholders.last_mut() {
+                            frame.insert(p.name.clone());
+                        }
+                    }
                     let kind = if matches!(&p.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
                         SymbolKind::Var
                     } else {
@@ -543,6 +785,7 @@ pub(super) fn check_decl(
                     .map(|o| EventDataField {
                         name: o.name.clone(),
                         ty: resolve_type_expr(ctx, &o.typ),
+                        is_const: false,
                     })
                     .collect();
                 ctx.diagnostics.truncate(chip_diag_mark);

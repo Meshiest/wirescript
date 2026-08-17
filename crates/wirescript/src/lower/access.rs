@@ -341,6 +341,34 @@ pub(super) fn lower_field_access(
     }
 }
 
+/// `t[i]` / `m[k]` whose RUNTIME lowering is unavailable but whose value is a
+/// compile-time constant: materialize it as a literal source gate, exactly as
+/// `lower_ident`'s constant fallback does for a bare constant name (see its
+/// comment — this is the indexed analogue, and shares its `wire_type_of_literal`
+/// + `literal_node_range` pair so both agree on which literals have a wire form).
+///
+/// Called ONLY after [`lower_index_access_runtime`] has declined, so this is
+/// strictly a NARROWING of the `_Unsupported` case: an index that resolves to a
+/// real array/map var never reaches here, and no program that already lowered
+/// correctly can change. That ordering is load-bearing rather than stylistic —
+/// a `const t = [...]` shadowed by a same-named runtime `var t: int[]` must read
+/// the VAR, so the fold can never run before the ordinary resolution.
+///
+/// This closes a real silent miscompile: typecheck accepts `const z = t[1]`
+/// (the read emits no gate, so its exec-context rule does not apply), but the
+/// ordinary lowering had no form for it and synthesised an `_Unsupported`
+/// placeholder that emit never writes a component for — so `z`'s wire died and
+/// every runtime consumer read the type default (0) instead of the real value.
+fn const_fold_index_access(ctx: &mut LowerCtx, e: &Expr, range: &SourceRange) -> Option<PortRef> {
+    let lit = {
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let mut budget = crate::const_eval::Budget::default();
+        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?
+    };
+    let ty = wire_type_of_literal(&lit)?;
+    Some(literal_node_range(ctx, range, ty, lit))
+}
+
 pub(super) fn lower_index_access(
     ctx: &mut LowerCtx,
     obj: &Expr,
@@ -348,17 +376,54 @@ pub(super) fn lower_index_access(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    let current_exec = match ctx.current_exec {
-        Some(e) => e,
-        None => return synthesise_unsupported(ctx, e),
-    };
+    if let Some(port) = lower_index_access_runtime(ctx, obj, index, range) {
+        return port;
+    }
+    if let Some(port) = const_fold_index_access(ctx, e, range) {
+        return port;
+    }
+    // Neither a real container nor a compile-time-constant read: the last case
+    // is a `const` container read at a RUNTIME index (`xs[i]`), which used to
+    // land on the placeholder below and silently read 0. Give the container its
+    // runtime form and retry the ordinary lowering.
+    //
+    // Placed THIRD, after the fold, and that order is load-bearing: it keeps
+    // `const z = t[1]` folding to a literal with no gate at all, exactly as
+    // before. Like the fold above it, this is strictly a NARROWING of the
+    // `_Unsupported` case — `lower_index_access_runtime` reaches every `None`
+    // exit before lowering the index expression (see its doc comment), so the
+    // retry cannot duplicate gates.
+    if materialize_const_container(ctx, obj).is_some()
+        && let Some(port) = lower_index_access_runtime(ctx, obj, index, range)
+    {
+        return port;
+    }
+    synthesise_unsupported(ctx, e)
+}
+
+/// The ordinary (gate-emitting) lowering of `obj[index]`. `None` means "no
+/// runtime form here" — every such exit used to be a `synthesise_unsupported`
+/// call directly; they now return `None` so [`lower_index_access`] can try a
+/// compile-time fold before falling back to that same placeholder.
+///
+/// Every `None` exit is reached BEFORE the index expression is lowered (the
+/// only container resolution helpers used above that point, `resolve_map_target`
+/// and `resolve_field_chain`, both take `&LowerCtx` and emit nothing), so
+/// declining here leaves no half-built gates behind for the fold to trip over.
+fn lower_index_access_runtime(
+    ctx: &mut LowerCtx,
+    obj: &Expr,
+    index: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let current_exec = ctx.current_exec?;
     // Map subscript `m[k]` desugars to a MapVar_Get (the same gate `m.get(k)`
     // lowers to), auto-unwrapping to the Value port. The Key/Value ports
     // carry the map's CONCRETE k/v types (not `any`) — see the comment at
     // `lower_map_method` on why a generic `any` Key would bake a bad default.
     if let Some((map_ref, Type::Map(k, v))) = resolve_map_target(ctx, obj) {
         let key = lower_expr(ctx, index);
-        return map_exec_op(
+        return Some(map_exec_op(
             ctx,
             range,
             map_ref,
@@ -369,19 +434,19 @@ pub(super) fn lower_index_access(
                 (WirePort::BFound, Type::Bool),
             ],
             WirePort::Value,
-        );
+        ));
     }
     let array_ref = if let Expr::Ident { name, .. } = obj {
         if let Some(var_rec) = ctx.lookup_var(name).cloned() {
             if var_rec.storage == VarStorage::Array {
                 var_rec.node_id.port(WirePort::ArrayVarRef)
             } else {
-                return synthesise_unsupported(ctx, e);
+                return None;
             }
         } else if let Some(inp) = ctx.lookup_input(name).cloned() {
             inp.node_id.port(WirePort::RerOutput)
         } else {
-            return synthesise_unsupported(ctx, e);
+            return None;
         }
     } else if let Some(binding) = resolve_field_chain(ctx, obj).cloned() {
         // obj is a record field chain that resolves to an array var
@@ -389,13 +454,13 @@ pub(super) fn lower_index_access(
             if var_rec.storage == VarStorage::Array {
                 var_rec.node_id.port(WirePort::ArrayVarRef)
             } else {
-                return synthesise_unsupported(ctx, e);
+                return None;
             }
         } else {
-            return synthesise_unsupported(ctx, e);
+            return None;
         }
     } else {
-        return synthesise_unsupported(ctx, e);
+        return None;
     };
     let index_port = lower_expr(ctx, index);
     // lower_expr for the index may have advanced the exec chain via
@@ -449,7 +514,7 @@ pub(super) fn lower_index_access(
     ctx.connect(array_ref, node_id.port(WirePort::ArrayVarRef));
     ctx.connect(index_port, node_id.port(WirePort::Index));
     ctx.current_exec = Some(node_id.port(WirePort::ExecOut));
-    node_id.port(WirePort::Value)
+    Some(node_id.port(WirePort::Value))
 }
 
 /// Build an ArrayVar exec gate with the standard `Exec` + `ArrayVarRef` inputs
@@ -670,6 +735,46 @@ pub(super) fn lower_map_literal_assign(
     }
 }
 
+/// Reject a method that would CHANGE a `const` container's contents.
+///
+/// A `const` array/map is two things at once — a compile-time value the const
+/// environment answers questions about, and (once something reads it at
+/// runtime) a real container gate. Mutation is what makes those two disagree:
+/// after `xs.push(40)`, `const n = xs.length()` and the gate would both be
+/// "right" with different answers, and the const environment would stop being a
+/// single source of truth. So it stays an error, exactly as it already was
+/// before a `const` container had any runtime form at all.
+///
+/// Reuses WS044 (the container-method diagnostic) with a message naming the
+/// real cause: the backstop's generic "did not resolve to an array or map"
+/// text would be actively wrong here, since the receiver resolved fine.
+///
+/// Keyed on the gate NODE, so it holds through aliasing — a `const` table
+/// passed to a `ys: T[]` parameter binds `ys` to this same node, and
+/// `ys.push(…)` inside the callee is rejected exactly like `xs.push(…)` outside
+/// it. Returns `true` when it reported (the caller must not emit the op).
+pub(super) fn reject_const_container_mutation(
+    ctx: &mut LowerCtx,
+    target: NodeId,
+    mutates: bool,
+    op: &str,
+    range: &SourceRange,
+) -> bool {
+    if !mutates || !ctx.immutable_containers.contains(&target) {
+        return false;
+    }
+    ctx.error(
+        "WS044",
+        format!(
+            "{op} would change a `const` array/map — a `const` container is \
+             immutable, so its compile-time value and its runtime contents can \
+             never disagree. Declare it `var` to make it mutable"
+        ),
+        range,
+    );
+    true
+}
+
 /// Lower `m.<method>(...)` for a `map` value. `map_type` is the whole
 /// `Type::Map(K, V)`. Mirrors [`lower_array_method`]; every method in
 /// [`crate::catalog::maps::MAP_METHODS`] must be handled here.
@@ -692,6 +797,17 @@ pub(super) fn lower_map_method(
         Type::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
         _ => (Type::Any, Type::Any),
     };
+
+    let mutates = crate::catalog::maps::map_method(method).is_some_and(|m| m.mutates);
+    if reject_const_container_mutation(
+        ctx,
+        map_ref.node_id,
+        mutates,
+        &format!("`.{method}()`"),
+        range,
+    ) {
+        return synthesise_unsupported(ctx, e);
+    }
 
     // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
     // of the surrounding exec chain, so a read like
@@ -816,6 +932,16 @@ pub(super) fn lower_array_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
+    let mutates = crate::catalog::arrays::array_method(method).is_some_and(|m| m.mutates);
+    if reject_const_container_mutation(
+        ctx,
+        array_ref.node_id,
+        mutates,
+        &format!("`.{method}()`"),
+        range,
+    ) {
+        return synthesise_unsupported(ctx, e);
+    }
     // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
     // of the surrounding exec chain, so a read like `lut.get(i, exec = i + 1)`
     // works in a PURE context (e.g. an output binding). The get self-fires
@@ -1375,6 +1501,13 @@ pub(super) fn lower_array_set(
     } else {
         return;
     };
+    // `xs[i] = v` is a mutation, so the `const` container rule applies to it
+    // exactly as it does to `xs.fill(v)`. Typecheck rejects the direct spelling
+    // by name; this catches the aliased ones (a `const` table reaching a
+    // `ys: T[]` parameter), which resolve to the same gate node.
+    if reject_const_container_mutation(ctx, array_ref.node_id, true, "an index write", range) {
+        return;
+    }
     let index_port = lower_expr(ctx, index);
     let value_port = lower_expr(ctx, value);
     let exec_in = ctx.current_exec.unwrap_or(current_exec);

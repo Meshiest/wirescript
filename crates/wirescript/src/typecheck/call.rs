@@ -518,15 +518,17 @@ pub(super) fn sig_of_callspec(spec: &crate::catalog::calls::CallSpec) -> CallSig
 
 /// Adapt a user mod/chip's `FnOrChipSig` into a `CallSignature` for
 /// `sig::check_args` — the `type_user_symbol_call` analog of
-/// `sig_of_callspec`. Every param is a plain `ParamKind::Wire` (user mods
-/// have no config-menu params) and non-optional (user mods have no default
-/// params either). `subst` — the generic-inference result computed by the
-/// caller, `None` for a non-generic call — is applied to each param's type
-/// first, exactly like the pre-`check_args` inline coerce loop did; a param
-/// whose (possibly-substituted) type still carries a `Type::Param` is left
-/// alone here too — `check_args`'s own `type_has_param` guard skips it.
-/// `config_gate` is `None`: a named arg that matches no declared param has
-/// no data-driven fallback to dispatch to for a user call.
+/// `sig_of_callspec`. Every param is `ParamKind::Wire`, except a `const`
+/// parameter (`name: const T`, or any parameter of a `const mod`) which
+/// becomes `ParamKind::Const` (user mods have no config-menu params) and
+/// non-optional (user mods have no default params either). `subst` — the
+/// generic-inference result computed by the caller, `None` for a non-generic
+/// call — is applied to each param's type first, exactly like the pre-
+/// `check_args` inline coerce loop did; a param whose (possibly-substituted)
+/// type still carries a `Type::Param` is left alone here too — `check_args`'s
+/// own `type_has_param` guard skips it. `config_gate` is `None`: a named arg
+/// that matches no declared param has no data-driven fallback to dispatch to
+/// for a user call.
 fn sig_of_fnchip(
     name: &str,
     sig: &FnOrChipSig,
@@ -544,7 +546,11 @@ fn sig_of_fnchip(
                 name: p.name.clone(),
                 ty,
                 optional: false,
-                kind: ParamKind::Wire,
+                kind: if p.is_const {
+                    ParamKind::Const
+                } else {
+                    ParamKind::Wire
+                },
             }
         })
         .collect();

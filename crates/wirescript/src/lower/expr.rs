@@ -180,6 +180,84 @@ fn asset_reference_gate(asset_type: &str) -> &'static str {
 }
 
 pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal) -> PortRef {
+    literal_node_range(ctx, e.range(), ty, lit)
+}
+
+/// The wire type a bare [`Literal`] produces when it is materialized as a
+/// literal source gate. Only needed where the literal arrives WITHOUT a
+/// declared annotation to take the type from (see `lower_ident`'s constant
+/// fallback); every other `literal_node` caller passes the type its
+/// expression already typechecked to.
+///
+/// Exhaustive over every `Literal` variant on purpose — no catch-all — so
+/// adding a new one forces a decision here instead of silently landing on
+/// `Type::Any`, the same discipline every other exhaustive match over
+/// `Literal` already applies. Reaching this function at all means a `const`
+/// value is being read bare: a top-level `const`/`let`, OR a `const`
+/// mod/chip parameter — `lower_chip_call_inline`'s `is_const` branch stashes
+/// whatever `const_eval::eval_expr` returns for the call argument into
+/// `scoped_consts` with NO filter on the literal's kind, unlike a top-level
+/// `let` (which special-cases record/array/map/prefab initializers into
+/// their own bindings, mostly bypassing this fallback — see `lower_let_decl`).
+/// So a `const` PARAMETER of any of these "no wire form" types, read bare
+/// where lowering doesn't otherwise resolve it (e.g. inside a record-literal
+/// field), lands here even when the same value as a top-level constant would
+/// not have. Confirmed by compiling one of each (see the task-25 report).
+///
+/// `None` means "no wire form" — the caller must fall back to the same
+/// WSP001 "unsupported expression" placeholder this arm bypassed before the
+/// `const` fallback existed, not bake a `Type::Any` literal gate whose value
+/// has nowhere honest to go (`emit::variants::literal_to_wire_variant`
+/// returns `None` for these same kinds too — there is no wire-variant form
+/// to inline into).
+pub(super) fn wire_type_of_literal(lit: &Literal) -> Option<Type> {
+    match lit {
+        Literal::Bool(_) => Some(Type::Bool),
+        Literal::Int(_) => Some(Type::Int),
+        Literal::Float(_) => Some(Type::Float),
+        Literal::String(_) => Some(Type::String),
+        Literal::Vector { .. } => Some(Type::Vector),
+        Literal::Rotator { .. } => Some(Type::Rotator),
+        Literal::Quat { .. } => Some(Type::Quat),
+        Literal::Color { .. } | Literal::LinearColor { .. } => Some(Type::Color),
+        // A compile-time-constant prefab reference. Never a runtime wire
+        // value (see `Type::PrefabRef`'s doc comment — reference-only, like
+        // `Type::Zone`/`Type::Teleport`), but it IS a real, singular type, so
+        // it gets one rather than falling into the no-wire-form group below.
+        // Reachable both as a top-level `const p = $./f.brz` (predeclare.rs's
+        // `build_const_env` folds it independently of `lower_let_decl`'s own
+        // no-scope-binding early return for the very same decl) and as a
+        // `const` parameter read bare.
+        Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } => Some(Type::PrefabRef),
+        // No SCALAR wire type — collections, a compile-time record, and an
+        // external asset reference, not values a single wire pin carries.
+        // All four are reachable through the `const`-PARAMETER path described
+        // above (a top-level `let`/`const` shields Array/Map/Record/Asset
+        // from ever reaching here — see `lower_let_decl`'s record/array/map/
+        // asset-specific handling — but nothing shields a `const` parameter).
+        Literal::Array(_) | Literal::Map(_) | Literal::Record(_) | Literal::Asset { .. } => None,
+        // Never produced by any source expression — no `Expr` folds to it.
+        // It exists solely as `default_literal_for_var_type`'s placeholder
+        // for a `Var` gate's initial value (Controller/Character/Entity),
+        // which never touches `const_eval`/`ConstEnv`, so it can never reach
+        // `const_lookup()` — the only way anything reaches this function.
+        // Treated the same as the no-wire-form group just above rather than
+        // `unreachable!()`: if this invariant is ever wrong (a future
+        // `const_eval` change starts producing one), the caller already
+        // falls back to the same `_Unsupported`/WSP001 placeholder a
+        // no-wire-form constant gets — a diagnosable gap, not a process
+        // abort. See `lower::tests::const_init::literal_object_is_never_produced_by_const_eval`
+        // for the invariant this leans on.
+        Literal::Object => None,
+    }
+}
+
+pub(super) fn literal_node_range(
+    ctx: &mut LowerCtx,
+    range: &SourceRange,
+    ty: Type,
+    lit: Literal,
+) -> PortRef {
     // String literals can't be inlined as wire_graph_variant immediate values
     // on consumer gates (e.g. Select). Emit them as String_Concatenate gates
     // whose str-typed fields accept inline strings, producing a wire signal.
@@ -190,7 +268,7 @@ pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal)
         props.insert(intern_static("Separator"), Literal::String(String::new()));
         let node_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::STRING_CONCATENATE,
-            source_range: e.range().clone(),
+            source_range: range.clone(),
             ports: GateIO {
                 inputs: vec![],
                 outputs: vec![PortSpec {
@@ -207,7 +285,7 @@ pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal)
     props.insert(*sym::VALUE, lit);
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::LITERAL,
-        source_range: e.range().clone(),
+        source_range: range.clone(),
         ports: GateIO {
             inputs: vec![],
             outputs: vec![PortSpec {
@@ -297,7 +375,44 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
         Some(Binding::Output(_) | Binding::Chip(_) | Binding::Namespace(_)) => {
             synthesise_unsupported_range(ctx, range)
         }
-        None => synthesise_unsupported_range(ctx, range),
+        // Not bound to any wire at all. Before giving up, check whether the
+        // name is a compile-time CONSTANT (`ctx.const_lookup()`: the top-level
+        // `const_env` overlaid by every open `scoped_consts` frame) and, if so,
+        // materialize it as a literal source gate — the existing
+        // literal-inlining pass (`lower/mod.rs`) then folds that gate's value
+        // straight into whatever consumes it and prunes the gate, so a constant
+        // read in a WIRE position costs nothing while still producing a real
+        // operand.
+        //
+        // This is what a `const` PARAMETER needs: `lower_chip_call_inline`
+        // records its value in `scoped_consts` (no wire, so a const-only use
+        // emits no gates at all), which means the name is deliberately absent
+        // from `scope` — without this arm, `mod addk(n: const int, m: int) { out
+        // r = n + m }` lowered `n` to `_Unsupported`, a WSP001 warning and a
+        // silently dead gate rather than the literal `5`.
+        //
+        // Strictly a NARROWING of the `_Unsupported` case: a name that IS bound
+        // in scope never reaches here, so no program that already lowered
+        // correctly can change. Composite constants (Vector/Rotator/Quat/Color)
+        // are deliberately included — unlike `literal_for_property_port`'s
+        // bare-Ident path (which excludes them so a named vector keeps its wired
+        // `Make*` producer), the alternative here is not a wire but
+        // `_Unsupported`, so a real literal source is unambiguously better.
+        //
+        // `wire_type_of_literal` returns `None` for a constant with no wire
+        // form (a collection, a compile-time record, an external asset
+        // reference — see its doc comment) — reachable through a `const`
+        // parameter of one of those types read bare. That is exactly the
+        // pre-fallback situation this whole arm narrows: fall back to the
+        // same `_Unsupported`/WSP001 placeholder, rather than baking a
+        // `Type::Any` literal gate around a value with nowhere honest to go.
+        None => match ctx.const_lookup().get(name).cloned() {
+            Some(lit) => match wire_type_of_literal(&lit) {
+                Some(ty) => literal_node_range(ctx, range, ty, lit),
+                None => synthesise_unsupported_range(ctx, range),
+            },
+            None => synthesise_unsupported_range(ctx, range),
+        },
     }
 }
 
@@ -380,7 +495,35 @@ pub(super) fn bake_string_bool(lit: Literal, ty: &Type) -> Literal {
     }
 }
 
-pub(super) fn literal_for_property_port(ctx: &LowerCtx, e: &Expr, port_ty: &Type) -> Option<Literal> {
+/// `config_only` marks a port that has NO wire pin at all — a settings-menu
+/// data field (`crate::catalog::is_wire_input(...) == false`), such as
+/// `SendCustomEvent`'s `EventName`. It unlocks a final fallback through the
+/// full const evaluator (`const_eval::eval_expr`), which is what typecheck's
+/// `config::validate_scalar_config_arg` accepts for exactly these ports —
+/// including a `const mod` call (`evtName("died")`) and a certified method
+/// call (`"died".ToUpper()`). Without it the two disagree: typecheck says the
+/// value is constant, lowering folds nothing, and the gate ships with the
+/// field unset while `builtin.rs`'s non-wire-port guard silently drops the
+/// argument.
+///
+/// It must stay OFF for every wire-capable port. `eval_expr` evaluates
+/// operators, and folding them here would delete real gates a program
+/// depends on — `Rotation(0.0 + 0.0, …)` must keep its MathAdd (see the
+/// env-less-fold note below). A config-only port has no such hazard: there is
+/// no wire for a gate to feed, so the value either bakes or is dropped.
+///
+/// Deliberately NOT extended to the composite (`MeshColors`/
+/// `WeaponAmmoOverride`) or data-driven config paths, which keep the narrow
+/// evaluator on BOTH sides — their typecheck validators
+/// (`validate_composite_config_arg` / `validate_data_driven_config`) were
+/// left on `expr_to_literal_in`, so widening only the lowering half would
+/// re-open this same accept-but-drop gap in the opposite direction.
+pub(super) fn literal_for_property_port(
+    ctx: &LowerCtx,
+    e: &Expr,
+    port_ty: &Type,
+    config_only: bool,
+) -> Option<Literal> {
     // Return the literal without type promotion — the emit layer handles the
     // native type (i32/f64/str) from the data struct schema — EXCEPT the
     // string → bool coercion, which must apply its `!= ""` law at compile
@@ -420,6 +563,19 @@ pub(super) fn literal_for_property_port(ctx: &LowerCtx, e: &Expr, port_ty: &Type
             Some(Literal::Vector { .. } | Literal::Rotator { .. } | Literal::Quat { .. } | Literal::LinearColor { .. }) => None,
             other => other,
         }
+    })
+    .or_else(|| {
+        // Config-only port: match typecheck's acceptance exactly (see this
+        // function's doc comment). Runs LAST, so every expression the two
+        // narrow paths above already handled keeps its existing result
+        // byte-for-byte — this can only add a literal where lowering
+        // previously produced none.
+        if !config_only {
+            return None;
+        }
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let mut budget = crate::const_eval::Budget::default();
+        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()
     });
     lit.map(|lit| bake_string_bool(lit, port_ty))
 }

@@ -44,6 +44,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
     let mut input_bindings: Vec<(String, NodeRecord)> = Vec::new();
     let mut val_bindings: Vec<(String, PortRef, Type)> = Vec::new();
     let mut record_bindings: Vec<(String, HashMap<crate::intern::Sym, Binding>)> = Vec::new();
+    let mut const_bindings: Vec<(String, Literal)> = Vec::new();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
         let Some(arg_expr) = positional_args.get(i) else {
             continue;
@@ -68,6 +69,14 @@ pub(in crate::lower) fn lower_chip_call_inline(
             // lowering to `_Unsupported`).
             pt if super::context::container_storage(pt).is_some() => {
                 let var_rec = if let Expr::Ident { name, .. } = arg_expr {
+                    // A `const` array/map argument: give it its runtime form so
+                    // the callee binds a real container ref, exactly as a `var`
+                    // argument does. Without this the param bound to nothing and
+                    // every container use inside the body failed as WS044. The
+                    // callee's binding carries the SAME gate node, so a mutating
+                    // method on the param is still rejected (see
+                    // `access::reject_const_container_mutation`).
+                    materialize_const_container(ctx, arg_expr);
                     ctx.lookup_var(name).cloned()
                 } else if let Some(Binding::Var(v)) = resolve_field_chain(ctx, arg_expr).cloned() {
                     Some(v)
@@ -94,6 +103,32 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 }
             }
             _ => {
+                // A `const` parameter is known at inline time — mods inline
+                // per call site with no cache, so there is nothing to
+                // specialise: the value simply IS the argument's, recorded
+                // below into `scoped_consts` so it resolves through
+                // `ctx.const_lookup()` exactly like a named constant (gate
+                // config, event channel names, array/map baking, ...).
+                // Evaluate it HERE, before falling to the ordinary
+                // `lower_expr` wire lowering — an argument that's itself a
+                // CALL (e.g. a `const mod` call) would otherwise ALSO get
+                // fully expanded into real gates by `lower_expr` whether or
+                // not those gates end up wired to anything, silently
+                // defeating "a const mod call emits no gates". Typecheck
+                // already reported an argument that fails to evaluate
+                // (WS046), so a failure here is a defensive fallback (keep
+                // the pre-Task-13 wire-lowering behavior), not the expected
+                // path.
+                if param.is_const {
+                    let lookup = |n: &str| ctx.resolve_mod(n);
+                    let mut budget = crate::const_eval::Budget::default();
+                    let evaluated =
+                        crate::const_eval::eval_expr(arg_expr, &ctx.const_ctx(Some(&lookup)), &mut budget);
+                    if let Ok(lit) = evaluated {
+                        const_bindings.push((param.name.clone(), lit));
+                        continue;
+                    }
+                }
                 let val_port = lower_expr(ctx, arg_expr);
                 let t = type_of_type_expr(&param.typ);
                 val_bindings.push((param.name.clone(), val_port, t));
@@ -101,7 +136,54 @@ pub(in crate::lower) fn lower_chip_call_inline(
         }
     }
 
+    // The callee body is lowered into the CALLER's ctx, so the caller's own
+    // block scopes stay open underneath it — and `const_lookup` /
+    // `const_lookup_declared_only` walk EVERY open frame. That is wrong for
+    // constants: typecheck checks a `mod` body exactly ONCE, at its
+    // declaration, where no call site's block scope exists, so it resolves the
+    // body's constant names against the module environment alone. Lowering
+    // reading the call site's frames too made the two disagree on a name the
+    // CALLER shadows:
+    //
+    //     const a = 111
+    //     mod inner() { if a == 111 { A } else { B } }
+    //     on go { let a = 222   inner() }
+    //
+    // — typecheck resolves `inner`'s `a` to the top-level 111 and elides `B`,
+    // while lowering saw the caller's `a` (222, recorded by `lower_let_decl`'s
+    // shadow handling with its `const` mark cleared) EVICT the top-level
+    // constant, and emitted a runtime Branch carrying the `B` typecheck never
+    // checked. That is the "typecheck dropped a block lowering still emits"
+    // direction, the one that is never safe.
+    //
+    // Swapping the const stacks out for the body's own (rather than clearing
+    // the whole scope) keeps everything an inlined body legitimately needs:
+    // module-level constants live in `const_env`, which is untouched; a `const`
+    // ARGUMENT was already evaluated above, in the caller's environment, before
+    // this point; and ordinary bindings still resolve through `ctx.scope`,
+    // which is deliberately NOT isolated. It also makes this path agree with
+    // the microchip path, which already builds its body against a const stack
+    // of its own (`instance_body`'s `scoped_consts`).
+    //
+    // Restored after `pop_scope` below. Every push and pop inside the body is
+    // balanced, so the swapped-in stack is back to depth 0 by then.
+    let saved_scoped_consts = std::mem::take(&mut ctx.scoped_consts);
+    let saved_scoped_const_declared = std::mem::take(&mut ctx.scoped_const_declared);
+
     ctx.push_scope(crate::scope::ScopeTag::MODULE);
+
+    for (name, lit) in const_bindings {
+        // Every entry here is a `const` PARAMETER (see the `param.is_const`
+        // gate above) — mark it declared so an `if`-condition inside this
+        // inlined body naming the param is eligible for the widened elision.
+        if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+            frame.insert(name.clone());
+        }
+        if let Some(frame) = ctx.scoped_consts.last_mut() {
+            frame.insert(name, lit);
+        }
+    }
+
     for (name, rec) in ref_bindings {
         ctx.scope.insert(&name, Binding::Var(rec));
     }
@@ -138,7 +220,14 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 // a record keyed by element index, so read the names out of it.
                 if let Some(Binding::Record(src)) = &base_binding {
                     let src = src.clone();
-                    install_tuple_destruct(ctx, &src, names, rest.as_ref());
+                    // Index keys: a tuple-pattern PARAMETER is only ever fed a
+                    // tuple literal (or a `let` bound to one), which is keyed
+                    // by element index — unlike a `let (a, b) = …` binding,
+                    // whose source may be a name-keyed multi-output result.
+                    let order: Vec<String> = (0..names.len().max(src.len()))
+                        .map(|i| i.to_string())
+                        .collect();
+                    install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
                 }
                 // For tuple patterns, extract by index from the local binding.
                 if let Some(Binding::Local(local)) = &base_binding {
@@ -163,9 +252,22 @@ pub(in crate::lower) fn lower_chip_call_inline(
 
     // Pre-declare var/array/buffer inside the mod body (recursively into
     // nested if/else blocks) so they're registered in ctx.vars.
+    //
+    // A nested chip/mod declaration is recorded into `pass1_chips`'s innermost
+    // frame — the one `push_scope` opened above and `pop_scope` drops at the
+    // end of this function — so it shadows a same-named outer declaration for
+    // the WHOLE of this body (including any chip instantiated inside it, which
+    // clones the stack as it stands then) and is gone afterwards. No manual
+    // save/restore: an earlier version of this did the bookkeeping by hand and
+    // undid it HERE, before the body was lowered, which left a chip declared
+    // and instantiated inside this body resolving the outer declaration while
+    // an ordinary call beside it resolved the inner one.
     fn pre_declare_block_vars(ctx: &mut LowerCtx, block: &Block) {
         for s in &block.stmts {
             match s {
+                // Nested declaration shadows a same-named outer one for any
+                // LATER initializer in this body — see `pre_declare_chip_name`.
+                Stmt::ChipDecl(c) => pre_declare_chip_name(ctx, c),
                 Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
                 Stmt::Array(a) => pre_declare_array(ctx, a),
                 Stmt::Map(m) => pre_declare_map(ctx, m),
@@ -369,6 +471,13 @@ pub(in crate::lower) fn lower_chip_call_inline(
     };
 
     ctx.pop_scope();
+
+    // Hand the caller back its own constant environment (see the swap above
+    // `push_scope`). Assigned rather than pushed onto: the body's stack is
+    // empty again after its balanced `pop_scope`, and anything a callee body
+    // recorded is scoped to that body by construction.
+    ctx.scoped_consts = saved_scoped_consts;
+    ctx.scoped_const_declared = saved_scoped_const_declared;
 
     // The mod body may have written to vars passed through records.
     // Those writes invalidated caches inside the mod scope (now popped),

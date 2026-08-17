@@ -302,6 +302,39 @@ on go {
     assert!(!diags(src).contains(&"WS045".to_string()));
 }
 
+// WS046 - a `const` binding whose initializer cannot be evaluated at compile
+// time (a runtime value, here an `in` port) [typecheck]
+#[test]
+fn ws046_is_reachable() {
+    let src = "in live: int\nmod f() { const n = live + 1 }\n";
+    assert!(diags(src).contains(&"WS046".to_string()));
+}
+
+// WS047 - a `const` binding whose initializer IS a compile-time constant, but
+// the certified fold evaluator declines to compute it (here, `ToUpper` on a
+// non-ASCII string operand was never certified by the in-game probe) [typecheck]
+#[test]
+fn ws047_is_reachable() {
+    let src = "mod f() { const s = \"café\".ToUpper() }\n";
+    assert!(diags(src).contains(&"WS047".to_string()));
+}
+
+// WS048 - const-mod call-chain depth budget exceeded. A `const mod` that
+// calls ITSELF is perfectly legal to declare and type-check — WS020
+// (`lower/call.rs`) only guards recursion reached through LOWERING's
+// wire-expansion of an ORDINARY call (`lower_chip_call`); a call resolved
+// through `ConstCtx::lookup_mod` never goes through that function at all, so
+// nothing but the interpreter's own `Budget` depth counter stops it from
+// recursing forever. Reached here exactly like WS046/WS047 above: `f(1)`
+// sits in `SendCustomEvent`'s constant-only channel-name position, which
+// forces it to be const-evaluated. [typecheck]
+#[test]
+fn ws048_is_reachable() {
+    let src = "const mod f(n: int) -> string { return f(n) }\n\
+               mod ping(v: int) { SendCustomEvent(f(1), v) }\n";
+    assert!(diags(src).contains(&"WS048".to_string()));
+}
+
 // WS031 - a reference (var ref / zone / teleport) used as an if-then-else branch
 // (Select routes a value, not a reference) [typecheck]
 // NOTE: a bare `*int` param reads back auto-dereferenced (its symbol is
@@ -445,3 +478,4 @@ mod resolve_phase {
         );
     }
 }
+

@@ -10,6 +10,7 @@ pub mod ast;
 pub mod catalog;
 pub mod collections;
 pub mod compile;
+pub mod const_eval;
 pub mod diagnostic;
 pub mod emit;
 pub mod hash;

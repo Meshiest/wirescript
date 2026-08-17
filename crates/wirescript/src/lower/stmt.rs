@@ -18,7 +18,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
         Stmt::ChipDecl(c) => lower_chip_decl(ctx, c),
         Stmt::In(_) => {}
         Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| {
-            if ctx.lookup_var(&v.name).is_none() {
+            if needs_declaration(ctx, &v.name) {
                 pre_declare_var(ctx, v);
             }
             // Pure position (chip/mod body instantiated without exec) or
@@ -140,12 +140,12 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             } // !is_static
         }),
         Stmt::Array(a) => {
-            if ctx.lookup_var(&a.name).is_none() {
+            if needs_declaration(ctx, &a.name) {
                 pre_declare_array(ctx, a);
             }
         }
         Stmt::Map(m) => {
-            if ctx.lookup_var(&m.name).is_none() {
+            if needs_declaration(ctx, &m.name) {
                 pre_declare_map(ctx, m);
             }
         }
@@ -306,6 +306,25 @@ pub(super) fn block_contains_return(block: &Block) -> bool {
     false
 }
 
+/// Does a `var`/`array`/`map` STATEMENT need to declare `name`, or does an
+/// existing binding already cover it?
+///
+/// A statement-position declaration is skipped when the name already resolves
+/// to a var, which is what lets a body pre-pass declare it once and the
+/// statement itself only run the reset. The one binding that must NOT count is
+/// a lazily materialized `const` container (see
+/// `predeclare::materialize_const_container`): it exists only because something
+/// READ the constant earlier in this body, so treating it as "already
+/// declared" makes a genuine `var xs: int[]` reuse the const container's gate
+/// instead of shadowing it — the declaration silently vanishes and every later
+/// write lands on (or, being immutable, is rejected against) the wrong array.
+fn needs_declaration(ctx: &LowerCtx, name: &str) -> bool {
+    match ctx.lookup_var(name) {
+        Some(rec) => ctx.immutable_containers.contains(&rec.node_id),
+        None => true,
+    }
+}
+
 pub(super) fn match_increment_self(s: &Assign) -> Option<&Expr> {
     let name = match &s.target {
         Expr::Ident { name, .. } => name,
@@ -337,6 +356,12 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         // non-map subscript targets.
         if let Some((map_ref, Type::Map(k, v))) = resolve_map_target(ctx, obj) {
             if ctx.current_exec.is_none() {
+                return;
+            }
+            // `m[k] = v` is a mutation — the `const` container rule applies to
+            // it exactly as it does to `m.set(k, v)`. Mirrors the array
+            // subscript write in `lower_array_set`.
+            if reject_const_container_mutation(ctx, map_ref.node_id, true, "an index write", &s.range) {
                 return;
             }
             let key = lower_expr(ctx, index);
@@ -591,41 +616,81 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
         return;
     }
 
-    // Constant-fold: if the condition is a literal bool, skip the Branch
-    // gate entirely and just emit the taken branch. Only when NOT under
-    // `@nofold` — that annotation promises "nothing folded or elided", so a
+    // A const-evaluable condition selects one block at compile time. This
+    // lowers the taken block STRAIGHT INTO THE PARENT SCOPE — no Branch gate,
+    // and so no Var_Get cache snapshot/restore (see this function's doc
+    // comment) — which is what makes it safe. Do not reimplement this as
+    // post-hoc deletion of an already-lowered branch. Generalises the old
+    // literal-bool-only elision (a bare `true`/`false`) to every
+    // compile-time-decidable condition built from const-DECLARED names
+    // (operators over them, certified method calls, ...) via
+    // `const_eval::eval_expr` — the same evaluator `typecheck::stmt`'s
+    // `Stmt::If` arm uses to decide which block NOT to check, so the two
+    // sides agree on exactly what's constant. `if_cond_const_ctx` restricts
+    // the environment to names actually spelled `const` (NOT a plain `let`
+    // that merely happens to fold — see its doc comment): the feature's own
+    // rule is that a program using no `const` compiles identically to
+    // before, so a condition built from a plain `let` must fall straight
+    // through to the general Branch path below, exactly as it did before
+    // this feature existed. The OLD second case (an ident bound to a
+    // literal-bool GATE, e.g. a plain mod param called with a literal
+    // argument) is not something `const_eval` can see — see
+    // `ident_literal_bool`'s doc comment — so it stays a separate, narrower
+    // fallback below, unaffected by the const-declared restriction (it
+    // never reads `const_lookup` at all). Only when NOT under `@nofold` —
+    // that annotation promises "nothing folded or elided", so a
     // `@nofold`-scoped `if true {...}` must still lower a real Branch (fall
     // through to the general path below).
-    if ctx.nofold_depth == 0
-        && let Expr::BoolLit { value, .. } = &s.cond
-    {
-        ctx.push_scope(crate::scope::ScopeTag::BLOCK);
-        if *value {
-            lower_block(ctx, &s.then_block);
-        } else if let Some(else_b) = &s.else_block {
-            lower_block(ctx, else_b);
+    if ctx.nofold_depth == 0 {
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let mut budget = crate::const_eval::Budget::default();
+        let cond_cx = ctx.if_cond_const_ctx(Some(&lookup));
+        let cond_result = crate::const_eval::eval_expr(&s.cond, &cond_cx, &mut budget);
+        // `const_eval` only ever resolves NAMED constants (`const`/`let`
+        // bindings, and operators/calls over them) — it has no notion of a
+        // lowered gate's value, so it can't see a plain (non-const) mod
+        // param that happens to be bound to a literal-bool ARGUMENT at this
+        // call site (e.g. `mod foo(cond: bool) { if cond {...} }` called as
+        // `foo(true)`: `cond` binds to the `_Literal` gate `lower_expr`
+        // built for that argument). `ident_literal_bool` reads that gate
+        // directly as a narrower, SEPARATE fallback — deliberately NOT
+        // folded into `const_eval`'s consts environment, so that evaluator's
+        // meaning stays "named constants only". Its hits are NOT recorded
+        // into `dropped_ranges` below: typecheck checks a mod body once,
+        // generically, per declaration — never re-checked per call site — so
+        // it has no way to know this particular call passed a literal, and
+        // always checks both branches here regardless. That's the safe
+        // over-checking direction (never under-checking), so leaving this
+        // case untracked cannot let a branch be lowered without having been
+        // checked.
+        let taken = match cond_result {
+            Ok(Literal::Bool(taken)) => {
+                // Record the range of the block that was skipped, mirroring
+                // `typecheck::stmt`'s `Stmt::If` arm exactly (see
+                // `typecheck_and_lowering_drop_exactly_the_same_ranges` in
+                // `typecheck::tests`) — a taken THEN with no `else` drops
+                // nothing, since there is no second block to skip.
+                if taken {
+                    if let Some(else_b) = &s.else_block {
+                        ctx.dropped_ranges.push(else_b.range.clone());
+                    }
+                } else {
+                    ctx.dropped_ranges.push(s.then_block.range.clone());
+                }
+                Some(taken)
+            }
+            _ => ident_literal_bool(ctx, &s.cond),
+        };
+        if let Some(taken) = taken {
+            ctx.push_scope(crate::scope::ScopeTag::BLOCK);
+            if taken {
+                lower_block(ctx, &s.then_block);
+            } else if let Some(else_b) = &s.else_block {
+                lower_block(ctx, else_b);
+            }
+            ctx.pop_scope();
+            return;
         }
-        ctx.pop_scope();
-        return;
-    }
-    // Also fold idents bound to literal bools (e.g. inline mod params) —
-    // same `@nofold` guard as above.
-    if ctx.nofold_depth == 0
-        && let Expr::Ident { name, .. } = &s.cond
-        && let Some(Binding::Local(local)) = ctx.scope.get(name).cloned()
-        && let Some(node) = ctx.builder.module.nodes.get(&local.port.node_id)
-        && node.gate_class == gc::LITERAL
-        && let Some(Literal::Bool(val)) = node.properties.get(&*sym::VALUE)
-    {
-        let val = *val;
-        ctx.push_scope(crate::scope::ScopeTag::BLOCK);
-        if val {
-            lower_block(ctx, &s.then_block);
-        } else if let Some(else_b) = &s.else_block {
-            lower_block(ctx, else_b);
-        }
-        ctx.pop_scope();
-        return;
     }
 
     let current_exec = ctx.current_exec.unwrap();
@@ -772,6 +837,32 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     restore_var_caches(ctx, &pre_branch_caches);
     for id in then_touched.iter().chain(else_touched.iter()) {
         invalidate_var_cache(ctx, id);
+    }
+}
+
+/// `cond` resolves (through the current scope) to a `_Literal` gate carrying
+/// a bool — the case a plain (non-`const`) mod parameter ends up in when its
+/// call-site argument was itself a literal (`mod foo(cond: bool) { if cond
+/// {...} }` called as `foo(true)`): the param binds to whatever gate
+/// `lower_expr` produced for the argument, which for a bare literal is a
+/// `_Literal` node. `const_eval` cannot see this — its `consts` environment
+/// only ever holds named `const`/`let` bindings, never a lowered gate's
+/// value — so `lower_if` falls back to this narrower, direct-gate-inspection
+/// check when `const_eval` reports the condition isn't constant.
+fn ident_literal_bool(ctx: &LowerCtx, cond: &Expr) -> Option<bool> {
+    let Expr::Ident { name, .. } = cond else {
+        return None;
+    };
+    let Some(Binding::Local(local)) = ctx.scope.get(name).cloned() else {
+        return None;
+    };
+    let node = ctx.builder.module.nodes.get(&local.port.node_id)?;
+    if node.gate_class != gc::LITERAL {
+        return None;
+    }
+    match node.properties.get(&*sym::VALUE) {
+        Some(Literal::Bool(val)) => Some(*val),
+        _ => None,
     }
 }
 

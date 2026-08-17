@@ -626,7 +626,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             inputs: event_inputs,
             outputs: event_outputs,
         },
-        properties: event_config_props(evt, &h.config),
+        properties: event_config_props(evt, &h.config, &ctx.const_lookup()),
         ..Default::default()
     });
 
@@ -679,10 +679,15 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
 /// Description = "Greets you")`) into the event gate's data-struct properties.
 /// Positional literals fill `evt.config_positional` in order; named args target
 /// a field via `evt.config_named` (case-insensitive). Args with no matching
-/// slot, or non-literal values, are ignored.
+/// slot are ignored. Values are folded against `consts` (`ctx.const_lookup()`)
+/// so a named constant (e.g. a computed `CustomEvent` channel) bakes here just
+/// as it does on the `SendCustomEvent` sender side; a genuinely non-constant
+/// value still folds to `None` and is ignored (typecheck has already rejected
+/// it via `validate_handler_config`).
 fn event_config_props(
     evt: &crate::catalog::events::EventSpec,
     config: &[HandlerConfigArg],
+    consts: &ConstEnv,
 ) -> HashMap<crate::intern::Sym, Literal> {
     let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
     let mut positional = 0;
@@ -702,7 +707,7 @@ fn event_config_props(
                 (field, value)
             }
         };
-        if let (Some(field), Some(lit)) = (field, expr_to_literal(value)) {
+        if let (Some(field), Some(lit)) = (field, expr_to_literal_in(value, consts)) {
             props.insert(intern(field), lit);
         }
     }

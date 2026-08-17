@@ -57,6 +57,12 @@ use register::*;
 
 pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheckResult {
     let mut ctx = TypeCheckCtx::new(file, ce_slots);
+    // A module-level `@nofold` marks the WHOLE program, exactly as
+    // `lower::lower` seeds `LowerCtx::nofold_depth` from this same flag.
+    // Under `@nofold` lowering still builds a real `Branch` for a constant
+    // `if`, so this stage must keep checking BOTH blocks — see the `Stmt::If`
+    // arm in `stmt.rs`.
+    ctx.nofold_depth = script.no_fold as u32;
     register_builtin_events(&mut ctx);
 
     // Pre-pass: collect every generic type alias (`type Pair<T> = …`) before
@@ -72,6 +78,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // initializer may name one. Built from the same function lowering uses, so
     // the two can't disagree about what counts as a compile-time constant.
     ctx.const_env = crate::lower::build_const_env(&script.decls);
+    ctx.const_declared = crate::lower::build_const_declared_names(&script.decls);
     // `@label(expr)` on a port/chip/nested-var must fold to a compile-time
     // constant (the folded text is baked as the label) — a runtime value there
     // has nowhere to host a wire, so it stays a WS040 error. A TOP-LEVEL `var`
@@ -116,6 +123,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
                     Some(te) => resolve_type_expr(&mut ctx, te),
                     None => Type::Any,
                 },
+                is_const: false,
             }),
             _ => None,
         })
@@ -189,6 +197,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
         if_contexts: ctx.if_contexts,
         var_read_contexts: ctx.var_read_contexts,
         diagnostics: ctx.diagnostics,
+        dropped_ranges: ctx.dropped_ranges,
     }
 }
 

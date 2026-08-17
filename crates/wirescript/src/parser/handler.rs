@@ -218,6 +218,7 @@ impl<'a> Parser<'a> {
                 typ: None,
                 value: expr,
                 no_fold: false,
+                is_const: false,
                 range: expr_range.clone(),
             });
 
@@ -241,31 +242,60 @@ impl<'a> Parser<'a> {
         let mut params: Vec<HandlerParam> = Vec::new();
         let mut config: Vec<HandlerConfigArg> = Vec::new();
         if self.match_tok(TokenKind::LParen, None).is_some() {
+            // How many POSITIONAL config slots this trigger's event declares
+            // (`CustomEvent`/`GlobalCustomEvent`: one, the channel name;
+            // everything else: none). An identifier landing in one of those
+            // slots is a legitimate constant config VALUE — `on
+            // CustomEvent(CH)` for a `const CH` — so the steer-to-`->`
+            // heuristic below must not claim it. Events with NO positional
+            // slot keep the heuristic exactly as it was.
+            let positional_config_slots = match &trigger {
+                Trigger::Ident { name, .. } => crate::catalog::events::find_event(name)
+                    .map_or(0, |evt| evt.config_positional.len()),
+                _ => 0,
+            };
+            let mut positional_seen = 0usize;
             while !self.check(TokenKind::RParen, None) {
-                if self.check(TokenKind::Ident, None) {
+                let at_ident = self.check(TokenKind::Ident, None);
+                // `name = value` — a named config arg, on every event.
+                let is_named = at_ident
+                    && self.peek_at(1).kind == TokenKind::Op
+                    && self.peek_at(1).text == "=";
+                // The removed inline output-binding form. A bare ident is only
+                // that when it is NOT filling a positional config slot; a
+                // `name: type` ident always is, even in a slot, since a config
+                // value is never type-annotated (`on CustomEvent("dmg", amount:
+                // int)` — the deprecated spelling always put the channel name
+                // first, so its data params sit past the slot regardless).
+                let is_inline_output_bind = at_ident
+                    && !is_named
+                    && (positional_seen >= positional_config_slots
+                        || self.peek_at(1).kind == TokenKind::Colon);
+                if is_named {
                     let tok = self.expect(TokenKind::Ident, None);
                     let name = tok.text;
-                    if self.match_tok(TokenKind::Op, Some("=")).is_some() {
-                        let value = self.parse_expr();
-                        config.push(HandlerConfigArg::Named { name, value });
-                    } else {
-                        // A bare ident or `name: type` here used to bind the
-                        // event's data outputs inline; that form is removed —
-                        // steer to the `->` capture instead.
-                        let mut end = tok.end;
-                        if self.match_tok(TokenKind::Colon, None).is_some() {
-                            end = self.parse_type().range().end;
-                        }
-                        self.error(
-                            "bind event outputs with `-> (a, b)`, not inside the event call \
-                             (`E(a) { }` is now `E() -> (a) { }`)",
-                            tok.start,
-                            end,
-                        );
+                    self.expect(TokenKind::Op, Some("="));
+                    let value = self.parse_expr();
+                    config.push(HandlerConfigArg::Named { name, value });
+                } else if is_inline_output_bind {
+                    // A bare ident or `name: type` here used to bind the
+                    // event's data outputs inline; that form is removed —
+                    // steer to the `->` capture instead.
+                    let tok = self.expect(TokenKind::Ident, None);
+                    let mut end = tok.end;
+                    if self.match_tok(TokenKind::Colon, None).is_some() {
+                        end = self.parse_type().range().end;
                     }
+                    self.error(
+                        "bind event outputs with `-> (a, b)`, not inside the event call \
+                         (`E(a) { }` is now `E() -> (a) { }`)",
+                        tok.start,
+                        end,
+                    );
                 } else {
                     let value = self.parse_expr();
                     config.push(HandlerConfigArg::Positional(value));
+                    positional_seen += 1;
                 }
                 if self.match_tok(TokenKind::Comma, None).is_none() {
                     break;

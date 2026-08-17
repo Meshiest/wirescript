@@ -320,6 +320,157 @@ var y: int = 20
 Swap(x, y)  // x and y are passed by reference
 ```
 
+## `const` Parameters and `const mod`
+
+A `mod` or `chip` parameter can be marked `const`, requiring the caller's
+argument to be a compile-time constant. Inside the body the parameter reads
+as one -- usable anywhere a `const` binding is (see
+[`const` -- Compile-Time Binding](statements.md#const----compile-time-binding)):
+
+```wirescript
+mod ping(channel: const string, v: int) {
+  SendCustomEvent(channel, v)
+}
+
+in go: exec
+var hp: int = 0
+on go { ping("died", hp) }   // "died" bakes as the event's channel name
+```
+
+A non-constant argument in a `const` slot is **WS046**:
+
+```wirescript ignore
+in name: string
+mod ping(channel: const string) { SendCustomEvent(channel) }
+on go { ping(name) }   // WS046 -- 'name' is a runtime value
+```
+
+`v` above stays an ordinary wired parameter -- a `mod`/`chip` can freely mix
+`const` and non-`const` parameters. A `const` parameter costs no pin: it
+never becomes a `MicrochipInput`, so it doesn't shift the pin index of any
+parameter that follows it. For a `chip` (not a `mod`), each distinct
+constant value passed to a `const` parameter gets its own compiled instance
+-- two call sites passing the same constant share one instance, since the
+body is cached by a template key that includes the const value.
+
+### `const mod`
+
+`const mod` marks every parameter of an inlined chip `const` in one step --
+equivalent to writing `const` on each parameter individually:
+
+```wirescript
+const mod double(n: int) -> int { return n * 2 }
+```
+
+A call to a `const mod` is itself const-evaluable (see
+[What's const-evaluable](statements.md#whats-const-evaluable)), so it can be
+used to build a `const` value out of one or more calls -- including calls to
+other `const mod`s and reads of module-level constants.
+
+`const chip` is a parse error -- a `chip` compiles to one shared physical
+microchip template reused across call sites, so "every parameter is const"
+isn't a property the declaration can have the way it is for an inlined
+`mod`. Mark the parameters you need constant individually instead:
+
+```wirescript ignore
+const chip C(v: int) -> (r: int) { out r = v }   // error -- use a mod, or const params
+
+chip C(name: const string, v: int) -> (r: int) { out r = v }   // fine
+```
+
+A `const` BINDING inside a named `chip`'s body is compile-time throughout that
+chip -- its handlers, its `out`s, and its constant-only config slots -- the
+same as inside a `mod`. Two places it is not: the body of an **anonymous**
+`chip { }`, and a chip *declared inside* another chip, which does not inherit
+the enclosing chip's body constants (pass them in as `const` parameters). Both
+are reported rather than silently dropped; see
+[Where `const` is allowed](statements.md#where-const-is-allowed).
+
+A `const mod` may declare multiple outputs, and its result destructures exactly
+as an ordinary multi-output mod's does. One rule is const-specific: the wire
+graph keeps whichever assignment to an output comes FIRST in source order, so a
+valued `return` placed *after* an `out` to the same output would disagree with
+it, so it is rejected (**WS046**) rather than shipping a mismatch.
+
+```wirescript ignore
+const mod pick(n: const int) -> (r: int) {
+  out r = 111
+  if n > 0 { return 222 }   // WS046 -- disagrees with the wire graph
+}
+```
+
+### The mixed-parameter macro pattern
+
+Because `const` and ordinary parameters mix freely, a `mod` can behave like a
+small macro that both configures a gate at compile time and wires a runtime
+value through it in the same call:
+
+```wirescript
+mod tagged(label: const string, amount: int) {
+  SendCustomEvent("evt_" .. label, amount)
+}
+
+in go: exec
+var score: int = 0
+on go {
+  tagged("score", score)   // "evt_score" bakes; score stays a live wire
+}
+```
+
+### const `if` and tree-shaking
+
+An `if` whose condition is const-evaluable is resolved at compile time: the
+taken branch is checked and lowered normally, and the untaken branch is
+dropped **before type-checking ever looks at it**.
+
+```wirescript
+const MODE = 1
+var x: int = 0
+in go: exec
+
+on go {
+  if MODE == 1 {
+    x = 1
+  } else {
+    x = someModeTwoOnlyFunction()   // never type-checked -- MODE is always 1
+  }
+}
+```
+
+This is what lets one `mod`/`chip` serve call sites that share no common API:
+a branch that wouldn't even compile for a given constant value is simply
+never checked for it. The editor's hover on a dropped block explains why it
+was dropped (e.g. `` `MODE == 1` is true here ``).
+
+**This does not work for a `const` parameter.** A `mod`/`chip` body is
+type-checked exactly once, before any call site exists -- there is no real
+argument yet to decide the branch with. A `const` parameter is seeded with a
+type-shaped placeholder during that one-time check, and the placeholder is
+deliberately never allowed to decide a branch: letting it choose would ship a
+branch the placeholder happened to select while the OTHER branch -- the one a
+real call actually takes -- goes unchecked. So **both branches of an `if` on
+a const parameter (or a `const` derived from one) are type-checked**, and
+each must be independently valid code, even though only one of them lowers
+per call site:
+
+```wirescript
+var x: int = 0
+
+mod f(mode: const int) {
+  if mode == 1 {
+    x = 1
+  } else {
+    x = someOtherModesFunction()   // IS type-checked, even if every call site passes mode = 1
+  }
+}
+```
+
+Both arms must compile for every possible constant value, not just the ones
+any call site actually passes. A top-level `const` -- or one read from inside
+a mod body that is not itself a parameter -- does not have this restriction;
+only the parameter itself, and anything derived from it, carries the
+placeholder.
+
 ## Open and Closed Chips
 
 Non-root chips compile **open** by default: each chip's inner grid renders
@@ -392,7 +543,7 @@ label); the port's wiring-UI name is unaffected either way.
 The `@label` argument may also be an expression: a constant folds to baked
 text, and on a top-level `var` a runtime expression becomes a **dynamic
 label** that shows the value live -- see
-[Expression labels](statements.md#expression-labels-label-expr). A chip
+[Expression labels](statements.md#expression-labels-labelexpr). A chip
 label must be a constant (its shell brick has no wired text component).
 
 Each opened plane with a title or doc comment gets a header at its top

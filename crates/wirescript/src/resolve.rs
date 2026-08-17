@@ -101,6 +101,34 @@ fn is_importable(d: &TopDecl) -> bool {
     )
 }
 
+/// Every top-level name a declaration introduces.
+///
+/// [`decl_name`] answers "what is this declaration CALLED", which is a
+/// different question for the one form that binds several names at once: a
+/// destructuring `let`/`const` (`const { x, y } = p`) has no single name, so
+/// `decl_name` returns `None` for it — and every import path keyed on
+/// `decl_name` therefore behaved as though the declaration introduced NOTHING.
+/// A named import of `x` reported WS012 "not found", a duplicate check could
+/// not see `x`, and the declaration-order restore sorted the binding to the
+/// end. (`import "lib"` was unaffected: it pushes every importable
+/// declaration and only consults `decl_name` to skip duplicates.)
+///
+/// Uses `const_eval::bound_names` — the same syntactic name list the constant
+/// environment and both typecheck sites split a destructured value with — so
+/// the import system cannot disagree with them about which names a binding
+/// form introduces.
+fn decl_names(d: &TopDecl) -> Vec<String> {
+    match d {
+        TopDecl::Let(l) => crate::const_eval::bound_names(&l.binding),
+        _ => decl_name(d).map(|n| vec![n.to_string()]).unwrap_or_default(),
+    }
+}
+
+/// Whether `d` introduces the top-level name `name`.
+fn decl_binds(d: &TopDecl, name: &str) -> bool {
+    decl_names(d).iter().any(|n| n == name)
+}
+
 fn decl_name(d: &TopDecl) -> Option<&str> {
     match d {
         TopDecl::Chip(c) => Some(&c.name),
@@ -240,19 +268,18 @@ fn resolve_import(
         target_doc_comments.insert(*k, v.clone());
     }
 
-    let already_has = |decls: &[TopDecl], name: &str| -> bool {
-        decls
-            .iter()
-            .any(|existing| decl_name(existing) == Some(name))
-    };
+    let already_has =
+        |decls: &[TopDecl], name: &str| -> bool { decls.iter().any(|e| decl_binds(e, name)) };
 
     match &imp.kind {
         ImportKind::All => {
             for d in importable {
-                if let Some(name) = decl_name(&d)
-                    && already_has(target_decls, name) {
-                        continue;
-                    }
+                if decl_names(&d)
+                    .iter()
+                    .any(|n| already_has(target_decls, n))
+                {
+                    continue;
+                }
                 target_decls.push(d);
             }
         }
@@ -267,12 +294,28 @@ fn resolve_import(
                 if already_has(target_decls, effective_name) {
                     continue;
                 }
-                let found = importable.iter().find(|d| decl_name(d) == Some(&b.name));
+                let found = importable.iter().find(|d| decl_binds(d, &b.name));
                 match found {
                     Some(d) => {
                         if let Some(alias) = &b.alias {
                             let mut d = d.clone();
-                            rename_decl(&mut d, alias);
+                            // A declaration binding SEVERAL names needs to know
+                            // WHICH one the alias renames; `rename_decl` only
+                            // knows how to rename a single-name declaration.
+                            if !rename_bound_name(&mut d, &b.name, alias) {
+                                diagnostics.push(Diagnostic::error(
+                                    "WS012",
+                                    format!(
+                                        "'{}' cannot be imported under an alias: it is one of \
+                                         several names bound by a destructuring declaration in \
+                                         '{}' — import it without `as`, or give the destructure \
+                                         its own alias at the declaration",
+                                        b.name, imp.path
+                                    ),
+                                    imp.range.clone(),
+                                ));
+                                continue;
+                            }
                             target_decls.push(d);
                         } else {
                             target_decls.push(d.clone());
@@ -298,16 +341,17 @@ fn resolve_import(
                 let mut added = false;
                 for d in &importable {
                     if matches!(d, TopDecl::TypeAlias(_)) { continue; }
-                    if let Some(name) = decl_name(d)
-                        && !binding_names.contains(name)
-                            && used.contains(name)
-                            && !target_decls
-                                .iter()
-                                .any(|existing| decl_name(existing) == Some(name))
-                        {
-                            target_decls.push(d.clone());
-                            added = true;
-                        }
+                    let names = decl_names(d);
+                    if !names.is_empty()
+                        && names.iter().any(|n| used.contains(n.as_str()))
+                        && !names.iter().any(|n| binding_names.contains(n.as_str()))
+                        && !names
+                            .iter()
+                            .any(|n| target_decls.iter().any(|e| decl_binds(e, n)))
+                    {
+                        target_decls.push(d.clone());
+                        added = true;
+                    }
                 }
                 if !added {
                     break;
@@ -319,14 +363,17 @@ fn resolve_import(
             // declared as it is checked — so a constant discovered via an array
             // initializer would land after the array and read as undeclared.
             // The source file already orders constants before their users.
-            let order: HashMap<&str, usize> = importable
-                .iter()
-                .enumerate()
-                .filter_map(|(i, d)| decl_name(d).map(|n| (n, i)))
-                .collect();
+            let mut order: HashMap<String, usize> = HashMap::default();
+            for (i, d) in importable.iter().enumerate() {
+                for n in decl_names(d) {
+                    order.entry(n).or_insert(i);
+                }
+            }
             target_decls[import_start..].sort_by_key(|d| {
-                decl_name(d)
-                    .and_then(|n| order.get(n).copied())
+                decl_names(d)
+                    .iter()
+                    .filter_map(|n| order.get(n).copied())
+                    .min()
                     .unwrap_or(usize::MAX)
             });
 
@@ -409,6 +456,48 @@ fn resolve_import(
                 break;
             }
         }
+    }
+}
+
+/// Rename the single bound name `old` to `new_name` inside `d`, for
+/// `import { old as new_name }`. Returns `false` when the declaration binds
+/// `old` but cannot express the rename — the caller turns that into a
+/// diagnostic rather than pushing a declaration that silently still binds the
+/// original name.
+///
+/// A `RecordDestruct` field renames through its own `alias` slot, which is
+/// exactly what that slot means. A `Record` (`const { x, y } = p`) cannot:
+/// its names ARE the field names it reads, so renaming one would change which
+/// field it binds, and a `Tuple`'s `rest` has no positional identity to keep.
+fn rename_bound_name(d: &mut TopDecl, old: &str, new_name: &str) -> bool {
+    let TopDecl::Let(l) = d else {
+        rename_decl(d, new_name);
+        return true;
+    };
+    match &mut l.binding {
+        LetBinding::Ident { name, .. } => {
+            *name = new_name.to_string();
+            true
+        }
+        LetBinding::Tuple { names, .. } => {
+            for n in names.iter_mut().filter(|n| *n == old) {
+                *n = new_name.to_string();
+                return true;
+            }
+            false
+        }
+        LetBinding::RecordDestruct { fields, .. } => {
+            for f in fields.iter_mut() {
+                if let RecordDestructField::Named { name, alias, .. } = f
+                    && alias.as_deref().unwrap_or(name) == old
+                {
+                    *alias = Some(new_name.to_string());
+                    return true;
+                }
+            }
+            false
+        }
+        LetBinding::Record { .. } => false,
     }
 }
 

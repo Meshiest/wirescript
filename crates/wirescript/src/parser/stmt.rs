@@ -163,7 +163,7 @@ impl<'a> Parser<'a> {
                     return None;
                 }
                 if kw("let") {
-                    let mut decl = self.parse_let_decl();
+                    let mut decl = self.parse_let_decl(false);
                     match &mut decl {
                         TopDecl::Let(l) => l.no_fold = true,
                         TopDecl::Event(e) => e.no_fold = true,
@@ -193,7 +193,7 @@ impl<'a> Parser<'a> {
                     t.start,
                     t2.end,
                 );
-                if let TopDecl::Chip(c) = self.parse_mod_decl() {
+                if let TopDecl::Chip(c) = self.parse_mod_decl(false) {
                     return Some(Stmt::ChipDecl(c));
                 }
                 return None;
@@ -244,7 +244,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 "let" => {
-                    let decl = self.parse_let_decl();
+                    let decl = self.parse_let_decl(false);
                     match decl {
                         TopDecl::Let(v) => return Some(Stmt::Let(v)),
                         TopDecl::Await(a) => return Some(Stmt::Await(a)),
@@ -265,6 +265,52 @@ impl<'a> Parser<'a> {
                         _ => {}
                     }
                 }
+                "const" => match self.peek_at(1).text.as_str() {
+                    "mod" => {
+                        self.advance(); // consume "const"
+                        if let TopDecl::Chip(c) = self.parse_mod_decl(/*is_const=*/ true) {
+                            return Some(Stmt::ChipDecl(c));
+                        }
+                    }
+                    // `const chip` is rejected: a chip shares one compiled template
+                    // across call sites, so "every parameter is const" is not a
+                    // property of the declaration the way it is for an inlined mod.
+                    // Const PARAMETERS on a chip are supported — they extend its
+                    // template key.
+                    "chip" => {
+                        let kw = self.peek().clone();
+                        self.error(
+                            "`const chip` is not allowed — use `const mod`, or mark \
+                             individual parameters `const` (`chip C(name: const \
+                             string, …)`)",
+                            kw.start,
+                            kw.end,
+                        );
+                        self.advance(); // consume "const"
+                        match self.parse_chip_decl(false, None, None, false, false) {
+                            TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
+                            TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
+                            _ => {}
+                        }
+                    }
+                    _ => {
+                        let decl = self.parse_let_decl(/*is_const=*/ true);
+                        match decl {
+                            TopDecl::Let(v) => return Some(Stmt::Let(v)),
+                            TopDecl::Await(a) => return Some(Stmt::Await(a)),
+                            TopDecl::Event(e) => {
+                                self.error(
+                                    "captured events (`let x = on Event { … }`) are only allowed at the top level"
+                                        .to_string(),
+                                    e.range.start,
+                                    e.range.end,
+                                );
+                                return None;
+                            }
+                            _ => {}
+                        }
+                    }
+                },
                 "array" => {
                     if let TopDecl::Array(a) = self.parse_array_decl() {
                         return Some(Stmt::Array(a));
@@ -317,7 +363,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "mod" => {
-                    if let TopDecl::Chip(c) = self.parse_mod_decl() {
+                    if let TopDecl::Chip(c) = self.parse_mod_decl(false) {
                         return Some(Stmt::ChipDecl(c));
                     }
                 }

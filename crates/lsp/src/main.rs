@@ -498,6 +498,10 @@ struct DocState {
     type_map: TypeMap,
     if_contexts: wirescript::analysis::IfContextMap,
     var_read_contexts: VarReadContextMap,
+    /// Ranges of `if`/`else` blocks a const-evaluable condition dropped before
+    /// type-checking (never verified), with a human-readable reason for each —
+    /// surfaced by `hover_dropped_range` so hovering inside one says so.
+    dropped_ranges: Vec<(wirescript::diagnostic::SourceRange, String)>,
     resource_estimates: wirescript::collections::HashMap<String, ResourceEstimate>,
     pre_resolve_ast: Script,
     /// Canonical paths this doc imports, transitively — used to decide whether
@@ -597,6 +601,7 @@ impl Backend {
                     type_map: tc.type_of_expr,
                     if_contexts: tc.if_contexts,
                     var_read_contexts: tc.var_read_contexts,
+                    dropped_ranges: tc.dropped_ranges,
                     resource_estimates,
                     pre_resolve_ast,
                     imported_files: resolved.imported_files.clone(),
@@ -981,6 +986,7 @@ impl LanguageServer for Backend {
                     &doc.doc_comments,
                     &doc.if_contexts,
                     &doc.var_read_contexts,
+                    &doc.dropped_ranges,
                     &doc.resource_estimates,
                     pos.line as usize,
                     pos.character as usize,

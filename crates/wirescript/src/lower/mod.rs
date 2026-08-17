@@ -29,8 +29,13 @@ use context::*;
 
 mod predeclare;
 use predeclare::*;
-pub use predeclare::{ConstEnv, build_const_env, expr_to_literal, expr_to_literal_in};
-pub(crate) use predeclare::{fold_ammo_override, fold_mesh_colors};
+pub use predeclare::{
+    ConstEnv, build_const_declared_names, build_const_env, expr_to_literal, expr_to_literal_in,
+};
+pub(crate) use predeclare::{
+    default_literal_for_var_type, eval_const_binop, eval_const_unop, fold_ammo_override,
+    fold_constructor, fold_mesh_colors,
+};
 
 mod decl;
 use decl::*;
@@ -72,6 +77,12 @@ pub mod fold;
 pub struct LowerResult {
     pub module: Module,
     pub diagnostics: Vec<Diagnostic>,
+    /// Source ranges of `if`/`else` blocks a const-evaluable condition
+    /// dropped during lowering — see `LowerCtx::dropped_ranges`. Consumed
+    /// only by tests that assert this side agrees with
+    /// `typecheck::TypeCheckResult::dropped_ranges` on exactly which ranges
+    /// are skipped.
+    pub dropped_ranges: Vec<SourceRange>,
 }
 
 pub struct LowerInput<'a> {
@@ -187,12 +198,18 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         chip_call_stack: Vec::new(),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
         const_env: Arc::new(predeclare::build_const_env(&input.ast.decls)),
+        const_declared: Arc::new(predeclare::build_const_declared_names(&input.ast.decls)),
+        immutable_containers: HashSet::default(),
         is_root_module: true,
         doc_comments: input.doc_comments,
         // Module-level `@nofold` (top of file + blank line) marks everything.
         nofold_depth: input.ast.no_fold as u32,
         mono_stack: Vec::new(),
         scoped_consts: Vec::new(),
+        scoped_const_declared: Vec::new(),
+        dropped_ranges: Vec::new(),
+        // Base frame: the module's own top-level declarations.
+        pass1_chips: vec![HashMap::default()],
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -353,6 +370,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     LowerResult {
         module,
         diagnostics: ctx.diagnostics,
+        dropped_ranges: ctx.dropped_ranges,
     }
 }
 
@@ -1520,11 +1538,17 @@ pub fn compile_chip_template(
         },
         known_fn_names: Arc::new(HashSet::default()),
         const_env: Arc::new(ConstEnv::default()),
+        const_declared: Arc::new(HashSet::default()),
+        immutable_containers: HashSet::default(),
         is_root_module: false,
         doc_comments: &empty_docs,
         nofold_depth: 0,
         mono_stack: Vec::new(),
         scoped_consts: Vec::new(),
+        scoped_const_declared: Vec::new(),
+        dropped_ranges: Vec::new(),
+        // Base frame: the module's own top-level declarations.
+        pass1_chips: vec![HashMap::default()],
     };
 
     // Create input ports
@@ -1618,6 +1642,12 @@ pub fn compile_chip_template(
         chip_decl.outputs.iter().map(|n| n.name.as_ref()).collect();
     for stmt in &chip_decl.body.stmts {
         match stmt {
+            // Same source-ordered nested-declaration overlay as the other
+            // pre-declare loops (see `pre_declare_chip_name`). This template
+            // path starts with an EMPTY `pass1_chips` (no inherited outer
+            // declarations to shadow), so here it only adds resolution rather
+            // than correcting any.
+            Stmt::ChipDecl(c) => pre_declare_chip_name(&mut ctx, c),
             Stmt::In(i) => pre_declare_input(&mut ctx, i),
             Stmt::Var(v) => ctx.with_nofold(v.no_fold, |c| pre_declare_var(c, v)),
             Stmt::Buffer(b) => pre_declare_buffer(&mut ctx, b),

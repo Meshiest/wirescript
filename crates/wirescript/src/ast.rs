@@ -274,6 +274,10 @@ pub struct Param {
     pub name: String,
     pub typ: TypeExpr,
     pub pattern: Option<ParamPattern>,
+    /// `name: const int` — the argument must be a compile-time constant, and
+    /// inside the body the parameter reads as one. Set on every parameter of a
+    /// `const mod`.
+    pub is_const: bool,
     pub range: SourceRange,
 }
 
@@ -331,6 +335,10 @@ pub struct ChipDecl {
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
+    /// `const mod f(…)`: every parameter is const. The body may still emit
+    /// gates; whether a CALL to it evaluates at compile time is decided by
+    /// attempting evaluation (see `const_eval::interp`).
+    pub is_const: bool,
 }
 
 impl ChipDecl {
@@ -430,6 +438,10 @@ pub struct LetDecl {
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
+    /// `const x = …` rather than `let x = …`: the initializer MUST evaluate at
+    /// compile time (WS046 if it cannot). A `let` folds opportunistically and
+    /// falls back to gates; a `const` is a guarantee.
+    pub is_const: bool,
     pub range: SourceRange,
 }
 

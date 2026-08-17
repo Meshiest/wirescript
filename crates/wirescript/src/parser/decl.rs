@@ -105,7 +105,7 @@ impl<'a> Parser<'a> {
                     return Some(self.parse_var_decl(false, no_fold, label, label_expr));
                 }
                 if kw("let") {
-                    let mut decl = self.parse_let_decl();
+                    let mut decl = self.parse_let_decl(false);
                     match &mut decl {
                         TopDecl::Let(l) => l.no_fold = true,
                         TopDecl::Event(e) => e.no_fold = true,
@@ -122,7 +122,7 @@ impl<'a> Parser<'a> {
                     t.start,
                     t2.end,
                 );
-                return Some(self.parse_mod_decl());
+                return Some(self.parse_mod_decl(false));
             }
             self.error(
                 "an annotation must be followed by an 'in', 'out', or chip declaration \
@@ -152,12 +152,38 @@ impl<'a> Parser<'a> {
                         self.parse_out_binding(None, None, None, false, false),
                     ));
                 }
-                "let" => return Some(self.parse_let_decl()),
+                "let" => return Some(self.parse_let_decl(false)),
+                "const" => {
+                    return Some(match self.peek_at(1).text.as_str() {
+                        "mod" => {
+                            self.advance(); // consume "const"
+                            self.parse_mod_decl(/*is_const=*/ true)
+                        }
+                        // `const chip` is rejected: a chip shares one compiled template
+                        // across call sites, so "every parameter is const" is not a
+                        // property of the declaration the way it is for an inlined mod.
+                        // Const PARAMETERS on a chip are supported — they extend its
+                        // template key.
+                        "chip" => {
+                            let kw = self.peek().clone();
+                            self.error(
+                                "`const chip` is not allowed — use `const mod`, or mark \
+                                 individual parameters `const` (`chip C(name: const \
+                                 string, …)`)",
+                                kw.start,
+                                kw.end,
+                            );
+                            self.advance(); // consume "const"
+                            self.parse_chip_decl(false, None, None, false, false)
+                        }
+                        _ => self.parse_let_decl(/*is_const=*/ true),
+                    });
+                }
                 "on" => return Some(TopDecl::Handler(self.parse_handler(false))),
                 "array" => return Some(self.parse_array_decl()),
                 "map" => return Some(self.parse_map_decl()),
                 "chip" => return Some(self.parse_chip_decl(false, None, None, false, false)),
-                "mod" => return Some(self.parse_mod_decl()),
+                "mod" => return Some(self.parse_mod_decl(false)),
                 "open" => {
                     if self.peek_at(1).kind == TokenKind::Kw && self.peek_at(1).text == "chip" {
                         self.advance(); // consume "open"
@@ -360,8 +386,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn parse_let_decl(&mut self) -> TopDecl {
-        let start = self.expect(TokenKind::Kw, Some("let")).start;
+    pub(super) fn parse_let_decl(&mut self, is_const: bool) -> TopDecl {
+        let start = self
+            .expect(TokenKind::Kw, Some(if is_const { "const" } else { "let" }))
+            .start;
 
         // Record destructuring: `let { a, b: alias, ...rest } = expr`
         if self.check(TokenKind::LBrace, None) {
@@ -442,6 +470,7 @@ impl<'a> Parser<'a> {
                 typ,
                 value,
                 no_fold: false,
+                is_const,
                 range: self.make_range(start, end),
             });
         }
@@ -487,6 +516,7 @@ impl<'a> Parser<'a> {
                 typ,
                 value,
                 no_fold: false,
+                is_const,
                 range: self.make_range(start, end),
             });
         }
@@ -520,6 +550,7 @@ impl<'a> Parser<'a> {
                         range: self.make_range(start, end),
                     },
                     no_fold: false,
+                    is_const,
                     range: self.make_range(start, end),
                 });
             }
@@ -588,6 +619,7 @@ impl<'a> Parser<'a> {
             typ,
             value,
             no_fold: false,
+            is_const,
             range: self.make_range(start, end),
         })
     }
@@ -778,6 +810,7 @@ impl<'a> Parser<'a> {
                     typ,
                     value,
                     no_fold: false,
+                    is_const: false,
                     range: self.make_range(ls, le),
                 }));
                 if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -875,6 +908,7 @@ impl<'a> Parser<'a> {
             label_expr,
             closed,
             no_fold,
+            is_const: false,
         })
     }
 
@@ -960,11 +994,18 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_mod_decl(&mut self) -> TopDecl {
+    pub(super) fn parse_mod_decl(&mut self, is_const: bool) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("mod")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let type_params = self.parse_type_params();
-        let inputs = self.parse_param_list();
+        let mut inputs = self.parse_param_list();
+        // `const mod f(...)`: every parameter is implicitly const, regardless
+        // of whether the parameter itself was written with a `const` modifier.
+        if is_const {
+            for p in &mut inputs {
+                p.is_const = true;
+            }
+        }
         let outputs = if self.match_tok(TokenKind::Arrow, None).is_some() {
             self.parse_chip_outputs()
         } else {
@@ -984,6 +1025,7 @@ impl<'a> Parser<'a> {
             label_expr: None,
             closed: false,
             no_fold: false,
+            is_const,
         })
     }
 
@@ -1042,6 +1084,7 @@ impl<'a> Parser<'a> {
                     name: synth_name,
                     typ,
                     pattern: Some(ParamPattern::Record { fields, rest }),
+                    is_const: false,
                     range: self.make_range(pstart, pend),
                 });
                 if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -1083,6 +1126,7 @@ impl<'a> Parser<'a> {
                     name: synth_name,
                     typ,
                     pattern: Some(ParamPattern::Tuple { names, rest }),
+                    is_const: false,
                     range: self.make_range(pstart, pend),
                 });
                 if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -1093,14 +1137,20 @@ impl<'a> Parser<'a> {
             }
 
             // Normal parameter: `name: Type`
+            // `name: const int` — a per-parameter modifier, NOT part of the type
+            // grammar. `const` is not a type (a `const int` IS an `int`), so
+            // putting it in `parse_type` would make `const int[]`, `*const int`
+            // and `Map<const int, V>` parse as though they meant something.
             let pname = self.expect(TokenKind::Ident, None).text;
             self.expect(TokenKind::Colon, None);
+            let is_const = self.match_tok(TokenKind::Kw, Some("const")).is_some();
             let typ = self.parse_type();
             let pend = self.peek().start;
             params.push(Param {
                 name: pname,
                 typ,
                 pattern: None,
+                is_const,
                 range: self.make_range(pstart, pend),
             });
             if self.match_tok(TokenKind::Comma, None).is_none() {

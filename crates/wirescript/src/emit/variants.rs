@@ -300,39 +300,49 @@ pub(super) fn literal_to_boxed_wire_variant(
 }
 
 /// Convert a Literal to a Box<dyn AsBrdbValue> using native types (str/i32/f64/bool).
-pub(super) fn literal_to_string(lit: &Literal) -> String {
+///
+/// `None` for a literal with no native-string representation — a `const`
+/// record, which typecheck's validators are supposed to keep out of a
+/// `FieldKind::Str` field entirely (see the caller in `components.rs`, which
+/// turns a `None` here into `EmitError::UnrepresentableLiteral` rather than
+/// the process-aborting `unreachable!()` this used to be).
+pub(super) fn literal_to_string(lit: &Literal) -> Option<String> {
     match lit {
-        Literal::String(s) => s.clone(),
-        Literal::Int(n) => n.to_string(),
-        Literal::Float(f) => f.to_string(),
-        Literal::Bool(b) => b.to_string(),
-        _ => String::new(),
+        Literal::String(s) => Some(s.clone()),
+        Literal::Int(n) => Some(n.to_string()),
+        Literal::Float(f) => Some(f.to_string()),
+        Literal::Bool(b) => Some(b.to_string()),
+        Literal::Record(_) => None,
+        _ => Some(String::new()),
     }
 }
 
-pub(super) fn literal_to_boxed_native(lit: &Literal) -> Box<dyn AsBrdbValue> {
+/// `None` for a literal with no native `AsBrdbValue` representation — same
+/// `Literal::Record` case and the same reasoning as [`literal_to_string`].
+pub(super) fn literal_to_boxed_native(lit: &Literal) -> Option<Box<dyn AsBrdbValue>> {
     match lit {
-        Literal::String(s) => Box::new(s.clone()),
-        Literal::Int(n) => Box::new(*n),
-        Literal::Float(f) => Box::new(*f),
-        Literal::Bool(b) => Box::new(*b),
-        Literal::Vector { x, y, z } => Box::new(VectorValue {
+        Literal::String(s) => Some(Box::new(s.clone())),
+        Literal::Int(n) => Some(Box::new(*n)),
+        Literal::Float(f) => Some(Box::new(*f)),
+        Literal::Bool(b) => Some(Box::new(*b)),
+        Literal::Vector { x, y, z } => Some(Box::new(VectorValue {
             x: *x,
             y: *y,
             z: *z,
-        }),
-        Literal::Rotator { pitch, yaw, roll } => Box::new(RotatorValue {
+        })),
+        Literal::Rotator { pitch, yaw, roll } => Some(Box::new(RotatorValue {
             pitch: *pitch,
             yaw: *yaw,
             roll: *roll,
-        }),
-        Literal::Quat { x, y, z, w } => Box::new(QuatValue {
+        })),
+        Literal::Quat { x, y, z, w } => Some(Box::new(QuatValue {
             x: *x,
             y: *y,
             z: *z,
             w: *w,
-        }),
-        _ => Box::new(0i64),
+        })),
+        Literal::Record(_) => None,
+        _ => Some(Box::new(0i64)),
     }
 }
 
@@ -444,8 +454,16 @@ pub(super) fn literal_to_wire_variant(lit: &Literal) -> Option<WireVariant> {
             b: *b as f32 / 255.0,
             a: *a as f32 / 255.0,
         }),
+        // No wire-variant form. `Record` belongs here with its siblings:
+        // this function's contract IS "None when there is no wire
+        // representation", so panicking for one such variant would
+        // contradict what every caller is told to expect. The `unreachable!`s
+        // live only in the two converters below, whose contract really is
+        // "this always yields a value" and which therefore have no honest way
+        // to decline.
         Literal::Array(_)
         | Literal::Map(_)
+        | Literal::Record(_)
         | Literal::Asset { .. }
         | Literal::PrefabRef { .. }
         | Literal::NestedPrefab { .. } => None,

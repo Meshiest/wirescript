@@ -275,16 +275,17 @@ fn validate_handler_config(
     config: &[crate::ast::HandlerConfigArg],
 ) {
     use crate::ast::HandlerConfigArg;
+    // Built ONCE for the whole arg list — `const_lookup` deep-clones the
+    // constant map, and nothing in this loop can change it.
+    let consts = ctx.const_lookup();
     let mut positional = 0usize;
     for arg in config {
         match arg {
             HandlerConfigArg::Positional(value) => {
                 let field = evt.config_positional.get(positional).copied();
                 positional += 1;
-                if let Some(field) = field
-                    && crate::lower::expr_to_literal(value).is_none()
-                {
-                    emit_event_config_const_error(ctx, field, value);
+                if let Some(field) = field {
+                    check_event_config_value(ctx, field, value, &consts);
                 }
             }
             HandlerConfigArg::Named { name, value } => {
@@ -293,9 +294,7 @@ fn validate_handler_config(
                     // A named arg that wires into a gate input port may be dynamic.
                     EventArgKind::InputWire(..) => {}
                     EventArgKind::ConfigField(..) => {
-                        if crate::lower::expr_to_literal(value).is_none() {
-                            emit_event_config_const_error(ctx, name, value);
-                        }
+                        check_event_config_value(ctx, name, value, &consts);
                     }
                     // Matches no input port and no config field: nothing lowers
                     // it (both typecheck and emit silently drop it), so `on
@@ -363,12 +362,37 @@ pub(super) fn check_handler_input_wires(
     }
 }
 
-fn emit_event_config_const_error(ctx: &mut TypeCheckCtx, field: &str, e: &Expr) {
-    ctx.emit(
-        "WS028",
-        format!(
-            "'{field}' is constant-only event config and cannot take a variable or computed value"
+/// One constant-only event-config slot: the value must be constant AND scalar.
+/// The scalar half mirrors the call-side
+/// [`non_scalar_config_kind`](crate::typecheck::config::non_scalar_config_kind)
+/// check — an event's config fields bake into the SAME kind of gate data field
+/// a call's do, so a constant record/array/map is just as unwritable here, and
+/// leaving it unchecked let one reach emit (silently wrong data for an array, a
+/// compile-aborting `unreachable!` for a record).
+fn check_event_config_value(
+    ctx: &mut TypeCheckCtx,
+    field: &str,
+    e: &Expr,
+    consts: &crate::lower::ConstEnv,
+) {
+    match crate::lower::expr_to_literal_in(e, consts) {
+        Some(lit) => {
+            if let Some(kind) = crate::typecheck::config::non_scalar_config_kind(&lit) {
+                ctx.emit(
+                    "WS028",
+                    format!(
+                        "'{field}' is constant-only event config and takes a single scalar value, not {kind}"
+                    ),
+                    e.range().clone(),
+                );
+            }
+        }
+        None => ctx.emit(
+            "WS028",
+            format!(
+                "'{field}' is constant-only event config and cannot take a variable or computed value"
+            ),
+            e.range().clone(),
         ),
-        e.range().clone(),
-    );
+    }
 }

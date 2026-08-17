@@ -1316,6 +1316,73 @@
         );
     }
 
+    /// An identifier filling a POSITIONAL CONFIG slot is a config value, not
+    /// the removed inline output-binding form. `CustomEvent`'s channel name is
+    /// such a slot, so `on CustomEvent(CH)` (for a `const CH`) — and any
+    /// computed expression in the same slot — must parse, not hit the
+    /// steer-to-`->` heuristic.
+    #[test]
+    fn an_identifier_in_a_positional_config_slot_is_not_an_inline_output_bind() {
+        for src in [
+            "const CH = \"evt_died\"\non CustomEvent(CH) -> (v: int) { }",
+            "const PREFIX = \"evt_\"\non CustomEvent(PREFIX .. \"died\") -> (v: int) { }",
+            "const CH = \"evt_died\"\non GlobalCustomEvent(CH) -> (v: int) { }",
+        ] {
+            let r = crate::parser::parse(src, "test");
+            assert!(
+                r.diagnostics.is_empty(),
+                "a positional config slot must accept an identifier/expression, \
+                 got {:?} for {src:?}",
+                r.diagnostics
+            );
+        }
+        // …and it really lands as a positional CONFIG arg, not as a param.
+        let s = parse_ok("const CH = \"evt_died\"\non CustomEvent(CH) -> (v: int) { }");
+        let handler = s
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect("a handler");
+        assert_eq!(handler.config.len(), 1, "one positional config arg");
+        assert!(
+            matches!(
+                &handler.config[0],
+                crate::ast::HandlerConfigArg::Positional(crate::ast::Expr::Ident { name, .. })
+                    if name == "CH"
+            ),
+            "the channel must be a positional config Ident, got {:?}",
+            handler.config[0]
+        );
+    }
+
+    /// The guard against over-broad suppression: an event with NO positional
+    /// config slot must keep the steer-to-`->` heuristic and its original
+    /// message, since there an identifier really is the removed inline
+    /// output-binding form.
+    #[test]
+    fn an_event_without_positional_config_still_gets_the_arrow_hint() {
+        for src in [
+            "on CharacterDied(character) { }",
+            "on CharacterSpawned(character) { }",
+            "on ControllerJoined(controller) { }",
+            // Past the ONE slot CustomEvent has, the heuristic applies again.
+            "on CustomEvent(\"dmg\", amount) { }",
+        ] {
+            let r = crate::parser::parse(src, "test");
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "WSP001"
+                        && d.message.contains("bind event outputs with `-> (a, b)`")),
+                "the inline-output-bind diagnostic must survive for {src:?}, got {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
     #[test]
     fn on_arrow_absent_binds_nothing() {
         // No `->` — unchanged behavior, no params.
@@ -1474,5 +1541,74 @@
             min.diagnostics.is_empty(),
             "i64::MIN must still parse: {:?}",
             min.diagnostics
+        );
+    }
+
+    // const-evaluation Task 2: `const` bindings parse exactly like `let`,
+    // carrying `LetDecl.is_const` set from the keyword used.
+    #[test]
+    fn const_binding_parses_as_a_let_with_the_const_flag() {
+        let p = parse("const x = 1 << 4\nlet y = 2", "test");
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+        let consts: Vec<bool> = p
+            .ast
+            .decls
+            .iter()
+            .filter_map(|d| match d {
+                TopDecl::Let(l) => Some(l.is_const),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(consts, vec![true, false], "const flag must follow the keyword used");
+    }
+
+    #[test]
+    fn const_binding_parses_inside_a_mod_body_with_an_annotation() {
+        let p = parse("mod f() { const n: int = 3 }", "test");
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    }
+
+    // const-evaluation Task 3: `const mod`, per-parameter `const`, and the
+    // rejection of `const chip`.
+    #[test]
+    fn const_mod_marks_every_parameter_const() {
+        let p = parse("const mod f(a: int, b: string) -> int { return a }", "test");
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+        let TopDecl::Chip(c) = &p.ast.decls[0] else {
+            panic!("expected a chip decl")
+        };
+        assert!(c.is_const);
+        assert!(c.inputs.iter().all(|p| p.is_const), "const mod implies const params");
+    }
+
+    #[test]
+    fn a_plain_mod_may_mix_const_and_wired_parameters() {
+        let p = parse("mod g(name: const string, v: int) { }", "test");
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+        let TopDecl::Chip(c) = &p.ast.decls[0] else {
+            panic!("expected a chip decl")
+        };
+        assert!(!c.is_const);
+        assert_eq!(
+            c.inputs.iter().map(|p| p.is_const).collect::<Vec<_>>(),
+            vec![true, false]
+        );
+    }
+
+    #[test]
+    fn const_params_are_allowed_on_a_chip_but_const_chip_is_not() {
+        let ok = parse(
+            "chip C(name: const string, v: int) -> (r: int) { out r = v }",
+            "test",
+        );
+        assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
+
+        let bad = parse("const chip C() -> (r: int) { out r = 1 }", "test");
+        assert!(
+            bad.diagnostics
+                .iter()
+                .any(|d| d.message.contains("`const chip`")),
+            "expected a parse error naming `const chip`, got {:?}",
+            bad.diagnostics
         );
     }

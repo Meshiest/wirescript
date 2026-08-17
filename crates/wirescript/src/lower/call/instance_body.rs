@@ -10,6 +10,7 @@ pub(super) fn build_chip_module(
     caller_captures: &HashMap<String, VarRecord>,
     force_exec_boundary: bool,
     mono_frame: Option<MonoFrame>,
+    const_params: &ConstEnv,
 ) -> Module {
     // A generic chip is monomorphized for this instantiation: `mono_frame` is
     // `Some` only for a generic chip, and seeding the child ctx's `mono_stack`
@@ -61,7 +62,39 @@ pub(super) fn build_chip_module(
         pending_return_record: None,
         chip_call_stack: ctx.chip_call_stack.clone(),
         known_fn_names: ctx.known_fn_names.clone(),
-        const_env: ctx.const_env.clone(),
+        // A `const` parameter's call-site value overlays the module constants
+        // for this body, so the parameter name resolves through
+        // `const_lookup()` inside the chip exactly as it does inside an
+        // inlined mod body — which is what lets it reach a literal-requiring
+        // position (gate config, event channel names, array/map baking).
+        // Overlaying (rather than a separate frame) also gives a param the
+        // right shadowing over a same-named module constant. The value is part
+        // of the template cache key (`lower_chip_call_instance`), so two calls
+        // with different constants can never share this body.
+        const_env: if const_params.is_empty() {
+            ctx.const_env.clone()
+        } else {
+            let mut env = (*ctx.const_env).clone();
+            for (name, lit) in const_params {
+                env.insert(name.clone(), lit.clone());
+            }
+            std::sync::Arc::new(env)
+        },
+        // `name: const T` chip params merged above are const-DECLARED by
+        // construction (the ONLY way a chip input lands in `const_params` at
+        // all is `inp.is_const`) — extend the declared-names set to match, so
+        // an `if`-condition inside this body naming the param is eligible for
+        // the widened elision exactly like a real `const` binding.
+        const_declared: if const_params.is_empty() {
+            ctx.const_declared.clone()
+        } else {
+            let mut set = (*ctx.const_declared).clone();
+            for name in const_params.keys() {
+                set.insert(name.clone());
+            }
+            std::sync::Arc::new(set)
+        },
+        immutable_containers: HashSet::default(),
         is_root_module: false,
         doc_comments: ctx.doc_comments,
         // `@nofold chip Foo(...) { ... }`: every gate lowered into this
@@ -79,10 +112,49 @@ pub(super) fn build_chip_module(
         // → empty stack → byte-identical resolution to before.
         mono_stack: mono_frame.map(|f| vec![f]).unwrap_or_default(),
         // Fresh module (its own root scope, not inheriting the caller's block
-        // scope — see `scope` above), so no scoped-const frame carries over
-        // either; any body-local `let` inside re-populates its own frame via
-        // `push_scope`/`pop_scope`.
-        scoped_consts: Vec::new(),
+        // scope — see `scope` above), so no scoped-const frame carries OVER
+        // from the caller. It does get one EMPTY frame of its own, and that
+        // frame is load-bearing rather than bookkeeping.
+        //
+        // A chip body is a `Block` of statements, not a list of `TopDecl`s, so
+        // its own `const` bindings never go through `build_const_env` the way
+        // the root module's do — they are recorded by `lower_let_decl`, which
+        // writes into `scoped_consts.last_mut()`. With no frame open at all
+        // that is `None`, and the recording was silently discarded: a chip-body
+        // `const ch = "…"` was invisible to the chip's OWN handlers, so
+        // `SendCustomEvent(ch, 1)` inside it baked an EMPTY channel name with
+        // no diagnostic from either stage (the `mod` spelling of the identical
+        // code, a top-level `const`, and the same `const` moved inside the
+        // handler all baked correctly — which is what made it look like a
+        // language rule rather than a dropped frame).
+        //
+        // Typecheck has always had a frame here: it checks a chip body inside
+        // a pushed scope, so a body-level `const` lands in ITS `scoped_consts`
+        // and shadows a same-named module constant. Opening one frame here is
+        // what makes lowering agree — without it a chip-body `const a = 222`
+        // shadowing a top-level `const a = 111` left lowering deciding an `if`
+        // on the OUTER value while typecheck decided it on the inner one, the
+        // two stages emitting and checking OPPOSITE arms.
+        //
+        // An empty frame changes nothing for a chip that declares no constant:
+        // `const_lookup`, `const_lookup_declared_only` and `is_declared_const`
+        // all iterate frames and an empty one contributes no entry.
+        scoped_consts: vec![HashMap::default()],
+        scoped_const_declared: vec![HashSet::default()],
+        dropped_ranges: Vec::new(),
+        // Snapshot the caller's whole `pass1_chips` FRAME STACK exactly as it
+        // stands at this instantiation point, so a body-local var/array/map
+        // initializer inside THIS chip resolves a `const mod` call to the same
+        // declaration the enclosing code would. Capturing the stack (rather
+        // than a flattened map) is what makes a chip declared inside an
+        // inlined `mod` see that mod's frame — the shadowing declaration is
+        // still on the stack here, because the frame is dropped by the
+        // enclosing `pop_scope` only after this body has been built.
+        //
+        // Cloning also isolates it: this chip's own nested declarations
+        // (recorded by the pre-declare loop below) can never reach the
+        // caller's stack.
+        pass1_chips: ctx.pass1_chips.clone(),
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -135,6 +207,15 @@ pub(super) fn build_chip_module(
     }
 
     for inp in &chip_decl.inputs {
+        // A `const` parameter is a compile-time value seeded into `const_env`
+        // above, NOT a wire — so it gets no `MicrochipInput` pin and consumes
+        // no pin slot. `wire_chip_args_and_outputs` skips it on the identical
+        // `is_const` predicate (deliberately NOT on "did it evaluate", so the
+        // two loops can never disagree): a mismatch here would shift every
+        // later param's pin index and silently mis-wire the whole call.
+        if inp.is_const {
+            continue;
+        }
         let resolved_record = child_ctx.record_fields_of(&inp.typ);
         if let Some(fields) = &resolved_record {
             let mut record_fields = HashMap::default();
@@ -261,6 +342,12 @@ pub(super) fn build_chip_module(
         chip_decl.outputs.iter().map(|o| o.name.as_str()).collect();
     for stmt in &chip_decl.body.stmts {
         match stmt {
+            // This chip's OWN nested chip/mod declarations overlay the
+            // `pass1_chips` inherited from the caller above, so a chip-local
+            // `const mod` shadowing a same-named top-level one wins in the
+            // bake path exactly as it does in every other path. Must stay in
+            // this source-ordered loop — see `pre_declare_chip_name`.
+            Stmt::ChipDecl(c) => pre_declare_chip_name(&mut child_ctx, c),
             Stmt::In(i) => pre_declare_input(&mut child_ctx, i),
             Stmt::Var(v) => child_ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
             Stmt::Buffer(b) => pre_declare_buffer(&mut child_ctx, b),
@@ -431,6 +518,7 @@ pub(super) fn build_chip_module(
     super::stmt::flush_pending_emits(&mut child_ctx);
 
     ctx.diagnostics.extend(child_ctx.diagnostics);
+    ctx.dropped_ranges.extend(child_ctx.dropped_ranges);
     let mut module = child_ctx.builder.module;
     module.scope_captures = compute_scope_captures(&module);
     module

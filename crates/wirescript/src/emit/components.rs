@@ -133,10 +133,23 @@ fn build_gate_data_map(
                     }
                     FieldKind::Enum(type_name) => match resolve_enum_value(type_name, lit) {
                         Some(ev) => Box::new(ev),
-                        None => literal_to_boxed_native(lit),
+                        None => literal_to_boxed_native(lit).ok_or_else(|| {
+                            EmitError::UnrepresentableLiteral {
+                                field: field.to_string(),
+                                literal: (**lit).clone(),
+                            }
+                        })?,
                     },
-                    FieldKind::Str => Box::new(literal_to_string(lit)),
-                    _ => literal_to_boxed_native(lit),
+                    FieldKind::Str => Box::new(literal_to_string(lit).ok_or_else(|| {
+                        EmitError::UnrepresentableLiteral {
+                            field: field.to_string(),
+                            literal: (**lit).clone(),
+                        }
+                    })?),
+                    _ => literal_to_boxed_native(lit).ok_or_else(|| EmitError::UnrepresentableLiteral {
+                        field: field.to_string(),
+                        literal: (**lit).clone(),
+                    })?,
                 },
                 // No inlined value. Wire-typed ports still need a typed variant
                 // default so the variant member matches the port type (the

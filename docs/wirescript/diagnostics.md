@@ -90,6 +90,17 @@ See [Generics](types.md#generics).
 | `WS026` | A map literal used somewhere other than initializing or assigning a Map variable. | `foo({ "a": 1 })` |
 | `WS027` | Assigning a whole map from a non-literal is unsupported — use `m.copyFrom(src)`. | `m = otherMap` |
 | `WS039` | Invalid map key type — a `Map<K, V>` key must be `int`, `string`, or an object (`entity`/`character`/`controller`). | `var m: Map<float, int>` |
+| `WS044` | An array/map method (`.push`, `.set`, `.remove`, …) called on something that isn't an array or map — the receiver didn't resolve to a container, so the operation would otherwise be silently dropped. Also reported for a MUTATING method whose receiver is a `const` array or map: a `const` container is immutable, so its compile-time value and its runtime contents can never disagree. | `let x = 5` then, in an exec handler, `x.push(1)`; or `const t = [1, 2]` then `t.push(3)` |
+
+## Compile-time constants (`const`)
+
+See [`const` -- Compile-Time Binding](statements.md#const----compile-time-binding).
+
+| Code | Meaning | Trigger |
+|------|---------|---------|
+| `WS046` | Not a compile-time constant — the value names a runtime value, a call to a mod that isn't `const mod`, an unsupported syntactic form, an out-of-range compile-time array index, or a missing compile-time map key/record field. The message names the actual offender. | `in live: int` then `const n = live + 1` |
+| `WS047` | The certified evaluator refuses to compute the value even though every operand IS constant — integer overflow, a non-ASCII string operand, or an uncertified gate/operand combination. The value is computable in principle; the compiler will not guess it. | `const s = "café".ToUpper()` |
+| `WS048` | Const evaluation gave up — the call chain is too deep or took too many steps (guards a runaway or self-referential `const mod` chain against a stack overflow, since a `const mod` calling itself type-checks fine). | a `const mod` that calls itself, reached from a constant-only position such as a custom-event channel name |
 
 ## Gate & event config
 
@@ -99,9 +110,10 @@ wiring in as ports — see [Built-in Events](statements.md#built-in-events) and
 
 | Code | Meaning | Trigger |
 |------|---------|---------|
-| `WS028` | Invalid gate/event config — an unknown enum member, an out-of-range int, a missing required config field, or a non-constant value for constant-only config. | `on Clock(pulseOn = someVar)` |
+| `WS028` | Invalid gate/event config — an unknown enum member, an out-of-range int, a missing required config field, or a non-constant value for constant-only config. Note that a DESTRUCTURING `let` binds runtime names even when its source is itself constant, so only the `const` spelling of one satisfies a constant-only slot; the `let` is rejected here rather than silently baking an empty value. | `on Clock(pulseOn = someVar)`; `let { chan } = src` then `SendCustomEvent(chan, n)` |
 | `WS030` | *(warning)* Custom-event sender/receiver type mismatch — a send's data value type disagrees with the receiver's declared type on the same channel. | sender sends `float`, receiver declares `amount: int` |
 | `WS042` | *(warning)* A `CustomEvent`/`GlobalCustomEvent` handler param has no type annotation and no in-unit sender to infer its type from — data defaults to `float`. Annotate the param, or add a matching `SendCustomEvent`/`SendGlobalCustomEvent` in the same unit, to silence. | `on CustomEvent("dmg") -> (amount) { }` with no in-unit `SendCustomEvent("dmg", …)` |
+| `WS045` | *(warning)* A custom-event send's data argument has no concrete type (`any`, or an `Opaque(...)` that erased its input's type) — the send emits the float variant regardless, so it won't match a receiver that declares a real type. Give the value a typed binding (e.g. a `var` of that type) instead of `any`/`Opaque(...)`. Unlike WS030 this needs no in-unit receiver to visit. | `SendGlobalCustomEvent("a", who, Opaque(true))` |
 
 ## `any`
 

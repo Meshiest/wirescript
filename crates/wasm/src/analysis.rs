@@ -603,6 +603,7 @@ pub fn hover(source: &str, line: u32, col: u32, files_json: &str) -> Option<Stri
         &resolved.doc_comments,
         &tc.if_contexts,
         &tc.var_read_contexts,
+        &tc.dropped_ranges,
         &estimates,
         line as usize,
         col as usize,

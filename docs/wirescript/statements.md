@@ -134,6 +134,220 @@ let args = (1, 2, 3)
 foo(...args)  // equivalent to foo(1, 2, 3)
 ```
 
+## `const` -- Compile-Time Binding
+
+`const` binds a name to a value, exactly like `let`:
+
+```wirescript ignore
+const name = expression
+const name: type = expression
+```
+
+```wirescript
+const width = 8
+const area = width * width          // 64
+const greeting = "Score: " .. "0"   // string concatenation folds too
+```
+
+### `const` vs `let`
+
+`let` folds its initializer **opportunistically**: when the value happens to
+be computable at compile time it becomes a literal, and when it isn't, `let`
+falls back to an ordinary runtime wire. Either way the program compiles.
+`const` makes the opposite promise: the initializer **must** evaluate at
+compile time, and one that can't is a compile error (**WS046**) instead of a
+silent runtime wire.
+
+```wirescript
+in live: int
+
+let n = live + 1     // fine -- falls back to a runtime wire
+```
+
+```wirescript ignore
+in live: int
+
+const n = live + 1   // WS046 -- 'live' is a runtime value, not a compile-time constant
+```
+
+Reach for `const` when a value's shape drives something that has to be known
+at compile time: a gate config field, a custom-event channel name, or the
+contents of a baked array. A typo that turns it into a runtime read is
+caught immediately instead of shipping a build where that position silently
+went empty or default.
+
+### Where `const` is allowed
+
+Anywhere `let` is allowed: at the top level, inside a block, and inside any
+`mod`/`chip` body, at any nesting depth.
+
+```wirescript
+const TOTAL_SLOTS = 4    // top level
+
+mod f() -> int {
+  const doubled = TOTAL_SLOTS * 2  // inside a mod body
+  return doubled
+}
+```
+
+One scope limit is worth knowing, and it is reported, never silent. A NAMED
+chip's body constants reach that chip's own code, including its handlers, its
+`out`s and its constant-only config slots. A chip *declared inside* it is built
+against a constant scope of its own, so a name it would inherit from the outer
+body does not resolve there. Rather than drop the value, that reports
+**WS028**; pass the value in as a `const` parameter instead.
+
+```wirescript ignore
+chip Outer(t: exec) {
+  const ch = "evt"
+  chip Inner(u: exec) { on u { send(ch) } }                // WS028 -- ch does not reach Inner
+  chip Ok(u: exec, c: const string) { on u { send(c) } }   // pass it in instead
+  let q = Ok(t, ch)
+}
+```
+
+### What's const-evaluable
+
+- Literals, and any other `const`/named constant.
+- Arithmetic, bitwise, shift, comparison, logical, and `..` string
+  concatenation over constant operands, with the same semantics as the
+  gates they would otherwise have compiled to: 64-bit wrapping integers,
+  divide-by-zero as `0`, and a non-finite float as `0`.
+- String interpolation (`"a${1 + 1}b"`) and the certified string/math builtin
+  methods (`.ToUpper()`, `.Trim()`, `.Length()`, `sin`, `sqrt`, ...), when
+  every operand is constant.
+- The `Vec`/`Rotation`/`Color` constructors.
+- Array and map literals, indexing (`arr[i]`, `m[k]`), and `.length()`.
+- Record literals and field access (`.field`), including nested records.
+- A call to a `const mod` (see
+  [`const` Parameters and `const mod`](chips.md#const-parameters-and-const-mod)),
+  including one nested inside an operator, a unary operator, or a
+  `Vec`/`Rotation`/`Color` constructor argument (positional or named):
+
+  ```wirescript
+  const mod double(n: int) -> int { return n * 2 }
+
+  const seven = double(3) + 1                 // 7 -- nested in an operator
+  const negSix = -double(3)                   // -6 -- nested in a unary operator
+  const v = Vec(double(1), y = 2.0, z = 3.0)  // nested in a named constructor argument
+  ```
+
+  A call nested one level deeper than that, as an argument to a call whose
+  own callee is not itself a `const mod`, still is not evaluated, because
+  that callee has no compile-time form of its own to descend through:
+
+  ```wirescript ignore
+  const mod double(n: int) -> int { return n * 2 }
+  mod scaleUp(n: int) -> int { return n }
+
+  const total = scaleUp(double(3))   // WS046 -- scaleUp is not itself a `const mod`
+  ```
+
+  Bind the call first, then pass the result: `const d = double(3)`, then
+  `scaleUp(d)`.
+
+An out-of-range array index, and a missing map key or record field, are
+refused outright rather than falling back to a stale or default value --
+unlike a *runtime* out-of-range array read, which keeps the gate's previous
+value, there is no previous value to fall back on at compile time.
+
+A const value reaches every position that requires a literal, not just
+another `const` binding: gate config fields, a custom event's channel name
+on both the sending and the receiving side, and the contents of a baked array
+or map:
+
+```wirescript
+const CHANNEL = "evt_" .. "died"
+
+in go: exec
+var n: int = 0
+
+on go { SendCustomEvent(CHANNEL, n) }
+on CustomEvent(CHANNEL) -> (v: int) { n = v }
+```
+
+A `const` array built at the top level can be indexed there too, in both a
+baked initializer and a runtime wire operand:
+
+```wirescript
+const t = [10, 20]
+const z = t[1]        // 20
+
+var counts: int[] = [z, 12345]   // baked into the array's initial contents
+
+var rv: int = 0
+in go: exec
+on go {
+  if z == rv { BroadcastChatMessage("match") }   // baked as a literal operand
+}
+```
+
+### `const` containers at runtime
+
+A `const` array or map is a compile-time value **and** a runtime container. It
+folds wherever the answer is known at compile time (`t[1]` above costs nothing),
+and the first runtime read builds a real container gate with the constant
+contents baked into its initial value:
+
+```wirescript
+const t = [10, 20, 30]
+const m = { "a": 1, "b": 2 }
+
+mod pick(ys: int[], at: int) -> int { return ys[at] }
+
+var i: int = 1
+var k: string = "b"
+in go: exec
+
+on go {
+  BroadcastChatMessage(t[i])        // 20, read at a runtime index
+  BroadcastChatMessage(t.length())  // 3
+  BroadcastChatMessage(pick(t, i))  // 20, passed as a `T[]` argument
+  BroadcastChatMessage(m[k])        // 2, read at a runtime key
+}
+```
+
+The container is built only where something needs it, and only once, so a
+`const` table used purely at compile time costs no gates and many runtime reads
+of one table share a single gate.
+
+Outside a `const mod` body a `const` container is **immutable**: `t.push(4)`,
+`t.clear()` and `t[0] = 4` are all rejected, so the compile-time value and the
+runtime contents can never disagree. Declare it `var` to make it mutable.
+
+### Compile-time mutation
+
+Inside a `const mod` body, a `const` array or map can be **mutated in
+place** using `push`/`set`/`clear`/`append` on an array and
+`set`/`remove`/`clear` on a map, so a collection can be assembled conditionally and still bake
+with zero gates:
+
+```wirescript
+const mod rooms(n: int) -> int[] {
+  const t = [10]
+  if n >= 2 { t.push(20) }
+  if n >= 3 { t.push(30) }
+  return t
+}
+
+const layout = rooms(2)   // [10, 20], computed entirely at compile time
+```
+
+See [`const` Parameters and `const mod`](chips.md#const-parameters-and-const-mod)
+for calling `const mod`s, `const` parameters, and how a const-evaluable `if`
+condition drops its untaken branch.
+
+### Diagnostics
+
+| Code | Meaning |
+|------|---------|
+| **WS046** | Not a compile-time constant. The value names a runtime value, a call to a mod that isn't `const`, an unsupported syntactic form, an out-of-range index, or a missing map key/record field. The message names the actual offender. |
+| **WS047** | The certified evaluator refuses to compute the value even though every operand IS constant: overflow, a non-ASCII string operand, or a constructor declining its arguments. The fix is different from WS046: the value isn't a stray runtime read, the evaluator just won't guess it. |
+| **WS048** | Const evaluation gave up because the call chain is too deep or took too many steps. Guards a runaway or self-referential `const mod` call chain, which fails with this diagnostic rather than a stack overflow. |
+| **WS028** | Reused from ordinary constant-config checking: a value that IS fully constant but has no scalar form for the slot it's used in, such as a const **record** used as a gate's config field, which has no wire representation and must be consumed at compile time (read a field off it instead of handing the whole record to the slot). |
+| **WS044** | Reused from the container-method backstop: a mutating method (`push`, `clear`, `set`, `sort`, ...) called on a `const` array or map, which is immutable. Declare it `var`, or do the mutation inside a `const mod` body, where it happens at compile time. |
+| **WS007** | Reused from the writable-target check: an index write (`t[0] = 4`) to a `const` array or map, rejected for the same reason as a mutating method. |
+
 ## `buffer` -- Buffered Value
 
 Declares a value that is delayed by one tick. Buffers are useful for creating feedback loops where a value depends on its own previous state without creating a circular dependency.

@@ -15,6 +15,19 @@ pub struct ResourceEstimate {
     pub total_microchips: usize,
     /// True if this is an inline mod (no physical microchip per call).
     pub is_inline: bool,
+    /// True for a `const mod`'s own estimate: a call to it in a
+    /// const-required position is answered entirely by the compile-time
+    /// interpreter and emits no gates at all, so `gates`/`wires`/
+    /// `total_microchips` are forced to 0 rather than derived from compiling
+    /// its body as ordinary runtime code. Hover renders this with a dedicated
+    /// "evaluated at compile time" message instead of the usual gate count
+    /// (see `hover::format_estimate`) — a bare `~0 gates` would read like a
+    /// bug, not a feature. A call from a NON-const position falls back to an
+    /// ordinary inlined mod and DOES emit gates; this flag can't cheaply tell
+    /// the two apart (that would need per-call-site const-position analysis
+    /// this AST-level estimator doesn't have), so it always reports the
+    /// compile-time answer — the assumption the hover text states plainly.
+    pub is_const_eval: bool,
 }
 
 fn is_spawnable(kind: NodeKind, gate_class: &str) -> bool {
@@ -44,6 +57,7 @@ pub fn estimate_module(module: &Module) -> ResourceEstimate {
         nested_chips: module.chips.len(),
         total_microchips: 0,
         is_inline: false,
+        is_const_eval: false,
     };
 
     let mut total_mc = module.chips.len();
@@ -165,9 +179,16 @@ fn collect_from_decl(
         TopDecl::Chip(chip) => {
             let key = chip_key(chip);
             estimate_chip(chip, tc, file, cache, estimates);
-            let calls = collect_calls_in_block(&chip.body);
-            if !calls.is_empty() {
-                call_graph.insert(key, calls);
+            // A `const mod`'s own body is never lowered as runtime code when
+            // called from a const-required position — it's answered entirely
+            // by the compile-time interpreter (see `ResourceEstimate::is_const_eval`)
+            // — so its callees must NOT add their gate counts on top of the
+            // forced-0 base estimate `estimate_chip` just gave it.
+            if !chip.is_const {
+                let calls = collect_calls_in_block(&chip.body);
+                if !calls.is_empty() {
+                    call_graph.insert(key, calls);
+                }
             }
             collect_from_block(&chip.body, tc, file, cache, estimates, call_graph);
         }
@@ -205,9 +226,14 @@ fn collect_from_block(
             Stmt::ChipDecl(chip) => {
                 let key = chip_key(chip);
                 estimate_chip(chip, tc, file, cache, estimates);
-                let calls = collect_calls_in_block(&chip.body);
-                if !calls.is_empty() {
-                    call_graph.insert(key, calls);
+                // See the matching comment in `collect_from_decl`'s
+                // `TopDecl::Chip` arm — a `const mod`'s callees don't add to
+                // its own forced-0 estimate.
+                if !chip.is_const {
+                    let calls = collect_calls_in_block(&chip.body);
+                    if !calls.is_empty() {
+                        call_graph.insert(key, calls);
+                    }
                 }
                 collect_from_block(&chip.body, tc, file, cache, estimates, call_graph);
             }
@@ -279,6 +305,7 @@ fn estimate_handler(
             label_expr: None,
             closed: false,
             no_fold: false,
+            is_const: false,
         };
         let template_est = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             compile_chip_template(&synthetic, tc, file, cache)
@@ -478,6 +505,21 @@ fn estimate_chip(
     if estimates.contains_key(&key) {
         return;
     }
+    // A `const mod` called from a const-required position is answered
+    // entirely by the compile-time interpreter (`const_eval`) and emits NO
+    // gates — compiling its body as an ordinary runtime template (as below)
+    // would count gates for code that never actually gets lowered. Report
+    // the compile-time answer unconditionally rather than the runtime
+    // fallback's cost: see `ResourceEstimate::is_const_eval` for why this
+    // estimator can't cheaply tell a const-position call from a non-const one.
+    if chip.is_const {
+        estimates.insert(key, ResourceEstimate {
+            is_inline: chip.inline,
+            is_const_eval: true,
+            ..Default::default()
+        });
+        return;
+    }
     let template_est = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compile_chip_template(chip, tc, file, cache)
     }))
@@ -515,6 +557,7 @@ fn estimate_anon_chip(
         label_expr: None,
         closed: false,
         no_fold: false,
+        is_const: false,
     };
     let template_est = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compile_chip_template(&synthetic, tc, file, cache)

@@ -87,6 +87,7 @@
             range: Default::default(),
             ty: Some(ty.to_string()),
             exec: false,
+            is_const: false,
         };
         let syms = vec![
             sd("Scores", "Map<string, int>"),

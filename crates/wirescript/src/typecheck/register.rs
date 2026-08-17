@@ -134,6 +134,7 @@ pub(super) fn register_builtin_events(ctx: &mut TypeCheckCtx) {
                         .map(|d| EventDataField {
                             name: d.name.to_string(),
                             ty: d.ty.clone(),
+                            is_const: false,
                         })
                         .collect(),
                 ),
@@ -286,6 +287,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     EventDataField {
                         name: p.name.clone(),
                         ty,
+                        is_const: p.is_const,
                     }
                 })
                 .collect();
@@ -311,6 +313,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         outputs: vec![EventDataField {
                             name: "_".into(),
                             ty: ret,
+                            is_const: false,
                         }],
                         type_params: Vec::new(),
                     }),
@@ -366,6 +369,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     EventDataField {
                         name: p.name.clone(),
                         ty,
+                        is_const: p.is_const,
                     }
                 })
                 .collect();
@@ -378,6 +382,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     EventDataField {
                         name: o.name.clone(),
                         ty,
+                        is_const: false,
                     }
                 })
                 .collect();
@@ -427,6 +432,15 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     event_data: None,
                 },
             );
+            // Backs `TypeCheckCtx::resolve_mod` — record into the INNERMOST
+            // open frame (mirrors `lower::predeclare::pre_declare_chip_name`),
+            // so a body-local `const mod` shadows a same-named outer one only
+            // for the duration of its own scope. The stack is never empty
+            // (the base frame holds the module's top-level declarations), so
+            // this always lands somewhere — see `mod_decls`'s own doc comment.
+            if let Some(frame) = ctx.mod_decls.last_mut() {
+                frame.insert(c.name.clone(), Arc::new(c.clone()));
+            }
         }
         TopDecl::Event(e) => {
             declare_or_dup(
@@ -579,6 +593,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             .map(|p| EventDataField {
                                 name: p.name.clone(),
                                 ty: resolve_type_expr(ctx, &p.typ),
+                                is_const: p.is_const,
                             })
                             .collect();
                         if has_type_params {
@@ -601,6 +616,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             .map(|p| EventDataField {
                                 name: p.name.clone(),
                                 ty: resolve_type_expr(ctx, &p.typ),
+                                is_const: p.is_const,
                             })
                             .collect();
                         ns_map.insert(

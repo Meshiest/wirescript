@@ -2,6 +2,7 @@
 
 ## 1.4.0
 
+- **`const` compile-time evaluation**: `const` bindings, `const` parameters (`f(name: const string, v: int)`) and `const mod` declarations are evaluated at compile time and can be used anywhere a literal is required, such as gate config and custom-event channel names. Const expressions compose freely (operators, constructor arguments, destructuring, indexing, collection assembly) and emit no gates. An `if` on a const condition drops its untaken branch, and a `const` that fails to be compile-time is reported at the binding.
 - LSP: Hover gate estimates now refresh as you type, so a mod added or renamed since the last save shows a count instead of none.
 - LSP: Hovering a namespaced call (`ns.f()`) now shows its gate estimate.
 

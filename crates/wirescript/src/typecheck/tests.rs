@@ -1417,6 +1417,94 @@
         );
     }
 
+    // ---- module-level const index (narrows WS007) ----
+    //
+    // A runtime array/map read needs an exec-context gate — an out-of-range
+    // runtime read keeps the gate's stale PREVIOUS value, which is why WS007
+    // is strict about it. A compile-time constant index into a compile-time
+    // constant array/map emits no gate at all, so that reasoning does not
+    // apply and WS007 must not fire. This narrows the rule; it must not
+    // remove it (see the guard-rail tests below).
+
+    #[test]
+    fn a_const_index_into_a_const_array_is_allowed_at_module_level() {
+        let r = tc("const t = [10, 20]\nconst z = t[1]");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "a compile-time index into a compile-time array must not raise WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    // NOTE: asserts only the ABSENCE OF WS007, not that this program compiles.
+    // A bare `const`/`let`-bound map literal always fails the separate,
+    // pre-existing `WS026 "a map literal must initialize or assign a Map
+    // variable"` (only a `var`/`map` initializer or an assignment RHS reaches
+    // `check_map_literal` and skips that arm), and WS026 is an ERROR — so this
+    // shape never reaches emit at all. This is NOT end-to-end permission for
+    // const map indexing; it pins the WS007 half of the narrowing only.
+    #[test]
+    fn a_const_index_into_a_const_map_is_allowed_at_module_level() {
+        let r = tc("const m = { :k => 5 }\nconst z = m[:k]");
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "a compile-time index into a compile-time map must not raise WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_runtime_index_into_a_const_array_is_still_ws007() {
+        // The RECEIVER being `const` doesn't make the read compile-time — the
+        // whole index expression must fold. A runtime index still needs an
+        // exec-context Array gate, so this must stay WS007.
+        let r = tc("const t = [10, 20]\nvar someVar: int\nlet x = t[someVar]");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "a runtime index into a const array must still be WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_const_index_into_a_runtime_array_is_still_ws007() {
+        let r = tc("var runtimeArr: int[]\nlet x = runtimeArr[1]");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "a const index into a runtime array must still be WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    // A `const` PARAMETER's value inside its own mod body is a type-shaped
+    // PLACEHOLDER (a zero seeded once, before any call site exists — see
+    // `scoped_const_placeholders`), not the real call-site value. Deciding
+    // "is this index compile-time" against a context that still contains the
+    // placeholder would fold `t[m]` using the fictional zero and suppress
+    // WS007 for a read whose real (call-site) index is unknown at this point
+    // in the pass — a silent miscompile in the making. The nested anon
+    // `chip {}` puts these statements in PURE context (mirrors
+    // `a_const_destructure_derived_from_a_placeholder_never_decides_a_branch`)
+    // even though the enclosing mod body itself is exec-checked, so WS007 is
+    // reachable here at all.
+    #[test]
+    fn a_const_index_using_a_placeholder_value_is_still_ws007() {
+        let r = tc(
+            "mod f(m: const int) {\n\
+               chip {\n\
+                 const t = [10, 20]\n\
+                 const z = t[m]\n\
+               }\n\
+             }\n\
+             in go: exec\non go { f(1) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "a placeholder-derived index must not silently suppress WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
     // ---- array methods ----
     #[test]
     fn array_push_pop() {
@@ -1501,6 +1589,61 @@
             "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet { x, y } = p\nlet sum = x + y",
         );
         assert_no_diags(&r);
+    }
+
+    // `...rest` on a plain (NON-const) `let`. `bind_let` is shared by the
+    // const and runtime paths, and typing `rest` as the record of the
+    // unconsumed fields (rather than the old `Type::Any`) widened BOTH — but
+    // only the const path had coverage, so these pin the runtime surface the
+    // change also serves. Both shapes below were previously silent: `Any`
+    // satisfies every parameter and every field access, so a genuine mistake
+    // type-checked clean and only failed (or silently misbehaved) later.
+    #[test]
+    fn a_runtime_let_rest_carries_the_unconsumed_field_types() {
+        // The positive direction: the remaining fields keep their real types,
+        // so arithmetic on them resolves (under `Type::Any` this produced
+        // "no overload for '+' on Any, Any").
+        assert_no_diags(&tc(
+            "type P = { x: int, y: int, z: int }\n\
+             let p: P = { x: 1, y: 2, z: 3 }\n\
+             let { x, ...rest } = p\n\
+             let sum = rest.y + rest.z",
+        ));
+    }
+
+    #[test]
+    fn a_runtime_let_rest_is_not_the_whole_record() {
+        // Passing a `{y, z}` rest where the FULL `{x, y, z}` record is
+        // expected must be rejected — the rest is missing `x`.
+        let r = tc(
+            "type P = { x: int, y: int, z: int }\n\
+             mod takesP(p: P) -> int { return p.x }\n\
+             let p: P = { x: 1, y: 2, z: 3 }\n\
+             let { x, ...rest } = p\n\
+             let bad = takesP(rest)",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a rest missing a field must not satisfy the full record type: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_runtime_let_rest_rejects_an_unknown_field() {
+        // Reading a field that is not in the rest (here the consumed `x`) is
+        // now a real error instead of silently typing as `any`.
+        let r = tc(
+            "type P = { x: int, y: int }\n\
+             let p: P = { x: 1, y: 2 }\n\
+             let { x, ...rest } = p\n\
+             let bad = rest.x",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS010" || d.code == "WS003"),
+            "reading a consumed/absent field off a rest must error: {:?}",
+            r.diagnostics
+        );
     }
 
     #[test]
@@ -2612,4 +2755,1280 @@
             "an any[] param must accept a concrete int[] arg, got {:?}",
             r.diagnostics
         );
+    }
+
+    // Task 5: `const` is a GUARANTEE — a `const` binding whose initializer
+    // cannot be evaluated at compile time is WS046. A `let` stays opportunistic.
+    #[test]
+    fn a_const_binding_must_evaluate_at_compile_time() {
+        assert_no_diags(&tc("mod f() { const n = 1 << 4 }"));
+        assert_no_diags(&tc("const TOP = 2 * 21"));
+
+        let r = tc("in live: int\nmod f() { const n = live + 1 }");
+        let d = r
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS046")
+            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
+        assert!(d.message.contains("live"), "must name the runtime value: {}", d.message);
+    }
+
+    #[test]
+    fn a_let_binding_that_cannot_fold_is_still_fine() {
+        // `let` stays opportunistic — this is the whole difference from `const`.
+        assert_no_diags(&tc("in live: int\nmod f() { let n = live + 1 }"));
+    }
+
+    #[test]
+    fn a_destructuring_const_binding_is_rejected() {
+        // `someRecord` is undefined — this stays WS046, but now via
+        // `ConstReason::NotConstant` (a runtime value) rather than the old
+        // blanket "destructuring can't be a compile-time constant" rejection
+        // Task 2 removed. See the tests below for the case this used to
+        // reject wrongly: a destructure of a value that genuinely IS
+        // constant.
+        let r = tc("mod f() { const { a, b } = someRecord }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS046"),
+            "expected WS046, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // Task 2: compile-time record destructuring. `typecheck::decl`'s
+    // top-level `const` and `typecheck::stmt`'s block-scope `const` used to
+    // share one message rejecting EVERY destructuring `const` outright; both
+    // are separate call sites into `const_eval::bind_destructured` now, so
+    // each gets its own coverage below.
+    //
+    // A top-level destructured name must be a compile-time constant
+    // EVERYWHERE a plain `const x = 1` is — which means it has to reach
+    // `ctx.const_env`/`ctx.const_declared`, built before pass 2 by
+    // `lower::predeclare::build_const_env`/`build_const_declared_names`.
+    // Accepting the source without that (compiling clean while silently
+    // producing non-const bindings) is the exact "looks supported but isn't"
+    // failure this wave exists to remove, so each form below is proven
+    // through a CONSUMER of const-ness, not just through absence of errors.
+
+    #[test]
+    fn a_const_record_binding_destructures_by_name() {
+        // Distinguishable per-field values, each checked against its OWN
+        // expected number: if x and y were bound to each other's fields both
+        // conditions flip, the ill-typed `else` branches survive instead of
+        // being elided, and WS003 fires.
+        let r = tc(
+            "const p = { x: 111, y: 222 }\n\
+             const { x, y } = p\n\
+             var flag: int = 0\n\
+             in go: exec\n\
+             on go {\n\
+               if x == 111 { flag = 1 } else { flag = \"wrong x\" }\n\
+               if y == 222 { flag = 2 } else { flag = \"wrong y\" }\n\
+             }",
+        );
+        assert_no_diags(&r);
+        assert_eq!(
+            r.dropped_ranges.len(), 2,
+            "a top-level destructured const must tree-shake a const `if` like \
+             any other const: {:?}", r.dropped_ranges
+        );
+    }
+
+    #[test]
+    fn a_const_record_binding_destructures_with_an_alias() {
+        let r = tc(
+            "const p = { x: 111, y: 222 }\n\
+             const { x: a, y: b } = p\n\
+             var flag: int = 0\n\
+             in go: exec\n\
+             on go {\n\
+               if a == 111 { flag = 1 } else { flag = \"wrong a\" }\n\
+               if b == 222 { flag = 2 } else { flag = \"wrong b\" }\n\
+             }",
+        );
+        assert_no_diags(&r);
+        assert_eq!(r.dropped_ranges.len(), 2, "{:?}", r.dropped_ranges);
+    }
+
+    #[test]
+    fn a_const_record_binding_destructures_with_a_rest() {
+        let r = tc(
+            "const p = { x: 111, y: 222, z: 333 }\n\
+             const { x, ...rest } = p\n\
+             var flag: int = 0\n\
+             in go: exec\n\
+             on go {\n\
+               if x == 111 { flag = 1 } else { flag = \"wrong x\" }\n\
+               if rest.y == 222 { flag = 2 } else { flag = \"wrong rest.y\" }\n\
+               if rest.z == 333 { flag = 3 } else { flag = \"wrong rest.z\" }\n\
+             }",
+        );
+        assert_no_diags(&r);
+        assert_eq!(r.dropped_ranges.len(), 3, "{:?}", r.dropped_ranges);
+    }
+
+    // The two cases the fix round called out by name. Both were BROKEN before
+    // it: `build_const_env`/`build_const_declared_names` skipped every
+    // non-`Ident` binding, so `x` reached neither, and a top-level
+    // `const { x, y } = p` compiled clean while producing bindings that were
+    // not compile-time constants at all.
+    #[test]
+    fn a_later_top_level_const_can_read_a_destructured_const_name() {
+        // Per-field distinguishable values AND a distinguishable combination
+        // (111*1000 + 222): a swapped binding yields 222111, a dropped one
+        // fails to evaluate at all.
+        let r = tc(
+            "const p = { x: 111, y: 222 }\n\
+             const { x, y } = p\n\
+             const combined = x * 1000 + y\n\
+             var flag: int = 0\n\
+             in go: exec\n\
+             on go { if combined == 111222 { flag = 1 } else { flag = \"wrong\" } }",
+        );
+        assert_no_diags(&r);
+        assert_eq!(
+            r.dropped_ranges.len(), 1,
+            "`combined` must itself be const (it is built from two \
+             destructured const names): {:?}", r.dropped_ranges
+        );
+    }
+
+    // Declaration-ORDER independence of the destructuring fixpoint is proven
+    // where the crate's existing fixpoint tests live —
+    // `lower::tests::const_init::a_destructured_constant_chain_resolves_regardless_of_order`
+    // — via the baked-value path, not here: a top-level FORWARD reference is
+    // WS002 ("unknown identifier") in typecheck regardless of destructuring
+    // (a plain `const p = …` read before its own declaration is rejected the
+    // same way), because scope registration walks decls in source order while
+    // `build_const_env` is order-independent. That split predates this task
+    // and is unchanged by it.
+
+    // A destructured const name in a constant-only GATE CONFIG slot (the
+    // WS028 surface) and as a custom-event CHANNEL NAME — the other two
+    // places the fix round named. A non-const binding is rejected in both.
+    #[test]
+    fn a_destructured_const_name_satisfies_constant_only_positions() {
+        assert_no_diags(&tc(
+            "const cfg = { rate: 1.0, chan: \"evt_died\" }\n\
+             const { rate, chan } = cfg\n\
+             var n: int = 0\n\
+             on Clock(interval = rate, enabled = true) { n = n + 1 }",
+        ));
+        assert_no_diags(&tc(
+            "const cfg = { chan: \"evt_died\" }\n\
+             const { chan } = cfg\n\
+             mod ping(v: int) { SendCustomEvent(chan, v) }",
+        ));
+    }
+
+    // The block-scope equivalents, INSIDE an ordinary mod body.
+    //
+    // These deliberately do NOT prove the binding via an ill-typed `else` on
+    // a const `if`. That idiom is circular here: a correct const binding
+    // ELIDES the `else`, so "no WS003" is equally consistent with the branch
+    // being correctly skipped and with it being wrongly skipped while
+    // lowering still emits it — which is exactly the silent miscompile fix
+    // round 2 found (an earlier version of these three tests passed only
+    // because typecheck under-checked a block lowering then emitted).
+    //
+    // Instead each destructured name is fed to a CONSTANT-ONLY position
+    // (`SendCustomEvent`'s channel name, WS028/WS046 if it is not a genuine
+    // compile-time constant) and compared against a distinguishable expected
+    // value with `==` on a `const`, so a wrong-field binding changes the
+    // computed value rather than merely changing which branch is skipped.
+    // Branch-elision parity itself is proven separately and structurally by
+    // `typecheck_and_lowering_drop_exactly_the_same_ranges`.
+
+    #[test]
+    fn a_block_scope_const_destructure_with_an_alias_binds_to_the_alias() {
+        // `a * 1000 + b` is 111222 only if the alias `a` took field `x` and
+        // `b` took `y`; a swap yields 222111, and either way the value must
+        // be a real constant or the `const` binding itself is WS046.
+        assert_no_diags(&tc(
+            "mod f() {\n\
+               const p = { x: 111, y: 222 }\n\
+               const { x: a, y: b } = p\n\
+               const combined = a * 1000 + b\n\
+               SendCustomEvent(\"evt\", combined)\n\
+             }\n\
+             in go: exec\non go { f() }",
+        ));
+        // The negative half: if the alias did NOT rebind, `x` would still be
+        // in scope and this would compile.
+        let stale = tc(
+            "mod f() {\n\
+               const p = { x: 111, y: 222 }\n\
+               const { x: a, y: b } = p\n\
+               const bad = x + a + b\n\
+             }\n\
+             in go: exec\non go { f() }",
+        );
+        assert!(
+            stale.diagnostics.iter().any(|d| d.code == "WS002" || d.code == "WS046"),
+            "an alias must bind ONLY the alias name, leaving `x` unbound: {:?}",
+            stale.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_block_scope_const_destructure_with_a_rest_collects_remaining_fields() {
+        // `rest` must carry y and z with their own values, and must be a
+        // genuine constant (the `const` bindings below are WS046 otherwise).
+        assert_no_diags(&tc(
+            "mod f() {\n\
+               const p = { x: 111, y: 222, z: 333 }\n\
+               const { x, ...rest } = p\n\
+               const combined = x * 1000000 + rest.y * 1000 + rest.z\n\
+               SendCustomEvent(\"evt\", combined)\n\
+             }\n\
+             in go: exec\non go { f() }",
+        ));
+
+        // `rest` must NOT include the field `x` already consumed by its own
+        // `Named` binding.
+        let excluded = tc(
+            "mod f() {\n\
+               const p = { x: 111, y: 222 }\n\
+               const { x, ...rest } = p\n\
+               const bad = rest.x\n\
+             }\n\
+             in go: exec\non go { f() }",
+        );
+        assert!(
+            excluded
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "WS046" || d.code == "WS010"),
+            "rest must not include the already-consumed field x: {:?}",
+            excluded.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_const_destructure_inside_a_const_mod_body_binds() {
+        // `typecheck::stmt`'s block-scope site (a DIFFERENT code path from
+        // `typecheck::decl`'s top-level site above) type-checks a
+        // destructuring `const` inside a `const mod`'s BODY clean, and
+        // calling the mod from a top-level `const` also forces
+        // `const_eval::interp`'s own destructuring site to run.
+        assert_no_diags(&tc(
+            "const mod f() -> int {\n\
+               const p = { x: 3, y: 4 }\n\
+               const { x, y } = p\n\
+               return x * 100 + y\n\
+             }\n\
+             const total = f()",
+        ));
+    }
+
+    #[test]
+    fn a_const_destructure_naming_a_missing_field_is_ws046() {
+        let r = tc("const p = { x: 1 }\nconst { x, missing } = p");
+        let d = r
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS046")
+            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
+        assert!(
+            d.message.contains("missing"),
+            "must name the missing field: {}", d.message
+        );
+    }
+
+    #[test]
+    fn a_const_destructure_of_a_non_record_is_ws046() {
+        let r = tc("const { x } = 1");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS046"),
+            "expected WS046, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // stmt.rs's block-scope site, exercised WITHOUT the const-mod machinery
+    // interp.rs also touches — proves stmt.rs's own wiring independently of
+    // the top-level and const-mod-body sites above. Same non-circular idiom
+    // as the alias/rest tests just above (see their header comment): the
+    // bound values are compared through a constant-only position, not through
+    // an ill-typed `else` that a correct binding would elide anyway.
+    #[test]
+    fn a_block_scope_const_destructure_binds_inside_an_ordinary_mod_body() {
+        assert_no_diags(&tc(
+            "mod f() {\n\
+               const p = { x: 111, y: 222 }\n\
+               const { x, y } = p\n\
+               const combined = x * 1000 + y\n\
+               SendCustomEvent(\"evt\", combined)\n\
+             }\n\
+             in go: exec\non go { f() }",
+        ));
+    }
+
+    /// A **non-`const`** destructuring `let` must NOT be treated as a
+    /// compile-time constant, in any of the shapes that reach a
+    /// constant-only config slot.
+    ///
+    /// This is the WS028 that correctly rejected these programs before
+    /// destructuring `const` existed. Recording a plain `let`'s destructured
+    /// names as constants made typecheck accept them while lowering — whose
+    /// non-`const` path is the narrow evaluator, which cannot fold the record
+    /// literal being destructured — silently dropped the value, shipping a
+    /// `SendCustomEvent` gate with an EMPTY channel name and no diagnostic.
+    ///
+    /// The positive counterparts (the same programs spelled `const`, asserted
+    /// to actually BAKE) live in `lower::tests::const_params`, because the bug
+    /// is invisible in typecheck output and in the IR dump alike — only the
+    /// baked component data distinguishes them.
+    #[test]
+    fn a_non_const_destructuring_let_is_not_constant_config() {
+        for (label, src) in [
+            (
+                "plain destructure in a mod body",
+                "mod f(v: int) {\n\
+                   let { chan } = { chan: \"evt\" }\n\
+                   SendCustomEvent(chan, v)\n\
+                 }\n\
+                 in go: exec\non go { f(1) }",
+            ),
+            (
+                "alias form",
+                "mod f(v: int) {\n\
+                   let { chan: c2 } = { chan: \"evt\" }\n\
+                   SendCustomEvent(c2, v)\n\
+                 }\n\
+                 in go: exec\non go { f(1) }",
+            ),
+            (
+                "handler body",
+                "in go: exec\nvar hp: int = 0\n\
+                 on go {\n\
+                   let { chan } = { chan: \"evt\" }\n\
+                   SendCustomEvent(chan, hp)\n\
+                 }",
+            ),
+            (
+                "rest form",
+                "mod f(v: int) {\n\
+                   let { other, ...rest } = { other: 1, chan: \"evt\" }\n\
+                   SendCustomEvent(rest.chan, v)\n\
+                 }\n\
+                 in go: exec\non go { f(1) }",
+            ),
+        ] {
+            let r = tc(src);
+            assert!(
+                r.diagnostics.iter().any(|d| d.code == "WS028"),
+                "a non-const destructured name must not satisfy constant-only \
+                 gate config — {label}: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    /// The mirror of the tests above, and the second manifestation of the
+    /// single-named-output wrapping bug: a `const mod` with ONE named output
+    /// (`-> (r: string)`) types as a bare `string` per `typecheck::call`, so
+    /// its result IS a legal scalar for a constant-only config slot. Wrapping
+    /// it in a 1-field record made const evaluation disagree with the type
+    /// system and produced a WS028 that reads as a flat contradiction:
+    /// `'eventName' … takes a single scalar value, not a record` about a value
+    /// typecheck itself calls `string`.
+    ///
+    /// A two-output `const mod` genuinely IS a record and must still be
+    /// rejected here, so both directions are asserted — a fix that simply
+    /// stopped wrapping everything would pass the first case and fail the
+    /// second.
+    #[test]
+    fn a_single_named_output_const_mod_result_is_scalar_config_not_a_record() {
+        let one = tc(
+            "const mod chan(p: const string) -> (r: string) { out r = p .. \"_evt\" }\n\
+             const NAME = chan(\"hit\")\n\
+             var hp: int = 0\n\
+             in go: exec\non go { SendCustomEvent(NAME, hp) }",
+        );
+        assert!(
+            !one.diagnostics.iter().any(|d| d.code == "WS028"),
+            "a single named output is a scalar, not a record — it must satisfy \
+             a constant-only scalar config slot: {:?}",
+            one.diagnostics
+        );
+        assert_no_diags(&one);
+
+        let two = tc(
+            "const mod chan(p: const string) -> (r: string, extra: int) { out r = p\n out extra = 1 }\n\
+             const NAME = chan(\"hit\")\n\
+             var hp: int = 0\n\
+             in go: exec\non go { SendCustomEvent(NAME, hp) }",
+        );
+        assert!(
+            two.diagnostics.iter().any(|d| d.code == "WS028"),
+            "a MULTI-output const mod's result really is a record and must \
+             still be rejected in a scalar config slot: {:?}",
+            two.diagnostics
+        );
+    }
+
+    /// The same hole reached through a `const` PARAMETER: `const string`
+    /// promises the callee a compile-time value, so passing a non-`const`
+    /// destructured name must be rejected rather than silently dropped inside
+    /// the callee.
+    #[test]
+    fn a_non_const_destructured_name_cannot_satisfy_a_const_parameter() {
+        let r = tc(
+            "mod send(name: const string, v: int) { SendCustomEvent(name, v) }\n\
+             mod f(v: int) {\n\
+               let { chan } = { chan: \"evt\" }\n\
+               send(chan, v)\n\
+             }\n\
+             in go: exec\non go { f(1) }",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS028" || d.code == "WS046"),
+            "a non-const destructured name must not satisfy a `const` param: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// The branch a const `if` KEEPS is still fully type-checked — only the
+    /// untaken one is skipped (`if constexpr` semantics). Without this, "the
+    /// untaken block isn't checked" could silently widen into "neither block
+    /// is checked", and a destructured const would stop catching real errors
+    /// in the code it actually ships.
+    #[test]
+    fn a_const_destructure_still_type_checks_the_branch_it_keeps() {
+        let r = tc(
+            "var flag: int = 0\n\
+             mod f() {\n\
+               const p = { x: 111, y: 222 }\n\
+               const { x, y } = p\n\
+               if x == 111 { flag = \"ill typed, and this branch SHIPS\" } else { flag = 1 }\n\
+             }\n\
+             in go: exec\non go { f() }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "the TAKEN branch must be type-checked: {:?}",
+            r.diagnostics
+        );
+    }
+
+    // A destructured field derived from a `const` PARAMETER's placeholder is
+    // just as fictional as a scalar one (see
+    // `a_const_param_placeholder_never_decides_a_branch`) — it must not be
+    // allowed to decide a branch either, now that a destructuring `const`
+    // inside a mod body is actually evaluated instead of being rejected
+    // outright.
+    #[test]
+    fn a_const_destructure_derived_from_a_placeholder_never_decides_a_branch() {
+        let r = tc(
+            "var x: int = 0\n\
+             mod f(m: const int) {\n\
+               const rec = { a: m }\n\
+               const { a } = rec\n\
+               if a == 1 { x = \"wrong\" } else { x = 2 }\n\
+             }\n\
+             in go: exec\non go { f(1) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a field destructured from a placeholder-derived record must not \
+             decide a branch: {:?}", r.diagnostics
+        );
+        assert!(
+            r.dropped_ranges.is_empty(),
+            "a placeholder must not drive an elision via a destructure: {:?}",
+            r.dropped_ranges
+        );
+    }
+
+    // Task 6: `const` PARAMETERS are enforced the same way `const` bindings
+    // are — the argument must evaluate at compile time (WS046 if it can't).
+    #[test]
+    fn a_const_parameter_rejects_a_runtime_argument() {
+        assert_no_diags(&tc(
+            "mod g(name: const string, v: int) { }\nmod caller(x: int) { g(\"lit\", x) }",
+        ));
+
+        let r = tc("in live: string\nmod g(name: const string) { }\nmod caller() { g(live) }");
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS046"),
+            "expected WS046, got {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn a_const_parameter_still_type_checks_its_argument() {
+        let r = tc("mod g(n: const int) { }\nmod caller() { g(\"not an int\") }");
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "expected WS003, got {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn a_named_constant_satisfies_a_const_parameter() {
+        assert_no_diags(&tc("const N = 4\nmod g(n: const int) { }\nmod caller() { g(N * 2) }"));
+    }
+
+    // Task 10: the sender side (`SendCustomEvent(CH, v)`) has always accepted a
+    // named constant as its channel name; the receiver side (`on
+    // CustomEvent(CH)`) used the environment-free `expr_to_literal` and rejected
+    // it, so a computed channel name could be sent but never received.
+    #[test]
+    fn an_event_handler_channel_accepts_a_named_constant() {
+        assert_no_diags(&tc(
+            "const CH = \"evt_\" .. \"died\"\n\
+             var n: int = 0\n\
+             on CustomEvent(CH) -> (v: int) { n = v }",
+        ));
+        // The same through a computed expression, not just a bare name.
+        assert_no_diags(&tc(
+            "const PREFIX = \"evt_\"\n\
+             var n: int = 0\n\
+             on CustomEvent(PREFIX .. \"died\") -> (v: int) { n = v }",
+        ));
+    }
+
+    // Task 11: a bare identifier in enum config is an enum MEMBER name first —
+    // that must keep working exactly as before. Only when it names no member
+    // does it fall back to resolving through the constant environment.
+    #[test]
+    fn an_enum_config_argument_may_name_a_constant() {
+        assert_no_diags(&tc(
+            "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = Bounce) }",
+        ));
+        assert_no_diags(&tc(
+            "const EASE = \"Bounce\"\n\
+             mod f(a: float, b: float, t: float) { Easing(a, b, t, function = EASE) }",
+        ));
+    }
+
+    // Task 13: a call to a `const mod` is itself compile-time-evaluable — the
+    // callee's body runs through `const_eval::interp::eval_call`, resolved
+    // via `ConstCtx::lookup_mod`.
+    //
+    // This is only the TYPECHECK half. Accepting the program proves nothing
+    // about the value reaching the gate — the first version of this feature
+    // passed this exact assertion while lowering baked no channel name at all.
+    // The real acceptance test inspects the emitted gate:
+    // `lower::tests::const_params::a_const_mod_call_bakes_as_a_custom_event_channel_name`.
+    #[test]
+    fn a_const_mod_call_satisfies_a_literal_position() {
+        assert_no_diags(&tc(
+            "const mod evtName(kind: string) -> string { return \"evt_\" .. kind }\n\
+             mod ping(v: int) { SendCustomEvent(evtName(\"died\"), v) }",
+        ));
+    }
+
+    // Wiring `lookup_mod` made `NotAConstMod` capable of lying: a `const mod`
+    // call that const evaluation does not descend to isn't evaluated, and the
+    // failure used to be reported as "'double' is not declared `const mod`"
+    // about a mod that plainly IS one. Leaving a position unevaluated is
+    // fine; stating something false about the user's code is not.
+    #[test]
+    fn a_nested_const_mod_call_is_not_blamed_for_being_non_const() {
+        // `double(3) + 1` (this test's ORIGINAL trigger) is no longer nested
+        // in the sense this test is about: `eval_expr` now resolves a `const
+        // mod` call standing as a `BinOp`/`UnOp`/constructor-argument operand
+        // directly (see `const_eval::expr`'s
+        // `a_const_mod_call_nested_in_a_binary_operator_evaluates`), so that
+        // expression just evaluates to `7` and never reaches this
+        // diagnostic. Nest one level deeper instead — as an argument to a
+        // call whose OWN callee (`scaleUp`) is an ordinary, non-const `mod` —
+        // which `eval_expr`'s `Expr::Call` arm still declines to evaluate,
+        // falling back to `reason_for`'s walk and landing on the exact
+        // `NestedConstModCall` case this test exists to prove.
+        let r = tc(
+            "const mod double(n: int) -> int { return n * 2 }\n\
+             mod scaleUp(n: int) -> int { return n }\n\
+             mod f() { const total = scaleUp(double(3)) }",
+        );
+        let d = r
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS046")
+            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
+        assert!(
+            !d.message.contains("is not declared `const mod`"),
+            "must not claim a `const mod` isn't one: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("is a `const mod`")
+                && d.message.contains("surrounding expression")
+                && d.message.contains("never reaches it"),
+            "must name the real limitation (the enclosing call, not the callee): {}",
+            d.message
+        );
+    }
+
+    // The other side of that branch: a callee that genuinely is NOT a `const
+    // mod` must keep the original, accurate message.
+    #[test]
+    fn a_nested_non_const_mod_call_still_says_it_is_not_a_const_mod() {
+        let r = tc(
+            "mod double(n: int) -> int { return n * 2 }\n\
+             mod f() { const total = double(3) + 1 }",
+        );
+        let d = r
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS046")
+            .unwrap_or_else(|| panic!("expected WS046, got {:?}", r.diagnostics));
+        assert!(
+            d.message.contains("'double' is not declared `const mod`"),
+            "a genuinely non-const callee keeps the original message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn calling_a_non_const_mod_in_a_const_position_is_an_error() {
+        let r = tc(
+            "mod evtName(kind: string) -> string { return \"evt_\" .. kind }\n\
+             mod ping(v: int) { SendCustomEvent(evtName(\"died\"), v) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS028" || d.code == "WS046"),
+            "expected a constant-required error, got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // CRITICAL, PROVEN MISCOMPILE: `TypeCheckCtx::mod_decls` used to be a
+    // FLAT map — registered by `register_decl`, never scoped, never popped —
+    // while lowering resolves a `const mod` CALL through `ctx.scope`, a
+    // properly scope-managed stack. A NESTED `const mod` permanently
+    // overwrote the flat entry for its name, so a call made from a totally
+    // separate, LATER sibling decl resolved the wrong body.
+    //
+    // Here `A`'s nested `size` (-> 100) is checked first (chips are checked
+    // in source order) and, under the flat-map bug, clobbers the top-level
+    // `size` (-> 10) for good. `B`'s `const s = size()` then resolved to
+    // 100, took the THEN branch (`s == 100`), and dropped the ELSE — never
+    // type-checking the `string` assigned into the `int` var `b`. Lowering,
+    // resolving `size` correctly through `ctx.scope` (scoped, not flat),
+    // sees the TOP-LEVEL `size` (10), takes the ELSE, and emits a live
+    // `Exec_Var_Set b = "definitely not an int"` into an `int` var — code
+    // that was NEVER type-checked. Before the `mod_decls` scoping fix this
+    // program type-checked with NO diagnostics at all.
+    #[test]
+    fn a_nested_const_mod_does_not_leak_into_a_sibling_chips_resolution() {
+        let r = tc(
+            "var b: int = 0\n\
+             const mod size() -> int { return 10 }\n\
+             mod A() { const mod size() -> int { return 100 } }\n\
+             mod B() {\n  const s = size()\n  if s == 100 { b = 2 } else { b = \"definitely not an int\" }\n}",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "B must resolve the TOP-LEVEL `size` (10) — same as lowering — take \
+             the else branch, and report the type error in it: got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // The scoping is symmetric: once `A`'s body has finished checking (its
+    // `mod_decls` frame popped), a call AFTER it in a totally unrelated decl
+    // must not see `A`'s nested override either. Pins the exact mechanism —
+    // WHICH range gets dropped — rather than just "no error": under the
+    // flat-map bug `B` would resolve `size` to `A`'s leaked 999, so
+    // `size() == 10` reads false and the THEN block (not the ELSE) would be
+    // the one dropped.
+    #[test]
+    fn a_nested_const_mod_frame_is_dropped_once_its_scope_closes() {
+        let src = "const mod size() -> int { return 10 }\n\
+             var ok: int = 0\n\
+             mod A() { const mod size() -> int { return 999 } }\n\
+             mod B() { const s = size()\n if s == 10 { ok = 1 } else { ok = 2 } }";
+        let r = tc(src);
+        assert!(
+            r.diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "resolving the top-level `size` after A's scope has closed must not error: {:?}",
+            r.diagnostics
+        );
+        assert_eq!(r.dropped_ranges.len(), 1, "exactly one branch must be dropped: {:?}", r.dropped_ranges);
+        let dropped_src = &src[r.dropped_ranges[0].0.start.offset..r.dropped_ranges[0].0.end.offset];
+        assert!(
+            dropped_src.contains("ok = 2"),
+            "B must resolve the TOP-LEVEL `size` (10, not A's leaked 999), so the \
+             ELSE block is the one dropped — got dropped range {dropped_src:?}"
+        );
+    }
+
+    // A self-referential `const mod` reaches `interp::eval_call` through
+    // `ConstCtx::lookup_mod`, NOT through `lower_chip_call`'s WS020 guard
+    // (that guard only fires during lowering's wire-expansion of an ORDINARY
+    // call). This path's own backstop is `interp::Budget`'s depth counter —
+    // this test proves it actually fires (a WS048, not a stack overflow) when
+    // a mod calls itself.
+    #[test]
+    fn a_self_referential_const_mod_call_fails_via_budget_not_a_stack_overflow() {
+        let r = tc(
+            "const mod f(n: int) -> string { return f(n) }\n\
+             mod ping(v: int) { SendCustomEvent(f(1), v) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS048"),
+            "expected WS048 (budget exceeded), got {:?}",
+            r.diagnostics
+        );
+    }
+
+    // `if constexpr` semantics: a const-evaluable condition drops the
+    // untaken block from type-checking entirely, so a branch that wouldn't
+    // even compile for THIS const value never gets checked — that's what
+    // lets one mod serve cases that share no API. Task 15 does the matching
+    // work on the lowering side (`lower_if`'s generalised elision).
+
+    #[test]
+    fn a_dropped_branch_is_not_type_checked() {
+        assert_no_diags(&tc(
+            "const MODE = 1\nvar x: int = 0\nin go: exec\n\
+             on go { if MODE == 1 { x = 1 } else { x = totallyUndefinedThing() } }",
+        ));
+    }
+
+    // MINOR: a body-local `const` declared inside a TAKEN, const-elided
+    // branch must not leak past the `if` — `lower_if`'s elision lowers the
+    // taken block STRAIGHT INTO THE PARENT SCOPE (no Branch gate), so it
+    // still pushes/pops its own scope frame around that block (see
+    // `lower_if`'s doc comment) rather than skipping scoping altogether.
+    // This property was verified by hand twice during development but never
+    // pinned by a test — do so here on the typecheck side (mirrors
+    // `ctx.scope`/`scoped_consts`/`scoped_const_declared`/`mod_decls`, all of
+    // which are frame stacks pushed/popped 1:1 with `ctx.scope` via
+    // `push_scope`/`pop_scope`, so this single check exercises all four).
+    #[test]
+    fn a_branch_local_const_does_not_leak_past_the_if() {
+        let r = tc(
+            "const A = 1\nvar x: int = 0\nin go: exec\n\
+             on go { if A == 1 { const b = 5\n x = b } else { x = 0 }\n x = b }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS002"),
+            "a `const` declared inside a taken (const-elided) branch must not be \
+             visible after the `if` — got {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn typecheck_records_which_ranges_it_dropped() {
+        let r = tc(
+            "const MODE = 1\nvar x: int = 0\nin go: exec\non go { if MODE == 1 { x = 1 } else { x = 2 } }",
+        );
+        assert_eq!(r.dropped_ranges.len(), 1, "the else block must be recorded as dropped");
+    }
+
+    // IMPORTANT: the widened elision (any const-eval-decidable condition, not
+    // just a bare `true`/`false`) must fire ONLY for a condition built from
+    // names actually DECLARED `const` — never a plain `let` that merely
+    // happens to fold. The feature's own first design principle is that a
+    // program using no `const` keyword compiles identically to before it
+    // existed; before this restriction, `let A = 1` + `if A == 1 {...} else
+    // {...}` newly emitted 3 nodes instead of a Branch plus both blocks, and
+    // a type error in the untaken block silently stopped being reported —
+    // a behavior change for a program containing no `const` at all.
+    #[test]
+    fn a_plain_let_condition_keeps_its_branch_and_checks_both_blocks() {
+        let r = tc(
+            "let A = 1\nvar x: int = 0\nin go: exec\n\
+             on go { if A == 1 { x = 1 } else { x = totallyUndefinedThing() } }",
+        );
+        assert!(
+            r.dropped_ranges.is_empty(),
+            "a plain `let` (no `const` keyword anywhere in the program) must NOT \
+             gain the widened elision — pre-feature behavior for a program using no \
+             `const` at all: {:?}",
+            r.dropped_ranges
+        );
+        assert!(
+            !r.diagnostics.is_empty(),
+            "the else block, calling an undefined function, must still be \
+             type-checked (a real Branch was built, both blocks checked): {:?}",
+            r.diagnostics
+        );
+    }
+
+    // The same shape, but with `const` instead of `let`, must still
+    // tree-shake exactly as the feature intends — proving the restriction
+    // above is keyed on the `const` keyword, not on some accidental
+    // difference between the two programs.
+    #[test]
+    fn a_const_condition_with_the_same_shape_still_tree_shakes() {
+        let r = tc(
+            "const A = 1\nvar x: int = 0\nin go: exec\n\
+             on go { if A == 1 { x = 1 } else { x = totallyUndefinedThing() } }",
+        );
+        assert_no_diags(&r);
+        assert_eq!(
+            r.dropped_ranges.len(),
+            1,
+            "a real `const` must still elide the untaken (else) block: {:?}",
+            r.dropped_ranges
+        );
+    }
+
+    /// Sorted ranges of every block a `tc`/`lower` run dropped, for comparing
+    /// the two sides directly.
+    fn typecheck_dropped(src: &str) -> Vec<crate::diagnostic::SourceRange> {
+        let mut ranges: Vec<crate::diagnostic::SourceRange> =
+            tc(src).dropped_ranges.into_iter().map(|(range, _reason)| range).collect();
+        ranges.sort_by_key(|r| (r.start.offset, r.end.offset));
+        ranges
+    }
+
+    fn lowering_dropped(src: &str) -> Vec<crate::diagnostic::SourceRange> {
+        let p = parse(src, "test");
+        assert!(p.diagnostics.is_empty(), "parse diagnostics: {:?}", p.diagnostics);
+        let tc_result = typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            tc_result.diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "typecheck errors: {:?}",
+            tc_result.diagnostics
+        );
+        let out = crate::lower::lower(crate::lower::LowerInput {
+            ast: &p.ast,
+            type_of_expr: &tc_result.type_of_expr,
+            op_resolutions: &tc_result.op_resolutions,
+            file: "test",
+            module_name: None,
+            template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+            doc_comments: &p.doc_comments,
+            fold_mode: crate::lower::FoldMode::ForceOff,
+            ce_slots: &crate::typecheck::CeSlotMap::default(),
+        });
+        assert!(
+            out.diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "lower errors: {:?}",
+            out.diagnostics
+        );
+        let mut ranges = out.dropped_ranges;
+        ranges.sort_by_key(|r| (r.start.offset, r.end.offset));
+        ranges
+    }
+
+    /// The EXACT-PARITY invariant that `lower::context`, `lower::stmt`,
+    /// `lower::decl` and `typecheck::ctx` all cite by name. It was cited by
+    /// four doc comments for a long time without ever being written, and that
+    /// is precisely how a real divergence shipped: block-scope `const`
+    /// recording used the FULL evaluator in `typecheck::stmt` but the NARROW
+    /// `expr_to_literal_in` in `lower::decl`, so a `const` bound to a record —
+    /// `const p = { x: 1 }` with `if p.x == 1`, and every destructuring
+    /// `const` — was compile-time-decidable to typecheck and not to lowering.
+    /// Typecheck skipped the untaken block; lowering emitted it. Ill-typed
+    /// code reached the graph with no diagnostic at all.
+    ///
+    /// The weaker containment property
+    /// (`typecheck_never_drops_a_block_that_lowering_still_emits`, below) does
+    /// NOT catch that: dropping LESS on the typecheck side is the safe
+    /// direction for containment, yet it is exactly what under-checking looks
+    /// like when it is lowering that drops less. Equality catches both
+    /// directions at once.
+    ///
+    /// Corpus covers a plain `const`, a record-valued `const` read by field, a
+    /// block-scope destructure (plain / alias / rest) and a top-level
+    /// destructure — every shape whose recording differs between the two
+    /// sides. Cases where the two stages genuinely hold DIFFERENT information
+    /// (a `const` param's placeholder, `ident_literal_bool`) are excluded by
+    /// construction and live in the containment test instead.
+    #[test]
+    fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "a plain block-scope const",
+                "var x: int = 0\n\
+                 mod f() { const A = 1\n if A == 1 { x = 1 } else { x = 2 } }\n\
+                 in go: exec\non go { f() }",
+            ),
+            (
+                // The shape that shipped broken with no destructuring at all:
+                // `expr_to_literal_in` cannot fold a record literal.
+                "a record-valued block-scope const read by field",
+                "var x: int = 0\n\
+                 mod f() { const p = { a: 1 }\n if p.a == 1 { x = 1 } else { x = 2 } }\n\
+                 in go: exec\non go { f() }",
+            ),
+            (
+                "a block-scope destructure",
+                "var x: int = 0\n\
+                 mod f() { const p = { a: 1, b: 2 }\n const { a, b } = p\n\
+                   if a == 1 { x = 1 } else { x = 2 }\n\
+                   if b == 2 { x = 3 } else { x = 4 } }\n\
+                 in go: exec\non go { f() }",
+            ),
+            (
+                "a block-scope destructure with an alias",
+                "var x: int = 0\n\
+                 mod f() { const p = { a: 1, b: 2 }\n const { a: q, b: r } = p\n\
+                   if q == 1 { x = 1 } else { x = 2 }\n\
+                   if r == 2 { x = 3 } else { x = 4 } }\n\
+                 in go: exec\non go { f() }",
+            ),
+            (
+                "a block-scope destructure with a rest",
+                "var x: int = 0\n\
+                 mod f() { const p = { a: 1, b: 2, c: 3 }\n const { a, ...rest } = p\n\
+                   if a == 1 { x = 1 } else { x = 2 }\n\
+                   if rest.c == 3 { x = 3 } else { x = 4 } }\n\
+                 in go: exec\non go { f() }",
+            ),
+            (
+                "a top-level destructure",
+                "const p = { a: 1, b: 2 }\nconst { a, b } = p\n\
+                 var x: int = 0\nin go: exec\n\
+                 on go { if a == 1 { x = 1 } else { x = 2 }\n\
+                         if b == 9 { x = 3 } else { x = 4 } }",
+            ),
+            (
+                "a destructure inside a nested block",
+                "var x: int = 0\n\
+                 mod f(n: int) { if n > 0 { const p = { a: 1 }\n const { a } = p\n\
+                   if a == 1 { x = 1 } else { x = 2 } } }\n\
+                 in go: exec\non go { f(1) }",
+            ),
+            // SHADOWING — the other half of keeping the two environments in
+            // step, and the half that had no coverage at all. Recording the
+            // same constants is only sound if RE-BINDING one clears it on both
+            // sides too, and lowering's clearing handled a single spelling
+            // (`Ident`, narrow evaluator) where typecheck's handled every one.
+            // Each case shadows ONE const and leaves a sibling alone, so the
+            // still-const half keeps the corpus's non-vacuity assert honest
+            // while the shadowed half is what actually has to agree.
+            (
+                // `let { a } = …` cleared `a`'s const mark in typecheck and
+                // not in lowering: typecheck emitted a real Branch for
+                // `if a == 1` while lowering tree-shook it on the STALE value,
+                // shipping only the `x = 1` arm and no Branch gate at all.
+                "a destructuring let shadowing a destructuring const",
+                "var x: int = 0\n\
+                 mod f() { const { a, b } = { a: 1, b: 2 }\n let { a } = { a: 9 }\n\
+                   if a == 1 { x = 1 } else { x = 2 }\n\
+                   if b == 2 { x = 3 } else { x = 4 } }\n\
+                 in go: exec\non go { f() }",
+            ),
+            (
+                // The same divergence reachable with NO destructuring: an
+                // `Ident` `let` whose value only the FULL evaluator folds
+                // (an `if` expression) never reached lowering's narrow
+                // clearing path either.
+                "a let shadowing a const with a value only the full evaluator folds",
+                "var x: int = 0\n\
+                 mod f() { const a = 1\n const b = 2\n let a = if true then 9 else 0\n\
+                   if a == 1 { x = 1 } else { x = 2 }\n\
+                   if b == 2 { x = 3 } else { x = 4 } }\n\
+                 in go: exec\non go { f() }",
+            ),
+            (
+                // The same shadow with the `const` at the TOP level, which is
+                // a different mechanism rather than a rephrasing: eviction in
+                // `const_lookup_declared_only` fires on a name being PRESENT
+                // in a `scoped_consts` frame and ABSENT from that frame's
+                // marks, so a top-level constant is only evicted once the
+                // inner `let` RECORDS its own value there. Clearing the mark
+                // alone left the top-level value resolving straight through.
+                "a block-scope let shadowing a top-level const",
+                "const a = 1\nconst b = 2\nvar x: int = 0\n\
+                 in go: exec\n\
+                 on go { let a = if true then 9 else 0\n\
+                   if a == 1 { x = 1 } else { x = 2 }\n\
+                   if b == 2 { x = 3 } else { x = 4 } }",
+            ),
+            // NAMED-CHIP BOUNDARY. A chip body is a `Block` of statements, so
+            // its own `const`s never reach `build_const_env` (which takes
+            // `TopDecl`s) — they are recorded by `lower_let_decl` into
+            // `scoped_consts.last_mut()`, and `instance_body` used to hand the
+            // child ctx NO frame at all, so every one was silently discarded.
+            // Typecheck has always had a frame here, so the two stages read
+            // different constants inside the same body.
+            (
+                // The sharpest form: lowering decided on the OUTER constant
+                // and typecheck on the INNER one, so they emitted and checked
+                // OPPOSITE arms — a wrong-branch miscompile AND an unchecked
+                // block reaching the graph, from one program.
+                "a named chip's own const shadowing a top-level one",
+                "const a = 1\nvar x: int = 0\n\
+                 chip Named(t: exec) { const a = 9\n\
+                   on t { if a == 1 { x = 1 } else { x = 2 }\n\
+                          if a == 9 { x = 3 } else { x = 4 } } }\n\
+                 in go: exec\nlet r = Named(go)",
+            ),
+            (
+                // The same gap with nothing shadowed: typecheck decided the
+                // condition on the chip-body `const` while lowering, holding
+                // no value for it, emitted a runtime Branch over both arms —
+                // typecheck dropping a block lowering still emits.
+                "a named chip's own const with no outer binding",
+                "var x: int = 0\n\
+                 chip Named(t: exec) { const a = 7\n\
+                   on t { if a == 9 { x = 1 } else { x = 2 } } }\n\
+                 in go: exec\nlet r = Named(go)",
+            ),
+            (
+                // INLINED-CALLEE BOUNDARY. A `mod` body is lowered into the
+                // CALLER's ctx with the caller's block scopes still open, and
+                // the const lookups walk every open frame — so a caller-local
+                // shadow evicted the top-level constant INSIDE the callee.
+                // Typecheck checks a `mod` body once, at its declaration,
+                // where no call site's scope exists, so it kept resolving the
+                // top-level one and elided an arm lowering then emitted.
+                "a caller-local shadow must not reach into an inlined callee",
+                "const a = 1\nvar x: int = 0\n\
+                 mod inner() { if a == 1 { x = 1 } else { x = 2 } }\n\
+                 in go: exec\n\
+                 on go { let a = if true then 9 else 0\n  inner() }",
+            ),
+        ];
+        for (label, src) in cases {
+            let tc_dropped = typecheck_dropped(src);
+            let lo_dropped = lowering_dropped(src);
+            assert_eq!(
+                tc_dropped, lo_dropped,
+                "typecheck and lowering must elide EXACTLY the same blocks — {label}\n  \
+                 typecheck dropped: {tc_dropped:?}\n  lowering dropped:  {lo_dropped:?}"
+            );
+            // A corpus entry that elides nothing on both sides would satisfy
+            // the equality vacuously and silently stop testing anything.
+            assert!(
+                !tc_dropped.is_empty(),
+                "case must actually exercise an elision — {label}"
+            );
+        }
+    }
+
+    /// THE soundness property of this feature, stated exactly:
+    /// **everything LOWERED must have been CHECKED.** A block is lowered iff
+    /// it is not in lowering's dropped set; checked iff it is not in
+    /// typecheck's. So the requirement is the containment
+    ///
+    /// ```text
+    /// typecheck_dropped  ⊆  lowering_dropped
+    /// ```
+    ///
+    /// — typecheck may skip a block only if lowering also skips it. The
+    /// reverse slack is deliberately allowed and is the SAFE direction:
+    /// lowering knows things typecheck cannot (a call site's real argument, a
+    /// literal bound to a gate), so it may drop MORE. That merely means a
+    /// block was checked and then not emitted — at worst a diagnostic about
+    /// absent code, never shipped-unchecked code.
+    ///
+    /// Every case below is a shape that genuinely diverged at some point, so
+    /// this is a regression net rather than a smoke test. Cases 1-3 also
+    /// satisfy exact EQUALITY (both stages hold the same information), which
+    /// is asserted separately and more tightly; case 4-5 are the intentional
+    /// strict-subset ones.
+    #[test]
+    fn typecheck_never_drops_a_block_that_lowering_still_emits() {
+        // (label, source, both stages have equal information)
+        let cases: &[(&str, &str, bool)] = &[
+            (
+                "a plain top-level const elides on both sides",
+                "const A = 1\nvar x: int = 0\nin go: exec\n\
+                 on go { if A == 1 { x = 1 } else { x = 2 } if A == 9 { x = 3 } }",
+                true,
+            ),
+            (
+                "@nofold on the handler keeps BOTH blocks on both sides",
+                "const A = 1\nvar x: int = 0\nin go: exec\n\n\
+                 @nofold\non go { if A == 1 { x = 1 } else { x = 2 } }",
+                true,
+            ),
+            (
+                "a module-level @nofold keeps both blocks on both sides",
+                "@nofold\n\nconst A = 1\nvar x: int = 0\nin go: exec\n\
+                 on go { if A == 1 { x = 1 } else { x = 2 } }",
+                true,
+            ),
+            (
+                // CRITICAL regression: `mod_decls` used to be a flat map, so
+                // `A`'s NESTED `const mod size` (checked first, in source
+                // order) permanently overwrote the top-level `size` for
+                // every later reader — typecheck resolved `B`'s call to
+                // `size` to A's leaked 100 (dropping the ELSE), while
+                // lowering (already scope-correct through `ctx.scope`)
+                // resolved the top-level 10 (dropping the THEN). Disjoint
+                // dropped sets — exactly the containment violation this test
+                // exists to catch. Scoping `mod_decls` like `scoped_consts`
+                // (mirroring `lower::LowerCtx::pass1_chips`) makes both
+                // stages resolve `size` identically once `A`'s body (and its
+                // frame) has closed.
+                "a nested const mod does not leak into a later sibling's resolution",
+                "const mod size() -> int { return 10 }\nvar x: int = 0\n\
+                 mod A() { const mod size() -> int { return 100 } }\n\
+                 mod B() { const s = size()\n if s == 100 { x = 1 } else { x = 2 } }\n\
+                 in go: exec\non go { B() }",
+                true,
+            ),
+            (
+                // Typecheck sees a placeholder ZERO and must decline to elide
+                // at all; lowering inlines the REAL `1` and elides the ELSE.
+                // Opposite selections — which is precisely why typecheck must
+                // not elide. Strict subset: {} ⊂ {else}.
+                "a const PARAM's placeholder must not decide a branch",
+                "var x: int = 0\nmod f(m: const int) { if m == 1 { x = 1 } else { x = 2 } }\n\
+                 in go: exec\non go { f(1) }",
+                false,
+            ),
+            (
+                "a const derived FROM a const param is just as fictional",
+                "var x: int = 0\n\
+                 mod f(m: const int) { const t = m + 1\n if t == 2 { x = 1 } else { x = 2 } }\n\
+                 in go: exec\non go { f(1) }",
+                false,
+            ),
+        ];
+        for (label, src, equal_information) in cases {
+            let tc_dropped = typecheck_dropped(src);
+            let lo_dropped = lowering_dropped(src);
+            for range in &tc_dropped {
+                assert!(
+                    lo_dropped.contains(range),
+                    "typecheck skipped a block lowering still EMITS (unchecked code ships) \
+                     — {label}\n  typecheck dropped: {tc_dropped:?}\n  lowering dropped:  {lo_dropped:?}"
+                );
+            }
+            if *equal_information {
+                assert_eq!(
+                    tc_dropped, lo_dropped,
+                    "both stages have the same information here, so their dropped sets must \
+                     match exactly — {label}"
+                );
+            } else {
+                assert!(
+                    tc_dropped.len() < lo_dropped.len(),
+                    "expected typecheck to be strictly more conservative here — {label}\n  \
+                     typecheck dropped: {tc_dropped:?}\n  lowering dropped:  {lo_dropped:?}"
+                );
+            }
+        }
+    }
+
+    /// The `@nofold` half of the agreement above, stated as the miscompile it
+    /// prevents: lowering keeps the `Branch` and emits BOTH blocks, so a type
+    /// error in the "untaken" one is real code that ships. Before typecheck
+    /// mirrored `nofold_depth`, this compiled with no diagnostic at all and
+    /// emitted a live `Var_Set x = "definitely not an int"` into an int var.
+    #[test]
+    fn a_nofold_if_still_type_checks_both_blocks() {
+        let r = tc(
+            "const MODE = 1\nvar x: int = 0\nin go: exec\n\n\
+             @nofold\non go { if MODE == 1 { x = 1 } else { x = \"definitely not an int\" } }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "@nofold must keep checking the block it still lowers: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            r.dropped_ranges.is_empty(),
+            "@nofold must drop nothing: {:?}",
+            r.dropped_ranges
+        );
+    }
+
+    /// A `const` parameter's placeholder is a type-shaped ZERO seeded once,
+    /// before any call site exists — so `m == 1` evaluates to FALSE here while
+    /// lowering, inlining the real `1`, takes the THEN. Selecting a branch
+    /// from it means the branch that actually ships is never checked: this
+    /// program used to compile clean and emit a lone `Var_Set x = "wrong"`
+    /// into an int var. Both blocks must be checked instead.
+    #[test]
+    fn a_const_param_placeholder_never_decides_a_branch() {
+        let r = tc(
+            "var x: int = 0\nmod f(m: const int) { if m == 1 { x = \"wrong\" } else { x = 2 } }\n\
+             in go: exec\non go { f(1) }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "the branch the real argument selects must be type-checked: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            r.dropped_ranges.is_empty(),
+            "a placeholder must not drive an elision: {:?}",
+            r.dropped_ranges
+        );
+        // Transitively, too: a `const` derived from the placeholder carries
+        // exactly the same fiction.
+        let derived = tc(
+            "var x: int = 0\n\
+             mod f(m: const int) { const t = m + 1\n if t == 2 { x = \"wrong\" } else { x = 2 } }\n\
+             in go: exec\non go { f(1) }",
+        );
+        assert!(
+            derived.diagnostics.iter().any(|d| d.code == "WS003"),
+            "placeholder-ness must propagate through a derived const: {:?}",
+            derived.diagnostics
+        );
+    }
+
+    /// The guard above must not over-fire: a REAL top-level constant read
+    /// inside the same mod body still elides normally, so tightening the
+    /// placeholder rule didn't just switch the feature off inside mods.
+    #[test]
+    fn a_real_constant_still_elides_inside_a_mod_body() {
+        assert_no_diags(&tc(
+            "const MODE = 1\nvar x: int = 0\n\
+             mod f(n: int) { if MODE == 1 { x = n } else { x = totallyUndefinedThing() } }\n\
+             in go: exec\non go { f(1) }",
+        ));
+    }
+
+    /// A constant-only SCALAR config slot must reject a constant COLLECTION.
+    ///
+    /// Being constant is necessary but not sufficient: a record/array/map has
+    /// no single scalar to bake into the gate's data field. Unchecked, these
+    /// reached emit and were resolved there by literal kind, two wrong ways —
+    /// an array silently defaulted to an empty/zero value (a clean-typechecking
+    /// program baking config the author never wrote), and a record hit a
+    /// converter with no way to decline, aborting the whole compile with an
+    /// `unreachable!` instead of producing a diagnostic.
+    #[test]
+    fn a_non_scalar_constant_in_a_scalar_config_slot_is_ws028() {
+        for (src, what) in [
+            // named config field, record
+            (
+                "const cfg = { rooms: 2, timer: 60 }\n\
+                 var x: int = 0\n\
+                 on Clock(interval = 1.0, enabled = true, onTime = cfg) { x = x + 1 }",
+                "a record",
+            ),
+            // POSITIONAL config field, record — a separate slot from the above
+            (
+                "const cfg = { rooms: 2, timer: 60 }\n\
+                 var x: int = 0\n\
+                 on ChatCommand(cfg) { x = x + 1 }",
+                "a record",
+            ),
+            // the pre-existing array case this subsumes: it used to typecheck
+            // clean and silently bake a wrong default
+            (
+                "const arr = [1, 2, 3]\n\
+                 var x: int = 0\n\
+                 on Clock(interval = 1.0, enabled = true, onTime = arr) { x = x + 1 }",
+                "an array",
+            ),
+        ] {
+            let r = tc(src);
+            let hit = r
+                .diagnostics
+                .iter()
+                .find(|d| d.code == "WS028")
+                .unwrap_or_else(|| panic!("expected WS028 for {what} in a scalar config slot: {:?}", r.diagnostics));
+            assert!(
+                hit.message.contains(what),
+                "the diagnostic must name the offending kind ({what}), got {:?}",
+                hit.message
+            );
+        }
+    }
+
+    /// The guard above must not over-fire: an ordinary SCALAR constant in the
+    /// same slot stays accepted, so this is a shape check, not a blanket ban.
+    #[test]
+    fn a_scalar_constant_in_a_scalar_config_slot_is_still_accepted() {
+        assert_no_diags(&tc(
+            "const T = 0.5\n\
+             var x: int = 0\n\
+             on Clock(interval = 1.0, enabled = true, onTime = T) { x = x + 1 }",
+        ));
     }

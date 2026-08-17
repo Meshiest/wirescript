@@ -70,7 +70,7 @@ pub(in crate::lower) fn lower_builtin_call(
         // axis (baked below); let a runtime axis fall through to the wire path
         // (is_wire_input("Position.X") is true, so it wires the float sub-port).
         if let Some((parent, axis)) = p.port.as_str().split_once('.') {
-            let axis_val = match literal_for_property_port(ctx, arg_expr, &Type::Float) {
+            let axis_val = match literal_for_property_port(ctx, arg_expr, &Type::Float, false) {
                 Some(Literal::Float(f)) => Some(f),
                 Some(Literal::Int(i)) => Some(i as f64),
                 _ => None,
@@ -90,14 +90,30 @@ pub(in crate::lower) fn lower_builtin_call(
         // resolve to the enum's integer value and inline as gate data. Int and
         // quoted-name forms fall through to the literal path below (the emitter
         // resolves those). Typecheck (WS028) already validated membership.
+        //
+        // When the identifier is NOT a member name, mirror
+        // `typecheck::config::validate_enum_config_arg`'s fallback: resolve it
+        // through the constant environment (`function = EASE` for `const EASE =
+        // "Bounce"`) instead. Member-name interpretation stays first, so no
+        // program that relies on it changes meaning.
         if let Expr::Ident { name, .. } = arg_expr
             && !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
             && let Some(enum_type) =
                 crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
-            && let Some(v) = crate::catalog::enum_member_value(enum_type, name)
         {
-            properties.insert(intern(p.port.as_str()), Literal::Int(v));
-            continue;
+            if let Some(v) = crate::catalog::enum_member_value(enum_type, name) {
+                properties.insert(intern(p.port.as_str()), Literal::Int(v));
+                continue;
+            }
+            let resolved = match expr_to_literal_in(arg_expr, &ctx.const_lookup()) {
+                Some(Literal::String(s)) => crate::catalog::enum_member_value(enum_type, &s),
+                Some(Literal::Int(v)) if crate::catalog::enum_has_value(enum_type, v) => Some(v),
+                _ => None,
+            };
+            if let Some(v) = resolved {
+                properties.insert(intern(p.port.as_str()), Literal::Int(v));
+                continue;
+            }
         }
         // Composite constant-only config (meshColors: Color[], ammoOverride:
         // WeaponAmmoOverride nested struct). These target NON-wire data fields,
@@ -108,9 +124,10 @@ pub(in crate::lower) fn lower_builtin_call(
         if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
             && matches!(p.port, WirePort::MeshColors | WirePort::WeaponAmmoOverride)
         {
+            let consts = ctx.const_lookup();
             let folded = match p.port {
-                WirePort::MeshColors => fold_mesh_colors(arg_expr),
-                _ => fold_ammo_override(arg_expr),
+                WirePort::MeshColors => fold_mesh_colors(arg_expr, &consts),
+                _ => fold_ammo_override(arg_expr, &consts),
             };
             if let Some(lit) = folded {
                 properties.insert(intern(p.port.as_str()), lit);
@@ -120,7 +137,12 @@ pub(in crate::lower) fn lower_builtin_call(
         // Literal check — inline constant arguments as properties so they
         // go into the data struct. With negative literal folding in the
         // parser, all constant args (positive and negative) are consistent.
-        if let Some(lit) = literal_for_property_port(ctx, arg_expr, &p.ty) {
+        // A port with no wire pin is constant-only config: allow the full
+        // const evaluator, matching what typecheck's
+        // `config::validate_scalar_config_arg` accepts for it. A wire-capable
+        // port keeps the narrow fold (see `literal_for_property_port`).
+        let config_only = !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str());
+        if let Some(lit) = literal_for_property_port(ctx, arg_expr, &p.ty, config_only) {
             // Struct-valued constants (folded Vec/Rotation/Color) only
             // inline when the gate's data field is a wire variant; other
             // gates (entity Set*, Split*) need a wired Make* gate, which
@@ -146,9 +168,31 @@ pub(in crate::lower) fn lower_builtin_call(
         // no pin to wire into. Reaching here means the value wasn't a foldable
         // constant — drop it rather than emit a wire into a nonexistent pin
         // (which loads as a silent "Failed to connect wire", with the config
-        // never applied). Typecheck (WS028) reports the non-constant value; this
-        // is the safety net that keeps the broken wire from ever being emitted.
+        // never applied).
+        //
+        // Typecheck's WS028 normally reports the non-constant value before this
+        // point, and for a long time this was described as a pure safety net on
+        // that. It is not: the two stages resolve constants through separate
+        // environments, so a name typecheck CAN fold and lowering cannot reaches
+        // here with nothing reported by anybody, and the config silently ships
+        // as the type's default — an empty custom-event channel name, for
+        // instance, which is a gate that quietly never fires. Every such gap
+        // found so far has been fixed at its source (a `const` recorded into a
+        // frame one side had and the other did not), but "the drop is silent"
+        // is the property that made each of them cost so much to find, so the
+        // drop now reports. Same WS028 the constant-only config validator uses,
+        // since it is the same rule being violated, just detected a stage later.
         if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str()) {
+            ctx.error(
+                "WS028",
+                format!(
+                    "'{}' is a constant-only config field, and its value did not resolve to a \
+                     constant during lowering — the setting would be dropped and the gate would \
+                     use its default",
+                    p.port.as_str()
+                ),
+                arg_expr.range(),
+            );
             continue;
         }
         let val_port = lower_expr(ctx, arg_expr);
@@ -197,13 +241,13 @@ pub(in crate::lower) fn lower_builtin_call(
                         | Expr::StringLit { value: member, .. } => et
                             .and_then(|e| crate::catalog::enum_member_value(e, member))
                             .map(Literal::Int),
-                        _ => literal_for_property_port(ctx, value, &Type::Int),
+                        _ => literal_for_property_port(ctx, value, &Type::Int, false),
                     }
                 }
-                "bool" => literal_for_property_port(ctx, value, &Type::Bool),
-                "int" => literal_for_property_port(ctx, value, &Type::Int),
-                "float" => literal_for_property_port(ctx, value, &Type::Float),
-                "string" => literal_for_property_port(ctx, value, &Type::String),
+                "bool" => literal_for_property_port(ctx, value, &Type::Bool, false),
+                "int" => literal_for_property_port(ctx, value, &Type::Int, false),
+                "float" => literal_for_property_port(ctx, value, &Type::Float, false),
+                "string" => literal_for_property_port(ctx, value, &Type::String, false),
                 _ => None,
             };
             if let Some(lit) = lit {

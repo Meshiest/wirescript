@@ -15,6 +15,7 @@
             &resolved.doc_comments,
             &tc.if_contexts,
             &tc.var_read_contexts,
+            &tc.dropped_ranges,
             &estimates,
             line,
             col,
@@ -216,6 +217,7 @@
             &resolved.doc_comments,
             &tc.if_contexts,
             &tc.var_read_contexts,
+            &tc.dropped_ranges,
             &estimates,
             1,
             col,
@@ -323,6 +325,7 @@
             &resolved.doc_comments,
             &tc.if_contexts,
             &tc.var_read_contexts,
+            &tc.dropped_ranges,
             &estimates,
             0,
             col,
@@ -718,4 +721,100 @@ chip a(uid: string) -> int {
             h.contains("x: int") && h.contains("y: int"),
             "must list the record's fields: {h}"
         );
+    }
+
+    /// The dropped-code warning covers a REGION, so it must answer everywhere
+    /// in that region — not only on identifiers. It originally sat behind
+    /// `hover_at`'s `word_at(...)?` early return, which returns `None` for any
+    /// non-identifier position, so the warning silently vanished on exactly the
+    /// characters someone skimming a block is most likely to point at: the
+    /// braces, the spaces, and the `=`. Those three are the regression guard.
+    #[test]
+    fn a_dropped_block_reports_at_braces_whitespace_and_operators_not_just_identifiers() {
+        let src = "const MODE = 1\nvar x: int = 0\nin go: exec\non go {\n  if MODE == 1 { x = 1 } else { x = 2 }\n}\n";
+        let line = src.lines().nth(4).unwrap();
+        // The dropped ELSE block: `{ x = 2 }`, indices 0..=8 from its `{`.
+        let open = line.find("{ x = 2 }").expect("else block in the fixture");
+        for (offset, what) in [
+            (0, "the opening brace `{`"),
+            (1, "the space after `{`"),
+            (2, "the `x` identifier"),
+            (3, "the space before `=`"),
+            (4, "the `=` operator"),
+            (6, "the `2` literal"),
+            (7, "the space before `}`"),
+            (8, "the closing brace `}`"),
+        ] {
+            let col = open + offset;
+            let h = hover_for(src, 4, col)
+                .unwrap_or_else(|| panic!("no hover at all on {what} (col {col})"));
+            assert!(
+                h.contains("Removed at compile time"),
+                "hovering {what} (col {col}) must report the dropped block, got: {h}"
+            );
+        }
+    }
+
+    /// The other half of the same property: the warning must be confined to the
+    /// dropped range. A containment check that always fired would pass the test
+    /// above while marking live code as removed.
+    #[test]
+    fn the_dropped_warning_does_not_leak_onto_the_taken_block() {
+        let src = "const MODE = 1\nvar x: int = 0\nin go: exec\non go {\n  if MODE == 1 { x = 1 } else { x = 2 }\n}\n";
+        let line = src.lines().nth(4).unwrap();
+        let taken = line.find("{ x = 1 }").expect("then block in the fixture");
+        for offset in 0..=8 {
+            let col = taken + offset;
+            let h = hover_for(src, 4, col).unwrap_or_default();
+            assert!(
+                !h.contains("Removed at compile time"),
+                "the TAKEN block is live code; col {col} must not be marked removed, got: {h}"
+            );
+        }
+    }
+
+    /// Mirror of the two tests above, for the opposite branch direction: a
+    /// const-FALSE condition drops the THEN block and keeps the `else`. The
+    /// two directions are recorded by separate arms of `Stmt::If`'s
+    /// const-elision (one pushes `else_block.range`, the other
+    /// `then_block.range`), so a bug in the arm that is never exercised —
+    /// pushing the wrong range, or not pushing at all — would be invisible to
+    /// a suite that only ever tests a true condition.
+    #[test]
+    fn a_const_false_condition_marks_the_then_block_and_leaves_the_else_alone() {
+        // MODE is 1, so `MODE == 2` is const-FALSE: `then` goes, `else` stays.
+        let src = "const MODE = 1\nvar x: int = 0\nin go: exec\non go {\n  if MODE == 2 { x = 1 } else { x = 2 }\n}\n";
+        let line = src.lines().nth(4).unwrap();
+
+        let dropped = line.find("{ x = 1 }").expect("then block in the fixture");
+        for (offset, what) in [
+            (0, "the opening brace `{`"),
+            (1, "the space after `{`"),
+            (2, "the `x` identifier"),
+            (4, "the `=` operator"),
+            (6, "the `1` literal"),
+            (8, "the closing brace `}`"),
+        ] {
+            let col = dropped + offset;
+            let h = hover_for(src, 4, col)
+                .unwrap_or_else(|| panic!("no hover at all on {what} (col {col})"));
+            assert!(
+                h.contains("Removed at compile time"),
+                "the THEN block is dropped here; hovering {what} (col {col}) must say so, got: {h}"
+            );
+            assert!(
+                h.contains("is false here"),
+                "the reason must name the condition's const value, got: {h}"
+            );
+        }
+
+        let taken = line.find("{ x = 2 }").expect("else block in the fixture");
+        for offset in 0..=8 {
+            let col = taken + offset;
+            let h = hover_for(src, 4, col).unwrap_or_default();
+            assert!(
+                !h.contains("Removed at compile time"),
+                "the ELSE block is the TAKEN one here; col {col} must not be marked removed, got: {h}"
+            );
+        }
     }

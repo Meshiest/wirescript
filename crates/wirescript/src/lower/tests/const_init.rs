@@ -19,12 +19,31 @@ fn baked_array(src: &str) -> Vec<Literal> {
         "unexpected errors: {:?}",
         r.diagnostics
     );
-    for n in r.module.nodes.values() {
-        if let Some(Literal::Array(items)) = n.properties.get(&crate::intern::intern_static("InitialValue")) {
-            return items.clone();
+    // Recurses into child modules: an array declared inside a `chip { }` lives
+    // in that chip's own module, not the root's node table.
+    fn find(m: &crate::ir::Module) -> Option<Vec<Literal>> {
+        for n in m.nodes.values() {
+            if let Some(Literal::Array(items)) =
+                n.properties.get(&crate::intern::intern_static("InitialValue"))
+            {
+                return Some(items.clone());
+            }
         }
+        m.chips.values().find_map(find)
     }
-    panic!("no array gate with a baked InitialValue");
+    find(&r.module).expect("no array gate with a baked InitialValue")
+}
+
+/// Whether `needle` appears anywhere in the lowered graph, child chip modules
+/// included — the tree-shaking oracle for a `const` condition's untaken arm.
+fn graph_contains(r: &LowerResult, needle: &str) -> bool {
+    fn walk(m: &crate::ir::Module, needle: &str) -> bool {
+        m.nodes
+            .values()
+            .any(|n| format!("{:?}", n.properties).contains(needle))
+            || m.chips.values().any(|c| walk(c, needle))
+    }
+    walk(&r.module, needle)
 }
 
 /// Typecheck errors only (the gate that rejects a non-constant element).
@@ -64,6 +83,83 @@ fn constant_chain_resolves_regardless_of_order() {
     // environment iterates to a fixpoint.
     let v = baked_array("let C = B * 2\nlet B = A + 1\nlet A = 5\nvar m: int[] = [A, B, C]");
     assert_eq!(v, vec![Literal::Int(5), Literal::Int(6), Literal::Int(12)]);
+}
+
+#[test]
+fn constant_chain_through_a_const_mod_call_resolves_regardless_of_order() {
+    // Same shape as `constant_chain_resolves_regardless_of_order` above, but
+    // `A`'s own value comes from a `const mod` CALL rather than a literal —
+    // `B`, which depends on `A`, is still declared FIRST. `build_const_env`
+    // collects every top-level `const mod` from the whole decls list up
+    // front (not incrementally alongside the fixpoint that resolves
+    // `let`/`const` values), so a name's dependency on a const-mod-derived
+    // constant resolves the same way it always has for a plain one.
+    //
+    // `f` itself is declared before its own call site (inside `A`'s
+    // initializer) — a call to a mod declared LATER than its caller is
+    // rejected outright (WS021, unrelated to and unaffected by this fix; see
+    // `a_const_mod_call_must_still_be_declared_before_its_use` in
+    // `tests/const_differential.rs`), so that is not the order being
+    // exercised here.
+    let v = baked_array(
+        "const mod f(n: int) -> int { return n + 1 }\n\
+         let B = A + 1\n\
+         let A = f(4)\n\
+         var m: int[] = [A, B]",
+    );
+    assert_eq!(v, vec![Literal::Int(5), Literal::Int(6)]);
+}
+
+#[test]
+fn a_destructured_constant_bakes() {
+    // A top-level destructuring `const` must land its names in the constant
+    // environment like any other, so a `var` initializer can name one.
+    // Distinguishable per-field values: a swapped binding bakes [222, 111].
+    let v = baked_array("const p = { x: 111, y: 222 }\nconst { x, y } = p\nvar m: int[] = [x, y]");
+    assert_eq!(v, vec![Literal::Int(111), Literal::Int(222)]);
+}
+
+#[test]
+fn a_destructured_constant_chain_resolves_regardless_of_order() {
+    // The destructuring analogue of `constant_chain_resolves_regardless_of_order`
+    // above, and the ordering constraint the destructuring fix had to respect:
+    // the destructure is declared BEFORE the record it splits, and a third
+    // constant built from its names is declared before BOTH. `build_const_env`
+    // iterates to a fixpoint — pass 1 evaluates `p`, pass 2 splits it into
+    // `x`/`y`, pass 3 resolves `SUM` — so declaration order does not matter
+    // here any more than it does for a plain constant chain.
+    //
+    // Values are chosen so every field is distinguishable and the combination
+    // pins the mapping: a swapped x/y bakes [222, 111, 222111].
+    let v = baked_array(
+        "const SUM = x * 1000 + y\n\
+         const { x, y } = p\n\
+         const p = { x: 111, y: 222 }\n\
+         var m: int[] = [x, y, SUM]",
+    );
+    assert_eq!(v, vec![Literal::Int(111), Literal::Int(222), Literal::Int(111222)]);
+}
+
+/// A `const mod` with ONE NAMED output (`-> (r: int)`, its value set by an
+/// `out` rather than a `return`) is typed by `typecheck::call` as the bare
+/// output type, so const evaluation must produce the bare value too. Wrapping
+/// it in a 1-field record instead did not error anywhere — it baked the
+/// element's ZERO value: this exact program baked `[0, 12345]`, silently
+/// losing the 7, with no diagnostic at all.
+///
+/// `12345` is a plain literal control: it bakes correctly either way, so a
+/// failure here means "wrong value", not "nothing was baked".
+///
+/// `docs/wirescript/chips.md` sends users directly at this shape — it rejects
+/// `const chip C(v: int) -> (r: int)` and tells them to use a `mod` instead.
+#[test]
+fn a_single_named_output_const_mod_result_bakes_as_a_scalar() {
+    let v = baked_array(
+        "const mod C(v: const int) -> (r: int) { out r = v }\n\
+         const got = C(7)\n\
+         var arr: int[] = [got, 12345]",
+    );
+    assert_eq!(v, vec![Literal::Int(7), Literal::Int(12345)]);
 }
 
 #[test]
@@ -196,4 +292,236 @@ fn cyclic_constants_do_not_hang_or_bake() {
     // A depends on B depends on A: neither resolves, the fixpoint terminates,
     // and the initializer stays an error.
     assert!(errors("let A = B + 1\nlet B = A + 1\nvar m: int[] = [A]").contains(&"WS003".to_string()));
+}
+
+// Minor: `lower::expr::wire_type_of_literal`'s `Literal::Object` arm used to
+// be `unreachable!()`; downgraded to `None` (the same "no wire form" shape
+// as its sibling Array/Map/Record/Asset arms) so a violated invariant would
+// be a diagnosable gap rather than a process abort. This pins the invariant
+// itself: `Literal::Object` is constructed ONLY by
+// `default_literal_for_var_type` — an object-family `Var` gate's placeholder
+// initial value — which never touches `const_eval`, so no `const`/`let`
+// expression can ever fold to one.
+#[test]
+fn literal_object_is_never_produced_by_const_eval() {
+    // Where `Literal::Object` DOES come from: a `Var` gate's own default.
+    assert_eq!(
+        crate::lower::default_literal_for_var_type(&crate::ir::Type::Entity),
+        Some(Literal::Object),
+        "Object is default_literal_for_var_type's placeholder for object-family types"
+    );
+    // No source syntax folds to an entity/controller/character value — the
+    // only way to name one is a runtime call, which `const_eval` must
+    // therefore always reject as non-constant, so `wire_type_of_literal`'s
+    // `const_lookup()` caller can never hand it an `Object` literal.
+    assert!(
+        errors("const e = FindPlayer(\"x\")").contains(&"WS046".to_string()),
+        "an entity-typed initializer must never be accepted as a compile-time constant"
+    );
+}
+
+// A constructor's NAMED arguments must bind by PARAMETER NAME all the way
+// through the pipeline that actually bakes values into gates, not just in
+// `const_eval`'s own unit tests. Binding them by source position instead
+// silently baked `Vector { x: 3.0, y: 1.0, z: 2.0 }` here — a wrong constant
+// in the emitted gate, with no diagnostic to notice it by. The runtime path
+// (`lower::call::builtin`) has always bound these by name, so this is also
+// what keeps a `const` and a non-`const` spelling of one expression agreeing.
+#[test]
+fn a_constructor_with_named_arguments_bakes_on_the_named_axes() {
+    assert_eq!(
+        baked_array("var v: vector[] = [Vec(z = 3.0, x = 1.0, y = 2.0)]"),
+        vec![Literal::Vector { x: 1.0, y: 2.0, z: 3.0 }]
+    );
+}
+
+// ---------- `const` inside an anonymous `chip { }` ----------
+
+/// An anonymous `chip { }` SHARES its parent's scope — `typecheck::register`
+/// and `typecheck::decl` register its body's declarations into the parent, and
+/// `lower::decl::lower_anon_chip` lowers the body with no `push_scope`. Its
+/// body-level `const`s must therefore live in the same constant environment as
+/// the top-level ones.
+///
+/// They did not: `build_const_env`/`build_const_declared_names` matched
+/// `TopDecl::Let` only and never descended into `TopDecl::AnonChip`, and
+/// nothing else opens a `scoped_consts` frame there — so the value was
+/// recorded NOWHERE. `const a = 1` was silent (a literal always evaluates) and
+/// the failure surfaced at the next line instead, blamed on a different
+/// binding: `const b = a + 1` reported WS046 "'a' is a runtime value".
+#[test]
+fn a_const_in_an_anonymous_chip_body_is_compile_time() {
+    let v = baked_array(
+        "chip {\n  const a = 20\n  const b = a + 2\n  var m: int[] = [a, b, 12345]\n}",
+    );
+    assert_eq!(
+        v,
+        vec![Literal::Int(20), Literal::Int(22), Literal::Int(12345)]
+    );
+}
+
+/// A `const` declared in an anonymous chip nested inside another anonymous
+/// chip resolves the same way: each shares the same parent scope in turn, so
+/// the descent recurses rather than stopping at the first body.
+#[test]
+fn a_const_in_a_nested_anonymous_chip_body_is_compile_time() {
+    let v = baked_array(
+        "chip {\n  chip {\n    const a = 5\n    const b = a * 3\n    \
+         var m: int[] = [b, 12345]\n  }\n}",
+    );
+    assert_eq!(v, vec![Literal::Int(15), Literal::Int(12345)]);
+}
+
+/// The reverse direction: an anonymous chip body reads a TOP-LEVEL constant
+/// and re-exports it through one of its own, proving the flattening merges
+/// into one environment rather than building a second, isolated one.
+#[test]
+fn an_anonymous_chip_body_const_may_read_a_top_level_const() {
+    let v = baked_array(
+        "const outer = 5\nchip {\n  const inner = outer * 2\n  \
+         var m: int[] = [inner, 12345]\n}",
+    );
+    assert_eq!(v, vec![Literal::Int(10), Literal::Int(12345)]);
+}
+
+/// A `const mod` declared in an anonymous chip body is registered into the
+/// parent scope by `predeclare`'s own `AnonChip` arm, so a `const` anywhere in
+/// the module can CALL it — `scope_const_mods` has to descend for the same
+/// reason `scope_lets` does.
+#[test]
+fn a_const_mod_in_an_anonymous_chip_body_resolves() {
+    let v = baked_array(
+        "chip {\n  const mod dbl(n: const int) -> int { return n * 2 }\n}\n\
+         const t = dbl(6)\nvar m: int[] = [t, 12345]",
+    );
+    assert_eq!(v, vec![Literal::Int(12), Literal::Int(12345)]);
+}
+
+/// Both stages must agree about an anonymous chip's constants, not just the
+/// baked value: a `const` condition inside one has to tree-shake exactly as it
+/// does at the top level. The `else` arm's unique sentinel must be absent, and
+/// the runtime-condition control proves the sentinel WOULD be there otherwise.
+#[test]
+fn a_const_if_inside_an_anonymous_chip_elides_like_a_top_level_one() {
+    let body = "  in go: exec\n  on go {\n    if flag { PrintToConsole(\"taken\") } \
+                else { PrintToConsole(\"SENTINEL\") }\n  }\n";
+    let has_sentinel = |src: &str| {
+        let r = compile(src);
+        assert_no_errors(&r);
+        graph_contains(&r, "SENTINEL")
+    };
+    assert!(
+        !has_sentinel(&format!("chip {{\n  const flag = true\n{body}}}")),
+        "a const condition in an anonymous chip must elide its untaken arm"
+    );
+    assert!(
+        has_sentinel(&format!("chip {{\n  var flag: bool = true\n{body}}}")),
+        "control: a RUNTIME condition must keep both arms"
+    );
+}
+
+/// The post-binding assertion (`typecheck::let_binding::check_const_recorded`)
+/// fires when a `const` whose initializer EVALUATED is then not retrievable as
+/// a constant in its own scope — the failure that used to be invisible at the
+/// declaration and surfaced later, at a use, blamed on a different binding.
+///
+/// It is a NET: no shape enumerated here reaches it, and that is the point of
+/// the test — the realistic failure mode for an assertion like this is a FALSE
+/// positive, so every scope a `const` can be declared in is listed and must
+/// stay silent. (That it genuinely bites is verified by mutation: disabling
+/// `scope_lets`' `AnonChip` descent makes the first case below report WS046 at
+/// the declaration instead of at the next line.)
+#[test]
+fn a_const_that_is_recorded_never_reports_at_its_binding() {
+    for src in [
+        // anonymous chip body, and one nested inside another
+        "chip { const a = 1\n const b = a + 1 }",
+        "chip { chip { const a = 1\n const b = a + 1 } }",
+        // handler block scope, and an `if` block inside one
+        "in go: exec\non go { const a = 1\n const b = a + 1 }",
+        "in go: exec\non go { if true { const a = 1\n const b = a + 1 } }",
+        // named chip body, and a plain mod body
+        "chip N() { const a = 1\n out r = a + 1 }",
+        "mod g() -> int { const a = 1\n return a + 1 }",
+        // a const mod body, with a const PARAMETER (a placeholder-seeded const)
+        "const mod g(n: const int) -> int { const a = n + 1\n return a }\nvar v: int[] = [g(2)]",
+        // top level: plain, destructured, and via a const mod call
+        "const a = 1\nconst b = a + 1",
+        "const p = { x: 1, y: 2 }\nconst { x, y } = p",
+        "const mod f() -> int { return 3 }\nconst a = f()",
+        // a namespaced import's members are checked in their own pushed scope
+        "const a = 1",
+    ] {
+        let diags = errors(src);
+        assert!(
+            !diags.contains(&"WS046".to_string()),
+            "a recorded `const` must not report at its binding\n  src: {src}\n  got: {diags:?}"
+        );
+    }
+}
+
+// ---------- compile-time tuple destructuring ----------
+
+/// A tuple pattern binds POSITIONALLY. A multi-output `const mod`'s result
+/// types as a NAME-keyed record in the signature's declaration order, which is
+/// exactly what "positional" means — so `const (a, b) = pair(…)` reads it the
+/// same way `const { a, b } = pair(…)` does. This was rejected outright
+/// (WS010 in `bind_let`, then WS046 from `const_eval`'s stub arm).
+#[test]
+fn a_tuple_destructure_of_a_multi_output_const_mod_is_compile_time() {
+    let v = baked_array(
+        "const mod trio(n: const int) -> (a: int, b: int, c: int) {\n\
+         out a = n\n  out b = n + 1\n  out c = n + 2\n}\n\
+         const (x, y, z) = trio(41)\nvar m: int[] = [x, y, z, 12345]",
+    );
+    assert_eq!(
+        v,
+        vec![
+            Literal::Int(41),
+            Literal::Int(42),
+            Literal::Int(43),
+            Literal::Int(12345)
+        ]
+    );
+}
+
+/// The other shape that reaches the same arm: a genuine tuple LITERAL, which
+/// evaluates to an index-keyed record. It used to report WS046 alone (the type
+/// side already accepted it; only the const evaluator refused).
+#[test]
+fn a_tuple_destructure_of_a_tuple_literal_is_compile_time() {
+    let v = baked_array("const (a, b) = (7, 8)\nvar m: int[] = [a, b, 12345]");
+    assert_eq!(v, vec![Literal::Int(7), Literal::Int(8), Literal::Int(12345)]);
+}
+
+/// A width mismatch stays an error, and names BOTH counts — the value is
+/// perfectly constant and perfectly positional, so "expected tuple[2], got
+/// Record(...)" was describing the compiler's internals rather than the
+/// program's mistake.
+#[test]
+fn a_tuple_destructure_of_the_wrong_width_reports_both_counts() {
+    let diags = errors(
+        "const mod pair(n: const int) -> (a: int, b: int) {\n out a = n\n out b = n + 1\n}\n\
+         const (p, q, r) = pair(1)",
+    );
+    assert!(diags.contains(&"WS010".to_string()), "got {diags:?}");
+}
+
+/// Const and runtime must not diverge: the same tuple pattern over a plain
+/// (non-`const`) multi-output `mod` has to lower to the same graph the record
+/// spelling produces, binding position for position.
+#[test]
+fn a_runtime_tuple_destructure_matches_the_record_spelling() {
+    let mod_src = "mod pair(n: int) -> (a: int, b: int) {\n out a = n * 10\n out b = n + 5\n}\n\
+                   in n: int\n";
+    let tuple = compile(&format!("{mod_src}let (x, y) = pair(n)\nout r = x + y"));
+    let record = compile(&format!("{mod_src}let {{ a: x, b: y }} = pair(n)\nout r = x + y"));
+    assert_no_errors(&tuple);
+    assert_no_errors(&record);
+    assert_eq!(
+        tuple.module.wires.len(),
+        record.module.wires.len(),
+        "tuple and record spellings of the same destructure must wire identically"
+    );
+    assert_eq!(tuple.module.nodes.len(), record.module.nodes.len());
 }

@@ -419,7 +419,7 @@ fn lsp_surface(label: &str, source: &str, file: &str, loader: &MemLoader, hover_
             for col in (0..line.len()).step_by(4) {
                 if hover_at(
                     source, file, &symbols, &tc.type_of_expr, &resolved.doc_comments,
-                    &tc.if_contexts, &tc.var_read_contexts, &estimates, line_no, col,
+                    &tc.if_contexts, &tc.var_read_contexts, &tc.dropped_ranges, &estimates, line_no, col,
                 )
                 .is_some()
                 {

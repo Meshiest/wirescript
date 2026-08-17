@@ -98,6 +98,22 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     }
     // Method calls: arr.push(val), arr.pop()
     if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
+        // A `const` array/map used as a method receiver: give it its runtime
+        // form first, so the receiver shapes below resolve it exactly like a
+        // `var` instead of falling through to the WS044 backstop. A no-op for
+        // every other receiver (and for a name that already has a binding), so
+        // the resolution order below is unchanged.
+        //
+        // MUTATION is not filtered here — `lower_array_method` /
+        // `lower_map_method` reject it on the resolved gate node (see
+        // `reject_const_container_mutation`), which also covers the aliased
+        // spellings this site can't see, such as the container arriving through
+        // a `ys: T[]` parameter.
+        if crate::catalog::arrays::is_array_method(field)
+            || crate::catalog::maps::is_map_method(field)
+        {
+            materialize_const_container(ctx, obj);
+        }
         if let Expr::Ident { name, .. } = obj.as_ref()
             && crate::catalog::arrays::is_array_method(field)
             && let Some(var_rec) = ctx.lookup_var(name).cloned()

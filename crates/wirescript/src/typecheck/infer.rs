@@ -148,6 +148,48 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
     }
 }
 
+/// Whether `e` — an `Expr::IndexAccess` node — is itself a compile-time
+/// constant, i.e. both the receiver and the index fold to a literal. Narrows
+/// WS007 (see the `Expr::IndexAccess` arm below): a *runtime* array/map read
+/// needs a gate on an exec chain, but a fully constant index into a fully
+/// constant array/map emits no gate at all, so the exec-context rule does not
+/// apply to it.
+///
+/// Evaluated against [`TypeCheckCtx::const_ctx_without_placeholders`], NOT
+/// `const_ctx` — this decides whether to SUPPRESS a diagnostic, and a `const`
+/// PARAMETER's placeholder is a type-shaped zero seeded once before any call
+/// site exists (see `scoped_const_placeholders`'s doc comment). Evaluating
+/// against it would let a fictional index value silently suppress WS007 for a
+/// read whose real (call-site) index is unknown at this point in the pass —
+/// exactly the placeholder-deciding-something hazard `const_ctx_without_placeholders`
+/// exists to close. With placeholders stripped, such a read simply fails to
+/// evaluate (`NotConstant`) and WS007 still fires, over-checking exactly like
+/// every other placeholder-derived construct in this pass.
+///
+/// The `lookup_mod` closure is built fresh here, the same way every other
+/// const-evaluating site in `typecheck/` does (see `TypeCheckCtx::const_ctx`'s
+/// doc comment for why it can't be stored on `ctx` itself).
+///
+/// Deliberately keys on SUCCESS only, not on "the failure was a genuine
+/// evaluation error rather than `NotConstant`". Widening it to also suppress
+/// WS007 for the genuine-error reasons (`ArrayIndexOutOfRange`, `MapKeyNotFound`,
+/// `Refused`, …) would de-duplicate the WS007+WS046 pair that `const z = t[5]`
+/// reports — but those two diagnostics BOTH exist only for a `const` binding.
+/// A plain `let q = t[5]` reports WS007 and nothing else (the non-`const` arms
+/// of the `Stmt::Let`/`TopDecl::Let` const-eval are `Err(_) => {}` by design, so
+/// a failed fold just falls back to runtime lowering), so suppressing it there
+/// would leave that program with no error at all — and lowering cannot fold an
+/// out-of-range index either, so it would ship a dead wire reading 0. That is
+/// exactly the silent-miscompile class this feature exists to close, traded for
+/// a cosmetic de-duplication, so the pair is left alone. The pair also predates
+/// this narrowing: WS007 fired unconditionally in pure position before it, and
+/// WS046 comes from the `const` binding path, independent of this function.
+fn index_access_is_const(ctx: &TypeCheckCtx, e: &Expr) -> bool {
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let mut budget = crate::const_eval::Budget::default();
+    crate::const_eval::eval_expr(e, &ctx.const_ctx_without_placeholders(Some(&lookup)), &mut budget).is_ok()
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     match e {
@@ -501,7 +543,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             infer(ctx, index);
             match &ot {
                 Type::Array(inner) => {
-                    if ctx.exec_mode() != ExecMode::Exec {
+                    if ctx.exec_mode() != ExecMode::Exec && !index_access_is_const(ctx, e) {
                         ctx.emit(
                             "WS007",
                             format!(
@@ -514,7 +556,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     inner.as_ref().clone()
                 }
                 Type::Map(_, v) => {
-                    if ctx.exec_mode() != ExecMode::Exec {
+                    if ctx.exec_mode() != ExecMode::Exec && !index_access_is_const(ctx, e) {
                         ctx.emit(
                             "WS007",
                             format!(
@@ -944,7 +986,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                                         name: p.name.clone(),
                                         ty: p.ty.clone(),
                                         optional: false,
-                                        kind: ParamKind::Wire,
+                                        kind: if p.is_const {
+                                            ParamKind::Const
+                                        } else {
+                                            ParamKind::Wire
+                                        },
                                     })
                                     .collect(),
                                 config_gate: None,

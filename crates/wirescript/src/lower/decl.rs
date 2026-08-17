@@ -137,6 +137,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 label_expr: None,
                 closed: false,
                 no_fold: false,
+                is_const: false,
             };
             lower_chip_decl(ctx, &chip);
         }
@@ -340,21 +341,315 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         }
     }
 
+    // A plain (non-`const`) `let` re-binding a name CLEARS the `const` mark
+    // and value it shadows — for EVERY binding form, and using the FULL
+    // evaluator, because that is exactly what `typecheck::stmt`'s `Stmt::Let`
+    // arm does on both of its sides (`Ident` and destructuring alike).
+    //
+    // This is the CLEARING half of the const environment, and it has to be
+    // symmetric with typecheck's for the same reason the recording half is:
+    // `scoped_const_declared` is what BOTH sides' `if` arms consult
+    // (`if_cond_const_ctx`/`const_lookup_declared_only`) to decide a condition
+    // is compile-time decidable. Clearing LESS here than typecheck clears
+    // there is a silent wrong-branch miscompile — typecheck sees a shadowed,
+    // no-longer-constant name and checks both arms, while lowering still holds
+    // the stale value, decides the condition, and emits only one arm with no
+    // Branch gate at all. Three spellings reached that, all measured:
+    //   `const { x } = { x: 111 }` + `let { x } = { x: 222 }` — only the
+    //     `Ident` binding form was handled here at all;
+    //   `const x = 111` + `let x = if true then 222 else 0` — an `Ident`
+    //     whose value only the FULL evaluator folds, so the narrow recording
+    //     below never ran;
+    //   the same `Ident` case with the `const` at the TOP level — the eviction
+    //     `const_lookup_declared_only` performs is driven by the name being
+    //     PRESENT in a `scoped_consts` frame and ABSENT from that frame's mark
+    //     set, so merely removing the mark evicts nothing when the value lives
+    //     in `const_env`.
+    //
+    // Each arm mirrors its typecheck counterpart exactly, and the difference
+    // between them is load-bearing rather than an inconsistency to tidy away:
+    // typecheck's `Ident` arm RECORDS the newly evaluated value (which is what
+    // makes the eviction above fire for an outer/top-level constant, and is
+    // also the value a constant-only config slot must now see), while its
+    // destructuring arm REMOVES. Inserting on the destructuring side too would
+    // evict where typecheck does not — lowering emitting an arm typecheck
+    // elided and never checked, the one direction that is never safe.
+    //
+    // Gated on the evaluation SUCCEEDING, again mirroring typecheck exactly:
+    // its `Err(_)` arm leaves the mark alone, so clearing unconditionally
+    // (from `bound_names`, say) would diverge in that same bad direction.
+    // Routed through the shared `bind_destructured` so "which names does this
+    // binding re-bind" cannot drift from the answer the recording sites use.
+    //
+    // Confined to names that currently read as a DECLARED `const`
+    // (`is_declared_const`): a shadow of anything else is not part of this
+    // feature, and skipping it keeps the promise that a program using no
+    // `const` keyword lowers exactly as it did before — every
+    // `scoped_const_declared` frame is empty there, so this whole block is
+    // inert.
+    if !d.is_const {
+        let rebound: Vec<(String, Literal)> = {
+            let lookup = |n: &str| ctx.resolve_mod(n);
+            let mut budget = crate::const_eval::Budget::default();
+            crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
+                .and_then(|lit| crate::const_eval::bind_destructured(&d.binding, lit))
+                .unwrap_or_default()
+        };
+        let is_ident = matches!(&d.binding, LetBinding::Ident { .. });
+        for (name, lit) in rebound {
+            if !ctx.is_declared_const(&name) {
+                continue;
+            }
+            if let Some(frame) = ctx.scoped_consts.last_mut() {
+                if is_ident {
+                    frame.insert(name.clone(), lit);
+                } else {
+                    frame.remove(&name);
+                }
+            }
+            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+                frame.remove(&name);
+            }
+        }
+    }
+
     // A body-local `let name = <constant>` is recorded in the innermost
     // `scoped_consts` frame (mirroring how a top-level `let` lands in
     // `const_env` via `build_const_env`), so a constant-only config arg
     // elsewhere in this scope (or a nested one) can resolve `name` via
-    // `ctx.const_lookup()` — see `literal_for_property_port`. Only the
-    // simple `Ident` binding form can name a single constant. This is a
+    // `ctx.const_lookup()` — see `literal_for_property_port`. This is a
     // no-op at the top level: `lower_let_decl` also handles `TopDecl::Let`
     // (via `lower_decl`), but no `push_scope` has run there yet, so
     // `scoped_consts` is empty and `last_mut()` finds no frame — top-level
     // constants are already covered by `const_env`.
+    //
+    // A plain (non-`const`) `let`: NARROW evaluator, exactly as before this
+    // feature existed. Widening this one would change how a program using no
+    // `const` at all compiles — `literal_for_property_port` would start baking
+    // config args whose producing gate must survive (the `@nofold let s =
+    // "a${1 + 1}b"` case gate 2 below describes) — so it is deliberately left
+    // on `expr_to_literal_in`. It re-inserts the value the clearing above just
+    // dropped, which is why it must run AFTER it. The clearing's full
+    // evaluator does not subsume this one: `expr_to_literal_in` also folds a
+    // prefab reference, which `eval_expr` refuses.
     if let LetBinding::Ident { name, .. } = &d.binding
+        && !d.is_const
         && let Some(lit) = expr_to_literal_in(&d.value, &ctx.const_lookup())
-        && let Some(frame) = ctx.scoped_consts.last_mut()
     {
-        frame.insert(name.clone(), lit);
+        if let Some(frame) = ctx.scoped_consts.last_mut() {
+            frame.insert(name.clone(), lit);
+        }
+        // A plain `let` re-binding a name CLEARS any `const` mark it had —
+        // see `LowerCtx::const_declared`'s doc comment.
+        if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+            frame.remove(name);
+        }
+    }
+
+    // A `const` binding — EVERY binding form, `Ident` and destructuring
+    // alike. This is a CORRECTNESS requirement, not a convenience:
+    // `typecheck::stmt`'s `Stmt::Let` arm records these into its own
+    // `scoped_consts`/`scoped_const_declared` using the FULL evaluator, and
+    // `scoped_const_declared` is what BOTH sides' `if` arms consult
+    // (`if_cond_const_ctx`) to decide a condition is compile-time decidable.
+    // Recording less here than typecheck records there makes typecheck skip
+    // an untaken block that lowering still EMITS — ill-typed code reaching
+    // the graph with no diagnostic at all, which is exactly the divergence
+    // `const_eval`'s module doc and `lower_if`'s "the same evaluator ... so
+    // the two sides agree" comment exist to prevent. Guarded by
+    // `typecheck_and_lowering_drop_exactly_the_same_ranges`.
+    //
+    // The narrow `expr_to_literal_in` above is NOT sufficient here: it cannot
+    // fold a record/array/map literal, string interpolation, an `if`
+    // expression, indexing, or a certified method call, all of which the full
+    // evaluator (and therefore typecheck) folds. A block-scope
+    // `const p = { x: 1 }` was recorded by typecheck and NOT by lowering, so
+    // `if p.x == 1 { … } else { … }` elided only on the typecheck side — the
+    // same one-sided elision, reachable with no destructuring at all.
+    //
+    // Restricted to `is_const` so a program using no `const` keyword compiles
+    // byte-identically to before (the feature's own first design rule); a
+    // `const` is a semantic guarantee that the value IS compile-time, so
+    // widening it cannot change the meaning of a program that had none.
+    //
+    // Unlike the const-mod path below this only RECORDS and never
+    // early-returns, so it cannot delete a gate: `lower_ident` consults
+    // `const_lookup()` only for a name with NO scope binding at all, so every
+    // runtime read still resolves through the port binding the ordinary
+    // lowering installs.
+    if d.is_const {
+        let pairs = {
+            let lookup = |n: &str| ctx.resolve_mod(n);
+            let mut budget = crate::const_eval::Budget::default();
+            crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
+                .and_then(|lit| crate::const_eval::bind_destructured(&d.binding, lit))
+                .unwrap_or_default()
+        };
+        // A `const` whose value IS an array or map literal. Recorded above like
+        // any other constant, and then NOT lowered — the same early-return
+        // shape as the prefab-reference and const-mod skips below, and for the
+        // same reason: `lower_expr` has no `Expr::Array` arm at all and an
+        // explicit `Expr::MapLit` -> unsupported arm, so falling through emits
+        // a placeholder `_Unsupported` gate plus a WSP001 warning for a value
+        // the compiler has already computed correctly.
+        //
+        // Gated on the SYNTACTIC form, not merely on the evaluated literal's
+        // kind, so this can only ever delete a placeholder: those are the two
+        // expression forms with no runtime lowering to lose. Gated on
+        // `d.is_const` as well, so a plain `let xs = [1, 2, 3]` keeps its
+        // existing behavior and a program using no `const` compiles unchanged.
+        //
+        // A runtime read of the name still works: it materializes the container
+        // on demand — see `predeclare::materialize_const_container`.
+        let container = matches!(&d.value, Expr::Array { .. } | Expr::MapLit { .. })
+            && pairs
+                .iter()
+                .any(|(_, l)| matches!(l, Literal::Array(_) | Literal::Map(_)));
+        for (name, lit) in pairs {
+            if let Some(frame) = ctx.scoped_consts.last_mut() {
+                frame.insert(name.clone(), lit);
+            }
+            if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+                frame.insert(name);
+            }
+        }
+        if container {
+            return;
+        }
+    }
+
+    // An initializer whose value can ONLY be obtained by CALLING a `const
+    // mod`: record the value and STOP, skipping the ordinary lowering of the
+    // expression.
+    //
+    // This is a correctness requirement, not an optimization. A `const mod`
+    // that ASSEMBLES a collection (`const t = []` … `t.push(x)` … `return t`)
+    // has NO valid ordinary lowering at all: its mutations target a `const`
+    // binding, which has no array/map var for `lower_array_method` to point
+    // at, so inlining the body emitted WS044 "the operation would be silently
+    // dropped" — once per mutation — for a `const r = rooms(2)` whose value
+    // the compiler had ALREADY computed correctly. Binding such a mod's result
+    // to a name is the natural way to reuse one, so that failure hit exactly
+    // the spelling users reach for first.
+    //
+    // THREE gates, and each is load-bearing — any one alone is wrong (gate 3
+    // is stated at its own `.filter`, below):
+    //
+    // 1. `expr_to_literal_in` must have FAILED. Its successes are the
+    //    pre-existing folding surface, and other parts of lowering depend on
+    //    those still producing a real WIRE: a named Vector/Rotator/Quat/Color
+    //    constant must keep its wired `Make*` producer (see
+    //    `literal_for_property_port`, which excludes exactly those four from
+    //    its own bare-`Ident` constant path for this reason — resolving them
+    //    to a literal lets a receiver like `dir.RotationByAngle(…)` skip the
+    //    wire and silently prunes the producing gate as a wireless orphan).
+    //
+    // 2. The value must be UNREACHABLE without `lookup_mod` — i.e. a const-mod
+    //    call is genuinely required, not merely present-in-principle. Gate 1
+    //    alone also catches string interpolation and `if`-expressions, which
+    //    the full evaluator can fold but the narrow one cannot; eliding those
+    //    silently deleted real gates from programs containing no `const` at
+    //    all (`@nofold let s = "a${1 + 1}b"` lost its FormatText + MathAdd,
+    //    4 gates -> 2), violating both `@nofold`'s "nothing folded or elided"
+    //    promise and this feature's rule that a program using no `const` must
+    //    compile identically. Re-running the evaluator with `lookup_mod: None`
+    //    answers "did this NEED a const mod?" exactly, and — unlike scanning
+    //    the AST for a call node — cannot drift from what the evaluator
+    //    actually does, since it IS the evaluator.
+    //
+    // Deliberately NOT gated on `nofold_depth`/`FoldMode`. `@nofold` is a
+    // barrier against the fold pass, and a barrier can only suppress an
+    // optimization that has a valid unoptimized form to fall back to; a
+    // mutating `const mod` has none, so honoring `@nofold` here would just
+    // restore the WS044 breakage under an attribute. (`@nofold const` is a
+    // parse error anyway — the attribute only precedes `var`/`static
+    // var`/`let`/`on` — and a `const` binding is a semantic guarantee that
+    // the value is compile-time, which no fold setting can revoke.) The
+    // `@nofold`-observable surface is unaffected in practice: gate 2 confines
+    // this to expressions that had no faithful gate form to preserve.
+    //
+    // Every name skipped here still resolves in a WIRE position through
+    // `lower_ident`'s `const_lookup()` fallback.
+    if expr_to_literal_in(&d.value, &ctx.const_lookup()).is_none() {
+        // Scope the immutable borrows of `ctx` (the `resolve_mod` closure and
+        // `const_ctx`) so they end before the `scoped_consts` insert below
+        // needs `&mut ctx`.
+        let evaluated = {
+            let mut budget = crate::const_eval::Budget::default();
+            // Gate 2, first: with no `lookup_mod`, `eval_expr` cannot resolve
+            // any const-mod call. Success here means the value never needed
+            // one, so this initializer keeps lowering exactly as it did
+            // before this feature existed.
+            if crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(None), &mut budget).is_ok() {
+                None
+            } else {
+                let lookup = |n: &str| ctx.resolve_mod(n);
+                let mut budget = crate::const_eval::Budget::default();
+                crate::const_eval::eval_expr(&d.value, &ctx.const_ctx(Some(&lookup)), &mut budget)
+                    .ok()
+            }
+        };
+        // Split the one evaluated value across whatever names the binding
+        // introduces, through the SAME `bind_destructured` the const
+        // recording above, `build_const_env` and both typecheck sites use.
+        // A destructuring binding is NOT a second, lesser spelling here: a
+        // multi-output `const mod` (`-> (a: …, b: …)`) evaluates to a
+        // `Literal::Record`, and `const { a, b } = pair(2)` is the only way
+        // to bind its outputs — so restricting this to `Ident` left every
+        // multi-output const mod lowering its body as ordinary gates, which
+        // is precisely the failure the comment above says this path exists
+        // to prevent (a mutating one hit WS044; one whose `out` sits inside
+        // a const `if` hit WS002 "no field ... available fields: ..."; a
+        // plain one just emitted dead gates for every `out` value).
+        // `Tuple` still splits nowhere, so it simply never takes this path.
+        if let Some(lit) = evaluated
+            && let Ok(pairs) = crate::const_eval::bind_destructured(&d.binding, lit)
+            // GATE 3, and it exists only for records — now stated over the
+            // BOUND VALUES rather than the whole evaluated one, which is the
+            // same rule with the destructuring case included. Unlike every
+            // other bakeable kind, a record ALREADY has a non-literal
+            // lowering below (`Expr::RecordLit` -> `Binding::Record`, and the
+            // multi-output-call paths further down, all of which bind each
+            // field to its own port), and baking here early-returns straight
+            // past it. That is not a missed optimization, it is a miscompile:
+            // `let p: Point = { x: mk(3), y: 10 }` (a field needing a
+            // const-mod call, so gates 1 and 2 both pass it through) lost its
+            // `Binding::Record`, and the later `p.x`/`p.y` reads fell through
+            // to the vector-swizzle path — a bogus `Expr_SplitVector`
+            // `.X`/`.Y` on a record, plus the `Literal::Record` reaching emit
+            // and tripping its `unreachable!`. Arrays and maps have no such
+            // existing lowering to hijack, which is why only this one kind
+            // needs excluding. A record's FIELDS still bake through
+            // `lower_record_lit`'s own per-field constant folding.
+            //
+            // Checking the SPLIT values is what lets a multi-output const
+            // mod through while keeping that guarantee exactly: `const { a, b
+            // } = pair(2)` binds two scalars and the record itself is never
+            // stored under any name, whereas `const dummy = pair(2)` (whole
+            // record under one name) and `const { x, ...rest } = p` (a
+            // `...rest` re-collects one) still keep their existing lowering.
+            && !pairs.iter().any(|(_, l)| matches!(l, Literal::Record(_)))
+        {
+            for (name, lit) in pairs {
+                // Body-local only, exactly like the narrow recording above: a
+                // top-level `let`/`const` has no open frame here and is already
+                // covered by `build_const_env`.
+                if let Some(frame) = ctx.scoped_consts.last_mut() {
+                    frame.insert(name.clone(), lit);
+                }
+                // Same is_const tracking as the narrow recording above — a
+                // plain `let` that reaches this path (its value NEEDED a
+                // `const mod` call) is still just a plain `let`.
+                if let Some(frame) = ctx.scoped_const_declared.last_mut() {
+                    if d.is_const {
+                        frame.insert(name);
+                    } else {
+                        frame.remove(&name);
+                    }
+                }
+            }
+            return;
+        }
     }
 
     // A prefab-only reference (`let pf = $./file.brz` / an inline nested-
@@ -388,7 +683,8 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 return;
             }
             LetBinding::Tuple { names, rest, .. } => {
-                install_tuple_destruct(ctx, &record, names, rest.as_ref());
+                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
+                install_tuple_destruct(ctx, &record, names, rest.as_ref(), &order);
                 return;
             }
             _ => {
@@ -415,7 +711,8 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 return;
             }
             LetBinding::Tuple { names, rest, .. } => {
-                install_tuple_destruct(ctx, &src, names, rest.as_ref());
+                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
+                install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
                 return;
             }
             _ => {}
@@ -437,7 +734,8 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 return;
             }
             LetBinding::Tuple { names, rest, .. } => {
-                install_tuple_destruct(ctx, &src, names, rest.as_ref());
+                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
+                install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
                 return;
             }
             _ => {}
@@ -461,6 +759,10 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 ..
             } => {
                 install_record_destruct(ctx, &record, destruct_fields);
+            }
+            LetBinding::Tuple { names, rest, .. } => {
+                let order = tuple_positions(&rhs_type, names.len());
+                install_tuple_destruct(ctx, &record, names, rest.as_ref(), &order);
             }
             _ => {}
         }
@@ -501,6 +803,10 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                         ..
                     } => {
                         install_record_destruct(ctx, &record, destruct_fields);
+                    }
+                    LetBinding::Tuple { names, rest, .. } => {
+                        let order = tuple_positions(&rhs_type, names.len());
+                        install_tuple_destruct(ctx, &record, names, rest.as_ref(), &order);
                     }
                     _ => {}
                 }
@@ -685,21 +991,43 @@ pub(super) fn install_record_destruct(
 /// to a `Binding::Record` keyed by the element index (`"0"`, `"1"`, ...), so
 /// positional names read straight out of that map. `rest` collects the tail,
 /// re-indexed from zero so it stays a well-formed tuple.
+/// The field names of `ty`, in declaration order — the POSITIONS a tuple
+/// pattern binds against. A `Binding::Record` is a `HashMap` and so carries no
+/// order of its own; the static type does, for both spellings that reach a
+/// tuple pattern: a tuple literal types as an index-keyed record (`"0"`,
+/// `"1"`, …) and a multi-output `mod` call as a NAME-keyed one in its
+/// signature's declaration order. Falls back to index keys when the type is
+/// not a record, which is exactly the pre-existing behaviour.
+fn tuple_positions(ty: &Type, arity: usize) -> Vec<String> {
+    match ty {
+        Type::Record(fields) => fields.iter().map(|(n, _)| n.clone()).collect(),
+        _ => (0..arity).map(|i| i.to_string()).collect(),
+    }
+}
+
+/// Bind a tuple pattern positionally against `src`, reading the positions in
+/// `order` (see [`tuple_positions`]). `rest` collects everything past `names`,
+/// re-keyed by its new position so `rest.0` is the first leftover — the same
+/// re-keying `const_eval::destructure`'s `Tuple` arm does, so the compile-time
+/// and runtime halves of the same pattern agree.
 pub(super) fn install_tuple_destruct(
     ctx: &mut LowerCtx,
     src: &HashMap<crate::intern::Sym, Binding>,
     names: &[String],
     rest: Option<&String>,
+    order: &[String],
 ) {
     for (i, name) in names.iter().enumerate() {
-        if let Some(binding) = src.get(&crate::intern::intern(&i.to_string())).cloned() {
+        if let Some(key) = order.get(i)
+            && let Some(binding) = src.get(&crate::intern::intern(key)).cloned()
+        {
             ctx.scope.insert(name, binding);
         }
     }
     if let Some(rest_name) = rest {
         let mut tail: HashMap<crate::intern::Sym, Binding> = HashMap::default();
-        for (i, key) in (names.len()..src.len()).enumerate() {
-            if let Some(binding) = src.get(&crate::intern::intern(&key.to_string())).cloned() {
+        for (i, key) in order.iter().skip(names.len()).enumerate() {
+            if let Some(binding) = src.get(&crate::intern::intern(key)).cloned() {
                 tail.insert(crate::intern::intern(&i.to_string()), binding);
             }
         }

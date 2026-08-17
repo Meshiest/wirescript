@@ -297,3 +297,10 @@
             "outer block owns the whole span; the inner $``` is part of its text"
         );
     }
+
+    #[test]
+    fn const_lexes_as_a_keyword() {
+        let r = lex("const x = 1", "test");
+        assert_eq!(r.tokens[0].kind, TokenKind::Kw);
+        assert_eq!(r.tokens[0].text, "const");
+    }

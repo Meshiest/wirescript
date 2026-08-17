@@ -48,6 +48,32 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // recomputes the identical predicate internally.
     let auto_exec = (ctx.current_exec.is_some() || exec_arg.is_some()) && !first_param_is_exec;
 
+    // A `const` parameter is a compile-time value, not a wire. Evaluate each
+    // one's argument HERE — before the cache key is built — because the value
+    // is baked INTO the compiled body: `build_chip_module` seeds it into the
+    // body's constant environment and gives the param no `MicrochipInput`
+    // pin, so it decides the body's content and pin shape exactly as the
+    // monomorph and the capture list do. Typecheck already reported any
+    // argument that fails to evaluate (WS046), so a failure is skipped here
+    // rather than double-reported.
+    let mut const_params: ConstEnv = ConstEnv::default();
+    let mut const_key_parts: Vec<(usize, Literal)> = Vec::new();
+    for (i, param) in chip_decl.inputs.iter().enumerate() {
+        if !param.is_const {
+            continue;
+        }
+        let Some(arg) = positional_args.get(i) else {
+            continue;
+        };
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let mut budget = crate::const_eval::Budget::default();
+        let cx = ctx.const_ctx(Some(&lookup));
+        if let Ok(lit) = crate::const_eval::eval_expr(arg, &cx, &mut budget) {
+            const_params.insert(param.name.clone(), lit.clone());
+            const_key_parts.push((i, lit));
+        }
+    }
+
     let (mono_frame, base_key) = if chip_decl.type_params.is_empty() {
         (None, chip_decl.name.clone())
     } else {
@@ -58,17 +84,20 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // The compiled body's shape is set by call-site context that the bare name
     // omits: the DECLARATION identity (two same-named chips in different
     // namespaces collapse to one name), whether auto-exec pins exist, and which
-    // params were CAPTURED (no `MicrochipInput` pin) vs. pinned. Two calls may
+    // params were CAPTURED (no `MicrochipInput` pin) vs. pinned, and the VALUE
+    // of every `const` param (baked into the body, so two calls passing
+    // different constants compile to genuinely different bodies). Two calls may
     // share the cached body only when ALL of these match — otherwise a second
     // call in a different context reuses the first's body and mis-wires against a
-    // stale pin list (the P0-1 a/b/c miscompiles). The `chip_call_stack`
+    // stale pin list (the P0-1 a/b/c miscompiles), or silently runs with the
+    // first call's baked constants. The `chip_call_stack`
     // recursion guard already keys on `chip_decl.range` for the same reason. This
     // key doubles as the instance `template_key` (grid dedup) and `fold_key`
     // base; making it more specific only ever makes those safer.
     let mut cap_names: Vec<&str> = caller_captures.keys().map(String::as_str).collect();
     cap_names.sort_unstable();
     let dr = &chip_decl.range;
-    let key = format!(
+    let mut key = format!(
         "{base_key}\u{1}@{}:{}:{}\u{1}e{}\u{1}c[{}]",
         dr.file,
         dr.start.offset,
@@ -76,6 +105,12 @@ pub(in crate::lower) fn lower_chip_call_instance(
         auto_exec as u8,
         cap_names.join(",")
     );
+    // `k`-prefixed so a const param's entry can never be confused with a
+    // `fold_key` entry (which appends the same `{index}:{value:?}` shape
+    // un-prefixed onto this same string).
+    for (index, value) in &const_key_parts {
+        key.push_str(&format!("\u{1}k{index}:{value:?}"));
+    }
 
     let mut child_module = if let Some(template) = ctx.template_cache.get(&key) {
         // Build remap: for each param name in the template's capture_names,
@@ -95,6 +130,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
             &caller_captures,
             exec_arg.is_some(),
             mono_frame,
+            &const_params,
         );
         // Cache the first instance as a template for subsequent calls.
         // Store capture_names so future instantiations can remap by param name.
@@ -175,7 +211,9 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // key as well, or grid dedup would hand one instance another's body; calls
     // passing the same constants still share a key. The base is the monomorph
     // `key` (not the bare name), so a generic chip folding the same constant at
-    // two DIFFERENT types (`Box<int>(5)` vs `Box<vector>(...)`) still keys apart.
+    // two DIFFERENT types (`Box<int>(5)` vs `Box<vector>(...)`) still keys apart
+    // — and `key` already carries every `const` param's value, so those key
+    // apart here too.
     if !const_folds.is_empty() {
         let mut fold_key = key.clone();
         for fold in &const_folds {

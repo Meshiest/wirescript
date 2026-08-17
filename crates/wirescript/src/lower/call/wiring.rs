@@ -20,6 +20,15 @@ pub(super) fn wire_chip_args_and_outputs(
         .collect();
     let mut input_idx: usize = 0;
     for (i, param) in chip_decl.inputs.iter().enumerate() {
+        // A `const` parameter has no `MicrochipInput` pin: its value is baked
+        // into the body's constant environment by `build_chip_module`, which
+        // skips it on this identical `is_const` predicate. So it consumes no
+        // `input_idx` slot and needs no wire. Checked BEFORE the argument
+        // lookup so the two loops agree param-for-param — any divergence would
+        // shift every later pin index and silently mis-wire the call.
+        if param.is_const {
+            continue;
+        }
         let Some(arg_expr) = positional_args.get(i) else {
             continue;
         };

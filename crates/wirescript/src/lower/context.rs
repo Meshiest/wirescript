@@ -229,6 +229,33 @@ pub(super) struct LowerCtx<'a> {
     /// `var … : T[]` initializer can name one (`1 << C_FLAG`) instead of restating its
     /// value. Shared (Arc) so child contexts clone it cheaply.
     pub(super) const_env: std::sync::Arc<super::predeclare::ConstEnv>,
+    /// Every TOP-LEVEL name declared with the `const` keyword — see
+    /// `predeclare::build_const_declared_names` and
+    /// `TypeCheckCtx::const_declared`'s matching doc comment. Shared (Arc)
+    /// so child contexts clone it cheaply, same as `const_env`; a chip
+    /// instantiation that merges `const` PARAMETERS into its child's
+    /// `const_env` (see `lower::call::instance_body`) extends this set the
+    /// same way.
+    pub(super) const_declared: std::sync::Arc<crate::collections::HashSet<String>>,
+    /// Container gates that must never be mutated: the `Pseudo_ArrayVar` /
+    /// `Pseudo_MapVar` nodes
+    /// [`materialize_const_container`](super::predeclare::materialize_const_container)
+    /// builds for a `const` array/map.
+    ///
+    /// A `const` container is BOTH a compile-time value and a runtime
+    /// container, and those two are only one source of truth while nothing
+    /// changes the runtime copy — `const n = xs.length()` folding to 3 while
+    /// the gate holds 4 elements is the divergence this set exists to prevent.
+    ///
+    /// Keyed on the NODE, not the name, so the rule survives aliasing: passing
+    /// a `const` table to a `ys: T[]` parameter binds the callee's `ys` to this
+    /// same node, and a name-keyed check would see only the innocent-looking
+    /// `ys` and let the mutation through.
+    ///
+    /// Not shared with a child context: a microchip body gets a fresh
+    /// `IdAllocator` and a fresh `Scope`, so its node ids and its own
+    /// materializations are entirely its own.
+    pub(super) immutable_containers: crate::collections::HashSet<NodeId>,
     /// True only for the compiled entry file's root LowerCtx. `@side` port
     /// annotations are legal only there (WS023 elsewhere).
     pub(super) is_root_module: bool,
@@ -254,6 +281,55 @@ pub(super) struct LowerCtx<'a> {
     /// (see `const_lookup`) can resolve it the same way a top-level `let`
     /// resolves through `const_env`.
     pub(super) scoped_consts: Vec<HashMap<String, Literal>>,
+    /// `const_declared`'s scoped counterpart, mirroring
+    /// `typecheck::TypeCheckCtx::scoped_const_declared` 1:1: which
+    /// `scoped_consts` entries, in the SAME frame, were bound with `const`
+    /// rather than a plain `let`. A name present in a `scoped_consts` frame
+    /// but absent from this set at that frame is a plain `let` — still
+    /// resolvable through the ordinary `const_lookup`, but excluded by
+    /// `const_lookup_declared_only` (the `if`-condition elision's own
+    /// environment; see `lower_if`).
+    pub(super) scoped_const_declared: Vec<HashSet<String>>,
+    /// Source ranges of `if`/`else` blocks a const-evaluable condition
+    /// dropped (`lower_if`'s const-elision path) — never lowered, so no gate
+    /// exists for them at all. Mirrors `typecheck::TypeCheckCtx`'s own
+    /// `dropped_ranges`; the two MUST agree on exactly which ranges they
+    /// drop (see `typecheck_and_lowering_drop_exactly_the_same_ranges` in
+    /// `typecheck::tests`) — a disagreement means code gets type-checked but
+    /// not lowered, or lowered without ever being checked.
+    pub(super) dropped_ranges: Vec<SourceRange>,
+    /// Chip/mod declarations visible to the BAKE path, as a FRAME STACK
+    /// mirroring `scope`/`scoped_consts` 1:1 — every `push_scope`/`pop_scope`
+    /// pair pushes and drops a frame here too. Populated in source order by
+    /// `pre_declare_chip_name` as each pre-declare loop reaches a declaration,
+    /// and consulted ONLY by `array_elem_literal`/`map_entry_literal` (via
+    /// [`resolve_mod_pass1`](Self::resolve_mod_pass1)) when baking a
+    /// var/array/map initializer's `const mod` CALL.
+    ///
+    /// **Why a frame stack and not a flat map.** A nested declaration must win
+    /// inside the body that declares it and be gone outside it. As a flat map
+    /// that required a manual save/restore around every borrowed-ctx body,
+    /// which is both easy to forget and easy to place wrongly — the restore
+    /// sat right after pre-declaration rather than after the body was lowered,
+    /// so a chip declared and INSTANTIATED inside an inlined mod cloned an
+    /// already-restored map and silently resolved the outer declaration while
+    /// the ordinary call path in the same chip resolved the inner one. Tying
+    /// the lifetime to the scope that already exists removes the discipline
+    /// (and that whole bug class) entirely.
+    ///
+    /// **Why not `ctx.scope` itself.** That is what the ordinary call-lowering
+    /// path (`resolve_mod`) and its use-before-declaration guard (WS021,
+    /// `lower/call/dispatch.rs`) read. Pass 1 runs to completion before pass 2
+    /// starts, so a chip registered into `scope` during pass 1 would be visible
+    /// to EVERY pass-2 call site regardless of source order, silently defeating
+    /// WS021 (confirmed against
+    /// `lower::tests::chip::use_before_declaration_is_ws021` while building
+    /// this). Keeping a separate stack preserves "only what's declared earlier"
+    /// for the bake without leaking early visibility into pass 2.
+    ///
+    /// Always non-empty: the base frame holds the module's top-level
+    /// declarations.
+    pub(super) pass1_chips: Vec<HashMap<String, std::sync::Arc<ChipDecl>>>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -363,12 +439,20 @@ impl<'a> LowerCtx<'a> {
     pub(super) fn push_scope(&mut self, tag: crate::scope::ScopeTag) {
         self.scope.push(tag);
         self.scoped_consts.push(HashMap::default());
+        self.scoped_const_declared.push(HashSet::default());
+        self.pass1_chips.push(HashMap::default());
     }
 
     /// Pop the frame pushed by `push_scope`.
     pub(super) fn pop_scope(&mut self) {
         self.scope.pop();
         self.scoped_consts.pop();
+        self.scoped_const_declared.pop();
+        // Never pop the base frame — it holds the module's own top-level
+        // declarations and must outlive every scope opened inside the module.
+        if self.pass1_chips.len() > 1 {
+            self.pass1_chips.pop();
+        }
     }
 
     /// The constant environment visible at the current point: the top-level
@@ -386,6 +470,137 @@ impl<'a> LowerCtx<'a> {
             }
         }
         env
+    }
+
+    /// The `ConstCtx` for `const_eval::eval_expr`, built from
+    /// [`const_lookup`](Self::const_lookup) so lowering agrees with typecheck
+    /// (`typecheck::TypeCheckCtx::const_ctx`) on what's constant at this
+    /// point. `module_consts` is the UNMERGED top-level `const_env`: a
+    /// `const mod` body is evaluated against the module's constants plus its
+    /// own parameters, never the call site's scope frames (see
+    /// `const_eval::interp::eval_call`).
+    ///
+    /// `lookup_mod` is supplied by the CALLER, built from [`resolve_mod`](Self::resolve_mod)
+    /// — see `TypeCheckCtx::const_ctx`'s matching doc comment for why this
+    /// method can't build and embed that closure itself.
+    pub(super) fn const_ctx<'b>(
+        &self,
+        lookup_mod: Option<&'b dyn Fn(&str) -> Option<std::sync::Arc<ChipDecl>>>,
+    ) -> crate::const_eval::ConstCtx<'b> {
+        crate::const_eval::ConstCtx {
+            consts: self.const_lookup(),
+            module_consts: (*self.const_env).clone(),
+            lookup_mod,
+        }
+    }
+
+    /// [`const_lookup`](Self::const_lookup), restricted to names DECLARED
+    /// `const` — mirrors `typecheck::TypeCheckCtx::const_lookup_declared_only`
+    /// exactly, including the outer-to-inner promote/evict shadowing. Built
+    /// from `const_declared`/`scoped_const_declared` rather than
+    /// `const_env`/`scoped_consts` directly.
+    pub(super) fn const_lookup_declared_only(&self) -> HashMap<String, Literal> {
+        let mut env: HashMap<String, Literal> = HashMap::default();
+        for name in self.const_declared.iter() {
+            if let Some(lit) = self.const_env.get(name) {
+                env.insert(name.clone(), lit.clone());
+            }
+        }
+        for (frame, declared) in self.scoped_consts.iter().zip(self.scoped_const_declared.iter()) {
+            for (name, lit) in frame {
+                if declared.contains(name) {
+                    env.insert(name.clone(), lit.clone());
+                } else {
+                    env.remove(name);
+                }
+            }
+        }
+        env
+    }
+
+    /// Whether `name` currently reads as a DECLARED compile-time constant —
+    /// presence in [`const_lookup_declared_only`](Self::const_lookup_declared_only),
+    /// answered without materialising that whole map, and walking the frames
+    /// outer-to-inner with the identical promote/evict rule so the two can
+    /// never disagree.
+    ///
+    /// `lower_let_decl` uses it to confine its shadow-clearing to names a
+    /// `const` actually introduced: a program that uses no `const` keyword has
+    /// every `scoped_const_declared` frame empty, so this is always `false`
+    /// there and that program's lowering is untouched — the feature's own
+    /// first rule.
+    pub(super) fn is_declared_const(&self, name: &str) -> bool {
+        let mut declared = self.const_declared.contains(name) && self.const_env.contains_key(name);
+        for (frame, marks) in self.scoped_consts.iter().zip(self.scoped_const_declared.iter()) {
+            if frame.contains_key(name) {
+                declared = marks.contains(name);
+            }
+        }
+        declared
+    }
+
+    /// The `Literal::Array` / `Literal::Map` a `const`-DECLARED `name` holds,
+    /// or `None` for anything else (a scalar constant, a plain `let` that
+    /// merely happens to fold, an unknown name).
+    ///
+    /// `is_declared_const` is the gate rather than a bare `const_lookup` hit,
+    /// so a program that uses no `const` keyword is untouched: its
+    /// `const_declared` set and every `scoped_const_declared` frame are empty,
+    /// so this is always `None` there.
+    pub(super) fn const_container_literal(&self, name: &str) -> Option<Literal> {
+        if !self.is_declared_const(name) {
+            return None;
+        }
+        match self.const_lookup().get(name) {
+            Some(lit @ (Literal::Array(_) | Literal::Map(_))) => Some(lit.clone()),
+            _ => None,
+        }
+    }
+
+    /// [`const_ctx`](Self::const_ctx), built from
+    /// [`const_lookup_declared_only`](Self::const_lookup_declared_only) — the
+    /// `if`-condition elision's own environment (`lower_if`). A plain `let`
+    /// that merely happens to fold must not participate in the generalised
+    /// const-eval elision: the feature's own rule is that a program using no
+    /// `const` compiles identically to before. Mirrors
+    /// `typecheck::TypeCheckCtx::if_cond_const_ctx` (which additionally
+    /// strips placeholders — lowering has no placeholder concept, so that
+    /// step is absent here).
+    pub(super) fn if_cond_const_ctx<'b>(
+        &self,
+        lookup_mod: Option<&'b dyn Fn(&str) -> Option<std::sync::Arc<ChipDecl>>>,
+    ) -> crate::const_eval::ConstCtx<'b> {
+        crate::const_eval::ConstCtx {
+            consts: self.const_lookup_declared_only(),
+            module_consts: (*self.const_env).clone(),
+            lookup_mod,
+        }
+    }
+    /// Resolve `name` to its `ChipDecl` for a `const mod` CALL, via the SAME
+    /// scope-based resolution an ordinary (non-const) call already goes
+    /// through: `lookup_chip` only finds a chip/mod whose `lower_chip_decl`
+    /// has already run (lowering processes decls in source order, unlike
+    /// typecheck's two-pass forward-reference-tolerant registration), so a
+    /// const-mod call resolves here exactly as far "ahead" as any other call
+    /// to it would at this point in lowering.
+    pub(super) fn resolve_mod(&self, name: &str) -> Option<std::sync::Arc<ChipDecl>> {
+        self.lookup_chip(name).cloned()
+    }
+
+    /// [`resolve_mod`](Self::resolve_mod)'s bake-path counterpart — see
+    /// [`pass1_chips`](Self::pass1_chips)'s doc comment for why baking a
+    /// var/array/map initializer's `const mod` CALL cannot simply call
+    /// `resolve_mod` (`ctx.scope`) here.
+    ///
+    /// Scans frames INNERMOST-first, so a body-local declaration shadows a
+    /// same-named outer one for exactly as long as its scope is open — the
+    /// same shadowing `const_lookup` gives scoped constants.
+    pub(super) fn resolve_mod_pass1(&self, name: &str) -> Option<std::sync::Arc<ChipDecl>> {
+        self.pass1_chips
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(name))
+            .cloned()
     }
 
     pub(super) fn type_of(&self, e: &Expr) -> Type {
