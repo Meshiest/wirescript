@@ -11,6 +11,7 @@
             wire_sources: HashMap::default(),
             var_labels: HashMap::default(),
             invisible: false,
+            no_gate_labels: false,
             root_shell_brick_id: 0,
         }
     }
@@ -675,6 +676,73 @@
         assert_eq!(
             atom_map.entries[0],
             (WireMapKeyData::Int64(atom_hash), WireMapValueData::Bool(true))
+        );
+    }
+
+    #[test]
+    /// `@layout("cube")` (via `EmitOptions::no_gate_labels`) must drop the
+    /// per-gate name label, which is unreadable inside a packed block and costs
+    /// one text component per labelled gate. The gate brick itself must survive
+    /// untouched: this is a payload cut, not a lowering change.
+    #[test]
+    fn no_gate_labels_drops_the_var_name_label_but_keeps_the_gate() {
+        use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder};
+
+        fn text_components(world: &brdb::World) -> usize {
+            let in_grids = world.grids.iter().flat_map(|(_, bricks)| bricks.iter());
+            world
+                .bricks
+                .iter()
+                .chain(in_grids)
+                .flat_map(|b| b.components.iter())
+                .filter(|c| {
+                    c.component_type()
+                        .is_some_and(|t| t.to_string() == "Component_TextDisplay")
+                })
+                .count()
+        }
+
+        let mut builder = ModuleBuilder::new("labelled");
+        let mut ids = IdAllocator::default();
+        let mut properties = HashMap::default();
+        properties.insert(*sym::NAME_LABEL, Literal::String("counter".into()));
+        builder.add_gate(
+            &mut ids,
+            AddNodeOpts {
+                gate_class: "BrickComponentType_WireGraphPseudo_Var",
+                properties,
+                ..Default::default()
+            },
+        );
+        let lr = crate::layout::layout(&builder.module);
+        let cache = std::sync::Arc::new(crate::template_cache::TemplateCache::new());
+        let build = |no_gate_labels: bool| {
+            build_world(
+                &builder.module,
+                &lr,
+                &EmitOptions {
+                    no_gate_labels,
+                    ..Default::default()
+                },
+                &cache,
+            )
+            .expect("emit must succeed")
+        };
+
+        let labelled = build(false);
+        let bare = build(true);
+        let (labelled_text, bare_text) = (text_components(&labelled), text_components(&bare));
+        assert!(
+            bare_text < labelled_text,
+            "the var's name label must be dropped: {labelled_text} then {bare_text}"
+        );
+        let brick_count = |w: &brdb::World| {
+            w.bricks.len() + w.grids.iter().map(|(_, b)| b.len()).sum::<usize>()
+        };
+        assert_eq!(
+            brick_count(&labelled),
+            brick_count(&bare),
+            "dropping labels must not change how many bricks are emitted"
         );
     }
 

@@ -252,6 +252,9 @@ fn compile_with_opts_inner(
     });
     // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
     opts.invisible = resolved.ast.invisible;
+    // `@layout("cube")` packs gates into an unreadable block, so the per-gate
+    // labels are dropped there as pure payload. See `EmitOptions::no_gate_labels`.
+    opts.no_gate_labels = resolved.ast.layout == Some(crate::ast::LayoutName::Cube);
     let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
 
     let template_cache = {
@@ -364,6 +367,9 @@ fn compile_to_world_inner(
     });
     // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
     opts.invisible = resolved.ast.invisible;
+    // `@layout("cube")` packs gates into an unreadable block, so the per-gate
+    // labels are dropped there as pure payload. See `EmitOptions::no_gate_labels`.
+    opts.no_gate_labels = resolved.ast.layout == Some(crate::ast::LayoutName::Cube);
     let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());

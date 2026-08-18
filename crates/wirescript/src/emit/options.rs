@@ -94,6 +94,14 @@ pub struct EmitOptions {
     /// hidden, non-colliding, and carries no labels (root name, root plane
     /// header, var tags, I/O gate labels).
     pub invisible: bool,
+    /// Module-level `@layout("cube")` — drop the per-gate name labels and var
+    /// tags. A cube is a solid block of gates, so those labels cannot be read
+    /// and are pure payload: one text component per labelled gate, which is
+    /// typically the majority of the emitted components. The shell label and
+    /// the plane header stay (a fixed cost, and the only thing identifying the
+    /// blob), as does a runtime `@label(expr)`, whose component is a live wire
+    /// target rather than decoration.
+    pub no_gate_labels: bool,
 }
 
 impl Default for EmitOptions {
@@ -106,6 +114,7 @@ impl Default for EmitOptions {
             nested_compiler: None,
             module_doc: None,
             invisible: false,
+            no_gate_labels: false,
         }
     }
 }

@@ -158,6 +158,7 @@ pub fn build_world(
         wire_sources: HashMap::default(),
         var_labels: HashMap::default(),
         invisible: opts.invisible,
+        no_gate_labels: opts.no_gate_labels,
         root_shell_brick_id: chip_brick_id,
     };
     emit_module(

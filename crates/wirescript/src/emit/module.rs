@@ -19,6 +19,10 @@ pub(super) struct EmitContext {
     /// Module-level `@invisible`, from `EmitOptions` — suppresses var-tag
     /// and I/O-gate label emission in `emit_module`.
     pub(super) invisible: bool,
+    /// Module-level `@layout("cube")`, from `EmitOptions` — suppresses the
+    /// per-gate name labels and var tags in `emit_module`. See
+    /// `EmitOptions::no_gate_labels`.
+    pub(super) no_gate_labels: bool,
     /// The root microchip shell brick's id. Pass 3.5 wires a module-level
     /// dynamic `@label` (`Module.root_dynamic_label`) into this brick's label
     /// `Text` port.
@@ -424,7 +428,14 @@ pub(super) fn emit_module(
             _ => None,
         };
         if let Some((text, line_height)) = label_spec {
-            if !ctx.invisible {
+            // A cube packs gates shoulder to shoulder, so these labels are
+            // unreadable there and cost one `Component_TextDisplay` per gate,
+            // which is the majority of a cube's components. A runtime
+            // `@label(expr)` is exempt: its text is a value the program
+            // computes, and Pass 3.5 wires into this exact component, so
+            // dropping it would leave a dangling wire that fails at load.
+            let dynamic = module.dynamic_labels.contains_key(*id);
+            if !ctx.invisible && (!ctx.no_gate_labels || dynamic) {
                 brick.add_component_box(Box::new(text_label(
                     world,
                     &text,
@@ -529,8 +540,12 @@ pub(super) fn emit_module(
         .with_id_split();
         // Named chips get a floating name label (the `@label` override wins
         // over the declared name); anonymous groupings (ModuleRoot-scoped
-        // partitions) stay unlabeled.
-        if let Some(name) = chip_display_name(node, child_module) {
+        // partitions) stay unlabeled. Dropped under `no_gate_labels` for the
+        // same reason as the gate labels above: this one rides the chip's own
+        // brick out in the packed block. The plane header emitted just above is
+        // NOT dropped, since it titles the chip's inner plane and stays legible
+        // when the chip is opened.
+        if let Some(name) = chip_display_name(node, child_module).filter(|_| !ctx.no_gate_labels) {
             chip_brick.add_component_box(Box::new(text_label(
                 world,
                 &name,

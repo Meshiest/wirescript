@@ -812,6 +812,13 @@ declaration directly (a variable self-label, above).
   (`@layout("grid")`) or a missing/malformed argument (`@layout`,
   `@layout(5)`) is a compile error. Naming a layout twice warns and the last
   one wins.
+- **`@layout("cube")` emits no per-gate labels.** A cube packs gates shoulder
+  to shoulder, so the floating name on a var, an I/O gate, a var tag, or a chip
+  brick cannot be read there, and each one costs a text component. Dropping
+  them typically removes most of the components in the save. The shell label
+  and every plane header stay, so the block is still identifiable and a chip
+  still shows its title when opened, as does a runtime `@label(expr)`, whose
+  text is a value the program computes rather than decoration.
 
 ```wirescript
 @layout("code")
