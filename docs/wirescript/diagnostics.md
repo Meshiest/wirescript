@@ -31,7 +31,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | Code | Meaning | Trigger |
 |------|---------|---------|
 | `WS001` | Unknown event or trigger — the name after `on` isn't a known event, input, `let`, `buffer`, `var`, or param. | `on Nope { }` |
-| `WS002` | Unknown name or type — an undefined variable, an unknown type, an undefined namespace base, or a misused generic alias (bare, wrong arity, or recursive). | `let x = undefinedVar` / `var x: Widget` |
+| `WS002` | Unknown name or type — an undefined variable, an unknown type, an undefined namespace base, a namespace base shadowed by a local binding of the same name, or a misused generic alias (bare, wrong arity, or recursive). | `let x = undefinedVar` / `var x: Widget` / `import * as u` then `mod g(u: int) { u.f() }` |
 | `WS012` | Import error — a circular import, an unresolvable file, or a named binding not found in the target module. | `import { nope } from "utils"` |
 | `WS013` | Duplicate declaration, or an output that is never assigned. | two `var x: int = 0` in one scope |
 | `WS014` | *(warning)* Unused import. | `import { clamp } from "u"`, `clamp` never used |

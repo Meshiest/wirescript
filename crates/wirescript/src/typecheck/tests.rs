@@ -1275,6 +1275,48 @@
         );
     }
 
+    /// A parameter sharing a name with an `import * as` alias makes every
+    /// `ns.f(...)` in that body resolve against the local value, which has no
+    /// such member. That used to type as `any` and lower to an `_Unsupported`
+    /// no-op with NO diagnostic, so `wirescript-check` called the file clean
+    /// and the failure only showed up wherever the `any` was finally consumed,
+    /// pointing at a line that was not the mistake.
+    #[test]
+    fn namespace_call_shadowed_by_a_local_is_ws002() {
+        use crate::resolve::resolve;
+        let loader = ns_util_loader();
+        let resolved = resolve(
+            "import * as u from \"util\"\nmod g(u: int) { u.f(Vec(0.0, 0.0, 0.0)) }\non RoundStart() { g(1) }",
+            "main.ws",
+            &loader,
+        );
+        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS002"),
+            "a local shadowing a namespace must emit WS002: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// The guard above must not fire on the ordinary case: same call, no
+    /// shadowing parameter.
+    #[test]
+    fn namespace_call_without_shadowing_is_clean() {
+        use crate::resolve::resolve;
+        let loader = ns_util_loader();
+        let resolved = resolve(
+            "import * as u from \"util\"\nmod g(v: int) { u.f(Vec(0.0, 0.0, 0.0)) }\non RoundStart() { g(1) }",
+            "main.ws",
+            &loader,
+        );
+        let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS002"),
+            "an unshadowed namespace call must not emit WS002: {:?}",
+            r.diagnostics
+        );
+    }
+
     #[test]
     fn namespace_call_wrong_arity_is_ws011() {
         use crate::resolve::resolve;

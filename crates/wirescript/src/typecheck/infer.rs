@@ -1179,6 +1179,39 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 );
                 return Type::Any;
             }
+            // A namespace call whose base is SHADOWED by a local binding:
+            // `import * as ns` plus a parameter, `let`, or `var` also named
+            // `ns` makes `ns.f(...)` resolve against the local value, which
+            // has no member `f`. Every accepting branch above has already had
+            // its turn, so the receiver genuinely cannot answer this call.
+            // Left alone it types as `any` and lowers to an `_Unsupported`
+            // no-op: the destructured names all read as `any`, the error (if
+            // any) surfaces far downstream at whatever consumes them, and
+            // `wirescript-check` reports the file clean. Name the shadowing,
+            // since the fix is to rename one of the two and nothing about the
+            // call site itself looks wrong.
+            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
+                && let Expr::Ident {
+                    name,
+                    range: base_range,
+                } = obj.as_ref()
+                && ctx.namespaces.contains_key(name.as_str())
+                && ctx
+                    .scope
+                    .lookup(name)
+                    .is_some_and(|s| s.kind != SymbolKind::Namespace)
+            {
+                ctx.emit(
+                    "WS002",
+                    format!(
+                        "'{name}' here is a local value, not the imported namespace, so \
+                         `{name}.{field}(...)` looks for a member on that value instead of \
+                         in the module. Rename the local binding or the `import * as {name}`."
+                    ),
+                    base_range.clone(),
+                );
+                return Type::Any;
+            }
             // A method call `obj.field(...)` on a valid receiver whose `field`
             // names a KNOWN user mod/chip that is NOT a `self`-receiver (the
             // self-mod case above would have returned; builtin / array / map
