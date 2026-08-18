@@ -240,6 +240,49 @@
     }
 
     #[test]
+    fn generic_call_hover_shows_resolved_type_args() {
+        // Hovering the CALL site of a generic mod shows the type args resolved
+        // for THAT call (`<int>`, `v: int`, `-> int`), not the declaration's
+        // `<T: Numeric>`.
+        let src = "mod square<T: Numeric>(v: T) -> T { return v * v }\n\
+                   on ReadBrickGrid() {\n  let n = square(5)\n}\n";
+        let call_line = 2usize;
+        let col = src.lines().nth(call_line).unwrap().find("square").unwrap() + 1;
+        let h = hover_for(src, call_line, col).expect("hover on generic call");
+        assert!(h.contains("square<int>"), "angle brackets resolved to int: {h}");
+        assert!(h.contains("v: int"), "param type substituted: {h}");
+        assert!(h.contains("-> int"), "return type substituted: {h}");
+        assert!(!h.contains("<T:"), "must not show the generic form at a call: {h}");
+        assert!(h.contains("`T` = `int`"), "resolution note present: {h}");
+    }
+
+    #[test]
+    fn generic_call_hover_uses_explicit_type_args() {
+        // An explicit `f<float>(...)` pins the type param even when the argument
+        // would infer something narrower.
+        let src = "mod id<T>(v: T) -> T { return v }\n\
+                   on ReadBrickGrid() {\n  let n = id<float>(1.0)\n}\n";
+        let call_line = 2usize;
+        let col = src.lines().nth(call_line).unwrap().find("id<float>").unwrap() + 1;
+        let h = hover_for(src, call_line, col).expect("hover on explicit generic call");
+        assert!(h.contains("id<float>"), "explicit type arg shown: {h}");
+        assert!(h.contains("v: float"), "param substituted from explicit arg: {h}");
+    }
+
+    #[test]
+    fn generic_call_hover_resolves_per_argument() {
+        // A `mod assert<T: int | float | string>(...)` called with a string
+        // argument resolves `T` to `string` for that call.
+        let src = "mod assert<T: int | float | string>(want: T, got: T, label: string) { if want == got { BroadcastChatMessage(label) } }\non ReadBrickGrid() {\n  assert(\"a\", \"a\", \"eq\")\n}\n";
+        let call_line = 2usize;
+        let col = src.lines().nth(call_line).unwrap().find("assert").unwrap() + 1;
+        let h = hover_for(src, call_line, col).expect("hover on assert call");
+        assert!(h.contains("assert<string>"), "T resolved to string: {h}");
+        assert!(h.contains("want: string") && h.contains("got: string"), "params substituted: {h}");
+        assert!(h.contains("label: string"), "non-generic param unchanged: {h}");
+    }
+
+    #[test]
     fn constraint_class_hovers() {
         // Hovering the bound `Numeric` shows the class + its members.
         let src = "mod square<T: Numeric>(v: T) -> T { return v * v }\n";

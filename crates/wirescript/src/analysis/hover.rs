@@ -1,5 +1,5 @@
 use crate::collections::HashMap;
-use crate::ast::{CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Script, Stmt, TopDecl, Trigger};
+use crate::ast::{CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Script, Stmt, TopDecl, Trigger, TypeExpr};
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
 use crate::diagnostic::SourceRange;
@@ -44,10 +44,14 @@ fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
         EstimateKind::Chip => est.total_microchips + 1,
         _ => est.total_microchips,
     };
-    let mut parts = vec![
-        format!("~{} gates", est.gates),
-        format!("{} chips", chips),
-    ];
+    let mut parts = vec![format!("~{} gates", est.gates)];
+    // A `mod`/scope with no inner microchips (the common case — an inlined mod
+    // whose body is plain gates, like `assert`) shows no chip clause at all; a
+    // bare "0 chips" reads like a missing count. A `chip` always instantiates
+    // at least itself, so its count is never zero and always shown.
+    if chips > 0 {
+        parts.push(format!("{} chip{}", chips, if chips == 1 { "" } else { "s" }));
+    }
     if matches!(kind, EstimateKind::Mod) {
         parts.push("inlined per call".into());
     }
@@ -317,6 +321,7 @@ pub fn hover_at(
         .or_else(|| hover_record_or_type_field(source, symbols, doc_comments, &word, line, col))
         .or_else(|| hover_namespace_member(source, symbols, doc_comments, resource_estimates, &word, line, col))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
+        .or_else(|| hover_generic_call(source, file, symbols, doc_comments, resource_estimates, type_map, &word, line, col))
         .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
         .or_else(|| hover_type_or_class(&word))
 }
@@ -1476,6 +1481,232 @@ fn hover_record_or_type_field(
         }
     }
     None
+}
+
+/// Hover for a USAGE (call site) of a generic `mod`/`chip`: show the type
+/// arguments *resolved for this call* in the angle brackets — e.g.
+/// `mod assert<int>(want: int, got: int, label: string)` instead of the
+/// declaration's `mod assert<T: int | float | string>(want: T, …)`.
+///
+/// Re-parses `source` (identical byte offsets, so `type_map` still resolves
+/// each argument's inferred type — the same trick [`hover_custom_event`] uses),
+/// finds the `Expr::Call` whose callee identifier spans the cursor, locates the
+/// callee's generic declaration, and re-runs the shared call-site inference
+/// ([`crate::types::mono::infer_call_subst`], or the caller's explicit
+/// `assert<int>(…)` type arguments when present) to bind each type parameter.
+///
+/// Returns `None` when the word is not the callee of a generic call — so the
+/// declaration site and every non-generic call still fall through to
+/// [`hover_user_symbol`]'s declaration-signature hover.
+fn hover_generic_call(
+    source: &str,
+    file: &str,
+    symbols: &[SymbolDef],
+    doc_comments: &HashMap<usize, String>,
+    resource_estimates: &HashMap<String, ResourceEstimate>,
+    type_map: &TypeMap,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    // Only a call whose callee is exactly the hovered word is in play; a bare
+    // reference or the declaration itself has no enclosing call here.
+    let l = source.lines().nth(line)?;
+    let word_off = line_offset_at(source, line) + word_start_in_line(l, col);
+
+    let parsed = crate::parser::parse(source, file);
+    let script = &parsed.ast;
+
+    // The `Expr::Call` whose callee identifier `word` spans the cursor.
+    let (args, type_args) = generic_call_at(script, word, word_off)?;
+
+    // The callee's declaration must be a generic `mod`/`chip` (only those carry
+    // `type_params`; `fn`s and builtins never do).
+    let decl = find_generic_chip_decl(&script.decls, word)?;
+    if decl.type_params.is_empty() {
+        return None;
+    }
+
+    // Resolve the declared parameter / output types with the decl's own type
+    // params in scope, so a `T` becomes `Type::Param("T")` (aliases aren't
+    // needed: only params that mention a `T` can constrain the inference).
+    let param_names: Vec<String> = decl.type_params.iter().map(|tp| tp.name.clone()).collect();
+    let aliases: HashMap<String, Type> = HashMap::default();
+    let generic_aliases: HashMap<String, crate::types::resolve::GenericAlias> = HashMap::default();
+    let rcx = crate::types::resolve::ResolveCtx {
+        params: &param_names,
+        type_aliases: &aliases,
+        generic_aliases: &generic_aliases,
+    };
+    let resolve = |te: &TypeExpr| crate::types::resolve::resolve_type(te, &rcx, &mut Vec::new());
+    let param_types: Vec<Type> = decl.inputs.iter().map(|p| resolve(&p.typ)).collect();
+
+    // Bind each type parameter. Explicit `assert<int>(…)` type arguments pin
+    // them directly; otherwise infer from the argument types the same way the
+    // compiler does at the call site.
+    let subst = if !type_args.is_empty() {
+        if type_args.len() != decl.type_params.len() {
+            return None;
+        }
+        let mut s = crate::types::infer::Subst::new();
+        for (tp, te) in decl.type_params.iter().zip(type_args.iter()) {
+            s.insert(tp.name.clone(), resolve(te));
+        }
+        s
+    } else {
+        let file_arc: std::sync::Arc<str> = file.into();
+        let arg_types: Vec<Type> = positional_arg_types(&args, type_map, &file_arc);
+        let params: Vec<(String, Vec<Type>)> = decl
+            .type_params
+            .iter()
+            .map(|tp| (tp.name.clone(), crate::types::mono::mask_for_param(tp.bound.as_ref(), &aliases)))
+            .collect();
+        crate::types::mono::infer_call_subst(&param_types, &arg_types, &params)
+    };
+
+    // Nothing resolved (e.g. a `T` only in the return type, called without
+    // explicit args): leave the declaration hover to show the generic form.
+    if decl.type_params.iter().all(|tp| !subst.contains_key(&tp.name)) {
+        return None;
+    }
+
+    // Rebuild the signature string with the resolved types, then reuse
+    // `render_decl_hover` so the exec marker, doc comment, and resource
+    // estimate render exactly as they do on the declaration.
+    let header = {
+        let parts: Vec<String> = decl
+            .type_params
+            .iter()
+            .map(|tp| match subst.get(&tp.name) {
+                Some(t) => type_str(t),
+                None => tp.name.clone(),
+            })
+            .collect();
+        format!("<{}>", parts.join(", "))
+    };
+    let params_str: Vec<String> = decl
+        .inputs
+        .iter()
+        .zip(param_types.iter())
+        .map(|(p, pt)| {
+            let ty = type_str(&crate::types::mono::substitute(pt, &subst));
+            if p.is_const {
+                format!("{}: const {}", p.name, ty)
+            } else {
+                format!("{}: {}", p.name, ty)
+            }
+        })
+        .collect();
+    let ret_suffix = match decl.outputs.as_slice() {
+        [] => String::new(),
+        [single] => format!(" -> {}", type_str(&crate::types::mono::substitute(&resolve(&single.typ), &subst))),
+        multiple => {
+            let fields: Vec<String> = multiple
+                .iter()
+                .map(|o| format!("{}: {}", o.name, type_str(&crate::types::mono::substitute(&resolve(&o.typ), &subst))))
+                .collect();
+            format!(" -> ({})", fields.join(", "))
+        }
+    };
+
+    // The declaration symbol carries the kind/exec/const flags and the offsets
+    // the doc-comment and estimate lookups key on; only its `ty` changes.
+    let sym = super::resolve_symbol(symbols, word, line, col)?;
+    if sym.kind != "mod" && sym.kind != "chip" {
+        return None;
+    }
+    let synth = SymbolDef {
+        name: sym.name.clone(),
+        kind: sym.kind,
+        range: sym.range.clone(),
+        ty: Some(format!("{}({}){}", header, params_str.join(", "), ret_suffix)),
+        exec: sym.exec,
+        is_const: sym.is_const,
+    };
+    let mut out = render_decl_hover(&synth, doc_comments, resource_estimates, Some((source, file)));
+
+    let bindings: Vec<String> = decl
+        .type_params
+        .iter()
+        .filter_map(|tp| subst.get(&tp.name).map(|t| format!("`{}` = `{}`", tp.name, type_str(t))))
+        .collect();
+    if !bindings.is_empty() {
+        out += &format!(
+            "\n\n*Generic call — {} for this call.*",
+            bindings.join(", ")
+        );
+    }
+    Some(out)
+}
+
+/// The `(args, type_args)` of the `Expr::Call` whose callee is the identifier
+/// `word` and whose callee range contains byte offset `off`. Walks the whole
+/// program (handler/mod/chip bodies included) via the shared visitor.
+fn generic_call_at<'a>(
+    script: &'a Script,
+    word: &str,
+    off: usize,
+) -> Option<(Vec<CallArg>, Vec<TypeExpr>)> {
+    let mut found: Option<(Vec<CallArg>, Vec<TypeExpr>)> = None;
+    {
+        let mut on_handler = |_: &Handler| {};
+        let mut on_call = |call: &Expr| {
+            if found.is_some() {
+                return;
+            }
+            let Expr::Call { callee, args, type_args, .. } = call else {
+                return;
+            };
+            let Expr::Ident { name, range } = callee.as_ref() else {
+                return;
+            };
+            if name == word && range.start.offset <= off && off < range.end.offset {
+                found = Some((args.clone(), type_args.clone()));
+            }
+        };
+        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+    }
+    found
+}
+
+/// Find the generic `mod`/`chip` declaration named `name` (top-level or inside
+/// a namespace). Returns the first match — enough for hover, which only needs
+/// the parameter shape and type-param bounds.
+fn find_generic_chip_decl<'a>(decls: &'a [TopDecl], name: &str) -> Option<&'a ChipDecl> {
+    for d in decls {
+        match d {
+            TopDecl::Chip(c) if c.name == name && !c.type_params.is_empty() => return Some(c),
+            TopDecl::Namespace(ns) => {
+                if let Some(c) = find_generic_chip_decl(&ns.decls, name) {
+                    return Some(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The inferred types of a call's leading POSITIONAL arguments, read from the
+/// `type_map` by each argument expression's source range. A named/spread arg
+/// stops the run (positional inference lines up by position); a missing entry
+/// becomes `Type::Any`, which contributes no constraint.
+fn positional_arg_types(
+    args: &[CallArg],
+    type_map: &TypeMap,
+    file: &std::sync::Arc<str>,
+) -> Vec<Type> {
+    let mut out = Vec::new();
+    for a in args {
+        let CallArg::Positional(e) = a else { break };
+        let r = e.range();
+        let ty = type_map
+            .get(&(file.clone(), r.start.offset, r.end.offset))
+            .cloned()
+            .unwrap_or(Type::Any);
+        out.push(ty);
+    }
+    out
 }
 
 /// User-defined symbol: var, let, buffer, in, out, mod, chip, fn, type, etc.

@@ -12,16 +12,15 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
             match parent {
                 Binding::Record(fields) => fields.get(&crate::intern::intern(field)),
                 // `ns.member` where `ns` came from `import * as ns`. The
-                // Namespace binding itself only carries the module's chips, but
-                // its VALUE members (`let`/`var`/`array`/`map`/`buffer`) are
-                // lowered into THIS scope under their bare name, so that a
-                // namespaced mod's inlined body can reach them (see
-                // `lower_namespace_decls`). Resolve to that same binding —
-                // otherwise the namespace parent matched no record field and the
-                // reference dropped to an `_Unsupported` placeholder reading 0,
-                // even though the identical value worked through a named import.
-                // A chained `ns.rec.field` continues through the Record arm.
-                Binding::Namespace(_) => ctx.scope.get(field),
+                // Namespace binding carries this module's own members, keyed by
+                // name — resolve through it rather than the shared bare-name
+                // scope, so two namespaces that export the same member name do
+                // not collide (the bare scope keeps only the last import's). A
+                // chained `ns.rec.field` continues through the Record arm on the
+                // record binding found here. The bare-scope fallback keeps
+                // anything not captured in the map (there should be none) from
+                // silently dropping to an `_Unsupported` placeholder.
+                Binding::Namespace(members) => members.get(field).or_else(|| ctx.scope.get(field)),
                 _ => None,
             }
         }

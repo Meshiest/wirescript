@@ -7,8 +7,18 @@ use crate::resolve::{MemLoader, resolve};
 
 /// Resolve + typecheck + lower a two-file program (`lib.ws` + main).
 fn compile_with_lib(lib_src: &str, main_src: &str) -> (crate::typecheck::TypeCheckResult, LowerResult) {
+    compile_with_libs(&[("lib.ws", lib_src)], main_src)
+}
+
+/// Resolve + typecheck + lower a program importing several library modules.
+fn compile_with_libs(
+    libs: &[(&str, &str)],
+    main_src: &str,
+) -> (crate::typecheck::TypeCheckResult, LowerResult) {
     let mut files = std::collections::HashMap::default();
-    files.insert("lib.ws".to_string(), lib_src.into());
+    for (name, src) in libs {
+        files.insert((*name).to_string(), (*src).into());
+    }
     let loader = MemLoader { files };
     let resolved = resolve(main_src, "test", &loader);
     assert!(
@@ -133,6 +143,37 @@ fn namespaced_value_feeding_a_typed_param_checks_clean() {
     );
     assert_clean(&tc, &lr);
     assert!(!has_unsupported(&lr.module), "must not emit a placeholder");
+}
+
+#[test]
+fn two_namespaces_sharing_a_member_name_stay_distinct() {
+    // Two imported modules each export `empty`, of unrelated record types. A
+    // record field access `a.empty.<field>` on each must resolve against the
+    // right namespace. Lowering used to dump every namespace's value members
+    // into one shared bare-name scope where the last import won, so the
+    // first-imported namespace's `empty` was overwritten and any field access
+    // on it lowered to an `_Unsupported` placeholder that silently read a
+    // default. Typecheck kept them distinct, so `wirescript-check` reported the
+    // file clean.
+    let (tc, lr) = compile_with_libs(
+        &[
+            ("sym.ws", "type Sym = { layer1: string }\nlet empty: Sym = { layer1: \"L\" }"),
+            ("tun.ws", "type Tun = { topart: string }\nlet empty: Tun = { topart: \"T\" }"),
+        ],
+        "import * as Sym from \"sym\"\n\
+         import * as Tun from \"tun\"\n\
+         var sink: string[]\n\
+         let g = ReadBrickGrid()\n\
+         on g {\n\
+           sink.push(\"${Sym.empty.layer1}\")\n\
+           sink.push(\"${Tun.empty.topart}\")\n\
+         }",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        !has_unsupported(&lr.module),
+        "each namespace's `empty` must resolve to its own record, not collapse to one bare name"
+    );
 }
 
 #[test]

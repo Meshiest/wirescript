@@ -91,7 +91,14 @@ pub(super) enum Binding {
     Output(NodeRecord),
     EventParam(PortRef),
     Chip(std::sync::Arc<ChipDecl>),
-    Namespace(HashMap<String, std::sync::Arc<ChipDecl>>),
+    /// An `import * as ns` module, keyed by member name. Holds BOTH the module's
+    /// chips (as `Binding::Chip`) and its value members (`let`/`array`/`map`/
+    /// `var`/`buffer`, as their own lowered binding). Keeping the value bindings
+    /// here — rather than only in the shared enclosing scope under their bare
+    /// name — is what lets two namespaces that export the same member name stay
+    /// distinct: `A.foo` and `B.foo` resolve through their own namespace map
+    /// instead of colliding on one bare `foo` where the last import wins.
+    Namespace(HashMap<String, Binding>),
     Record(HashMap<crate::intern::Sym, Binding>),
 }
 
@@ -919,7 +926,10 @@ impl<'a> LowerCtx<'a> {
 
     pub(super) fn lookup_ns_chip(&self, ns: &str, name: &str) -> Option<&std::sync::Arc<ChipDecl>> {
         match self.scope.get(ns) {
-            Some(Binding::Namespace(members)) => members.get(name),
+            Some(Binding::Namespace(members)) => match members.get(name) {
+                Some(Binding::Chip(c)) => Some(c),
+                _ => None,
+            },
             _ => None,
         }
     }

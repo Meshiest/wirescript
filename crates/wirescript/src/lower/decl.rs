@@ -143,12 +143,19 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         }
         TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
         TopDecl::Namespace(ns) => {
-            let mut ns_decls = HashMap::default();
+            let mut ns_decls: HashMap<String, Binding> = HashMap::default();
             let mut ns_buffers = Vec::new();
+            // Value members whose lowered binding we capture into this
+            // namespace's map AFTER the loop (so `A.foo` reads A's own `foo`
+            // even when a later `import * as B` overwrites the shared bare
+            // `foo`). Bare-name value members are only ever `let name`/`array
+            // name`/… idents, so a plain name is all we need here.
+            let mut ns_value_names: Vec<String> = Vec::new();
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
-                        ns_decls.insert(c.name.clone(), std::sync::Arc::new(c.clone()));
+                        ns_decls
+                            .insert(c.name.clone(), Binding::Chip(std::sync::Arc::new(c.clone())));
                         // A namespaced mod's body also calls its SIBLING mods by
                         // bare name (`drawCardBg(...)`, not `card.drawCardBg`);
                         // register them so those calls resolve when the body is
@@ -168,21 +175,36 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // reference drops to an `_Unsupported` placeholder that reads
                     // 0 at runtime. (Constant `array` initializers bake straight
                     // into the ArrayVar node during pre-declaration.)
-                    TopDecl::Let(l) => ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l)),
+                    //
+                    // The bare-name insertion is shared across every namespace,
+                    // so a name two modules both export collides there. Each
+                    // member's binding is ALSO captured per-namespace below, and
+                    // `A.member` resolves through that map, so explicit
+                    // namespaced access stays correct regardless of the clash.
+                    TopDecl::Let(l) => {
+                        ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l));
+                        if let crate::ast::LetBinding::Ident { name, .. } = &l.binding {
+                            ns_value_names.push(name.clone());
+                        }
+                    }
                     TopDecl::Array(a) if ctx.scope.get(&a.name).is_none() => {
-                        pre_declare_array(ctx, a)
+                        pre_declare_array(ctx, a);
+                        ns_value_names.push(a.name.clone());
                     }
                     TopDecl::Map(m) if ctx.scope.get(&m.name).is_none() => {
-                        pre_declare_map(ctx, m)
+                        pre_declare_map(ctx, m);
+                        ns_value_names.push(m.name.clone());
                     }
                     TopDecl::Var(v) if ctx.scope.get(&v.name).is_none() => {
                         ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v));
                         // Module-level = pure: a non-constant init is dropped.
                         ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true));
+                        ns_value_names.push(v.name.clone());
                     }
                     TopDecl::Buffer(b) if ctx.scope.get(&b.name).is_none() => {
                         pre_declare_buffer(ctx, b);
                         ns_buffers.push(b);
+                        ns_value_names.push(b.name.clone());
                     }
                     _ => {}
                 }
@@ -192,6 +214,16 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // pre-declared above — a name the importer already owns stays its.
             for b in ns_buffers {
                 lower_buffer_body(ctx, b);
+            }
+            // Capture each value member's binding into this namespace's map,
+            // NOW — before the next `import * as` lowers its own members and
+            // overwrites the shared bare names. A member the importer already
+            // owned (the `is_none()`-guarded kinds that were skipped) is not in
+            // `ns_value_names`, so it is not captured here.
+            for name in ns_value_names {
+                if let Some(binding) = ctx.scope.get(&name).cloned() {
+                    ns_decls.insert(name, binding);
+                }
             }
             ctx.scope
                 .insert(&ns.name, Binding::Namespace(ns_decls));

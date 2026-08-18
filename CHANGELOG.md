@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 1.4.1
+
+- Two `import * as` namespaces that export the same member name now stay distinct. `A.foo` and `B.foo` had both resolved to whichever module was imported last, so a field access on the other read the wrong value and lowered to a placeholder while type-checking reported the file clean.
+
 ## 1.4.0
 
 - **`const` compile-time evaluation**: `const` bindings, `const` parameters (`f(name: const string, v: int)`) and `const mod` declarations are evaluated at compile time and can be used anywhere a literal is required, such as gate config and custom-event channel names. Const expressions compose freely (operators, constructor arguments, destructuring, indexing, collection assembly) and emit no gates. An `if` on a const condition drops its untaken branch, and a `const` that fails to be compile-time is reported at the binding.

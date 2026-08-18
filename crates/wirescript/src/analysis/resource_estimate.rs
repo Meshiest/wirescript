@@ -385,7 +385,18 @@ fn collect_calls_in_expr(expr: &Expr, calls: &mut Vec<String>) {
     match expr {
         Expr::Call { callee, args, .. } => {
             if let Expr::Ident { name, .. } = callee.as_ref() {
-                calls.push(name.clone());
+                // Only USER mod/chip calls belong in the call graph. A builtin
+                // call is a single gate (already counted by the template/gate
+                // heuristic), NOT a microchip — the same distinction
+                // `count_gates_in_expr` makes. Without this guard,
+                // `expand_estimate` treats every builtin callee (absent from
+                // `base_estimates`, so its default `is_inline` is `false`) as a
+                // non-inline chip and fabricates one phantom microchip per call:
+                // a `mod` whose only call was `BroadcastChatMessage` reported
+                // "1 chip per call" for a gate that never was one.
+                if !crate::catalog::calls::calls().contains_key(name.as_str()) {
+                    calls.push(name.clone());
+                }
             }
             for arg in args {
                 match arg {

@@ -43,6 +43,33 @@ chip Wrap(a: *int) -> () {
         );
     }
 
+    #[test]
+    fn builtin_calls_do_not_count_as_microchips() {
+        // A `mod` whose body only calls a builtin gate (here
+        // `BroadcastChatMessage`) instantiates no microchip — the builtin is a
+        // single gate. A regression guard against `expand_estimate` fabricating
+        // a phantom microchip for every callee absent from `base_estimates`.
+        let est = estimates_for("mod say(m: string) { BroadcastChatMessage(m) }");
+        let say = est.get("say").expect("should have say estimate");
+        assert!(say.gates > 0, "builtin gate still counts toward gates: {}", say.gates);
+        assert_eq!(say.total_microchips, 0, "no phantom microchip for a builtin call");
+    }
+
+    #[test]
+    fn non_inline_chip_call_still_counts_as_a_microchip() {
+        // The counterpart to the builtin guard: calling a real non-inline
+        // `chip` DOES instantiate a microchip, so the caller's count includes it.
+        let src = "\
+chip Inner(a: int) -> (r: int) { out r = a + 1 }
+chip Outer(a: *int) -> () {
+  in run: exec
+  on run { let x = Inner(a) }
+}";
+        let est = estimates_for(src);
+        let outer = est.get("Outer").expect("should have Outer");
+        assert!(outer.total_microchips >= 1, "a non-inline chip call is a microchip: {}", outer.total_microchips);
+    }
+
     /// A `import * as ns` member is stored in `symbols` — and looked up by
     /// hover — under its qualified `ns.member` name, while estimates are
     /// collected under the bare one. Without the qualified alias, hovering
