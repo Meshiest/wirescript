@@ -213,6 +213,11 @@ pub const PLAYERSTATE_SET_CAN_RESPAWN: &str = "BrickComponentType_WireGraph_Exec
 pub const PLAYERSTATE_FORCE_RESPAWN: &str = "BrickComponentType_WireGraph_Exec_PlayerState_ForceRespawn";
 pub const CHARACTER_GET_FROM_CONTROLLER: &str = "BrickComponentType_WireGraph_Exec_Character_GetFromController";
 pub const CHARACTER_GET_AIM: &str = "BrickComponentType_WireGraph_Exec_Character_GetAim";
+/// Exec-form sample of the same control set the seat splitter
+/// ([`INPUT_SPLITTER`]) reads continuously. Not `Character_`-prefixed in the
+/// game: its operand port is `Player`, which takes a character or a
+/// persistent player.
+pub const EXEC_GET_INPUTS: &str = "BrickComponentType_WireGraph_Exec_GetInputs";
 pub const CHARACTER_SHOW_HINT: &str = "BrickComponentType_WireGraph_Exec_Character_ShowHint";
 pub const CHARACTER_GET_DAMAGE: &str = "BrickComponentType_WireGraph_Exec_Character_GetDamage";
 pub const CHARACTER_SET_DAMAGE: &str = "BrickComponentType_WireGraph_Exec_Character_SetDamage";

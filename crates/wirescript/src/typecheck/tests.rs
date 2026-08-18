@@ -29,6 +29,66 @@
         assert_no_diags(&tc("mod inc(v: *int) { v = v + 1 }"));
     }
 
+    /// `GetInputs` outputs must carry their real types, not `any`. A coercible
+    /// annotation cannot tell the two apart (`let x: int = <float>` and
+    /// `let x: int = <any>` are both accepted), so each field is checked against
+    /// `vector`, which nothing here coerces to. The float axis, the bool flag,
+    /// and a known-float control must all report the same way.
+    #[test]
+    fn get_inputs_outputs_are_typed_not_any() {
+        let r = tc("in go: exec\n\
+                    in pl: character\n\
+                    on go {\n\
+                      let inp = pl.GetInputs()\n\
+                      let axis: vector = inp.Forward\n\
+                      let flag: vector = inp.PressedC\n\
+                    }");
+        let msgs: Vec<&str> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "WS016")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("has type float")),
+            "an axis output must type as float: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("has type bool")),
+            "a pressed flag must type as bool: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn get_inputs_unknown_field_is_ws010() {
+        let r = tc("in go: exec\n\
+                    in pl: character\n\
+                    on go {\n\
+                      let inp = pl.GetInputs()\n\
+                      let x = inp.Jump\n\
+                    }");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS010"),
+            "an unknown control must be WS010: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// It is an exec gate, so it samples where the chain reaches it. Used in
+    /// pure position it would otherwise lower to a placeholder that reads a
+    /// default for every control.
+    #[test]
+    fn get_inputs_outside_an_exec_context_is_ws007() {
+        let r = tc("in pl: character\nlet inp = pl.GetInputs()");
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS007"),
+            "a pure-position GetInputs must be WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
     #[test]
     fn generic_map_type_resolves() {
         // `Map<K, V>` resolves to a map type usable in an annotation.

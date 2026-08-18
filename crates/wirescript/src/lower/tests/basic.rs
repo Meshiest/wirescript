@@ -2239,6 +2239,77 @@ fn on_input_splitter_field_trigger_selects_named_port() {
     );
 }
 
+/// `GetInputs` is the exec-form counterpart of the seat splitter: it takes the
+/// character on its `Player` port (not `Character`, since the gate also accepts
+/// a persistent player) and advances the exec chain through `ExecOut`.
+#[test]
+fn get_inputs_chains_exec_and_wires_the_player_operand() {
+    let src = "in go: exec\n\
+               in pl: character\n\
+               on go {\n\
+                 let inp = pl.GetInputs()\n\
+                 pl.ShowStatusMessage(\"${inp.Forward}\")\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let gate = find_gate(&r, "BrickComponentType_WireGraph_Exec_GetInputs");
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == gate && w.target.port.as_str() == "Player"),
+        "the character must wire into the gate's Player port: {:?}",
+        r.module.wires
+    );
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == gate && w.target.port.as_str() == "Exec"),
+        "the handler must drive the gate's Exec input"
+    );
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == gate && w.source.port.as_str() == "ExecOut"),
+        "the gate must advance the exec chain through ExecOut"
+    );
+}
+
+/// Each surface field must reach its real port. Two different renamings are in
+/// play and both are shared with the splitter: the axes drop an `Input` prefix
+/// (`.Forward` -> `InputForward`) and the flags drop a `b` (`.PressedC` ->
+/// `bPressedC`). A field that resolved to the gate's default port instead would
+/// still compile and would read the wrong control.
+#[test]
+fn get_inputs_fields_resolve_to_their_game_ports() {
+    let src = "in go: exec\n\
+               in pl: character\n\
+               on go {\n\
+                 let inp = pl.GetInputs()\n\
+                 pl.ShowStatusMessage(\"${inp.Forward}\")\n\
+                 pl.ShowStatusMessage(\"${inp.MouseWheel}\")\n\
+                 if inp.PressedC { pl.ShowStatusMessage(\"c\") }\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let gate = find_gate(&r, "BrickComponentType_WireGraph_Exec_GetInputs");
+    let ports: Vec<&str> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.node_id == gate)
+        .map(|w| w.source.port.as_str())
+        .collect();
+    for want in ["InputForward", "InputMouseWheel", "bPressedC"] {
+        assert!(
+            ports.contains(&want),
+            "expected a wire out of {want}, got {ports:?}"
+        );
+    }
+}
+
 #[test]
 fn atom_literal_bakes_as_its_hash_int() {
     // `:red` is an int constant == atom_hash("red"); baked into the var's

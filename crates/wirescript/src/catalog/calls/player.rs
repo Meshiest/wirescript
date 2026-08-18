@@ -156,6 +156,40 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: Some(Type::Character),
         },
     );
+    // The exec-form counterpart of `InputReader`: same twelve controls, sampled
+    // once when the exec chain reaches it instead of read continuously. The
+    // field names are deliberately identical to the splitter's, so the two read
+    // the same at a call site and only the context differs. Its operand port is
+    // `Player` rather than `Character` (the gate accepts a character or a
+    // persistent player), while the surface type stays `Character`: a
+    // controller wires straight into a character param, so the permissive port
+    // costs no expressiveness here.
+    m.insert(
+        "GetInputs",
+        character_exec(
+            "GetInputs",
+            gc::EXEC_GET_INPUTS,
+            vec![CallParam::req("player", WirePort::Player, Type::Character)],
+            vec![CallOutput {
+                field: None,
+                port: WirePort::InputForward,
+                ty: Type::Record(vec![
+                    ("Forward".into(), Type::Float),
+                    ("Right".into(), Type::Float),
+                    ("Up".into(), Type::Float),
+                    ("Pitch".into(), Type::Float),
+                    ("Yaw".into(), Type::Float),
+                    ("Roll".into(), Type::Float),
+                    ("MouseWheel".into(), Type::Float),
+                    ("PressedC".into(), Type::Bool),
+                    ("PressedE".into(), Type::Bool),
+                    ("PressedQ".into(), Type::Bool),
+                    ("PressedLeftMouse".into(), Type::Bool),
+                    ("PressedRightMouse".into(), Type::Bool),
+                ]),
+            }],
+        ),
+    );
 
     // ---- PlayerState role check -----------------------------
     // `ctrl.HasRole("Admin")` — RoleName is a config string, returns a bool.

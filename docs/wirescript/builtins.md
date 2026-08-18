@@ -356,6 +356,27 @@ let moving = input.Forward != 0.0 || input.Right != 0.0
 let interacting = input.PressedE
 ```
 
+### GetInputs
+```
+character.GetInputs() -> { ...same fields as InputReader... }
+GetInputs(player: character) -> { ...same fields... }
+```
+
+Sample the same twelve controls once, at the point the exec chain reaches this
+call, rather than reading them continuously. The field names are identical to
+`InputReader`'s, so only the context differs. Its operand also accepts a
+persistent player, which wires straight into the `character` parameter.
+
+Being exec form, it must sit on an exec chain; in pure position it reports
+`WS007`.
+
+```wirescript
+on Clock(interval = 0.1) {
+  let input = char.GetInputs()
+  if input.PressedQ { char.ShowStatusMessage("q") }
+}
+```
+
 ## Controller / Character Conversions (Exec)
 
 These functions convert between entity types. They require exec context and support receiver syntax.

@@ -248,7 +248,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_ArrayVar_Average",
       "brickDisplayName": "Average Array",
-      "brickSummary": "Outputs the average of every value in the connected numeric or vector array. Is Empty reports when there are no values; use it for mean scores, positions, or speeds.",
+      "brickSummary": "Outputs the average of every value in the connected numeric or vector array. Is Empty reports when there are no values and Value is its default; use it for mean scores, positions, or speeds.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -517,7 +517,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_ArrayVar_Get",
       "brickDisplayName": "Get Array Element",
-      "brickSummary": "Outputs the element at Index without changing the array and reports Out Of Bounds for an invalid index. Indices start at 0, so use 0 for the first element.",
+      "brickSummary": "Outputs the element at Index without changing the array and reports Out Of Bounds for an invalid index. Value is its default when out of bounds. Indices start at 0, so use 0 for the first element.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -698,7 +698,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_ArrayVar_Max",
       "brickDisplayName": "Array Maximum",
-      "brickSummary": "Outputs the highest value in the connected array. Is Empty reports when there is no result; use this to find the best score, greatest speed, or largest amount.",
+      "brickSummary": "Outputs the highest value in the connected array. Is Empty reports when there is no result and Value is its default; use this to find the best score, greatest speed, or largest amount.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -756,7 +756,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_ArrayVar_Min",
       "brickDisplayName": "Array Minimum",
-      "brickSummary": "Outputs the lowest value in the connected array. Is Empty reports when there is no result; use this to find the shortest time, lowest score, or nearest limit.",
+      "brickSummary": "Outputs the lowest value in the connected array. Is Empty reports when there is no result and Value is its default; use this to find the shortest time, lowest score, or nearest limit.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -814,7 +814,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_ArrayVar_Pop",
       "brickDisplayName": "Pop From Array",
-      "brickSummary": "Removes and outputs the last element of the connected array. Is Empty reports whether the array has no entries afterward, which is useful for stack-like lists.",
+      "brickSummary": "Removes and outputs the last element of the connected array. Is Empty reports whether the array had no entries to remove, in which case Value is its default.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -6568,6 +6568,134 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_GetInputs",
+      "brickDisplayName": "Get Inputs",
+      "brickSummary": "Samples the current vehicle controls of a persistent player when executed.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_WireGraph_Exec_GetInputs",
+        "displayName": "Get Inputs",
+        "description": "Samples the current vehicle controls of a character or persistent player when executed.",
+        "searchTags": "",
+        "kind": "exec",
+        "family": "",
+        "inputs": [
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Player",
+            "displayName": "Player",
+            "tooltip": "",
+            "type": "any",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "bPressedC",
+            "displayName": "Pressed C",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bPressedE",
+            "displayName": "Pressed E",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bPressedLeftMouse",
+            "displayName": "Pressed Left Mouse",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bPressedQ",
+            "displayName": "Pressed Q",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "bPressedRightMouse",
+            "displayName": "Pressed Right Mouse",
+            "tooltip": "",
+            "type": "bool",
+            "composite": null
+          },
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "InputForward",
+            "displayName": "Input Forward",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "InputMouseWheel",
+            "displayName": "Input Mouse Wheel",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "InputPitch",
+            "displayName": "Input Pitch",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "InputRight",
+            "displayName": "Input Right",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "InputRoll",
+            "displayName": "Input Roll",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "InputUp",
+            "displayName": "Input Up",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          },
+          {
+            "name": "InputYaw",
+            "displayName": "Input Yaw",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_GetOwnTransform",
       "brickDisplayName": "Get Own Location and Rotation",
       "brickSummary": "Returns this gate brick's location and rotation, or its outermost containing microchip brick's location and rotation when placed inside a microchip.",
@@ -6716,7 +6844,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_MapVar_Get",
       "brickDisplayName": "Get Map Element",
-      "brickSummary": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed, which is useful before using saved player or object data.",
+      "brickSummary": "Looks up Key in the connected map and outputs its Value. Found reports whether the key existed; a missing key outputs the default Value. Use this before consuming saved player or object data.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -7958,7 +8086,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_PlayerState_ShowMessageBox",
       "brickDisplayName": "Show Message Box",
-      "brickSummary": "Opens a titled, one-button dialog for one player; use it for important rules, announcements, or confirmations.",
+      "brickSummary": "Opens a titled dialog for one player; use it for important rules, announcements, or confirmations.",
       "halfSize": {
         "X": 5,
         "Y": 5,

@@ -1096,6 +1096,26 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     v
                 };
                 check_args(ctx, &sig_of_callspec(c), &recv_args, 0, true, true, fa_range);
+                // Same exec-context rule the plain-call form applies above. It
+                // lived only in the `Expr::Ident` callee branch, so the
+                // receiver spelling of the very same gate went unchecked:
+                // `GetLocation(e)` was WS007 in pure position while
+                // `e.GetLocation()` compiled to an `_Unsupported` placeholder
+                // that reads a default, with the file reported clean.
+                if c.exec && ctx.exec_mode() != ExecMode::Exec {
+                    let has_exec_arg = args
+                        .iter()
+                        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+                    if !has_exec_arg {
+                        ctx.emit(
+                            "WS007",
+                            format!(
+                                "exec call '{field}' outside an exec context (pass exec = ... to override)"
+                            ),
+                            fa_range.clone(),
+                        );
+                    }
+                }
                 if !c.outputs.is_empty() {
                     return output_record_type(ctx, c, &recv_args, fa_range);
                 }
