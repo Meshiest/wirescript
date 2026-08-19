@@ -129,7 +129,48 @@ pub(in crate::lower) fn lower_chip_call_inline(
                         continue;
                     }
                 }
+                // Whether this param wants a RECORD (an annotated record type,
+                // or a destructuring pattern). Computed before lowering, since
+                // `record_fields_of` borrows `ctx`.
+                let wants_record =
+                    param.pattern.is_some() || ctx.record_fields_of(&param.typ).is_some();
                 let val_port = lower_expr(ctx, arg_expr);
+                // A record-returning CALL as an argument (`Take(Make())`). The
+                // call just stashed its field→source-port record, exactly as it
+                // does for `let m = Make()`, which is what makes the hand-split
+                // `let m = Make()` / `Take(m.o)` work. Consume it here so the
+                // record param receives its fields.
+                //
+                // The two record paths above cannot cover this: a call is
+                // neither an `Expr::RecordLit` nor something
+                // `resolve_field_chain` can walk. Without this the param bound
+                // to ONE opaque value port, so every field read in the callee
+                // (and every name of a destructuring pattern) lowered to an
+                // `_Unsupported` placeholder that silently read a default.
+                //
+                // Gated on `wants_record` so a multi-output call passed to a
+                // SCALAR param keeps auto-unwrapping to its first output via
+                // `val_port`, and on `Expr::Call` so a stale record from some
+                // earlier lowering can never be picked up here.
+                if wants_record
+                    && matches!(arg_expr, Expr::Call { .. })
+                    && let Some(record) = ctx.pending_inline_record.take()
+                {
+                    // The stashed map is keyed by the callee's OUTPUT names. A
+                    // single-output call auto-unwraps to that output's value, so
+                    // when that value is itself a record, pass the INNER one —
+                    // the same unwrap a scalar single-output result gets through
+                    // `val_port`. A multi-output result is passed whole.
+                    let unwrapped = if record.len() == 1
+                        && let Some(Binding::Record(inner)) = record.values().next()
+                    {
+                        inner.clone()
+                    } else {
+                        record
+                    };
+                    record_bindings.push((param.name.clone(), unwrapped));
+                    continue;
+                }
                 let t = type_of_type_expr(&param.typ);
                 val_bindings.push((param.name.clone(), val_port, t));
             }
@@ -169,6 +210,11 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // balanced, so the swapped-in stack is back to depth 0 by then.
     let saved_scoped_consts = std::mem::take(&mut ctx.scoped_consts);
     let saved_scoped_const_declared = std::mem::take(&mut ctx.scoped_const_declared);
+    // `out <name> = <record>` bindings are per-body: swap the caller's aside so
+    // this expansion starts empty and cannot consume (or be polluted by) an
+    // enclosing body's. Restored right after the body, before the record for
+    // THIS call is assembled.
+    let saved_out_records = std::mem::take(&mut ctx.pending_out_records);
 
     ctx.push_scope(crate::scope::ScopeTag::MODULE);
 
@@ -491,15 +537,40 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // nodes below are internal and removed). Set definitively for THIS call —
     // `None` for single-output — so a nested multi-output arg call doesn't leak.
     let return_record = ctx.pending_return_record.take();
+    // Records bound by `out <name> = <record>` in THIS body, swapping the
+    // caller's own map back in (see `saved_out_records` above).
+    let out_records = std::mem::replace(&mut ctx.pending_out_records, saved_out_records);
     ctx.pending_inline_record = if let Some(rec) = return_record {
         // A `return { ... }` record literal: `-> { a, b }` is one record-typed
         // output, so the fields were destructured into a field->binding map
         // rather than wired to the (single) output node. Bind the caller's
         // record from that map.
         Some(rec)
+    } else if chip_decl.outputs.len() == 1
+        && let Some(rec) = chip_decl
+            .outputs
+            .first()
+            .and_then(|o| out_records.get(&o.name))
+    {
+        // A single RECORD-typed output (`mod f() -> (o: Rec) { out o = rec }`).
+        // Keyed by the OUTPUT name, exactly like the multi-output case, so
+        // `f().o` (and `let d = f()` then `d.o`) keeps resolving. Consumers that
+        // want the value itself unwrap the single output — see the argument
+        // binding above, which mirrors the auto-unwrap a scalar result gets.
+        let name = &chip_decl.outputs[0].name;
+        let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::default();
+        record.insert(crate::intern::intern(name), Binding::Record(rec.clone()));
+        Some(record)
     } else if chip_decl.outputs.len() > 1 {
         let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::default();
         for (i, out) in chip_decl.outputs.iter().enumerate() {
+            // A record-typed output among several carries no wire into its
+            // output node (a record has no single port), so take its field map
+            // and nest it: `r.card.cardtype` then resolves through both hops.
+            if let Some(rec) = out_records.get(&out.name) {
+                record.insert(crate::intern::intern(&out.name), Binding::Record(rec.clone()));
+                continue;
+            }
             let Some(&out_id) = inline_output_ids.get(i) else {
                 continue;
             };

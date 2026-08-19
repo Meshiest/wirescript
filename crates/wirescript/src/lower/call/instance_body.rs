@@ -60,6 +60,7 @@ pub(super) fn build_chip_module(
         exec_signal_payloads: HashMap::default(),
         pending_inline_record: None,
         pending_return_record: None,
+        pending_out_records: HashMap::default(),
         chip_call_stack: ctx.chip_call_stack.clone(),
         known_fn_names: ctx.known_fn_names.clone(),
         // A `const` parameter's call-site value overlays the module constants

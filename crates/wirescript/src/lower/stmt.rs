@@ -1755,6 +1755,31 @@ pub(super) fn lower_out_binding(
         Some(o) => o,
         None => return,
     };
+    // A RECORD assigned to an output (`out card = someRecord`). A record has no
+    // single value port, so lowering it as an expression yields an
+    // `_Unsupported` placeholder and the output silently carries a default.
+    // Stash the field map under this output's name instead; the inline-call
+    // machinery hands it to the caller as a real record (see
+    // `pending_out_records`). Mirrors what `Stmt::Return` already does through
+    // `pending_return_record`.
+    if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, value).cloned() {
+        ctx.pending_out_records.insert(name.to_string(), fields);
+        return;
+    }
+    if let Expr::RecordLit { fields, .. } = value {
+        let record = lower_record_lit(ctx, fields);
+        ctx.pending_out_records.insert(name.to_string(), record);
+        return;
+    }
+    // `out x = makeRecord(...)`: the call stashes its own field map, exactly as
+    // `let`/`return` consume it.
+    ctx.pending_inline_record = None;
     let port = lower_expr(ctx, value);
+    if matches!(value, Expr::Call { .. })
+        && let Some(record) = ctx.pending_inline_record.take()
+    {
+        ctx.pending_out_records.insert(name.to_string(), record);
+        return;
+    }
     ctx.connect(port, out.node_id.port(WirePort::RerInput));
 }

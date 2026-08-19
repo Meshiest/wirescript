@@ -209,3 +209,31 @@ fn var_read_after_if_not_reused_from_branch() {
     assert!(gets >= 2,
         "post-join read of `a` must get its own Var_Get, not reuse the in-branch one (got {gets})");
 }
+
+/// A record-returning mod call passed DIRECTLY as an argument
+/// (`Take(Make())`) must bind the callee's record parameter to the caller's
+/// record, exactly as the hand-split `let m = Make()` / `Take(m.o)` does.
+///
+/// Argument binding only recognised a record LITERAL or something
+/// `resolve_field_chain` could walk (an ident or field chain). A call
+/// expression is neither, so the record param never received its fields, every
+/// destructured name inside the callee was unbound, and each read lowered to an
+/// `_Unsupported` placeholder returning a default. `wirescript-check` reported
+/// the file clean, so this shipped as a silent miscompile.
+#[test]
+fn record_returning_call_as_an_argument_binds_the_record() {
+    let r = compile(
+        "type Rec = { a: string, b: int }\n\
+         let recempty: Rec = { a: \"Z\", b: 0 }\n\
+         mod Make() -> (o: Rec) { out o = recempty }\n\
+         mod Take({a, b}: Rec) -> (s: string) { out s = a }\n\
+         in go: exec\n\
+         on go { let r = Take(Make())  PrintToConsole(\"${r.s}\") }",
+    );
+    assert_no_errors(&r);
+    let placeholders = gate_count(&r, "_Unsupported");
+    assert_eq!(
+        placeholders, 0,
+        "a record-returning call argument must not lower to a placeholder"
+    );
+}

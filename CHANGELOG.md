@@ -2,6 +2,8 @@
 
 ## 1.4.1
 
+- A record assigned to a mod output (`mod f() -> (o: Rec) { out o = rec }`) now reaches the caller. A record has no single value port, so the output silently carried a placeholder that read a default, and everything downstream of it did too, including a record result passed straight to another mod (`Take(Make())`). The warning only appeared when the result went unused, so the broken cases were the quiet ones.
+- An imported module's root-level `in` and `out` ports are now declared and reachable as `ns.name`. They were dropped entirely, so `on ns.trigger { ... }` matched nothing and silently discarded the whole handler body while both stages reported the file clean. Root-level `var`, `array`, `map` and `buffer` members already worked.
 - An import read only in an event handler's config (`on Clock(interval = TICK)`) is no longer reported as unused. The scan walked the handler body but not its config args, so a constant used only to configure the gate warned `WS014`, and Organize Imports would then delete it.
 - Two `import * as` namespaces that export the same member name now stay distinct. `A.foo` and `B.foo` had both resolved to whichever module was imported last, so a field access on the other read the wrong value and lowered to a placeholder while type-checking reported the file clean.
 

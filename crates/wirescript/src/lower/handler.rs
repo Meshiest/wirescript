@@ -88,6 +88,13 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             Some(Binding::Record(fields_map)) => {
                 fields_map.get(&crate::intern::intern(field)).cloned()
             }
+            // `on ns.trigger` where `ns` came from `import * as ns`: resolve the
+            // member through that namespace. An imported `in` port binds as
+            // `Binding::Input`, which `binding_to_port` turns into its
+            // `RerOutput` exactly like a local input. Without this the trigger
+            // matched nothing and the ENTIRE handler was dropped, with no
+            // diagnostic from either stage.
+            Some(Binding::Namespace(members)) => members.get(field).cloned(),
             _ => None,
         };
         if let Some(binding) = rec_binding {

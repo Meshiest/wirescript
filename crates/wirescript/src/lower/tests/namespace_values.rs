@@ -176,6 +176,61 @@ fn two_namespaces_sharing_a_member_name_stay_distinct() {
     );
 }
 
+/// An imported module's root-level `in` port, triggered as `on ns.port`. The
+/// namespace lowering never declared `in`/`out` at all, so the port did not
+/// exist and the trigger matched nothing — which silently dropped the ENTIRE
+/// handler body, with both typecheck and lowering reporting the file clean.
+#[test]
+fn namespaced_input_port_can_trigger_a_handler() {
+    let (tc, lr) = compile_with_lib(
+        "in trigger: exec",
+        "import * as L from \"lib\"\non L.trigger { PrintToConsole(\"fired\") }",
+    );
+    assert_clean(&tc, &lr);
+    let has_input = lr
+        .module
+        .nodes
+        .values()
+        .any(|n| n.gate_class == "BrickComponentType_Internal_MicrochipInput");
+    assert!(has_input, "the imported `in` port must be declared");
+    let printed = lr
+        .module
+        .nodes
+        .values()
+        .any(|n| n.gate_class.contains("PrintToConsole"));
+    assert!(
+        printed,
+        "the handler body must survive: `on ns.trigger` used to drop it entirely"
+    );
+    assert!(
+        !lr.module.wires.is_empty(),
+        "the imported input must drive the handler's exec chain"
+    );
+}
+
+/// An imported module's root-level `out` port is declared, and its initializer
+/// is wired. Ordering matters: the value may name a member declared after it,
+/// so outputs are wired only once the whole module is in scope.
+#[test]
+fn namespaced_output_port_is_declared_and_wired() {
+    let (tc, lr) = compile_with_lib(
+        "var counter: int = 0\nout total = counter",
+        "import * as L from \"lib\"\nin go: exec\non go { L.counter = L.counter + 1 }",
+    );
+    assert_clean(&tc, &lr);
+    let out_id = lr
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .map(|(id, _)| *id)
+        .expect("the imported `out` port must be declared");
+    assert!(
+        lr.module.wires.iter().any(|w| w.target.node_id == out_id),
+        "the imported output's initializer must be wired into it"
+    );
+}
+
 #[test]
 fn namespaced_chip_calls_still_work() {
     // Guard the pre-existing call path against the value-member change.

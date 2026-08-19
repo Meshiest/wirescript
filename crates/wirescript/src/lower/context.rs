@@ -217,6 +217,15 @@ pub(super) struct LowerCtx<'a> {
     /// call consumes this (instead of the removed output node) to bind the
     /// caller's record. Set only by a record-literal return; taken by the call.
     pub(super) pending_return_record: Option<HashMap<crate::intern::Sym, Binding>>,
+    /// Output name → the record bound to it by `out <name> = <record>` inside a
+    /// mod body. A record has no single value port, so wiring it into the
+    /// output's `RerInput` lowered to an `_Unsupported` placeholder that read a
+    /// default. The inline-call machinery consults this to hand the caller the
+    /// real field map instead (see `lower_out_binding` and the record assembly
+    /// at the end of `lower_chip_call_inline`). Scoped to one inline expansion:
+    /// swapped out and restored around the callee body, exactly like
+    /// `scoped_consts`, so a nested call cannot leak into its caller.
+    pub(super) pending_out_records: HashMap<String, HashMap<crate::intern::Sym, Binding>>,
     /// Source ranges of chips/mods whose bodies are being lowered on the current
     /// call path (child contexts inherit a copy). Every call is expanded into the
     /// wire graph at compile time, so a body that (transitively) calls itself

@@ -145,6 +145,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Namespace(ns) => {
             let mut ns_decls: HashMap<String, Binding> = HashMap::default();
             let mut ns_buffers = Vec::new();
+            let mut ns_outputs = Vec::new();
             // Value members whose lowered binding we capture into this
             // namespace's map AFTER the loop (so `A.foo` reads A's own `foo`
             // even when a later `import * as B` overwrites the shared bare
@@ -206,6 +207,33 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                         ns_buffers.push(b);
                         ns_value_names.push(b.name.clone());
                     }
+                    // An imported module's `in`/`out` PORTS. Without these the
+                    // declarations were dropped entirely: `on ns.trigger { … }`
+                    // type-checked clean and lowered to nothing at all, taking
+                    // the whole handler with it. They become ports of the
+                    // importing module's chip, exactly as a local `in`/`out`
+                    // does, and are reachable both bare and as `ns.name`.
+                    TopDecl::In(i) if ctx.scope.get(&i.name).is_none() => {
+                        pre_declare_input(ctx, i);
+                        ns_value_names.push(i.name.clone());
+                    }
+                    TopDecl::Out(o) if ctx.scope.get(&o.name).is_none() => {
+                        ctx.with_nofold(o.no_fold, |ctx| {
+                            pre_declare_output(
+                                ctx,
+                                &o.name,
+                                o.value.as_ref(),
+                                o.typ.as_ref(),
+                                o.side,
+                                o.label.as_deref(),
+                                o.label_expr.as_ref(),
+                                o.invisible,
+                                &o.range,
+                            )
+                        });
+                        ns_outputs.push(o);
+                        ns_value_names.push(o.name.clone());
+                    }
                     _ => {}
                 }
             }
@@ -214,6 +242,14 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // pre-declared above — a name the importer already owns stays its.
             for b in ns_buffers {
                 lower_buffer_body(ctx, b);
+            }
+            // Same ordering rule as buffers: an `out x = <expr>` initializer may
+            // name a member declared after it, so wire the values only once the
+            // whole module is in scope.
+            for o in ns_outputs {
+                ctx.with_nofold(o.no_fold, |ctx| {
+                    lower_out_binding(ctx, &o.name, o.value.as_ref(), &o.range)
+                });
             }
             // Capture each value member's binding into this namespace's map,
             // NOW — before the next `import * as` lowers its own members and
