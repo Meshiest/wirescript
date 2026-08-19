@@ -182,6 +182,27 @@
     }
 
     #[test]
+    fn import_used_in_event_config_not_unused() {
+        // `on Clock(interval = TICK)` reads TICK in the handler's CONFIG args,
+        // which the usage scan skipped — it only walked the handler body — so a
+        // constant used ONLY to configure the event gate looked unused and
+        // warned WS014. Inlining the literal to silence it is the wrong fix: the
+        // value IS consumed.
+        let loader = mem(&[("lib.ws", "let TICK = 0.15")]);
+        let r = resolve(
+            "import { TICK } from \"lib\"\non Clock(interval = TICK) { }",
+            "main.ws",
+            &loader,
+        );
+        let ws014: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS014").collect();
+        assert!(
+            ws014.is_empty(),
+            "an import read in an event config arg must not be reported unused: {:?}",
+            ws014
+        );
+    }
+
+    #[test]
     fn import_var_alias_renames() {
         let loader = mem(&[("lib.ws", "var counter: int = 0")]);
         let r = resolve(

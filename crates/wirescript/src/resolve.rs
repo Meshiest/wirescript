@@ -706,7 +706,26 @@ fn collect_idents_in_decls(decls: &[TopDecl]) -> HashSet<String> {
 
 fn collect_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
     match d {
-        TopDecl::Handler(h) => collect_idents_in_block(&h.body, idents),
+        TopDecl::Handler(h) => {
+            // The event's CONFIG args count as uses: `on Clock(interval = TICK)`
+            // reads TICK to configure the gate, not in the body. Missing these
+            // reported the import unused (WS014) — and Organize Imports would
+            // then delete it, breaking the handler it configures.
+            for arg in &h.config {
+                match arg {
+                    HandlerConfigArg::Positional(e) => collect_idents_in_expr(e, idents),
+                    HandlerConfigArg::Named { value, .. } => collect_idents_in_expr(value, idents),
+                }
+            }
+            // A capture param may annotate its type with an imported alias
+            // (`on CustomEvent("x") -> (v: SomeType)`).
+            for p in &h.params {
+                if let Some(t) = &p.ty {
+                    collect_idents_in_type_expr(t, idents);
+                }
+            }
+            collect_idents_in_block(&h.body, idents);
+        }
         TopDecl::AnonChip(ac) => collect_idents_in_block(&ac.body, idents),
         TopDecl::Chip(c) => {
             for p in &c.inputs {

@@ -2,6 +2,7 @@
 
 ## 1.4.1
 
+- An import read only in an event handler's config (`on Clock(interval = TICK)`) is no longer reported as unused. The scan walked the handler body but not its config args, so a constant used only to configure the gate warned `WS014`, and Organize Imports would then delete it.
 - Two `import * as` namespaces that export the same member name now stay distinct. `A.foo` and `B.foo` had both resolved to whichever module was imported last, so a field access on the other read the wrong value and lowered to a placeholder while type-checking reported the file clean.
 
 ## 1.4.0
