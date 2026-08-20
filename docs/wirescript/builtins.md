@@ -1078,6 +1078,24 @@ optional entity whose grid receives the matching **object** events. Delivery is
 same-owner; use `SendGlobalCustomEvent` for the ownership-agnostic version. Fires
 all matching receivers.
 
+> **A targeted send needs `isObject = true` on the receiver.** Giving a `target`
+> (including the receiver spelling, `ent.SendCustomEvent(...)`) makes it an
+> *object* event, and only an object-scoped receiver matches one. A plain
+> `on CustomEvent("x")` is scoped grid-wide and **silently never fires** for it -
+> no error, no warning, at check or compile. The two spellings pair up:
+>
+> ```wirescript ignore
+> ent.SendCustomEvent("ui.init", who)          // targeted -> object event
+> on CustomEvent("ui.init", isObject = true) -> (who: character) { }
+>
+> SendCustomEvent("ui.init", who)              // untargeted -> grid-wide
+> on CustomEvent("ui.init") -> (who: character) { }
+> ```
+>
+> This is the usual way to talk to a spawned prefab: keep the entity
+> `SpawnPrefab` returned and target it, with `isObject = true` on the prefab's
+> receivers.
+
 ```wirescript
 on hit {
   SendCustomEvent("damage", 7, attacker)   // send an int + a character

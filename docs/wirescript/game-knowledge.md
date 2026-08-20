@@ -165,3 +165,61 @@ Rename  Find
 LeaveSeat        Vehicle_ZoomIn   Vehicle_ZoomOut
 ```
 
+
+## DisplayText Screen Placement
+
+`DisplayText` positions text with an **anchor** and a **position offset**, and
+the two use different units. Getting this wrong puts the text off-screen, where
+it looks identical to the text not drawing at all.
+
+- **`anchorX` / `anchorY` are fractions of the screen.** `0` is left / top,
+  `0.5` is center, `1` is right / bottom. This is the only pair that takes a
+  `0..1` value.
+- **`positionX` / `positionY` are an offset from that anchor in slate units**,
+  which are roughly pixels at 1080p -- not a fraction. A realistic offset is in
+  the tens or hundreds. `positionX = 0.98` is not "98% across the screen", it is
+  one pixel from the anchor.
+
+Anchor to the corner you want, then offset *inward* with the sign that moves you
+away from that edge:
+
+```wirescript
+on show {
+  // top-right, inset 40 units from the right edge and 40 down from the top
+  ctrl.DisplayText("LAP 3",
+    anchorX = 1.0, anchorY = 0.0,
+    positionX = -40.0, positionY = 40.0,
+    fontSize = 28, justify = "Right")
+
+  // bottom-right, 300 in from the right and 460 up from the bottom
+  ctrl.DisplayText("STATUS",
+    anchorX = 1.0, anchorY = 1.0,
+    positionX = -300.0, positionY = -460.0,
+    fontSize = 24)
+}
+```
+
+### Defaults worth knowing
+
+Unset parameters bake the gate's own defaults, which are sane -- an invisible
+overlay is a placement bug far more often than a scale or color one:
+
+| Field | Default | Note |
+|---|---|---|
+| `Scale` | `(1, 1)` | not zero, so unset scale never hides text |
+| `FontColor` | opaque white | not transparent |
+| `Anchor` | `(0.5, 0.5)` | screen center |
+| `Position` | `(0, 0)` | no offset from the anchor |
+| `Pivot` | `(-1, 0.5)` | |
+| `FontSize` | `16` | |
+| `OutlineSize` | `2` | text has an outline unless you pass `0` |
+| `Lifetime` | `5.0` | seconds; **`0` means infinite**, not "vanish now" |
+| `TextId` | `0` | `0` uses the brick's persistent handle; a non-zero id is shared by every gate using it, which is how several gates update one piece of text |
+
+`lifetime` interacts with how often you redraw. Text redrawn every tick wants a
+short lifetime so it disappears if the drawing chip stops; text redrawn only on
+a change wants `0` (infinite), or it blanks itself between updates.
+
+The 2D layout ports are `Vector2D` composites and the call feeds them one axis
+at a time, so every one of these is a `float` named `...X` / `...Y`. There is no
+`vector`-typed `position` or `anchor`; passing one is a `WS041` error.

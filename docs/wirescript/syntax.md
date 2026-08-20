@@ -26,7 +26,35 @@ import { swap as mySwap } from "lib"    // aliased import
 import * as utils from "lib"            // namespace import — utils.swap()
 ```
 
-Only stateless declarations can be imported: `mod`, `chip`, `let`, and `type`. Variables, arrays, buffers, I/O ports, and handlers are not importable.
+Importable: `mod`, `chip`, `fn`, `let`, `const`, `type`, and a module's
+root-level `var`, array, map, `buffer`, `in` and `out` declarations. Imported
+state is **shared, not copied** -- every importer reads and writes the same
+storage gate, so a library module can own state that several entry files drive.
+
+**Handlers are not importable, and a handler declared in an imported module is
+silently dropped.** There is no error and no warning at any stage: the receiver
+gate is simply never emitted, and at runtime every event it would have caught is
+discarded. Nothing in `just check` or `just compile` reveals it.
+
+So put `on` handlers in the **entry** file. When the logic belongs to a shared
+library, expose it as a `mod` and let each entry file declare the thin handler
+that calls it:
+
+```wirescript ignore
+// lib.ws -- the logic, reachable by importers
+mod onPing(v: int) { total = total + v }
+
+// main.ws -- the handler must be declared HERE
+import { onPing } from "lib"
+on CustomEvent("ping") -> (v: int) { onPing(v) }
+```
+
+To confirm the receivers survived, count them in the lowered graph -- this is
+the only check that sees the problem:
+
+```
+just ir main.ws | grep -c WireGraphPseudo_CustomEvent
+```
 
 Paths are resolved relative to the importing file. Circular imports are an error.
 
