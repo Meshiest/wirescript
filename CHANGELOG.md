@@ -3,6 +3,7 @@
 ## 1.4.2
 
 - Folding enabled by default now that it's stable
+- Inline nested-prefab blocks now compile in the browser build. An inline nested-prefab block passed to `SpawnPrefab` (the `$`-fenced source form) is compiled to its own prefab and embedded, matching the native CLI. The browser previously rejected any inline nested block with "no nested compiler configured for this compile"; dragged-in `$./file.brz` prefab references already worked. Blocks nested past a fixed depth fail with a clear error instead of hanging.
 
 ## 1.4.1
 
