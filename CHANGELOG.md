@@ -1,8 +1,9 @@
 # Wirescript Changelog
 
-## Unreleased
+## 1.4.3
 
 - An imported `let` no longer clobbers a same-named declaration in the importing file. An imported `let start` overwrote the file's own `in start: exec`, so `on start` bound the imported value instead of the input and silently dropped the handler body.
+- Void container operations (`push`/`clear`/`set`, the `keys`/`values` fills) now type as `never`, so using their result as a value (`let r = a.push(x)`) is a type error instead of silently accepted.
 
 ## 1.4.2
 

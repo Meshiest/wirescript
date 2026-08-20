@@ -116,6 +116,12 @@ fn check_stmt_inner(
                     check_map_literal(ctx, entries, k, v_ty);
                 } else {
                     let t = infer::check(ctx, init, &inner);
+                    // Reject a void-mutation `Never` init on an unannotated var
+                    // (annotated already mismatches via `check`), same as the
+                    // top-level decl and `let` paths.
+                    if v.typ.is_none() {
+                        reject_never_value(ctx, &unwrap_ref(&t), init.range(), &v.name);
+                    }
                     // Refine an unannotated var's placeholder `any` from a
                     // non-literal init, same as the top-level decl path.
                     if v.typ.is_none() && matches!(inner, Type::Any) {
@@ -141,7 +147,9 @@ fn check_stmt_inner(
         }
         Stmt::Let(l) => {
             let t = infer_let_init(ctx, l);
-            check_let_type_annotation(ctx, l, &t);
+            if !reject_never_binding(ctx, l, &t) {
+                check_let_type_annotation(ctx, l, &t);
+            }
             record_single_output_alias(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
             // A body-local `let name = <constant>` is recorded in the

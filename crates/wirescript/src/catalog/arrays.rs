@@ -189,7 +189,10 @@ pub fn array_return_type(method: &str, elem: &Type) -> Option<Type> {
         .map(|p| (field_name(&p.name), port_type(&p.ty, elem)))
         .collect();
     Some(match fields.len() {
-        0 => Type::Any,
+        // No distinct output = a void mutation (`push`, `clear`, `fill`, …).
+        // `Never` (not `Any`) so using its "result" as a value is a type
+        // mismatch instead of being silently accepted.
+        0 => Type::Never,
         1 => fields.into_iter().next().unwrap().1,
         _ => Type::Record(fields),
     })

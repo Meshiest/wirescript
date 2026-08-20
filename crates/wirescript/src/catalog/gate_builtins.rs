@@ -98,6 +98,27 @@ pub fn method_for(name: &str) -> Option<&'static str> {
     })
 }
 
+/// A descriptive usage hint for a STATEMENT-form gate builtin (`parser::
+/// gate_builtin_assign`), shown when one fails to desugar — used as a value, or
+/// with the wrong number of arguments (e.g. still being typed). Completion
+/// offers these names, so recognizing them here (rather than reporting a bare
+/// "unknown identifier") keeps the error sensible. The hint only DESCRIBES the
+/// builtin — it never guesses which specific mistake was made, so it reads right
+/// whether the call was a value misuse or an incomplete statement. `None` for
+/// the expression-form builtins (which desugar to methods and CAN be
+/// expressions) and for non-builtins.
+pub fn statement_usage_hint(name: &str) -> Option<&'static str> {
+    Some(match name {
+        SET_VARIABLE => "`SetVariable(variable, value)` is an exec statement that sets a variable \
+                         (shorthand for `v = x`); it has no return value",
+        SET_ARRAY_ELEMENT => "`SetArrayElement(array, index, value)` is an exec statement that sets \
+                              an array element (shorthand for `a[i] = x`); it has no return value",
+        INCREMENT_VARIABLE => "`IncrementVariable(variable, amount)` is an exec statement that adds \
+                               to a variable (shorthand for `v = v + x`); it has no return value",
+        _ => return None,
+    })
+}
+
 /// Every callable gate-builtin name, for editor completion.
 pub const ALL: &[&str] = &[
     GET_VARIABLE,

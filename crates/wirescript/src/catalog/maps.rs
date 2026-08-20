@@ -66,8 +66,8 @@ pub static MAP_METHODS: &[MapMethod] = &[
     MapMethod { name: "length", mutates: false, gate: gc::MAP_GET_LENGTH, signature: "() -> int", doc: "Number of entries", params: |_, _| vec![] },
     // `keys`/`values` fill a caller-supplied destination array in place (see
     // `lower::access::lower_map_method`, which reads the first arg as the
-    // array-ref destination); their own return is `Any` (`map_return_type`),
-    // so the `out: K[]`/`V[]` array is a PARAMETER, not the result.
+    // array-ref destination); the `out: K[]`/`V[]` array is a PARAMETER, and
+    // the call itself has no value (`Never`, `map_return_type`).
     MapMethod { name: "keys", mutates: false, gate: gc::MAP_GET_KEYS, signature: "(destArray)", doc: "Fill an array with the map's keys", params: |k, _| vec![p("out", Type::Array(Box::new(k.clone())), false)] },
     MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, signature: "(destArray)", doc: "Fill an array with the map's values", params: |_, v| vec![p("out", Type::Array(Box::new(v.clone())), false)] },
 ];
@@ -91,7 +91,7 @@ pub fn is_map_method(name: &str) -> bool {
 
 /// The return type of `m.<method>()` for a `Map<key, value>`. `get` yields a
 /// record that auto-unwraps to `Value`; `has`/`remove` a bool; `length` an int;
-/// the rest are statements (`Any`).
+/// the rest are void statements (`never`).
 pub fn map_return_type(method: &str, _key: &Type, value: &Type) -> Option<Type> {
     Some(match method {
         "get" => Type::Record(vec![
@@ -100,7 +100,11 @@ pub fn map_return_type(method: &str, _key: &Type, value: &Type) -> Option<Type> 
         ]),
         "has" | "remove" => Type::Bool,
         "length" => Type::Int,
-        "set" | "clear" | "copyFrom" | "keys" | "values" => Type::Any,
+        // All void statements: `set`/`clear`/`copyFrom` mutate the map;
+        // `keys`/`values` fill the destination array passed as their argument
+        // (`m.keys(destArray)`). None produce a value, so `Never` (not `Any`)
+        // makes consuming a "result" a type error.
+        "set" | "clear" | "copyFrom" | "keys" | "values" => Type::Never,
         _ => return None,
     })
 }

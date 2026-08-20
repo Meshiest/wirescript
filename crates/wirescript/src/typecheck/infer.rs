@@ -920,6 +920,19 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     return Type::Record(fields);
                 }
                 let Some(sym) = ctx.scope.lookup(name).cloned() else {
+                    // A statement-form gate builtin (`SetArrayElement`,
+                    // `SetVariable`, `IncrementVariable`) is real — completion
+                    // offers it — but it desugars to an assignment only in
+                    // statement position with the right arg count. Anything else
+                    // (used as a value, or still being typed with too few args)
+                    // lands here; describe the builtin rather than reporting a
+                    // bare, misleading "unknown identifier".
+                    if let Some(hint) =
+                        crate::catalog::gate_builtins::statement_usage_hint(name)
+                    {
+                        ctx.emit("WS002", hint.to_string(), range.clone());
+                        return Type::Any;
+                    }
                     ctx.emit(
                         "WS002",
                         format!("unknown identifier '{name}'"),

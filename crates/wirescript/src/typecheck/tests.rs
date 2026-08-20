@@ -21,6 +21,57 @@
     }
 
     #[test]
+    fn statement_form_gate_builtin_reports_helpful_message() {
+        // `SetArrayElement`/`SetVariable`/`IncrementVariable` desugar to
+        // assignments only in statement position with the right arg count.
+        // Anything else — used as a value, or still being typed with too few
+        // args — used to report a bare "unknown identifier" even though
+        // completion offers the name. Both now get a describe-the-builtin hint.
+        let hint = |d: &crate::diagnostic::Diagnostic| {
+            d.code == "WS002"
+                && d.message.contains("SetArrayElement")
+                && d.message.contains("exec statement")
+                && d.message.contains("a[i] = x")
+        };
+        // Used as a value.
+        let r = tc("var a: int[]\nin go: exec\non go { let r = SetArrayElement(a, 0, 9) }");
+        assert!(r.diagnostics.iter().any(hint), "value use: {:?}", r.diagnostics);
+        // Incomplete / wrong arg count (the mid-typing case) — NOT "unknown identifier".
+        let r2 = tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0) }");
+        assert!(
+            r2.diagnostics.iter().any(hint)
+                && !r2.diagnostics.iter().any(|d| d.message.contains("unknown identifier")),
+            "wrong arg count: {:?}",
+            r2.diagnostics
+        );
+        // Correct statement desugars to `a[0] = 9` and is clean.
+        assert_no_diags(&tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0, 9) }"));
+    }
+
+    #[test]
+    fn void_container_mutation_used_as_value_errors() {
+        // Void mutations (`push`/`insert`/`clear`/`set`/`copyFrom`/...) return
+        // `Never`, not `Any`, so binding their "result" is a WS003 error instead
+        // of silently accepting an unusable value. As a statement they're fine,
+        // and value-returning methods (`pop`, `get`) still bind.
+        let pre = "var a: int[]\nvar m: Map<string,int>\nin go: exec\n";
+        let no_value = |r: &TypeCheckResult| {
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS003" && d.message.contains("no value"))
+        };
+        assert!(no_value(&tc(&format!("{pre}on go {{ let r = a.push(5) }}"))), "let/push");
+        assert!(no_value(&tc(&format!("{pre}on go {{ let r = m.set(\"k\", 1) }}"))), "let/set");
+        assert!(no_value(&tc(&format!("{pre}on go {{ var x = a.clear() }}"))), "var/clear");
+        assert!(no_value(&tc(&format!("{pre}out y = a.push(5)"))), "out/push");
+        // Statement form is clean.
+        assert_no_diags(&tc(&format!("{pre}on go {{ a.push(5) }}")));
+        // Value-returning methods still bind fine.
+        assert_no_diags(&tc(&format!("{pre}on go {{ let r = a.pop() }}")));
+        assert_no_diags(&tc(&format!("{pre}on go {{ let r = m.get(\"k\") }}")));
+    }
+
+    #[test]
     fn generic_array_and_ref_syntax_desugar() {
         // `Array<V>` is an alternate spelling of `V[]`, and `Ref<V>` of `*V`.
         assert_no_diags(&tc("var a: Array<int> = [1, 2]"));

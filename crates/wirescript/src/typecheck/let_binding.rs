@@ -314,6 +314,44 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
     }
 }
 
+/// A binding whose initializer has no value (`Type::Never` — a void container
+/// mutation like `a.push(x)` / `m.set(k, v)` used as a value) has nothing to
+/// bind. Report it and return `true`. Nothing but a void mutation produces
+/// `Never` today, so this can't fire spuriously. Shared by `let`/`var`/`out`.
+pub(super) fn reject_never_value(
+    ctx: &mut TypeCheckCtx,
+    inferred: &Type,
+    range: &SourceRange,
+    name: &str,
+) -> bool {
+    if !matches!(inferred, Type::Never) {
+        return false;
+    }
+    ctx.emit(
+        "WS003",
+        format!(
+            "`{name}` is bound to an expression that produces no value (a void mutation \
+             such as `a.push(x)` or `m.set(k, v)`); use it as a statement, not a value"
+        ),
+        range.clone(),
+    );
+    true
+}
+
+/// `reject_never_value` for a `let` binding: returning `true` lets the caller
+/// skip the ordinary annotation check, which would only add a redundant WS016.
+pub(super) fn reject_never_binding(
+    ctx: &mut TypeCheckCtx,
+    l: &crate::ast::LetDecl,
+    inferred: &Type,
+) -> bool {
+    let name = match &l.binding {
+        crate::ast::LetBinding::Ident { name, .. } => name.as_str(),
+        _ => "<binding>",
+    };
+    reject_never_value(ctx, inferred, l.value.range(), name)
+}
+
 pub(super) fn check_let_type_annotation(
     ctx: &mut TypeCheckCtx,
     l: &crate::ast::LetDecl,

@@ -328,6 +328,12 @@ fn check_decl_inner(
                 } else {
                     ctx.in_pure(|ctx| {
                         let t = infer::check(ctx, init, &inner);
+                        // An unannotated `var x = a.push(5)` adopts the init's
+                        // type; reject a void-mutation `Never` here (an annotated
+                        // var already mismatches via `check` above).
+                        if v.typ.is_none() {
+                            reject_never_value(ctx, &unwrap_ref(&t), init.range(), &v.name);
+                        }
                         // Unannotated var with a non-literal init (`var v =
                         // Vec(…)`): refine the placeholder `any` from the RHS,
                         // like buffers do.
@@ -395,6 +401,12 @@ fn check_decl_inner(
         TopDecl::Out(b) => {
             if let Some(value) = &b.value {
                 let value_ty = ctx.in_pure(|ctx| infer::infer(ctx, value));
+                // An unannotated `out y = a.push(5)` would publish a nothing;
+                // reject a void-mutation `Never` (an annotated out already
+                // mismatches via `coerce_or_emit` below).
+                if b.typ.is_none() {
+                    reject_never_value(ctx, &unwrap_ref(&value_ty), value.range(), &b.name);
+                }
                 // When out has ref type and value is a var, override to show "ref" in hover
                 if let Some(ref te) = b.typ {
                     let resolved = resolve_type_expr(ctx, te);
@@ -440,7 +452,9 @@ fn check_decl_inner(
         }
         TopDecl::Let(l) => {
             let t = ctx.in_pure(|ctx| infer_let_init(ctx, l));
-            check_let_type_annotation(ctx, l, &t);
+            if !reject_never_binding(ctx, l, &t) {
+                check_let_type_annotation(ctx, l, &t);
+            }
             record_single_output_alias(ctx, &l.binding, &l.value);
             bind_let(ctx, &l.binding, &t);
             // Same is_const/let split as the `Stmt::Let` arm (typecheck/stmt.rs):
