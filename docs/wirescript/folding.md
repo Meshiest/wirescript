@@ -7,27 +7,30 @@ or nested conditionals collapses in a single compile.
 
 ## Enabling folding
 
-The pass is currently **opt-in** while it stabilizes -- an unannotated program does not
-fold. Turn it on with a module-level `@fold`: on the first line of the entry file
-(after any module doc), separated from the first declaration by a blank line, exactly
-like the module-level `@nofold` placement below.
+Folding is **on by default** -- every compile folds unless you opt out. An unannotated
+program folds:
 
 ```wirescript
-@fold
-
 let x = 2 + 3 * 4          // folds to the literal 14
 ```
 
-- `--fold` on the CLI's `compile` command force-enables folding without requiring a
-  module-level `@fold` (a module-level `@nofold` still wins -- see below).
-- `--no-fold` force-disables folding, overriding a module-level `@fold`.
+Turn it off for a whole program with a module-level `@nofold`: on the first line of the
+entry file (after any module doc), separated from the first declaration by a blank line.
+
+```wirescript
+@nofold
+
+let x = 2 + 3 * 4          // stays as gates; nothing folds or is elided
+```
+
+- `--no-fold` on the CLI's `compile` command disables folding for that compile,
+  equivalent to a module-level `@nofold`.
+- `--fold`, and a module-level `@fold`, still parse but are redundant now that folding
+  is the default. They never override a `@nofold`.
 - If both a module-level `@fold` and `@nofold` are present, `@nofold` wins and the
   parser warns that the annotations conflict.
-- An `@fold` in an *imported* file has no effect -- only the entry file's module-level
+- A `@nofold` in an *imported* file has no effect -- only the entry file's module-level
   annotation is consulted.
-
-The plan is to default-enable folding once the pass has stabilized further; `Auto`'s
-meaning (fold only when opted in) is the single place that flips when that happens.
 
 ## What folds
 
@@ -66,8 +69,8 @@ fold, and it draws solely from the table's whitelisted rules (nothing derived).
 
 ## Constant inlining into gate data (always on)
 
-Independent of `@fold`: a **bare** constant wired into a gate's data field whose
-type matches the constant's type is written straight into that field and the
+Independent of the fold pass (it runs even under `@nofold`): a **bare** constant wired
+into a gate's data field whose type matches the constant's type is written straight into that field and the
 wire dropped — no separate carrier gate. This runs before the fold pass and only
 on source literals (never fold-produced ones), so folding stays a structural
 no-op.
@@ -197,14 +200,12 @@ the build instead of silently folding wrong.
 
 ## Disabling the pass
 
-- `--no-fold` on the CLI's `compile` command skips folding for that compile, even if
-  the entry file has a module-level `@fold`.
 - A module-level `@nofold`, placed at the top of the entry file and separated from the
-  first declaration by a blank line, has the same effect -- and always wins over a
-  module-level `@fold` (see "Enabling folding" above).
-- Without any of the above, folding is off by default everywhere -- CLI compile, the
-  LSP, and the wasm build -- so diagnostics and output stay consistent across tools
-  until a program opts in.
+  first declaration by a blank line, turns folding off for the whole program -- and
+  always wins over a module-level `@fold`.
+- `--no-fold` on the CLI's `compile` command has the same effect for that compile.
+- Folding is on by default everywhere it runs -- CLI compile, the LSP, and the wasm
+  build -- so all tools fold consistently unless a program opts out with `@nofold`.
 
 ## Guarantee
 

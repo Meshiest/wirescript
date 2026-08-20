@@ -20,7 +20,9 @@ fn lowered(src: &str) -> LowerResult {
         module_name: None,
         template_cache: std::sync::Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
-        fold_mode: FoldMode::Auto,
+        // These are boundary-structure tests; force folding off so the fold
+        // pass can't elide the constant chip bodies used as minimal fixtures.
+        fold_mode: FoldMode::ForceOff,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     assert!(

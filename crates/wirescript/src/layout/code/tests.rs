@@ -16,7 +16,9 @@
             module_name: None,
             template_cache: Arc::new(crate::template_cache::TemplateCache::new()),
             doc_comments: &parsed.doc_comments,
-            fold_mode: crate::lower::FoldMode::Auto,
+            // Layout tests assert node placement per source line; force folding
+            // off so the fold pass can't remove nodes out from under them.
+            fold_mode: crate::lower::FoldMode::ForceOff,
             ce_slots: &crate::typecheck::CeSlotMap::default(),
         });
         r.module
@@ -50,7 +52,8 @@
             module_name: None,
             template_cache: Arc::new(crate::template_cache::TemplateCache::new()),
             doc_comments: &resolved.doc_comments,
-            fold_mode: crate::lower::FoldMode::Auto,
+            // See `lowered`: layout tests force folding off.
+            fold_mode: crate::lower::FoldMode::ForceOff,
             ce_slots: &crate::typecheck::CeSlotMap::default(),
         });
         let opts = LayoutOptions {

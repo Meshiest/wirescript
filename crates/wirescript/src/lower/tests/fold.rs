@@ -367,7 +367,8 @@ fn module_level_nofold_disables_pass() {
 }
 
 #[test]
-fn module_level_fold_enables_pass_under_auto() {
+fn fold_runs_by_default_under_auto() {
+    // Auto is the production default and now folds without any opt-in.
     // Same source as `folds_arithmetic_chain_to_fixpoint`: a chain that fully
     // collapses to a literal `true`, leaving zero Math/Compare gates behind
     // when folded. A bare `2 + 3` directly feeding a dataless `out` boundary
@@ -375,22 +376,31 @@ fn module_level_fold_enables_pass_under_auto() {
     // even a successfully-folded int result in a same-shaped baked carrier
     // gate (see `select_with_unwired_chosen_input_stays`), so a MathAdd
     // count would stay 1 either way and never distinguish folded from
-    // unfolded. Auto only folds when the entry file opts in with a
-    // module-level `@fold` — this is the default flip itself.
+    // unfolded.
+    let unannotated = compile_auto("out y = (2 + 3) * 4 == 20");
+    no_errors(&unannotated);
+    assert_eq!(
+        count_class(&unannotated.module, gc::COMPARE_EQUAL),
+        0,
+        "Auto must fold by default with no annotation"
+    );
+
+    // The legacy `@fold` opt-in is still accepted and behaves identically.
     let annotated = compile_auto("@fold\n\nout y = (2 + 3) * 4 == 20");
     no_errors(&annotated);
     assert_eq!(
         count_class(&annotated.module, gc::COMPARE_EQUAL),
         0,
-        "@fold under Auto must run the pass"
+        "a redundant @fold under Auto still folds"
     );
 
-    let unannotated = compile_auto("out y = (2 + 3) * 4 == 20");
-    no_errors(&unannotated);
+    // Opting out with `@nofold` disables the pass even under Auto.
+    let disabled = compile_auto("@nofold\n\nout y = (2 + 3) * 4 == 20");
+    no_errors(&disabled);
     assert_eq!(
-        count_class(&unannotated.module, gc::COMPARE_EQUAL),
+        count_class(&disabled.module, gc::COMPARE_EQUAL),
         1,
-        "no @fold under Auto must NOT run the pass (the default flip)"
+        "@nofold disables folding under Auto (the only opt-out)"
     );
 }
 
@@ -400,7 +410,7 @@ fn module_nofold_beats_fold() {
     // collect_module_annotations run supports either order (each annotation
     // just needs to be alone on its own line, with the whole run separated
     // from the first decl by a blank line, same as `@nofold` alone).
-    // Same source/reasoning as `module_level_fold_enables_pass_under_auto`:
+    // Same source/reasoning as `fold_runs_by_default_under_auto`:
     // a chain feeding a dataless boundary that collapses to a literal `true`
     // when folded (a bare `2 + 3` int result would get re-wrapped in a
     // same-shaped baked carrier either way and never distinguish folded from
@@ -436,7 +446,7 @@ fn module_nofold_beats_fold() {
         })
     };
 
-    // Auto: ast.fold && !ast.no_fold == true && false == false -> no fold.
+    // Auto folds by default, but `@nofold` (`ast.no_fold`) wins -> no fold.
     let r_auto = lower_with(FoldMode::Auto);
     no_errors(&r_auto);
     assert_eq!(
@@ -475,23 +485,23 @@ fn fold_adjacent_to_doc_comment_emits_module_level_only_error() {
 }
 
 #[test]
-fn imported_module_fold_is_inert() {
-    // A module-level `@fold` only takes effect for the file `resolve()` was
-    // entered on — resolve.rs never reads an imported file's own
-    // `Script.fold` when merging its declarations in (mirrors the existing
-    // entry-only `@nofold` semantics). An entry file with no `@fold` of its
-    // own must NOT fold under Auto, even when everything it imports opts in.
-    let lib = "@fold\n\nmod inc(v: int) -> int {\n  return v + 1\n}";
-    let main = "import { inc } from \"lib\"\nout y = inc(2) + 3";
+fn imported_module_nofold_is_inert() {
+    // A module-level `@nofold` only takes effect for the file `resolve()` was
+    // entered on — resolve.rs never reads an imported file's own `no_fold`
+    // when merging its declarations in. Folding is on by default, so the only
+    // way to disable it is a `@nofold` on the ENTRY file; a `@nofold` in an
+    // imported library must be inert and the unannotated entry must still fold.
+    let lib = "@nofold\n\nmod inc(v: int) -> int {\n  return v + 1\n}";
+    let main = "import { inc } from \"lib\"\nout y = inc(2) * 4 == 12";
     let r = compile_multi(main, &[("lib", lib)]);
     no_errors(&r);
-    // Unfolded: `inc(2)` inlines to a real `2 + 1` MathAdd, then `+ 3` is a
-    // second MathAdd. A folded result would collapse to a single baked
-    // carrier gate instead.
+    // Folded: `inc(2)` inlines to `2 + 1`, `* 4`, `== 12` -> literal `true`,
+    // leaving zero Compare gates. An imported `@nofold` that leaked would keep
+    // the CompareEqual gate alive instead.
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"),
-        2,
-        "the imported file's @fold must be inert for an unannotated entry file"
+        count_class(&r.module, gc::COMPARE_EQUAL),
+        0,
+        "the imported file's @nofold must be inert; the entry still folds"
     );
 }
 

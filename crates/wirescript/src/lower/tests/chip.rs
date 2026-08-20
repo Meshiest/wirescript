@@ -678,7 +678,9 @@ fn namespace_chip_call_resolves() {
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::Auto,
+        // Structural resolution test; force folding off so the constant chip
+        // body isn't elided before the instantiation assert below.
+        fold_mode: FoldMode::ForceOff,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     assert!(

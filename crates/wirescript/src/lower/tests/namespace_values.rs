@@ -39,7 +39,9 @@ fn compile_with_libs(
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::Auto,
+        // Namespace-resolution structure tests; force folding off so constant
+        // chip/value bodies aren't optimized away out from under the asserts.
+        fold_mode: FoldMode::ForceOff,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
     (tc, lr)

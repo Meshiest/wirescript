@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 1.4.2
+
+- Folding enabled by default now that it's stable
+
 ## 1.4.1
 
 - A record assigned to a mod output (`mod f() -> (o: Rec) { out o = rec }`) now reaches the caller. A record has no single value port, so the output silently carried a placeholder that read a default, and everything downstream of it did too, including a record result passed straight to another mod (`Take(Make())`). The warning only appeared when the result went unused, so the broken cases were the quiet ones.

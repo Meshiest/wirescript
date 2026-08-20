@@ -733,26 +733,23 @@ declaration directly (a variable self-label, above).
   so both branches stay real gates. See [Constant Folding](folding.md) for
   the full pass.
 
-### `@fold` -- Opt Into Constant Folding
+### `@fold` -- Constant Folding (on by default)
 
-- The fold pass is currently opt-in: `@fold` at the very top of the **entry**
-  file (after any module doc comment), separated from the first declaration
-  by a blank line, enables the whole pass for that compile — the same
-  blank-line rule as a module-level `@nofold` above, and module-level only
-  (there's no decl-scoped `@fold`).
-- Entry-file-only, same as module-level `@nofold`: an `@fold` at the top of
-  an *imported* file does not carry into the importer and has no effect.
-- If both a module-level `@fold` and `@nofold` are present, `@nofold` wins
-  and the parser warns that the two conflict. A module-level `@nofold` also
-  overrides `--fold` on the CLI.
-- Two module-level gotchas: leave a **blank line between a module doc block and
-  a module-level `@fold`** (a directly-adjacent pair registers as neither,
-  and now produces a module-level-only error), and a module-level `@fold`
-  applies only to the file compiled as the **entry** — an imported library's
-  own module-level `@fold` does not carry into the importer.
-- `--fold` on the CLI has the same effect as a module-level `@fold`, without
-  editing the source; `--no-fold` overrides either. See
-  [Constant Folding](folding.md) for the full enable/disable story.
+- Constant folding runs on every compile by default, so `@fold` is now
+  **redundant** — it is still accepted for backward compatibility but enables
+  nothing that isn't already on. To turn folding *off*, use `@nofold` (above)
+  or `--no-fold`.
+- Placement, if you do write it: `@fold` at the very top of the **entry** file
+  (after any module doc comment), separated from the first declaration by a
+  blank line — the same module-level, blank-line rule as `@nofold`, and
+  module-level only (there's no decl-scoped `@fold`). A directly-adjacent
+  module-doc / `@fold` pair registers as neither and produces a
+  module-level-only error.
+- If both a module-level `@fold` and `@nofold` are present, `@nofold` wins and
+  the parser warns that the two conflict.
+- `--fold` on the CLI likewise just re-affirms the default; `--no-fold`
+  disables folding. See [Constant Folding](folding.md) for the full
+  enable/disable story.
 
 ### `@layout("code")` -- Source-Shaped Gate Layout
 

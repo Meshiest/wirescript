@@ -105,9 +105,11 @@ pub struct LowerInput<'a> {
 }
 
 /// Whether the certified constant-fold pass runs. `Auto` (production
-/// default): fold only when the entry file opts in with a module-level
-/// `@fold`. The pass is opt-in while it stabilizes; `Auto`'s meaning is
-/// the single place to change when it becomes on-by-default.
+/// default): fold unless the entry file opts out with a module-level
+/// `@nofold`. Folding is now on by default, so `Auto` and `ForceOn` are
+/// behaviourally identical; the legacy module-level `@fold` / CLI `--fold`
+/// opt-in is still accepted but redundant. `ForceOff` (CLI `--no-fold`) is
+/// the only way to disable folding across a whole compile.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum FoldMode {
     #[default]
@@ -320,15 +322,14 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // pruned — not a user's connected-but-unused `let y = x * 2`.
     prune_dead_pure_gates(&mut module, false);
     // Certified constant folding — table-gated. `FoldMode::Auto` (the
-    // production default) only folds when the entry file opts in with a
-    // module-level `@fold`; `ForceOn`/`ForceOff` are the CLI `--fold`/
-    // `--no-fold` overrides. A module-level `@nofold` always disables it on
-    // top of the mode — even `ForceOn` respects it ("don't require @fold",
-    // not "ignore @nofold").
+    // production default) folds unless the entry file opts out with a
+    // module-level `@nofold`; `ForceOff` (CLI `--no-fold`) disables it
+    // outright. `ForceOn` (CLI `--fold`) is now equivalent to `Auto`, and the
+    // legacy `@fold` opt-in (`input.ast.fold`) no longer gates anything. A
+    // module-level `@nofold` always wins over any mode short of `ForceOff`.
     let run_fold = match input.fold_mode {
         FoldMode::ForceOff => false,
-        FoldMode::ForceOn => !input.ast.no_fold,
-        FoldMode::Auto => input.ast.fold && !input.ast.no_fold,
+        FoldMode::ForceOn | FoldMode::Auto => !input.ast.no_fold,
     };
     // Inline a bare source literal into a gate's scalar data field when its type
     // matches (a constant `on Clock(interval = 0.25)`, a `Sweep` distance, the

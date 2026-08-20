@@ -49,7 +49,9 @@ fn lower_source(src: &str) -> wirescript::lower::LowerResult {
         module_name: None,
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::Auto,
+        // Node-ID isolation tests use constant chip args as minimal fixtures;
+        // force folding off so the fold pass can't elide the chip instances.
+        fold_mode: FoldMode::ForceOff,
         ce_slots: &wirescript::typecheck::CeSlotMap::default(),
     })
 }

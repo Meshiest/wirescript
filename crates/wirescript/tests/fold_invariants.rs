@@ -30,10 +30,12 @@ fn count_module(m: &Module) -> (usize, usize) {
 /// entries in `src/compile.rs` only return emitted bytes/world, not the
 /// intermediate `Module`, so there's nothing further to count there.
 ///
-/// Deliberately `ForceOn`/`ForceOff`, NOT `Auto`: the probe/verifier files
-/// carry no module-level `@fold`, so under `Auto` both calls below would
-/// skip folding identically and this test would be trivially green without
-/// ever exercising the pass — defeating the whole point of the invariant.
+/// Deliberately `ForceOn`/`ForceOff` on the two sides, NOT `Auto`: the
+/// invariant is that folding is a structural no-op on these files, so the two
+/// sides must differ in whether the pass runs. `Auto` now folds by default
+/// (identical to `ForceOn`), so using it for both calls would run the pass on
+/// both sides and the test would be trivially green without ever comparing
+/// folded to unfolded — defeating the whole point of the invariant.
 fn counts(file: &str, fold_mode: FoldMode) -> (usize, usize) {
     let source = std::fs::read_to_string(file)
         .unwrap_or_else(|e| panic!("cannot read probe file {file}: {e}"));

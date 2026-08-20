@@ -837,50 +837,66 @@ fn gates_at(source: &str, file: &str, fold_mode: FoldMode) -> usize {
 
 /// A `let` initializer that the FULL const evaluator can fold but the narrow
 /// `expr_to_literal_in` cannot — string interpolation, an `if`-EXPRESSION —
-/// must still lower to its real gates. These programs contain no `const`
-/// keyword at all, so this feature must not change them by so much as one
-/// gate, and `@nofold`'s documented promise ("nothing folded or elided",
-/// `lower/tests/fold.rs`) has to hold over them too.
+/// must still lower to its real gates *by way of the const-mod-call gate*.
+/// These programs contain no `const` keyword at all, so the const-mod-call
+/// skip must not touch them.
 ///
 /// This is the exact regression that made the const-mod-call gate necessary:
 /// skipping ordinary lowering for EVERY initializer only the full evaluator
 /// could answer silently elided the FormatText + MathAdd (4 gates -> 2) and
-/// the Select (3 -> 2), under both fold modes, with and without `@nofold`.
-/// Measured at both modes because `ForceOff` is what the rest of this file
-/// uses (so a fold-pass elision can't be mistaken for a const one) while
-/// `Auto` is what real compiles use.
+/// the Select (3 -> 2).
+///
+/// Measured with folding OFF, so a fold-pass elision can't be mistaken for a
+/// const-mod one — `ForceOff` isolates the skip that this guards. The now-
+/// default fold pass legitimately collapses these constant initializers under
+/// `Auto` (that is the optimizer doing its job, not the bug here), so the
+/// `@nofold` variants pull double duty: under `Auto` they must still keep
+/// every gate, proving `@nofold` opts back out of the default fold.
 #[test]
-fn a_non_const_mod_initializer_keeps_its_gates_under_every_fold_mode() {
-    // (label, source, expected gates — identical at ForceOff and Auto)
-    let cases: [(&str, String, usize); 4] = [
+fn a_non_const_mod_initializer_keeps_its_gates() {
+    // (label, source, expected gates with folding disabled, is `@nofold`)
+    let cases: [(&str, String, usize, bool); 4] = [
         (
             "interpolation, @nofold",
             "in go: exec\non go { @nofold let s = \"a${1 + 1}b\"\n BroadcastChatMessage(s) }".to_string(),
             4,
+            true,
         ),
         (
             "interpolation, plain",
             "in go: exec\non go { let s = \"a${1 + 1}b\"\n BroadcastChatMessage(s) }".to_string(),
             4,
+            false,
         ),
         (
             "if-expression, @nofold",
             "@nofold let x = if true then 1 else 2\nout y = x * 2".to_string(),
             3,
+            true,
         ),
         (
             "if-expression, plain",
             "let x = if true then 1 else 2\nout y = x * 2".to_string(),
             3,
+            false,
         ),
     ];
-    for (label, src, want) in cases {
-        for mode in [FoldMode::ForceOff, FoldMode::Auto] {
-            let got = gates_at(&src, "nofold.ws", mode);
+    for (label, src, want, is_nofold) in cases {
+        // Folding off: the const-mod-call skip must not fire, so every gate survives.
+        let got = gates_at(&src, "nofold.ws", FoldMode::ForceOff);
+        assert_eq!(
+            got, want,
+            "{label} under ForceOff must keep its {want} gates (a program with no \
+             `const` in it must not be touched by the const-mod-call skip), got {got}"
+        );
+        // `@nofold` also opts back out of the now-default fold pass, so the
+        // gates must survive `Auto` too.
+        if is_nofold {
+            let got_auto = gates_at(&src, "nofold.ws", FoldMode::Auto);
             assert_eq!(
-                got, want,
-                "{label} under {mode:?} must keep its {want} gates (a program with no \
-                 `const` in it must compile identically), got {got}"
+                got_auto, want,
+                "{label} under Auto must keep its {want} gates (@nofold disables the \
+                 default fold), got {got_auto}"
             );
         }
     }

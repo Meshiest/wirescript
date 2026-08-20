@@ -99,7 +99,7 @@ pub(super) fn compile_folded(src: &str) -> LowerResult {
 }
 
 /// Like `compile`, but with `fold_mode: FoldMode::Auto` (the production
-/// default) — folds only if `src` opts in with a module-level `@fold`.
+/// default) — folds unless `src` opts out with a module-level `@nofold`.
 pub(super) fn compile_auto(src: &str) -> LowerResult {
     let parsed = parse(src, "test");
     assert!(
@@ -129,10 +129,10 @@ pub(super) fn compile_auto(src: &str) -> LowerResult {
 
 /// Compile `entry_src` as the root file, resolving its `import`s against the
 /// in-memory `deps` (each `(name, source)` is loaded as `name.ws`).
-/// `fold_mode: Auto` — none of the current cross-file tests depend on
-/// folding (they either use a runtime input to keep arithmetic real, or
-/// don't assert on gate shape at all), so this doubles as the harness for
-/// `imported_module_fold_is_inert`-style entry-vs-import annotation tests.
+/// `fold_mode: Auto` (folds by default) — the cross-file tests that assert on
+/// gate shape keep their arithmetic real with a runtime input so folding is a
+/// no-op; this also doubles as the harness for
+/// `imported_module_nofold_is_inert`-style entry-vs-import annotation tests.
 pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResult {
     use crate::resolve::{MemLoader, resolve};
     let loader = MemLoader {

@@ -53,13 +53,13 @@ enum Command {
         #[arg(long)]
         dump_ir: bool,
 
-        /// Force-disable the certified constant-fold pass, overriding a
-        /// module-level `@fold`.
+        /// Disable the certified constant-fold pass (it runs by default);
+        /// equivalent to a module-level `@nofold`.
         #[arg(long, conflicts_with = "fold")]
         no_fold: bool,
 
-        /// Force-enable the certified constant-fold pass without requiring a
-        /// module-level `@fold` (a module-level `@nofold` still wins).
+        /// Explicitly enable the certified constant-fold pass. Folding is on by
+        /// default, so this is redundant; a module-level `@nofold` still wins.
         #[arg(long, conflicts_with = "no_fold")]
         fold: bool,
     },
