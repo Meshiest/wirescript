@@ -293,7 +293,7 @@ exec gates), so call them inside `on` handlers / mods. Declare arrays with
 | `arr.remove(index)` | `(index: int)` | Remove the element at `index` |
 | `arr.insert(index, value)` | `(index: int, value: T)` | Insert before `index` |
 | `arr.clear()` | `()` | Remove all elements |
-| `arr.find(value)` | `(value: T) -> int` | Index of first match (-1 if absent) |
+| `arr.find(value)` | `(value: T) -> {Index: int, Found: bool, Value: T}` | Find the first match (auto-unwraps to `Index`); `Index` is `-1` when `Found` is `false` |
 | `arr.sort(descending?)` | `(descending?: bool)` | Sort in place |
 | `arr.sortMultiple(other, ..., descending?)` | `(other: T[], ..., descending?: bool)` | Sort in place, reordering up to 7 parallel arrays through the same permutation |
 | `arr.reverse()` | `()` | Reverse in place |
@@ -1450,7 +1450,6 @@ the full `Sweep(origin, direction, distance, ...)` gate, which has a `vector` `o
 ```
 arr.fillFromZoneEntities(zone, tagFilter?)   // entities inside a zone
 arr.fillFromZonePlayers(zone, tagFilter?)    // players inside a zone
-arr.sortMultiple(other, ..., descending?)    // sort this + up to 7 parallel arrays together
 ```
 
 The character/entity zone enter/leave events also accept a `tagFilter =` argument

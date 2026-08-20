@@ -1339,6 +1339,59 @@ Semantics worth knowing:
 - An emit on the **same exec chain** as an unconditional `await` of that signal is sequenced through a `Var_Set(armed = true)` **before** entering the signal's union — so the awaiting `Var_Get` can never race the arm, and a loop back-edge re-arms the await every iteration.
 - Emits from **other handlers** enter the signal directly and are guarded by the armed flag: the continuation only runs if the awaiting chain has reached the `await`.
 - An `await` inside an `if` branch keeps pure flag semantics (its arm only fires when the branch is taken).
+- **A back-edge loop whose `await` sits inside an `if` runs exactly ONE iteration.** This follows from the rule above and is the single easiest way to write a loop that looks fine and is not. The first pass consumes the arm; the buffered back-edge arrives on the next tick, finds the branch untaken and the await unarmed, and the continuation never runs. There is no error, no warning, and no hang - the program carries on with one iteration's worth of work done, so a loop meant to fill 25 entries leaves 1.
+
+  Measured, same loop body both ways: 5 of 5 iterations with the `await` at its handler's top level, 1 of 5 with it inside a branch.
+
+  This bites hardest when a loop lives in a `mod` called from a step machine, because the `mod` inlines into the caller and inherits its branch:
+
+  ```wirescript ignore
+  // BROKEN - the call site puts the await inside an `if`
+  on tick {
+    if step == 4 { fill() }        // fill()'s await inlines into this branch
+  }
+
+  // WORKS - the await is at its own handler's top level
+  let fillSig: exec
+  on fillSig {
+    idx = 0
+    let loop: exec
+    emit loop
+    await loop
+    if idx < 25 { dest.push(idx) idx += 1 buffer emit loop }
+  }
+  on tick {
+    if step == 4 { emit fillSig }  // pulse it instead of calling it
+  }
+  ```
+
+  The `if` guarding the loop's own continuation (`if idx < 25`) is fine and required - it is the exit test. What must not be branched is the `await` itself.
+- **Loop state must outlive the tick.** A back-edge buffer crosses a tick, and a
+  tick is a new call of whatever handler the loop sits in - so a non-static `var`
+  declared inside the loop's own scope is reset before the next iteration reads
+  it. A counter declared there sticks at its initial value forever, and the loop
+  rewrites element 0 on every pass while looking like it is running. Put the
+  counter (and any accumulator) at **module level**, or make it `static`, and
+  reset it upstream of the `emit`:
+
+  ```wirescript
+  var idx: int = 0          // module level: survives the tick boundary
+
+  mod fill(dest: int[]) {
+    idx = 0                 // reset BEFORE the emit, not inside the loop body
+    let loop: exec
+    emit loop
+    await loop
+    if idx < 25 {
+      dest.push(idx)
+      idx += 1
+      buffer emit loop
+    }
+  }
+  ```
+
+  The failure is silent: the program runs, the loop terminates, and the
+  collection simply holds one element.
 - **A loop advances one iteration per tick.** The back-edge is a buffer, and a buffer crosses a tick, so walking N elements takes N ticks. That is fine for work that runs once (a reset sweep, a one-off rebuild) and wrong for work that has to happen every tick for every element: a per-tick sweep over a roster of N costs N ticks per pass and degrades as the roster grows. When you need per-tick work per entity, give each entity its own chip instance instead of looping a central one -- see [per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all).
 
 ### Gate Cost

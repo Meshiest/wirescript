@@ -98,6 +98,12 @@ fn is_importable(d: &TopDecl) -> bool {
             | TopDecl::In(_)
             | TopDecl::Out(_)
             | TopDecl::TypeAlias(_)
+            // A top-level `on` handler in an imported file runs as part of the
+            // importing program (a library that installs behaviour). Without
+            // this the handler was dropped, and an `on <expr>` handler's
+            // desugared `let _on_expr_N = <expr>` (a Let, which IS importable)
+            // still leaked in — a dangling trigger gate with no body.
+            | TopDecl::Handler(_)
     )
 }
 

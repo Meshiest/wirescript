@@ -31,14 +31,21 @@ root-level `var`, array, map, `buffer`, `in` and `out` declarations. Imported
 state is **shared, not copied** -- every importer reads and writes the same
 storage gate, so a library module can own state that several entry files drive.
 
-**Handlers are not importable, and a handler declared in an imported module is
-silently dropped.** There is no error and no warning at any stage: the receiver
-gate is simply never emitted, and at runtime every event it would have caught is
-discarded. Nothing in `just check` or `just compile` reveals it.
+**Handlers come across only with the import-all form.** `import "lib"` carries a
+module's top-level `on` handlers; a selective or namespace import does not,
+because both select declarations BY NAME and a handler has none to select. The
+exclusion is silent - no error and no warning at any stage. The receiver gate is
+simply never emitted, and at runtime every event it would have caught is
+discarded.
 
-So put `on` handlers in the **entry** file. When the logic belongs to a shared
-library, expose it as a `mod` and let each entry file declare the thin handler
-that calls it:
+The trap is the edit that narrows an import: turning `import "lib"` into
+`import { helper } from "lib"` to quiet an unused-name warning also drops every
+handler that module declared, and nothing in `just check` or `just compile`
+reports it.
+
+The robust arrangement is to keep `on` handlers in the **entry** file regardless:
+expose the logic from the library as a `mod`, and let each entry file declare the
+thin handler that calls it. That way no import form can silently remove them:
 
 ```wirescript ignore
 // lib.ws -- the logic, reachable by importers

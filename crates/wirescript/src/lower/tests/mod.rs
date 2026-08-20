@@ -25,6 +25,7 @@ mod opaque;
 mod port_side;
 mod purity;
 mod records;
+mod regression_bugs;
 mod returns;
 mod scope;
 mod string;

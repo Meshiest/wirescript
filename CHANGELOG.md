@@ -4,6 +4,9 @@
 
 - An imported `let` no longer clobbers a same-named declaration in the importing file. An imported `let start` overwrote the file's own `in start: exec`, so `on start` bound the imported value instead of the input and silently dropped the handler body.
 - Void container operations (`push`/`clear`/`set`, the `keys`/`values` fills) now type as `never`, so using their result as a value (`let r = a.push(x)`) is a type error instead of silently accepted.
+- Top-level `on` handlers in an imported file now run; they were silently dropped, and an `on <expr>` handler additionally left a dangling trigger gate with no body.
+- A `let` aliasing an array or map (`let ar = a`) now resolves for indexing, writes, and methods (`ar[0]`, `ar[0] = x`, `ar.push(...)`) instead of lowering to a placeholder or silently dropping the write.
+- A namespaced member (`ns.name`) whose bare name the importing file also owns is now reachable as `ns.name`, so `ns.tuple.0` resolves instead of falling through to the local binding.
 
 ## 1.4.2
 

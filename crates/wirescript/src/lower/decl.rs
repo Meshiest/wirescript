@@ -187,17 +187,36 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // imported `let start` used to overwrite a local
                     // `in start: exec`, so `on start` then found a
                     // `Binding::Record`/`Local` instead of the Input and
-                    // silently dropped the whole handler body. Unlike the
-                    // `is_none()` guard on the sibling kinds below, this checks
-                    // `importer_names` (not "any prior binding"), so a member
-                    // shadowed only by an EARLIER `import * as` still lowers —
-                    // two namespaces exporting the same `let` name each keep
-                    // their own value (`A.foo` / `B.foo`).
+                    // silently dropped the whole handler body. But the member
+                    // must STILL be reachable as `ns.name` — so when the name is
+                    // importer-owned we lower it, capture the resulting binding
+                    // into THIS namespace's own map, then RESTORE the importer's
+                    // bare binding. Without the capture, `Other.start` fell
+                    // through `resolve_field_chain`'s bare-scope fallback to the
+                    // local `in start` input and `Other.start.0` lowered to
+                    // `_Unsupported`. (Only `importer_names` is checked, not "any
+                    // prior binding", so a member shadowed by an EARLIER
+                    // `import * as` still lowers to the shared bare name — two
+                    // namespaces exporting the same `let` keep `A.foo`/`B.foo`.)
                     TopDecl::Let(l) => {
-                        let importer_owned = matches!(&l.binding,
+                        let owned_name = match &l.binding {
                             crate::ast::LetBinding::Ident { name, .. }
-                                if ctx.importer_names.contains(name));
-                        if !importer_owned {
+                                if ctx.importer_names.contains(name) =>
+                            {
+                                Some(name.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(name) = owned_name {
+                            let saved = ctx.scope.get(&name).cloned();
+                            ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l));
+                            if let Some(binding) = ctx.scope.get(&name).cloned() {
+                                ns_decls.insert(name.clone(), binding);
+                            }
+                            if let Some(b) = saved {
+                                ctx.scope.insert(&name, b);
+                            }
+                        } else {
                             ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l));
                             if let crate::ast::LetBinding::Ident { name, .. } = &l.binding {
                                 ns_value_names.push(name.clone());
@@ -801,6 +820,21 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             }
             _ => {}
         }
+    }
+
+    // RHS that is an ident aliasing an array/map var. Bind the new name to the
+    // SAME `Var` so `x[i]` / `x.push(..)` / `x.get(k)` resolve exactly like the
+    // original — arrays/maps are reference containers, so this aliases rather
+    // than snapshots (a scalar `let x = v` still snapshots through the value
+    // path below). Without it, `let ar = myarray; ar[0]` lost the array binding
+    // and the index lowered to a `_Unsupported` placeholder.
+    if let Expr::Ident { name: rhs_name, .. } = &d.value
+        && let LetBinding::Ident { name, .. } = &d.binding
+        && let Some(Binding::Var(var_rec)) = ctx.scope.get(rhs_name).cloned()
+        && matches!(var_rec.storage, VarStorage::Array | VarStorage::Map)
+    {
+        ctx.scope.insert(name, Binding::Var(var_rec));
+        return;
     }
 
     // Handle RHS that is a field-chain resolving to a record binding.
