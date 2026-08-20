@@ -438,8 +438,11 @@ DisplayText(target: controller, text: any, ...) -> int
 Display HUD text to a player. Receiver on `controller`. Returns the resolved
 `textId` (an `int`) so a later call can update or clear the same on-screen text.
 
-The 2D layout ports (`position`, `anchor`, `scale`, `pivot`, `shadowOffset`) each
-take a `vector` whose X/Y components are used. The call also exposes the scalar
+The 2D layout ports are `Vector2D` composites, and the call feeds them one axis
+at a time: `positionX` / `positionY`, `anchorX` / `anchorY`, and so on, each a
+`float`. There is no `vector`-typed `position` or `anchor` -- passing one is a
+`WS041` error. A constant axis bakes into the parent `Vector2D` data field; a
+runtime value wires the matching sub-port. The call also exposes the scalar
 styling below, plus `fontSize` / `justify` / `easing` / `typeface` / `font`, which
 are constant-only data fields (not wire inputs).
 
@@ -449,11 +452,11 @@ are constant-only data fields (not wire inputs).
 |-----------|------|----------|-------------|
 | `target` | `controller` | Yes | Player to display to |
 | `text` | `any` | Yes | Text content (auto-converted to string) |
-| `position` | `vector` | No | 2D screen position (X/Y used) |
-| `anchor` | `vector` | No | 2D anchor point (X/Y used) |
-| `scale` | `vector` | No | 2D scale (X/Y used) |
-| `pivot` | `vector` | No | 2D pivot point (X/Y used) |
-| `shadowOffset` | `vector` | No | 2D drop-shadow offset (X/Y used) |
+| `positionX` / `positionY` | `float` | No | 2D screen position, per axis |
+| `anchorX` / `anchorY` | `float` | No | 2D anchor point, per axis |
+| `scaleX` / `scaleY` | `float` | No | 2D scale, per axis |
+| `pivotX` / `pivotY` | `float` | No | 2D pivot point, per axis |
+| `shadowOffsetX` / `shadowOffsetY` | `float` | No | 2D drop-shadow offset, per axis |
 | `angle` | `float` | No | Rotation angle |
 | `outlineSize` | `int` | No | Text outline size |
 | `outlineColor` | `color` | No | Outline color |
@@ -1145,7 +1148,7 @@ on hit { SendGlobalCustomEvent("score", 10) }
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `prefab` | prefab ref | No | The prefab to spawn — a `$./file.brz` / `$/abs.brz` [prefab reference](expressions.md#prefab-references). Embedded into the bundle at compile. |
+| `prefab` | prefab ref | No | The prefab to spawn — a `$./file.brz` archive, a `$./file.ws` source compiled on reference, or an inline `$` triple-backtick block ([prefab reference](expressions.md#prefab-references)). Embedded into the bundle at compile. |
 | `offset` | `vector` | No | Spawn position offset |
 | `rotation` | `rotator` | No | Spawn rotation offset |
 | `velocity` | `vector` | No | Initial velocity of the spawned entity |
@@ -1185,8 +1188,11 @@ on trigger {
 
 A `$./file.brz` reference reads the `.brz` at compile and embeds it into the
 output bundle (content-addressed at `Prefabs/Uploads/<hash>.brz`), so the
-compiled program carries its prefab. See
-[Prefab References](expressions.md#prefab-references).
+compiled program carries its prefab. A `$./file.ws` reference compiles that
+source first and embeds the result, and a prefab can also be written inline as a
+`$` followed by a triple-backtick block. See
+[Prefab References](expressions.md#prefab-references) and the per-entity
+fan-out section in [best practices](best-practices.md).
 
 ### SpawnExplosion
 

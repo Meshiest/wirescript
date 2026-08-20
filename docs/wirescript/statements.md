@@ -1339,6 +1339,7 @@ Semantics worth knowing:
 - An emit on the **same exec chain** as an unconditional `await` of that signal is sequenced through a `Var_Set(armed = true)` **before** entering the signal's union — so the awaiting `Var_Get` can never race the arm, and a loop back-edge re-arms the await every iteration.
 - Emits from **other handlers** enter the signal directly and are guarded by the armed flag: the continuation only runs if the awaiting chain has reached the `await`.
 - An `await` inside an `if` branch keeps pure flag semantics (its arm only fires when the branch is taken).
+- **A loop advances one iteration per tick.** The back-edge is a buffer, and a buffer crosses a tick, so walking N elements takes N ticks. That is fine for work that runs once (a reset sweep, a one-off rebuild) and wrong for work that has to happen every tick for every element: a per-tick sweep over a roster of N costs N ticks per pass and degrades as the roster grows. When you need per-tick work per entity, give each entity its own chip instance instead of looping a central one -- see [per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all).
 
 ### Gate Cost
 

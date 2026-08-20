@@ -302,6 +302,64 @@ out color0: color = colorOf(vP0.Value)    // pure: no exec chain, no result var
 Requirement: a mod called from a pure binding must be **expression-`if`** (a single
 `return if ... then ... else ...`), not a statement-`if` with early `return`s.
 
+## 10. Per-entity fan-out: one chip each, not one loop over all
+
+A loop advances one iteration per tick. So a central chip that sweeps a roster
+of N entities every tick does not cost "a loop" -- it costs N ticks per pass,
+and it gets slower exactly as the thing succeeds and N grows. Anything the
+player perceives as continuous (a ticking timer, a follow camera, a per-player
+HUD) is unusable built that way.
+
+Give each entity its own chip instance instead. The per-tick work then happens
+in parallel gate instances, one per entity, and the wall-clock cost stops
+depending on N:
+
+```wirescript
+var minions: Map<character, entity>
+
+on CharacterSpawned() -> (who) {
+  let e = SpawnPrefab(prefab = $./minion.ws, lifetime = 0.0, limit = 64)
+  minions.set(who, e)
+  owner = who              // a var: a constant argument emits no wire
+  e.SendCustomEvent("minion.init", owner)
+}
+```
+
+and in `minion.ws`, the per-tick handler nests inside the init handler so it
+closes over a reference that is set:
+
+```wirescript
+var owner: character
+var ready: bool = false
+
+on CustomEvent("minion.init") -> (who: character) {
+  owner = who
+  ready = true
+  on ServerUptime() {
+    if ready {
+      // per-tick work for exactly this one entity
+      if owner.GetUserId() == "" { ReadBrickGrid().DestroySpawnedPrefab() }
+    }
+  }
+}
+```
+
+Three things that bite:
+
+- **The nested handler is not registered by the outer one.** The wire graph is
+  static, so its trigger is live from the moment the prefab spawns, a tick or
+  more before the init event lands. It needs a guard on an init-set value.
+  Nesting scopes the reference readably; it does not sequence the two.
+- **Each instance should own only its own state.** Shared state stays in the
+  central chip, which stays event-driven. The moment an instance needs to read
+  another's data you have rebuilt the roster sweep by mail.
+- **Instances must clean themselves up.** A spawned chip whose subject is gone
+  keeps running; check for that in the tick handler and
+  `DestroySpawnedPrefab()`.
+
+Keep the *bookkeeping* central and event-driven, and push only the per-tick
+rendering or sampling out to the instances.
+
 ## Profiling: find the hot spots
 
 `--dump-ir` prints, to **stderr**, a node count per module and every gate with its
@@ -358,6 +416,7 @@ When a build is unexpectedly huge, walk this list:
 7. Is an unrolled max/sum/count really a one-gate `.max()` / `.sum()` / `.average()`?
 8. Would a derived parallel array turn a per-element decode-and-add into a `slice` + `sum`?
 9. Is display/derived logic running on the exec chain when it could be a pure output binding?
+10. Is a per-tick roster sweep really one chip instance per entity?
 
 ## See also
 

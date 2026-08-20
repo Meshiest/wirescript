@@ -587,13 +587,52 @@ asset:
 - `$./file.brz` — relative to the current source file's directory.
 - `$/abs/path/file.brz` — a filesystem-absolute path.
 
-The `.brz` extension is required. Pass one to [`SpawnPrefab`](builtins.md#spawnprefab):
+A reference ending in `.ws` is a **source prefab**: the file is compiled at
+reference time and the result embedded, so a prefab can be kept as readable
+source next to the program that spawns it. Its own `$./…` references resolve
+relative to that `.ws` file. Source prefabs may nest 8 deep.
+
+Pass either form to [`SpawnPrefab`](builtins.md#spawnprefab):
 
 ```wirescript
 on spawn {
   SpawnPrefab(prefab = $./turret.brz, offset = Vec(0.0, 0.0, 50.0))
+  SpawnPrefab(prefab = $./minion.ws, offset = Vec(0.0, 0.0, 50.0))
 }
 ```
+
+A prefab can also be written **inline**, as a `$` followed by a triple-backtick
+block of Wirescript compiled as a nested prefab. The spawned chip's source sits
+at the spawn site, and it closes over nothing — it communicates by targeted
+custom events like any other prefab. Inline blocks may nest 8 deep.
+
+```wirescript
+var subject: character
+
+on CharacterSpawned() -> (who) {
+  let e = SpawnPrefab(prefab = $```
+    var owner: character
+    on CustomEvent("init") -> (p: character) {
+      owner = p
+      on ServerUptime() {
+        if owner.GetUserId() == "" { ReadBrickGrid().DestroySpawnedPrefab() }
+      }
+    }
+  ```, lifetime = 0.0, limit = 64)
+  subject = who               // a var: a constant argument emits no wire
+  e.SendCustomEvent("init", subject)
+}
+```
+
+> **Why this form exists.** A loop advances one iteration per tick, so a central
+> chip sweeping N entities every tick costs N ticks per pass. Spawning one chip
+> per entity moves that work into parallel gate instances, and the per-tick cost
+> stops depending on N. Note that the nested `on ServerUptime()` above is **not**
+> registered by the init handler — the wire graph is static, so its trigger is
+> live from the moment the prefab spawns, before `init` lands, which is why real
+> code guards it on an init-set value. See
+> [per-entity fan-out](best-practices.md#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all)
+> and [Loops](statements.md#loops).
 
 At compile the referenced `.brz` is read and **embedded into the output
 bundle** (content-addressed at `Prefabs/Uploads/<hash>.brz`), and the gate's
