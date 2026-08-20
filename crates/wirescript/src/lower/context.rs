@@ -346,6 +346,13 @@ pub(super) struct LowerCtx<'a> {
     /// Always non-empty: the base frame holds the module's top-level
     /// declarations.
     pub(super) pass1_chips: Vec<HashMap<String, std::sync::Arc<ChipDecl>>>,
+    /// Bare names the importing module itself owns — snapshotted from `scope`
+    /// after pass-1 pre-declaration (its `in`/`out`/`var`/`array`/… ), before
+    /// any `import * as` namespace lowers its members in pass 2. A namespaced
+    /// `let` member must not re-register (clobber) one of these bare names, or
+    /// e.g. an imported `let start` would overwrite the importer's own
+    /// `in start: exec` and silently drop `on start`'s handler body.
+    pub(super) importer_names: crate::collections::HashSet<String>,
 }
 
 impl<'a> LowerCtx<'a> {

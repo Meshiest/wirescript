@@ -213,12 +213,19 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         dropped_ranges: Vec::new(),
         // Base frame: the module's own top-level declarations.
         pass1_chips: vec![HashMap::default()],
+        // Populated from `scope` right after pass 1 (top-level module only;
+        // stays empty for a chip body, which has no `import * as`).
+        importer_names: HashSet::default(),
     };
 
     // Pass 1: register I/O + vars + buffers.
     for d in &input.ast.decls {
         pre_declare_decl(&mut ctx, d);
     }
+    // Snapshot the names the importer itself owns (everything pass 1 just
+    // registered) so a pass-2 `import * as` namespace member can't clobber one
+    // of them — see `LowerCtx::importer_names`.
+    ctx.importer_names = ctx.scope.iter().map(|(k, _)| k.to_string()).collect();
     // Pass 1b (P0-4): an output value-driven from more than one `emit` site
     // can't take a wire per site (two wires into the output rerouter is a
     // load-time fan-in) — give it a backing PseudoVar. `lower_emit` does a
@@ -1552,6 +1559,9 @@ pub fn compile_chip_template(
         dropped_ranges: Vec::new(),
         // Base frame: the module's own top-level declarations.
         pass1_chips: vec![HashMap::default()],
+        // Populated from `scope` right after pass 1 (top-level module only;
+        // stays empty for a chip body, which has no `import * as`).
+        importer_names: HashSet::default(),
     };
 
     // Create input ports

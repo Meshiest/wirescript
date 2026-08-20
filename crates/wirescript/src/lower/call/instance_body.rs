@@ -156,6 +156,7 @@ pub(super) fn build_chip_module(
         // (recorded by the pre-declare loop below) can never reach the
         // caller's stack.
         pass1_chips: ctx.pass1_chips.clone(),
+        importer_names: ctx.importer_names.clone(),
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- An imported `let` no longer clobbers a same-named declaration in the importing file. An imported `let start` overwrote the file's own `in start: exec`, so `on start` bound the imported value instead of the input and silently dropped the handler body.
 
 ## 1.4.2
 

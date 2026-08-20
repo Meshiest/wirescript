@@ -45,6 +45,38 @@ fn orphan_pure_gates(r: &LowerResult) -> Vec<&'static str> {
     out
 }
 
+/// True if any module in the tree contains a gate of `class`.
+fn has_gate_class(r: &LowerResult, class: &str) -> bool {
+    fn walk(m: &crate::ir::Module, class: &str) -> bool {
+        m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| walk(c, class))
+    }
+    walk(&r.module, class)
+}
+
+/// An imported namespace member whose bare name matches a LOCAL exec-input
+/// trigger must not clobber that input. Regression: `import * as C` where the
+/// imported module has `let start: <record>` registered a `Binding::Record`
+/// under the bare name `start`, shadowing the importer's own `in start: exec`.
+/// `on start` then resolved to that record instead of the Input and SILENTLY
+/// dropped the entire handler body (0 gates, no diagnostic). Every other
+/// namespace-member kind was `is_none()`-guarded against this; `let` was not.
+#[test]
+fn imported_let_does_not_clobber_local_input_trigger() {
+    let lib = "let start: { v: int } = { v: 1 }";
+    let main = "\
+import * as C from \"lib\"
+in start: exec
+var hit: int = 0
+on start { hit = hit + 1 }";
+    let r = compile_multi(main, &[("lib", lib)]);
+    assert_no_errors(&r);
+    assert!(
+        has_gate_class(&r, "BrickComponentType_WireGraph_Exec_Var_Increment"),
+        "the `on start` handler body was dropped: an imported `let start` clobbered \
+         the local `in start: exec`, so the trigger resolved to the imported value"
+    );
+}
+
 /// A module imported via BOTH a namespace (`import * as x`) AND a named import
 /// materializes its top-level `let`s twice — the namespace copy is unreferenced,
 /// so a constant used to ship as a gate wired to nothing. `prune_dead_pure_gates`

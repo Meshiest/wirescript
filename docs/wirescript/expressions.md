@@ -140,7 +140,7 @@ let either = a ^^ b
 
 ## Bitwise Operators
 
-All bitwise operators work on `int` operands and produce `int` results.
+All bitwise operators produce `int` results. Operands are `int`; a `float` or `bool` operand coerces to `int` first (`1.5 & 2` truncates `1.5` to `1`), so only a non-numeric operand (`string`, `vector`, …) is a **WS011** error.
 
 | Operator | Operation |
 |----------|-----------|

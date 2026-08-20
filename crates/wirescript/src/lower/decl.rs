@@ -182,10 +182,26 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // member's binding is ALSO captured per-namespace below, and
                     // `A.member` resolves through that map, so explicit
                     // namespaced access stays correct regardless of the clash.
+                    // An imported `let name = …` must not clobber a bare name
+                    // the IMPORTER itself owns (its own `in`/`out`/`var`/…): an
+                    // imported `let start` used to overwrite a local
+                    // `in start: exec`, so `on start` then found a
+                    // `Binding::Record`/`Local` instead of the Input and
+                    // silently dropped the whole handler body. Unlike the
+                    // `is_none()` guard on the sibling kinds below, this checks
+                    // `importer_names` (not "any prior binding"), so a member
+                    // shadowed only by an EARLIER `import * as` still lowers —
+                    // two namespaces exporting the same `let` name each keep
+                    // their own value (`A.foo` / `B.foo`).
                     TopDecl::Let(l) => {
-                        ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l));
-                        if let crate::ast::LetBinding::Ident { name, .. } = &l.binding {
-                            ns_value_names.push(name.clone());
+                        let importer_owned = matches!(&l.binding,
+                            crate::ast::LetBinding::Ident { name, .. }
+                                if ctx.importer_names.contains(name));
+                        if !importer_owned {
+                            ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l));
+                            if let crate::ast::LetBinding::Ident { name, .. } = &l.binding {
+                                ns_value_names.push(name.clone());
+                            }
                         }
                     }
                     TopDecl::Array(a) if ctx.scope.get(&a.name).is_none() => {

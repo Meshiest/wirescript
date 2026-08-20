@@ -47,7 +47,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS003` | Type mismatch — a value doesn't coerce to the expected type (assignment, argument, output, array element, `if`-branch join, event input). | `var n: int = "hi"` |
 | `WS004` | No operator overload for the operand type(s) (arithmetic / comparison / logical). | `"a" + 1` |
 | `WS008` | Taking `&`/`ref` of a non-reference — only a variable, ref parameter, or array/map element can be referenced, not a temporary. | `&(a + b)` |
-| `WS011` | No overload for a bitwise/shift operator (`&`, `\|`, `^`, `~`, `<<`, `>>`), or a builtin call with the wrong number of positional arguments. | `1.5 & 2` |
+| `WS011` | No overload for a bitwise/shift operator (`&`, `\|`, `^`, `~`, `<<`, `>>`), or a builtin call with the wrong number of positional arguments. Bitwise/shift accept `int`, and `float`/`bool` coerce to `int`; only non-numeric operands (`string`, `vector`, …) have no overload. | `"a" & 2` |
 | `WS016` | *(warning)* `let` / `out` annotation doesn't match the inferred type (a checked assertion; string-format coercion is exempt). | `let n: int = s` where `s: string` |
 | `WS025` | A non-storable type used as storage — `any`, `zone`, `teleport`, or `prefab` in a `var` / `buffer` / array / map. | `var x: any = 0` |
 | `WS031` | A reference (`zone` / `teleport` / var ref) used in an `if`-then-else — a Select routes a value, not a reference. | `if c then zoneA else zoneB` |
