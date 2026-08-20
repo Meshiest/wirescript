@@ -915,7 +915,28 @@ fn collect_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
                     collect_idents_in_expr(e, idents);
                 }
             }
-            Stmt::Handler(h) => collect_idents_in_block(&h.body, idents),
+            // Same treatment as a top-level handler: the CONFIG args and the
+            // capture param types count as uses, not just the body. A handler
+            // nested in a chip body reaches this arm instead of the TopDecl
+            // one, so omitting them here reported `on CustomEvent(CH)` inside a
+            // chip as an unused import of CH — and Organize Imports would then
+            // delete it, breaking the handler it names.
+            Stmt::Handler(h) => {
+                for arg in &h.config {
+                    match arg {
+                        HandlerConfigArg::Positional(e) => collect_idents_in_expr(e, idents),
+                        HandlerConfigArg::Named { value, .. } => {
+                            collect_idents_in_expr(value, idents)
+                        }
+                    }
+                }
+                for p in &h.params {
+                    if let Some(t) = &p.ty {
+                        collect_idents_in_type_expr(t, idents);
+                    }
+                }
+                collect_idents_in_block(&h.body, idents);
+            }
             Stmt::Return { value: Some(e), .. } => collect_idents_in_expr(e, idents),
             Stmt::Var(v) => {
                 if let Some(t) = &v.typ {
