@@ -45,6 +45,38 @@
     }
 
     #[test]
+    fn multiline_named_import_resolves_the_clicked_specifier() {
+        // Regression: go-to-definition on a named-import specifier ignored the
+        // cursor column and returned the FIRST binding that resolved via
+        // `top_decl_name`. With `var` specifiers before `mod` ones, clicking
+        // `onCheckpoint` jumped to the earlier `doReset` instead.
+        let display = "var cfg: string = \"\"\nmod doReset() { }\nmod onCheckpoint() { }\n";
+        let main = "import { cfg, doReset,\n  onCheckpoint } from \"display\"\n";
+        let click_line = 1; // the continuation line, where doReset used to win
+        let l = main.lines().nth(click_line).unwrap();
+        let col = l.find("onCheckpoint").unwrap() + 2; // inside `onCheckpoint`
+        let loc = goto(main, display, click_line, col).expect("goto on import specifier");
+        assert_eq!(loc.file.as_deref(), Some("display.ws"));
+        assert_eq!(
+            loc.start_line, 2,
+            "onCheckpoint is on display.ws line 2 (0-based); a jump to line 1 is doReset: {loc:?}"
+        );
+    }
+
+    #[test]
+    fn named_import_resolves_a_var_specifier() {
+        // `top_decl_name` used to cover only mod/chip/let/event, so clicking an
+        // imported `var` specifier fell through to the file top. It now resolves
+        // to the var's own decl.
+        let display = "var cfg: string = \"\"\nmod doReset() { }\n";
+        let main = "import { cfg, doReset } from \"display\"\n";
+        let col = main.lines().next().unwrap().find("cfg").unwrap() + 1;
+        let loc = goto(main, display, 0, col).expect("goto on the `cfg` specifier");
+        assert_eq!(loc.file.as_deref(), Some("display.ws"));
+        assert_eq!(loc.start_line, 0, "cfg is declared on display.ws line 0, got {loc:?}");
+    }
+
+    #[test]
     fn send_custom_event_name_jumps_to_receiver() {
         // Cursor on the channel-name string of a `SendCustomEvent(...)` jumps to
         // the matching `on CustomEvent(...)` receiver in the same file.

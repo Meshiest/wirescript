@@ -44,7 +44,7 @@ pub fn definition_at(
     col: usize,
 ) -> Option<Location> {
     // Check if cursor is on an import path or binding
-    if let Some(loc) = find_import_definition(pre_resolve_ast, current_file, loader, line, col) {
+    if let Some(loc) = find_import_definition(source, pre_resolve_ast, current_file, loader, line, col) {
         return Some(loc);
     }
 
@@ -91,13 +91,20 @@ pub fn definition_at(
 }
 
 fn find_import_definition(
+    source: &str,
     ast: &Script,
     current_file: &str,
     loader: &dyn FileLoader,
     line: usize,
-    _col: usize,
+    col: usize,
 ) -> Option<Location> {
     let cursor_line = (line + 1) as u32;
+    // The specifier under the cursor. A named import lists many bindings on one
+    // (possibly multi-line) statement, so the column is what disambiguates
+    // WHICH one is clicked — without it, every click resolved to the first
+    // binding that happened to have a matching decl (e.g. `onCheckpoint`
+    // jumping to an earlier `doReset`).
+    let cursor_word = word_at(source, line, col);
 
     for d in &ast.decls {
         let TopDecl::Import(imp) = d else { continue };
@@ -116,6 +123,17 @@ fn find_import_definition(
             if let Ok(file_src) = loader.load(&imp.path, current_file) {
                 let target_ast = crate::parse(&file_src, &import_path);
                 for b in bindings {
+                    // Only the binding the cursor is actually on. For
+                    // `orig as alias`, clicking either name resolves `orig`'s
+                    // decl. If the cursor isn't on a specifier (the path, a
+                    // keyword, whitespace), no binding matches and we fall
+                    // through to the file location below.
+                    let surface = b.alias.as_deref().unwrap_or(&b.name);
+                    if cursor_word.as_deref() != Some(surface)
+                        && cursor_word.as_deref() != Some(b.name.as_str())
+                    {
+                        continue;
+                    }
                     for td in &target_ast.ast.decls {
                         if top_decl_name(td) == Some(&b.name) {
                             let r = find_name_range(&file_src, td.range(), &b.name)
@@ -123,6 +141,10 @@ fn find_import_definition(
                             return Some(source_range_to_location(&r, Some(import_path.clone())));
                         }
                     }
+                    // The clicked specifier's decl kind isn't resolvable here
+                    // (e.g. an imported `var`); stop rather than falling on to a
+                    // later binding, and jump to the file below.
+                    break;
                 }
             }
         }
@@ -145,7 +167,10 @@ fn is_field_access(source: &str, line: usize, col: usize) -> bool {
     start > 0 && l.as_bytes().get(start - 1) == Some(&b'.')
 }
 
-/// The referenceable name a top-level declaration binds, if any.
+/// The referenceable name a top-level declaration binds, if any. Covers every
+/// importable / namespaced member kind so go-to-definition resolves to the
+/// specifier's own decl — not just `mod`/`chip`/`let`, but also `var`/`array`/
+/// `map`/`buffer`, root `in`/`out` ports, and `type` aliases.
 fn top_decl_name(td: &TopDecl) -> Option<&str> {
     match td {
         TopDecl::Chip(c) => Some(&c.name),
@@ -155,6 +180,13 @@ fn top_decl_name(td: &TopDecl) -> Option<&str> {
             _ => None,
         },
         TopDecl::Event(e) => Some(&e.name),
+        TopDecl::Var(v) => Some(&v.name),
+        TopDecl::Array(a) => Some(&a.name),
+        TopDecl::Map(m) => Some(&m.name),
+        TopDecl::Buffer(b) => Some(&b.name),
+        TopDecl::In(i) => Some(&i.name),
+        TopDecl::Out(o) => Some(&o.name),
+        TopDecl::TypeAlias(t) => Some(&t.name),
         _ => None,
     }
 }
