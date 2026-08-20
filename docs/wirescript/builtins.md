@@ -295,6 +295,7 @@ exec gates), so call them inside `on` handlers / mods. Declare arrays with
 | `arr.clear()` | `()` | Remove all elements |
 | `arr.find(value)` | `(value: T) -> int` | Index of first match (-1 if absent) |
 | `arr.sort(descending?)` | `(descending?: bool)` | Sort in place |
+| `arr.sortMultiple(other, ..., descending?)` | `(other: T[], ..., descending?: bool)` | Sort in place, reordering up to 7 parallel arrays through the same permutation |
 | `arr.reverse()` | `()` | Reverse in place |
 | `arr.shuffle()` | `()` | Randomly reorder |
 | `arr.swap(a, b)` | `(a: int, b: int)` | Swap two elements |
@@ -331,6 +332,26 @@ on RoundEnd() {
   let count = scores.length()
 }
 ```
+
+`sortMultiple` sorts the receiver and drags parallel arrays along, which is how
+you sort records by one field and keep the others attached:
+
+```wirescript
+var scores: Map<string, int>
+var names: string[]
+var points: int[]
+
+in show: exec
+on show {
+  scores.keys(names)     // string[]
+  scores.values(points)  // int[]
+  points.sortMultiple(names)
+  // points is sorted ascending and names[k] still owns points[k]
+}
+```
+
+Sorting a copy and searching back with `find` is the alternative, and it ties
+duplicate values to whichever entry matched first.
 
 ## Player Input (Exec)
 
