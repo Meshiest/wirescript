@@ -1,9 +1,13 @@
 # Wirescript Changelog
 
+## Unreleased
+
+
 ## 1.4.2
 
 - Folding enabled by default now that it's stable
 - Inline nested-prefab blocks now compile in the browser build. An inline nested-prefab block passed to `SpawnPrefab` (the `$`-fenced source form) is compiled to its own prefab and embedded, matching the native CLI. The browser previously rejected any inline nested block with "no nested compiler configured for this compile"; dragged-in `$./file.brz` prefab references already worked. Blocks nested past a fixed depth fail with a clear error instead of hanging.
+- An import read only in the config of an event handler **inside a chip body** is no longer reported as unused. The 1.4.1 fix covered handlers at module level but not the statement path a chip body takes, so `on CustomEvent(CH)` inside a chip warned `WS014` while the identical handler outside one did not, and Organize Imports would then delete the import and leave the handler naming nothing.
 
 ## 1.4.1
 

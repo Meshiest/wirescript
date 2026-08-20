@@ -203,6 +203,66 @@
     }
 
     #[test]
+    fn import_used_in_event_config_inside_chip_not_unused() {
+        // Same as above, but the handler is nested in a chip body, which
+        // reaches the STATEMENT arm of the scan rather than the top-level one.
+        // That arm walked only the body, so a channel constant used by a
+        // handler inside a chip warned while the identical handler at module
+        // level did not. Organize Imports acts on WS014, so the fallout was a
+        // deleted import and a handler left naming nothing.
+        let loader = mem(&[("lib.ws", "const CH = \"chan.a\"")]);
+        let r = resolve(
+            "import { CH } from \"lib\"\n\
+             chip Inner() -> (n: int) {\n\
+             var m: int = 0\n\
+             on CustomEvent(CH) -> (v: int) { m = v }\n\
+             out n: int = m\n\
+             }\n\
+             let i = Inner()\n\
+             out n: int = i.n",
+            "main.ws",
+            &loader,
+        );
+        let ws014: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS014").collect();
+        assert!(
+            ws014.is_empty(),
+            "an import read in an event config arg inside a chip must not be reported unused: {:?}",
+            ws014
+        );
+    }
+
+    #[test]
+    fn genuinely_unused_import_still_warns_alongside_chip_handler() {
+        // Guards the fix above from over-reaching: widening the scan must not
+        // blind the lint. UNUSED is imported and never read anywhere.
+        let loader = mem(&[("lib.ws", "const CH = \"chan.a\"\nconst UNUSED = 5")]);
+        let r = resolve(
+            "import { CH, UNUSED } from \"lib\"\n\
+             chip Inner() -> (n: int) {\n\
+             var m: int = 0\n\
+             on CustomEvent(CH) -> (v: int) { m = v }\n\
+             out n: int = m\n\
+             }\n\
+             let i = Inner()\n\
+             out n: int = i.n",
+            "main.ws",
+            &loader,
+        );
+        let ws014: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS014").collect();
+        assert_eq!(
+            ws014.len(),
+            1,
+            "exactly the unused import should warn: {:?}",
+            ws014
+        );
+        assert!(
+            ws014[0].message.contains("UNUSED"),
+            "the warning should name UNUSED: {:?}",
+            ws014
+        );
+    }
+
+    #[test]
     fn import_var_alias_renames() {
         let loader = mem(&[("lib.ws", "var counter: int = 0")]);
         let r = resolve(
