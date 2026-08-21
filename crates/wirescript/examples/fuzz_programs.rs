@@ -3647,6 +3647,42 @@ out o: int = acc.Value";
             "[selftest] ok: ns-imported handler write survives (namespaced-handler fix holds)"
         );
     }
+
+    // 7. REGRESSION GUARD: an OPERATOR (or sibling call) inside a namespaced
+    // module's `on` handler must lower to a real gate. Namespaced handlers began
+    // LOWERING in 1.4.4, but typecheck did not descend into their bodies, so
+    // `n << 10` got no `op_resolutions` and lowered to `_Unsupported` (fixed by
+    // checking Handler/AnonChip bodies in the namespace arm). The oracle must
+    // stay SILENT; an unsupported-gate finding means a namespaced handler body
+    // is no longer type-checked.
+    let nsop = "\
+//!ws-file ho1
+let n = 3
+var arr: int[]
+on ReadBrickGrid() {
+  arr.push((n << 10) + n)
+}
+//!ws-file main
+import * as H from \"ho1\"";
+    let out = run_pipeline(nsop);
+    let fired = out.findings().iter().any(|(k, _)| *k == Kind::Unsupported);
+    if out.has_errors() {
+        eprintln!(
+            "[selftest] FAIL: ns-handler-operator canary rejected with errors {:?}",
+            out.error_diags
+        );
+        ok = false;
+    } else if fired {
+        eprintln!(
+            "[selftest] FAIL: REGRESSION - operator in a namespaced handler lowered to _Unsupported (findings: {:?})",
+            out.findings()
+        );
+        ok = false;
+    } else {
+        eprintln!(
+            "[selftest] ok: operator in a namespaced handler lowers to a gate (namespaced-handler type-check holds)"
+        );
+    }
     ok
 }
 

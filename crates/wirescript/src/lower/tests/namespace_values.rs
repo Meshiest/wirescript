@@ -530,3 +530,27 @@ fn namespaced_mod_mutates_its_own_module_var() {
         "A.bump() must write the gate A.g reads, not the other module's"
     );
 }
+
+/// An operator inside a namespaced module's `on` handler must be typechecked
+/// (its `op_resolutions` recorded) so it lowers to a real gate. The handler now
+/// lowers (the namespaced-handler fix), but typecheck never descended into its
+/// body, so arithmetic like `n << 10` lowered to `_Unsupported`.
+#[test]
+fn namespaced_handler_operator_lowers_to_a_gate() {
+    let (tc, lr) = compile_with_lib(
+        "let n = 3\nvar arr: int[]\non ReadBrickGrid() { arr.push(n << 10) }",
+        "import * as L from \"lib\"",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        !has_unsupported(&lr.module),
+        "an operator in a namespaced handler must not lower to _Unsupported"
+    );
+    assert!(
+        lr.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class.contains("BitwiseShiftLeft")),
+        "`n << 10` must lower to a shift gate"
+    );
+}

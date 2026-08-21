@@ -904,6 +904,17 @@ fn check_decl_inner(
                     check_decl(ctx, d);
                 }
             }
+            // Handlers (and anon chips) in an imported module now LOWER as part
+            // of the importing program, so their bodies must be checked here too
+            // — otherwise operators / sibling calls inside a namespaced
+            // `on …` handler get no `op_resolutions` and lower to `_Unsupported`
+            // (the same failure the value/chip checks above prevent). Checked
+            // last, once every member is registered.
+            for d in &ns.decls {
+                if matches!(d, TopDecl::Handler(_) | TopDecl::AnonChip(_)) {
+                    check_decl(ctx, d);
+                }
+            }
             ctx.pop_scope();
         }
         TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}

@@ -2,6 +2,7 @@
 
 ## 1.4.5
 
+- An operator or sibling call inside a namespaced module's `on` handler (`import * as L from "lib"` where lib has `on ReadBrickGrid() { arr.push(n << 10) }`) is now type-checked, so it lowers to a real gate instead of `_Unsupported`. Namespaced handlers began lowering in 1.4.4 but typecheck never descended into their bodies, so operators got no resolution.
 - `--dump-ir` node locations now include the source file (`@ lib.ws:3:1`) and render each node's snippet from that file. Imported nodes used to show the entry file's text at their offset and an ambiguous `@ line:col`; the IR ranges themselves were already correct, only the dump's preview read the wrong source.
 
 ## 1.4.4
