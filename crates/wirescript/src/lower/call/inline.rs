@@ -227,6 +227,21 @@ pub(in crate::lower) fn lower_chip_call_inline(
 
     ctx.push_scope(crate::scope::ScopeTag::MODULE);
 
+    // If this mod was declared inside an `import * as ns` module, push THAT
+    // module's members into the body frame FIRST, so its body resolves its own
+    // siblings/vars/consts by bare name rather than through the ambient scope
+    // (which holds whatever namespace lowered last). Params/refs/inputs are
+    // inserted below and shadow these, as they must. See `LowerCtx::ns_mod_scopes`.
+    let ns_key = (
+        chip_decl.range.file.to_string(),
+        chip_decl.range.start.offset,
+    );
+    if let Some(ns_scope) = ctx.ns_mod_scopes.get(&ns_key).cloned() {
+        for (name, binding) in ns_scope.iter() {
+            ctx.scope.insert(name, binding.clone());
+        }
+    }
+
     for (name, lit) in const_bindings {
         // Every entry here is a `const` PARAMETER (see the `param.is_const`
         // gate above) — mark it declared so an `if`-condition inside this

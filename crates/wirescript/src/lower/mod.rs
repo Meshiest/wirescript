@@ -118,31 +118,46 @@ pub enum FoldMode {
     ForceOff,
 }
 
-/// Count `emit <output> = <expr>` sites per output name across the top-level
-/// handler bodies (recursing into `if` branches, but NOT into chip / anon-chip
-/// bodies — those emit to their own outputs). An output reached from more than
-/// one site can't take a wire per site (fan-in) and needs a backing store (P0-4).
-fn count_output_value_emits(ast: &Script) -> HashMap<String, usize> {
-    fn walk(block: &Block, counts: &mut HashMap<String, usize>) {
+/// Count `emit <output> = <expr>` sites per output name. Recurses into `if`
+/// branches AND anonymous `chip { … }` bodies and nested handlers — an anon chip
+/// SHARES its parent's outputs (unlike a NAMED chip, which has its own), so an
+/// `emit r = …` inside one is another site for the parent's `r`. Missing those
+/// sites left the output reached from two drivers with no backing var — a
+/// load-time fan-in on its `RER_Input`. An output reached from more than one
+/// site (or one conditional site) needs a backing store (P0-4).
+fn count_output_value_emits(ast: &Script) -> HashMap<String, (usize, bool)> {
+    // Per output: (number of `emit out = …` sites, whether ANY site is inside a
+    // conditional). A conditional emit needs a backing var even when it is the
+    // ONLY site — otherwise the single-site fast path wires the value straight
+    // to the output rerouter, UNCONDITIONALLY, and the branch's taken-exec is
+    // left dead (`if c { emit r = v }` made `r` continuously equal `v`).
+    fn walk(block: &Block, in_branch: bool, counts: &mut HashMap<String, (usize, bool)>) {
         for s in &block.stmts {
             match s {
                 Stmt::Emit(e) if e.value.is_some() => {
-                    *counts.entry(e.name.clone()).or_insert(0) += 1;
+                    let entry = counts.entry(e.name.clone()).or_insert((0, false));
+                    entry.0 += 1;
+                    entry.1 |= in_branch;
                 }
                 Stmt::If(i) => {
-                    walk(&i.then_block, counts);
+                    walk(&i.then_block, true, counts);
                     if let Some(eb) = &i.else_block {
-                        walk(eb, counts);
+                        walk(eb, true, counts);
                     }
                 }
+                // Anon chip / a handler nested in one: same output scope as here.
+                Stmt::AnonChip(ac) => walk(&ac.body, in_branch, counts),
+                Stmt::Handler(h) => walk(&h.body, in_branch, counts),
                 _ => {}
             }
         }
     }
     let mut counts = HashMap::default();
     for d in &ast.decls {
-        if let TopDecl::Handler(h) = d {
-            walk(&h.body, &mut counts);
+        match d {
+            TopDecl::Handler(h) => walk(&h.body, false, &mut counts),
+            TopDecl::AnonChip(ac) => walk(&ac.body, false, &mut counts),
+            _ => {}
         }
     }
     counts
@@ -216,6 +231,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         // Populated from `scope` right after pass 1 (top-level module only;
         // stays empty for a chip body, which has no `import * as`).
         importer_names: HashSet::default(),
+        ns_mod_scopes: HashMap::default(),
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -230,10 +246,26 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // can't take a wire per site (two wires into the output rerouter is a
     // load-time fan-in) — give it a backing PseudoVar. `lower_emit` does a
     // Var_Set into it at each site; the var feeds the output once at the end
-    // (finalized just before `flush_pending_emits`). Single-site outputs keep
-    // the direct value→output wire.
-    for (name, count) in count_output_value_emits(input.ast) {
-        if count < 2 {
+    // (finalized just before `flush_pending_emits`). A SINGLE emit inside a
+    // conditional also needs the backing var (so the write is gated by the
+    // branch exec); only a single UNCONDITIONAL emit keeps the direct
+    // value→output wire.
+    // Outputs with a default initializer (`out r = 0`). The default is a
+    // persistent driver on the output rerouter, so ANY `emit r = …` adds a
+    // second — a fan-in. Such an output also needs the backing var: the default
+    // seeds the var (see `lower_out_binding`) and each emit does a Var_Set.
+    let defaulted_outputs: HashSet<String> = input
+        .ast
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            TopDecl::Out(o) if o.value.is_some() => Some(o.name.clone()),
+            _ => None,
+        })
+        .collect();
+    for (name, (count, in_branch)) in count_output_value_emits(input.ast) {
+        let has_default = defaulted_outputs.contains(&name);
+        if count < 2 && !in_branch && !has_default {
             continue;
         }
         let Some(out) = ctx.lookup_output(&name).cloned() else {
@@ -1562,6 +1594,7 @@ pub fn compile_chip_template(
         // Populated from `scope` right after pass 1 (top-level module only;
         // stays empty for a chip body, which has no `import * as`).
         importer_names: HashSet::default(),
+        ns_mod_scopes: HashMap::default(),
     };
 
     // Create input ports

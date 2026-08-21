@@ -157,6 +157,7 @@ pub(super) fn build_chip_module(
         // caller's stack.
         pass1_chips: ctx.pass1_chips.clone(),
         importer_names: ctx.importer_names.clone(),
+        ns_mod_scopes: ctx.ns_mod_scopes.clone(),
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so

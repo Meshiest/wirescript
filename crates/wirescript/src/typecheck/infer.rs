@@ -190,6 +190,27 @@ fn index_access_is_const(ctx: &TypeCheckCtx, e: &Expr) -> bool {
     crate::const_eval::eval_expr(e, &ctx.const_ctx_without_placeholders(Some(&lookup)), &mut budget).is_ok()
 }
 
+/// A container method call is exempt from the pure-context WS007 when it can
+/// legitimately run there: a READ on a `const`-declared receiver (that path
+/// should const-fold, a separate missing feature, so an "outside an exec
+/// context" error would mislead), or ANY call carrying an explicit
+/// `exec = <trigger>` arg that supplies the exec context itself (e.g.
+/// `lut.get(i, exec = tick)` in a pure `out` binding). A mutation or runtime
+/// receiver with no `exec =` arg is not exempt.
+fn container_call_exec_exempt(
+    ctx: &TypeCheckCtx,
+    mutates: bool,
+    obj: &Expr,
+    args: &[CallArg],
+) -> bool {
+    let const_read =
+        !mutates && matches!(obj, Expr::Ident { name, .. } if ctx.const_declared.contains(name));
+    let has_exec_arg = args
+        .iter()
+        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+    const_read || has_exec_arg
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     match e {
@@ -1038,15 +1059,21 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 && let Some(Type::Array(inner)) = container_receiver_type(ctx, obj)
             {
                 let elem = inner.as_ref().clone();
-                // A mutation (`push`/`clear`/`insert`/…) only runs on an exec
-                // trigger; in pure position it lowered to an `_Unsupported`
-                // placeholder that silently did nothing (WSP001, warn-only).
-                // Reject it as WS007, exactly like a pure array index read.
-                if method.mutates && ctx.exec_mode() != ExecMode::Exec {
+                // Every array method lowers to an `Exec_*` gate (a mutation runs
+                // on the trigger; a read like `length`/`find`/`sum` samples on
+                // it), so a pure-context call is invalid — it used to lower to an
+                // `_Unsupported` placeholder that silently did nothing (WSP001,
+                // warn-only). Reject it as WS007, like a pure array index read.
+                // A READ on a `const` receiver is exempt: that should const-fold
+                // (a separate missing feature) and an exec error would mislead.
+                if ctx.exec_mode() != ExecMode::Exec
+                    && !container_call_exec_exempt(ctx, method.mutates, obj, args)
+                {
                     ctx.emit(
                         "WS007",
                         format!(
-                            "array mutation '{}.{}(...)' outside an exec context",
+                            "array {} '{}.{}(...)' outside an exec context",
+                            if method.mutates { "mutation" } else { "read" },
                             target_name(obj).unwrap_or("<expr>".into()),
                             field
                         ),
@@ -1086,13 +1113,17 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 && let Some(Type::Map(k, v)) = container_receiver_type(ctx, obj)
             {
                 let (key, value) = (k.as_ref().clone(), v.as_ref().clone());
-                // Same rule as the array mutation guard above: a `set`/`clear`/…
-                // in pure position lowered to a silent `_Unsupported`; reject it.
-                if method.mutates && ctx.exec_mode() != ExecMode::Exec {
+                // Same rule as the array guard above: every map method is an
+                // `Exec_*` gate, so a pure-context call (mutation OR read) is
+                // rejected as WS007; a read on a `const` receiver is exempt.
+                if ctx.exec_mode() != ExecMode::Exec
+                    && !container_call_exec_exempt(ctx, method.mutates, obj, args)
+                {
                     ctx.emit(
                         "WS007",
                         format!(
-                            "map mutation '{}.{}(...)' outside an exec context",
+                            "map {} '{}.{}(...)' outside an exec context",
+                            if method.mutates { "mutation" } else { "read" },
                             target_name(obj).unwrap_or("<expr>".into()),
                             field
                         ),

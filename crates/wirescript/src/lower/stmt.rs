@@ -1783,6 +1783,21 @@ pub(super) fn lower_out_binding(
         ctx.pending_out_records.insert(name.to_string(), record);
         return;
     }
+    // A var-backed output (it is also emitted to) must NOT take a direct driver
+    // from its initializer — that would fan-in with the backing var's own feed.
+    // A constant default seeds the backing var's `InitialValue`; the var then
+    // drives the output once. A non-constant default is left to the direct wire
+    // below (rare, and it is the sole driver only when there is no emit, which
+    // would not have created a backing var).
+    if let Some(backing) = ctx.output_backing_vars.get(name).cloned()
+        && let Some(lit) = expr_to_literal_in(value, &ctx.const_env)
+    {
+        if let Some(node) = ctx.builder.module.nodes.get_mut(&backing.node_id) {
+            let props = std::sync::Arc::make_mut(&mut node.properties);
+            props.insert(*sym::INITIAL_VALUE, lit);
+        }
+        return;
+    }
     // `out x = makeRecord(...)`: the call stashes its own field map, exactly as
     // `let`/`return` consume it.
     ctx.pending_inline_record = None;

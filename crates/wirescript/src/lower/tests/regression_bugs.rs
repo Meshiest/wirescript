@@ -79,3 +79,21 @@ fn imported_on_handler_generates() {
         r.diagnostics
     );
 }
+
+/// A `let` aliasing an INPUT-port array/map (`in a: int[]` then `let x = a`)
+/// must resolve for `x[i]` and methods, like a `var` alias. It used to fall
+/// through to the scalar value path and lower the index to `_Unsupported`.
+#[test]
+fn let_alias_of_input_array_resolves_index() {
+    let r = compile("in a: int[]\nin go: exec\non go { let x = a\n let v = x[0] }");
+    assert!(
+        !has_unsupported(&r),
+        "aliased input-array index lowered to _Unsupported: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+        1,
+        "x[0] must lower to an ArrayVar_Get on the aliased input"
+    );
+}

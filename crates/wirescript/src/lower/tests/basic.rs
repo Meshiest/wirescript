@@ -1459,6 +1459,118 @@ fn union_trigger_lowers_body_per_part() {
     }
 }
 
+/// A captured handler with a NON-event trigger (`let e = on go { … }` where
+/// `go` is an exec input) lowers its body and captures its exit as `e`. The body
+/// used to be dropped entirely — `lower_event_decl` returned unless the trigger
+/// was a built-in Event.
+#[test]
+fn captured_handler_on_exec_input_lowers_body() {
+    let r = compile("in go: exec\nvar x: int = 0\nout r: exec\nlet e = on go { x = x + 1 }\non e { emit r }");
+    assert_no_errors(&r);
+    let inc = r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class.contains("Var_Increment"))
+        .map(|(id, _)| *id)
+        .expect("the captured body's increment must lower");
+    // The increment fires off the input, and its exit chains onward (to `on e`).
+    assert!(
+        r.module.wires.iter().any(|w| w.target.node_id == inc),
+        "the captured body must be triggered from the input"
+    );
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == inc),
+        "the captured body's exit must chain into `on e`"
+    );
+}
+
+/// A single `emit out = <expr>` inside an `if` must be var-backed so the write
+/// is gated by the branch's taken-exec — not wired straight to the output
+/// rerouter (unconditional). The single-emit-site fast path used to bypass the
+/// guard, making the output continuously equal the value regardless of `c`.
+#[test]
+fn single_conditional_emit_is_branch_gated() {
+    let r = compile(
+        "in c: bool\nin a: int\nin go: exec\nout r: int\non go { if c { emit r = a } }",
+    );
+    assert_no_errors(&r);
+    // The output must be fed by a backing var, not by the input directly.
+    let out_id = find_gate(&r, "BrickComponentType_Internal_MicrochipOutput");
+    let feed = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == out_id)
+        .map(|w| w.source.node_id)
+        .and_then(|id| r.module.nodes.get(&id));
+    assert!(
+        feed.is_some_and(|n| n.gate_class.contains("Pseudo_Var")),
+        "the conditional output must be fed by a backing var, not wired unconditionally"
+    );
+    // The gated write exists: a Var_Set driven from the branch's taken exec.
+    let branch = find_gate(&r, "BrickComponentType_WireGraph_Exec_Branch");
+    let set_ids: std::collections::HashSet<crate::ir::NodeId> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class.contains("Var_Set"))
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        r.module.wires.iter().any(|w| {
+            w.source.node_id == branch
+                && w.source.port == crate::ir::port_registry::WirePort::ExecOutA
+                && set_ids.contains(&w.target.node_id)
+        }),
+        "the branch's taken exec must drive the emit's Var_Set (gated write)"
+    );
+}
+
+/// Exactly one wire drives an output's `RER_Input` (2+ = a load-breaking
+/// fan-in). Helper for the emit-fan-in regressions below.
+fn output_driver_count(r: &LowerResult) -> usize {
+    let out_id = find_gate(r, "BrickComponentType_Internal_MicrochipOutput");
+    r.module
+        .wires
+        .iter()
+        .filter(|w| {
+            w.target.node_id == out_id
+                && w.target.port == crate::ir::port_registry::WirePort::RerInput
+        })
+        .count()
+}
+
+/// A defaulted output (`out r = 0`) plus an `emit r = …` must be var-backed (the
+/// default seeds the var), not driven by both the default and the emit — which
+/// used to fan-in two wires into the output rerouter.
+#[test]
+fn defaulted_output_plus_emit_has_single_driver() {
+    let r = compile("in go: exec\nout r = 0\non go { emit r = 42 }");
+    assert_no_errors(&r);
+    assert_eq!(
+        output_driver_count(&r),
+        1,
+        "a defaulted output with an emit must have one driver, not a fan-in"
+    );
+}
+
+/// An `emit r = …` in the handler and another inside an anonymous `chip { … }`
+/// (which shares the parent's output) must be var-backed. The counter used to
+/// skip the chip site, so both wired straight to the output — a fan-in.
+#[test]
+fn emit_across_handler_and_anon_chip_has_single_driver() {
+    let r = compile(
+        "in go: exec\nin a: int\nin b: int\nout r: int\non go { emit r = a\n chip { emit r = b } }",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        output_driver_count(&r),
+        1,
+        "emit split across a handler and an anon chip must not fan-in"
+    );
+}
+
 #[test]
 fn get_aim_is_one_gate_with_both_ports() {
     // `c.GetAim().Origin` / `.Direction` resolve to a single GetAim gate,

@@ -26,7 +26,27 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     };
     let evt = match find_event(&source_name) {
         Some(e) => e,
-        None => return,
+        None => {
+            // Not a built-in Event: `let e = on go { … }` where `go` is an exec
+            // `in`put / `var` / `let` / event data param. Trigger the body off
+            // that source's port and capture its exit as `e`, exactly like a
+            // plain `on go` handler. Without this the whole captured body was
+            // silently dropped for every non-Event trigger.
+            if let Some(trig) = resolve_captured_source_port(ctx, &source_name) {
+                let saved_exec = ctx.current_exec;
+                let saved_entry = ctx.handler_entry_exec;
+                ctx.current_exec = Some(trig);
+                ctx.handler_entry_exec = Some(trig);
+                reset_var_get_caches(ctx);
+                lower_block(ctx, body);
+                if let Some(e) = ctx.current_exec {
+                    ctx.captured_events.insert(d.name.clone(), e);
+                }
+                ctx.current_exec = saved_exec;
+                ctx.handler_entry_exec = saved_entry;
+            }
+            return;
+        }
     };
     let mut outputs = vec![PortSpec {
         name: intern(evt.exec_out),
@@ -58,6 +78,26 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     }
     ctx.current_exec = saved_exec;
     ctx.handler_entry_exec = saved_entry;
+}
+
+/// Resolve a captured handler's non-event trigger source (`let e = on go { … }`)
+/// to its exec/value trigger port — an exec `in`put, a `let`/local, a `var`, or
+/// an enclosing event data param — the same sources a plain `on go` handler
+/// fires off.
+fn resolve_captured_source_port(ctx: &mut LowerCtx, name: &str) -> Option<PortRef> {
+    if let Some(rec) = ctx.lookup_input(name).cloned() {
+        return Some(rec.node_id.port(WirePort::RerOutput));
+    }
+    if let Some(rec) = ctx.lookup_local(name).cloned() {
+        return Some(rec.port);
+    }
+    if let Some(rec) = ctx.lookup_var(name).cloned() {
+        return Some(port_ref(rec.node_id, "Value"));
+    }
+    if let Some(Binding::EventParam(p)) = ctx.scope.get(name).cloned() {
+        return Some(p);
+    }
+    None
 }
 
 pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {

@@ -151,6 +151,48 @@ fn array_mutation_outside_exec_is_ws007() {
 }
 
 #[test]
+fn array_read_outside_exec_is_ws007() {
+    // A pure-context READ (`length`/`find`/…) also needs exec — it lowers to an
+    // `Exec_*` gate, and used to fall to a silent `_Unsupported`.
+    let p = parse("var xs: int[]\nout r = xs.length()", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "pure runtime array read must be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn array_read_with_exec_arg_is_clean() {
+    // An explicit `exec = <trigger>` arg supplies the exec context in a pure
+    // binding, so it must NOT be WS007.
+    let p = parse(
+        "var lut: color[]\nin i: int\nout c: color = lut.get(i, exec = i + 1).Value",
+        "test",
+    );
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "a read with an exec= arg must not be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn const_array_read_is_not_ws007() {
+    // A read on a `const` receiver should const-fold (a separate feature), so it
+    // must not be reported as an exec-context error.
+    let p = parse("const t = [1, 2, 3]\nconst n = t.length()\nout r = n", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "const array read must not be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
 fn map_mutation_outside_exec_is_ws007() {
     let p = parse("var m: Map<int,int>\nchip {\n  m.set(1, 2)\n}", "test");
     let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
@@ -169,6 +211,32 @@ fn array_mutation_inside_exec_is_clean() {
     assert!(
         !r.diagnostics.iter().any(|d| d.code == "WS007"),
         "exec-context mutation must not be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn let_shadowing_in_port_is_ws013() {
+    // `let go` shadowing `in go: exec` used to silently hijack `on go` (the
+    // handler bound to the constant, the exec input went dead).
+    let p = parse("in go: exec\nlet go = 5\nout r: int\non go { emit r = 1 }", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS013"),
+        "a let shadowing an in/out port must be WS013: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn let_value_shadowing_stays_clean() {
+    // Rust-style value shadowing (`let a = 1; let a = 2`) is legal and must NOT
+    // be flagged - only a port shadow is the bug.
+    let p = parse("var x: int = 0\nin go: exec\non go { let a = 1\n let a = 2\n x = a }", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS013"),
+        "value shadowing must not be WS013: {:?}",
         r.diagnostics
     );
 }

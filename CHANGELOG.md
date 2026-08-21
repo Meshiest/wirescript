@@ -10,6 +10,14 @@
 - Two different modules declaring the same top-level name, merged via `import "m"` or `import { x }`, now report `WS013` instead of silently collapsing both onto one storage gate.
 - A container mutation (`arr.push(x)`, `m.set(k, v)`) outside an exec context now reports `WS007` instead of silently lowering to a placeholder that does nothing.
 - A parse error in an imported file now surfaces instead of being silently swallowed; the identical source only errored when compiled as the entry file.
+- An anonymous chip (`chip { … }` / `chip on t { … }`) in an imported module now runs; it was filtered out before the merge and silently dropped along with its writes.
+- A single `emit out = <expr>` inside an `if` is now gated by the branch instead of wired unconditionally to the output; a guarded write no longer becomes permanent.
+- A `let` that shadows an in/out port of the same name now reports `WS013` instead of silently hijacking it (`let go` before `on go`, with `in go: exec`, left the exec input dead). Ordinary value shadowing (`let a = 1; let a = 2`) is unaffected.
+- An output reached by an `emit` plus a default initializer (`out r = 0` then `emit r = …`), or by emits split across a handler and an anonymous `chip { … }`, is now var-backed instead of driven by two wires - a load-breaking fan-in on the output rerouter.
+- A `let` aliasing an input-port array or map (`in a: int[]` then `let x = a`) now resolves for `x[i]` and container methods, like a `var` alias; it used to lower the index to a placeholder.
+- A namespaced mod's body now resolves its OWN module's siblings, vars, and constants. Two imported modules with a same-named private `helper` no longer make one module's public functions run the other's code, and a namespaced mod mutating `g` now writes its own module's storage gate instead of the last-imported namespace's.
+- A container method READ outside an exec context (`out r = arr.length()`) now reports `WS007` instead of silently lowering to a placeholder, matching the pure index-read rule. A `const` receiver or an explicit `exec = <trigger>` arg is exempt.
+- A captured handler with a non-Event trigger (`let e = on go { … }` where `go` is an exec input, `var`, or `let`) now runs its body and captures its exit as `e`; the body used to be dropped entirely unless the trigger was a built-in event.
 
 ## 1.4.3
 

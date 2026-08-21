@@ -104,6 +104,11 @@ fn is_importable(d: &TopDecl) -> bool {
             // desugared `let _on_expr_N = <expr>` (a Let, which IS importable)
             // still leaked in — a dangling trigger gate with no body.
             | TopDecl::Handler(_)
+            // An anonymous `chip { … }` (including the `chip on t { … }`
+            // desugar) in an imported library installs behaviour just like a
+            // top-level handler. Without this it was filtered out before the
+            // merge and silently dropped, taking its writes with it.
+            | TopDecl::AnonChip(_)
     )
 }
 

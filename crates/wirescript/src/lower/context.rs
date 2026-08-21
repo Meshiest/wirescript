@@ -353,6 +353,20 @@ pub(super) struct LowerCtx<'a> {
     /// e.g. an imported `let start` would overwrite the importer's own
     /// `in start: exec` and silently drop `on start`'s handler body.
     pub(super) importer_names: crate::collections::HashSet<String>,
+    /// For a mod DECLARED inside an `import * as ns` module: its owning
+    /// namespace's member map, keyed by the mod's decl location `(file,
+    /// offset)`. A namespaced mod is registered by BARE name and inlined at its
+    /// call site, where the ambient scope holds whatever namespace lowered last
+    /// — so its body's references to its own module's siblings/vars/consts
+    /// resolved to the WRONG module (two modules with a same-named `helper`: the
+    /// second's callers ran the first's code; a mod mutating `g` wrote the
+    /// last-imported namespace's gate). At inline, the callee's members are
+    /// pushed into its body frame FIRST (params still shadow), so bare `helper` /
+    /// `g` resolve to THIS module's. Keyed by location, so both the `ns.f`
+    /// access and a bare sibling call (distinct `Arc<ChipDecl>` clones of the
+    /// same source) map to one entry.
+    pub(super) ns_mod_scopes:
+        crate::collections::HashMap<(String, usize), std::sync::Arc<HashMap<String, Binding>>>,
 }
 
 impl<'a> LowerCtx<'a> {

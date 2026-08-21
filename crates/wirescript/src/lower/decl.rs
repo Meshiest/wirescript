@@ -170,6 +170,12 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // module as a namespace ran none of its `on Clock` / event / exec
             // handlers.
             let mut ns_handlers: Vec<&Handler> = Vec::new();
+            // Anonymous chips (`chip { … }` / `chip on t { … }`) in the imported
+            // module. Like handlers, they install behaviour and are lowered at
+            // the end of the arm (pre-declared then lowered, since pass 1 never
+            // descended into `ns.decls`), while the module's members still hold
+            // the bare names. Without this they fell into `_ => {}` and vanished.
+            let mut ns_anon_chips: Vec<&AnonChipDecl> = Vec::new();
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
@@ -324,6 +330,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                         );
                     }
                     TopDecl::Handler(h) => ns_handlers.push(h),
+                    TopDecl::AnonChip(ac) => ns_anon_chips.push(ac),
                     _ => {}
                 }
             }
@@ -359,12 +366,32 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             for h in ns_handlers {
                 ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h));
             }
+            // Anonymous chips: pre-declare (create the chip node + inner vars,
+            // the pass-1 step that never ran for a namespaced decl) then lower
+            // the body.
+            for ac in ns_anon_chips {
+                pre_declare_decl(ctx, &TopDecl::AnonChip(ac.clone()));
+                lower_anon_chip(ctx, ac);
+            }
             // Hand each importer-owned bare name back to the importer, only now
             // that this namespace's deferred buffer/out bodies have resolved
             // against the member's own fresh gate.
             for (name, saved) in ns_restores {
                 if let Some(binding) = saved {
                     ctx.scope.insert(&name, binding);
+                }
+            }
+            // Record this namespace's member map for each mod it declares, keyed
+            // by the mod's decl location, so the inline path can push THIS
+            // module's members into the callee's body frame (see
+            // `LowerCtx::ns_mod_scopes`). Both the `ns.f` access and a bare
+            // sibling call reach the same source ChipDecl, so the location key is
+            // shared.
+            let ns_scope = std::sync::Arc::new(ns_decls.clone());
+            for d in &ns.decls {
+                if let TopDecl::Chip(c) = d {
+                    let key = (c.range.file.to_string(), c.range.start.offset);
+                    ctx.ns_mod_scopes.insert(key, ns_scope.clone());
                 }
             }
             ctx.scope
@@ -938,6 +965,21 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         && matches!(var_rec.storage, VarStorage::Array | VarStorage::Map)
     {
         ctx.scope.insert(name, Binding::Var(var_rec));
+        return;
+    }
+
+    // Same aliasing, but where the RHS is an INPUT port of container type
+    // (`in a: int[]` then `let x = a`). An input array/map is a reference
+    // container too, reached through its `RerOutput`; bind `x` to the same
+    // `Input` so `x[i]` / `x.length()` resolve exactly like `a[i]`. Without this
+    // the alias fell through to the scalar value path and the index lowered to
+    // an `_Unsupported` placeholder.
+    if let Expr::Ident { name: rhs_name, .. } = &d.value
+        && let LetBinding::Ident { name, .. } = &d.binding
+        && let Some(Binding::Input(inp)) = ctx.scope.get(rhs_name).cloned()
+        && matches!(unwrap_ref(&inp.ty), Type::Array(_) | Type::Map(..))
+    {
+        ctx.scope.insert(name, Binding::Input(inp));
         return;
     }
 

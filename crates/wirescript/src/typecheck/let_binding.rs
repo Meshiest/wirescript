@@ -140,7 +140,15 @@ pub(super) fn check_const_recorded(ctx: &mut TypeCheckCtx, l: &LetDecl) {
 pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
     match b {
         LetBinding::Ident { name, range } => {
-            ctx.scope.declare(
+            // A `let` may shadow another VALUE binding in the same scope
+            // (Rust-style: `const a = 1` then `let a = …` re-binds `a`). But a
+            // `let` that shadows an in/out PORT of the same name is the silent
+            // hijack bug: `in go: exec` then `let go = 5` made `on go` bind to
+            // the constant and left the exec input dead. `declare` returns the
+            // previous symbol only when it was in the SAME frame (child-scope
+            // shadowing stays legal), so gating on a port kind flags exactly the
+            // collision without touching value shadowing.
+            let prev = ctx.scope.declare(
                 name,
                 SymbolInfo {
                     kind: SymbolKind::LetBinding,
@@ -151,6 +159,13 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                     event_data: None,
                 },
             );
+            if matches!(prev, Some(p) if matches!(p.kind, SymbolKind::In | SymbolKind::Out)) {
+                ctx.emit(
+                    "WS013",
+                    format!("'{name}' shadows the in/out port of the same name — rename one"),
+                    range.clone(),
+                );
+            }
         }
         LetBinding::Tuple { names, rest, range } => {
             // `rest` takes everything past `names`, so the source only has to

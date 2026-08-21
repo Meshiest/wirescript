@@ -400,3 +400,133 @@ fn namespaced_and_local_handlers_both_run() {
         "both the local and the imported `on ReadBrickGrid` handler must generate"
     );
 }
+
+/// An anonymous chip (`chip on t { ... }`) in a namespaced module installs its
+/// behaviour just like a top-level handler. It used to fall into the namespace
+/// arm's `_ => {}` and vanish, taking its writes with it.
+#[test]
+fn namespaced_import_anon_chip_runs() {
+    let (tc, lr) = compile_with_lib(
+        "var v: int = 0\nin t: exec\nchip on t { v = 1 }\nout cur = v",
+        "import * as N from \"lib\"",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        !lr.module.chips.is_empty(),
+        "the namespaced anon chip must instantiate a microchip"
+    );
+    let has_set = lr
+        .module
+        .chips
+        .values()
+        .any(|c| c.nodes.values().any(|n| n.gate_class.contains("Var_Set")));
+    assert!(has_set, "the namespaced anon chip's `v = 1` write must lower");
+}
+
+fn count_class_ns(m: &crate::ir::Module, class: &str) -> usize {
+    let mut n = m.nodes.values().filter(|x| x.gate_class == class).count();
+    for c in m.chips.values() {
+        n += count_class_ns(c, class);
+    }
+    n
+}
+
+/// Two modules with a same-named private `helper`, each called by a public mod:
+/// `A.f` must run A's `helper` and `B.g` must run B's. The bodies used to
+/// resolve `helper` through the shared bare scope (last namespace won), so both
+/// ran ONE module's helper. Now each mod body is lowered with its own module's
+/// members pushed into the frame.
+#[test]
+fn namespaced_sibling_mod_resolves_its_own_module() {
+    let (tc, lr) = compile_with_libs(
+        &[
+            ("m.ws", "mod helper(x: int) -> int { return x + 1 }\nmod f(x: int) -> int { return helper(x) }"),
+            ("n.ws", "mod helper(x: int) -> int { return x * 100 }\nmod g(x: int) -> int { return helper(x) }"),
+        ],
+        "import * as A from \"m\"\n\
+         import * as B from \"n\"\n\
+         in v: int\n\
+         out ra = A.f(v)\n\
+         out rb = B.g(v)",
+    );
+    assert_clean(&tc, &lr);
+    assert_eq!(
+        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        1,
+        "A.f must run m's `helper` (x + 1)"
+    );
+    assert_eq!(
+        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathMultiply"),
+        1,
+        "B.g must run n's `helper` (x * 100), not m's"
+    );
+}
+
+/// A namespaced mod reading its module's `let` constant returns THAT module's
+/// value: `A.getG()` bakes 111, `B.getG()` bakes 222.
+#[test]
+fn namespaced_mod_reads_its_own_module_const() {
+    let (tc, lr) = compile_with_libs(
+        &[
+            ("mc.ws", "let g: int = 111\nmod getG() -> int { return g }"),
+            ("nc.ws", "let g: int = 222\nmod getG() -> int { return g }"),
+        ],
+        "import * as A from \"mc\"\nimport * as B from \"nc\"\nout ra = A.getG()\nout rb = B.getG()",
+    );
+    assert_clean(&tc, &lr);
+    let ints = baked_ints(&lr.module);
+    assert!(ints.contains(&111), "A.getG() must bake m's g (111): {ints:?}");
+    assert!(ints.contains(&222), "B.getG() must bake n's g (222): {ints:?}");
+}
+
+/// A namespaced mod that mutates its module's `var` writes ITS module's gate.
+/// Both modules declare `var g` + `mod bump` (the name collision), but only
+/// `A.g` is read out; `A.bump()`'s increment must target the very gate `A.g`
+/// reads. Before the fix it wrote whichever namespace lowered last (B's).
+#[test]
+fn namespaced_mod_mutates_its_own_module_var() {
+    let (tc, lr) = compile_with_libs(
+        &[
+            ("mv.ws", "var g: int = 0\nmod bump() { g = g + 1 }"),
+            ("nv.ws", "var g: int = 0\nmod bump() { g = g + 1 }"),
+        ],
+        "import * as A from \"mv\"\nimport * as B from \"nv\"\nin go: exec\nout a = A.g\non go { A.bump() }",
+    );
+    assert_clean(&tc, &lr);
+    assert_eq!(
+        count_class_ns(&lr.module, "BrickComponentType_WireGraphPseudo_Var"),
+        2,
+        "A.g and B.g are distinct storage gates"
+    );
+    // The gate `out a = A.g` reads.
+    let out_id = find_gate(&lr, "BrickComponentType_Internal_MicrochipOutput");
+    let a_gate = lr
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == out_id)
+        .map(|w| w.source.node_id)
+        .expect("out a must be wired from A.g");
+    // The gate A.bump()'s increment writes.
+    let inc = lr
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class.contains("Var_Increment"))
+        .map(|(id, _)| *id)
+        .expect("A.bump() must lower to a Var_Increment");
+    let inc_target = lr
+        .module
+        .wires
+        .iter()
+        .find(|w| {
+            w.target.node_id == inc
+                && w.target.port == crate::ir::port_registry::WirePort::VarRef
+        })
+        .map(|w| w.source.node_id)
+        .expect("the increment must target a storage gate");
+    assert_eq!(
+        inc_target, a_gate,
+        "A.bump() must write the gate A.g reads, not the other module's"
+    );
+}
