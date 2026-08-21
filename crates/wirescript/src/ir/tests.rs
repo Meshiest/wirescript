@@ -32,3 +32,19 @@
         // it loudly rather than silently mapping to the wrong port.
         let _ = crate::ir::port_registry::WirePort::from_name("NotARealWirePort");
     }
+
+    #[test]
+    fn node_loc_shows_file_basename_and_position() {
+        use crate::diagnostic::{Pos, SourceRange};
+        // An imported node's range points into its own file; the dump location
+        // now includes the basename so it is distinguishable from an entry-file
+        // node at the same line.
+        let sr = SourceRange {
+            file: std::sync::Arc::from("C:/some/dir/lib.ws"),
+            start: Pos { offset: 10, line: 3, col: 1 },
+            end: Pos { offset: 20, line: 3, col: 11 },
+        };
+        assert_eq!(super::node_loc(&sr), " @ lib.ws:3:1");
+        // A synthetic node (no source position) has no location tag.
+        assert_eq!(super::node_loc(&SourceRange::default()), "");
+    }

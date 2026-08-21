@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 1.4.5
+
+- `--dump-ir` node locations now include the source file (`@ lib.ws:3:1`) and render each node's snippet from that file. Imported nodes used to show the entry file's text at their offset and an ambiguous `@ line:col`; the IR ranges themselves were already correct, only the dump's preview read the wrong source.
+
 ## 1.4.4
 
 - A module imported as a namespace (`import * as L from "lib"`) now runs its top-level `on` handlers.

@@ -529,7 +529,45 @@ pub fn dump_module(module: &Module, indent: usize) {
     dump_module_with_source(module, indent, None);
 }
 
+/// The `@ file:line:col` location tag for a node's source range. The file's
+/// BASENAME is included so an imported node is distinguishable from an
+/// entry-file node at the same line (imported ranges are correct — they point
+/// into their own file — the old dump just omitted the file and rendered the
+/// snippet against the entry source). Empty for a synthetic node with no
+/// source position.
+fn node_loc(sr: &crate::diagnostic::SourceRange) -> String {
+    if sr.start.line == 0 && sr.start.col == 0 {
+        return String::new();
+    }
+    let base = std::path::Path::new(&*sr.file)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&sr.file);
+    if base.is_empty() {
+        format!(" @ {}:{}", sr.start.line, sr.start.col)
+    } else {
+        format!(" @ {base}:{}:{}", sr.start.line, sr.start.col)
+    }
+}
+
 pub fn dump_module_with_source(module: &Module, indent: usize, source: Option<&str>) {
+    // A node's snippet must come from its OWN `range.file`: imported nodes live
+    // in other files, so indexing the single entry `source` by their offset
+    // rendered garbage text (and the location omitted the file, so `@ 3:1` was
+    // ambiguous between the entry and an import). Cache each file's source,
+    // reading imports from disk on demand; fall back to the passed `source` when
+    // a file can't be read (in-memory/test sources).
+    let mut cache: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    dump_module_inner(module, indent, source, &mut cache);
+}
+
+fn dump_module_inner(
+    module: &Module,
+    indent: usize,
+    entry_source: Option<&str>,
+    cache: &mut std::collections::HashMap<String, Option<String>>,
+) {
     use crate::intern::resolve;
     let pad = "  ".repeat(indent);
     eprintln!(
@@ -550,12 +588,15 @@ pub fn dump_module_with_source(module: &Module, indent: usize, source: Option<&s
             .map(|s| format!(" [{s}]"))
             .unwrap_or_default();
         let sr = &n.source_range;
-        let loc = if sr.start.line > 0 || sr.start.col > 0 {
-            format!(" @ {}:{}", sr.start.line, sr.start.col)
-        } else {
-            String::new()
-        };
-        let snippet = source
+        let loc = node_loc(sr);
+        // Snippet from THIS node's file (cached; imports read from disk).
+        let file: &str = &sr.file;
+        let src: Option<&str> = cache
+            .entry(file.to_string())
+            .or_insert_with(|| std::fs::read_to_string(file).ok())
+            .as_deref()
+            .or(entry_source);
+        let snippet = src
             .and_then(|s| s.get(sr.start.offset..sr.end.offset.min(sr.start.offset + 40)))
             .map(|s| {
                 let s = s.split('\n').next().unwrap_or(s);
@@ -575,7 +616,7 @@ pub fn dump_module_with_source(module: &Module, indent: usize, source: Option<&s
     }
     for (chip_id, child) in &module.chips {
         eprintln!("{pad}  chip {chip_id}:");
-        dump_module_with_source(child, indent + 2, source);
+        dump_module_inner(child, indent + 2, entry_source, cache);
     }
 }
 
