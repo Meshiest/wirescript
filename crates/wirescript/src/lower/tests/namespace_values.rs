@@ -246,3 +246,157 @@ fn namespaced_chip_calls_still_work() {
         "a namespaced chip call must still instantiate its chip"
     );
 }
+
+const PSEUDO_VAR: &str = "BrickComponentType_WireGraphPseudo_Var";
+const VAR_SET: &str = "BrickComponentType_WireGraph_Exec_Var_Set";
+const OUTPUT: &str = "BrickComponentType_Internal_MicrochipOutput";
+
+fn count_gate(m: &crate::ir::Module, class: &str) -> usize {
+    m.nodes.values().filter(|n| n.gate_class == class).count()
+}
+
+/// The source node feeding `target`'s incoming wire on port `port` (the first
+/// such wire), if any.
+fn feed_source(
+    m: &crate::ir::Module,
+    target: crate::ir::NodeId,
+    port: crate::ir::port_registry::WirePort,
+) -> Option<crate::ir::NodeId> {
+    m.wires
+        .iter()
+        .find(|w| w.target.node_id == target && w.target.port == port)
+        .map(|w| w.source.node_id)
+}
+
+/// Two DIFFERENT modules each declaring `var g`, imported as two namespaces:
+/// `A.g` and `B.g` must be DISTINCT storage gates for both reads and writes.
+/// The old lowering skipped the second module's `var` (its bare name was
+/// already bound by the first) and let `B.g` alias `A.g`'s single `Pseudo_Var`,
+/// so writing one silently changed the other.
+#[test]
+fn two_namespaces_same_var_name_get_distinct_gates() {
+    let (tc, lr) = compile_with_libs(
+        &[("amod.ws", "var g: int = 0"), ("bmod.ws", "var g: int = 0")],
+        "import * as A from \"amod\"\n\
+         import * as B from \"bmod\"\n\
+         in go: exec\n\
+         out ra = A.g\n\
+         out rb = B.g\n\
+         on go { A.g = 5\n B.g = 9 }",
+    );
+    assert_clean(&tc, &lr);
+    assert!(!has_unsupported(&lr.module));
+    assert_eq!(
+        count_gate(&lr.module, PSEUDO_VAR),
+        2,
+        "A.g and B.g must be two distinct storage gates, not one collapsed gate"
+    );
+    // The two reads (`out ra = A.g`, `out rb = B.g`) come from distinct gates.
+    let outs: Vec<crate::ir::NodeId> = lr
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == OUTPUT)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(outs.len(), 2);
+    let r0 = feed_source(&lr.module, outs[0], crate::ir::port_registry::WirePort::RerInput);
+    let r1 = feed_source(&lr.module, outs[1], crate::ir::port_registry::WirePort::RerInput);
+    assert!(
+        r0.is_some() && r1.is_some() && r0 != r1,
+        "the two namespaced reads must resolve to distinct storage gates"
+    );
+    // The two writes (`A.g = 5`, `B.g = 9`) target distinct storage gates.
+    let sets: Vec<crate::ir::NodeId> = lr
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == VAR_SET)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(sets.len(), 2, "each namespaced write is its own Var_Set");
+    let w0 = feed_source(&lr.module, sets[0], crate::ir::port_registry::WirePort::VarRef);
+    let w1 = feed_source(&lr.module, sets[1], crate::ir::port_registry::WirePort::VarRef);
+    assert!(
+        w0.is_some() && w1.is_some() && w0 != w1,
+        "the two namespaced writes must target distinct storage gates"
+    );
+}
+
+/// A local `var g` and an imported `A.g` of the same name must be distinct
+/// gates. The importer OWNS the bare `g`, so after the namespace lowers its own
+/// `g` (a fresh gate captured as `A.g`) the bare `g` is restored to the local.
+#[test]
+fn local_var_and_namespaced_var_same_name_stay_distinct() {
+    let (tc, lr) = compile_with_libs(
+        &[("amod.ws", "var g: int = 0")],
+        "import * as A from \"amod\"\n\
+         var g: int = 0\n\
+         in go: exec\n\
+         out mine = g\n\
+         out theirs = A.g\n\
+         on go { g = 1\n A.g = 2 }",
+    );
+    assert_clean(&tc, &lr);
+    assert!(!has_unsupported(&lr.module));
+    assert_eq!(
+        count_gate(&lr.module, PSEUDO_VAR),
+        2,
+        "the local `g` and the imported `A.g` must be two distinct gates"
+    );
+    let sets: Vec<crate::ir::NodeId> = lr
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == VAR_SET)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(sets.len(), 2);
+    let w0 = feed_source(&lr.module, sets[0], crate::ir::port_registry::WirePort::VarRef);
+    let w1 = feed_source(&lr.module, sets[1], crate::ir::port_registry::WirePort::VarRef);
+    assert!(
+        w0.is_some() && w1.is_some() && w0 != w1,
+        "`g = 1` and `A.g = 2` must write distinct gates"
+    );
+}
+
+/// A namespaced import's top-level `on` handler runs as part of the importing
+/// program. Handlers used to fall into the namespace arm's `_ => {}` and be
+/// dropped, so importing a module as a namespace ran none of its handlers.
+#[test]
+fn namespaced_import_on_handler_runs() {
+    let (tc, lr) = compile_with_lib(
+        "var ticks: int = 0\nin go: exec\non go { ticks = ticks + 1 }\nout t = ticks",
+        "import * as L from \"lib\"",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        lr.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class.contains("Var_Increment")),
+        "the namespaced module's `on go` handler body must lower"
+    );
+}
+
+/// A namespaced module's handler and the importer's own handler for the same
+/// trigger both run; neither is dropped, and each resolves its own module's
+/// state.
+#[test]
+fn namespaced_and_local_handlers_both_run() {
+    let (tc, lr) = compile_with_lib(
+        "on ReadBrickGrid() { BroadcastChatMessage(\"lib\") }",
+        "import * as Other from \"lib\"\non ReadBrickGrid() { BroadcastChatMessage(\"main\") }",
+    );
+    assert_clean(&tc, &lr);
+    let broadcasts = lr
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class.contains("BroadcastChatMessage"))
+        .count();
+    assert_eq!(
+        broadcasts, 2,
+        "both the local and the imported `on ReadBrickGrid` handler must generate"
+    );
+}

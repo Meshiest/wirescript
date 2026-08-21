@@ -1425,6 +1425,40 @@ fn handler_creates_event_and_exec_chain() {
     assert!(has_event, "expected event node for RoundStart");
 }
 
+/// An or-triggered handler (`on a | b { ... }`) runs its body when EITHER part
+/// fires. The `Trigger::Union` case used to hit `lower_handler`'s `_ => return`
+/// and drop the whole body silently. Now the body lowers once per part, each
+/// wired from its own trigger.
+#[test]
+fn union_trigger_lowers_body_per_part() {
+    let r = compile("var v: int = 0\nin t: exec\nin u: exec\non t | u { v = v + 1 }");
+    assert_no_errors(&r);
+    let increments = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class.contains("Var_Increment"))
+        .count();
+    assert_eq!(
+        increments, 2,
+        "the body must lower once per union trigger part (t and u)"
+    );
+    // Each input drives one of the two increments (no dropped/dead trigger).
+    let inputs: Vec<crate::ir::NodeId> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_Internal_MicrochipInput")
+        .map(|(id, _)| *id)
+        .collect();
+    for inp in &inputs {
+        assert!(
+            r.module.wires.iter().any(|w| w.source.node_id == *inp),
+            "each union-trigger input must drive a handler body copy"
+        );
+    }
+}
+
 #[test]
 fn get_aim_is_one_gate_with_both_ports() {
     // `c.GetAim().Origin` / `.Direction` resolve to a single GetAim gate,

@@ -66,6 +66,16 @@ impl<V> Scope<V> {
         None
     }
 
+    /// Look up `key` in ONLY the innermost (current) frame, never ancestors.
+    /// Distinguishes "declared in THIS scope" from "shadows an outer binding" —
+    /// a statement-position `var`/`array`/`map`/`buffer` redeclaration needs its
+    /// own fresh storage precisely when the outer binding is in an ancestor
+    /// frame, not the current one.
+    pub fn get_current(&self, key: &str) -> Option<&V> {
+        let sym = crate::intern::intern(key);
+        self.frames.last().and_then(|f| f.entries.get(&sym))
+    }
+
     pub fn get_mut(&mut self, key: &str) -> Option<&mut V> {
         let sym = crate::intern::intern(key);
         self.get_mut_sym(sym)

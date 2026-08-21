@@ -61,6 +61,18 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
 }
 
 pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
+    // Union trigger `on a | b { ... }`: run the body when ANY part fires. Lower
+    // the body once per part (each part reuses the full single-trigger
+    // resolution below), so it works for every trigger kind. Without this the
+    // whole handler fell into the `_ => return` below and was silently dropped.
+    if let Trigger::Union { parts, .. } = &h.trigger {
+        for part in parts {
+            let mut single = h.clone();
+            single.trigger = part.clone();
+            lower_handler(ctx, &single);
+        }
+        return;
+    }
     // Unwrap negated triggers: `on !foo { ... }` → lower `foo`, negate
     // Also handle `on var.value { ... }` field triggers.
     let (trigger_name, trigger_field, negated) = match &h.trigger {

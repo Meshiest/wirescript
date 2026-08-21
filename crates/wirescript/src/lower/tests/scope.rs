@@ -119,3 +119,120 @@ fn if_branches_own_their_body_nodes() {
     assert!(!in_then.is_empty(), "IfThen should own at least one node");
     assert!(!in_else.is_empty(), "IfElse should own at least one node");
 }
+
+// ── block-scoped storage shadowing (regression) ──
+// A `var`/array/map/buffer declared inside a handler/`if`/block whose name
+// matches an ancestor storage binding must get its OWN gate, not silently
+// reuse the ancestor's. The old `needs_declaration` walked the whole frame
+// chain, found the ancestor, and skipped the declaration — so the inner var
+// wrote the outer's storage (type-divergent writes, a `static var` reset every
+// call, a load-breaking buffer fan-in).
+
+const PVAR: &str = "BrickComponentType_WireGraphPseudo_Var";
+const BUF: &str = "BrickComponentType_WireGraphPseudo_BufferTicks";
+const AVAR: &str = "BrickComponentType_WireGraphPseudo_ArrayVar";
+const MVAR: &str = "BrickComponentType_WireGraphPseudo_MapVar";
+
+/// How many wires leave `node`'s `VarRef` output (its write consumers).
+fn varref_consumers(r: &LowerResult, node: crate::ir::NodeId) -> usize {
+    r.module
+        .wires
+        .iter()
+        .filter(|w| {
+            w.source.node_id == node
+                && w.source.port == crate::ir::port_registry::WirePort::VarRef
+        })
+        .count()
+}
+
+#[test]
+fn block_local_var_shadowing_ancestor_gets_its_own_gate() {
+    // Inner `int` var must not reuse the outer `string` var's storage gate.
+    let r = compile("var x: string = \"hi\"\nin go: exec\non go {\n var x: int = 5\n x = x + 1\n}");
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, PVAR),
+        2,
+        "the outer and inner `x` must be two distinct storage gates"
+    );
+    // The outer (untouched) gate has zero write consumers; the inner has both
+    // the reset Set and the increment — so the int writes never reach the
+    // string gate.
+    let consumers: Vec<usize> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == PVAR)
+        .map(|(id, _)| varref_consumers(&r, *id))
+        .collect();
+    assert!(
+        consumers.contains(&0) && consumers.contains(&2),
+        "inner writes must all target the inner gate, leaving the outer untouched: {consumers:?}"
+    );
+}
+
+#[test]
+fn static_var_not_reset_by_shadowing_block_var() {
+    let r =
+        compile("static var acc: int = 0\nin go: exec\non go {\n var acc: int = 0\n acc = acc + 1\n}");
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, PVAR),
+        2,
+        "the block-local `acc` must be its own gate, not reset the static every call"
+    );
+}
+
+#[test]
+fn buffer_shadowing_ancestor_gets_its_own_gate_no_fanin() {
+    let r = compile("var src: int = 0\nbuffer b = src\nin go: exec\non go { buffer b = src }");
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, BUF),
+        2,
+        "the block-local buffer must be its own gate"
+    );
+    // No buffer Input may have two drivers — that fan-in fails to load in-game.
+    for (id, _) in r.module.nodes.iter().filter(|(_, n)| n.gate_class == BUF) {
+        let drivers = r
+            .module
+            .wires
+            .iter()
+            .filter(|w| {
+                w.target.node_id == *id
+                    && w.target.port == crate::ir::port_registry::WirePort::Input
+            })
+            .count();
+        assert!(drivers <= 1, "buffer Input fan-in ({drivers} drivers)");
+    }
+}
+
+#[test]
+fn block_local_array_and_map_shadow_get_own_gate() {
+    let ra = compile("var g: int[] = [0]\nin go: exec\non go { var g: int[] = []\n g.push(7) }");
+    assert_no_errors(&ra);
+    assert_eq!(gate_count(&ra, AVAR), 2, "inner array must be its own gate");
+    let rm = compile("var m: Map<int,int>\nin go: exec\non go { var m: Map<int,int>\n m[1] = 5 }");
+    assert_no_errors(&rm);
+    assert_eq!(gate_count(&rm, MVAR), 2, "inner map must be its own gate");
+}
+
+#[test]
+fn mod_body_var_and_nested_if_var_stay_distinct() {
+    // A mod's body-level var and a same-named nested-`if` var are distinct
+    // storage. The recursive body pre-pass used to hoist the nested `var k`
+    // into the mod frame, collapsing it with the body-level `k` — orphaning one
+    // gate and mis-scoping the body-level `return k` onto the nested storage.
+    let r = compile(
+        "in go: exec\nvar out1: int = 0\nin cond: bool\n\
+         mod f() -> (r: int) {\n var k: int = 3\n if cond {\n var k: int = 99\n k = k + 1\n }\n return k\n}\n\
+         on go { out1 = f() }",
+    );
+    assert_no_errors(&r);
+    // out1 + body-level k + nested k = exactly 3 gates (no orphan 4th).
+    assert_eq!(
+        gate_count(&r, PVAR),
+        3,
+        "body-level and nested `k` must be distinct with no orphaned gate"
+    );
+}

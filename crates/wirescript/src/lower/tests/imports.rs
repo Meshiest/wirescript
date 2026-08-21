@@ -394,3 +394,79 @@ fn a_namespaced_const_still_works_as_a_runtime_value() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
 }
+
+/// Two DIFFERENT modules declaring the same top-level name, merged via plain
+/// `import`, now collide with WS013 instead of silently dropping one and
+/// aliasing both onto a single storage gate. A DIAMOND import (the same module
+/// reached via two paths) still dedups without a false duplicate.
+#[test]
+fn plain_import_same_name_from_two_modules_is_ws013() {
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader {
+        files: [
+            ("m1.ws".to_string(), "var g: int = 1".to_string()),
+            ("m2.ws".to_string(), "var g: int = 2".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let resolved = resolve("import \"m1\"\nimport \"m2\"", "main", &loader);
+    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
+    let codes: Vec<&str> = tc.diagnostics.iter().map(|d| d.code.as_ref()).collect();
+    assert!(
+        codes.contains(&"WS013"),
+        "cross-module name collision must be WS013, got {codes:?}"
+    );
+}
+
+#[test]
+fn named_import_same_name_from_two_modules_is_ws013() {
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader {
+        files: [
+            ("m1.ws".to_string(), "var dat: int = 1".to_string()),
+            ("m3.ws".to_string(), "var dat: int = 2".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let resolved = resolve(
+        "import { dat } from \"m1\"\nimport { dat } from \"m3\"",
+        "main",
+        &loader,
+    );
+    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
+    let codes: Vec<&str> = tc.diagnostics.iter().map(|d| d.code.as_ref()).collect();
+    assert!(
+        codes.contains(&"WS013"),
+        "cross-module named-import collision must be WS013, got {codes:?}"
+    );
+}
+
+/// A genuine diamond import (one module reached through two others) must NOT
+/// trip the collision check: `util` stays a single shared declaration.
+#[test]
+fn diamond_import_of_one_module_does_not_collide() {
+    use crate::resolve::{MemLoader, resolve};
+    let loader = MemLoader {
+        files: [
+            ("util.ws".to_string(), "var shared: int = 5".to_string()),
+            ("dm1.ws".to_string(), "import \"util\"".to_string()),
+            ("dm2.ws".to_string(), "import \"util\"".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let resolved = resolve("import \"dm1\"\nimport \"dm2\"", "main", &loader);
+    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
+    let errors: Vec<&str> = tc
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+        .map(|d| d.code.as_ref())
+        .collect();
+    assert!(
+        !errors.contains(&"WS013"),
+        "diamond import must not false-collide, got {errors:?}"
+    );
+}

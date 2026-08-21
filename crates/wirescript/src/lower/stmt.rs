@@ -150,7 +150,11 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             }
         }
         Stmt::Buffer(b) => {
-            if ctx.lookup_buffer(&b.name).is_none() {
+            // Current-frame check, mirroring `needs_declaration`: an ancestor
+            // buffer of the same name is a distinct binding being shadowed, so
+            // this statement must get its own gate rather than re-driving the
+            // outer buffer's `Input` (a fan-in that fails to load).
+            if ctx.lookup_buffer_current_frame(&b.name).is_none() {
                 pre_declare_buffer(ctx, b);
             }
             // Wire the initializer into the buffer's Input. Pre-declaration
@@ -310,16 +314,24 @@ pub(super) fn block_contains_return(block: &Block) -> bool {
 /// existing binding already cover it?
 ///
 /// A statement-position declaration is skipped when the name already resolves
-/// to a var, which is what lets a body pre-pass declare it once and the
-/// statement itself only run the reset. The one binding that must NOT count is
-/// a lazily materialized `const` container (see
-/// `predeclare::materialize_const_container`): it exists only because something
-/// READ the constant earlier in this body, so treating it as "already
-/// declared" makes a genuine `var xs: int[]` reuse the const container's gate
-/// instead of shadowing it — the declaration silently vanishes and every later
-/// write lands on (or, being immutable, is rejected against) the wrong array.
+/// to a var IN THE CURRENT FRAME, which is what lets a body pre-pass declare it
+/// once and the statement itself only run the reset. The check must be
+/// CURRENT-FRAME, not a full chain walk: a same-named var in an ANCESTOR frame
+/// (an outer handler/block, or a mod's top-level body around a nested `if`) is a
+/// DIFFERENT variable being shadowed, and this statement must get its own fresh
+/// storage gate. A chain walk found the ancestor and skipped the declaration, so
+/// the inner `var` silently reused the outer's gate — type-divergent writes, a
+/// `static var` reset every call, or a load-breaking buffer fan-in.
+///
+/// The one binding that must NOT count is a lazily materialized `const`
+/// container (see `predeclare::materialize_const_container`): it exists only
+/// because something READ the constant earlier in this body, so treating it as
+/// "already declared" makes a genuine `var xs: int[]` reuse the const
+/// container's gate instead of shadowing it — the declaration silently vanishes
+/// and every later write lands on (or, being immutable, is rejected against) the
+/// wrong array.
 fn needs_declaration(ctx: &LowerCtx, name: &str) -> bool {
-    match ctx.lookup_var(name) {
+    match ctx.lookup_var_current_frame(name) {
         Some(rec) => ctx.immutable_containers.contains(&rec.node_id),
         None => true,
     }

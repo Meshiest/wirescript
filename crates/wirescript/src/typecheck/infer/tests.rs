@@ -138,6 +138,42 @@ fn array_index_read_outside_exec_is_ws007() {
 }
 
 #[test]
+fn array_mutation_outside_exec_is_ws007() {
+    // A pure-context mutation used to lower to a silent `_Unsupported`; it must
+    // be a WS007 hard error like a pure index read.
+    let p = parse("var xs: int[]\nchip {\n  xs.push(1)\n}", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "pure array mutation must be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn map_mutation_outside_exec_is_ws007() {
+    let p = parse("var m: Map<int,int>\nchip {\n  m.set(1, 2)\n}", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "pure map mutation must be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn array_mutation_inside_exec_is_clean() {
+    // The guard must NOT fire for a mutation inside an exec handler.
+    let p = parse("var xs: int[]\nin go: exec\non go { xs.push(1) }", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "exec-context mutation must not be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
 fn if_branch_type_mismatch_is_ws003() {
     let p = parse("let x = if true then 1 else Vec(0.0,0.0,0.0)", "test");
     let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());

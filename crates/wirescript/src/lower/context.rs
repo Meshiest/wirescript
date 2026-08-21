@@ -882,6 +882,18 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
+    /// `lookup_var`, but only when the var is bound in the CURRENT (innermost)
+    /// scope frame. Lets a statement-position redeclaration tell "a body
+    /// pre-pass already declared this var here" (reuse + reset) from "a
+    /// same-named var exists only in an ANCESTOR frame" (a distinct variable
+    /// being shadowed, which needs its own fresh storage gate).
+    pub(super) fn lookup_var_current_frame(&self, name: &str) -> Option<&VarRecord> {
+        match self.scope.get_current(name) {
+            Some(Binding::Var(r)) => Some(r),
+            _ => None,
+        }
+    }
+
     pub(super) fn lookup_var_mut(&mut self, name: &str) -> Option<&mut VarRecord> {
         match self.scope.get_mut(name) {
             Some(Binding::Var(r)) => Some(r),
@@ -898,6 +910,18 @@ impl<'a> LowerCtx<'a> {
 
     pub(super) fn lookup_buffer(&self, name: &str) -> Option<&NodeRecord> {
         match self.scope.get(name) {
+            Some(Binding::Buffer(r)) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// `lookup_buffer`, restricted to the CURRENT (innermost) scope frame — the
+    /// buffer counterpart of [`lookup_var_current_frame`]. A statement-position
+    /// `buffer b = …` shadowing an ancestor buffer must create its OWN gate, or
+    /// its initializer is wired into the outer buffer's `Input` (two drivers =
+    /// a load-breaking fan-in) instead of a fresh buffer of its own.
+    pub(super) fn lookup_buffer_current_frame(&self, name: &str) -> Option<&NodeRecord> {
+        match self.scope.get_current(name) {
             Some(Binding::Buffer(r)) => Some(r),
             _ => None,
         }

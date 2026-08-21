@@ -1038,6 +1038,21 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 && let Some(Type::Array(inner)) = container_receiver_type(ctx, obj)
             {
                 let elem = inner.as_ref().clone();
+                // A mutation (`push`/`clear`/`insert`/…) only runs on an exec
+                // trigger; in pure position it lowered to an `_Unsupported`
+                // placeholder that silently did nothing (WSP001, warn-only).
+                // Reject it as WS007, exactly like a pure array index read.
+                if method.mutates && ctx.exec_mode() != ExecMode::Exec {
+                    ctx.emit(
+                        "WS007",
+                        format!(
+                            "array mutation '{}.{}(...)' outside an exec context",
+                            target_name(obj).unwrap_or("<expr>".into()),
+                            field
+                        ),
+                        fa_range.clone(),
+                    );
+                }
                 // sortMultiple is a true variadic (empty params → opt out of
                 // arity, else "expects at most 0, got N" would wrongly fire).
                 // Every other method arity-checks normally.
@@ -1071,6 +1086,19 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 && let Some(Type::Map(k, v)) = container_receiver_type(ctx, obj)
             {
                 let (key, value) = (k.as_ref().clone(), v.as_ref().clone());
+                // Same rule as the array mutation guard above: a `set`/`clear`/…
+                // in pure position lowered to a silent `_Unsupported`; reject it.
+                if method.mutates && ctx.exec_mode() != ExecMode::Exec {
+                    ctx.emit(
+                        "WS007",
+                        format!(
+                            "map mutation '{}.{}(...)' outside an exec context",
+                            target_name(obj).unwrap_or("<expr>".into()),
+                            field
+                        ),
+                        fa_range.clone(),
+                    );
+                }
                 check_args(
                     ctx,
                     &method.signature(&key, &value),

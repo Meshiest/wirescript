@@ -937,6 +937,41 @@ let r = Toggle(flag)",
     assert_eq!(r.module.chips.len(), 1);
 }
 
+/// `&x` (address-of) passed to a `*T` param must bind the SAME var as bare `x`,
+/// so a write through the param reaches the caller's var. The `&` form (the
+/// documented `inc(&x)` idiom) used to bind the param to nothing — the inline
+/// ref-binding never unwrapped `Expr::RefOf` — silently dropping every write.
+#[test]
+fn addr_of_arg_binds_ref_param_so_write_lands() {
+    let r = compile(
+        "\
+var x: int = 0
+mod inc(v: *int) { v = v + 1 }
+in go: exec
+on go { inc(&x) }",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !r.module.nodes.values().any(|n| n.gate_class.contains("Unsupported")),
+        "the ref param must bind, not fall to an _Unsupported read"
+    );
+    // The `v = v + 1` write must be wired to x's storage gate (its VarRef).
+    let x_var = find_gate(&r, "BrickComponentType_WireGraphPseudo_Var");
+    let writes = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| {
+            w.source.node_id == x_var
+                && w.source.port == crate::ir::port_registry::WirePort::VarRef
+        })
+        .count();
+    assert!(
+        writes >= 1,
+        "the write through `&x` must target x's storage gate, not vanish"
+    );
+}
+
 #[test]
 fn unassigned_output_warning() {
     let r = compile(

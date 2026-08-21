@@ -1,10 +1,25 @@
 //! Grammar-based Wirescript program fuzzer hunting SILENT MISCOMPILES:
 //! programs with no error diagnostics that still lower to `_Unsupported`
 //! placeholder gates, invalid wires (dangling endpoints / fan-in duplicates),
-//! stage panics, or emit failures.
+//! stage panics, emit failures, or (multi-file mode) storage-identity bugs.
 //!
 //!   cargo run --release -p wirescript --example fuzz_programs -- \
 //!       --count 5000 --seed 1 --out fuzz_findings
+//!
+//! Multi-file programs are represented as a single "bundle" string: sections
+//! delimited by `//!ws-file <name>` markers (the `main` section is the entry;
+//! the rest resolve as `<name>.ws` through an in-memory `MemLoader`). A share
+//! of generated programs are bundles exercising `import "m"`,
+//! `import * as N from "m"`, and `import { x } from "m"` with deliberate
+//! name collisions (same state name in two modules, local decl vs import)
+//! plus nested-scope shadowing. Bundles get an extra STORAGE oracle: the
+//! declared module state (top-level `var` / `array` / map-`var` / `buffer`,
+//! derived syntactically from the bundle itself) must lower to that many
+//! distinct storage gates (`Pseudo_Var` / `Pseudo_ArrayVar` / `Pseudo_MapVar`
+//! / buffer gates) - fewer is a `storage-collapse` finding (two names merged
+//! into one gate). Each syntactic write to that state must produce a
+//! Set/Increment/Push/... gate wired to a matching storage gate - a missing
+//! one is a `dropped-write` finding (the write silently vanished).
 //!
 //! Extra modes:
 //!   --calibrate <dir>   run the oracle over every .ws file in <dir> (should
@@ -39,7 +54,7 @@ use wirescript::layout::layout;
 // user input, code, or expression string ever reaches it.
 use wirescript::lower::fold::eval::{self, Value as FoldValue};
 use wirescript::lower::{FoldMode, LowerInput, lower};
-use wirescript::resolve::{FsLoader, ResolveResult, resolve};
+use wirescript::resolve::{FsLoader, MemLoader, ResolveResult, resolve};
 use wirescript::template_cache::TemplateCache;
 use wirescript::typecheck::{TypeCheckResult, typecheck};
 use wirescript::{EmitOptions, build_world};
@@ -132,6 +147,12 @@ enum Kind {
     WireFanIn,
     WireDup,
     EmitErr,
+    /// Fewer distinct storage gates than syntactically-distinct declared
+    /// state (two same-named module states merged into ONE gate).
+    StorageCollapse,
+    /// A syntactic write to declared state produced no Set/mutation gate
+    /// wired to any matching storage gate - the write silently vanished.
+    DroppedWrite,
 }
 
 impl Kind {
@@ -143,6 +164,8 @@ impl Kind {
             Kind::WireFanIn => "wire-fanin",
             Kind::WireDup => "wire-duplicate",
             Kind::EmitErr => "emit-error",
+            Kind::StorageCollapse => "storage-collapse",
+            Kind::DroppedWrite => "dropped-write",
         }
     }
 }
@@ -157,6 +180,9 @@ struct Outcome {
     wire_issues: Vec<(Kind, String)>,
     /// verbose per-issue details (src classes, counts) for metadata
     wire_detail: Vec<String>,
+    /// storage-oracle findings (StorageCollapse / DroppedWrite) + details
+    storage_issues: Vec<(Kind, String)>,
+    storage_detail: Vec<String>,
     emit_err: Option<String>,
     total_nodes: usize,
 }
@@ -176,6 +202,9 @@ impl Outcome {
                 v.push((Kind::Unsupported, coarse_shape(norm)));
             }
             for (k, key) in &self.wire_issues {
+                v.push((*k, key.clone()));
+            }
+            for (k, key) in &self.storage_issues {
                 v.push((*k, key.clone()));
             }
             if let Some(e) = &self.emit_err {
@@ -325,6 +354,497 @@ fn check_wires(root: &Module, out: &mut Outcome) {
     }
 }
 
+// --------------------------- multi-file bundles + storage oracle ---------------------------
+
+/// Section delimiter for multi-file programs packed into one string (so the
+/// existing single-string plumbing - minimizer, bucket exemplars, findings
+/// files - carries multi-file programs unchanged). The `main` section is the
+/// entry; every other section resolves as `<name>.ws` via `MemLoader`.
+const FILE_MARKER: &str = "//!ws-file ";
+
+struct Bundle {
+    entry: String,
+    files: Vec<(String, String)>, // (module name sans .ws, source)
+}
+
+fn split_bundle(src: &str) -> Bundle {
+    if !src.contains(FILE_MARKER) {
+        return Bundle { entry: src.to_string(), files: Vec::new() };
+    }
+    let mut sections: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut pre: Vec<&str> = Vec::new();
+    for line in src.lines() {
+        if let Some(rest) = line.trim_end().strip_prefix(FILE_MARKER) {
+            sections.push((rest.trim().to_string(), Vec::new()));
+        } else if let Some((_, body)) = sections.last_mut() {
+            body.push(line);
+        } else {
+            pre.push(line);
+        }
+    }
+    let mut entry: Option<String> = None;
+    let mut files = Vec::new();
+    for (name, body) in sections {
+        let text = body.join("\n");
+        if name == "main" && entry.is_none() {
+            entry = Some(text);
+        } else {
+            files.push((name, text));
+        }
+    }
+    Bundle { entry: entry.unwrap_or_else(|| pre.join("\n")), files }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum StoreKind {
+    Var,
+    Array,
+    Map,
+    Buffer,
+}
+
+impl StoreKind {
+    fn name(self) -> &'static str {
+        match self {
+            StoreKind::Var => "var",
+            StoreKind::Array => "array",
+            StoreKind::Map => "map",
+            StoreKind::Buffer => "buffer",
+        }
+    }
+}
+
+/// What the bundle's SOURCE says must exist in the lowered IR. Derived
+/// syntactically from the bundle text itself (not carried from the
+/// generator), so line-based minimization stays truthful: deleting a
+/// declaration or write line lowers the expectation with it.
+#[derive(Default)]
+struct StorageExpect {
+    /// (kind, name) -> how many distinct storage gates that name must have
+    /// (one per distinct declaring file that the entry actually reaches).
+    counts: BTreeMap<(StoreKind, String), usize>,
+    /// Buffer gates carry no name label in the IR, so buffers are checked as
+    /// an aggregate count instead.
+    buffer_total: usize,
+    /// (kind, name) pairs the source syntactically writes to.
+    writes: BTreeSet<(StoreKind, String)>,
+}
+
+fn ident_at(s: &str) -> &str {
+    let end = s
+        .char_indices()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_'))
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    &s[..end]
+}
+
+/// Top-level (column-0) state declarations of one file. Anything indented -
+/// chip/mod/handler bodies - is deliberately ignored: nested `var`s create
+/// storage gates too, but under names this derivation never claims.
+fn scan_state_decls(src: &str) -> Vec<(StoreKind, String)> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let l = line.strip_prefix("static ").unwrap_or(line);
+        if let Some(rest) = l.strip_prefix("var ") {
+            let rest = rest.trim_start();
+            let name = ident_at(rest);
+            if name.is_empty() {
+                continue;
+            }
+            // the annotation decides the storage class: `var x: Map<..>` is a
+            // MapVar, `var x: T[]` an ArrayVar, anything else a plain Var
+            let ann = rest[name.len()..].split('=').next().unwrap_or("");
+            let kind = if ann.contains("Map<") {
+                StoreKind::Map
+            } else if ann.contains("[]") {
+                StoreKind::Array
+            } else {
+                StoreKind::Var
+            };
+            out.push((kind, name.to_string()));
+        } else if let Some(rest) = l.strip_prefix("array ") {
+            let name = ident_at(rest.trim_start());
+            if !name.is_empty() {
+                out.push((StoreKind::Array, name.to_string()));
+            }
+        } else if let Some(rest) = l.strip_prefix("buffer ") {
+            let name = ident_at(rest.trim_start());
+            if !name.is_empty() && name != "emit" {
+                out.push((StoreKind::Buffer, name.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The entry's import lines: (module name, Some(named list) | None = all).
+/// `import * as N` and `import "m"` both reach the module's whole state;
+/// `import { a, b as c }` reaches only the named state (bound as the alias).
+fn scan_imports(entry: &str) -> Vec<(String, Option<Vec<String>>)> {
+    let mut out = Vec::new();
+    for line in entry.lines() {
+        let l = line.trim_end();
+        if !l.starts_with("import") {
+            continue;
+        }
+        let rest = l["import".len()..].trim_start();
+        let module_of = |s: &str| -> Option<String> {
+            let q = s.find('"')?;
+            let rest = &s[q + 1..];
+            let e = rest.find('"')?;
+            Some(rest[..e].trim_end_matches(".ws").to_string())
+        };
+        if let Some(body) = rest.strip_prefix('{') {
+            let Some(close) = body.find('}') else { continue };
+            let names: Vec<String> = body[..close]
+                .split(',')
+                .filter_map(|part| {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        return None;
+                    }
+                    // `orig as alias` binds (and labels) the alias, but the
+                    // DECL matched in the module is `orig`; the bound name is
+                    // what the gate label carries. Track the bound name and
+                    // match it against the module's decls by the original.
+                    let mut it = part.split_whitespace();
+                    let orig = it.next()?.to_string();
+                    match (it.next(), it.next()) {
+                        (Some("as"), Some(alias)) => Some(format!("{orig}\u{1}{alias}")),
+                        _ => Some(orig),
+                    }
+                })
+                .collect();
+            if let Some(m) = module_of(&body[close..]) {
+                out.push((m, Some(names)));
+            }
+        } else if let Some(m) = module_of(rest) {
+            // covers both `import "m"` and `import * as N from "m"`
+            out.push((m, None));
+        }
+    }
+    out
+}
+
+/// Write statements: indented lines of the strict shapes the generators emit
+/// (`P = e` / `P += e` / `P[i] = e` / `P.push(..)` and friends / `P.set(..)`
+/// / `refw(P, ..)`), where `P` is `name` or `Ns.name`. Only names that the
+/// derivation already expects as storage count - mod params, chip-internal
+/// vars, and locals never match.
+fn scan_writes(
+    src: &str,
+    counts: &BTreeMap<(StoreKind, String), usize>,
+    writes: &mut BTreeSet<(StoreKind, String)>,
+) {
+    const ARRAY_METHODS: [&str; 8] = [
+        "push", "clear", "insert", "sort", "reverse", "shuffle", "fill", "resize",
+    ];
+    let mut add = |kind: StoreKind, name: &str| {
+        if counts.contains_key(&(kind, name.to_string())) {
+            writes.insert((kind, name.to_string()));
+        }
+    };
+    // A write inside a `mod` / named-`chip` DECLARATION body only lowers when
+    // the mod/chip is actually called - an uncalled body legitimately emits
+    // nothing, so its lines must not become write expectations. (Handler
+    // bodies, `chip on`, and anonymous `chip {` blocks always lower and DO
+    // count.) Tracked as: a column-0 `mod ` / `chip Name` header excludes the
+    // indented lines that follow, until the next column-0 line.
+    let mut in_decl_body = false;
+    for line in src.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            // skip leading annotations (`@closed `, `@label("...") `, sides)
+            let mut l = line;
+            loop {
+                if let Some(rest) = l.strip_prefix("@label(") {
+                    if let Some(p) = rest.find(')') {
+                        l = rest[p + 1..].trim_start();
+                        continue;
+                    }
+                } else if l.starts_with('@') {
+                    if let Some((_, rest)) = l.split_once(' ') {
+                        l = rest.trim_start();
+                        continue;
+                    }
+                }
+                break;
+            }
+            in_decl_body = l.starts_with("mod ")
+                || (l.starts_with("chip ")
+                    && !l.starts_with("chip on")
+                    && !l.starts_with("chip let")
+                    && !l.starts_with("chip {"));
+            continue;
+        }
+        if in_decl_body {
+            continue;
+        }
+        let t = line.trim_start();
+        // ref-param write helper emitted by the canary generator: the mod
+        // writes its first (ref) argument.
+        if let Some(rest) = t.strip_prefix("refw(") {
+            let arg = rest.split([',', ')']).next().unwrap_or("");
+            let base = arg.trim().rsplit('.').next().unwrap_or("");
+            if !base.is_empty() {
+                add(StoreKind::Var, base);
+            }
+            continue;
+        }
+        // Leading dotted path.
+        let mut end = 0;
+        let bytes: Vec<char> = t.chars().collect();
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == '_' || bytes[end] == '.') {
+            end += 1;
+        }
+        if end == 0 {
+            continue;
+        }
+        let path: String = bytes[..end].iter().collect();
+        let after = t[path.len()..].trim_start();
+        let segs: Vec<&str> = path.split('.').collect();
+        if segs.iter().any(|s| s.is_empty()) {
+            continue;
+        }
+        let first = segs[0];
+        if matches!(
+            first,
+            "let" | "var" | "static" | "buffer" | "array" | "out" | "in" | "emit" | "chip"
+                | "mod" | "on" | "if" | "else" | "await" | "return" | "type" | "import"
+        ) {
+            continue;
+        }
+        let last = *segs.last().unwrap();
+        if after.starts_with('(') && segs.len() >= 2 {
+            // method call: base is the segment before the method name
+            let base = segs[segs.len() - 2];
+            if ARRAY_METHODS.contains(&last) {
+                add(StoreKind::Array, base);
+            } else if last == "set" || last == "remove" {
+                add(StoreKind::Map, base);
+            }
+        } else if after.starts_with('[') {
+            // `P[i] = e` indexed array write (only when an assignment follows)
+            if let Some(close) = after.find(']') {
+                let tail = after[close + 1..].trim_start();
+                if tail.starts_with('=') && !tail.starts_with("==") {
+                    add(StoreKind::Array, last);
+                }
+            }
+        } else if (after.starts_with('=') && !after.starts_with("=="))
+            || after.starts_with("+=")
+            || after.starts_with("-=")
+            || after.starts_with("*=")
+        {
+            add(StoreKind::Var, last);
+        }
+    }
+}
+
+fn derive_storage_expect(bundle: &Bundle) -> StorageExpect {
+    let mut expect = StorageExpect::default();
+    let by_file: StdMap<&str, Vec<(StoreKind, String)>> = bundle
+        .files
+        .iter()
+        .map(|(name, src)| (name.as_str(), scan_state_decls(src)))
+        .collect();
+
+    // Reachable distinct state: the entry's own decls + each imported file's
+    // (deduped per (file, kind, name) - importing one file twice is still ONE
+    // storage per state, which is the language's intended sharing).
+    let mut reachable: BTreeSet<(String, StoreKind, String)> = BTreeSet::new();
+    for (kind, name) in scan_state_decls(&bundle.entry) {
+        reachable.insert(("".into(), kind, name));
+    }
+    let mut reached_files: BTreeSet<String> = BTreeSet::new();
+    for (module, named) in scan_imports(&bundle.entry) {
+        let Some(decls) = by_file.get(module.as_str()) else { continue };
+        reached_files.insert(module.clone());
+        match &named {
+            None => {
+                for (kind, name) in decls {
+                    reachable.insert((module.clone(), *kind, name.clone()));
+                }
+            }
+            Some(names) => {
+                for entry in names {
+                    let (orig, bound) = match entry.split_once('\u{1}') {
+                        Some((o, a)) => (o, a),
+                        None => (entry.as_str(), entry.as_str()),
+                    };
+                    for (kind, name) in decls {
+                        if name == orig {
+                            reachable.insert((module.clone(), *kind, bound.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (_, kind, name) in &reachable {
+        if *kind == StoreKind::Buffer {
+            expect.buffer_total += 1;
+        }
+        *expect.counts.entry((*kind, name.clone())).or_insert(0) += 1;
+    }
+    // Writes: entry + reached files only (an unimported section never lowers,
+    // so its writes must not be expected).
+    scan_writes(&bundle.entry, &expect.counts, &mut expect.writes);
+    for (name, src) in &bundle.files {
+        if reached_files.contains(name) {
+            scan_writes(src, &expect.counts, &mut expect.writes);
+        }
+    }
+    expect
+}
+
+/// Storage-gate mutation classes per storage kind - a write must wire the
+/// storage's ref port into one of these.
+fn is_writer_class(kind: StoreKind, class: &str) -> bool {
+    match kind {
+        StoreKind::Var => class == gc::VAR_SET || class == gc::VAR_INCREMENT,
+        StoreKind::Array => [
+            gc::ARRAY_SET_AT_INDEX,
+            gc::ARRAY_PUSH,
+            gc::ARRAY_POP,
+            gc::ARRAY_CLEAR,
+            gc::ARRAY_INSERT,
+            gc::ARRAY_REMOVE_AT_INDEX,
+            gc::ARRAY_SORT,
+            gc::ARRAY_SORT_MULTIPLE,
+            gc::ARRAY_REVERSE,
+            gc::ARRAY_SHUFFLE,
+            gc::ARRAY_FILL,
+            gc::ARRAY_RESIZE,
+            gc::ARRAY_SWAP,
+            gc::ARRAY_APPEND,
+            gc::ARRAY_COPY_FROM,
+            gc::ARRAY_SLICE,
+        ]
+        .contains(&class),
+        StoreKind::Map => {
+            [gc::MAP_SET, gc::MAP_REMOVE, gc::MAP_CLEAR, gc::MAP_COPY_FROM].contains(&class)
+        }
+        StoreKind::Buffer => false,
+    }
+}
+
+/// The oracle: every syntactically-distinct declared state must have its own
+/// storage gate, and every syntactic write must have a mutation gate wired to
+/// a matching storage gate. Declared storage gates are identified by class +
+/// the `_label` name property (synthetic pseudo-vars - out-backing, signal
+/// payload stores, await armed flags, ret_val - all carry a `note` and no
+/// label, so they never match).
+fn check_storage(root: &Module, expect: &StorageExpect, out: &mut Outcome) {
+    if expect.counts.is_empty() {
+        return;
+    }
+    let mut nodes: StdMap<NodeId, &Node> = StdMap::new();
+    collect_all_nodes(root, &mut nodes);
+    let mut wires: Vec<Wire> = Vec::new();
+    collect_all_wires(root, &mut wires);
+
+    let name_label = *sym::NAME_LABEL;
+    let mut labeled: BTreeMap<(StoreKind, String), Vec<NodeId>> = BTreeMap::new();
+    let mut buffer_actual = 0usize;
+    for (id, n) in &nodes {
+        if n.note.is_some() {
+            continue;
+        }
+        let kind = match n.gate_class {
+            c if c == gc::PSEUDO_VAR => StoreKind::Var,
+            c if c == gc::PSEUDO_ARRAY_VAR => StoreKind::Array,
+            c if c == gc::PSEUDO_MAP_VAR => StoreKind::Map,
+            c if c == gc::BUFFER_TICKS || c == gc::BUFFER_SECONDS => {
+                buffer_actual += 1;
+                continue;
+            }
+            _ => continue,
+        };
+        if let Some(Literal::String(label)) = n.properties.get(&name_label) {
+            labeled.entry((kind, label.clone())).or_default().push(*id);
+        }
+    }
+
+    for ((kind, name), exp) in &expect.counts {
+        if *kind == StoreKind::Buffer {
+            continue; // aggregate check below
+        }
+        let actual = labeled.get(&(*kind, name.clone())).map_or(0, |v| v.len());
+        if actual < *exp {
+            out.storage_detail.push(format!(
+                "collapse {} `{name}`: {exp} declared -> {actual} storage gate(s)",
+                kind.name()
+            ));
+            out.storage_issues
+                .push((Kind::StorageCollapse, format!("storage-collapse {}", kind.name())));
+        }
+    }
+    if buffer_actual < expect.buffer_total {
+        out.storage_detail.push(format!(
+            "collapse buffer: {} declared -> {buffer_actual} buffer gate(s)",
+            expect.buffer_total
+        ));
+        out.storage_issues
+            .push((Kind::StorageCollapse, "storage-collapse buffer".to_string()));
+    }
+
+    for (kind, name) in &expect.writes {
+        let Some(ids) = labeled.get(&(*kind, name.clone())) else {
+            continue; // storage entirely missing - the collapse check owns it
+        };
+        let ref_port = match kind {
+            StoreKind::Var => WirePort::VarRef,
+            StoreKind::Array => WirePort::ArrayVarRef,
+            StoreKind::Map => WirePort::MapVarRef,
+            StoreKind::Buffer => continue,
+        };
+        // Follow the ref wire from the storage gate to a mutation gate,
+        // chasing through chip-boundary pins and rerouters (a write inside a
+        // `chip on` / anon chip body receives the VarRef via a
+        // MicrochipInput boundary pin, not a direct wire).
+        let mut frontier: Vec<NodeId> = wires
+            .iter()
+            .filter(|w| w.source.port == ref_port && ids.contains(&w.source.node_id))
+            .map(|w| w.target.node_id)
+            .collect();
+        let mut seen: BTreeSet<NodeId> = BTreeSet::new();
+        let mut written = false;
+        while let Some(id) = frontier.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(n) = nodes.get(&id) else { continue };
+            if is_writer_class(*kind, n.gate_class) {
+                written = true;
+                break;
+            }
+            let pass_through = n.gate_class == MICROCHIP_INPUT
+                || n.gate_class == MICROCHIP_OUTPUT
+                || n.gate_class == gc::REROUTER;
+            if pass_through {
+                frontier.extend(
+                    wires
+                        .iter()
+                        .filter(|w| w.source.node_id == id)
+                        .map(|w| w.target.node_id),
+                );
+            }
+        }
+        if !written {
+            out.storage_detail.push(format!(
+                "dropped write: {} `{name}` is written in source but no mutation gate targets its storage",
+                kind.name()
+            ));
+            out.storage_issues
+                .push((Kind::DroppedWrite, format!("dropped-write {}", kind.name())));
+        }
+    }
+}
+
 fn run_pipeline(src: &str) -> Outcome {
     std::thread::scope(|s| {
         std::thread::Builder::new()
@@ -342,7 +862,9 @@ fn run_pipeline(src: &str) -> Outcome {
 
 fn run_pipeline_inner(src: &str) -> Outcome {
     let mut out = Outcome::default();
-    let file = "fuzz.ws";
+    let bundle = split_bundle(src);
+    let is_bundle = !bundle.files.is_empty();
+    let file = if is_bundle { "main" } else { "fuzz.ws" };
 
     let mut record_diags = |out: &mut Outcome, diags: &[wirescript::diagnostic::Diagnostic]| {
         for d in diags {
@@ -354,8 +876,20 @@ fn run_pipeline_inner(src: &str) -> Outcome {
         }
     };
 
-    // resolve
-    let resolved = match catch_unwind(AssertUnwindSafe(|| resolve(src, file, &FsLoader))) {
+    // resolve - single-file programs keep the FsLoader path; bundles resolve
+    // their sections in-memory (the same MemLoader pattern the crate's own
+    // `compile_multi` tests use).
+    let resolved = match catch_unwind(AssertUnwindSafe(|| {
+        if is_bundle {
+            let mut loader = MemLoader { files: Default::default() };
+            for (name, text) in &bundle.files {
+                loader.files.insert(format!("{name}.ws"), text.clone());
+            }
+            resolve(&bundle.entry, file, &loader)
+        } else {
+            resolve(&bundle.entry, file, &FsLoader)
+        }
+    })) {
         Ok(r) => r,
         Err(p) => {
             out.panic = Some(("resolve".into(), panic_msg(p)));
@@ -427,6 +961,13 @@ fn run_pipeline_inner(src: &str) -> Outcome {
 
     // wire validity
     check_wires(&lowered.module, &mut out);
+
+    // storage identity (bundles only): declared module state vs the storage
+    // gates + mutation gates that actually lowered.
+    if is_bundle {
+        let expect = derive_storage_expect(&bundle);
+        check_storage(&lowered.module, &expect, &mut out);
+    }
 
     // layout + build_world only when clean (mirrors compile.rs gating)
     if !out.has_errors() {
@@ -653,6 +1194,12 @@ struct Gen {
     out_execs: Vec<String>,
     typed_val_outs: Vec<(String, Ty)>,
     bool_lets: Vec<String>,
+    // `import * as N` symbols (`N.name` paths). Only reachable from EXEC
+    // scopes: a namespaced var read in a PURE context (`N.g.Value`) lowers to
+    // a WSP001 `_Unsupported` placeholder today, so pure scopes never see
+    // these and the general fuzz mode doesn't drown in that known bucket.
+    ns_scalars: Vec<Sca>,
+    ns_arrays: Vec<(String, Ty, bool)>,
     n: u32,
     stmt_budget: i32,
 }
@@ -674,6 +1221,8 @@ impl Gen {
             out_execs: Vec::new(),
             typed_val_outs: Vec::new(),
             bool_lets: Vec::new(),
+            ns_scalars: Vec::new(),
+            ns_arrays: Vec::new(),
             n: 0,
             stmt_budget: 40,
         }
@@ -685,10 +1234,16 @@ impl Gen {
     }
 
     fn top_scope(&self, exec: bool) -> Scope {
+        let mut scalars = self.scalars.clone();
+        let mut arrays = self.arrays.clone();
+        if exec {
+            scalars.extend(self.ns_scalars.iter().cloned());
+            arrays.extend(self.ns_arrays.iter().cloned());
+        }
         Scope {
-            scalars: self.scalars.clone(),
+            scalars,
             rec_binds: self.rec_binds.clone(),
-            arrays: self.arrays.clone(),
+            arrays,
             objs: self.objs.clone(),
             exec,
             mod_ret: None,
@@ -907,11 +1462,17 @@ impl Gen {
                 }
                 6 => self.if_then_else(sc, ty, d),
                 7 => {
-                    // var.prev comparison (docs pattern: c0 != c0.prev)
+                    // var.prev comparison (docs pattern: c0 != c0.prev) -
+                    // never on a namespaced `N.g` path (`.prev` through a
+                    // namespace hop is unsupported syntax).
                     let vars: Vec<&Sca> = sc
                         .scalars
                         .iter()
-                        .filter(|s| s.acc == Acc::Var && matches!(s.ty, Ty::Int | Ty::Float))
+                        .filter(|s| {
+                            s.acc == Acc::Var
+                                && matches!(s.ty, Ty::Int | Ty::Float)
+                                && !s.name.contains('.')
+                        })
                         .collect();
                     if let Some(v) = (!vars.is_empty())
                         .then(|| vars[self.rng.below(vars.len())].name.clone())
@@ -1089,7 +1650,30 @@ impl Gen {
     }
 
     fn exec_stmt(&mut self, sc: &mut Scope, d: u32, cur: Option<&str>, indent: usize) -> String {
-        match self.rng.below(20) {
+        match self.rng.below(21) {
+            // shadow an existing in-scope name with a same-typed `let`
+            // (including a `let` shadowing a `var` - the shadowed var's
+            // storage keeps existing but later reads in this scope bind to
+            // the let). Namespaced `N.x` paths can't be shadowed by a bare
+            // let, so they're excluded.
+            19 => {
+                let cands: Vec<Sca> = sc
+                    .scalars
+                    .iter()
+                    .filter(|s| !s.name.contains('.'))
+                    .cloned()
+                    .collect();
+                if cands.is_empty() {
+                    return String::new();
+                }
+                let target = self.rng.pick(&cands).clone();
+                let e = self.expr(sc, target.ty, d);
+                // model the shadow: every later reference resolves to the let
+                for s in sc.scalars.iter_mut().filter(|s| s.name == target.name) {
+                    s.acc = Acc::Direct;
+                }
+                format!("let {} = {e}", target.name)
+            }
             // assignment
             0 | 1 | 2 => {
                 let vars: Vec<Sca> = sc
@@ -1516,9 +2100,9 @@ impl Gen {
                 let k = self.rng.range(2, 4);
                 let items: Vec<String> = (0..k).map(|_| self.lit(ty)).collect();
                 self.blocks
-                    .push(format!("array {a}: {}[] = [{}]", ty.name(), items.join(", ")));
+                    .push(format!("var {a}: {}[] = [{}]", ty.name(), items.join(", ")));
             } else {
-                self.blocks.push(format!("array {a}: {}[]", ty.name()));
+                self.blocks.push(format!("var {a}: {}[]", ty.name()));
             }
             self.arrays.push((a, ty, true));
         }
@@ -1584,10 +2168,25 @@ impl Gen {
                 let mut params = Vec::new();
                 let mut body_sc = Scope { exec: false, ..Default::default() };
                 for i in 0..np {
-                    let pn = format!("q{i}");
+                    // occasionally name a parameter after an existing global
+                    // (parameter shadowing an outer name)
+                    let pn = if self.rng.chance(1, 5) && !self.scalars.is_empty() {
+                        let g = self.rng.pick(&self.scalars).name.clone();
+                        if g.contains('.') { format!("q{i}") } else { g }
+                    } else {
+                        format!("q{i}")
+                    };
+                    if params.iter().any(|(n, _)| *n == pn) {
+                        continue;
+                    }
                     let t = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
                     params.push((pn.clone(), PTy::Val(t)));
                     body_sc.scalars.push(Sca { name: pn, ty: t, acc: Acc::Direct });
+                }
+                if params.is_empty() {
+                    let t = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
+                    params.push(("q0".to_string(), PTy::Val(t)));
+                    body_sc.scalars.push(Sca { name: "q0".into(), ty: t, acc: Acc::Direct });
                 }
                 let rt = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
                 let sig = params
@@ -2177,7 +2776,39 @@ impl Gen {
         self.scalars.push(Sca { name: v, ty, acc: Acc::Var });
     }
 
-    fn generate(mut self) -> String {
+    /// Top-level shadowing declarations exploiting the WS013 escape (`let` /
+    /// `out` are not duplicate-checked against `var` / `in`): a `let`
+    /// re-binding a var's name (later references silently read the constant,
+    /// the storage keeps existing), and a `let` re-binding an exec input's
+    /// name (an `on <name>` handler then binds the CONSTANT - its exec input
+    /// is silently dead).
+    fn gen_top_shadows(&mut self) {
+        if self.rng.chance(1, 6) {
+            let vars: Vec<Sca> = self
+                .scalars
+                .iter()
+                .filter(|s| s.acc == Acc::Var && s.ty == Ty::Int && !s.name.contains('.'))
+                .cloned()
+                .collect();
+            if !vars.is_empty() {
+                let v = self.rng.pick(&vars).clone();
+                let lit = self.lit(Ty::Int);
+                self.blocks.push(format!("let {} = {lit}", v.name));
+                for s in self.scalars.iter_mut().filter(|s| s.name == v.name) {
+                    s.acc = Acc::Direct;
+                }
+            }
+        }
+        if self.rng.chance(1, 8) && !self.execs.is_empty() {
+            let e = self.rng.pick(&self.execs).clone();
+            let lit = self.lit(Ty::Int);
+            self.blocks.push(format!("let {e} = {lit}"));
+            // deliberately KEPT in `execs`: a later `on <e>` handler then
+            // exercises the trigger-binds-to-constant path.
+        }
+    }
+
+    fn generate_body(&mut self) {
         for _ in 0..self.rng.range(0, 2) {
             self.gen_type_alias();
         }
@@ -2195,13 +2826,92 @@ impl Gen {
             self.gen_chip();
         }
         self.gen_top_lets();
+        self.gen_top_shadows();
         self.gen_signals_and_typed_outs();
         for _ in 0..self.rng.range(1, 3) {
             self.gen_handler();
         }
         self.gen_outs();
+    }
+
+    fn generate(mut self) -> String {
+        self.generate_body();
         self.blocks.join("\n")
     }
+
+    /// Entry generator for multi-file programs: `prelude` (import lines + any
+    /// deliberate local re-declarations) goes first, then the normal grammar
+    /// - which also reaches every symbol the caller injected into the tables
+    /// beforehand (bare names for `import "m"`, `N.x` paths for
+    /// `import * as N`).
+    fn generate_entry(mut self, prelude: Vec<String>) -> String {
+        self.blocks = prelude;
+        self.generate_body();
+        self.blocks.join("\n")
+    }
+
+    /// A small importable module: top-level state (+ optionally mods, a chip,
+    /// and an in-port + handler writing its own state). Returns the module
+    /// source and what it exports.
+    fn generate_module(mut self, with_handler: bool) -> (String, ModuleExports) {
+        if self.rng.chance(1, 3) {
+            self.gen_type_alias();
+        }
+        self.gen_vars();
+        let vars_end = self.scalars.len();
+        self.gen_buffers();
+        let buffers_end = self.scalars.len();
+        for _ in 0..self.rng.range(0, 2) {
+            self.gen_mod();
+        }
+        if self.rng.chance(1, 3) {
+            self.gen_chip();
+        }
+        if with_handler {
+            self.gen_inputs();
+            self.gen_handler();
+        }
+        // Record-typed signatures reference the module's private type
+        // aliases; the entry can't construct those args, so only export
+        // scalar-shaped mods/chips.
+        let scalar_sig = |params: &[(String, PTy)]| {
+            params
+                .iter()
+                .all(|(_, p)| matches!(p, PTy::Val(_) | PTy::Ref(_) | PTy::Exec))
+        };
+        let exports = ModuleExports {
+            vars: self.scalars[..vars_end].to_vec(),
+            buffers: self.scalars[vars_end..buffers_end].to_vec(),
+            ports: self.scalars[buffers_end..].to_vec(),
+            arrays: self.arrays.clone(),
+            mods: self
+                .mods
+                .iter()
+                .filter(|m| scalar_sig(&m.params) && !matches!(m.ret, Some(RetTy::Rec(_) | RetTy::Multi(_))))
+                .cloned()
+                .collect(),
+            chips: self
+                .chips
+                .iter()
+                .filter(|c| scalar_sig(&c.params))
+                .cloned()
+                .collect(),
+        };
+        (self.blocks.join("\n"), exports)
+    }
+}
+
+#[derive(Clone)]
+struct ModuleExports {
+    /// top-level `var`s (Acc::Var)
+    vars: Vec<Sca>,
+    /// top-level buffers (Acc::Direct - pure-readable by bare name)
+    buffers: Vec<Sca>,
+    /// value in-ports declared by the module (only meaningful bare)
+    ports: Vec<Sca>,
+    arrays: Vec<(String, Ty, bool)>,
+    mods: Vec<ModSig>,
+    chips: Vec<ChipSig>,
 }
 
 /// ~5% of programs: mutate a valid program into (probable) garbage as a
@@ -2256,6 +2966,426 @@ fn mutate_garbage(rng: &mut Rng, src: &str) -> String {
         }
     }
     lines.join("\n")
+}
+
+// --------------------------- multi-file program generators ---------------------------
+
+/// Full-grammar multi-file mode: 1-3 modules (top-level state, mods, chips,
+/// sometimes an in-port + handler writing the module's own state), imported
+/// via `import "m"` or `import * as N from "m"`, with DELIBERATE collisions:
+/// later modules re-declare a state name of module 1 (same or different
+/// storage kind), and the entry sometimes re-declares a namespace-imported
+/// name locally. The entry is a normal full-grammar program whose symbol
+/// tables were seeded with the imported state, so its statements read/write
+/// cross-module state through both bare and `N.x` paths.
+fn gen_import_program(seed: u64) -> String {
+    let mut rng = Rng::new(seed ^ 0x17B7_A2E5);
+    let n_mods = rng.range(1, 3);
+
+    struct ModPlan {
+        src: String,
+        exports: ModuleExports,
+        namespaced: bool,
+        alias: String,
+    }
+    let mut plans: Vec<ModPlan> = Vec::new();
+    for i in 0..n_mods {
+        let mut mg = Gen::new(seed ^ (0x51ED_2F0B + i as u64 * 7919));
+        mg.n = (i as u32) * 40;
+        let with_handler = rng.chance(1, 3);
+        let (mut src, mut exports) = mg.generate_module(with_handler);
+        // deliberate cross-module collision: re-declare a state name of
+        // module 0, same kind or a different one (the storage-identity bugs
+        // ignore the type too)
+        if i > 0 && rng.chance(1, 2) {
+            let mut names: Vec<String> = Vec::new();
+            names.extend(plans[0].exports.vars.iter().map(|s| s.name.clone()));
+            names.extend(plans[0].exports.arrays.iter().map(|(n, _, _)| n.clone()));
+            names.extend(plans[0].exports.buffers.iter().map(|s| s.name.clone()));
+            if !names.is_empty() {
+                let name = rng.pick(&names).clone();
+                match rng.below(3) {
+                    0 => {
+                        src.push_str(&format!("\nvar {name}: int = {}", rng.below(9)));
+                        exports.vars.push(Sca { name, ty: Ty::Int, acc: Acc::Var });
+                    }
+                    1 => {
+                        src.push_str(&format!("\nvar {name}: int[]"));
+                        exports.arrays.push((name, Ty::Int, true));
+                    }
+                    _ => {
+                        src.push_str(&format!("\nbuffer {name} = {}", rng.below(9)));
+                        exports.buffers.push(Sca { name, ty: Ty::Int, acc: Acc::Direct });
+                    }
+                }
+            }
+        }
+        let namespaced = rng.chance(1, 2);
+        plans.push(ModPlan {
+            src,
+            exports,
+            namespaced,
+            alias: format!("N{}", i + 1),
+        });
+    }
+
+    let mut prelude: Vec<String> = Vec::new();
+    let mut eg = Gen::new(seed ^ 0x00E7_7A11);
+    eg.n = 200;
+    let mut bare_names: BTreeSet<String> = BTreeSet::new();
+    for (i, p) in plans.iter().enumerate() {
+        let file = format!("m{}", i + 1);
+        if p.namespaced {
+            prelude.push(format!("import * as {} from \"{file}\"", p.alias));
+            for s in &p.exports.vars {
+                eg.ns_scalars.push(Sca {
+                    name: format!("{}.{}", p.alias, s.name),
+                    ty: s.ty,
+                    acc: Acc::Var,
+                });
+            }
+            for (n, t, w) in &p.exports.arrays {
+                eg.ns_arrays.push((format!("{}.{n}", p.alias), *t, *w));
+            }
+            // exec-only mods: a namespaced PURE call's result types as `any`
+            // today (unusable in typed expressions), so only statement-position
+            // exec mods go through the `N.m(..)` path.
+            for m in &p.exports.mods {
+                if m.ret.is_none() && !m.pure_call {
+                    let mut m2 = m.clone();
+                    m2.name = format!("{}.{}", p.alias, m.name);
+                    m2.generic = false;
+                    eg.mods.push(m2);
+                }
+            }
+        } else {
+            prelude.push(format!("import \"{file}\""));
+            for s in p
+                .exports
+                .vars
+                .iter()
+                .chain(p.exports.buffers.iter())
+                .chain(p.exports.ports.iter())
+            {
+                bare_names.insert(s.name.clone());
+                eg.scalars.push(s.clone());
+            }
+            for a in &p.exports.arrays {
+                bare_names.insert(a.0.clone());
+                eg.arrays.push(a.clone());
+            }
+            eg.mods.extend(p.exports.mods.iter().cloned());
+            eg.chips.extend(p.exports.chips.iter().cloned());
+        }
+    }
+    // entry-local re-declaration of a namespace-imported name (silent today:
+    // the module's same-named state never gets its own gate). Only names NOT
+    // also reachable bare - a bare duplicate is a WS013 hard error.
+    if rng.chance(1, 3) {
+        let mut cands: Vec<String> = Vec::new();
+        for p in plans.iter().filter(|p| p.namespaced) {
+            cands.extend(
+                p.exports
+                    .vars
+                    .iter()
+                    .filter(|s| s.ty == Ty::Int)
+                    .map(|s| s.name.clone()),
+            );
+        }
+        cands.retain(|n| !bare_names.contains(n));
+        if !cands.is_empty() {
+            let name = rng.pick(&cands).clone();
+            prelude.push(format!("var {name}: int = {}", rng.below(9)));
+            eg.scalars.push(Sca { name, ty: Ty::Int, acc: Acc::Var });
+        }
+    }
+
+    let entry = eg.generate_entry(prelude);
+    let mut out = String::new();
+    for (i, p) in plans.iter().enumerate() {
+        let _ = writeln!(out, "{FILE_MARKER}m{}", i + 1);
+        let _ = writeln!(out, "{}", p.src);
+    }
+    let _ = writeln!(out, "{FILE_MARKER}main");
+    out.push_str(&entry);
+    out
+}
+
+/// Canary mode: SMALL, fully-controlled multi-file programs whose storage
+/// expectations are exactly derivable from the source (`derive_storage_expect`)
+/// - every declared state gets a read and usually a write through its own
+/// access path. Collision shapes generated: same name in two modules (any mix
+/// of import kinds and storage kinds), a local decl vs a namespaced import,
+/// same file imported twice (the KNOWN-GOOD sharing case), and writes routed
+/// through a ref-param mod (`refw`).
+fn gen_import_canary(seed: u64) -> String {
+    let mut r = Rng::new(seed ^ 0xCA7A_B15D);
+    const POOL: [&str; 6] = ["g", "cnt", "dat", "xs", "mm", "qq"];
+    const KINDS: [StoreKind; 5] = [
+        StoreKind::Var,
+        StoreKind::Var,
+        StoreKind::Array,
+        StoreKind::Map,
+        StoreKind::Buffer,
+    ];
+
+    #[derive(Clone)]
+    struct CItem {
+        kind: StoreKind,
+        name: String,
+    }
+    #[derive(Clone, Copy, PartialEq)]
+    enum Imp {
+        All,
+        Ns,
+        Named,
+    }
+
+    let n_mods = r.range(1, 3);
+    let mut modules: Vec<Vec<CItem>> = Vec::new();
+    // file index each module reads from (same-file re-import = known-good)
+    let mut file_of: Vec<usize> = Vec::new();
+    let mut imps: Vec<Imp> = Vec::new();
+    for i in 0..n_mods {
+        if i > 0 && r.chance(1, 4) {
+            // re-import module 0's FILE under a second namespace: shared
+            // state on purpose - must stay ONE gate and stay silent.
+            modules.push(modules[0].clone());
+            file_of.push(0);
+            imps.push(Imp::Ns);
+            continue;
+        }
+        let mut items: Vec<CItem> = Vec::new();
+        let n_items = r.range(1, 3);
+        for _ in 0..n_items {
+            let name = if i > 0 && r.chance(1, 2) && !modules[0].is_empty() {
+                // collide with a module-0 state name
+                let src = r.pick(&modules[0]).clone();
+                src.name
+            } else {
+                let mut cand = (*r.pick(&POOL)).to_string();
+                let mut guard = 0;
+                while items.iter().any(|it| it.name == cand) && guard < 8 {
+                    cand = (*r.pick(&POOL)).to_string();
+                    guard += 1;
+                }
+                cand
+            };
+            if items.iter().any(|it| it.name == name) {
+                continue;
+            }
+            items.push(CItem { kind: *r.pick(&KINDS), name });
+        }
+        modules.push(items);
+        file_of.push(i);
+        imps.push(match r.below(3) {
+            0 => Imp::All,
+            1 => Imp::Ns,
+            _ => Imp::Named,
+        });
+    }
+
+    // names reachable bare (All / Named imports); a local re-declaration of
+    // one of those is a WS013 hard error, so the local collision may only
+    // target names that are namespace-only.
+    let mut bare_names: BTreeSet<String> = BTreeSet::new();
+    let mut ns_only: Vec<String> = Vec::new();
+    for (mi, items) in modules.iter().enumerate() {
+        for it in items {
+            if imps[mi] == Imp::Ns {
+                ns_only.push(it.name.clone());
+            } else {
+                bare_names.insert(it.name.clone());
+            }
+        }
+    }
+    ns_only.retain(|n| !bare_names.contains(n) && n != "acc");
+    let local_collision = if !ns_only.is_empty() && r.chance(1, 3) {
+        Some(r.pick(&ns_only).clone())
+    } else {
+        None
+    };
+
+    // module sections (deduped by file)
+    let mut out = String::new();
+    let mut emitted_files: BTreeSet<usize> = BTreeSet::new();
+    for (mi, items) in modules.iter().enumerate() {
+        let fi = file_of[mi];
+        if !emitted_files.insert(fi) {
+            continue;
+        }
+        let _ = writeln!(out, "{FILE_MARKER}m{}", fi + 1);
+        for it in items {
+            match it.kind {
+                StoreKind::Var => {
+                    let _ = writeln!(out, "var {}: int = {}", it.name, r.below(9));
+                }
+                StoreKind::Array => {
+                    let _ = writeln!(out, "var {}: int[]", it.name);
+                }
+                StoreKind::Map => {
+                    let _ = writeln!(out, "var {}: Map<int, int>", it.name);
+                }
+                StoreKind::Buffer => {
+                    let _ = writeln!(out, "buffer {} = {}", it.name, r.below(9));
+                }
+            }
+        }
+    }
+
+    // entry
+    let mut entry: Vec<String> = Vec::new();
+    for (mi, items) in modules.iter().enumerate() {
+        let file = format!("m{}", file_of[mi] + 1);
+        match imps[mi] {
+            Imp::All => entry.push(format!("import \"{file}\"")),
+            Imp::Ns => entry.push(format!("import * as A{} from \"{file}\"", mi + 1)),
+            Imp::Named => {
+                let names: Vec<&str> = items.iter().map(|it| it.name.as_str()).collect();
+                entry.push(format!("import {{ {} }} from \"{file}\"", names.join(", ")));
+            }
+        }
+    }
+    let mut use_refw = false;
+    let mut body: Vec<String> = Vec::new();
+    let mut int_reads: Vec<String> = Vec::new();
+    let mut rn = 0usize;
+    let mut seen_lines: BTreeSet<String> = BTreeSet::new();
+    let mut buffer_outs: Vec<String> = Vec::new();
+    {
+        let mut push_line = |body: &mut Vec<String>, line: String| {
+            if seen_lines.insert(line.clone()) {
+                body.push(line);
+            }
+        };
+        let mut emit_item = |it: &CItem,
+                             path: &str,
+                             bare: bool,
+                             body: &mut Vec<String>,
+                             int_reads: &mut Vec<String>,
+                             buffer_outs: &mut Vec<String>,
+                             r: &mut Rng,
+                             rn: &mut usize,
+                             use_refw: &mut bool| {
+            match it.kind {
+                StoreKind::Var => {
+                    *rn += 1;
+                    let rv = format!("r{rn}");
+                    push_line(body, format!("  let {rv} = {path}"));
+                    int_reads.push(rv);
+                    if r.chance(2, 3) {
+                        match r.below(4) {
+                            0 => push_line(body, format!("  {path} += {}", r.range(1, 5))),
+                            1 => {
+                                *use_refw = true;
+                                push_line(body, format!("  refw({path})"));
+                            }
+                            _ => push_line(
+                                body,
+                                format!("  {path} = {path} + {}", r.range(1, 5)),
+                            ),
+                        }
+                    }
+                }
+                StoreKind::Array => {
+                    if r.chance(2, 3) {
+                        if r.chance(1, 3) {
+                            push_line(body, format!("  {path}[0] = {}", r.below(9)));
+                        } else {
+                            push_line(body, format!("  {path}.push({})", r.below(9)));
+                        }
+                    }
+                    *rn += 1;
+                    let rv = format!("r{rn}");
+                    push_line(body, format!("  let {rv} = {path}.length()"));
+                    // a NAMESPACED array method result types as `any` today,
+                    // so only bare-path lengths feed the int accumulator
+                    if bare {
+                        int_reads.push(rv);
+                    }
+                }
+                StoreKind::Map => {
+                    if r.chance(2, 3) {
+                        push_line(
+                            body,
+                            format!("  {path}.set({}, {})", r.below(5), r.below(9)),
+                        );
+                    }
+                    *rn += 1;
+                    push_line(body, format!("  let r{rn} = {path}.get({})", r.below(5)));
+                }
+                StoreKind::Buffer => {
+                    // buffers are pure-readable by bare name only; a
+                    // namespaced buffer stays declare-only (its gate still
+                    // must exist - the count check covers it).
+                    if bare {
+                        buffer_outs.push(path.to_string());
+                    }
+                }
+            }
+        };
+
+        for (mi, items) in modules.iter().enumerate() {
+            for it in items {
+                let (path, bare) = match imps[mi] {
+                    Imp::Ns => (format!("A{}.{}", mi + 1, it.name), false),
+                    _ => (it.name.clone(), true),
+                };
+                emit_item(
+                    it,
+                    &path,
+                    bare,
+                    &mut body,
+                    &mut int_reads,
+                    &mut buffer_outs,
+                    &mut r,
+                    &mut rn,
+                    &mut use_refw,
+                );
+            }
+        }
+        if let Some(name) = &local_collision {
+            let it = CItem { kind: StoreKind::Var, name: name.clone() };
+            emit_item(
+                &it,
+                name,
+                true,
+                &mut body,
+                &mut int_reads,
+                &mut buffer_outs,
+                &mut r,
+                &mut rn,
+                &mut use_refw,
+            );
+        }
+    }
+
+    if use_refw {
+        entry.push(format!(
+            "mod refw(v: *int) {{\n  v = v + {}\n}}",
+            r.range(1, 3)
+        ));
+    }
+    if let Some(name) = &local_collision {
+        entry.push(format!("var {name}: int = {}", r.below(9)));
+    }
+    entry.push("in t: exec".to_string());
+    entry.push("var acc: int = 0".to_string());
+    let sum = if int_reads.is_empty() {
+        "1".to_string()
+    } else {
+        int_reads.join(" + ")
+    };
+    body.push(format!("  acc = acc + {sum}"));
+    entry.push(format!("on t {{\n{}\n}}", body.join("\n")));
+    for (i, b) in buffer_outs.iter().enumerate() {
+        entry.push(format!("out ob{i}: int = {b}"));
+    }
+    entry.push("out o: int = acc.Value".to_string());
+
+    let _ = writeln!(out, "{FILE_MARKER}main");
+    out.push_str(&entry.join("\n"));
+    out
 }
 
 // ─────────────────────────── minimization ───────────────────────────
@@ -2390,6 +3520,132 @@ fn selftest() -> bool {
         ok = false;
     } else {
         eprintln!("[selftest] ok: clean program produces no findings");
+    }
+
+    // 4. KNOWN-GOOD storage canary: distinct state across two modules, plus
+    // the same file imported under TWO namespaces (deliberately-shared state
+    // must stay ONE gate and must NOT fire the oracle).
+    let good = "\
+//!ws-file mg1
+var g: int = 1
+var xs: int[]
+var mm: Map<int, int>
+buffer bb = 3
+//!ws-file mg2
+var cnt: int = 2
+//!ws-file main
+import * as A from \"mg1\"
+import * as B from \"mg1\"
+import \"mg2\"
+in t: exec
+var acc: int = 0
+on t {
+  let r1 = A.g
+  A.g = A.g + 1
+  A.xs.push(1)
+  let r2 = B.xs.length()
+  A.mm.set(1, 2)
+  let r3 = B.mm.get(1)
+  cnt = cnt + 1
+  let r4 = cnt
+  acc = acc + r1 + r4
+}
+out o: int = acc.Value";
+    let out = run_pipeline(good);
+    let f = out.findings();
+    if out.has_errors() || !f.is_empty() {
+        eprintln!(
+            "[selftest] FAIL: known-good storage canary fired: findings {:?} / errors {:?}",
+            f, out.error_diags
+        );
+        ok = false;
+    } else {
+        eprintln!("[selftest] ok: known-good storage canary is silent (shared state stays one gate)");
+    }
+
+    // 5. REGRESSION GUARD (was a known-bad canary): two modules each declaring
+    // `var g`, imported as two namespaces, used to collapse into ONE storage
+    // gate so writing A.g changed B.g. The namespace direct-state fix makes them
+    // distinct, so the oracle must now stay SILENT; a storage-collapse finding
+    // here means the bug regressed.
+    let bad = "\
+//!ws-file mb1
+var g: int = 1
+//!ws-file mb2
+var g: int = 2
+//!ws-file main
+import * as A from \"mb1\"
+import * as B from \"mb2\"
+in t: exec
+var acc: int = 0
+on t {
+  let r1 = A.g
+  let r2 = B.g
+  A.g = A.g + 1
+  B.g = B.g + 2
+  acc = acc + r1 + r2
+}
+out o: int = acc.Value";
+    let out = run_pipeline(bad);
+    let fired = out
+        .findings()
+        .iter()
+        .any(|(k, _)| *k == Kind::StorageCollapse);
+    if out.has_errors() {
+        eprintln!(
+            "[selftest] FAIL: two-namespace `var g` canary rejected with errors {:?}",
+            out.error_diags
+        );
+        ok = false;
+    } else if fired {
+        eprintln!(
+            "[selftest] FAIL: REGRESSION - two-namespace `var g` collapsed to one gate again (findings: {:?})",
+            out.findings()
+        );
+        ok = false;
+    } else {
+        eprintln!("[selftest] ok: two-namespace `var g` stays distinct (namespace direct-state fix holds)");
+    }
+
+    // 6. REGRESSION GUARD (was a known-bad canary): a namespace-imported
+    // module's `on` handler used to be silently dropped, taking its
+    // `wv = wv + 1` write with it. The namespaced-handler fix runs it, so the
+    // write's mutation gate now exists and the oracle must stay SILENT; a
+    // dropped-write finding here means the handler was dropped again.
+    let badw = "\
+//!ws-file mw1
+var wv: int = 0
+in tw: exec
+on tw {
+  wv = wv + 1
+}
+//!ws-file main
+import * as W from \"mw1\"
+in t: exec
+var acc: int = 0
+on t {
+  let r1 = W.wv
+  acc = acc + r1
+}
+out o: int = acc.Value";
+    let out = run_pipeline(badw);
+    let fired = out.findings().iter().any(|(k, _)| *k == Kind::DroppedWrite);
+    if out.has_errors() {
+        eprintln!(
+            "[selftest] FAIL: ns-imported handler canary rejected with errors {:?}",
+            out.error_diags
+        );
+        ok = false;
+    } else if fired {
+        eprintln!(
+            "[selftest] FAIL: REGRESSION - ns-imported handler write dropped again (findings: {:?})",
+            out.findings()
+        );
+        ok = false;
+    } else {
+        eprintln!(
+            "[selftest] ok: ns-imported handler write survives (namespaced-handler fix holds)"
+        );
     }
     ok
 }
@@ -3567,11 +4823,22 @@ fn main() {
             .wrapping_add(idx as u64)
             .wrapping_mul(0x9E3779B97F4A7C15);
         let mut meta_rng = Rng::new(pseed ^ 0xABCD);
-        let base = Gen::new(pseed).generate();
-        let src = if meta_rng.chance(1, 20) {
-            mutate_garbage(&mut meta_rng, &base)
+        // ~10% storage-canary bundles, ~15% full-grammar import bundles, the
+        // rest single-file. Bundles are never garbage-mutated (the storage
+        // oracle derives expectations from the source text, and scrambled
+        // markers would make those claims meaningless).
+        let flavor = meta_rng.below(20);
+        let src = if flavor < 2 {
+            gen_import_canary(pseed)
+        } else if flavor < 5 {
+            gen_import_program(pseed)
         } else {
-            base
+            let base = Gen::new(pseed).generate();
+            if meta_rng.chance(1, 20) {
+                mutate_garbage(&mut meta_rng, &base)
+            } else {
+                base
+            }
         };
 
         let out = run_pipeline(&src);
@@ -3614,6 +4881,7 @@ fn main() {
                 Kind::WireFanIn | Kind::WireDangling | Kind::WireDup => {
                     out.wire_detail.join(" | ")
                 }
+                Kind::StorageCollapse | Kind::DroppedWrite => out.storage_detail.join(" | "),
                 _ => bucket.clone(),
             };
             let mut diags: Vec<String> = Vec::new();

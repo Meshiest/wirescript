@@ -1,5 +1,16 @@
 # Wirescript Changelog
 
+## 1.4.4
+
+- A module imported as a namespace (`import * as L from "lib"`) now runs its top-level `on` handlers.
+- Two `import * as` namespaces (or a local declaration plus an imported one) that share a state name now get distinct storage gates.
+- A `var`/`array`/`map`/`buffer` declared inside a handler, `if`, or block now gets its own storage gate instead of silently reusing an outer same-named one.
+- `&x` passed to a `*T`/ref parameter now binds the caller's var, so writes through it land.
+- An or-triggered handler (`on a | b { ... }`) now runs its body when either trigger fires instead of silently dropping the whole handler.
+- Two different modules declaring the same top-level name, merged via `import "m"` or `import { x }`, now report `WS013` instead of silently collapsing both onto one storage gate.
+- A container mutation (`arr.push(x)`, `m.set(k, v)`) outside an exec context now reports `WS007` instead of silently lowering to a placeholder that does nothing.
+- A parse error in an imported file now surfaces instead of being silently swallowed; the identical source only errored when compiled as the entry file.
+
 ## 1.4.3
 
 - An imported `let` no longer clobbers a same-named declaration in the importing file. An imported `let start` overwrote the file's own `in start: exec`, so `on start` bound the imported value instead of the input and silently dropped the handler body.

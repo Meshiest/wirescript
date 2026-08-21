@@ -145,7 +145,7 @@
 
     #[test]
     fn implicit_ws_extension() {
-        let loader = mem(&[("utils.ws", "fn double(x: int) -> int = x * 2")]);
+        let loader = mem(&[("utils.ws", "mod double(x: int) -> int { return x * 2 }")]);
         let r = resolve(r#"import "utils""#, "main.ws", &loader);
         assert!(
             !r.diagnostics
@@ -158,7 +158,22 @@
             r.ast
                 .decls
                 .iter()
-                .any(|d| matches!(d, TopDecl::Fn(f) if f.name == "double"))
+                .any(|d| matches!(d, TopDecl::Chip(c) if c.name == "double"))
+        );
+    }
+
+    #[test]
+    fn imported_file_parse_error_surfaces() {
+        // A parse error in an imported module must NOT be swallowed — it used to
+        // compile clean while the identical source errored as an entry file.
+        let loader = mem(&[("broken.ws", "array xs: int[]")]);
+        let r = resolve(r#"import "broken""#, "main.ws", &loader);
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::diagnostic::Severity::Error),
+            "an imported file's parse error must surface, got: {:?}",
+            r.diagnostics
         );
     }
 

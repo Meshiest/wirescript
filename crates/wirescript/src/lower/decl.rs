@@ -152,6 +152,24 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // `foo`). Bare-name value members are only ever `let name`/`array
             // name`/… idents, so a plain name is all we need here.
             let mut ns_value_names: Vec<String> = Vec::new();
+            // Importer-owned names (`var`/`array`/`map`/`buffer`/`in`/`out`
+            // whose bare name the ENTRY file itself declares) to restore AFTER
+            // this namespace's deferred buffer/out bodies have wired against the
+            // member's own fresh gate. Each member is always pre-declared fresh
+            // (never skipped), so two modules' same-named state — or a local
+            // plus an imported one — land on DISTINCT storage gates instead of
+            // collapsing onto one; the restore then hands the bare name back to
+            // the importer so `g` stays the importer's while `A.g` is A's own.
+            let mut ns_restores: Vec<(String, Option<Binding>)> = Vec::new();
+            // Top-level `on` handlers in the imported module. They are lowered
+            // AFTER the member loop (below), so their bodies resolve THIS
+            // namespace's members by bare name — correct even when another
+            // namespace exports the same names, because handlers are lowered in
+            // place here rather than inlined at a call site. Without this the
+            // handlers fell into `_ => {}` and were silently dropped: importing a
+            // module as a namespace ran none of its `on Clock` / event / exec
+            // handlers.
+            let mut ns_handlers: Vec<&Handler> = Vec::new();
             for d in &ns.decls {
                 match d {
                     TopDecl::Chip(c) => {
@@ -223,24 +241,50 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             }
                         }
                     }
-                    TopDecl::Array(a) if ctx.scope.get(&a.name).is_none() => {
+                    // Each state member is pre-declared FRESH (no `is_none()`
+                    // skip): the old guard silently dropped a second module's
+                    // same-named `var`/`array`/… and let `B.g` alias `A.g`'s gate.
+                    // `route_ns_member` then captures the fresh binding per
+                    // namespace and, for an importer-owned name, restores the
+                    // importer's own bare binding at the end of the arm.
+                    TopDecl::Array(a) => {
+                        let owned = ctx.importer_names.contains(&a.name);
+                        let saved = owned.then(|| ctx.scope.get(&a.name).cloned()).flatten();
                         pre_declare_array(ctx, a);
-                        ns_value_names.push(a.name.clone());
+                        route_ns_member(
+                            ctx, &a.name, &mut ns_decls, &mut ns_value_names,
+                            &mut ns_restores, saved, owned,
+                        );
                     }
-                    TopDecl::Map(m) if ctx.scope.get(&m.name).is_none() => {
+                    TopDecl::Map(m) => {
+                        let owned = ctx.importer_names.contains(&m.name);
+                        let saved = owned.then(|| ctx.scope.get(&m.name).cloned()).flatten();
                         pre_declare_map(ctx, m);
-                        ns_value_names.push(m.name.clone());
+                        route_ns_member(
+                            ctx, &m.name, &mut ns_decls, &mut ns_value_names,
+                            &mut ns_restores, saved, owned,
+                        );
                     }
-                    TopDecl::Var(v) if ctx.scope.get(&v.name).is_none() => {
+                    TopDecl::Var(v) => {
+                        let owned = ctx.importer_names.contains(&v.name);
+                        let saved = owned.then(|| ctx.scope.get(&v.name).cloned()).flatten();
                         ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v));
                         // Module-level = pure: a non-constant init is dropped.
                         ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true));
-                        ns_value_names.push(v.name.clone());
+                        route_ns_member(
+                            ctx, &v.name, &mut ns_decls, &mut ns_value_names,
+                            &mut ns_restores, saved, owned,
+                        );
                     }
-                    TopDecl::Buffer(b) if ctx.scope.get(&b.name).is_none() => {
+                    TopDecl::Buffer(b) => {
+                        let owned = ctx.importer_names.contains(&b.name);
+                        let saved = owned.then(|| ctx.scope.get(&b.name).cloned()).flatten();
                         pre_declare_buffer(ctx, b);
                         ns_buffers.push(b);
-                        ns_value_names.push(b.name.clone());
+                        route_ns_member(
+                            ctx, &b.name, &mut ns_decls, &mut ns_value_names,
+                            &mut ns_restores, saved, owned,
+                        );
                     }
                     // An imported module's `in`/`out` PORTS. Without these the
                     // declarations were dropped entirely: `on ns.trigger { … }`
@@ -248,11 +292,18 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // the whole handler with it. They become ports of the
                     // importing module's chip, exactly as a local `in`/`out`
                     // does, and are reachable both bare and as `ns.name`.
-                    TopDecl::In(i) if ctx.scope.get(&i.name).is_none() => {
+                    TopDecl::In(i) => {
+                        let owned = ctx.importer_names.contains(&i.name);
+                        let saved = owned.then(|| ctx.scope.get(&i.name).cloned()).flatten();
                         pre_declare_input(ctx, i);
-                        ns_value_names.push(i.name.clone());
+                        route_ns_member(
+                            ctx, &i.name, &mut ns_decls, &mut ns_value_names,
+                            &mut ns_restores, saved, owned,
+                        );
                     }
-                    TopDecl::Out(o) if ctx.scope.get(&o.name).is_none() => {
+                    TopDecl::Out(o) => {
+                        let owned = ctx.importer_names.contains(&o.name);
+                        let saved = owned.then(|| ctx.scope.get(&o.name).cloned()).flatten();
                         ctx.with_nofold(o.no_fold, |ctx| {
                             pre_declare_output(
                                 ctx,
@@ -267,8 +318,12 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             )
                         });
                         ns_outputs.push(o);
-                        ns_value_names.push(o.name.clone());
+                        route_ns_member(
+                            ctx, &o.name, &mut ns_decls, &mut ns_value_names,
+                            &mut ns_restores, saved, owned,
+                        );
                     }
+                    TopDecl::Handler(h) => ns_handlers.push(h),
                     _ => {}
                 }
             }
@@ -288,17 +343,66 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             }
             // Capture each value member's binding into this namespace's map,
             // NOW — before the next `import * as` lowers its own members and
-            // overwrites the shared bare names. A member the importer already
-            // owned (the `is_none()`-guarded kinds that were skipped) is not in
-            // `ns_value_names`, so it is not captured here.
+            // overwrites the shared bare names. An importer-owned member was
+            // already captured into `ns_decls` by `route_ns_member` (its bare
+            // name still belongs to the importer, so it never joins
+            // `ns_value_names`), and is restored below.
             for name in ns_value_names {
                 if let Some(binding) = ctx.scope.get(&name).cloned() {
                     ns_decls.insert(name, binding);
                 }
             }
+            // Lower this module's own `on` handlers, now that its members are in
+            // scope and still bound to the bare names (before the restore below),
+            // so a handler body reads/writes THIS module's members even when
+            // another namespace exports the same names.
+            for h in ns_handlers {
+                ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h));
+            }
+            // Hand each importer-owned bare name back to the importer, only now
+            // that this namespace's deferred buffer/out bodies have resolved
+            // against the member's own fresh gate.
+            for (name, saved) in ns_restores {
+                if let Some(binding) = saved {
+                    ctx.scope.insert(&name, binding);
+                }
+            }
             ctx.scope
                 .insert(&ns.name, Binding::Namespace(ns_decls));
         }
+    }
+}
+
+/// Route a namespace state member's freshly pre-declared binding. `owned` is
+/// whether the ENTRY file itself declares this bare name (`saved` is the
+/// importer's prior binding, captured before the fresh pre-declare):
+/// - owned: capture the fresh binding into the namespace map and record the
+///   importer's binding for restoration once the namespace's deferred
+///   buffer/out bodies have wired (so `A.g` is A's own gate while the bare `g`
+///   goes back to the importer);
+/// - not owned: defer capture to the end-of-loop `ns_value_names` sweep, and
+///   let the fresh binding stay as the shared bare name until the next
+///   `import * as` overwrites it.
+///
+/// Either way the member always gets its OWN gate — the collapse bug was the
+/// old path SKIPPING a member whose bare name a prior namespace/local already
+/// held, which aliased the two onto one storage gate.
+fn route_ns_member(
+    ctx: &LowerCtx,
+    name: &str,
+    ns_decls: &mut HashMap<String, Binding>,
+    value_names: &mut Vec<String>,
+    restores: &mut Vec<(String, Option<Binding>)>,
+    saved: Option<Binding>,
+    owned: bool,
+) {
+    if owned {
+        if let Some(binding) = ctx.scope.get(name).cloned() {
+            ns_decls.insert(name.to_string(), binding);
+        }
+        restores.push((name.to_string(), saved));
+    } else {
+        value_names.push(name.to_string());
     }
 }
 

@@ -176,6 +176,12 @@ fn resolve_file(
     };
     stack.insert(canon.clone());
     let parsed = parse(&source, &canon);
+    // Surface the imported file's OWN parse diagnostics. Without this a parse
+    // error in an imported module was silently swallowed — it compiled clean
+    // while the identical source errored as an entry file. Each file is parsed
+    // exactly once (the cache check above returns before re-parsing), so these
+    // are collected once; the ranges point into the imported file.
+    diagnostics.extend(parsed.diagnostics.iter().cloned());
 
     // Recursively resolve imports in the imported file
     let mut imported_ast = parsed.ast.clone();
@@ -280,10 +286,19 @@ fn resolve_import(
     match &imp.kind {
         ImportKind::All => {
             for d in importable {
-                if decl_names(&d)
-                    .iter()
-                    .any(|n| already_has(target_decls, n))
-                {
+                // Diamond-import dedup: skip a decl whose name is already present
+                // FROM THE SAME source file (the same module reached via two
+                // import paths). A same-named decl from a DIFFERENT file is a
+                // genuine collision in the flat merged scope — keep it so the
+                // duplicate-name check (WS013) fires, rather than silently
+                // dropping one and aliasing the two onto a single storage gate.
+                let d_file = d.range().file.clone();
+                let is_diamond = decl_names(&d).iter().any(|n| {
+                    target_decls
+                        .iter()
+                        .any(|e| decl_binds(e, n) && e.range().file == d_file)
+                });
+                if is_diamond {
                     continue;
                 }
                 target_decls.push(d);
@@ -297,43 +312,48 @@ fn resolve_import(
             let import_start = target_decls.len();
             for b in bindings {
                 let effective_name = b.alias.as_deref().unwrap_or(&b.name);
-                if already_has(target_decls, effective_name) {
+                let Some(d) = importable.iter().find(|d| decl_binds(d, &b.name)) else {
+                    diagnostics.push(Diagnostic::error(
+                        "WS012",
+                        format!("'{}' not found in '{}'", b.name, imp.path),
+                        imp.range.clone(),
+                    ));
+                    continue;
+                };
+                // Diamond-import dedup vs genuine collision, same rule as
+                // `ImportKind::All`: skip only when `effective_name` is already
+                // bound FROM THE SAME source file (the same module reached twice).
+                // A same name selected from a DIFFERENT file is a real collision —
+                // keep it so WS013 fires instead of silently aliasing them.
+                let d_file = d.range().file.clone();
+                let same_file_present = target_decls
+                    .iter()
+                    .any(|e| decl_binds(e, effective_name) && e.range().file == d_file);
+                if same_file_present {
                     continue;
                 }
-                let found = importable.iter().find(|d| decl_binds(d, &b.name));
-                match found {
-                    Some(d) => {
-                        if let Some(alias) = &b.alias {
-                            let mut d = d.clone();
-                            // A declaration binding SEVERAL names needs to know
-                            // WHICH one the alias renames; `rename_decl` only
-                            // knows how to rename a single-name declaration.
-                            if !rename_bound_name(&mut d, &b.name, alias) {
-                                diagnostics.push(Diagnostic::error(
-                                    "WS012",
-                                    format!(
-                                        "'{}' cannot be imported under an alias: it is one of \
-                                         several names bound by a destructuring declaration in \
-                                         '{}' — import it without `as`, or give the destructure \
-                                         its own alias at the declaration",
-                                        b.name, imp.path
-                                    ),
-                                    imp.range.clone(),
-                                ));
-                                continue;
-                            }
-                            target_decls.push(d);
-                        } else {
-                            target_decls.push(d.clone());
-                        }
-                    }
-                    None => {
+                if let Some(alias) = &b.alias {
+                    let mut d = d.clone();
+                    // A declaration binding SEVERAL names needs to know
+                    // WHICH one the alias renames; `rename_decl` only
+                    // knows how to rename a single-name declaration.
+                    if !rename_bound_name(&mut d, &b.name, alias) {
                         diagnostics.push(Diagnostic::error(
                             "WS012",
-                            format!("'{}' not found in '{}'", b.name, imp.path),
+                            format!(
+                                "'{}' cannot be imported under an alias: it is one of \
+                                 several names bound by a destructuring declaration in \
+                                 '{}' — import it without `as`, or give the destructure \
+                                 its own alias at the declaration",
+                                b.name, imp.path
+                            ),
                             imp.range.clone(),
                         ));
+                        continue;
                     }
+                    target_decls.push(d);
+                } else {
+                    target_decls.push(d.clone());
                 }
             }
             // Pull in non-requested declarations that are referenced by

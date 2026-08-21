@@ -68,6 +68,15 @@ pub(in crate::lower) fn lower_chip_call_inline(
             // arg to a scalar value (which would then fail the container-method
             // lowering to `_Unsupported`).
             pt if super::context::container_storage(pt).is_some() => {
+                // `&x` (address-of) passed to a `*T`/`ref T`/container param binds
+                // the SAME var as bare `x` — unwrap it so a write through the
+                // param reaches the caller's var. Without this the `&` form (the
+                // documented `inc(&x)` idiom) bound the param to nothing and every
+                // write through it was silently dropped.
+                let arg_expr = match arg_expr {
+                    Expr::RefOf { operand, .. } => operand.as_ref(),
+                    other => other,
+                };
                 let var_rec = if let Expr::Ident { name, .. } = arg_expr {
                     // A `const` array/map argument: give it its runtime form so
                     // the callee binds a real container ref, exactly as a `var`
@@ -318,10 +327,37 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 Stmt::Array(a) => pre_declare_array(ctx, a),
                 Stmt::Map(m) => pre_declare_map(ctx, m),
                 Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
+                // Recurse into nested blocks for CHIP NAMES ONLY (their
+                // forward-reference visibility), NOT for storage. A `var`/
+                // `array`/`map`/`buffer` inside an `if` is block-scoped: it must
+                // be declared into ITS OWN block frame when that block is
+                // lowered, not hoisted into this body's frame. Hoisting a
+                // nested `var k` up here collided it with a same-named body-level
+                // `var k` (last-declared won the shared frame), which orphaned
+                // one gate and mis-scoped the body-level reads onto the nested
+                // storage. The block's own `lower_stmt` now declares it fresh
+                // (see `needs_declaration`, current-frame).
                 Stmt::If(i) => {
-                    pre_declare_block_vars(ctx, &i.then_block);
+                    pre_declare_block_chip_names(ctx, &i.then_block);
                     if let Some(eb) = &i.else_block {
-                        pre_declare_block_vars(ctx, eb);
+                        pre_declare_block_chip_names(ctx, eb);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    /// Recurse a block for nested `chip`/`mod` NAMES only — the forward-reference
+    /// pre-declaration that `pre_declare_block_vars` keeps while no longer
+    /// hoisting block-scoped storage. Storage is intentionally skipped here.
+    fn pre_declare_block_chip_names(ctx: &mut LowerCtx, block: &Block) {
+        for s in &block.stmts {
+            match s {
+                Stmt::ChipDecl(c) => pre_declare_chip_name(ctx, c),
+                Stmt::If(i) => {
+                    pre_declare_block_chip_names(ctx, &i.then_block);
+                    if let Some(eb) = &i.else_block {
+                        pre_declare_block_chip_names(ctx, eb);
                     }
                 }
                 _ => {}
