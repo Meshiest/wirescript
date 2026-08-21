@@ -38,7 +38,9 @@ fn rotator_and_color_arrays_emit_to_brz() {
 var rots: rotator[] = [Rotation(0.0, 90.0, 0.0)]
 var tints: color[] = [Color(1.0, 0.0, 0.0), Color(0.0, 0.0, 1.0, 0.5)]
 var quats: quat[]
-out n = rots.length()";
+var n: int = 0
+in start: exec
+on start { n = rots.length() }";
     let r = compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto });
     assert!(r.is_ok(), "rotator/color/quat arrays should emit: {:?}", r.err());
 }
