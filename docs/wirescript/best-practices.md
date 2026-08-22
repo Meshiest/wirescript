@@ -360,6 +360,113 @@ Three things that bite:
 Keep the *bookkeeping* central and event-driven, and push only the per-tick
 rendering or sampling out to the instances.
 
+## What actually costs anything: measured
+
+Numbers below were measured in game, not reasoned. They matter because most
+optimisation instinct here aims at the wrong target.
+
+### Almost nothing costs what you think
+
+At **512 operations per tick** against a 4.2ms frame, only one thing moved the
+tick time at all:
+
+| Operation | Cost per op |
+|---|---|
+| Building a string (`"a" .. pad(x) .. "b"`) | **~1us** |
+| Reading a var | free |
+| `Map.get` + `Found` check | free |
+| Reading a pre-built string from a map | free |
+| `DisplayText` call | free |
+
+**512 `DisplayText` calls per tick cost 3us.** If a HUD redraws twenty elements
+at 10Hz, drawing is not your problem and rate-limiting it will not help.
+
+**Map reads are free and O(1)** -- a 1024-entry map reads no slower than an
+8-entry one. A permanent record store can grow forever without pruning, and
+keying per-entity state by `character` or account id costs nothing at runtime.
+
+So: **the only operation worth caching is a built string.** If the same text is
+rebuilt every frame and only occasionally changes, store it in a map and read it
+back. Everything else is noise -- and a cache with one reader is a net loss.
+
+### Gates and ticks are one currency
+
+There is no construction that gives concurrency from a single body:
+
+| Construction | Bodies (gates) | Ticks for N items |
+|---|---|---|
+| Unrolled calls | N | **1** |
+| Back-edge loop (`await`) | 1 | N |
+| Self-event fan-out | 1 | N |
+| One send to N distinct receivers | N | **1** |
+
+**Firing an event N times gives one invocation per tick**, at any tick rate --
+measured at 240Hz and 60Hz, and the tick COUNT was identical. Fan-out is a loop
+with nicer ergonomics, not a way to parallelise.
+
+But **one send reaching many receivers costs one tick total.** Send count is
+expensive; receiver count is free. So broadcast one packed payload and let each
+receiver filter, rather than tailoring a message per receiver.
+
+Practical rule: **unroll hot paths** (N gates buys one tick), **loop or fan out
+cold ones** (one gate body, and nothing is waiting).
+
+### Where gates actually go
+
+- **A `mod` inlines per call site**, so its cost is roughly `body x call sites`.
+  That is an upper bound -- the compiler shares loop-invariant subexpressions
+  across the copies, so hand-hoisting a repeated read out of an unrolled mod
+  typically buys very little.
+- **A `mod`'s LOCAL `var` becomes a storage gate at every call site.** Three
+  locals in a helper called from a 30-wide unroll is ninety gates. Hoisting them
+  to module scope collapses that to three -- but only do it when every call site
+  is alone in its statement, because module scratch is shared and two calls in
+  one expression will race.
+- **A `mod` with a return type costs a storage gate per call site** for the
+  returned value. Unavoidable short of writing to a module var instead.
+- **Storage survives everything.** Guarding a feature behind a false constant
+  removes its logic but not its `var` declarations. Nothing prunes unused state,
+  and the compiler never warns about it.
+
+### Feature flags fold completely
+
+A body guarded by a compile-time-false constant is **deleted, not skipped**:
+
+```wirescript
+const FEATURE = false
+on tick { if FEATURE { expensiveThing() } }   // compiles to nothing
+```
+
+Measured: a 1056-gate body behind `const FEATURE = false` compiled to 3 gates.
+Shipping two builds of a chip -- one with a feature, one without -- is therefore
+close to free, and cuts both gate count and artifact size for anyone who does
+not need it.
+
+### Size is usually the real constraint
+
+Runtime headroom is large; artifact size is not.
+
+- **Every `.brz` has a ~25KB floor**, whatever it contains. A 10-gate helper
+  chip and a 500-gate chip cost about the same. Splitting work across many small
+  chips pays that floor every time.
+- **A `SpawnPrefab` reference embeds the whole prefab** into the spawning chip.
+  Shrinking the prefab shrinks every chip that spawns it, and each spawner
+  carries its own copy.
+- **On-screen text is capped at roughly 32 elements per player**, shared across
+  every circuit that player has loaded -- not per chip. Past the cap, one element
+  silently never renders, and which one shifts as you change unrelated things.
+  Budget elements, not draw calls.
+
+### Before optimising, check you have a problem
+
+Compute what your circuit actually does per second and compare it to the numbers
+above. A full 30-player HUD system doing ~8,000 string builds per second spends
+under 1% of wall clock on the only operation that costs anything.
+
+Gate count still matters for **paste size, world load and the text-element
+budget**. It mostly does not matter for per-tick CPU. Optimise for the one that
+is actually binding.
+
 ## Profiling: find the hot spots
 
 `--dump-ir` prints, to **stderr**, a node count per module and every gate with its
