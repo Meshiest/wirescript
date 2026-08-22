@@ -14,9 +14,9 @@
     /// Structural coverage guarantee: every method `array_methods()` lists
     /// round-trips through `array_method(name)` and has a constructible
     /// `signature` — `ArrayMethod::signature`'s match panics on a name with
-    /// no arm (replacing the old silent `_ => vec![]` fallback), so a method
-    /// added to `ARRAY_METHODS` without a matching `signature` arm fails
-    /// this test instead of shipping with unchecked call arguments.
+    /// no arm, so a method added to `ARRAY_METHODS` without a matching
+    /// `signature` arm fails this test instead of shipping with unchecked
+    /// call arguments.
     #[test]
     fn every_array_method_has_a_signature() {
         for m in array_methods() {

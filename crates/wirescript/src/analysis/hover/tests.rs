@@ -518,8 +518,7 @@ on load { let s = fa.sum() }";
     #[test]
     fn map_method_access_hovers_as_map_not_array() {
         // Method hovers dispatch on the RECEIVER's type. On a `Map` receiver:
-        //  - map-only names (`get`, `has`) that no array has must now hover
-        //    (previously produced nothing);
+        //  - map-only names (`get`, `has`) that no array has must hover;
         //  - shared names (`clear`) must show the MAP method, not the array one;
         //  - the concrete key/value types appear in the hover.
         let src = "\
@@ -720,8 +719,8 @@ chip a(uid: string) -> int {
     #[test]
     fn event_config_param_hovers() {
         // Hovering an event config arg name (`pulseOn`) identifies it as Clock
-        // config and names the gate field it sets. (`enabled` is now a wire
-        // input, not config.)
+        // config and names the gate field it sets (`enabled` is a wire input,
+        // not config).
         let src = "static var n: int = 0\non Clock(interval = 2.0, pulseOn = false) {\n  n = n + 1\n}";
         let line = src.lines().nth(1).unwrap();
         let h = hover_for(src, 1, line.find("pulseOn").unwrap()).expect("hover on pulseOn");

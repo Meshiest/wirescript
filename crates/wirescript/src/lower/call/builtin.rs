@@ -19,7 +19,6 @@ pub(in crate::lower) fn lower_builtin_call(
         return synthesise_unsupported(ctx, e);
     }
 
-    // Match args to params
     let mut bound: HashMap<&str, &Expr> = HashMap::default();
     let mut next_pos = 0usize;
     // A method-call receiver is the first positional argument.
@@ -171,17 +170,13 @@ pub(in crate::lower) fn lower_builtin_call(
         // never applied).
         //
         // Typecheck's WS028 normally reports the non-constant value before this
-        // point, and for a long time this was described as a pure safety net on
-        // that. It is not: the two stages resolve constants through separate
-        // environments, so a name typecheck CAN fold and lowering cannot reaches
-        // here with nothing reported by anybody, and the config silently ships
-        // as the type's default — an empty custom-event channel name, for
-        // instance, which is a gate that quietly never fires. Every such gap
-        // found so far has been fixed at its source (a `const` recorded into a
-        // frame one side had and the other did not), but "the drop is silent"
-        // is the property that made each of them cost so much to find, so the
-        // drop now reports. Same WS028 the constant-only config validator uses,
-        // since it is the same rule being violated, just detected a stage later.
+        // point, but typecheck and lowering resolve constants through separate
+        // environments, so a name typecheck can fold and lowering cannot reaches
+        // here with nothing reported by anybody, and the config would silently
+        // ship as the type's default — an empty custom-event channel name, for
+        // instance, which is a gate that quietly never fires. Report it here too,
+        // under the same WS028 code, since it's the same rule being violated,
+        // just detected a stage later.
         if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str()) {
             ctx.error(
                 "WS028",
@@ -198,9 +193,9 @@ pub(in crate::lower) fn lower_builtin_call(
         let val_port = lower_expr(ctx, arg_expr);
         // character and controller wire directly into each other's ports in
         // Brickadia, so no adapter gate is inserted for a character passed to
-        // a controller param (or vice versa). The old char->controller adapter
-        // used `GetFromEntity` ("Get Player (Persistent)"), an admin-only gate
-        // that gets blocked on paste for non-admins — wire straight through.
+        // a controller param (or vice versa) — an adapter would need
+        // `GetFromEntity` ("Get Player (Persistent)"), an admin-only gate that
+        // gets blocked on paste for non-admins.
         // Remember the argument's typechecked type. It is strictly better than the
         // wired node's port type for typing an `any` port: a mod return (`aimHit()
         // -> entity`) or a gate output the catalog declares loosely both reach emit
@@ -279,7 +274,6 @@ pub(in crate::lower) fn lower_builtin_call(
         WirePort::Exec
     };
 
-    // Build gate ports
     let mut ports = GateIO::default();
     if spec.exec {
         ports.inputs.push(PortSpec {

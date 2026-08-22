@@ -3,11 +3,10 @@ use super::*;
 #[test]
 fn on_local_exec_signal_fires_from_emit_in_another_handler() {
     // `on sig` must trigger when `emit sig` runs in a *different* handler, even
-    // though `on sig` appears after the emitting handler in source. Previously
-    // the signal's binding was only created after all handlers were lowered, so
-    // `on sig` silently produced nothing. The pre-declared hub carries the emit
-    // to the listener; with a single emitter the hub union is spliced out, so
-    // assert the connectivity itself: trig's chain must reach the `on sig` body.
+    // though `on sig` appears after the emitting handler in source. The
+    // pre-declared hub carries the emit to the listener; with a single emitter
+    // the hub union is spliced out, so assert the connectivity itself: trig's
+    // chain must reach the `on sig` body.
     let src = "in trig: exec\n\
                let sig: exec\n\
                static var n: int = 0\n\
@@ -1265,9 +1264,9 @@ fn in_handler_var_map_literal_init_desugars_to_clear_and_sets() {
 
 #[test]
 fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
-    // Task 6 made `m = <any Map expr>` typecheck (mirroring arrays), but only
-    // a MapLit RHS is lowered by the desugar (Task 8). Investigation: a
-    // non-literal map RHS (`m = m2`) falls through toward the generic
+    // `m = <any Map expr>` typechecks (mirroring arrays), but only a MapLit
+    // RHS is lowered by the desugar. A non-literal map RHS (`m = m2`) falls
+    // through toward the generic
     // Var_Set/Var_Get reset path, which wires a `VarRef` port that
     // Pseudo_MapVar's gate never declares (it only exposes `MapVarRef`) —
     // the exact hazard already called out for arrays in `lower_stmt`. Left
@@ -1427,8 +1426,7 @@ fn handler_creates_event_and_exec_chain() {
 
 /// An or-triggered handler (`on a | b { ... }`) runs its body when EITHER part
 /// fires. The `Trigger::Union` case used to hit `lower_handler`'s `_ => return`
-/// and drop the whole body silently. Now the body lowers once per part, each
-/// wired from its own trigger.
+/// and drop the whole body silently.
 #[test]
 fn union_trigger_lowers_body_per_part() {
     let r = compile("var v: int = 0\nin t: exec\nin u: exec\non t | u { v = v + 1 }");
@@ -1542,8 +1540,8 @@ fn output_driver_count(r: &LowerResult) -> usize {
 }
 
 /// A defaulted output (`out r = 0`) plus an `emit r = …` must be var-backed (the
-/// default seeds the var), not driven by both the default and the emit — which
-/// used to fan-in two wires into the output rerouter.
+/// default seeds the var), not driven by both the default and the emit — that
+/// would fan-in two wires into the output rerouter.
 #[test]
 fn defaulted_output_plus_emit_has_single_driver() {
     let r = compile("in go: exec\nout r = 0\non go { emit r = 42 }");
@@ -1556,8 +1554,8 @@ fn defaulted_output_plus_emit_has_single_driver() {
 }
 
 /// An `emit r = …` in the handler and another inside an anonymous `chip { … }`
-/// (which shares the parent's output) must be var-backed. The counter used to
-/// skip the chip site, so both wired straight to the output — a fan-in.
+/// (which shares the parent's output) must be var-backed: skipping the chip
+/// site would wire both straight to the output — a fan-in.
 #[test]
 fn emit_across_handler_and_anon_chip_has_single_driver() {
     let r = compile(
@@ -2088,10 +2086,10 @@ out result = dir",
 
 #[test]
 fn detector_builtins_map_to_split_gate_classes() {
-    // The build split the detectors: `Change` (value pulse-through, OnChanged)
-    // lives on the Exec gate now, `Changed` (bool pulse) on the plain gate;
-    // `EdgeExec` fires exec pulses for `on`/`await`, and `Edge`'s
-    // rising/falling record fields resolve via the port aliases.
+    // `Change` (value pulse-through, OnChanged) lives on the Exec gate;
+    // `Changed` (bool pulse) is the plain gate. `EdgeExec` fires exec pulses
+    // for `on`/`await`, and `Edge`'s rising/falling record fields resolve via
+    // the port aliases.
     let src = "in v: float\nin b: bool\nin x: int\nin t: exec\n\
         let c = Change(x)\nlet cd = Changed(x)\nlet e = Edge(b)\nlet ee = EdgeExec(v)\n\
         out cv = c\nout cdv = cd\nout rising = e.Rising\nout falling = e.Falling\n\

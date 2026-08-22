@@ -37,7 +37,7 @@
     fn node_loc_shows_file_basename_and_position() {
         use crate::diagnostic::{Pos, SourceRange};
         // An imported node's range points into its own file; the dump location
-        // now includes the basename so it is distinguishable from an entry-file
+        // includes the basename so it is distinguishable from an entry-file
         // node at the same line.
         let sr = SourceRange {
             file: std::sync::Arc::from("C:/some/dir/lib.ws"),

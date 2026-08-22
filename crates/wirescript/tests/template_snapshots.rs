@@ -1,10 +1,10 @@
 //! Integration snapshot tests for the wirescript compiler.
 //!
 //! Tests exercise the full compile pipeline: source → IR → layout → BRZ bytes.
-//! Tests are grouped by task area:
-//!   Task 6 — basic chip/mod snapshots
-//!   Task 7 — scope capture BRZ tests
-//!   Task 10 — correctness equivalence tests
+//! Tests are grouped by area:
+//!   basic chip/mod snapshots
+//!   scope capture BRZ tests
+//!   correctness equivalence tests
 
 use std::sync::Arc;
 use wirescript::compile::{CompileInput, compile};
@@ -21,8 +21,8 @@ use wirescript::typecheck::typecheck;
 /// Uses `compile` for the BRZ bytes and `lower` for the IR stats.
 /// Chip counts and node/wire counts recurse through all nested chips.
 fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
-    // Structural node/wire/chip counts below are exact-ish baselines predating
-    // the certified fold pass — keep both halves unfolded so they still hold.
+    // Node/wire/chip counts below are approximate baselines that assume
+    // folding stays off in both halves.
     // --- BRZ via compile ---
     let input = CompileInput {
         source: src,
@@ -65,7 +65,7 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
     (nodes, wires, chips, brz_size)
 }
 
-// ── Task 6: basic chip/mod snapshots ─────────────────────────────────────────
+// ── basic chip/mod snapshots ─────────────────────────────────────────────────
 
 /// Simple chip Add(a, b) -> (r) called once with output port.
 #[test]
@@ -106,7 +106,7 @@ out total = w1 + w2
     compile(input).expect("nested chip calls should compile");
 }
 
-// ── Task 7: scope capture BRZ tests ──────────────────────────────────────────
+// ── scope capture BRZ tests ──────────────────────────────────────────────────
 
 /// Mod captures var and array from parent scope; called 3 times.
 /// BRZ output must be > 100 bytes.
@@ -157,7 +157,7 @@ on tick {
     compile(input).expect("forward reference to array in mod should compile");
 }
 
-// ── Task 10: correctness equivalence tests ────────────────────────────────────
+// ── correctness equivalence tests ────────────────────────────────────────────
 
 /// Buffer capture: buffer prev_val is read by a mod that checks current != prev_val.
 #[test]

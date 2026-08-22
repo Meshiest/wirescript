@@ -112,11 +112,10 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
     // form it could take — and a method call routes here only when its
     // callee resolves to a certified, non-exec receiver method; anything
     // else (an unknown method, a user self-receiver mod) falls through to
-    // `reason_for` below exactly as before this task. Array/map LITERALS,
-    // indexing into one, and `.length()` on one are handled directly below —
-    // `expr_to_literal_in` never folds these (baking them is `predeclare.rs`'s
-    // job, not this evaluator's, until Task 19 routed the fold through here
-    // too), so they always reach this match.
+    // `reason_for` below. Array/map LITERALS, indexing into one, and
+    // `.length()` on one are handled directly below — `expr_to_literal_in`
+    // never folds these (baking them is `predeclare.rs`'s job, not this
+    // evaluator's), so they always reach this match.
     match e {
         Expr::InterpLit { parts, range } => return eval_interp(parts, range, cx, budget),
         // `[a, b, ...c]`: every element must itself be constant. A spread has
@@ -767,10 +766,8 @@ fn reason_for(e: &Expr, cx: &ConstCtx) -> (ConstReason, SourceRange) {
                 // one but sits inside a SURROUNDING expression that has no
                 // compile-time form — most often an argument to a call whose
                 // own callee is not a `const mod` — so evaluation never
-                // descended to it. Before `lookup_mod` was populated this
-                // distinction could not exist and `NotAConstMod` was
-                // unconditionally true; now it can be false, so it must be
-                // checked rather than assumed.
+                // descended to it. This distinction must be checked rather
+                // than assumed.
                 Expr::Ident { name, .. } => {
                     let is_const_mod = cx
                         .lookup_mod

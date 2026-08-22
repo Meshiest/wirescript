@@ -79,8 +79,8 @@ on start { hit = hit + 1 }";
 
 /// A module imported via BOTH a namespace (`import * as x`) AND a named import
 /// materializes its top-level `let`s twice — the namespace copy is unreferenced,
-/// so a constant used to ship as a gate wired to nothing. `prune_dead_pure_gates`
-/// must drop that orphan.
+/// so a constant ships as a gate wired to nothing unless pruned.
+/// `prune_dead_pure_gates` must drop that orphan.
 #[test]
 fn namespace_plus_named_import_leaves_no_orphan_constant() {
     let lib = "\
@@ -277,9 +277,9 @@ fn a_destructured_const_may_be_imported_under_an_alias() {
     );
 }
 
-/// `import "lib"` (import-all) already worked — it pushes every importable
-/// declaration and only consults `decl_name` to skip duplicates — but it now
-/// shares the multi-name duplicate check, so pin it too.
+/// `import "lib"` (import-all) pushes every importable declaration and only
+/// consults `decl_name` to skip duplicates, sharing the multi-name duplicate
+/// check pinned below.
 #[test]
 fn a_destructured_const_survives_an_import_all() {
     assert_eq!(
@@ -396,7 +396,7 @@ fn a_namespaced_const_still_works_as_a_runtime_value() {
 }
 
 /// Two DIFFERENT modules declaring the same top-level name, merged via plain
-/// `import`, now collide with WS013 instead of silently dropping one and
+/// `import`, collide with WS013 rather than silently dropping one and
 /// aliasing both onto a single storage gate. A DIAMOND import (the same module
 /// reached via two paths) still dedups without a false duplicate.
 #[test]

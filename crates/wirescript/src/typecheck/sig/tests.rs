@@ -148,9 +148,8 @@ fn check_args_optional_param_omitted_is_ok() {
 //   - `bOnlyHitPlayerBodyParts` (bool) and `Direction` (enum) are scalar config.
 const SWEEP_GATE: &str = crate::ir::gate_class::SWEEP_SIMPLE;
 
-// (a) A `ConfigScalar` param given a non-constant value emits the constant-only
-// WS028 — reached via a NAMED arg matched by SURFACE name (`bodyPartsOnly`),
-// which is the end-to-end path that would have caught the Fix 1 name conflict.
+// A `ConfigScalar` param given a non-constant value emits the constant-only
+// WS028 — reached via a NAMED arg matched by SURFACE name (`bodyPartsOnly`).
 #[test]
 fn config_scalar_named_arg_nonconstant_is_ws028() {
     let ce_slots = crate::typecheck::CeSlotMap::default();
@@ -189,7 +188,7 @@ fn config_scalar_named_arg_nonconstant_is_ws028() {
     );
 }
 
-// (b) A `ConfigEnum(et)` param validates a bare member name against the schema:
+// A `ConfigEnum(et)` param validates a bare member name against the schema:
 // a known member is clean; an unknown one is WS028 (and never WS002).
 #[test]
 fn config_enum_arm_validates_bare_member() {
@@ -234,7 +233,7 @@ fn config_enum_arm_validates_bare_member() {
     );
 }
 
-// (c) A named arg that matches NO declared param falls back to the gate's
+// A named arg that matches NO declared param falls back to the gate's
 // data-driven settings config via `config_gate` (`bOnlyHitPlayerBodyParts` is a
 // raw schema field); a non-constant value there is WS028.
 #[test]
@@ -262,7 +261,7 @@ fn named_arg_data_driven_config_fallback_is_ws028() {
     );
 }
 
-// (d) A `ConfigComposite(port)` param rejects a non-constant value (can't fold
+// A `ConfigComposite(port)` param rejects a non-constant value (can't fold
 // to the expected shape) with WS028, and the message names the SURFACE param.
 #[test]
 fn config_composite_arm_rejects_nonconstant() {
@@ -302,7 +301,7 @@ fn config_composite_arm_rejects_nonconstant() {
     );
 }
 
-// (e) A named arg matching no declared param and no data-driven config field
+// A named arg matching no declared param and no data-driven config field
 // does nothing at lower time (both typecheck and emit silently drop it), so it
 // is flagged WS041 — the `p.DisplayText(t, positionX = 0.0)` typo. The message
 // names the call and the unknown parameter.
@@ -334,7 +333,7 @@ fn unknown_named_arg_is_ws041() {
     );
 }
 
-// (f) `exec = ...` is the universal exec-override for a pure-context call, never
+// `exec = ...` is the universal exec-override for a pure-context call, never
 // a declared param — it must NOT be flagged unknown.
 #[test]
 fn exec_named_arg_is_not_ws041() {
@@ -356,7 +355,7 @@ fn exec_named_arg_is_not_ws041() {
     );
 }
 
-// (g) A variadic call that opts out of arity checking (`check_arity == false`,
+// A variadic call that opts out of arity checking (`check_arity == false`,
 // e.g. `arr.sortMultiple(other, descending = true)`) can't enumerate its legal
 // named args in a fixed `Param` list, so no WS041 fires there.
 #[test]
@@ -379,7 +378,7 @@ fn unknown_named_arg_skipped_when_arity_unchecked() {
     );
 }
 
-// (f2) A REQUIRED param supplied by name satisfies arity — it must not also be
+// A REQUIRED param supplied by name satisfies arity — it must not also be
 // demanded positionally (`Sweep(origin, dir, distance = 100.0)` is complete).
 #[test]
 fn required_param_given_by_name_satisfies_arity() {
@@ -404,7 +403,7 @@ fn required_param_given_by_name_satisfies_arity() {
     );
 }
 
-// (f3) A named arg that differs from a real param only by case gets a pointer to
+// A named arg that differs from a real param only by case gets a pointer to
 // the right spelling — matching is case-sensitive, so the bare "no parameter"
 // message was misleading for a parameter that plainly exists.
 #[test]
@@ -432,9 +431,9 @@ fn miscased_named_arg_suggests_the_real_param() {
     );
 }
 
-// (g2) A user mod/chip call passes `check_arity = false` (its count is checked as
+// A user mod/chip call passes `check_arity = false` (its count is checked as
 // WS022 upstream) but `check_named = true` — its full param list IS known, so an
-// unknown named arg (`g(1, bogus = 5)`) must still be flagged WS041 (P0-16d).
+// unknown named arg (`g(1, bogus = 5)`) must still be flagged WS041.
 #[test]
 fn unknown_named_arg_flagged_when_arity_off_but_named_on() {
     let ce_slots = crate::typecheck::CeSlotMap::default();
@@ -455,7 +454,7 @@ fn unknown_named_arg_flagged_when_arity_off_but_named_on() {
     );
 }
 
-// (h) A real settings-menu config field routed through `config_gate` is a known
+// A real settings-menu config field routed through `config_gate` is a known
 // name — it is validated (WS028 here, for a non-constant value) but never WS041.
 #[test]
 fn known_config_named_arg_is_not_ws041() {

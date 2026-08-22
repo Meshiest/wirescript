@@ -18,8 +18,6 @@ fn aggregate_fixture_compiles_without_placeholders() {
         fold_mode: FoldMode::Auto,
     })
     .expect("aggregate.ws must compile without errors");
-    // A clean example: no warnings at all, and specifically no WSP001
-    // (`_Unsupported`) — a record op that silently fell back to a placeholder.
     assert!(
         r.diagnostics.iter().all(|d| d.code != "WSP001"),
         "aggregate.ws lowered a record op to an _Unsupported placeholder: {:?}",

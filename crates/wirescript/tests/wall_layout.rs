@@ -43,10 +43,8 @@ fn grids_are_upright_and_stacked() {
 
     // Root grid is pushed first; children sit strictly to its RIGHT.
     //
-    // Depth used to stack upward in world Z, and this asserted that. It grows
-    // along world Y now so a chip's interior can open level with the brick
-    // that opens it — the claim is the same (a child never covers its parent),
-    // on the axis that now carries depth.
+    // Depth grows along world Y so a chip's interior can open level with the
+    // brick that opens it: a child never covers its parent.
     let root_y = r.world.grids[0].0.location.y;
     for (entity, _) in &r.world.grids[1..] {
         assert!(

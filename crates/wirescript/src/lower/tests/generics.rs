@@ -1,7 +1,7 @@
-//! Monomorphization of generic `mod` calls (Task 2.5): a generic mod inlined
+//! Monomorphization of generic `mod` calls: a generic mod inlined
 //! at a concrete call site must emit CONCRETE gates (`box<int>` → int gates,
-//! `box<vector>` → vector gates), never leaking `Type::Param` (or the wrong
-//! `Any`/last-combo variant it defaulted to before) into emit.
+//! `box<vector>` → vector gates), never leaking `Type::Param` (or an
+//! incorrectly-defaulted `Any`/last-combo variant) into emit.
 
 use super::*;
 use crate::ir::{Module, Type};
@@ -89,8 +89,8 @@ fn emit_ok(r: &LowerResult) -> Result<(), String> {
 fn generic_mod_monomorphizes_to_concrete_gates() {
     // A generic mod with a T-typed storage gate + T return. Called at `int`
     // and at `vector`, each inline must emit a concrete int / vector Variable
-    // gate — and EMIT cleanly. A leaked `Type::Param` (or the pre-fix `Any`
-    // default) would give both monomorphs a wrong (Number-defaulted) variant.
+    // gate — and EMIT cleanly. A leaked `Type::Param` would give both
+    // monomorphs a wrong (Number-defaulted) variant.
     let src = "mod boxed<T>(v: T) -> T { static var stored: T = v\n return stored }\n\
                in go: exec\nin n: int\nin vec: vector\n\
                on go {\n  let a = boxed(n)\n  let b = boxed(vec)\n}\n";
@@ -187,8 +187,8 @@ fn nested_generic_mod_forwarding_monomorphizes() {
     // Core composition pattern: `outer<T>` forwards its own `T`-typed value
     // into `inner<T>`. `inner`'s `static var s: T` must monomorphize to the
     // type flowing at the OUTER call site (int, then vector) — NOT the stale
-    // last-mask-member type P2.4 left in `type_of_expr` (which silently
-    // collapsed BOTH monomorphs to Prefab).
+    // last-mask-member type left in `type_of_expr` (which silently collapsed
+    // BOTH monomorphs to Prefab).
     let src = "mod inner<T>(v: T) -> T { static var s: T = v\n return s }\n\
                mod outer<T>(v: T) -> T { let r = inner(v)\n return r }\n\
                in go: exec\nin n: int\nin vec: vector\n\
@@ -263,7 +263,7 @@ fn generic_mod_polymorphic_recursion_terminates() {
 
 #[test]
 fn generic_body_invalid_for_a_member_is_rejected_above_the_combo_cap() {
-    // Combo-cap escape (correctness review): two UNbounded params make
+    // Combo-cap escape: two UNbounded params make
     // 11×11 = 121 mask combos, over MAX_BODY_CHECK_COMBOS (64). The old capped
     // fallback checked a single all-first-member combo (every param bound to
     // `bool`, the most permissive member for arithmetic), so a body op invalid
@@ -295,8 +295,8 @@ fn generic_body_invalid_for_a_member_is_rejected_above_the_combo_cap() {
 #[test]
 fn non_generic_mod_lowering_unchanged() {
     // Guard sanity: a non-generic mod pushes no MonoFrame, so its `var s: int`
-    // still lowers to a concrete int gate exactly as before — the generic path
-    // is fully gated on non-empty `type_params`.
+    // still lowers to a concrete int gate — the generic path is fully gated
+    // on non-empty `type_params`.
     let src = "mod keep(v: int) -> int { static var s: int = 0\n s = v\n return s }\n\
                in go: exec\nin n: int\non go { let a = keep(n) }\n";
     let r = compile(src);
@@ -308,7 +308,7 @@ fn non_generic_mod_lowering_unchanged() {
 
 #[test]
 fn generic_body_operator_and_if_use_call_monomorph_variant() {
-    // Regression (correctness review): operators (`v * v`) and if-exprs
+    // Regression: operators (`v * v`) and if-exprs
     // (`if c then a else b`) inside a generic body must emit the CALL's
     // monomorph variant — not the last mask-member the per-mask-member body
     // check leaves in `op_resolutions` / `type_of_expr` (Numeric → Color,
@@ -685,7 +685,7 @@ fn non_self_mod_method_call_is_a_typecheck_error() {
     );
 }
 
-// ---------- container-var receiver self-mods (Bug A regression) ----------
+// ---------- container-var receiver self-mods ----------
 
 #[test]
 fn container_array_self_receiver_desugars_to_mod_call() {
@@ -770,7 +770,7 @@ fn generic_container_self_receiver_monomorphizes() {
 
 #[test]
 fn compound_arg_forwarded_into_nested_generic_call_uses_monomorph() {
-    // Whole-branch review Critical: a COMPOUND arg (`a + b`, an if-expr, a
+    // A COMPOUND arg (`a + b`, an if-expr, a
     // nested generic call) forwarded into another generic call from INSIDE a
     // generic body must monomorphize the inner call to the CURRENT type — not
     // the stale last-mask-member `type_of_expr` holds (`Numeric` → Color). Here
@@ -905,7 +905,7 @@ fn receiver_call_validates_receiver_type() {
             .collect::<Vec<_>>()
     };
     // A receiver whose type doesn't match `self` is a WS003 error — user mod/chip
-    // calls now coerce each arg (incl. the receiver bound as arg 0) against its
+    // calls coerce each arg (incl. the receiver bound as arg 0) against its
     // parameter, exactly like the wire layer's PortsAreCompatible.
     let bad = "mod lensq(self: vector, k: float) -> float { return self.Dot(self) * k }\n\
                in x: int\nstatic var rv: float = 0.0\nout r: float = rv\nin go: exec\non go { rv = x.lensq(2.0) }\n";
@@ -941,7 +941,7 @@ fn type_args_on_builtin_warn() {
     assert!(!r2.diagnostics.iter().any(|d| d.code == "WS037"));
 }
 
-// ---- Task 10: max generic parameters / cartesian body-check cap
+// ---- max generic parameters / cartesian body-check cap
 // (`MAX_BODY_CHECK_COMBOS = 64` in typecheck.rs). A bounded generic's body
 // is checked once per member of the cartesian product of its type params'
 // masks; over the cap the check falls back to a representative combo (each

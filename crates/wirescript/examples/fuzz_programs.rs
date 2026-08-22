@@ -45,8 +45,8 @@ use wirescript::intern::{intern, intern_static, resolve as sym_resolve, sym};
 use wirescript::ir::port_registry::WirePort;
 use wirescript::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc};
 use wirescript::layout::layout;
-// `fold::eval` is the `#[doc(hidden)] pub` surface Task 6 opened up
-// specifically for this harness (see the visibility note on `pub mod fold`
+// `fold::eval` is the `#[doc(hidden)] pub` surface opened up specifically
+// for this harness (see the visibility note on `pub mod fold`
 // in `src/lower/mod.rs`) — the differential predictor calls the crate's own
 // certified evaluator instead of re-implementing the value laws. NOTE:
 // `eval::eval` is a pure lookup against a probed truth table (a match over
@@ -3679,9 +3679,9 @@ fn selftest() -> bool {
     let mut ok = true;
 
     // 1. _Unsupported detection: pure-context array index read. (Note:
-    // typecheck now WS007-errors this, so it is NOT a silent-miscompile
-    // finding — but the lowered module must still contain the placeholder,
-    // proving the scanner works.)
+    // typecheck WS007-errors this, so it is NOT a silent-miscompile finding
+    // — but the lowered module must still contain the placeholder, proving
+    // the scanner works.)
     let src = "var items: int[]\nlet x = items[0]\nout r = x";
     let out = run_pipeline(src);
     if out.unsupported.is_empty() {
@@ -3793,11 +3793,11 @@ out o: int = acc.Value";
         eprintln!("[selftest] ok: known-good storage canary is silent (shared state stays one gate)");
     }
 
-    // 5. REGRESSION GUARD (was a known-bad canary): two modules each declaring
-    // `var g`, imported as two namespaces, used to collapse into ONE storage
-    // gate so writing A.g changed B.g. The namespace direct-state fix makes them
-    // distinct, so the oracle must now stay SILENT; a storage-collapse finding
-    // here means the bug regressed.
+    // 5. REGRESSION GUARD: two modules each declaring `var g`, imported as
+    // two namespaces, used to collapse into ONE storage gate so writing A.g
+    // changed B.g. The namespace direct-state fix makes them distinct, so
+    // the oracle must now stay SILENT; a storage-collapse finding here means
+    // the bug regressed.
     let bad = "\
 //!ws-file mb1
 var g: int = 1
@@ -3837,8 +3837,8 @@ out o: int = acc.Value";
         eprintln!("[selftest] ok: two-namespace `var g` stays distinct (namespace direct-state fix holds)");
     }
 
-    // 6. REGRESSION GUARD (was a known-bad canary): a namespace-imported
-    // module's `on` handler used to be silently dropped, taking its
+    // 6. REGRESSION GUARD: a namespace-imported module's `on` handler used
+    // to be silently dropped, taking its
     // `wv = wv + 1` write with it. The namespaced-handler fix runs it, so the
     // write's mutation gate now exists and the oracle must stay SILENT; a
     // dropped-write finding here means the handler was dropped again.
@@ -3991,7 +3991,7 @@ fn calibrate(dir: &str) {
 
 // ─────────────────────────── fold-diff mode ───────────────────────────
 //
-// Differential fuzzer for the certified constant-fold pass (Task 6):
+// Differential fuzzer for the certified constant-fold pass:
 // compiles the SAME source twice — once with `FoldMode::ForceOff` (U, the
 // "unfolded" module) and once with `FoldMode::ForceOn` (F, the "folded"
 // module) — then:
@@ -4703,8 +4703,8 @@ fn run_fold_diff(count: usize, seed: u64) {
 // none of which `predict()` can ever resolve). Reuses `Gen`'s existing
 // literal/name-freshening utilities (`Gen::lit`, `Gen::fresh`, its `Rng`) so
 // literal syntax (escaping, negative numbers, ...) matches the rest of the
-// harness, but restricts every operator to the certified set the brief
-// calls out: `+ - * / % == != < <= > >= && || ^^ !`.
+// harness, but restricts every operator to the certified set:
+// `+ - * / % == != < <= > >= && || ^^ !`.
 
 /// A leaf: 80% a plain literal, 20% `Opaque(<literal>)` — a genuine wired
 /// value the fold pass (and `predict()`, matching it) must never propagate
@@ -4738,10 +4738,10 @@ fn fold_str_leaf(g: &mut Gen) -> String {
 /// An EXACTLY-representable (as f64) decimal float literal — mirrors the
 /// certified probe's own `compositeMath`/`compositeOps` operand set (halves
 /// and quarters, e.g. `MakeVector(1.5,-2.5,0.75)`) — dedicated to the
-/// composite pool (`Vec`/`Quat` leaves) per the task brief's
-/// "exact-representable components" instruction, unlike `Gen::lit(Ty::Float)`
-/// (which can produce an arbitrary, not-exactly-representable decimal like
-/// `"23.7"` for the GENERAL fuzzer).
+/// composite pool (`Vec`/`Quat` leaves) so every component is exactly
+/// representable, unlike `Gen::lit(Ty::Float)` (which can produce an
+/// arbitrary, not-exactly-representable decimal like `"23.7"` for the
+/// GENERAL fuzzer).
 fn fold_exact_float_lit(g: &mut Gen) -> String {
     const VALUES: &[&str] = &[
         "0.0", "1.0", "-1.0", "0.5", "-0.5", "0.25", "-0.25",
@@ -4824,9 +4824,9 @@ fn fold_str_expr(g: &mut Gen, depth: u32) -> String {
 
 /// A `${...}`-interpolated Str leaf: 1-3 embedded Int/Float/Bool
 /// sub-expressions (matching `render_for_format`'s certified law for those
-/// variants — composites are deliberately excluded, matching Task 4's
-/// "scalar-only inputs" scope; nested STRING sub-expressions are also
-/// excluded, sidestepping untested quote-in-interpolation lexing) wrapped in
+/// variants — composites are deliberately excluded (scalar-only inputs);
+/// nested STRING sub-expressions are also excluded, sidestepping untested
+/// quote-in-interpolation lexing) wrapped in
 /// static ASCII text, free of `"`/`\`/`$` so it can never accidentally start
 /// a second interpolation. Lowers to `String_FormatText`
 /// (`lower/ops.rs::lower_interp`) — exercises `predict_format_text`.
@@ -4860,10 +4860,10 @@ fn fold_expr(g: &mut Gen, ty: Ty, depth: u32) -> String {
     // (a permanent, by-design prediction barrier), a full-width depth-4
     // tree accumulates enough leaves that almost every root `out` ends up
     // blocked, tanking the predictor's measured coverage even though the
-    // predictor itself is sound. Depth stays capped at <= 4 (the ceiling
-    // the design calls for; deep chains still happen, just less often) —
-    // only the AVERAGE leaf count drops, which is the generator-side lever
-    // the brief calls for tuning (not the predictor).
+    // predictor itself is sound. Depth stays capped at <= 4; deep chains
+    // still happen, just less often — only the AVERAGE leaf count drops,
+    // which is the generator-side lever available for tuning (not the
+    // predictor).
     if depth == 0 || g.rng.chance(1, 2) {
         return fold_leaf(g, ty);
     }
@@ -4956,8 +4956,8 @@ fn fold_expr_with_param(g: &mut Gen, ty: Ty, pname: &str, depth: u32) -> String 
 /// chip-boundary propagation), a 25% chance of an extra `quat`-typed `out`
 /// (`MakeQuaternion` over 4 independent arithmetic float args — the
 /// transitively-certified recipe from `eval.rs::make_quaternion`'s doc
-/// comment, matching the Task 4 regression tests' shape so the constructor
-/// only ever folds once all four operands resolve), and a 20% chance of an
+/// comment, so the constructor only ever folds once all four operands
+/// resolve), and a 20% chance of an
 /// unrelated `on t { if <const-expr> { .. } else { .. } }` wrapper
 /// (exercises Branch-truncation structural cleanup; deliberately NOT
 /// value-checked — `predict()` never resolves through Branch).

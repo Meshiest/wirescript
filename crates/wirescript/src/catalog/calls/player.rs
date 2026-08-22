@@ -3,13 +3,13 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- PlayerState (was Controller) --------------------------------------
-    // The reworked DisplayText gate drops the old scalar position/anchor/scale
-    // floats (now composite `Position`/`Anchor`/`Scale` struct ports, which the
-    // call form can't feed) and adds per-axis styling (colors, spacing, skew,
-    // wrap, z-order). `fontSize`/`justify`/`easing` survive as constant-only
-    // data fields. `target` is the entity-typed `PlayerState` port — a
-    // `controller` wires straight in.
+    // ---- PlayerState --------------------------------------------------------
+    // DisplayText's position/anchor/scale are composite `Position`/`Anchor`/
+    // `Scale` struct ports, which the call form can't feed directly, so each
+    // axis is exposed as its own float param, alongside per-axis styling
+    // (colors, spacing, skew, wrap, z-order). `fontSize`/`justify`/`easing`
+    // are constant-only data fields. `target` is the entity-typed
+    // `PlayerState` port — a `controller` wires straight in.
     m.insert(
         "DisplayText",
         CallSpec {
@@ -70,7 +70,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     );
 
     // ---- Character / Controller conversions ------------------------------
-    // `ControllerOf` now lowers to `PlayerState_GetFromEntity` ("Get Player
+    // `ControllerOf` lowers to `PlayerState_GetFromEntity` ("Get Player
     // (Persistent)"), whose player output is the entity-typed `PlayerState`.
     m.insert(
         "ControllerOf",
@@ -85,8 +85,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             }],
         ),
     );
-    // `CharacterOf` keeps the `Character_GetFromController` gate, but its player
-    // input port is now the entity-typed `PlayerState`.
+    // `CharacterOf` uses the `Character_GetFromController` gate; its player
+    // input port is the entity-typed `PlayerState`.
     m.insert(
         "CharacterOf",
         controller_exec(
@@ -134,10 +134,6 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             outputs: vec![CallOutput {
             field: None,
                 port: WirePort::InputForward,
-                // The splitter's port set was reworked: the movement axes gained
-                // Up plus the look axes (Pitch/Yaw/Roll) and mouse wheel, the
-                // old `Jump` bool was dropped, and the pressed-key bools are now
-                // C/E/Q and the mouse buttons.
                 ty: Type::Record(vec![
                     ("Forward".into(), Type::Float),
                     ("Right".into(), Type::Float),

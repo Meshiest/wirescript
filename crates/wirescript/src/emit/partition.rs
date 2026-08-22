@@ -18,9 +18,8 @@ pub fn partition_anon_chips(module: &mut Module) {
         .filter_map(|(id, n)| n.chip_id.map(|c| (*id, c)))
         .collect();
     // Sorted Vec, NOT a std HashSet: iteration order decides the intern order
-    // of the `_anon_{id}` module names (and, before the single-pass wire
-    // partition, decided the wire structure itself) — random order made
-    // emitted wire counts and Sym numbering nondeterministic run-to-run.
+    // of the `_anon_{id}` module names — random order made emitted wire
+    // counts and Sym numbering nondeterministic run-to-run.
     let mut chip_ids: Vec<NodeId> = assignment.values().copied().collect();
     chip_ids.sort_unstable();
     chip_ids.dedup();
@@ -92,10 +91,9 @@ pub fn partition_anon_chips(module: &mut Module) {
 
     // Partition wires in ONE pass: internal wires go to their chip's child,
     // cross-boundary wires stay in the parent as remote wires with Layout
-    // edges keeping the chips inline in the DAG. (The old per-chip loop
-    // re-scanned and rebuilt the full wire list once per chip.) A wire that
-    // crosses between two chips gets the same edge set the sequential passes
-    // produced: chip->chip, chip->inner-node, and inner-node->chip.
+    // edges keeping the chips inline in the DAG. A wire that crosses between
+    // two chips gets edges for chip->chip, chip->inner-node, and
+    // inner-node->chip.
     let layout_edge = |a: NodeId, b: NodeId| Wire {
         source: PortRef {
             node_id: a,

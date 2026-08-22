@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn return_in_mod_does_not_kill_caller_exec() {
-    // Bug 11 regression: `return` in an inlined mod should jump to the
-    // mod's return union, not kill the containing handler's exec chain.
+    // Regression: `return` in an inlined mod should jump to the mod's
+    // return union, not kill the containing handler's exec chain.
     let r = compile(
         "\
 var x: int = 0
@@ -24,7 +24,6 @@ on player {
         "unexpected errors: {:?}",
         r.diagnostics
     );
-    // x = 42 after the mod call should produce a Set gate
     let set_count = r
         .module
         .nodes
@@ -35,7 +34,6 @@ on player {
         set_count >= 2,
         "x = 42 after mod with return should produce a Set gate, found {set_count}"
     );
-    // The return union should exist
     let has_union = r
         .module
         .nodes
@@ -215,19 +213,12 @@ on player {
         .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_BitwiseAND")
         .collect();
     assert!(!and_nodes.is_empty(), "should have a BitwiseAND gate for v & 0xFF");
-    // Find the Var_Set for y (the last set in the chain).
-    // Its Value input should come from MathAdd, not BitwiseAND.
-    // We verify by checking no wire goes from BitwiseAND output to
-    // any gate AFTER the mod returns (i.e. no leaked binding).
     let and_id = &and_nodes[0].id;
     let and_out_targets: Vec<_> = r.module.wires.iter()
         .filter(|w| w.source.node_id == *and_id && w.source.port == crate::ir::port_registry::WirePort::Output)
         .map(|w| w.target.node_id)
         .collect();
     assert!(!and_out_targets.is_empty(), "BitwiseAND should have at least one output wire");
-    // The output should only connect to nodes that are part of the mod's internal logic,
-    // not to arbitrary caller-scope nodes (which would indicate a leak).
-    // With numeric IDs we verify the target count is bounded rather than checking names.
 }
 
 #[test]
@@ -349,9 +340,9 @@ on z {
 
 #[test]
 fn standalone_chip_multi_call_preserves_value_wire() {
-    // The 2raab case: the chip is called many times, so only the first call
-    // builds the module - the rest instantiate the cached template. EVERY
-    // instance must keep its value output fed by the SELECT and expose _exec_out.
+    // The chip is called many times, so only the first call builds the
+    // module - the rest instantiate the cached template. EVERY instance
+    // must keep its value output fed by the SELECT and expose _exec_out.
     let r = compile(
         "\
 var counts: int[]
@@ -395,10 +386,10 @@ on z {
 
 #[test]
 fn inline_mod_exec_body_returns_select_reaches_consumer() {
-    // The 2raab slot lookup as an INLINE mod: exec op (find) then `return <if>`.
-    // The SELECT holding the returned value must reach the caller's consumer
-    // (a Var_Set), i.e. the return value isn't dropped when the body also
-    // advances the exec chain.
+    // An inline mod: exec op (find) then `return <if>`. The SELECT holding
+    // the returned value must reach the caller's consumer (a Var_Set), i.e.
+    // the return value isn't dropped when the body also advances the exec
+    // chain.
     let r = compile(
         "\
 var counts: int[]

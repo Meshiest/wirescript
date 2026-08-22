@@ -40,7 +40,7 @@ pub(super) fn compile(src: &str) -> LowerResult {
         "parse diags: {:?}",
         parsed.diagnostics
     );
-    // Two-pass inference (Task 3), like the real `compile` pipeline, so CE
+    // Two-pass inference, like the real `compile` pipeline, so CE
     // receiver tests (e.g. `gate_config.rs`) see sender-inferred slot types
     // instead of the always-empty default map.
     let (tc, ce_slots) = typecheck_with_inference(&parsed.ast, "test");

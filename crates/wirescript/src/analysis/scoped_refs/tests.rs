@@ -98,7 +98,7 @@ fn match_arm_binding_is_registered() {
     assert!(b.scope.is_some(), "match-arm binding must carry a scope extent");
 }
 
-// --- Task 2: value-use collection + `references_at` -----------------------
+// --- value-use collection + `references_at` -----------------------
 
 /// Resolve the binding under `(line, col)` (0-based, LSP-style — matches
 /// `references_at`'s own contract) and return its name plus every site's
@@ -297,7 +297,7 @@ on go { let z = bound }";
     );
 }
 
-// --- Task 3: type namespace + type-position resolution --------------------
+// --- type namespace + type-position resolution --------------------
 
 #[test]
 fn capture_named_like_a_type_does_not_touch_type_annotations() {
@@ -372,7 +372,7 @@ on go { emit r = 5 }";
     assert_eq!(sites.len(), 2);
 }
 
-// --- Task 4: cursor dispatch, target classification, refusals -------------
+// --- cursor dispatch, target classification, refusals -------------
 
 #[test]
 fn builtin_type_position_is_not_renameable() {
@@ -431,7 +431,7 @@ fn record_lit_field_key_inside_coarse_var_init_is_refused() {
 fn unresolved_call_target_is_not_renameable() {
     // A call to a name with no matching `chip`/`mod`/`fn` binding (a builtin
     // gate call) leaves its `Use` unresolved — `references_at` itself
-    // already returns `None` for that, with no extra Task 4 check needed.
+    // already returns `None` for that, with no extra check needed.
     let src = "in go: exec\non go { SomeBuiltinCall() }";
     // cursor on the callee `SomeBuiltinCall` (0-based line 1, col 10)
     assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 1, 10).is_none());
@@ -446,7 +446,7 @@ fn record_type_field_name_is_refused_for_now() {
     assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 0, 11).is_none());
 }
 
-// --- Task 5: cross-file resolution (`references_to_export`) ---------------
+// --- cross-file resolution (`references_to_export`) ---------------
 
 #[test]
 fn import_specifier_and_uses_are_found_not_shadows() {
@@ -560,11 +560,9 @@ on go { x(1) }";
     );
 }
 
-// --- Whole-branch review fixes ----------------------------------------------
-
 #[test]
 fn rename_exec_port_includes_its_on_trigger() {
-    // BLOCKER fix: `register_handler` previously never walked `h.trigger`,
+    // `register_handler` previously never walked `h.trigger`,
     // so `on go` produced no `Use` of the `in go` binding at all — renaming
     // the port left every handler that triggers on it dangling, and the
     // trigger token itself wasn't even a valid rename START point. Both the
@@ -630,7 +628,7 @@ on split.Forward { }";
     );
 }
 
-// --- Task 8: retire the textual scanner + regression suite -----------------
+// --- retire the textual scanner + regression suite -----------------
 
 #[test]
 fn consolidated_regression_comment_string_type_and_sibling_scope_excluded() {

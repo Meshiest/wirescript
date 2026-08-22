@@ -168,9 +168,9 @@ fn noncommutative_operand_order_not_merged() {
 
 #[test]
 fn mutation_between_reads_is_not_merged() {
-    // THE correctness case: `x` is mutated between the two `x + 1`, so the second
-    // reads a FRESH Var_Get (different source node) — the two adds must NOT merge,
-    // or `b` would compute from the pre-mutation value.
+    // `x` is mutated between the two `x + 1`, so the second reads a FRESH
+    // Var_Get (different source node) — the two adds must NOT merge, or `b`
+    // would compute from the pre-mutation value.
     let full = format!(
         "var x: int = 5\nvar a: int = 0\nvar b: int = 0\n{}",
         go("  a = x + 1\n  x = 10\n  b = x + 1")
@@ -231,7 +231,7 @@ fn nofold_barriered_gates_not_merged() {
 fn identical_gates_in_distinct_chips_not_merged() {
     // Two chip INSTANCES partition their bodies into distinct `chip_id` modules;
     // merging across them would land a keeper in the wrong grid, so the `v + 1`
-    // in each instance is kept (the const-dedup chip_id lesson).
+    // in each instance is kept.
     let r = compile(
         "chip Inc(v: int) -> (r: int) { out r = v + 1 }\nvar x: int = 5\nlet p = Inc(x)\nlet q = Inc(x)\nout oa = p\nout ob = q",
     );

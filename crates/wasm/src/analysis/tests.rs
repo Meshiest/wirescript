@@ -417,8 +417,8 @@
 
     #[test]
     fn var_array_member_completion_has_full_method_set() {
-        // `var ids: string[]` completes array methods, including the ones the
-        // old hardcoded list omitted (find/sort/insert/...).
+        // `var ids: string[]` completion should include the full array
+        // method set (find/sort/insert/...).
         let src = "var ids: string[]\nids.";
         let items = parse_items(&completions(src, 1, 4, "{}", &[]));
         for m in ["push", "find", "sort", "insert", "slice"] {

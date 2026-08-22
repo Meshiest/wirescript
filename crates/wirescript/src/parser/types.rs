@@ -111,7 +111,7 @@ impl<'a> Parser<'a> {
         while self.check(TokenKind::Dot, None)
             && self.peek_at(1).kind == TokenKind::Ident
         {
-            self.advance(); // consume `.`
+            self.advance();
             let member = self.expect(TokenKind::Ident, None);
             name = format!("{name}.{}", member.text);
             end = member.end;
@@ -120,7 +120,7 @@ impl<'a> Parser<'a> {
         // `Array<int>`, `Ref<Point>`). `Array`/`Ref` desugar straight to the
         // existing postfix forms so downstream code sees no new shape.
         if self.check(TokenKind::Op, Some("<")) {
-            self.advance(); // consume `<`
+            self.advance();
             let mut args: Vec<TypeExpr> = Vec::new();
             while !self.check(TokenKind::Op, Some(">")) && self.peek().kind != TokenKind::Eof {
                 args.push(self.parse_type());

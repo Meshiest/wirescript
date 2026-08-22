@@ -224,10 +224,9 @@ fn flat_leaves_no_wire_pointing_outside_the_module() {
     }
 }
 
-/// The brief's load-bearing claim: with the tree already flat, the boundary
-/// pin pass has nothing to do. Asserted, not assumed — if it ever did fire
-/// it would add MicrochipInput/Output rerouters for wires that no longer
-/// cross anything.
+/// With the tree already flat, the boundary pin pass has nothing to do.
+/// Asserted, not assumed — if it ever did fire it would add
+/// MicrochipInput/Output rerouters for wires that no longer cross anything.
 #[test]
 fn boundary_pins_is_a_no_op_on_a_flattened_module() {
     let flattened = lowered(&flat(NESTED));

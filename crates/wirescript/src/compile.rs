@@ -56,8 +56,7 @@ pub fn compile(input: CompileInput<'_>) -> Result<CompileResult, CompileError> {
 /// ~2 MiB tokio blocking thread, which large programs overflowed, aborting
 /// the whole process. Reserved address space only — pages are committed as
 /// used, so the worker costs nothing beyond what the compile actually
-/// touches. (The former deepest site, the Tarjan SCC walk in
-/// `analyze_cycles`, is now iterative and needs no stack headroom at all.)
+/// touches.
 const COMPILE_STACK_SIZE: usize = 256 * 1024 * 1024; // 256 MiB reserved
 
 /// Run `f` on a dedicated big-stack worker thread so every compile entry

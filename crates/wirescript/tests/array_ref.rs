@@ -85,10 +85,9 @@ fn count_gate_class(m: &Module, class: &str) -> usize {
 /// rewritten to use the pattern that IS known to lower correctly — an
 /// `int[]` parameter (already a reference) the callee pushes into directly,
 /// e.g. `mod build(n: int, t: int[]) { ... t.push(10) ... }` called as
-/// `var r: int[]\nbuild(2, r)` — see the task-26 report for the fixture
-/// diff. This test exists only to TRACK the underlying compiler bug so it
-/// is not silently reintroduced or forgotten; fixing it is out of scope
-/// here.
+/// `var r: int[]\nbuild(2, r)`. This test exists only to TRACK the
+/// underlying compiler bug so it is not silently reintroduced or
+/// forgotten; fixing it is out of scope here.
 ///
 /// CORRECT BEHAVIOR would lower the initializer expression like any other
 /// value and rebuild the array from it (clear + append, or equivalent),

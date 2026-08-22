@@ -251,8 +251,8 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
             },
         ]);
     }
-    // Object operands (players, entities, bricks…) no longer coerce directly to
-    // an int on a math gate. Accept them here; `lower_binop` routes an object
+    // Object operands (players, entities, bricks…) don't coerce directly to an
+    // int on a math gate. Accept them here; `lower_binop` routes an object
     // operand through `(obj || false)` so it still reduces to an int the gate
     // takes — i.e. `1 + player` lowers to `add(1, or(player, false))`.
     const OBJECT_TYPES: &[Type] = &[

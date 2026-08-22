@@ -146,7 +146,6 @@
         assert!(ls.iter().any(|l| l == "ChatCommand"), "ChatCommand missing: {ls:?}");
         assert!(ls.iter().any(|l| l == "RoundStart"), "RoundStart missing");
         assert!(ls.iter().any(|l| l == "CharacterSpawned"), "CharacterSpawned missing");
-        // ...and regular functions are still there.
         assert!(ls.iter().any(|l| l == "GetAim"), "GetAim function missing");
     }
 
@@ -254,7 +253,6 @@
     fn string_dot_shows_only_string_methods() {
         let src = "let foo = \"\"\nfoo.";
         let ls = labels(src, 1, 4); // cursor right after `foo.`
-        // String methods are offered.
         assert!(ls.iter().any(|l| l == "Length"), "Length missing: {ls:?}");
         assert!(ls.iter().any(|l| l == "Contains"), "Contains missing: {ls:?}");
         // The global list must NOT leak into a member-access context.
@@ -463,8 +461,7 @@
     #[test]
     fn input_reader_field_trigger_completes_record_fields() {
         // `on split.<here>` where `split = pl.InputReader()` completes the
-        // splitter's record fields (Forward/Right/Up), not nothing. (`Jump` was
-        // dropped in the InputSplitter rework; `Up` is its current axis.)
+        // splitter's record fields (Forward/Right/Up), not nothing.
         let src = "in pl: character\nlet split = pl.InputReader()\non split.";
         let ls = labels(src, 2, 9); // cursor right after `on split.`
         for f in ["Forward", "Right", "Up"] {
@@ -770,12 +767,12 @@ on CharacterSpawned() -> (character) {\n\
     async fn rename_export_updates_multiline_aliased_import_specifier_not_whole_decl() {
         // Regression: `find_name_range` used to search only the coarse
         // site's FIRST line via a plain substring match — a multi-line
-        // `import { … }` specifier (only ALIASED specifiers stay coarse
-        // after the non-aliased precision fix) would fail to find the name
-        // on that first line and fall back to replacing the WHOLE `import
-        // { … } from "…"` span. This fixture also plants a decoy
-        // (`helperX`) on an earlier line whose name is a PREFIX of the real
-        // target, to catch a non-word-boundary match landing inside it.
+        // `import { … }` specifier (only ALIASED specifiers stay coarse)
+        // would fail to find the name on that first line and fall back to
+        // replacing the WHOLE `import { … } from "…"` span. This fixture
+        // also plants a decoy (`helperX`) on an earlier line whose name is
+        // a PREFIX of the real target, to catch a non-word-boundary match
+        // landing inside it.
         let dir = scratch_dir("rename-multiline-import");
         let lib_path = dir.join("lib.ws");
         let lib_source = "mod helper() {\n}\n";
@@ -987,11 +984,11 @@ on CharacterSpawned() -> (character) {\n\
     #[tokio::test]
     async fn goto_definition_on_record_type_field_routes_through_definition_at() {
         // A cursor on a record-TYPE field name inside a `type` decl must NOT
-        // resolve to the enclosing type's reference set (the Task-6 drift);
-        // it falls through to `definition_at`. Field rename/resolution is
-        // deferred, so `definition_at` yields no target here — the load-
-        // bearing assertion is that the response is NOT the type's references
-        // (which is what the un-guarded `references_at` branch would return).
+        // resolve to the enclosing type's reference set; it falls through to
+        // `definition_at`. Field rename/resolution is deferred, so
+        // `definition_at` yields no target here — the load-bearing assertion
+        // is that the response is NOT the type's references (which is what
+        // the un-guarded `references_at` branch would return).
         let source = "type P = { field: int }\n";
         let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-goto-field.ws")).unwrap();
         let service = build_backend();

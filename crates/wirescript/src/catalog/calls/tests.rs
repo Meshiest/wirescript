@@ -27,9 +27,8 @@
 
     #[test]
     fn leaderboard_getters_return_int() {
-        // The inventory dump types both leaderboard `Value` outputs as `int`;
-        // `GetLeaderboard` was declared `Any`, so arithmetic on its result had
-        // no operator overload.
+        // The inventory dump types both leaderboard `Value` outputs as `int`,
+        // so arithmetic on the result has an operator overload.
         for name in ["GetLeaderboard", "GetTeamLeaderboardValue"] {
             let c = find_call(name).unwrap();
             assert!(
@@ -245,16 +244,15 @@
 
     #[test]
     fn display_text_targets_player_state_port() {
-        // The reworked DisplayText gate takes its player on the entity-typed
-        // `PlayerState` port, and `Text` is a real wire input.
+        // DisplayText takes its player on the entity-typed `PlayerState` port,
+        // and `Text` is a real wire input.
         let g = gc::PLAYERSTATE_DISPLAY_TEXT;
         assert!(crate::catalog::is_wire_input(g, "PlayerState"));
         assert!(crate::catalog::is_wire_input(g, "Text"));
-        // The old flat scalar layout ports are gone.
         assert!(!crate::catalog::is_wire_input(g, "PositionX"));
         assert!(!crate::catalog::is_wire_input(g, "FontSize"));
-        // The reworked layout ports are Vector2D composites whose float X/Y
-        // sub-ports are individually wireable (resolved via composite.sub_ports).
+        // Layout ports are Vector2D composites whose float X/Y sub-ports are
+        // individually wireable (resolved via composite.sub_ports).
         assert!(crate::catalog::is_wire_input(g, "Position.X"));
         assert!(crate::catalog::is_wire_input(g, "Anchor.Y"));
         assert!(!crate::catalog::is_wire_input(g, "Position.Z"));

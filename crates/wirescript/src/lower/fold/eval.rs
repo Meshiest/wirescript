@@ -172,8 +172,8 @@ const G_MATH_MODULO: &str = "MathModulo";
 /// `deferredOps` chapter: probed but NEVER folded — hard refusal regardless
 /// of signature coverage (allowlisted wholesale in the replay test below).
 /// These gates' math is meaningfully harder to get exactly right (slerp,
-/// normalize, arbitrary-axis construction, blend) and weren't asked to be
-/// implemented by this task. Module-level (not local to `eval()`) so the
+/// normalize, arbitrary-axis construction, blend) and are not implemented.
+/// Module-level (not local to `eval()`) so the
 /// test module's `deferred_ops_always_refuse`/`replay_every_certified_case`
 /// assert against the SAME list `eval()` actually refuses against, rather
 /// than a hand-copied mirror that could silently drift.
@@ -997,7 +997,7 @@ fn make_quaternion(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>, d: O
 /// entirely from its output — so the 4-arg form (alpha explicitly wired)
 /// hard-refuses below rather than folding an unconfirmed channel.
 ///
-/// CORRECTION (T3 review): "3-arg form is fold-eligible" does NOT mean a
+/// "3-arg form is fold-eligible" does NOT mean a
 /// real, wired 3-arg `Color(r, g, b)` call actually folds in production —
 /// it never does. `catalog/calls.rs`'s `Color` CallSpec declares `a` as an
 /// OPTIONAL 4th param, and `lower/call.rs::lower_builtin_call` always
@@ -1163,8 +1163,8 @@ pub fn eval(gate_class: &str, inputs: &[Option<Value>]) -> Option<Value> {
     // un-probed direction of an asymmetric compare, Bool in ordered compares,
     // NOT on non-bool, ...). This makes eval exactly as permissive as the
     // certified table, no more — every law below only ever sees a signature
-    // that was actually certified. (A Task-3 driver-side coverage check is a
-    // deliberately redundant second layer — belt and suspenders by design.)
+    // that was actually certified. (The driver has its own coverage check too —
+    // a deliberately redundant second layer, belt and suspenders by design.)
     let sig: Vec<InVariant> = inputs
         .iter()
         .map(|v| v.as_ref().map_or(InVariant::Unwired, Value::variant))

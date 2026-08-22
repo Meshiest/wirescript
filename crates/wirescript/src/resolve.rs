@@ -100,14 +100,14 @@ fn is_importable(d: &TopDecl) -> bool {
             | TopDecl::TypeAlias(_)
             // A top-level `on` handler in an imported file runs as part of the
             // importing program (a library that installs behaviour). Without
-            // this the handler was dropped, and an `on <expr>` handler's
+            // this the handler would be dropped, and an `on <expr>` handler's
             // desugared `let _on_expr_N = <expr>` (a Let, which IS importable)
-            // still leaked in — a dangling trigger gate with no body.
+            // would still leak in — a dangling trigger gate with no body.
             | TopDecl::Handler(_)
             // An anonymous `chip { … }` (including the `chip on t { … }`
             // desugar) in an imported library installs behaviour just like a
-            // top-level handler. Without this it was filtered out before the
-            // merge and silently dropped, taking its writes with it.
+            // top-level handler. Without this it would be filtered out before
+            // the merge and silently dropped, taking its writes with it.
             | TopDecl::AnonChip(_)
     )
 }
@@ -118,11 +118,12 @@ fn is_importable(d: &TopDecl) -> bool {
 /// different question for the one form that binds several names at once: a
 /// destructuring `let`/`const` (`const { x, y } = p`) has no single name, so
 /// `decl_name` returns `None` for it — and every import path keyed on
-/// `decl_name` therefore behaved as though the declaration introduced NOTHING.
-/// A named import of `x` reported WS012 "not found", a duplicate check could
-/// not see `x`, and the declaration-order restore sorted the binding to the
-/// end. (`import "lib"` was unaffected: it pushes every importable
-/// declaration and only consults `decl_name` to skip duplicates.)
+/// `decl_name` alone would behave as though the declaration introduced
+/// NOTHING: a named import of `x` would report WS012 "not found", a
+/// duplicate check couldn't see `x`, and the declaration-order restore would
+/// sort the binding to the end. (`import "lib"` is unaffected: it pushes
+/// every importable declaration and only consults `decl_name` to skip
+/// duplicates.)
 ///
 /// Uses `const_eval::bound_names` — the same syntactic name list the constant
 /// environment and both typecheck sites split a destructured value with — so
@@ -182,13 +183,13 @@ fn resolve_file(
     stack.insert(canon.clone());
     let parsed = parse(&source, &canon);
     // Surface the imported file's OWN parse diagnostics. Without this a parse
-    // error in an imported module was silently swallowed — it compiled clean
-    // while the identical source errored as an entry file. Each file is parsed
-    // exactly once (the cache check above returns before re-parsing), so these
-    // are collected once; the ranges point into the imported file.
+    // error in an imported module would be silently swallowed — it would
+    // compile clean while the identical source errored as an entry file. Each
+    // file is parsed exactly once (the cache check above returns before
+    // re-parsing), so these are collected once; the ranges point into the
+    // imported file.
     diagnostics.extend(parsed.diagnostics.iter().cloned());
 
-    // Recursively resolve imports in the imported file
     let mut imported_ast = parsed.ast.clone();
     let mut sub_imports = Vec::new();
     imported_ast.decls.retain(|d| {
@@ -280,7 +281,6 @@ fn resolve_import(
         .cloned()
         .collect();
 
-    // Merge doc comments from imported file
     for (k, v) in &parsed.doc_comments {
         target_doc_comments.insert(*k, v.clone());
     }
@@ -557,9 +557,9 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
 }
 
 /// `resolve` for a caller that ALREADY parsed the entry file. The LSP keeps the
-/// pre-resolve AST for local analysis and used to parse the same buffer a second
-/// time in here on every keystroke — measured at ~21% of a keystroke on a
-/// 2.5k-line file. Consumes the `ParseResult`; clone it first if you need it.
+/// pre-resolve AST for local analysis; re-parsing the same buffer a second
+/// time in here costs ~21% of a keystroke on a 2.5k-line file, which this
+/// avoids. Consumes the `ParseResult`; clone it first if you need it.
 pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) -> ResolveResult {
     let mut diagnostics = parsed.diagnostics.clone();
     let mut doc_comments = parsed.doc_comments.clone();
@@ -740,8 +740,8 @@ fn collect_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
         TopDecl::Handler(h) => {
             // The event's CONFIG args count as uses: `on Clock(interval = TICK)`
             // reads TICK to configure the gate, not in the body. Missing these
-            // reported the import unused (WS014) — and Organize Imports would
-            // then delete it, breaking the handler it configures.
+            // would report the import unused (WS014) — and Organize Imports
+            // would then delete it, breaking the handler it configures.
             for arg in &h.config {
                 match arg {
                     HandlerConfigArg::Positional(e) => collect_idents_in_expr(e, idents),
@@ -949,9 +949,9 @@ fn collect_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
             // Same treatment as a top-level handler: the CONFIG args and the
             // capture param types count as uses, not just the body. A handler
             // nested in a chip body reaches this arm instead of the TopDecl
-            // one, so omitting them here reported `on CustomEvent(CH)` inside a
-            // chip as an unused import of CH — and Organize Imports would then
-            // delete it, breaking the handler it names.
+            // one, so omitting them here would report `on CustomEvent(CH)`
+            // inside a chip as an unused import of CH — and Organize Imports
+            // would then delete it, breaking the handler it names.
             Stmt::Handler(h) => {
                 for arg in &h.config {
                     match arg {

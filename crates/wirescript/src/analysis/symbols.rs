@@ -60,8 +60,8 @@ fn expr_has_exec(e: &Expr) -> bool {
     match e {
         // Array index read compiles to Exec_ArrayVar_Get — requires exec.
         Expr::IndexAccess { obj, index, .. } => {
-            // Only flag if the object looks like an array (not arbitrary indexing).
-            // We conservatively flag all IndexAccess as exec-requiring.
+            // Conservatively flags all IndexAccess as exec-requiring, not just
+            // ones where the object looks like an array.
             let _ = (obj, index);
             true
         }
@@ -74,7 +74,6 @@ fn expr_has_exec(e: &Expr) -> bool {
             {
                 return true;
             }
-            // Recurse into args.
             args.iter().any(|a| match a {
                 CallArg::Positional(v) => expr_has_exec(v),
                 CallArg::Named { value, .. } => expr_has_exec(value),
@@ -102,7 +101,6 @@ fn stmt_has_exec(s: &Stmt) -> bool {
         // Direct exec-requiring statements (emit with value works in pure too).
         Stmt::Assign(_) | Stmt::Handler(_) => true,
         Stmt::Emit(e) => e.value.is_none(),
-        // If statement always requires exec context.
         Stmt::If(_) => true,
         // Expr statements — check for exec-requiring expressions (e.g. array methods).
         Stmt::ExprStmt(es) => expr_has_exec(&es.expr),

@@ -8,7 +8,7 @@
 //! data-driven settings-menu attributes keyed off the gate's inventory
 //! `config` list). It reads from `CallSignature` (rather than a specific
 //! `catalog::calls::CallSpec`) so every call form can route through one
-//! checker. All call forms now go through it: builtins and receivers via
+//! checker. All call forms go through it: builtins and receivers via
 //! `sig_of_callspec`, user mod/chip + self-receiver calls via
 //! `sig_of_fnchip` (both adapters live in `typecheck.rs`).
 
@@ -97,7 +97,7 @@ pub struct CallSignature {
 /// already run their own arity check (WS022, in `type_user_symbol_call`)
 /// before reaching here, so they pass `false` to avoid double-reporting a
 /// mismatched call under two different codes; every other caller (builtins,
-/// receivers) passes `true` and keeps WS011 exactly as before.
+/// receivers) passes `true`.
 ///
 /// `check_named` gates the WS041 unknown-named-arg check independently: user
 /// mod/chip calls DO know their full param list, so they pass `true` (catching
@@ -300,7 +300,7 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // itself infers to its already-auto-derefed inner type, so the
     // ref annotation must not participate in the coercion. Builtin/
     // receiver params are never `Ref`-typed, so this is a no-op for
-    // them (mirrors `type_user_symbol_call`'s former inline check).
+    // them.
     let param_ty = unwrap_ref(&param.ty);
     if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch {
         ctx.emit(

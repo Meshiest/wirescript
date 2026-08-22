@@ -64,7 +64,7 @@ fn enum_config_rejects_out_of_range_int() {
 
 #[test]
 fn enum_config_accepts_quoted_name() {
-    // The pre-existing quoted-name form keeps working (and is validated).
+    // The quoted-name form is also accepted and validated.
     let src = "in t: float\nlet e = Easing(0.0, 1.0, t, function = \"Bounce\")\n";
     assert!(
         errors(src).is_empty(),
@@ -511,7 +511,7 @@ fn non_constant_font_config_is_rejected() {
 fn non_constant_event_config_is_rejected() {
     // `pulseOn` is constant-only Clock config; a variable would be silently
     // dropped at lowering, so it must be a WS028 typecheck error. (`enabled` is
-    // now a wire input, so it accepts a variable — covered separately.)
+    // a wire input, so it accepts a variable — covered separately.)
     let src = "in flag: bool\nstatic var n: int = 0\non Clock(interval = 2.0, pulseOn = flag) {\n  n = n + 1\n}\n";
     assert!(
         errors(src).contains(&"WS028".to_string()),
@@ -973,8 +973,7 @@ fn exec_after_mod_ending_in_emit_signal_lowers() {
     // chain terminator — it fires the signal and the exec continues. When such
     // a mod is inlined mid-chain, exec statements AFTER the call must still
     // lower onto the chain, not fall to an `_Unsupported` placeholder. (Only a
-    // BUFFERED `buffer emit loop` back-edge terminates the chain.) Regression
-    // for the panel_tester find/SetTag/SetLocation placeholders.
+    // BUFFERED `buffer emit loop` back-edge terminates the chain.)
     let src = "let sig: exec\n\
                in cube: entity\n\
                in go: exec\n\
@@ -1011,7 +1010,7 @@ fn send_custom_event_target_is_entity_typed() {
     );
 }
 
-// ---- `on <Event> -> <pattern>` output capture (Task 5, additive) ---------
+// ---- `on <Event> -> <pattern>` output capture ----------------------------
 
 #[test]
 fn on_arrow_tuple_custom_event_matches_inline() {
@@ -1043,7 +1042,7 @@ fn on_arrow_record_named_event_binds_outputs() {
 #[test]
 fn on_arrow_tuple_infers_from_sender() {
     // The omitted tuple slot type is inferred from the in-unit sender —
-    // proving inference (Tasks 1-4) works through the new `->` surface.
+    // proving inference works through the `->` surface.
     let src = "static var last: int = 0\nin go: exec\non CustomEvent(\"dmg\") -> (amount) {\n  last = last + 1\n}\non go {\n  SendCustomEvent(\"dmg\", 7)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
@@ -1060,7 +1059,7 @@ fn on_arrow_tuple_infers_from_sender() {
 
 #[test]
 fn on_arrow_general_chip_call_exec_auto_extracted() {
-    // Task 6: `on <chipCall>(..., exec = trigger) -> (pattern)` is a GENERAL
+    // `on <chipCall>(..., exec = trigger) -> (pattern)` is a GENERAL
     // (non-event) expr trigger. `on` auto-extracts the call's own completion
     // exec (a structural `Type::Exec` field on the call's result record) to
     // drive the body, and `-> (code)` binds the call's other (data) output.
@@ -1101,7 +1100,7 @@ fn on_arrow_general_chip_call_exec_auto_extracted() {
 
 #[test]
 fn on_arrow_general_inline_mod_single_out_exec_is_ws043() {
-    // Repro A (silent-miscompile fix): a SINGLE-output INLINE `mod` driven by
+    // A SINGLE-output INLINE `mod` driven by
     // `exec =` exposes no bindable exec output (its completion exec isn't
     // surfaced as a record field — a separate lowering gap). The desugared
     // `_on_expr_N` binding is a `Binding::Local`, so the general-expr trigger
@@ -1127,7 +1126,7 @@ fn on_arrow_general_inline_mod_single_out_exec_is_ws043() {
 
 #[test]
 fn on_arrow_general_inline_mod_multi_out_exec_is_ws043() {
-    // Repro B (silent-miscompile fix): a MULTI-output INLINE `mod` driven by
+    // A MULTI-output INLINE `mod` driven by
     // `exec =` binds `_on_expr_N` to a `Binding::Record`, but that record has
     // no `exec` field (inline mods don't surface completion exec), so the exec
     // can't be materialized. Previously the whole handler was silently dropped
@@ -1151,7 +1150,7 @@ fn on_arrow_general_inline_mod_multi_out_exec_is_ws043() {
 
 #[test]
 fn on_arrow_general_call_capture_is_typed_from_output_record() {
-    // Fix round 3: a general (mod/chip) call trigger's `-> (a, b)` capture must
+    // A general (mod/chip) call trigger's `-> (a, b)` capture must
     // take a/b's types from the call's OUTPUT RECORD, not `Any` — else
     // arithmetic on the captured names fails WS004 ("no overload for '+' on
     // Any, Any"). `la = a` alone worked (Any coerces to int); `la = a + b` did
@@ -1167,7 +1166,7 @@ fn on_arrow_general_call_capture_is_typed_from_output_record() {
 
 #[test]
 fn on_general_inline_mod_exec_no_arrow_is_ws043() {
-    // Fix round 2: a SINGLE-output value `mod` driven by `exec =` but with NO
+    // A SINGLE-output value `mod` driven by `exec =` but with NO
     // `-> <pattern>` — `on doWork(5, exec = s) { ... }`. The `exec =` is explicit
     // "drive this as exec" intent, but an inline mod exposes no completion exec
     // for the handler to trigger on, so the `exec =` has nothing to attach to.
@@ -1500,7 +1499,7 @@ fn send_custom_event_type_mismatch_lints_ws030() {
 
 #[test]
 fn clock_enabled_accepts_variable_wire() {
-    // `enabled` is a wire input now, so a variable is valid (no WS028).
+    // `enabled` is a wire input, so a variable is valid (no WS028).
     let src = "in flag: bool\nstatic var n: int = 0\non Clock(interval = 2.0, enabled = flag) {\n  n = n + 1\n}\n";
     assert!(
         errors(src).is_empty(),
@@ -1538,7 +1537,7 @@ fn teleport_gate_requires_a_teleport_point() {
         "a teleport point should teleport cleanly: {:?}",
         errors(ok)
     );
-    // A raw position (vector) no longer teleports — that's SetLocation's job.
+    // A raw position (vector) doesn't teleport — that's SetLocation's job.
     let vec_dest = "in e: entity\nin go: exec\non go {\n  e.Teleport(Vec(0.0, 0.0, 100.0))\n}\n";
     assert!(
         errors(vec_dest).contains(&"WS003".to_string()),
@@ -1793,8 +1792,7 @@ fn generic_mod_call_inference() {
          (proves result is concrete float, not any / leaked Param): {vecerr:?}"
     );
     // widening: int + float have no strict-equality agreement but DO share a
-    // safe widening (int -> float) -> T=float, clean (NOT a WS033 conflict —
-    // this used to be the strict-equality conflict case pre-widening).
+    // safe widening (int -> float) -> T=float, clean (NOT a WS033 conflict).
     assert!(
         errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")).is_empty(),
         "int+float should widen to float, not conflict: {:?}",
@@ -1855,7 +1853,7 @@ fn generic_widening_inference() {
             .collect::<Vec<_>>()
     };
     let pick = "in flag: bool\nmod pick<T>(c: bool, a: T, b: T) -> T { return a }\n";
-    // int + float widens to float -> clean (was a strict-equality error)
+    // int + float widens to float -> clean
     assert!(
         errs(&format!("{pick}let x = pick(flag, 1, 2.0)\n")).is_empty(),
         "int+float should widen to float: {:?}",
@@ -1896,11 +1894,10 @@ fn generic_body_checked_per_mask_member() {
     );
     // `Dot()` takes two vectors — invalid for every Scalar member (int/float
     // aren't vectors) — so the body fails per-member checking and surfaces
-    // an error at the DEFINITION. (Confirmed in Step 0: `a.length()` is
-    // NOT a counterexample here — method-call resolution doesn't check the
-    // receiver type strictly, so it silently passes on int/float too;
-    // `Dot()`'s WS003 "expected Vector, got Int/Float" argument-type check
-    // is a genuine per-member failure.)
+    // an error at the DEFINITION. (`a.length()` is NOT a counterexample here
+    // — method-call resolution doesn't check the receiver type strictly, so
+    // it silently passes on int/float too; `Dot()`'s WS003 "expected Vector,
+    // got Int/Float" argument-type check is a genuine per-member failure.)
     let bad = "mod wrong<T: Scalar>(a: T) -> float { return a.Dot(a) }\n";
     assert!(
         !errs(bad).is_empty(),
@@ -1935,10 +1932,9 @@ fn if_expr_and_builtins_widen() {
         "if int/float should widen to float: {:?}",
         errs("in c: bool\nlet x = if c then 1 else 2.0\n")
     );
-    // Same, branches swapped: under the OLD "else-branch wins" rule this
-    // resolved to `int` (the else type) and was clean; under widening it's
-    // `float` either way -- still clean, but now proven by the assignment
-    // check below rather than by luck of which branch is which.
+    // Same, branches swapped: widening resolves to `float` either way,
+    // proven by the assignment check below rather than by luck of which
+    // branch is which.
     assert!(
         codes("in c: bool\nlet y = if c then 2.0 else 1\n").is_empty(),
         "if float/int (branches swapped) should also widen to float: {:?}",
@@ -1948,7 +1944,7 @@ fn if_expr_and_builtins_widen() {
     // (`var`'s initializer coercion is the hard WS003 error -- a `let`
     // annotation mismatch is only a WS016 warning here, per the `pick`
     // tests above, so `var` is what proves the concrete result type.)
-    // Proves the *swapped* branch order also now yields Float (old else-wins
+    // Proves the *swapped* branch order also yields Float (old else-wins
     // code would have produced Int here, whose WS003 message would say
     // "Int", not "Float").
     let swapped_vec_err = errs("in c: bool\nvar v: vector = if c then 2.0 else 1\n");
@@ -2004,7 +2000,7 @@ fn if_expr_and_builtins_widen() {
 
 #[test]
 fn generic_chip_type_checks_clean() {
-    // Generic *chips* (physical microchips) are now monomorphized per distinct
+    // Generic *chips* (physical microchips) are monomorphized per distinct
     // type instantiation at lowering time (one template per `(name, subst)`),
     // so a generic chip decl type-checks clean — the old WS034 hard error is
     // gone. (The per-type lowering + no-shared-grid proof lives in
@@ -2090,10 +2086,10 @@ fn generic_type_aliases_instantiate() {
     );
 }
 
-/// Regression for the review's Critical 1: a generic-alias record type used at
-/// a PORT or a chip param must dissolve into real per-field wire gates at
-/// LOWERING — not silently degrade to a single `any` port whose field accesses
-/// emit `_Unsupported`/`SplitColor` swizzle gates with zero diagnostics.
+/// Regression: a generic-alias record type used at a PORT or a chip param
+/// must dissolve into real per-field wire gates at LOWERING — not silently
+/// degrade to a single `any` port whose field accesses emit
+/// `_Unsupported`/`SplitColor` swizzle gates with zero diagnostics.
 /// typecheck alone can't catch this (it was green while the IR was broken), so
 /// this asserts on the emitted IR.
 #[test]
@@ -2121,8 +2117,8 @@ fn generic_alias_record_port_lowers_to_real_gates() {
         "Pair<int> port should expand into two int sub-ports"
     );
 
-    // Chip param form — the `resolved_record` site the review named. The
-    // generic case must produce IR identical in shape to the non-generic one.
+    // Chip param form (the `resolved_record` site). The generic case must
+    // produce IR identical in shape to the non-generic one.
     let rg = compile(
         "type Pt<T> = { foo: T, bar: T }\nchip Sum(p: Pt<int>) -> (r: int) { out r = p.foo + p.bar }\nin a: int\nout total: int = Sum({ foo: a, bar: 2 })\n",
     );
@@ -2153,11 +2149,11 @@ fn generic_alias_record_port_lowers_to_real_gates() {
 
 #[test]
 fn deeply_nested_generic_decls_terminate_quickly() {
-    // Whole-branch review: the per-mask-member body check is a whole-PATH
-    // budget, not per-decl, so nesting generic decls can't multiply the combo
-    // count (`13^d` → a 17s+ typecheck / LSP hang). Depth-6 nested generic mods
-    // must type-check clean and near-instantly (this test would time out
-    // conspicuously in the suite if the budget regressed).
+    // The per-mask-member body check is a whole-PATH budget, not per-decl, so
+    // nesting generic decls can't multiply the combo count (`13^d` → a 17s+
+    // typecheck / LSP hang). Depth-6 nested generic mods must type-check clean
+    // and near-instantly (this test would time out conspicuously in the suite
+    // if the budget regressed).
     let src = "mod l0<A>(a: A) -> A {\n\
                mod l1<B>(b: B) -> B {\n\
                mod l2<C>(c: C) -> C {\n\

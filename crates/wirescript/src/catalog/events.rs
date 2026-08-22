@@ -110,8 +110,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         )
     };
     // Like `mk_zone`, but the event also exposes a `tagFilter = <value>` named
-    // arg wiring into the gate's `TagFilter` input (the character/entity zone
-    // enter/leave events gained it — it restricts the event to tagged entities).
+    // arg wiring into the gate's `TagFilter` input, restricting the event to
+    // tagged entities. Only the character/entity zone enter/leave events have it.
     let mk_zone_tag = |surface: &'static str, class: &'static str, data: Vec<EventDataBinding>| {
         (
             surface,
@@ -232,7 +232,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         // Team join/leave: like ControllerJoined/Left, but fired when a player
         // joins/leaves a team, and additionally exposing the `team` entity. The
-        // PlayerState is surfaced as an entity here (the newer object typing).
+        // PlayerState is entity-typed here, unlike the plain join/leave events
+        // above.
         mk(
             "ControllerJoinedTeam",
             "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedTeamEvent",
@@ -263,8 +264,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "BrickComponentType_Internal_CharacterZoneEvent_Left",
             vec![character("character", "Character")],
         ),
-        // The brick zone events now carry no data payload — the gate exposes
-        // only its exec pulse (no `Brick` output), so there's no `brick` binding.
+        // The brick zone events carry no data payload — the gate exposes only
+        // its exec pulse (no `Brick` output), so there's no `brick` binding.
         mk_zone(
             "BrickChanged",
             "BrickComponentType_Internal_ZoneEvent_BrickChanged",
@@ -285,8 +286,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                     port: "Damage",
                     ty: Type::Float,
                 },
-                // The attacker is a player character. The weapon stays
-                // `entity`. it's an item, matched by entity-typed asset refs.
+                // The attacker is a player character; the weapon is an item
+                // entity, matched by entity-typed asset refs.
                 character("attacker", "Attacker"),
                 entity("attackerWeapon", "AttackerWeapon"),
                 EventDataBinding {

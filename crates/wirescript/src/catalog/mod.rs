@@ -229,8 +229,8 @@ impl Catalog {
                 spec.component.inputs.iter().any(|p| p.name == port)
                     // A composite sub-port (`Position.X`) is wireable when its
                     // parent (`Position`) is a composite input listing that
-                    // sub-port — the reworked Vector2D layout ports expose each
-                    // axis as an individually-wireable float.
+                    // sub-port — Vector2D layout ports expose each axis as an
+                    // individually-wireable float.
                     || port.split_once('.').is_some_and(|(base, sub)| {
                         spec.component.inputs.iter().any(|p| {
                             p.name == base

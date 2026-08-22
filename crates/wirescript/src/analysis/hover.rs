@@ -114,8 +114,7 @@ fn literal_display_inner(lit: &Literal) -> String {
 }
 
 /// Best-effort compile-time VALUE of a `const` binding, for hover's
-/// `const NAME: TYPE = VALUE` display — "the single most useful thing hover
-/// can say about a compile-time constant" (see the task that added this).
+/// `const NAME: TYPE = VALUE` display.
 ///
 /// Hover works from a flat [`SymbolDef`], which doesn't carry enough AST
 /// structure to walk sibling declarations, so this RE-PARSES `source` (the
@@ -820,8 +819,7 @@ fn hover_collection_method(
         // in the chain handle it instead of claiming a same-named array method.
         Some(None) => None,
         // Receiver isn't a named symbol we can type (a call/index result, or a name
-        // the symbol table doesn't carry): preserve the pre-type-aware behavior of
-        // matching array method names only.
+        // the symbol table doesn't carry): fall back to matching array method names only.
         None => hover_array_method_named(word),
     }
 }
@@ -851,8 +849,8 @@ fn hover_map_method(word: &str, map_display: &str) -> Option<String> {
 /// carries data, the `-> (…)` tuple capture that binds it.
 fn hover_builtin_event(word: &str) -> Option<String> {
     let evt = find_event(word)?;
-    // Config/inputs are the only things allowed inside the call parens now;
-    // event data outputs are bound via the trailing `-> (…)` tuple capture.
+    // Config/inputs are the only things allowed inside the call parens; event
+    // data outputs are bound via the trailing `-> (…)` tuple capture.
     let is_custom = matches!(evt.surface_name, "CustomEvent" | "GlobalCustomEvent");
     let mut cfg_parts: Vec<String> = Vec::new();
     if is_custom {
@@ -1400,7 +1398,6 @@ fn hover_chip_or_mod_keyword(
     let lo = line_offset_at(source, line);
     let line_end = lo + source.lines().nth(line).map_or(0, |l| l.len() + 1);
 
-    // Find the nearest symbol at this line that's a chip/mod
     for sym in symbols {
         if (sym.kind == "chip" || sym.kind == "mod")
             && sym.range.start.offset >= lo
@@ -1914,12 +1911,10 @@ fn resolve_record_lit_field(source: &str, symbols: &[SymbolDef], field: &str, li
             let type_name = type_name.trim();
             if type_name.is_empty() { continue; }
 
-            // Find this type in symbols and parse its field list
             for sym in symbols {
                 if sym.kind == "type" && sym.name == type_name
                     && let Some(ref ty_str) = sym.ty
                 {
-                    // Parse "{name: type, name: type}" into field pairs
                     if let Some(field_type) = extract_record_field_type(ty_str, field) {
                         return Some(format!("```wirescript\n{}.{}: {}\n```", type_name, field, field_type));
                     }
@@ -2298,13 +2293,10 @@ fn resolve_field_via_symbols(symbols: &[SymbolDef], obj_name: &str, field: &str)
     let sym = symbols.iter().find(|s| s.name == obj_name)?;
     let ty_name = sym.ty.as_deref()?;
 
-    // Try named type: find the type declaration and extract the field
     symbols.iter()
         .find(|ts| ts.kind == "type" && ts.name == ty_name)
         .and_then(|ts| ts.ty.as_deref())
         .and_then(|ty_str| extract_record_field_type(ty_str, field))
-        // If the symbol's type is an inline record literal (starts with `{`),
-        // parse it directly
         .or_else(|| {
             if ty_name.starts_with('{') {
                 extract_record_field_type(ty_name, field)

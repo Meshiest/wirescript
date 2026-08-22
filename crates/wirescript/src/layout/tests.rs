@@ -178,7 +178,6 @@
 
     #[test]
     fn nested_chip_gets_its_own_layout() {
-        // Parent has one chip node; the child module has its own gates.
         let mut parent = Module::new("parent");
         let mut chip_node = gate("my_chip");
         chip_node.kind = NodeKind::Chip;

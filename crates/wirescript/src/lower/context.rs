@@ -118,8 +118,9 @@ pub(super) struct MonoFrame {
 /// Scope key for an `Output` binding. Outputs share scope frames with value
 /// bindings (inline-mod MODULE frames must isolate them), but live under a
 /// key no identifier can collide with (`:` can't appear in an identifier) so
-/// `out X = X` can still read a var/array named `X` — a same-name output used
-/// to clobber the var's slot and the init expr lowered to `_Unsupported`.
+/// `out X = X` can still read a var/array named `X` — without a distinct key,
+/// a same-name output would clobber the var's slot and its init expr would
+/// lower to `_Unsupported`.
 pub(super) fn output_scope_key(name: &str) -> String {
     format!("out:{name}")
 }
@@ -157,8 +158,8 @@ pub(super) struct LowerCtx<'a> {
     /// (`Pair<int>` → `{ a: int, b: int }`) so a generic-alias record
     /// annotation dissolves into per-field sub-ports exactly like a
     /// non-generic `type P = { … }` — without this, a generic-alias record
-    /// port/param silently degraded to a single `any` port and its field
-    /// accesses lowered to `_Unsupported`/swizzle gates.
+    /// port/param would silently degrade to a single `any` port and its field
+    /// accesses would lower to `_Unsupported`/swizzle gates.
     pub(super) generic_type_aliases: HashMap<String, crate::types::resolve::GenericAlias>,
     /// Pending emit exec paths per output name, each tagged with the exec
     /// chain (handler) it was emitted on. Accumulated during lowering, flushed
@@ -338,9 +339,8 @@ pub(super) struct LowerCtx<'a> {
     /// `lower/call/dispatch.rs`) read. Pass 1 runs to completion before pass 2
     /// starts, so a chip registered into `scope` during pass 1 would be visible
     /// to EVERY pass-2 call site regardless of source order, silently defeating
-    /// WS021 (confirmed against
-    /// `lower::tests::chip::use_before_declaration_is_ws021` while building
-    /// this). Keeping a separate stack preserves "only what's declared earlier"
+    /// WS021 (see `lower::tests::chip::use_before_declaration_is_ws021`).
+    /// Keeping a separate stack preserves "only what's declared earlier"
     /// for the bake without leaking early visibility into pass 2.
     ///
     /// Always non-empty: the base frame holds the module's top-level
@@ -433,13 +433,13 @@ impl<'a> LowerCtx<'a> {
     /// trigger kind routes through this wrapper, not just the built-in-event
     /// path — gets its own BLOCK frame. Without this, a body-local `let`
     /// declared inside e.g. an `in`-port-triggered handler (`on go { let pf =
-    /// ... }`) had no frame of its own to bind into: it landed in whatever
-    /// scope was ambient at the call site (module root, for a top-level
-    /// handler) and was never popped. Any caller that ALSO needs to bind
-    /// names visible for the duration of `f` (e.g. a handler's typed event
-    /// params) must do so INSIDE the closure, after this push — not before
-    /// calling `with_scope` — or those bindings leak into the outer scope
-    /// instead of being cleaned up with the body.
+    /// ... }`) would have no frame of its own to bind into: it would land in
+    /// whatever scope is ambient at the call site (module root, for a
+    /// top-level handler) and would never be popped. Any caller that ALSO
+    /// needs to bind names visible for the duration of `f` (e.g. a handler's
+    /// typed event params) must do so INSIDE the closure, after this push —
+    /// not before calling `with_scope` — or those bindings leak into the
+    /// outer scope instead of being cleaned up with the body.
     pub(super) fn with_scope<R>(
         &mut self,
         kind: ScopeKind,
@@ -654,9 +654,10 @@ impl<'a> LowerCtx<'a> {
     /// non-generic lowering is byte-identical. Inside a generic mod's body, the
     /// callee's type params are put in scope so a `T` annotation resolves to
     /// `Type::Param(T)`, then the call's substitution replaces it with the
-    /// concrete monomorph (`T` → `int` / `vector`). Without this, `T` resolved
-    /// to `Any` (empty-params `type_of_type_expr`), silently emitting a wrong
-    /// (Number-defaulted) variant for every generic storage/return gate.
+    /// concrete monomorph (`T` → `int` / `vector`). Without this, `T` would
+    /// resolve to `Any` (empty-params `type_of_type_expr`), silently emitting
+    /// a wrong (Number-defaulted) variant for every generic storage/return
+    /// gate.
     pub(super) fn resolve_local_type(&self, te: &crate::ast::TypeExpr) -> Type {
         // Generic aliases resolve on BOTH paths (a `Pair<int>` annotation must
         // become its record `Type`, not `Any`); non-generic name aliases stay

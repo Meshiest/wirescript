@@ -46,9 +46,9 @@ fn opaque_not_pruned_when_consumed() {
 
 #[test]
 fn any_fallback_still_rejected_by_operators() {
-    // Regression for the reviewed Critical: error-fallback `Any` (e.g. the
-    // result of a void array method like `arr.clear()`) must NOT satisfy
-    // operator overloads the way a real `Opaque(...)` probe does.
+    // Regression: error-fallback `Any` (e.g. the result of a void array
+    // method like `arr.clear()`) must NOT satisfy operator overloads the way
+    // a real `Opaque(...)` probe does.
     //
     // NB: `compile()`'s `LowerResult.diagnostics` only carries forward
     // Warning-severity typecheck diagnostics (by design, to isolate
@@ -299,8 +299,8 @@ out y: int = x");
 
 #[test]
 fn nofold_var_nested_in_chip_and_mod_marks_gate() {
-    // Re-review Critical: var gates predeclared inside chip/mod/anon-chip
-    // bodies must honor a var-level @nofold (all pre_declare_var sites wrap).
+    // Var gates predeclared inside chip/mod/anon-chip bodies must honor a
+    // var-level @nofold (all pre_declare_var sites wrap).
     let marked_var = |r: &LowerResult| {
         fn walk(m: &crate::ir::Module) -> bool {
             m.nodes.values().any(|n| {
@@ -333,8 +333,8 @@ chip {
 
 #[test]
 fn nofold_out_marks_port_node() {
-    // Final-review Minor: `@nofold out` must stamp the port node created in
-    // pass-1 predeclare, not just the value gates.
+    // `@nofold out` must stamp the port node created in pass-1 predeclare,
+    // not just the value gates.
     let r = compile("var x: int = 0
 in t: exec
 on t { x = 1 }
@@ -349,7 +349,7 @@ on t { x = 1 }
 
 #[test]
 fn opaque_scalar_inputs_materialize_as_constant_gates() {
-    // Silent-miscompile family #9: a scalar literal wired to a dataless port
+    // Silent-miscompile: a scalar literal wired to a dataless port
     // (the rerouter's RER_Input) was inlined into nonexistent component data
     // at emit and silently dropped in-game. It must materialize as a REAL
     // pure gate carrying the value as unwired-input data defaults (MathAdd

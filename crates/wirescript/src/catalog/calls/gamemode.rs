@@ -94,8 +94,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     );
 
     // ---- Gamemode (additional) -------------------------------------------
-    // The old imperative `EndRound` gate is gone; a round now ends by
-    // declaring a winner via PlayerWins / TeamWins.
+    // A round ends by declaring a winner via PlayerWins / TeamWins.
     m.insert(
         "PlayerWins",
         CallSpec {

@@ -17,9 +17,8 @@ fn every_map_method_has_typed_params() {
 /// Structural coverage guarantee: every method `map_methods()` lists
 /// round-trips through `map_method(name)` and has a constructible
 /// `signature` — `MapMethod::signature`'s match panics on a name with no
-/// arm (replacing the old silent `_ => vec![]` fallback), so a method added
-/// to `MAP_METHODS` without a matching `signature` arm fails this test
-/// instead of shipping with unchecked call arguments.
+/// arm, so a method added to `MAP_METHODS` without a matching `signature`
+/// arm fails this test instead of shipping with unchecked call arguments.
 #[test]
 fn every_map_method_has_a_signature() {
     for m in map_methods() {

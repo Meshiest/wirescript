@@ -60,15 +60,10 @@ fn code_layout_compiles_and_orders_lines_top_down() {
     })
     .expect("compile");
     assert!(!r.brz.is_empty());
-    // Recompute the lowered module to pair placements with source lines
-    // (CompileResult carries placements by NodeId only) — or, simpler and
-    // sufficient: group r.placements against the module from a direct
-    // parse/typecheck/lower call is NOT valid (fresh NodeIds). Instead assert
-    // the structural property that holds for ANY module under code layout:
-    // placements occupy >= 4 distinct Placement.x rows (4+ occupied source
-    // lines) — the Dag layout of this program yields a different, wider
-    // shape. Then assert determinism: a second compile gives identical
-    // placements.
+    // Placements occupy >= 4 distinct Placement.x rows (4+ occupied source
+    // lines) under code layout — the Dag layout of this program yields a
+    // different, wider shape. Then assert determinism: a second compile
+    // gives identical placements.
     let rows: std::collections::HashSet<i32> = r.placements.values().map(|p| p.x).collect();
     assert!(rows.len() >= 4, "expected line-stacked rows, got {}", rows.len());
     let r2 = compile(CompileInput {

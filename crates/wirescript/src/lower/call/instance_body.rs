@@ -16,7 +16,8 @@ pub(super) fn build_chip_module(
     // `Some` only for a generic chip, and seeding the child ctx's `mono_stack`
     // with it makes every `T`-annotated storage/operator/if-expr/return in the
     // body — and its boundary ports (below) — resolve to the concrete type.
-    // Non-generic chips pass `None` → empty stack → byte-identical to before.
+    // Non-generic chips pass `None`, leaving the stack empty and resolution
+    // unaffected.
     let is_generic = mono_frame.is_some();
     let mut child_builder = ModuleBuilder::new(instance_name);
     child_builder.module.scopes.insert(
@@ -110,7 +111,7 @@ pub(super) fn build_chip_module(
         // the stack with this call's frame so every `T` in the body resolves to
         // the concrete monomorph (`resolve_local_type` / `mono_op_rule` /
         // `lower_if_expr` all read `mono_stack`). `None` for a non-generic chip
-        // → empty stack → byte-identical resolution to before.
+        // leaves the stack empty, so resolution is unaffected.
         mono_stack: mono_frame.map(|f| vec![f]).unwrap_or_default(),
         // Fresh module (its own root scope, not inheriting the caller's block
         // scope — see `scope` above), so no scoped-const frame carries OVER

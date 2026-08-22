@@ -204,8 +204,6 @@ impl Default for AddNodeOpts {
     }
 }
 
-/// Build a `PortRef` from a node ID and a port name string.
-/// Looks up the port name in the port registry to get the `WirePort`.
 pub fn port_ref(node_id: NodeId, port_name: &str) -> PortRef {
     PortRef {
         node_id,

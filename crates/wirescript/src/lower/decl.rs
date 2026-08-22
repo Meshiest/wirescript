@@ -109,7 +109,6 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // `fn` has been removed (rejected at parse with a hard error). A
             // recovered `fn` decl is still lowered as an inline mod-with-return so
             // a stray one doesn't crash lowering — there is no deprecation warning.
-            // Synthesize a ChipDecl from the FnDecl
             let outputs = if let Some(ref ret_type) = f.return_type {
                 vec![NamedOutput {
                     name: "_".into(),
@@ -207,11 +206,11 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // `A.member` resolves through that map, so explicit
                     // namespaced access stays correct regardless of the clash.
                     // An imported `let name = …` must not clobber a bare name
-                    // the IMPORTER itself owns (its own `in`/`out`/`var`/…): an
-                    // imported `let start` used to overwrite a local
-                    // `in start: exec`, so `on start` then found a
+                    // the IMPORTER itself owns (its own `in`/`out`/`var`/…):
+                    // without this, an imported `let start` overwrites a local
+                    // `in start: exec`, so `on start` then finds a
                     // `Binding::Record`/`Local` instead of the Input and
-                    // silently dropped the whole handler body. But the member
+                    // silently drops the whole handler body. But the member
                     // must STILL be reachable as `ns.name` — so when the name is
                     // importer-owned we lower it, capture the resulting binding
                     // into THIS namespace's own map, then RESTORE the importer's
@@ -838,7 +837,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         // `Tuple` still splits nowhere, so it simply never takes this path.
         if let Some(lit) = evaluated
             && let Ok(pairs) = crate::const_eval::bind_destructured(&d.binding, lit)
-            // GATE 3, and it exists only for records — now stated over the
+            // GATE 3, and it exists only for records — stated over the
             // BOUND VALUES rather than the whole evaluated one, which is the
             // same rule with the destructuring case included. Unlike every
             // other bakeable kind, a record ALREADY has a non-literal
@@ -928,7 +927,6 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         }
     }
 
-    // Handle RHS that is an ident referencing a record binding.
     if let Expr::Ident { name: rhs_name, .. } = &d.value
         && let Some(Binding::Record(src)) = ctx.scope.get(rhs_name).cloned()
     {
@@ -983,7 +981,6 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         return;
     }
 
-    // Handle RHS that is a field-chain resolving to a record binding.
     if let Some(Binding::Record(src)) = resolve_field_chain(ctx, &d.value).cloned() {
         match &d.binding {
             LetBinding::Ident { name, .. } => {
@@ -1038,7 +1035,6 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // that owns these outputs and build field→port bindings.
     if let Type::Record(ref fields) = rhs_type {
         if let Expr::Call { .. } = &d.value {
-            // Find the chip node whose outputs include rhs_port.node_id
             let chip_entry = ctx
                 .builder
                 .module
@@ -1162,7 +1158,6 @@ pub(super) fn lower_record_lit(
     for field in fields {
         match field {
             RecordLitField::Named { name, value, .. } => {
-                // Check if value is itself a record literal (nested records).
                 if let Expr::RecordLit {
                     fields: inner_fields,
                     ..
@@ -1174,7 +1169,6 @@ pub(super) fn lower_record_lit(
                     // Value references something in scope (possibly through a record chain).
                     map.insert(crate::intern::intern(name), binding);
                 } else {
-                    // Otherwise evaluate as expression and store as Local.
                     let port = lower_expr(ctx, value);
                     map.insert(
                         crate::intern::intern(name),
@@ -1251,10 +1245,6 @@ pub(super) fn install_record_destruct(
     }
 }
 
-/// Bind a tuple pattern's names against a record source. Tuple literals lower
-/// to a `Binding::Record` keyed by the element index (`"0"`, `"1"`, ...), so
-/// positional names read straight out of that map. `rest` collects the tail,
-/// re-indexed from zero so it stays a well-formed tuple.
 /// The field names of `ty`, in declaration order — the POSITIONS a tuple
 /// pattern binds against. A `Binding::Record` is a `HashMap` and so carries no
 /// order of its own; the static type does, for both spellings that reach a

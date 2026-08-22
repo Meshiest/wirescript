@@ -15,7 +15,7 @@
         )
         .unwrap();
         assert_eq!(s["T"], Type::Int);
-        // int + float widens to float (not a Conflict — was under strict equality)
+        // int + float widens to float, not a Conflict
         let s = solve(
             &[Constraint::Eq("T".into(), Type::Int), Constraint::Eq("T".into(), Type::Float)],
             &[("T".into(), num())],

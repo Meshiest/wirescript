@@ -132,11 +132,11 @@ fn assert_pin_delivery(what: &str, src: &str, fold_mode: FoldMode, expected: i64
 }
 
 /// The chip input pin's incoming wire COUNT — boundary-delivery cleanup
-/// (Rule A) drops it to ZERO once the argument is delivered straight to its
+/// drops it to ZERO once the argument is delivered straight to its
 /// real consumer instead (`live_consumer_fed_by_opaque`/
-/// `operand_source_brick` below), so this is now the shape a fully-consumed
-/// argument reaches, NOT `pin_sole_source`'s "exactly one" — that shape is
-/// still correct for `--no-fold`, where the pin is the only delivery path.
+/// `operand_source_brick` below), so this is the shape a fully-consumed
+/// argument reaches, NOT `assert_pin_delivery`'s "exactly one" — that shape
+/// is still correct for `--no-fold`, where the pin is the only delivery path.
 fn chip_input_incoming_wire_count(w: &brdb::World, pin: usize) -> usize {
     w.wires
         .iter()
@@ -231,14 +231,14 @@ fn read_wire_variant_vector(b: &brdb::Brick, component_type: &str, field: &str) 
     }
 }
 
-/// Some fields (e.g. `QuatSlerp`'s `InputA`/receiver — confirmed by the
-/// `UnimplementedCast("wire variant", ...)` this produced before this arm
-/// was split out) embed a baked composite as a NESTED struct (X/Y/Z/W
-/// sub-fields) rather than a tagged `WireVariant::Quat` union member —
-/// unlike a generic math gate's operand slot (`read_wire_variant`'s own
-/// callers), which reads back as a normal wire variant. Try the wire-
-/// variant reading first (cheaper, and correct for the fields that DO use
-/// it), falling back to the nested-struct shape.
+/// Some fields (e.g. `QuatSlerp`'s `InputA`/receiver) embed a baked
+/// composite as a NESTED struct (X/Y/Z/W sub-fields) rather than a tagged
+/// `WireVariant::Quat` union member — reading it as a normal wire variant
+/// produces `UnimplementedCast("wire variant", ...)` — unlike a generic
+/// math gate's operand slot (`read_wire_variant`'s own callers), which
+/// reads back as a normal wire variant. Try the wire-variant reading first
+/// (cheaper, and correct for the fields that DO use it), falling back to
+/// the nested-struct shape.
 fn read_wire_variant_quat(b: &brdb::Brick, component_type: &str, field: &str) -> (f64, f64, f64, f64) {
     let schema = brdb::schemas::bricks_components_schema_max();
     let comp = b
@@ -295,10 +295,10 @@ fn string_concat_input_a(b: &brdb::Brick) -> String {
 
 /// `chip P(v: string) -> (r: string)`: the argument is a constant-folded
 /// `FormatText` interpolation (`"n=${n}"`, `n = 1000`) — only known once
-/// THIS task's driver-level FormatText folding runs, so this exercises the
-/// NEW capability specifically (a bare string literal argument would
-/// already deliver via the pre-existing, fold-independent string-literal
-/// carrier machinery and wouldn't prove anything new — see
+/// driver-level FormatText folding runs, so this exercises that capability
+/// specifically (a bare string literal argument would already deliver via
+/// the pre-existing, fold-independent string-literal carrier machinery and
+/// wouldn't prove anything — see
 /// `cross_chip_constant_folds_inside_named_chip`'s `2 + 2` comment for the
 /// same reasoning applied to ints).
 const FOLDED_STRING_EXPR: &str = "chip P(v: string) -> (r: string) { out r = v .. Opaque(\"\") }\n\
@@ -332,8 +332,8 @@ fn folded_const_string_arg_reaches_named_chip_input() {
 }
 
 /// `chip P(v: vector) -> (r: vector)`: the argument is a folded composite
-/// `MathAdd` (`Vec(1,2,3) + Vec(0.5,0.5,0.5)`), only known once the
-/// certified `compositeMath` folding this task wires into the driver runs.
+/// `MathAdd` (`Vec(1,2,3) + Vec(0.5,0.5,0.5)`), only known once certified
+/// `compositeMath` folding runs.
 const FOLDED_VECTOR_EXPR: &str =
     "chip P(v: vector) -> (r: vector) { out r = v + Opaque(Vec(0.0, 0.0, 0.0)) }\n\
      out y = P(Vec(1.0, 2.0, 3.0) + Vec(0.5, 0.5, 0.5))\n";
@@ -418,8 +418,8 @@ fn let_alias_const_arg_reaches_named_chip_input_no_fold() {
 }
 
 /// Control: with folding disabled the expression argument stays a real
-/// `MathAdd(2, 2)` wired cross-grid into the pin — this always worked and
-/// pins the canonical delivery shape the fix must reproduce.
+/// `MathAdd(2, 2)` wired cross-grid into the pin — the canonical delivery
+/// shape the folded variants above must still reproduce.
 #[test]
 fn unfolded_expr_arg_reaches_named_chip_input() {
     assert_pin_delivery("P(2 + 2) --no-fold", FOLDED_EXPR, FoldMode::ForceOff, 4);
@@ -431,17 +431,16 @@ fn unfolded_expr_arg_reaches_named_chip_input() {
 /// argument bakes its floats directly into the MakeQuaternion gate's OWN
 /// properties at ordinary call lowering — no `Literal::Quat` is ever
 /// produced (`expr_to_literal` has no `Quat` arm, unlike `Vec`/`Rotation`/
-/// `Color` — see `lower/predeclare.rs`), so it would reach the pin via the
-/// pre-existing, fold-independent path and prove nothing about THIS task's
-/// `Literal::Quat` carrier arm (that was the vacuousness bug in the prior
-/// version of this test). Arithmetic args force a real `MathAdd` per
-/// component, so a `Literal::Quat` can only appear once the certified fold
-/// pass evaluates `MakeQuaternion` itself, all four inputs known
-/// (`fold/eval.rs::make_quaternion`). `Slerp` is on the deferred-ops list
-/// (never folds — see `eval::eval`'s `DEFERRED` list), so `v`'s use inside
-/// the chip body stays a real, unfoldable gate: mirrors the vector test's
-/// `+ Opaque(...)` shape, keeping `P` a genuine cross-module boundary
-/// instead of being optimized away entirely.
+/// `Color` — see `lower/predeclare.rs`), so a bare literal would reach the
+/// pin via the pre-existing, fold-independent path and prove nothing about
+/// the `Literal::Quat` carrier arm this test targets. Arithmetic args force
+/// a real `MathAdd` per component, so a `Literal::Quat` can only appear
+/// once the certified fold pass evaluates `MakeQuaternion` itself, all four
+/// inputs known (`fold/eval.rs::make_quaternion`). `Slerp` is on the
+/// deferred-ops list (never folds — see `eval::eval`'s `DEFERRED` list), so
+/// `v`'s use inside the chip body stays a real, unfoldable gate: mirrors
+/// the vector test's `+ Opaque(...)` shape, keeping `P` a genuine
+/// cross-module boundary instead of being optimized away entirely.
 const FOLDED_QUAT_EXPR: &str =
     "chip P(v: quat) -> (r: quat) { out r = v.Slerp(Opaque(Quat(0.0, 0.0, 0.0, 1.0)), 0.0) }\n\
      out y = P(Quat(0.0 + 0.0, 0.0 + 0.0, 0.38 + 0.0, 0.92 + 0.0))\n";

@@ -748,9 +748,9 @@
 
     #[test]
     fn build_world_rejects_an_unresolvable_wire() {
-        // A module wire whose endpoint never got a brick used to be logged to
-        // stderr and dropped, laundering a lowering miscompile into a
-        // format-valid `.brz` with a silently-missing wire. Emit must now fail.
+        // A module wire whose endpoint never got a brick must fail emit, not
+        // be silently dropped — that would launder a lowering miscompile into
+        // a format-valid `.brz` with a silently-missing wire.
         // Synthetic on purpose: it guards the emit backstop itself, so it stays
         // valid even after the lowering bugs that produce such wires are fixed.
         use crate::ir::Wire;

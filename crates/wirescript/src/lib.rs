@@ -1,8 +1,5 @@
 //! wirescript — a logic-brick scripting language that compiles to Brickadia
 //! `.brz` world files.
-//!
-//! Phase 1 provides the IR + brz emitter. The parser / typecheck / lower
-//! stages are ported in subsequent phases.
 
 pub mod analysis;
 pub mod analyze;

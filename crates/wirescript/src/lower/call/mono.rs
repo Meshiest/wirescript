@@ -194,7 +194,7 @@ pub(super) fn build_mono_frame(
 /// a stable, unique-per-type string, so two instantiations collide iff they
 /// pick the same concrete types — exactly when their emitted grids are
 /// interchangeable and safe to dedup. A non-generic chip never calls this: its
-/// key stays the bare name (byte-identical to before).
+/// key stays the bare name.
 pub(super) fn mono_key(chip_decl: &ChipDecl, frame: &MonoFrame) -> String {
     let args: Vec<String> = frame
         .params

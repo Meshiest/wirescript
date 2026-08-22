@@ -97,7 +97,7 @@ pub struct LowerInput<'a> {
     /// module-level `@nofold` (`input.ast.no_fold`) always disables it on
     /// top of this, regardless of mode.
     pub fold_mode: FoldMode,
-    /// Inferred custom-event data-slot types (Task 1-3's `CeSlotMap`), keyed
+    /// Inferred custom-event data-slot types (`CeSlotMap`), keyed
     /// by the receiver handler's `ce_slot_key`. Consulted by `lower_handler`
     /// so an unannotated `on CustomEvent(...)` param's `DataOut` port takes
     /// the inferred type instead of defaulting to `Type::Float`.
@@ -106,7 +106,7 @@ pub struct LowerInput<'a> {
 
 /// Whether the certified constant-fold pass runs. `Auto` (production
 /// default): fold unless the entry file opts out with a module-level
-/// `@nofold`. Folding is now on by default, so `Auto` and `ForceOn` are
+/// `@nofold`. Folding is on by default, so `Auto` and `ForceOn` are
 /// behaviourally identical; the legacy module-level `@fold` / CLI `--fold`
 /// opt-in is still accepted but redundant. `ForceOff` (CLI `--no-fold`) is
 /// the only way to disable folding across a whole compile.
@@ -124,7 +124,7 @@ pub enum FoldMode {
 /// `emit r = …` inside one is another site for the parent's `r`. Missing those
 /// sites left the output reached from two drivers with no backing var — a
 /// load-time fan-in on its `RER_Input`. An output reached from more than one
-/// site (or one conditional site) needs a backing store (P0-4).
+/// site (or one conditional site) needs a backing store.
 fn count_output_value_emits(ast: &Script) -> HashMap<String, (usize, bool)> {
     // Per output: (number of `emit out = …` sites, whether ANY site is inside a
     // conditional). A conditional emit needs a backing var even when it is the
@@ -242,7 +242,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // registered) so a pass-2 `import * as` namespace member can't clobber one
     // of them — see `LowerCtx::importer_names`.
     ctx.importer_names = ctx.scope.iter().map(|(k, _)| k.to_string()).collect();
-    // Pass 1b (P0-4): an output value-driven from more than one `emit` site
+    // Pass 1b: an output value-driven from more than one `emit` site
     // can't take a wire per site (two wires into the output rerouter is a
     // load-time fan-in) — give it a backing PseudoVar. `lower_emit` does a
     // Var_Set into it at each site; the var feeds the output once at the end
@@ -333,7 +333,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // forward-reference declarations below it).
     resolve_module_label(&mut ctx, input.ast.module_label.as_ref());
 
-    // P0-4: feed each multi-emit output's backing PseudoVar value into its
+    // Feed each multi-emit output's backing PseudoVar value into its
     // output rerouter — one wire, placed after every handler's Var_Set exists.
     let backings: Vec<(String, VarRecord)> = ctx
         .output_backing_vars
@@ -351,7 +351,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
 
     flush_pending_emits(&mut ctx);
 
-    let ids_unused = ctx.ids; // move consumed
+    let ids_unused = ctx.ids;
     let _ = ids_unused;
     let mut module = ctx.builder.module;
     prune_dead_exec_unions(&mut module);
@@ -363,8 +363,8 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // Certified constant folding — table-gated. `FoldMode::Auto` (the
     // production default) folds unless the entry file opts out with a
     // module-level `@nofold`; `ForceOff` (CLI `--no-fold`) disables it
-    // outright. `ForceOn` (CLI `--fold`) is now equivalent to `Auto`, and the
-    // legacy `@fold` opt-in (`input.ast.fold`) no longer gates anything. A
+    // outright. `ForceOn` (CLI `--fold`) is equivalent to `Auto`, and the
+    // legacy `@fold` opt-in (`input.ast.fold`) does not gate anything. A
     // module-level `@nofold` always wins over any mode short of `ForceOff`.
     let run_fold = match input.fold_mode {
         FoldMode::ForceOff => false,
@@ -957,9 +957,8 @@ fn inline_orphan_literals(module: &mut Module) {
             changed = true;
         }
 
-        // Fold pure constant-string `String_Concatenate` wrappers (the legacy
-        // way a string literal became a wire, before inline wire-variant
-        // support) into consumers that accept an inline string variant. Unlike
+        // Fold pure constant-string `String_Concatenate` wrappers into
+        // consumers that accept an inline string variant. Unlike
         // `_Literal`, this is gated on `port_accepts_inline_variant` — a string
         // can't fill a wire-only port, so those keep the real concat gate.
         concat_ids.clear();
@@ -1359,8 +1358,8 @@ pub(super) fn prune_dead_exec_unions(module: &mut Module) {
     }
 
     // Degrees + adjacency computed once and maintained incrementally via a
-    // worklist. The old version rebuilt counts over every wire and spliced
-    // one union per full rebuild — O(unions × wires) on union-heavy modules.
+    // worklist, avoiding an O(unions × wires) rebuild over every wire on
+    // union-heavy modules.
     let queue: Vec<NodeId> = module
         .nodes
         .iter()
@@ -1597,7 +1596,6 @@ pub fn compile_chip_template(
         ns_mod_scopes: HashMap::default(),
     };
 
-    // Create input ports
     for inp in &chip_decl.inputs {
         let resolved_record = ctx.record_fields_of(&inp.typ);
         if let Some(fields) = &resolved_record {
@@ -1673,7 +1671,6 @@ pub fn compile_chip_template(
         }
     }
 
-    // Create output ports
     for out in &chip_decl.outputs {
         let t = type_of_type_expr(&out.typ);
         let node_id = ctx.add_output(&out.name, t.clone(), chip_decl.range.clone());
@@ -1683,7 +1680,6 @@ pub fn compile_chip_template(
         );
     }
 
-    // Pre-declare + lower body
     let sig_output_names: HashSet<&str> =
         chip_decl.outputs.iter().map(|n| n.name.as_ref()).collect();
     for stmt in &chip_decl.body.stmts {

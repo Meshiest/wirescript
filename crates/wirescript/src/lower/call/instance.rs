@@ -28,7 +28,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // and key the template + emitted grid on `(name, concrete subst)` so
     // `Box<int>` and `Box<vector>` get separate bodies AND separate grids (they
     // dedup on `template_key`, which would otherwise collapse them into one).
-    // A non-generic chip keeps the bare name — byte-identical to before.
+    // A non-generic chip keeps the bare name.
     let positional_args: Vec<&Expr> = args
         .iter()
         .filter_map(|a| match a {
@@ -89,8 +89,8 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // different constants compile to genuinely different bodies). Two calls may
     // share the cached body only when ALL of these match — otherwise a second
     // call in a different context reuses the first's body and mis-wires against a
-    // stale pin list (the P0-1 a/b/c miscompiles), or silently runs with the
-    // first call's baked constants. The `chip_call_stack`
+    // stale pin list, or silently runs with the first call's baked constants.
+    // The `chip_call_stack`
     // recursion guard already keys on `chip_decl.range` for the same reason. This
     // key doubles as the instance `template_key` (grid dedup) and `fold_key`
     // base; making it more specific only ever makes those safer.

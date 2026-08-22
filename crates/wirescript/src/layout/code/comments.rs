@@ -120,7 +120,6 @@ pub(super) fn assign_comment_owners(
             continue;
         }
         let line = c.line as i32;
-        // (distance to the next row, deeper first, then chip id).
         // Rank: nearest row wins, then the deeper plane, then the lower id.
         let rank = |dist: i32, depth: usize, key: Option<NodeId>| {
             (dist, std::cmp::Reverse(depth), key)

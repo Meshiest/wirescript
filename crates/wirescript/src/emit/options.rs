@@ -147,19 +147,16 @@ pub enum EmitError {
     /// Fatal. A wire that can't be drawn is not a cosmetic gap — it is the
     /// signature of a lowering miscompile (a stranded `return`/`emit` fan-in, a
     /// template-cache mixup, a phantom node) that would otherwise slip into a
-    /// format-valid `.brz` and silently misbehave in-game. This path used to log
-    /// to stderr and continue, laundering every such bug into a shippable save;
-    /// erroring here converts the whole class into a compile failure. (The
-    /// gutter-bus equivalent is `BusWireUnresolved`.)
+    /// format-valid `.brz` and silently misbehave in-game. (The gutter-bus
+    /// equivalent is `BusWireUnresolved`.)
     #[error("dropped wire: {0}")]
     DroppedWire(String),
     /// A `Literal` reached component-data encoding with no wire or native
     /// representation for the field it was inlined into (e.g. a `const`
     /// record, which typecheck's validators are supposed to keep out of a
-    /// wire-variant/native-typed field entirely). This used to be an
-    /// `unreachable!()` panic in `literal_to_string`/`literal_to_boxed_native`
-    /// — erroring here means a future gap in those validators is a
-    /// diagnosable compile failure instead of a process abort.
+    /// wire-variant/native-typed field entirely). Erroring here means a
+    /// future gap in those validators is a diagnosable compile failure
+    /// instead of a process abort.
     #[error("field '{field}' has no wire representation for {literal:?}")]
     UnrepresentableLiteral {
         field: String,

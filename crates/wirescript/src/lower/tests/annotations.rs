@@ -212,9 +212,9 @@ fn stmt_level_annotated_nested_chip_gets_doc() {
 
 #[test]
 fn stmt_level_annotated_in_inside_named_chip_gets_label() {
-    // Coverage gap noted in review: `@label(...) in p: ...` declared as a
-    // statement inside a *named* chip's body (not just at top level) must
-    // still stamp NAME_LABEL on the resulting port node.
+    // `@label(...) in p: ...` declared as a statement inside a *named*
+    // chip's body (not just at top level) must still stamp NAME_LABEL on
+    // the resulting port node.
     let m = lower_src(
         "chip Foo(x: int) -> (r: int) {\n\
          @label(\"Pretty\") in p: int\n\
@@ -241,11 +241,10 @@ fn multi_line_doc_joins_with_newlines() {
     );
 }
 
-// ---------- labels P3: `@label(expr)` + `@label` on `var` ----------
+// ---------- `@label(expr)` + `@label` on `var` ----------
 
 #[test]
 fn out_can_carry_explicit_string_label() {
-    // Regression: the existing string form still bakes as-is.
     let m = lower_src("@label(\"hi\") out v: int = 0");
     let node = m
         .outputs
@@ -287,8 +286,8 @@ fn anon_chip_label_expr_folds_arithmetic() {
 
 #[test]
 fn var_can_carry_explicit_label() {
-    // `@label` is now legal directly on `var` (previously a parse error) and
-    // overrides the name-derived default the same way it does on a port.
+    // `@label` is legal directly on `var` and overrides the name-derived
+    // default the same way it does on a port.
     let m = lower_src("@label(\"HP\") var hp: int = 0");
     m.nodes
         .values()

@@ -72,7 +72,6 @@ pub static MAP_METHODS: &[MapMethod] = &[
     MapMethod { name: "values", mutates: false, gate: gc::MAP_GET_VALUES, signature: "(destArray)", doc: "Fill an array with the map's values", params: |_, v| vec![p("out", Type::Array(Box::new(v.clone())), false)] },
 ];
 
-/// All map methods.
 pub fn map_methods() -> &'static [MapMethod] {
     MAP_METHODS
 }
@@ -84,7 +83,6 @@ pub fn map_method(name: &str) -> Option<&'static MapMethod> {
 static MAP_METHOD_NAMES: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
     std::sync::LazyLock::new(|| MAP_METHODS.iter().map(|m| m.name).collect());
 
-/// Is `name` a method callable on a map value?
 pub fn is_map_method(name: &str) -> bool {
     MAP_METHOD_NAMES.contains(name)
 }

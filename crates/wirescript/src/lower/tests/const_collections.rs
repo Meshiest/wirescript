@@ -6,10 +6,10 @@
 use super::*;
 use super::const_params::{lower_ok, nodes_of};
 
-/// A test using plain named constants (`[N, N * 2]`) would have passed
-/// before this change too — `array_elem_literal` already routed those
-/// through `expr_to_literal_in`, which resolves named constants. A const-mod
-/// CALL per element is the one form only `const_eval` can evaluate.
+/// A test using plain named constants (`[N, N * 2]`) would not discriminate
+/// this path — `array_elem_literal` already routes those through
+/// `expr_to_literal_in`, which resolves named constants. A const-mod CALL
+/// per element is the one form only `const_eval` can evaluate.
 #[test]
 fn a_const_mod_call_in_an_array_initializer_bakes_with_no_push_gates() {
     let m = lower_ok(
@@ -156,9 +156,8 @@ fn a_chip_local_const_mod_shadows_the_top_level_one_in_the_map_bake_path() {
 ///
 /// Both leak detectors are lowered in PASS 2, *after* `f()` is expanded — a
 /// TOP-LEVEL `var` would not discriminate, because every top-level
-/// initializer bakes during pass 1, before any inlining happens (verified:
-/// the top-level form passes with the restore deleted). The two that do
-/// discriminate:
+/// initializer bakes during pass 1, before any inlining happens. The two
+/// that do discriminate:
 ///   - `afterh`, a handler-local `static var` following the `f()` call;
 ///   - `chipv`, inside a chip instantiated after it, which inherits
 ///     `pass1_chips` by clone at instantiation time.

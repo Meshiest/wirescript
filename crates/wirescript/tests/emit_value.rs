@@ -23,7 +23,6 @@ fn emit_value_in_exec_no_error() {
 
 #[test]
 fn emit_value_in_pure_no_error() {
-    // emit-value inside a pure chip body
     let src = "chip Foo(x: int) -> (status: int) { emit status = x }";
     let codes = diag_codes(src);
     assert!(!codes.contains(&"WS007".into()), "emit value in pure should not error: {codes:?}");

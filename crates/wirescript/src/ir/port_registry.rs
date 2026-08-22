@@ -44,7 +44,7 @@ macro_rules! wire_ports {
 }
 
 wire_ports! {
-    // Ports added for the array / controller / character / gamemode builtins.
+    // Ports for the array / controller / character / gamemode builtins.
     BDescending = "bDescending",
     BDetectBricks = "bDetectBricks",
     BDetectPlayers1 = "bDetectPlayers1",
@@ -82,8 +82,8 @@ wire_ports! {
     DisplayName = "DisplayName",
     BHasPermission = "bHasPermission",
     BHasRole = "bHasRole",
-    // Ports added for the builtins (messaging, tags, audio,
-    // quaternions, inventory family, damage/zone events).
+    // Ports for the messaging, tags, audio, quaternions, inventory family,
+    // and damage/zone-event builtins.
     Title = "Title",
     Tag = "Tag",
     Query = "Query",
@@ -380,9 +380,8 @@ wire_ports! {
     BTeamCollision2 = "bTeamCollision2",
     BTeamCollision3 = "bTeamCollision3",
     BVisionRaycasting = "bVisionRaycasting",
-    // PlayerState refactor + new-build gate additions.
     PlayerState = "PlayerState",
-    // Reworked InputSplitter output ports.
+    // InputSplitter output ports.
     InputUp = "InputUp",
     InputPitch = "InputPitch",
     InputYaw = "InputYaw",
@@ -393,7 +392,7 @@ wire_ports! {
     BPressedQ = "bPressedQ",
     BPressedLeftMouse = "bPressedLeftMouse",
     BPressedRightMouse = "bPressedRightMouse",
-    // Reworked DisplayText styling ports.
+    // DisplayText styling ports.
     Skew = "Skew",
     LetterSpacing = "LetterSpacing",
     LineHeight = "LineHeight",
@@ -402,11 +401,11 @@ wire_ports! {
     ShadowColor = "ShadowColor",
     BMiteredOutline = "bMiteredOutline",
     HitColor = "HitColor",
-    // Entity/character gate additions.
+    // Entity/character gate ports.
     Point = "Point",
     Speed = "Speed",
     Resource = "Resource",
-    // Expr gate additions (Remap, IntegerToEnum, codepoint, date).
+    // Expr gate ports (Remap, IntegerToEnum, codepoint, date).
     InputMin = "InputMin",
     InputMax = "InputMax",
     OutputMin = "OutputMin",
@@ -434,7 +433,7 @@ wire_ports! {
     ArrayVarRef7 = "ArrayVarRef7",
     ArrayVarRef8 = "ArrayVarRef8",
     // Full inventory port coverage (vehicle/aero/pickup/light/water/etc.
-    // internal components, plus reworked string/displaytext ports). Kept
+    // internal components, plus string/displaytext ports). Kept
     // exhaustive so lower_call can pull any gate's catalog ports without a
     // from_name panic.
     ActiveDamping = "ActiveDamping",
@@ -662,8 +661,8 @@ wire_ports! {
     WeaponAmmoOverride = "WeaponAmmoOverride",
     // Vector2D composite sub-ports (DisplayText layout): each parent (`Position`,
     // `Anchor`, …) exposes two individually-wireable float sub-ports `X`/`Y`.
-    // Position/Anchor/Scale axes reuse the (repurposed) former Controller_DisplayText
-    // variants below; Pivot/ShadowOffset are new to the reworked gate.
+    // Position/Anchor/Scale axes reuse the variants defined below;
+    // Pivot/ShadowOffset are defined here.
     PivotX = "Pivot.X",
     PivotY = "Pivot.Y",
     ShadowOffsetX = "ShadowOffset.X",

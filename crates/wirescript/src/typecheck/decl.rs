@@ -99,9 +99,9 @@ fn check_top_level_array_init(
 /// Every OTHER reason keeps the generic WS003, deliberately — including
 /// `Refused` (e.g. `[1 << 64]`, an operator declining its operands), whose
 /// WS003 is pinned by `lower::tests::const_init::out_of_range_shift_is_not_folded`.
-/// Widening this to `Refused`/`BudgetExceeded` does produce a more accurate
-/// message, but it changes a diagnostic code that test deliberately asserts,
-/// so it is left alone as a separate call rather than folded into this fix.
+/// Widening this to `Refused`/`BudgetExceeded` would produce a more accurate
+/// message, but it would change a diagnostic code that test asserts, so it's
+/// left as WS003.
 fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir::Literal> {
     if let Some(lit) = crate::lower::expr_to_literal_in(e, &ctx.const_env) {
         return Some(lit);
@@ -303,9 +303,8 @@ fn aggregate_record_fields(ty: &Type) -> Option<&Vec<(String, Type)>> {
 /// A record used as var/array/map STORAGE decomposes into one backing gate per
 /// field (see `lower::predeclare::declare_record_container`), so every leaf must
 /// be a value that a gate can hold. A reference-only field (`ref T`/zone/
-/// teleport/prefab) or an `exec` can't, and used to lower to a bogus `Pseudo_Var`
-/// with no diagnostic — reject it with WS049 instead. Nested records recurse;
-/// variant, array, and map fields are fine.
+/// teleport/prefab) or an `exec` can't — reject it with WS049. Nested records
+/// recurse; variant, array, and map fields are fine.
 fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &SourceRange) {
     fn reason(ft: &Type) -> Option<&'static str> {
         match ft {
@@ -602,8 +601,7 @@ fn check_decl_inner(
             // arm), and even where it somehow could, the body must be valid
             // for EVERY concrete type the mask allows, not just checked once
             // symbolically. A non-generic decl (`type_params` empty) gets
-            // the single trivial "no bindings" combo below, so its check —
-            // and its diagnostics — are unchanged from before this task.
+            // the single trivial "no bindings" combo below.
             const MAX_BODY_CHECK_COMBOS: usize = 64;
             // Budget is a whole-PATH cap, not per-decl: a nested generic decl is
             // re-checked once per OUTER combo, so divide the cap by the combos
@@ -668,7 +666,7 @@ fn check_decl_inner(
             };
             // Diagnostics are only batched + deduped for an actual
             // multi-combo generic check; the non-generic single combo
-            // writes straight into `ctx.diagnostics` exactly as before.
+            // writes straight into `ctx.diagnostics`.
             let multi_pass = combos.len() > 1;
             let mut seen = std::collections::HashSet::new();
             let mut deduped: Vec<Diagnostic> = Vec::new();
@@ -968,7 +966,7 @@ fn check_decl_inner(
                     check_decl(ctx, d);
                 }
             }
-            // Handlers (and anon chips) in an imported module now LOWER as part
+            // Handlers (and anon chips) in an imported module lower as part
             // of the importing program, so their bodies must be checked here too
             // — otherwise operators / sibling calls inside a namespaced
             // `on …` handler get no `op_resolutions` and lower to `_Unsupported`

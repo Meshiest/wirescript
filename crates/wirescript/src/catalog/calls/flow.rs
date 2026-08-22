@@ -422,7 +422,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Newer pure expression gates -------------------------------------
+    // ---- Pure expression gates --------------------------------------------
     m.insert(
         "EnumToInteger",
         CallSpec {

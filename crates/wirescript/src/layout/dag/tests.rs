@@ -165,7 +165,6 @@
         );
         let root = leaf_region(&m);
         let lay = layout_leaf(&root, &m.wires);
-        // No two placements share the same (dx, dy).
         let mut seen: HashSet<(i32, i32)> = HashSet::default();
         for p in lay.local.values() {
             assert!(

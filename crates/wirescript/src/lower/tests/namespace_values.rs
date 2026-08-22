@@ -235,7 +235,6 @@ fn namespaced_output_port_is_declared_and_wired() {
 
 #[test]
 fn namespaced_chip_calls_still_work() {
-    // Guard the pre-existing call path against the value-member change.
     let (tc, lr) = compile_with_lib(
         "chip Double(x: int) -> (result: int) { out result = x + x }",
         "import * as lib from \"lib\"\nlet r = lib.Double(5)\nout o = r.result",
@@ -482,7 +481,7 @@ fn namespaced_mod_reads_its_own_module_const() {
 /// A namespaced mod that mutates its module's `var` writes ITS module's gate.
 /// Both modules declare `var g` + `mod bump` (the name collision), but only
 /// `A.g` is read out; `A.bump()`'s increment must target the very gate `A.g`
-/// reads. Before the fix it wrote whichever namespace lowered last (B's).
+/// reads. It used to write whichever namespace lowered last (B's).
 #[test]
 fn namespaced_mod_mutates_its_own_module_var() {
     let (tc, lr) = compile_with_libs(
@@ -532,9 +531,9 @@ fn namespaced_mod_mutates_its_own_module_var() {
 }
 
 /// An operator inside a namespaced module's `on` handler must be typechecked
-/// (its `op_resolutions` recorded) so it lowers to a real gate. The handler now
-/// lowers (the namespaced-handler fix), but typecheck never descended into its
-/// body, so arithmetic like `n << 10` lowered to `_Unsupported`.
+/// (its `op_resolutions` recorded) so it lowers to a real gate. The handler
+/// itself lowers, but typecheck used to never descend into its body, so
+/// arithmetic like `n << 10` lowered to `_Unsupported`.
 #[test]
 fn namespaced_handler_operator_lowers_to_a_gate() {
     let (tc, lr) = compile_with_lib(

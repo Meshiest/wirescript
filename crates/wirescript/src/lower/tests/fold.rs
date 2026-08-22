@@ -10,10 +10,9 @@ fn count_class(m: &crate::ir::Module, class: &str) -> usize {
     for c in m.chips.values() { n += count_class(c, class); }
     n
 }
-// Kept for future fold tasks (Task 4+) that check a surviving standalone
-// literal directly; unused by the current test set (see
-// `annihilator_folds_with_unknown_side` for why a bare literal often doesn't
-// survive the full pipeline when it feeds a dataless boundary port).
+// Unused by the current test set; kept because a bare literal often doesn't
+// survive the full pipeline when it feeds a dataless boundary port (see
+// `annihilator_folds_with_unknown_side`).
 #[allow(dead_code)]
 fn literal_values(m: &crate::ir::Module) -> Vec<crate::ir::Literal> {
     let mut out: Vec<_> = m.nodes.values()
@@ -124,8 +123,7 @@ fn annihilator_folds_with_unknown_side() {
 fn constant_bitwise_operand_inlines_not_carrier() {
     // A bitwise gate stores its operands as plain `i64`, so a native-int
     // constant operand (the `0` in `x | 0`) inlines into the gate's `InputB`
-    // data rather than materializing a `MathAdd(0, 0)` carrier — the fix for the
-    // `(pointPercent * progLen) | 0` truncation idiom's stray add gate.
+    // data rather than materializing a `MathAdd(0, 0)` carrier.
     let r = compile_folded("var x: int = 3\nout y = x | 0");
     no_errors(&r);
     assert_eq!(
@@ -167,15 +165,6 @@ fn constant_string_operand_inlines_not_carrier() {
         "Contains bakes its search string into the Search field"
     );
 }
-
-// `uncovered_signature_stays_unfolded` (brief: `out y = "a" + 1`) is deleted
-// per the brief's own inline fallback: `"a" + 1` never reaches lowering as a
-// real MathAdd/concat gate at all — it hits an unrelated, pre-existing "IR
-// lowering not yet supported for this expression" placeholder (WSP001,
-// `_Unsupported` node), so there is no gate left for this pass to (correctly)
-// decline to fold. The refusal this test wanted to guard is already covered
-// at the eval level by fold/eval.rs's `replay_every_certified_case` (asserts
-// exactly 3 math-with-string refusals) and `uncovered_signatures_refuse`.
 
 #[test]
 fn overflow_and_nonfinite_results_stay_unfolded() {
@@ -219,21 +208,19 @@ fn string_literal_folds_across_chip_boundary() {
 
 #[test]
 fn cross_chip_constant_folds_inside_named_chip() {
-    // The call argument must NOT be a bare literal AST node (`Inc(4)`) — a
-    // pre-existing, pre-Task-3 optimization (`const_arg_literal` in
-    // lower/call.rs) already special-cases a syntactic literal argument by
-    // inlining it directly into the chip instance, bypassing the
-    // MicrochipInput wire entirely, which would make this test pass without
-    // ever exercising the cross-chip VALUE propagation this task adds.
+    // The call argument must NOT be a bare literal AST node (`Inc(4)`) —
+    // `const_arg_literal` (lower/call.rs) already special-cases a syntactic
+    // literal argument by inlining it directly into the chip instance,
+    // bypassing the MicrochipInput wire entirely, which would make this test
+    // pass without exercising cross-chip VALUE propagation.
     // `2 + 2` forces the real MicrochipInput+wire path; its value only
     // becomes known via this pass's own fold-then-propagate fixpoint.
     let src = "chip Inc(v: int) -> (r: int) { out r = v + 1 }\nout y = Inc(2 + 2)";
     let r = compile_folded(src);
     no_errors(&r);
     // Dead-feed pruning (boundary-delivery cleanup, Rule A + Rule B): `v`
-    // folds away inside the chip (nothing left reads its wire — the SAME
-    // proof the pre-cleanup version of this test checked), and `r`'s only
-    // exterior consumer (root `y`) gets rewired by Rule B straight to a
+    // folds away inside the chip (nothing left reads its wire), and `r`'s
+    // only exterior consumer (root `y`) gets rewired by Rule B straight to a
     // fresh literal, so `r` ALSO ends up wire-free. With BOTH of Inc's
     // boundary nodes at zero incoming AND zero outgoing wires, the whole
     // instance is wire-free, carries no `@label`/`@closed`/doc annotation,
@@ -368,7 +355,7 @@ fn module_level_nofold_disables_pass() {
 
 #[test]
 fn fold_runs_by_default_under_auto() {
-    // Auto is the production default and now folds without any opt-in.
+    // Auto is the production default and folds without any opt-in.
     // Same source as `folds_arithmetic_chain_to_fixpoint`: a chain that fully
     // collapses to a literal `true`, leaving zero Math/Compare gates behind
     // when folded. A bare `2 + 3` directly feeding a dataless `out` boundary
@@ -473,14 +460,12 @@ fn fold_adjacent_to_doc_comment_emits_module_level_only_error() {
     let src = "/// doc\n@fold\n\nout y = 1";
     let parsed = crate::parser::parse(src, "test");
 
-    // Diagnostic contains the module-level-only message.
     assert!(
         parsed.diagnostics.iter().any(|d| d.message.contains("module-level only")),
         "expected module-level-only diagnostic, got: {:?}",
         parsed.diagnostics
     );
 
-    // @fold should not be recorded on the AST (it was not recognized as module-level).
     assert!(!parsed.ast.fold, "@fold adjacent to doc comment should not be recognized as module-level");
 }
 
@@ -621,9 +606,8 @@ fn nofold_literal_condition_branch_stays() {
 #[test]
 fn literal_condition_shortcut_fires_without_nofold() {
     // Baseline (no @nofold): `if true {...} else {...}` still takes the
-    // pre-existing lowering shortcut and emits no Branch at all — confirms
-    // the `nofold_depth == 0` guard added for the test above didn't change
-    // behavior outside `@nofold`.
+    // pre-existing lowering shortcut and emits no Branch at all — the
+    // `nofold_depth == 0` guard only applies when `@nofold` is in scope.
     let src = "in t: exec\nvar a: int = 0\nvar b: int = 0\n\
                on t { if true { a = 1 } else { b = 2 } }";
     let r = compile_folded(src);
@@ -703,7 +687,7 @@ fn annotated_empty_chip_is_kept() {
     assert_eq!(r.module.chips.len(), 1, "labeled empty chip's module entry survives");
 }
 
-// --- Task 3 review follow-up: `inline_orphan_literals` cross-module guard ---
+// --- `inline_orphan_literals` cross-module guard ---
 
 #[test]
 fn cross_module_literal_inline_skips_orphan_deletion() {
@@ -730,17 +714,15 @@ fn cross_module_literal_inline_skips_orphan_deletion() {
         .values()
         .find(|n| n.gate_class == gc::MICROCHIP_INPUT)
         .expect("chip has a v boundary node");
-    // Boundary-delivery cleanup's actual shape now (Rule B, then Rule A):
-    // `v`'s Known value (4) is delivered DIRECTLY to the real `v +
-    // Opaque(0)` gate, bypassing the MicrochipInput rerouter — and the
-    // `materialize_unfoldable_constants` carrier this test used to check
-    // for entirely. Rule B rewires the wire straight to a fresh literal,
-    // which (single-consumer, same-module as the real MathAdd it feeds)
-    // then inlines as baked data via the ordinary `inline_orphan_literals`
-    // pass, same as any hand-written constant operand. `v`'s own boundary
-    // node ends up with ZERO wires at all — the cleanest possible outcome —
-    // but the VALUE must still be there, correctly, on the real gate that
-    // needed it (the bug this test guards against was the value going
+    // Boundary-delivery cleanup's shape (Rule B, then Rule A): `v`'s Known
+    // value (4) is delivered DIRECTLY to the real `v + Opaque(0)` gate,
+    // bypassing the MicrochipInput rerouter. Rule B rewires the wire
+    // straight to a fresh literal, which (single-consumer, same-module as
+    // the real MathAdd it feeds) then inlines as baked data via the
+    // ordinary `inline_orphan_literals` pass, same as any hand-written
+    // constant operand. `v`'s own boundary node ends up with ZERO wires at
+    // all, but the VALUE must still be there, correctly, on the real gate
+    // that needed it (the bug this test guards against was the value going
     // missing across the module boundary, not the wire going missing).
     assert!(
         !child
@@ -802,7 +784,7 @@ fn cross_module_literal_inline_skips_orphan_deletion() {
     );
 }
 
-// --- Task 4: driver — FormatText folding, composite seeding/delivery ---
+// --- FormatText folding, composite seeding/delivery ---
 
 fn float_prop(n: &crate::ir::Node, name: &str) -> Option<f64> {
     match n.properties.get(&crate::intern::intern(name)) {
@@ -878,24 +860,24 @@ fn vector_math_folds() {
     assert_eq!(float_prop(carrier, "Z"), Some(3.5));
 }
 
-/// Regression for a `--fold-diff`-fuzzer-discovered bug (fold2 Task 5):
-/// `Dot`/`Cross`/`ScaleVec` (and any other certified gate reached via a
-/// builtin CALL, not a binary operator) take their Vector arguments as a
-/// baked, UNWIRED node property when both operands are compile-time
-/// literals (`lower/call.rs::literal_for_property_port` — the port's data
-/// field accepts an inline `Vector` variant, so the arg is written directly
-/// onto the CONSUMING gate's own properties, never wired through a separate
+/// Regression for a `--fold-diff`-fuzzer-discovered bug: `Dot`/`Cross`/
+/// `ScaleVec` (and any other certified gate reached via a builtin CALL, not
+/// a binary operator) take their Vector arguments as a baked, UNWIRED node
+/// property when both operands are compile-time literals
+/// (`lower/call.rs::literal_for_property_port` — the port's data field
+/// accepts an inline `Vector` variant, so the arg is written directly onto
+/// the CONSUMING gate's own properties, never wired through a separate
 /// `_Literal`/`MakeVector` source). `fold/mod.rs`'s driver only ever
 /// consulted WIRES (`resolve_input`) when deciding what a data input
 /// resolves to, so a gate whose every operand arrived this way had an
 /// all-`Unwired` signature — never certified, since the probe never tests
 /// "every operand missing" — and could NEVER fold, no matter how
-/// well-determined its value actually was. Fixed by `resolve_data_input`
-/// (added in fold/mod.rs), which falls back to the node's own baked
-/// property whenever a data port comes back `Unwired`. `Dot(Vec, Vec)` was
-/// the exact minimal repro (`cargo run -p wirescript-cli -- compile --fold
-/// --dump-ir` on a single `out y = Dot(Vec(1,0,0), Vec(0,1,0))` line kept
-/// the `VecDotProduct` gate alive before the fix, folded it away after).
+/// well-determined its value actually was. `resolve_data_input`
+/// (fold/mod.rs) falls back to the node's own baked property whenever a
+/// data port comes back `Unwired`. `Dot(Vec, Vec)` is the minimal repro:
+/// `cargo run -p wirescript-cli -- compile --fold --dump-ir` on
+/// `out y = Dot(Vec(1,0,0), Vec(0,1,0))` shows the `VecDotProduct` gate
+/// folding away.
 #[test]
 fn call_argument_baked_vector_literals_fold_through_dot() {
     let r = compile_folded("out y = Dot(Vec(1.0, 2.0, 3.0), Vec(4.0, 5.0, 6.0))");
@@ -914,10 +896,9 @@ fn call_argument_baked_vector_literals_fold_through_dot() {
     assert_eq!(float_prop(carrier, "InputB"), Some(0.0));
 }
 
-/// Sibling of `call_argument_baked_vector_literals_fold_through_dot`: proves
-/// the same fix also covers a Vector-RESULT gate (`Cross`), not just a
-/// scalar-result one — delivered via the `MakeVector` carrier recipe
-/// instead of `MathAdd`.
+/// Sibling of `call_argument_baked_vector_literals_fold_through_dot`: covers
+/// a Vector-RESULT gate (`Cross`), not just a scalar-result one — delivered
+/// via the `MakeVector` carrier recipe instead of `MathAdd`.
 #[test]
 fn call_argument_baked_vector_literals_fold_through_cross() {
     let r = compile_folded("out v = Cross(Vec(1.0, 0.0, 0.0), Vec(0.0, 1.0, 0.0))");
@@ -940,25 +921,20 @@ fn call_argument_baked_vector_literals_fold_through_cross() {
 /// `literal_for_property_port` baked-vs-wired split as any other certified
 /// CALL's arguments (a bare-literal component bakes onto MakeVector's own
 /// properties with no wire; a computed-but-foldable one wires normally and
-/// resolves once its own source folds). Before the fix, this MakeVector
-/// call never fully folded (X/Y invisible to the driver as `Unwired`, an
-/// uncertified all-unknown-ish signature); after, all three resolve and it
-/// folds like any other fully-known composite constructor. NOTE: this exact
-/// shape (2 literal + 1 arithmetic component) also appears in
-/// `probes/gate_semantics.ws`'s `renderVec` render-showcase call, feeding
-/// an `Opaque(...)`-wrapped argument — since `Vec(...)`'s construction now
-/// also folds away there, `tests/fold_invariants.rs::probe_is_fold_invariant`
-/// picks up a 1-wire structural delta (2072n/3204w unfolded vs.
-/// 2072n/3203w folded) even though the probe's OBSERVABLE behavior is
-/// unchanged (`Opaque`'s own wire stays real; `MakeVector` reads whatever's
-/// at its ports, wired-computed or baked-default, per this whole feature's
-/// foundational "unwired input reads its own data default" law — the same
-/// one the composite/scalar carriers throughout this file already rely on).
-/// Reconciling the probe's structural invariant requires probe-side armor
-/// (e.g. wrapping `Vec(...)`'s individual components in `Opaque(...)`,
-/// mirroring `compositeMakeCases`'s pattern) — out of this task's file
-/// scope (`probes/` is read-only here); flagged in the task report instead
-/// of silently worked around.
+/// resolves once its own source folds), so all three resolve and it folds
+/// like any other fully-known composite constructor.
+///
+/// TODO: this exact shape (2 literal + 1 arithmetic component) also appears
+/// in `probes/gate_semantics.ws`'s `renderVec` render-showcase call, feeding
+/// an `Opaque(...)`-wrapped argument. Since `Vec(...)`'s construction folds
+/// away there too, `tests/fold_invariants.rs::probe_is_fold_invariant` sees
+/// a 1-wire structural delta (2072n/3204w unfolded vs. 2072n/3203w folded)
+/// even though the probe's OBSERVABLE behavior is unchanged (`Opaque`'s own
+/// wire stays real; `MakeVector` reads whatever's at its ports per the
+/// "unwired input reads its own data default" law). Reconciling the
+/// probe's structural invariant needs probe-side armor (wrapping
+/// `Vec(...)`'s individual components in `Opaque(...)`, mirroring
+/// `compositeMakeCases`'s pattern).
 #[test]
 fn mixed_literal_and_computed_vector_components_fold() {
     let r = compile_folded("out v = Vec(0.5, -1.25, 1.0 / 3.0)");
@@ -1056,8 +1032,8 @@ fn string_concat_operator_form_folds() {
 
 #[test]
 fn nofold_blocks_format_text_and_vector_math() {
-    // Two representative shapes from this task, both gated by @nofold:
-    // FormatText constant interpolation, and composite vector math.
+    // Two representative shapes, both gated by @nofold: FormatText constant
+    // interpolation, and composite vector math.
     let r = compile_folded("@nofold\n\nlet n = 42\nout y = \"n=${n}\"");
     no_errors(&r);
     assert_eq!(count_class(&r.module, gc::STRING_FORMAT_TEXT), 1);
@@ -1077,14 +1053,14 @@ fn quat_literal_constant_folds_to_carrier() {
     // each bare-literal float argument inlines directly into the
     // MakeQuaternion gate's OWN properties at lowering time — a real gate
     // that happens to carry the right data, indistinguishable from the
-    // materialized carrier this test exists to protect (that was the
-    // vacuousness bug: the original version of this test used bare literals
-    // and passed regardless of whether the `Literal::Quat` carrier arm in
-    // `materialize_unfoldable_constants` existed at all). Arithmetic args
-    // force a real `MathAdd` per component, wired into MakeQuaternion, so a
-    // `Literal::Quat` can only appear if the certified fold pass evaluates
-    // `MakeQuaternion` itself once all four inputs are known
-    // (`fold/eval.rs::make_quaternion`, transitively certified).
+    // materialized carrier this test exists to protect. Using bare literals
+    // here would make the test pass vacuously regardless of whether the
+    // `Literal::Quat` carrier arm in `materialize_unfoldable_constants`
+    // exists at all. Arithmetic args force a real `MathAdd` per component,
+    // wired into MakeQuaternion, so a `Literal::Quat` can only appear if the
+    // certified fold pass evaluates `MakeQuaternion` itself once all four
+    // inputs are known (`fold/eval.rs::make_quaternion`, transitively
+    // certified).
     let r = compile_folded(
         "let q = Quat(0.0 + 0.0, 0.0 + 0.0, 0.38 + 0.0, 0.92 + 0.0).SplitQuat()\n\
          out x = q.X"
@@ -1130,12 +1106,12 @@ fn quat_literal_constant_folds_to_carrier() {
     );
 }
 
-// --- fold2 Task 5 (review follow-up): the SAME call-argument-baking gap,
-// still open in the two resolvers `resolve_data_input` was never wired
-// into: `try_resolve_format_text`'s substitution slots, and
-// `resolve_condition` (shared by Select/Branch). Both used plain
-// `resolve_input`, which only ever consults wires, so a baked slot/condition
-// reads back as `Unwired` no matter how determined its actual value is.
+// --- The SAME call-argument-baking gap, also present in two resolvers
+// `resolve_data_input` was never wired into: `try_resolve_format_text`'s
+// substitution slots, and `resolve_condition` (shared by Select/Branch).
+// Both used plain `resolve_input`, which only ever consults wires, so a
+// baked slot/condition reads back as `Unwired` no matter how determined
+// its actual value is.
 
 #[test]
 fn format_text_call_argument_baked_slot_folds() {

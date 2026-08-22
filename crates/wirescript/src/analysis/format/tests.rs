@@ -44,7 +44,7 @@
     fn call_opening_record_literal_indents_once() {
         // `addRole(next, {` opens a paren AND a brace on one line — the
         // record fields indent ONE level, and `})` returns to the opener's
-        // level (previously double-indented).
+        // level.
         let src = "on init {
 emit NONE = addRole(next, {
 name: \"S\",

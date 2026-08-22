@@ -19,8 +19,8 @@
     #[test]
     fn out_binding_rejects_trailing_tokens() {
         // `out aw(wa)` reads like an anonymous output of a call, but an output
-        // port is always `out NAME` / `out NAME = expr`. The trailing `(wa)`
-        // used to be silently dropped and re-parsed as its own declaration.
+        // port is always `out NAME` / `out NAME = expr` — trailing tokens like
+        // `(wa)` must not be silently dropped and re-parsed as their own decl.
         let r = parse("let wa = (1, 2)\nout aw(wa)", "test");
         assert!(
             r.diagnostics.iter().any(|d| d.message.contains("out")),
@@ -65,7 +65,7 @@
 
     #[test]
     fn top_doc_block_adjacent_to_decl_is_decl_doc_not_module() {
-        // No blank line → the block documents the first decl (unchanged), so
+        // No blank line → the block documents the first decl, so
         // `module_doc` is None and the first decl carries it.
         let src = "/// first decl doc\nvar x: int = 0";
         let r = parse(src, "test");
@@ -165,7 +165,7 @@
 
     #[test]
     fn event_trigger_requires_parens() {
-        // Task 10: an event trigger is a CALL -- `on RoundStart { }` (no
+        // An event trigger is a CALL -- `on RoundStart { }` (no
         // parens) must error, steering to `on RoundStart() { }`.
         let r = crate::parser::parse("on RoundStart { }", "test");
         assert!(
@@ -175,7 +175,6 @@
             "no-parens event trigger should error: {:?}",
             r.diagnostics
         );
-        // parenned form is fine
         assert!(crate::parser::parse("on RoundStart() { }", "test")
             .diagnostics
             .is_empty());
@@ -373,7 +372,6 @@
             "map decl must be rejected: {:?}",
             rm.diagnostics
         );
-        // The `var` forms parse clean into `TopDecl::Var`.
         let rv = crate::parser::parse("var xs: int[]", "test");
         assert!(rv.diagnostics.is_empty(), "var array: {:?}", rv.diagnostics);
         match &rv.ast.decls[0] {
@@ -413,7 +411,6 @@
             "fn decl must be rejected: {:?}",
             r.diagnostics
         );
-        // The `mod` replacement parses clean.
         let rm = crate::parser::parse("mod add(a: int, b: int) -> int { return a + b }", "test");
         assert!(rm.diagnostics.is_empty(), "mod replacement: {:?}", rm.diagnostics);
     }
@@ -487,7 +484,6 @@
         assert_eq!(ta.type_params.len(), 1);
         assert_eq!(ta.type_params[0].name, "T");
 
-        // all of the above (and a non-generic mod) parse with no errors
         for s in ["mod pick<T>(a: T) -> T { return a }\n", "mod plain(a: int) -> int { return a }\n",
                   "type Grid<T> = T[]\n"] {
             assert!(crate::parser::parse(s, "t").diagnostics.iter()
@@ -520,8 +516,6 @@
             d => panic!("expected Chip, got {:?}", d),
         }
     }
-
-    // event keyword was removed — event alias/captured tests removed
 
     #[test]
     fn side_annotation_same_line_and_line_above() {
@@ -735,8 +729,6 @@
 
     #[test]
     fn label_annotation_is_allowed_on_var() {
-        // Previously any annotation besides a bare `@nofold` before `var`
-        // fell through to the generic "must be followed by ..." parse error.
         let r = parse("@label(\"HP\") var hp: int = 0", "test");
         assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
         let TopDecl::Var(v) = &r.ast.decls[0] else {
@@ -1110,11 +1102,8 @@
     fn brace_disambiguation_preserved_and_bounded() {
         let no_err = |s: &str| crate::parser::parse(s, "t").diagnostics.iter()
             .all(|d| d.severity != crate::diagnostic::Severity::Error);
-        // record literal stays a record
         assert!(no_err("let r = { x: 1, y: 2 }\n"), "record should parse");
-        // map literal stays a map
         assert!(no_err("var m: Map<int,int> = { 1 => 2 }\n"), "map should parse");
-        // block-expr braces still parse
         assert!(no_err("let b = { let x = 1\n x + 1 }\n"), "block-expr should parse");
         // Non-literal / non-trivial key expressions are valid maps — the key
         // is `parse_expr()`, so any expression may open an entry. These all
@@ -1212,7 +1201,6 @@
             "the chain is one statement, not two: {:?}",
             handler.body.stmts
         );
-        // That one statement is a chained call whose callee is `.SendCustomEvent`.
         match &handler.body.stmts[0] {
             Stmt::ExprStmt(es) => match &es.expr {
                 Expr::Call { callee, .. } => assert!(
@@ -1226,7 +1214,7 @@
         }
     }
 
-    // ---- `on <Event> -> <pattern>` output capture (Task 5, additive) -----
+    // ---- `on <Event> -> <pattern>` output capture -----
 
     #[test]
     fn on_arrow_tuple_on_named_event_binds_positionally() {
@@ -1267,12 +1255,10 @@
 
     #[test]
     fn on_arrow_and_inline_params_both_present_is_error() {
-        // Inline data params are unconditionally an error now (Task 8), so
-        // this is no longer a special "both present" case in the parser —
-        // the dead `parse_handler_arrow_pattern` guard for it was removed.
-        // Kept as regression coverage that a leftover inline param still
-        // errors even when a `->` capture is also present, and that the
-        // `->` capture still binds correctly despite the leftover.
+        // Inline data params are unconditionally an error. Regression coverage
+        // that a leftover inline param still errors even when a `->` capture
+        // is also present, and that the `->` capture still binds correctly
+        // despite the leftover.
         let r = crate::parser::parse(
             "on CustomEvent(\"dmg\", amount: int) -> (amount) { }",
             "test",
@@ -1385,7 +1371,7 @@
 
     #[test]
     fn on_arrow_absent_binds_nothing() {
-        // No `->` — unchanged behavior, no params.
+        // No `->` present — no params bound.
         let s = parse_ok("on RoundStart() { }");
         let handler = s
             .decls
@@ -1494,9 +1480,9 @@
         assert!(handler.params[0].ty.is_none());
     }
 
-    // P0-6: a captured event `let x = on E { }` at statement level used to be
-    // parsed then silently dropped, and its trailing tokens re-parsed into two
-    // unrelated errors. Now it reports one diagnostic that names the cause.
+    // A captured event `let x = on E { }` at statement level must report one
+    // diagnostic that names the cause, not parse then silently drop its
+    // trailing tokens into unrelated errors.
     #[test]
     fn captured_event_as_statement_reports_top_level_only() {
         let r = parse(
@@ -1510,7 +1496,7 @@
             "a statement-level captured event must be reported clearly: {:?}",
             r.diagnostics
         );
-        // The misleading fallthrough errors are gone.
+        // No unrelated fallthrough errors should remain.
         assert!(
             !r.diagnostics
                 .iter()
@@ -1520,7 +1506,8 @@
         );
     }
 
-    // P0-7: an integer literal out of i64 range used to compile to 0 silently.
+    // An integer literal out of i64 range must be reported, not silently
+    // compiled to 0.
     #[test]
     fn int_literal_overflow_is_reported() {
         let dec = parse("let big = 99999999999999999999", "test");
@@ -1544,8 +1531,8 @@
         );
     }
 
-    // const-evaluation Task 2: `const` bindings parse exactly like `let`,
-    // carrying `LetDecl.is_const` set from the keyword used.
+    // `const` bindings parse exactly like `let`, carrying `LetDecl.is_const`
+    // set from the keyword used.
     #[test]
     fn const_binding_parses_as_a_let_with_the_const_flag() {
         let p = parse("const x = 1 << 4\nlet y = 2", "test");
@@ -1568,8 +1555,7 @@
         assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
     }
 
-    // const-evaluation Task 3: `const mod`, per-parameter `const`, and the
-    // rejection of `const chip`.
+    // `const mod`, per-parameter `const`, and the rejection of `const chip`.
     #[test]
     fn const_mod_marks_every_parameter_const() {
         let p = parse("const mod f(a: int, b: string) -> int { return a }", "test");

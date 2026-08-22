@@ -202,7 +202,7 @@ pub(super) fn literal_node(ctx: &mut LowerCtx, e: &Expr, ty: Type, lit: Literal)
 /// So a `const` PARAMETER of any of these "no wire form" types, read bare
 /// where lowering doesn't otherwise resolve it (e.g. inside a record-literal
 /// field), lands here even when the same value as a top-level constant would
-/// not have. Confirmed by compiling one of each (see the task-25 report).
+/// not have.
 ///
 /// `None` means "no wire form" — the caller must fall back to the same
 /// WSP001 "unsupported expression" placeholder this arm bypassed before the
@@ -530,8 +530,7 @@ pub(super) fn literal_for_property_port(
     // time here (see `bake_string_bool`): emit has no String→bool cast, and
     // a raw String on a Bool data field is an UnimplementedCast crash.
     //
-    // The env-less fold first — UNCHANGED from before scoped consts existed:
-    // bare literals, negated literals, and constructor calls on constant
+    // The env-less fold first: bare literals, negated literals, and constructor calls on constant
     // args. Deliberately does not evaluate operators (`expr_to_literal`'s own
     // doc comment: folding `0.0 + 0.0` here would delete the real MathAdd
     // gate a program like `Rotation(0.0 + 0.0, ...)` must keep) and does not

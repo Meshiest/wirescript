@@ -278,9 +278,6 @@ pub(super) fn wire_array_variant_from_literals(
     }
 }
 
-/// Convert a Literal to a Box<dyn AsBrdbValue> using the most appropriate
-/// type. For wire_graph_variant fields, wraps in WireVariant. For plain
-/// typed fields, uses the native type directly.
 /// Convert a Literal to a Box<dyn AsBrdbValue> as a WireVariant.
 pub(super) fn literal_to_boxed_wire_variant(
     lit: &Literal,
@@ -299,13 +296,13 @@ pub(super) fn literal_to_boxed_wire_variant(
     Box::new(var_type_to_wire_variant(port_ty))
 }
 
-/// Convert a Literal to a Box<dyn AsBrdbValue> using native types (str/i32/f64/bool).
+/// Convert a Literal to its native string representation (str/i32/f64/bool as text).
 ///
 /// `None` for a literal with no native-string representation — a `const`
 /// record, which typecheck's validators are supposed to keep out of a
 /// `FieldKind::Str` field entirely (see the caller in `components.rs`, which
-/// turns a `None` here into `EmitError::UnrepresentableLiteral` rather than
-/// the process-aborting `unreachable!()` this used to be).
+/// turns a `None` here into `EmitError::UnrepresentableLiteral` instead of
+/// panicking).
 pub(super) fn literal_to_string(lit: &Literal) -> Option<String> {
     match lit {
         Literal::String(s) => Some(s.clone()),

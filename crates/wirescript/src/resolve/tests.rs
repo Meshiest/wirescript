@@ -248,8 +248,8 @@
 
     #[test]
     fn genuinely_unused_import_still_warns_alongside_chip_handler() {
-        // Guards the fix above from over-reaching: widening the scan must not
-        // blind the lint. UNUSED is imported and never read anywhere.
+        // The wider usage scan above must still catch a genuinely unused
+        // import: UNUSED is imported and never read anywhere.
         let loader = mem(&[("lib.ws", "const CH = \"chan.a\"\nconst UNUSED = 5")]);
         let r = resolve(
             "import { CH, UNUSED } from \"lib\"\n\
@@ -447,9 +447,8 @@
     /// without the cycle guard this hangs or overflows the stack first.
     ///
     /// The recursive field is left unexpanded and so still fails to resolve in
-    /// the importing module (WS002) — unchanged from the single-pass expansion
-    /// this replaced, which left the same name behind. What must hold is that
-    /// everything *around* the cycle still types.
+    /// the importing module (WS002). What must hold is that everything
+    /// *around* the cycle still types.
     #[test]
     fn recursive_alias_expansion_terminates() {
         let lib = "type Node = { v: int, next: Node }\n\

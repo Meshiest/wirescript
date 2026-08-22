@@ -121,10 +121,10 @@ fn collapse_container_ref(t: Type) -> Type {
 /// remaining call arms without having emitted anything.
 ///
 /// The reach here must match lowering's `resolve_field_chain` (see the
-/// record-resolved container methods in `lower/call/dispatch.rs`): while this
-/// only accepted a bare identifier, `g.ready.sum()` lowered to a real
-/// `ArrayVar_Sum` gate but typed as `any`, so arithmetic on the result had no
-/// overload.
+/// record-resolved container methods in `lower/call/dispatch.rs`) — narrowing
+/// it to a bare identifier mistypes a hit: `g.ready.sum()` would still lower
+/// to a real `ArrayVar_Sum` gate but type as `any`, leaving arithmetic on the
+/// result with no overload.
 fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
     match e {
         Expr::Ident { name, .. } => {
@@ -546,10 +546,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 // the element type and this would fall through to Any. Lowering
                 // already maps these names to the gate's bOutOfBounds port.
                 (_, "OutOfBounds" | "bOutOfBounds") => Type::Bool,
-                // A scalar has no fields, so `c.whatever` on an `int` is a typo
-                // — it used to type `any` silently while lowering read the whole
-                // base value (`b = c.whatever` behaved as `b = c`). The one
-                // legal exception is projecting a single-output call result by
+                // A scalar has no fields, so `c.whatever` on an `int` is a typo.
+                // The one legal exception is projecting a single-output call result by
                 // its output name (`let f = Foo(); f.result`), which types as
                 // the bare output; `single_output_alias` records exactly which
                 // bindings those are and what name each accepts, so a genuine
@@ -1024,9 +1022,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 match ns_lookup {
                     Some((kind, ret, params)) => {
                         // Route the call through the shared arg checker —
-                        // namespaced calls previously did NO argument
-                        // checking at all (silent miscompile on wrong type
-                        // or arity). Only `Fn`/`Chip` members are callable;
+                        // skipping it risks a silent miscompile on wrong type
+                        // or arity. Only `Fn`/`Chip` members are callable;
                         // a `TypeAlias` (etc.) member reached via call syntax
                         // has nothing to check here. A generic member's
                         // `params` may still carry `Type::Param` — there's no
@@ -1085,11 +1082,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 let elem = inner.as_ref().clone();
                 // Every array method lowers to an `Exec_*` gate (a mutation runs
                 // on the trigger; a read like `length`/`find`/`sum` samples on
-                // it), so a pure-context call is invalid — it used to lower to an
-                // `_Unsupported` placeholder that silently did nothing (WSP001,
-                // warn-only). Reject it as WS007, like a pure array index read.
-                // A READ on a `const` receiver is exempt: that should const-fold
-                // (a separate missing feature) and an exec error would mislead.
+                // it), so a pure-context call is invalid — reject it as WS007,
+                // like a pure array index read. A READ on a `const` receiver is
+                // exempt: that should const-fold (a separate missing feature)
+                // and an exec error would mislead.
                 if ctx.exec_mode() != ExecMode::Exec
                     && !container_call_exec_exempt(ctx, method.mutates, obj, args)
                 {
@@ -1192,12 +1188,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     v
                 };
                 check_args(ctx, &sig_of_callspec(c), &recv_args, 0, true, true, fa_range);
-                // Same exec-context rule the plain-call form applies above. It
-                // lived only in the `Expr::Ident` callee branch, so the
-                // receiver spelling of the very same gate went unchecked:
-                // `GetLocation(e)` was WS007 in pure position while
-                // `e.GetLocation()` compiled to an `_Unsupported` placeholder
-                // that reads a default, with the file reported clean.
+                // Same exec-context rule the plain-call form applies above —
+                // the receiver spelling of the same gate needs it too, or
+                // `e.GetLocation()` would silently compile to a no-op in pure
+                // position while `GetLocation(e)` correctly errors.
                 if c.exec && ctx.exec_mode() != ExecMode::Exec {
                     let has_exec_arg = args
                         .iter()
@@ -1396,7 +1390,7 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
     t
 }
 
-/// The shared WS003 sink (formerly `typecheck::expect_coerce`).
+/// The shared WS003 sink.
 pub(crate) fn coerce_or_emit(ctx: &mut TypeCheckCtx, from: &Type, to: &Type, range: &SourceRange) {
     if coerce(from, to) == CoerceRule::Mismatch {
         ctx.emit(

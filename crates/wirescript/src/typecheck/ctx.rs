@@ -125,8 +125,7 @@ pub struct NsDeclInfo {
     pub kind: SymbolKind,
     pub return_type: Option<TypeExpr>,
     /// The member's declared params, carried so a namespaced call
-    /// (`ns.f(args)`) can be arity/type-checked via `check_args` — before
-    /// this field existed those calls did NO argument checking at all. A
+    /// (`ns.f(args)`) can be arity/type-checked via `check_args`. A
     /// generic member's params may still carry `Type::Param` (there's no
     /// call-site `subst` here to resolve them against); `check_args`'s own
     /// `type_has_param` guard skips those, same as it does elsewhere.
@@ -135,8 +134,9 @@ pub struct NsDeclInfo {
     /// type — what `ns.member` evaluates to when read rather than called.
     /// `None` for callables, and for a value whose type can't be determined at
     /// registration time (an unannotated non-literal initializer), which reads
-    /// as `any` exactly as before. Without this a namespaced value reference
-    /// typed `any`, so passing it anywhere typed was a spurious mismatch.
+    /// as `any`. Without a resolved type here, a namespaced value reference
+    /// types as `any` everywhere, so passing it anywhere typed becomes a
+    /// spurious mismatch.
     pub value_type: Option<Type>,
 }
 
@@ -215,8 +215,7 @@ pub struct TypeCheckCtx<'a> {
     /// is the enforcement: the `Stmt::If` const-elision arm evaluates its
     /// condition against an environment with these removed, so a condition
     /// reading one simply fails to evaluate and BOTH branches get checked —
-    /// the safe over-checking direction, and exactly what the body did before
-    /// const `if` existed. Without it, `mod f(m: const int) { if m == 1 {…}
+    /// the safe over-checking direction. Without it, `mod f(m: const int) { if m == 1 {…}
     /// else {…} }` type-checks whichever branch the placeholder zero selects
     /// while lowering — which inlines the REAL argument — ships the other one.
     pub(super) scoped_const_placeholders: Vec<crate::collections::HashSet<String>>,
@@ -229,7 +228,7 @@ pub struct TypeCheckCtx<'a> {
     /// block that lowering emits. A depth counter rather than a bool for the
     /// same reason lowering uses one: annotated declarations nest.
     pub(super) nofold_depth: u32,
-    /// Inferred custom-event receiver slot types (Task 2's `infer_custom_event_slots`
+    /// Inferred custom-event receiver slot types (`infer_custom_event_slots`
     /// output), keyed by handler source range. Empty on pass 1 (nothing inferred
     /// yet); populated on pass 2 by `typecheck_with_inference`. Consulted by
     /// `bind_handler_trigger_params` for unannotated custom-event params and by
@@ -267,14 +266,14 @@ pub struct TypeCheckCtx<'a> {
     /// shadows a same-named outer declaration only inside the body that
     /// declares it and is gone the moment that body's scope pops.
     ///
-    /// Before this was a stack, two DIFFERENT decls sharing a name (an outer
-    /// mod shadowed by a same-named nested one) collided in a single flat
-    /// map: whichever was registered LAST silently won everywhere, including
-    /// at a call site that should have resolved the other one — typecheck and
-    /// lowering (which already resolved through scope) then evaluated
-    /// different `const mod` bodies for the same call, so one branch of a
-    /// dependent `if` was type-checked while lowering emitted the other,
-    /// unchecked. See `resolve_mod`.
+    /// A single flat map (instead of a stack) would let two DIFFERENT decls
+    /// sharing a name (an outer mod shadowed by a same-named nested one)
+    /// collide: whichever is registered LAST silently wins everywhere,
+    /// including at a call site that should resolve the other one —
+    /// typecheck and lowering (which resolve through scope) would then
+    /// evaluate different `const mod` bodies for the same call, so one
+    /// branch of a dependent `if` gets type-checked while lowering emits the
+    /// other, unchecked. See `resolve_mod`.
     pub mod_decls: Vec<HashMap<String, Arc<ChipDecl>>>,
     /// Source ranges of `if`/`else` blocks a const-evaluable condition
     /// dropped (`Stmt::If`'s const-elision arm), paired with a human-readable

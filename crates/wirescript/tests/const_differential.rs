@@ -170,7 +170,7 @@ fn every_const_fixture_compiles_without_warnings() {
 /// This test fails if const params stop working, in either direction: degrade
 /// `const string` to `string` and the first half dies on WS028 inside
 /// `lower_ok`; keep it type-checking but lose the bake and the `EventName`
-/// assertion goes empty. Verified by doing exactly that — see the task report.
+/// assertion goes empty.
 #[test]
 fn a_const_param_carries_a_literal_into_gate_config_where_a_plain_param_cannot() {
     let m = lower_ok(
@@ -207,7 +207,7 @@ fn a_const_param_carries_a_literal_into_gate_config_where_a_plain_param_cannot()
 /// a plain `let` here produces the IDENTICAL 2 gates, because `let`-into-var
 /// -initializer folding predates this feature entirely (see
 /// `src/lower/tests/const_init.rs`, e.g. `bare_named_constant_bakes`). This
-/// test therefore passes with or without Tasks 1-7. It is kept only as a
+/// test therefore passes whether or not this feature exists. It is kept only as a
 /// regression guard that adding `const` did not BREAK the pre-existing
 /// folding, and as a smoke test of the `gates`/`count` machinery above. The
 /// real const-specific guard is
@@ -224,10 +224,10 @@ fn a_const_binding_folds_into_a_literal_position() {
 
 /// The headline claim of the whole feature: a CALL to a `const mod` — not
 /// just a `const` binding or a `const` param's literal argument, but the
-/// CALL ITSELF, resolved through `ConstCtx::lookup_mod` (Task 13) — costs
+/// CALL ITSELF, resolved through `ConstCtx::lookup_mod` — costs
 /// ZERO gates, because `interp::eval_call` walks the callee's body in plain
 /// Rust and never touches `ctx.builder`/`add_gate`. `ping`'s `name` param is
-/// `const string` (Task 6), so `evtName("died")` sits in a position that
+/// `const string`, so `evtName("died")` sits in a position that
 /// FORCES it to be evaluated at compile time (a plain wire argument there
 /// is WS046, per `a_const_parameter_rejects_a_runtime_argument` in
 /// `typecheck/tests.rs`).
@@ -246,14 +246,13 @@ fn a_const_binding_folds_into_a_literal_position() {
 ///   constant), so it lowers normally: several more gates than `via_call`'s
 ///   zero, for the SAME computation.
 ///
-/// Regression note for anyone tempted to "simplify" this test: an earlier
-/// draft of the Task 13 implementation passed `via_call` at 5 gates (matching
-/// `ordinary`) — `lower_chip_call_inline` was ALSO unconditionally lowering
-/// every `const` parameter's argument as an ordinary wire (`lower_expr`)
-/// before the const value it computed ever got consulted, leaving `evtName`'s
-/// fully-expanded (but never wired to anything) body as 3 orphaned gates.
-/// Only `ping`'s param being `const` (not `evtName` itself) is what a caller
-/// can control here — see `is_const` in that function for the fix.
+/// If `lower_chip_call_inline` ever unconditionally lowers a `const`
+/// parameter's argument as an ordinary wire (`lower_expr`) before consulting
+/// the const value it computed, `via_call` regresses to 5 gates (matching
+/// `ordinary`), leaving `evtName`'s fully-expanded (but never wired to
+/// anything) body as 3 orphaned gates. Only `ping`'s param being `const` (not
+/// `evtName` itself) is what a caller can control here — see `is_const` in
+/// `lower_chip_call_inline`.
 #[test]
 fn a_const_mod_call_in_a_const_position_emits_zero_gates() {
     let via_call = gates(
@@ -293,10 +292,9 @@ fn a_const_mod_call_in_a_const_position_emits_zero_gates() {
 /// parameter of its own in `ping` to force evaluation. This only works if
 /// `CHANNEL`'s value actually lands in the SAME constant environment
 /// lowering reads when it bakes the gate — checked here by reading the real
-/// gate's `EventName` property, not merely by the absence of diagnostics (an
-/// earlier task in this feature shipped a silent miscompile — a program that
-/// type-checked cleanly while lowering silently dropped the value — that a
-/// diagnostics-only assertion would not have caught).
+/// gate's `EventName` property, not merely by the absence of diagnostics (a
+/// program can type-check cleanly while lowering silently drops the value,
+/// which a diagnostics-only assertion would not catch).
 #[test]
 fn a_const_binding_from_a_const_mod_call_bakes_downstream() {
     let m = lower_ok(
@@ -474,7 +472,7 @@ fn a_const_mod_call_nested_in_a_unary_operator_or_constructor_argument_emits_zer
 /// alias + rest, matching the fixture); `via_literal` is the byte-identical
 /// program with each destructured name replaced by the int it evaluates to.
 /// Equal gate counts is the strongest form of "zero gates for the
-/// destructure" — before this task, ANY destructuring `const` was rejected
+/// destructure" — without this support, destructuring `const` is rejected
 /// outright (WS046), so this also doubles as an end-to-end regression guard.
 #[test]
 fn a_const_record_destructure_in_a_const_position_emits_zero_gates() {
@@ -520,10 +518,9 @@ fn a_const_record_destructure_in_a_const_position_emits_zero_gates() {
 ///
 /// Not covered here, deliberately: binding the whole result to one name
 /// (`const dummy = pair(2)`) still lowers the call. That spelling stores a
-/// `Literal::Record` under a single name, which `lower::decl`'s gate 3
-/// excludes from the skip path because baking it early-returns past the
-/// `Binding::Record` its later field reads resolve through — see that gate's
-/// own comment.
+/// `Literal::Record` under a single name, which `lower::decl` excludes from
+/// the skip path because baking it early-returns past the `Binding::Record`
+/// its later field reads resolve through.
 ///
 /// The gate count alone cannot tell a real gate from an `_Unsupported`
 /// placeholder, and "zero gates" is exactly what a silently-dropped constant
@@ -584,15 +581,12 @@ fn a_multi_output_const_mod_destructure_emits_zero_gates() {
 /// (`counts`) and a live wire operand (`ping`'s `cv: const int` argument).
 ///
 /// Unlike this file's other differentials, both sides declare the same
-/// unused `const t = [10, 20, 30]`, rather than `via_literal` omitting it.
-/// That symmetry was originally needed because a bare top-level collection
-/// `const` was partially lowered to an `_Unsupported` placeholder whether or
-/// not anything indexed it, and holding that fixed cost on both sides was the
-/// only way to isolate the claim. It now costs ZERO gates on both sides (a
+/// unused `const t = [10, 20, 30]`, rather than `via_literal` omitting it: a
 /// `const` container materializes only where something reads it at runtime,
-/// and nothing here does), so the symmetry is no longer load-bearing — it is
-/// kept because keeping the two programs otherwise identical is what makes
-/// the comparison mean "indexing `t` costs nothing beyond declaring it".
+/// and nothing here does, so it costs zero gates on both sides regardless.
+/// Declared on both sides anyway, because keeping the two programs otherwise
+/// identical is what makes the comparison mean "indexing `t` costs nothing
+/// beyond declaring it".
 #[test]
 fn a_module_level_const_array_index_adds_no_gates_over_declaring_the_array() {
     const DECL: &str = "const t = [10, 20, 30]\n\
@@ -633,16 +627,14 @@ fn a_module_level_const_array_index_adds_no_gates_over_declaring_the_array() {
 // `build_const_env`'s fixpoint is a SEPARATE, order-independent computation
 // of the same names' VALUES for baking elsewhere (`var`/array initializers,
 // labels, …); it was never a promise that the `let` chain itself
-// type-checks with zero errors out of order, and this fix does not change
-// that pre-existing split — confirmed against the plain (no const mod
-// involved) form of the same pattern before writing the const-mod version.
+// type-checks with zero errors out of order.
 
 /// The `fixtures/const/assembly.ws` analog of
 /// `a_const_mod_call_per_array_element_in_a_const_position_emits_zero_gates`
 /// above: a `const mod` that ASSEMBLES its array conditionally — `if`+`push`,
 /// not a single array literal — still costs ZERO gates when the call sits in
-/// a const-required position, because `if`-tree-shaking (Task 15) and the
-/// mutation interpreter (this task) both run in plain Rust inside
+/// a const-required position, because `if`-tree-shaking and the
+/// mutation interpreter both run in plain Rust inside
 /// `interp::eval_call` and never touch `ctx.builder`.
 ///
 /// `via_call` (calling `rooms`, whose body conditionally `push`es) is checked
@@ -737,9 +729,9 @@ fn all_error_diags(source: &str, file: &str) -> Vec<String> {
 }
 
 /// A `const mod` that ASSEMBLES its result by mutating a `const` collection —
-/// the shape this feature's Task 21 introduced, and the one with no valid
-/// ordinary lowering (its `clear`/`push` target a `const` binding, which has
-/// no array var for the runtime array gates to point at).
+/// the one shape with no valid ordinary lowering (its `clear`/`push` target a
+/// `const` binding, which has no array var for the runtime array gates to
+/// point at).
 const MUTATING_CONST_MOD: &str = "const mod rooms(n: int) -> int[] {\n\
    const t = [0]\n\
    t.clear()\n\
@@ -753,13 +745,12 @@ const MUTATING_CONST_MOD: &str = "const mod rooms(n: int) -> int[] {\n\
 /// ordinary code.
 ///
 /// This is not merely an inconvenience: binding the result to a name is the
-/// natural way to reuse one, so leaving it broken would make the mods Task 21
-/// introduced unusable in exactly the spelling users reach for first.
+/// natural way to reuse one, so leaving it broken would make mutating const
+/// mods unusable in exactly the spelling users reach for first.
 ///
 /// All four binding forms are covered because they take different lowering
 /// paths (`TopDecl::Let` vs `Stmt::Let`, and `const` vs plain `let` differ in
-/// whether typecheck DEMANDS the evaluation succeed), and each previously
-/// failed: 1 WS044 at module scope, 3 inside a handler.
+/// whether typecheck DEMANDS the evaluation succeed).
 #[test]
 fn binding_a_mutating_const_mod_is_clean_at_every_scope() {
     for (label, src) in [

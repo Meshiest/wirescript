@@ -30,8 +30,8 @@ pub(crate) enum InVariant {
 }
 
 /// A parsed case operand/output value. Scalar variants keep the certified
-/// table's raw text (parsed by `lower/fold/eval.rs`'s replay harness, same
-/// split as before); composite variants are parsed HERE, structurally, from
+/// table's raw text (parsed by `lower/fold/eval.rs`'s replay harness);
+/// composite variants are parsed HERE, structurally, from
 /// their constructor text (`Vec(x,y,z)`, `Rotation(pitch,yaw,roll)`,
 /// `Quat(x,y,z,w)`, `Color(r,g,b[,a])`) since that's the only form an
 /// operand value ever takes in the table — a malformed constructor is a

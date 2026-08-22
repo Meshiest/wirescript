@@ -42,19 +42,13 @@ chip { chip { var inner: int = 0 } var outer: int = 0 }\n";
     /// Depth grows RIGHTWARD: each nesting level is a column stepping past
     /// the widest plane of the level before it, and planes inside a column are
     /// spread vertically instead.
-    ///
-    /// Replaces `rows_stack_upward_without_overlap`, which pinned the opposite
-    /// arrangement — depth stacked in world Z with siblings spread along Y.
-    /// Every claim it made survives here with the two axes swapped; the
-    /// no-overlap and child-clear-of-parent guarantees are unchanged.
     #[test]
     fn columns_grow_rightward_without_overlap() {
         let module = lowered(SRC);
         let lr = crate::layout::layout(&module);
         let wall = assign_wall_slots(&module, &lr, (0, 0, 6));
 
-        // Root: bottom edge just above the chip brick's top face. Unchanged —
-        // the root's own placement is not part of the transposition.
+        // Root: bottom edge just above the chip brick's top face.
         let chip_top = 6.0 + 2.0; // pos.z + half height
         let root_bottom = wall.root.location.z - wall.root.extent.x as f32;
         assert_eq!(root_bottom, chip_top + WALL_ROOT_CLEARANCE);
@@ -170,8 +164,6 @@ let c = C(go)\n";
         let lr = crate::layout::layout(&module);
         let wall = assign_wall_slots(&module, &lr, (0, 0, 6));
 
-        // Order chips by their brick position in the parent plane (code order),
-        // then assert the wall slots preserve that order.
         let mut chips: Vec<(NodeId, i32)> = module
             .chips
             .keys()
@@ -235,11 +227,9 @@ let c = C(go)\n";
     /// lone depth-2 plane here has nothing to collide with, so it lands
     /// exactly on its brick.
     ///
-    /// The anchored axis is now the VERTICAL one: depth is carried by the
+    /// The anchored axis is the VERTICAL one: depth is carried by the
     /// column step, which frees world Z to track the brick's own row (local +X
-    /// → world up). Previously this asserted the same relationship on world Y
-    /// against the brick's local Y — the claim is unchanged, the axes swapped
-    /// with the arrangement.
+    /// → world up).
     #[test]
     fn nested_planes_anchor_on_their_parents_plane() {
         let src = "in go: exec\n\

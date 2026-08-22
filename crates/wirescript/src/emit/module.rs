@@ -161,7 +161,6 @@ pub(super) fn emit_module(
         let mut gate_inlined: StdMap<Sym, &Literal> = StdMap::new();
         if let Some(entries) = inlined_by_node.get(id) {
             for (port_idx, lit) in entries {
-                // Convert PortIndex → Sym for property key lookup
                 let port_sym = crate::intern::intern(port_idx.as_str());
                 gate_inlined.insert(port_sym, lit);
             }

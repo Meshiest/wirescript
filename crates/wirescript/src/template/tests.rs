@@ -37,7 +37,6 @@
         let input_b_pi = WirePort::InputB;
         let output_pi = WirePort::Output;
 
-        // in_a node
         let in_a = Node {
             id: in_a_id,
             kind: NodeKind::Input,
@@ -54,7 +53,6 @@
             note: None,
         };
 
-        // in_b node
         let in_b = Node {
             id: in_b_id,
             kind: NodeKind::Input,
@@ -71,7 +69,6 @@
             note: None,
         };
 
-        // add gate
         let add = Node {
             id: add_id,
             kind: NodeKind::Gate,
@@ -91,7 +88,6 @@
             note: None,
         };
 
-        // out_r node
         let out_r = Node {
             id: out_r_id,
             kind: NodeKind::Output,
@@ -154,7 +150,6 @@
         m
     }
 
-    // ── Test 1 ────────────────────────────────────────────────────────────────
     #[test]
     fn template_from_module_preserves_structure() {
         let m = simple_add_module();
@@ -173,7 +168,6 @@
         assert!(t.external_refs.is_empty());
     }
 
-    // ── Test 2 ────────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_produces_unique_ids() {
         let t = CompiledTemplate::from_module(simple_add_module());
@@ -185,7 +179,6 @@
         let ids0: std::collections::HashSet<NodeId> = inst0.nodes.keys().cloned().collect();
         let ids1: std::collections::HashSet<NodeId> = inst1.nodes.keys().cloned().collect();
 
-        // The two sets must be completely disjoint.
         assert!(
             ids0.is_disjoint(&ids1),
             "inst0 and inst1 share node IDs: {:?}",
@@ -193,7 +186,6 @@
         );
     }
 
-    // ── Test 3 ────────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_preserves_wire_integrity() {
         let t = CompiledTemplate::from_module(simple_add_module());
@@ -213,7 +205,6 @@
         }
     }
 
-    // ── Test 4 ────────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_resolves_captured_refs() {
         let mut m = simple_add_module();
@@ -222,7 +213,6 @@
         let ext_id = NodeId::fresh();
         use crate::ir::port_registry::WirePort;
         let ext_port = WirePort::Value;
-        // Pick an existing input node from the module.
         let in_a_id = m.inputs[0];
         let rer_in = WirePort::RerInput;
 
@@ -247,8 +237,8 @@
 
         let inst = t.instantiate("cap_test", &captures);
 
-        // Find the wire that used to point to external_var — it must now point
-        // to caller_node_id, not to a fresh prefixed ID.
+        // The wire that pointed to external_var in the template must now
+        // point to caller_node_id.
         let resolved_wire = inst
             .wires
             .iter()
@@ -263,7 +253,6 @@
         );
     }
 
-    // ── Test 5 ────────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_captures_not_remapped_as_internal() {
         let m = simple_add_module();
@@ -290,15 +279,10 @@
             );
         }
 
-        // Wires referencing the external should use caller_id.
-        // With numeric IDs there are no "prefixed" IDs to check against;
-        // just verify external refs resolve to the caller's ID.
         for wire in &inst.wires {
             if wire.source.node_id != caller_id && wire.target.node_id != caller_id {
-                // This wire doesn't touch the external ref — skip.
                 continue;
             }
-            // At least one end should be caller_id (the external).
             assert!(
                 wire.source.node_id == caller_id || wire.target.node_id == caller_id,
                 "external ref wire should use caller_id"
@@ -306,7 +290,6 @@
         }
     }
 
-    // ── Test 7 ────────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_50_times_all_disjoint() {
         let t = CompiledTemplate::from_module(simple_add_module());
@@ -325,7 +308,6 @@
         }
     }
 
-    // ── Test 8 ────────────────────────────────────────────────────────────────
     fn collect_all_ids(m: &Module) -> std::collections::HashSet<NodeId> {
         let mut ids: std::collections::HashSet<NodeId> = m.nodes.keys().cloned().collect();
         for child_module in m.chips.values() {
@@ -421,7 +403,6 @@
         let inst0 = t.instantiate("top0", &caps);
         let inst1 = t.instantiate("top1", &caps);
 
-        // All IDs across both instances must be disjoint.
         let ids0 = collect_all_ids(&inst0);
         let ids1 = collect_all_ids(&inst1);
         assert!(
@@ -437,7 +418,6 @@
         assert_eq!(mid_inst.chips.len(), 1, "mid should have 1 child chip");
     }
 
-    // ── Test 9 ────────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_empty_template() {
         let m = Module::new("empty");
@@ -449,7 +429,6 @@
         assert_eq!(inst.chips.len(), 0, "expected 0 chips");
     }
 
-    // ── Test 10 ───────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_no_captures_no_params() {
         let gate_id = NodeId::fresh();
@@ -484,7 +463,6 @@
         );
     }
 
-    // ── Test 11 ───────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_multiple_captures_same_call() {
         use crate::intern::sym;
@@ -577,7 +555,6 @@
 
         let inst = t.instantiate("mc0", &captures);
 
-        // All three real nodes must appear as wire sources.
         let wire_sources: std::collections::HashSet<NodeId> =
             inst.wires.iter().map(|w| w.source.node_id).collect();
 
@@ -595,7 +572,6 @@
             "real_node_c not found as wire source"
         );
 
-        // None of the original placeholder IDs should remain.
         for w in &inst.wires {
             assert_ne!(
                 w.source.node_id, ext_a_id,
@@ -612,7 +588,6 @@
         }
     }
 
-    // ── Test 6 ────────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_remaps_chip_children() {
         let mut m = simple_add_module();
@@ -646,7 +621,6 @@
         let inst0 = t.instantiate("ci0", &caps);
         let inst1 = t.instantiate("ci1", &caps);
 
-        // Chip keys must be different between instances.
         let chip_keys0: std::collections::HashSet<NodeId> = inst0.chips.keys().cloned().collect();
         let chip_keys1: std::collections::HashSet<NodeId> = inst1.chips.keys().cloned().collect();
         assert!(
@@ -654,7 +628,6 @@
             "chip keys overlap between instances"
         );
 
-        // Child node IDs must also be disjoint.
         for (_, child0) in &inst0.chips {
             for (_, child1) in &inst1.chips {
                 let child0_mod = child0;
@@ -671,7 +644,6 @@
         }
     }
 
-    // ── Test 12 ───────────────────────────────────────────────────────────────
     #[test]
     fn instantiate_boundary_wire_into_child_is_per_instance() {
         // A parent module with a gate wired into a CHILD chip's input node: the

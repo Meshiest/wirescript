@@ -91,7 +91,7 @@ fn record_literal_return_destructures_to_fields() {
     );
 }
 
-/// Test 1: Record literal and field access.
+/// Record literal and field access.
 /// `type State = { val: *int }` with `var n` makes `s.val` alias `n`.
 /// Writing `s.val = 42` in exec should produce a Var_Set targeting `n`'s PseudoVar.
 #[test]
@@ -109,7 +109,6 @@ on RoundStart() { s.val = 42 }",
         "writing through a record ref field should produce a Var_Set gate"
     );
 
-    // The Var_Set's VarRef input should be wired to n's PseudoVar node.
     let pseudo_var = r
         .module
         .nodes
@@ -140,7 +139,7 @@ on RoundStart() { s.val = 42 }",
     );
 }
 
-/// Test 2: Record pass-through to mod.
+/// Record pass-through to mod.
 /// Passing a record with a `*int` field into a mod that increments it
 /// should produce a Var_Get+add+Var_Set (or IncVar) chain.
 #[test]
@@ -164,7 +163,6 @@ on RoundStart() { bump(s) }",
         "record ref field increment inside mod should produce IncVar or Var_Set"
     );
 
-    // The operation should target n's PseudoVar.
     let pseudo_var = r
         .module
         .nodes
@@ -172,7 +170,6 @@ on RoundStart() { bump(s) }",
         .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
         .expect("expected a PseudoVar for `var n`");
 
-    // Check that at least one VarRef wire leads back to n's PseudoVar.
     let has_ref_wire = r.module.wires.iter().any(|w| {
         w.source.node_id == pseudo_var.id
             && w.source.port == crate::ir::port_registry::WirePort::VarRef
@@ -183,7 +180,7 @@ on RoundStart() { bump(s) }",
     );
 }
 
-/// Test 3: Record with array field.
+/// Record with array field.
 /// `type Mem = { data: int[] }` should let `m.data.push(42)` resolve to
 /// an ArrayVar_Push gate targeting `arr`'s ArrayVar node.
 #[test]
@@ -201,7 +198,6 @@ on RoundStart() { m.data.push(42) }",
         "pushing through a record array field should produce an ArrayVar_Push gate"
     );
 
-    // The Push should reference arr's ArrayVar pseudo-node.
     let array_var = r
         .module
         .nodes
@@ -232,7 +228,7 @@ on RoundStart() { m.data.push(42) }",
     );
 }
 
-/// Test 4: Record spread.
+/// Record spread.
 /// `let b = { ...a, y: 99 }` should resolve `b.x` to `a.x` (literal 1)
 /// and `b.y` to literal 99, producing a correct sum.
 #[test]
@@ -247,13 +243,12 @@ out result = sum",
     );
     assert_no_errors(&r);
 
-    // The addition should exist.
     assert!(
         has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
         "b.x + b.y should produce a MathAdd gate"
     );
 
-    // Verify no duplicate additions -- spread should not generate extra gates.
+    // Spread must not generate extra addition gates.
     assert_eq!(
         gate_count(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
         1,
@@ -261,7 +256,7 @@ out result = sum",
     );
 }
 
-/// Test 5: Record destructuring.
+/// Record destructuring.
 /// `let { x, y } = p` should install x and y as separate locals.
 /// `x + y` should produce an addition wired to the right literal sources.
 #[test]
@@ -281,14 +276,12 @@ out result = sum",
         "destructured x + y should produce a MathAdd gate"
     );
 
-    // Single addition gate from the destructured fields.
     assert_eq!(
         gate_count(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
         1,
         "should have exactly one addition gate"
     );
 
-    // The output node should exist.
     assert_eq!(r.module.outputs.len(), 1, "should have one output port");
 }
 
@@ -476,7 +469,7 @@ let I = C(exec = go)",
     );
 }
 
-/// Test 6: Mod parameter destructuring.
+/// Mod parameter destructuring.
 /// `mod set_val({ val }: State) { val = 42 }` — the destructured `val` field
 /// is a `*int` ref, so writing `val = 42` inside the mod should produce a
 /// Var_Set gate targeting `n`'s PseudoVar.
@@ -491,7 +484,6 @@ mod set_val({ val }: State) { val = 42 }
 on RoundStart() { set_val(s) }",
     );
     assert_no_errors(&r);
-    // Should have a Var_Set gate targeting n's PseudoVar
     let has_set = r
         .module
         .nodes
@@ -503,7 +495,7 @@ on RoundStart() { set_val(s) }",
     );
 }
 
-/// Test 7: Nested record field access.
+/// Nested record field access.
 /// `o.inner.x = 42` through two levels of record should resolve to
 /// a Var_Set targeting `x`'s PseudoVar.
 #[test]
@@ -699,14 +691,12 @@ on tick {
 }",
     );
     assert_no_errors(&r);
-    // The Var_Set must exist (compound assign through record field)
     let set_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
     assert!(
         set_count >= 1,
         "record field |= inside if inside mod should produce Var_Set, got {}",
         set_count
     );
-    // The Var_Set must be connected to the exec chain (not orphaned)
     let set_node = r
         .module
         .nodes
@@ -721,7 +711,6 @@ on tick {
         "Var_Set must have exec input wired (not orphaned)"
     );
 
-    // Also verify it compiles to brz without errors
     let lr = crate::layout::layout(&r.module);
     let brz = crate::emit::emit_brz(
         &r.module,
@@ -734,7 +723,6 @@ on tick {
 
 #[test]
 fn dump_record_vs_direct_cond_set() {
-    // Version A: direct *int param (old style)
     let r_direct = compile(
         "\
 var flag: int = 0
@@ -744,7 +732,6 @@ mod cond_set(f_val: *int, cond: bool) {
 in tick: exec
 on tick { cond_set(flag, true) }",
     );
-    // Version B: record param (new style)
     let r_record = compile(
         "\
 type F = { val: *int }
@@ -773,7 +760,6 @@ on tick {
         "record version should have same number of Var_Sets as direct"
     );
 
-    // Constant-folded: no Branch gate needed when condition is literal bool
     let branch_count = gate_count(&r_direct, "BrickComponentType_WireGraph_Exec_Branch");
     assert_eq!(
         branch_count, 0,

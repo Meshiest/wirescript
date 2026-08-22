@@ -2,14 +2,14 @@ use super::*;
 use crate::catalog::operators::OpRule;
 
 /// The operator rule for the CURRENT monomorph. Non-generic bodies read the
-/// baked `op_resolutions` map (byte-identical to pre-generics lowering). Inside
-/// a generic mod's body that map holds the STALE last-mask-member rule — the
-/// per-mask-member body check in typecheck re-resolves every operator once per
-/// member and the last write wins (`Numeric` → Color, `Scalar` → Float, an
-/// unbounded `T` → Prefab), so a `square<int>` monomorph would otherwise emit a
-/// Color MathMultiply. Re-resolve from the operands' ACTUAL lowered port types,
-/// which already carry the concrete monomorph; nested operators resolve
-/// bottom-up because each sub-expr's output port type is fixed first.
+/// baked `op_resolutions` map. Inside a generic mod's body that map holds the
+/// STALE last-mask-member rule — the per-mask-member body check in typecheck
+/// re-resolves every operator once per member and the last write wins
+/// (`Numeric` → Color, `Scalar` → Float, an unbounded `T` → Prefab), so a
+/// `square<int>` monomorph would otherwise emit a Color MathMultiply.
+/// Re-resolve from the operands' ACTUAL lowered port types, which already
+/// carry the concrete monomorph; nested operators resolve bottom-up because
+/// each sub-expr's output port type is fixed first.
 fn mono_op_rule(ctx: &LowerCtx, e: &Expr, op: &str, operand_ports: &[PortRef]) -> Option<OpRule> {
     if ctx.mono_stack.is_empty() {
         return ctx.op_for(e).cloned();
@@ -33,9 +33,9 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         } => (op, left, right, range),
         _ => return synthesise_unsupported(ctx, e),
     };
-    // Non-generic path short-circuits on a missing rule exactly as before (no
-    // operand gates created). A generic body defers rule resolution until the
-    // operands are lowered so `mono_op_rule` can read their concrete port types.
+    // Non-generic path short-circuits on a missing rule (no operand gates
+    // created). A generic body defers rule resolution until the operands are
+    // lowered so `mono_op_rule` can read their concrete port types.
     if ctx.mono_stack.is_empty() && ctx.op_for(e).is_none() {
         return synthesise_unsupported(ctx, e);
     }
@@ -46,7 +46,7 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         None => return synthesise_unsupported(ctx, e),
     };
 
-    // Players (and other objects) no longer cast directly to ints on a math gate,
+    // Players (and other objects) don't cast directly to ints on a math gate,
     // so an object math operand is routed through `(obj || false)` first — that
     // LogicalOR coerces it to a value the gate accepts. `1 + player` becomes
     // `add(1, or(player, false))`. Only applies to the Math* gates; logical and
@@ -91,7 +91,7 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     node_id.port(out)
 }
 
-/// Players and other object operands no longer coerce directly to ints on a math
+/// Players and other object operands don't coerce directly to ints on a math
 /// gate, so route an object operand through `(obj || false)` — a LogicalOR with a
 /// `false` literal — which coerces it to a value the math gate accepts. Returns
 /// the (possibly rewritten) port and its effective wire type. No-op for

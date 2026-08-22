@@ -125,7 +125,7 @@ pub fn eval_call(
     };
     let flow = exec_block(&decl.body, &mut call_cx, &sig, &mut outputs, budget)?.0;
     match flow {
-        // A `return <value>` wins outright — and can no longer disagree with
+        // A `return <value>` wins outright — and cannot disagree with
         // lowering about it, because the `Stmt::Return` arm has already
         // rejected both ways that could happen: a value returned past an
         // earlier `out` (lowering would wire that `out` instead), and a
@@ -351,8 +351,8 @@ fn earliest_declared_out(block: &Block, declared: &[NamedOutput]) -> Option<usiz
 }
 
 /// Runs `block`'s statements against `cx`, mutating it with every
-/// `let`/`const` binding the block introduces (and, since this task, every
-/// `t.push(…)`-shaped mutation of an already-bound const array/map — see
+/// `let`/`const` binding the block introduces, and every
+/// `t.push(…)`-shaped mutation of an already-bound const array/map (see
 /// [`exec_call_stmt`]). Returns `Ok((Flow::Returned(..), shadowed))` the
 /// moment a `return` is hit (short-circuiting the rest of the block, exactly
 /// like a real `return`), `Ok((Flow::Fell, shadowed))` if every statement ran
@@ -487,12 +487,11 @@ fn exec_block(
                 // has no meaning anywhere: `lower::stmt`'s `Stmt::Return`
                 // arm wires a plain returned value only through
                 // `output_count() == 1`, so with 2+ outputs lowering
-                // silently drops it — and const evaluation used to let it
-                // win outright, handing every consumer a bare scalar where
-                // the type system promised a record. A field read off that
-                // scalar (`c.a`) then lowered to a `SplitColor` gate,
-                // reinterpreting the field as a colour channel with no
-                // diagnostic at all.
+                // silently drops it. Letting it win outright here would hand
+                // every consumer a bare scalar where the type system
+                // promised a record: a field read off that scalar (`c.a`)
+                // would lower to a `SplitColor` gate, reinterpreting the
+                // field as a colour channel with no diagnostic at all.
                 //
                 // A RECORD return is exempt because it IS the documented
                 // multi-output mechanism: the same `lower::stmt` arm stashes
@@ -695,8 +694,7 @@ fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Resu
 /// unresolved name, a non-collection value, a non-Ident receiver) falls
 /// through to the same generic "this statement" error every other
 /// unsupported `ExprStmt` gets, since it isn't a const-collection mutation
-/// at all — that diagnostic already existed for every field-access call
-/// before this task; only a genuine collection mutation attempt is new.
+/// at all.
 fn exec_mutating_method_call(
     obj: &Expr,
     field: &str,

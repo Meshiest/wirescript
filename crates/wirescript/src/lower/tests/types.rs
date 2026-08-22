@@ -181,13 +181,13 @@ fn bitwise_and_still_works_with_ampersand_ref() {
         "infix & should still be bitwise AND");
 }
 
-/// Regression for the `types::resolve` unification: lowering's
-/// `type_of_type_expr` (predeclare.rs) used to be missing `zone`/`teleport`
-/// from its primitive-name match, so a `zone`/`teleport`-annotated `in` port
-/// silently degraded to `Type::Any` on this path even though typecheck had
-/// already resolved it correctly. `pre_declare_input` (predeclare.rs) feeds
-/// the resolved type straight into the `MicrochipInput` node's output port,
-/// so an `Any` drift is directly observable there.
+/// `type_of_type_expr` (predeclare.rs) must include `zone`/`teleport` in its
+/// primitive-name match — omitting them lets a `zone`/`teleport`-annotated
+/// `in` port silently degrade to `Type::Any` on this path even though
+/// typecheck already resolved it correctly. `pre_declare_input`
+/// (predeclare.rs) feeds the resolved type straight into the
+/// `MicrochipInput` node's output port, so an `Any` drift is directly
+/// observable there.
 #[test]
 fn zone_and_teleport_annotations_keep_their_type_through_lowering() {
     let r = compile("in z: zone\nin p: teleport");

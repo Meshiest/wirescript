@@ -393,16 +393,16 @@ pub(super) fn lower_index_access(
         return port;
     }
     // Neither a real container nor a compile-time-constant read: the last case
-    // is a `const` container read at a RUNTIME index (`xs[i]`), which used to
-    // land on the placeholder below and silently read 0. Give the container its
-    // runtime form and retry the ordinary lowering.
+    // is a `const` container read at a RUNTIME index (`xs[i]`), which would
+    // otherwise land on the placeholder below and silently read 0. Give the
+    // container its runtime form and retry the ordinary lowering.
     //
     // Placed THIRD, after the fold, and that order is load-bearing: it keeps
-    // `const z = t[1]` folding to a literal with no gate at all, exactly as
-    // before. Like the fold above it, this is strictly a NARROWING of the
-    // `_Unsupported` case — `lower_index_access_runtime` reaches every `None`
-    // exit before lowering the index expression (see its doc comment), so the
-    // retry cannot duplicate gates.
+    // `const z = t[1]` folding to a literal with no gate at all. Like the fold
+    // above it, this is strictly a NARROWING of the `_Unsupported` case —
+    // `lower_index_access_runtime` reaches every `None` exit before lowering
+    // the index expression (see its doc comment), so the retry cannot
+    // duplicate gates.
     if materialize_const_container(ctx, obj).is_some()
         && let Some(port) = lower_index_access_runtime(ctx, obj, index, range)
     {
@@ -412,9 +412,8 @@ pub(super) fn lower_index_access(
 }
 
 /// The ordinary (gate-emitting) lowering of `obj[index]`. `None` means "no
-/// runtime form here" — every such exit used to be a `synthesise_unsupported`
-/// call directly; they now return `None` so [`lower_index_access`] can try a
-/// compile-time fold before falling back to that same placeholder.
+/// runtime form here", letting [`lower_index_access`] try a compile-time fold
+/// before falling back to the `_Unsupported` placeholder.
 ///
 /// Every `None` exit is reached BEFORE the index expression is lowered (the
 /// only container resolution helpers used above that point, `resolve_map_target`
@@ -752,8 +751,7 @@ pub(super) fn lower_map_literal_assign(
 /// runtime) a real container gate. Mutation is what makes those two disagree:
 /// after `xs.push(40)`, `const n = xs.length()` and the gate would both be
 /// "right" with different answers, and the const environment would stop being a
-/// single source of truth. So it stays an error, exactly as it already was
-/// before a `const` container had any runtime form at all.
+/// single source of truth. So it stays an error.
 ///
 /// Reuses WS044 (the container-method diagnostic) with a message naming the
 /// real cause: the backstop's generic "did not resolve to an array or map"

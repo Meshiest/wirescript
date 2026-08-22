@@ -233,8 +233,6 @@ pub(super) fn resolve_enum_value(type_name: &str, lit: &Literal) -> Option<u8> {
     match lit {
         Literal::Int(n) => Some(*n as u8),
         Literal::String(s) => {
-            // Try exact match first ("EBRDisplayTextJustification::Left"),
-            // then bare suffix ("Left").
             if let Some(id) = schema.intern.get(s) {
                 if let Some(&v) = enum_def.get(&id) {
                     return Some(v as u8);

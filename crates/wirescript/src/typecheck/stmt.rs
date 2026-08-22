@@ -164,8 +164,8 @@ fn check_stmt_inner(
             // the same failure is the evaluator's own error (WS046, or
             // WS047/WS048 for a refused/budget-exceeded evaluation).
             if let LetBinding::Ident { name, .. } = &l.binding {
-                // Evaluate against the FULL environment (unchanged behavior),
-                // and — for a value that does evaluate — probe again with
+                // Evaluate against the FULL environment, and — for a value
+                // that does evaluate — probe again with
                 // placeholders removed. Placeholder-ness is TRANSITIVE:
                 // `const t = m + 1` inside a body with a `const` param `m`
                 // only evaluates because `m` is seeded as a type-shaped zero,
@@ -258,21 +258,19 @@ fn check_stmt_inner(
                     // ONLY a `const` destructure is recorded, mirroring
                     // `lower::decl`'s own `if d.is_const` gate exactly.
                     //
-                    // Recording a plain `let` here too (which this did
-                    // briefly) makes the two sides disagree in the one
-                    // direction that is never safe: typecheck would treat the
-                    // name as a compile-time constant while lowering — whose
-                    // non-`const` path is the NARROW `expr_to_literal_in`, and
-                    // which therefore cannot fold the record literal such a
-                    // binding destructures — would not. The name then
-                    // satisfies a constant-only config slot at check time and
-                    // is silently dropped at fold time
-                    // (`lower::call::builtin`), so
-                    // `let { chan } = { chan: "evt" }` + `SendCustomEvent(chan,
-                    // v)` compiled clean and shipped a gate with an EMPTY
-                    // channel name. Gating here restores the WS028 that
-                    // correctly rejected exactly that program before
-                    // destructuring `const` existed.
+                    // Recording a plain `let` here too would make the two
+                    // sides disagree in the one direction that is never
+                    // safe: typecheck would treat the name as a compile-time
+                    // constant while lowering — whose non-`const` path is
+                    // the NARROW `expr_to_literal_in`, and which therefore
+                    // cannot fold the record literal such a binding
+                    // destructures — would not. The name then satisfies a
+                    // constant-only config slot at check time and is
+                    // silently dropped at fold time (`lower::call::builtin`),
+                    // so `let { chan } = { chan: "evt" }` +
+                    // `SendCustomEvent(chan, v)` would compile clean and ship
+                    // a gate with an EMPTY channel name. Gating here keeps
+                    // WS028 rejecting that program.
                     //
                     // Widening LOWERING to match instead would not work: its
                     // non-`const` path is narrow by design (see
@@ -371,7 +369,7 @@ fn check_stmt_inner(
                 // -> (r: T)`) — check the value against it via the current
                 // `out_ctx` frame. Both sides unwrap refs, same as the
                 // annotated branch above. Not an output (e.g. shadowed by
-                // something else) → nothing to check against, same as before.
+                // something else) → nothing to check against.
                 let vty = infer::infer(ctx, value);
                 if let Some(out_ty) = current_output_ty(ctx, &b.name) {
                     infer::coerce_or_emit(
@@ -511,8 +509,7 @@ fn check_stmt_inner(
             //    the REAL argument and would pick the other way. Dropping
             //    placeholders from the environment makes such a condition
             //    simply unevaluable here, so both blocks are checked — the
-            //    safe over-checking direction, and exactly what this body did
-            //    before const `if` existed.
+            //    safe over-checking direction.
             // 3. const-DECLARED-only — a plain `let` that merely happens to
             //    fold (no `const` keyword anywhere) must NOT gain this
             //    elision: the feature's own rule is that a program using no
@@ -520,8 +517,7 @@ fn check_stmt_inner(
             //    restricts the environment to names actually spelled `const`
             //    (see `const_declared`'s doc comment), so a condition built
             //    from a plain `let` simply fails to evaluate here and falls
-            //    through to the general Branch path below, exactly as it did
-            //    before this feature existed.
+            //    through to the general Branch path below.
             let cond_result = if ctx.nofold_depth > 0 {
                 None
             } else {
@@ -675,15 +671,13 @@ fn infer_assign_target(
             Some(s) if s.kind == SymbolKind::Map => unwrap_ref(&s.ty),
             // A `let` is only a writable target when it's reference-backed
             // (an array/map binding it aliases). A scalar `let` is a computed
-            // wire, not storage: `y = 5` on a `let y = x + 1` type-checked
-            // clean and then emitted NO gate (the write vanished).
+            // wire, not storage: writing to it (`y = 5` on a `let y = x + 1`)
+            // type-checks clean but emits no gate — the write vanishes.
             // A `const` container is the one reference-backed `let` that is
             // NOT a writable target. It is a compile-time value as well as a
             // runtime container, and a write would make those two disagree —
             // `xs[0] = 99` while `const z = xs[0]` still folds to the original
-            // element. (Before a `const` container had a runtime form at all
-            // this write type-checked clean and then lowered to nothing, so
-            // rejecting it replaces a silent drop, not a working feature.)
+            // element.
             Some(s)
                 if s.kind == SymbolKind::LetBinding
                     && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _))

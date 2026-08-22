@@ -19,8 +19,7 @@ fn count_class(m: &crate::ir::Module, class: &str) -> usize {
 }
 
 /// A `let` aliasing an array var must resolve for `x[i]` (and array methods),
-/// exactly like the original. It used to bind as a plain value and the index
-/// lowered to an `_Unsupported` placeholder.
+/// exactly like the original.
 #[test]
 fn let_alias_of_array_var_resolves_index() {
     let r = compile("var a = [0]\nin go: exec\non go { let ar = a\n let v = ar[0] }");
@@ -39,8 +38,7 @@ fn let_alias_of_array_var_resolves_index() {
 /// `let t = Other.member; t.0` where the namespace member's bare name is ALSO
 /// owned by the importer (`in start`): the member must still be reachable as
 /// `Other.member` (captured into the namespace map without clobbering the local
-/// `in start`). Previously `Other.start` fell through to the local input and
-/// `test.0` lowered to `_Unsupported`.
+/// `in start`).
 #[test]
 fn imported_namespace_tuple_pick_resolves() {
     let r = compile_multi(
@@ -57,8 +55,7 @@ fn imported_namespace_tuple_pick_resolves() {
 }
 
 /// A top-level `on` handler in an imported file runs as part of the importing
-/// program: its body lowers and wires to its own trigger. It used to be dropped
-/// (for `on <expr>` it left a dangling trigger gate with no body).
+/// program: its body lowers and wires to its own trigger.
 #[test]
 fn imported_on_handler_generates() {
     let r = compile_multi(
@@ -81,8 +78,7 @@ fn imported_on_handler_generates() {
 }
 
 /// A `let` aliasing an INPUT-port array/map (`in a: int[]` then `let x = a`)
-/// must resolve for `x[i]` and methods, like a `var` alias. It used to fall
-/// through to the scalar value path and lower the index to `_Unsupported`.
+/// must resolve for `x[i]` and methods, like a `var` alias.
 #[test]
 fn let_alias_of_input_array_resolves_index() {
     let r = compile("in a: int[]\nin go: exec\non go { let x = a\n let v = x[0] }");

@@ -6,9 +6,7 @@ use super::*;
 
 // Brickadia renders stored brick-colour bytes as sRGB directly (a raw
 // paint value like 60,160,240 shows up as that same bright blue in-game),
-// so these are the perceived sRGB colours we want, used verbatim. (They
-// were previously pre-darkened by γ=2.2 on the assumption the game decoded
-// them from linear — that double-darkened every gate brick.)
+// so these are the perceived sRGB colours we want, used verbatim.
 const C_YELLOW: Color = Color {
     r: 184,
     g: 145,

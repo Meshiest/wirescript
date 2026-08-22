@@ -378,11 +378,7 @@ fn resolve_input(
 /// no chip/opaque involved, reproduces it) and fixed here rather than in the
 /// harness, since the harness's OWN independent predictor (`predict()` in
 /// `examples/fuzz_programs.rs`) already implements this exact fallback —
-/// this driver was the one side actually missing it. (A follow-up review
-/// pass found `resolve_condition`/`try_resolve_format_text` still on plain
-/// `resolve_input` at the time — `Select(true, a, b)`'s baked `true` and
-/// `Fmt(...)`'s baked slot arguments were the same gap, just not yet routed
-/// through here.)
+/// this driver was the one side actually missing it.
 fn resolve_data_input(
     target: NodeId,
     port: WirePort,
@@ -709,14 +705,12 @@ fn try_resolve(
 /// node becomes a literal) and `cleanup_boundary_feeds`'s Rule B (a BRAND
 /// NEW node is minted as a literal), so the two never drift apart.
 ///
-/// Task-3 minimal deviation from that task's "table.rs + eval.rs only"
-/// scope: `Value` (fold/eval.rs) grew four composite variants (Vector/
-/// Rotator/Quat/Color) there, and this match must stay exhaustive over the
-/// FULL enum for the crate to compile at all — there is no way to add
-/// those variants without touching every exhaustive `match value` site,
-/// and this is the only one in the crate (verified via `grep -rn
-/// "Value::" src/`; `fuzz_programs.rs`'s uses are all `matches!`/tuple
-/// patterns, not exhaustive matches).
+/// `Value` (fold/eval.rs) has four composite variants (Vector/Rotator/Quat/
+/// Color), and this match must stay exhaustive over the FULL enum for the
+/// crate to compile at all — there is no way to add those variants without
+/// touching every exhaustive `match value` site, and this is the only one
+/// in the crate (verified via `grep -rn "Value::" src/`; `fuzz_programs.rs`'s
+/// uses are all `matches!`/tuple patterns, not exhaustive matches).
 fn literal_properties_and_ports(
     value: &Value,
 ) -> (

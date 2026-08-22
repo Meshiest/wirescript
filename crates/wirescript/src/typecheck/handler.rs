@@ -109,7 +109,7 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
                 // An explicit annotation wins; a record capture (`-> { f: a }`)
                 // resolves by the original field name; a tuple capture
                 // (`-> (a, b)`) is positional over the data fields; `Any` when
-                // nothing resolves (a genuinely-untyped trigger — unchanged).
+                // nothing resolves (a genuinely-untyped trigger).
                 let ty = if let Some(te) = &pname.ty {
                     let t = resolve_type_expr(ctx, te);
                     warn_any_annotation(ctx, &t, type_expr_range(te));
@@ -163,8 +163,8 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
                 None => {
                     // Custom Event's data outputs are untyped in the catalog, so an
                     // unannotated param has no declared type to fall back on. Look
-                    // it up in `ce_slots` (Task 2's `infer_custom_event_slots`,
-                    // keyed by this handler's source range): pass 2 has it resolved
+                    // it up in `ce_slots` (`infer_custom_event_slots`, keyed by
+                    // this handler's source range): pass 2 has it resolved
                     // from an in-unit sender (or defaulted to float with a WS042
                     // warning already emitted by the inference pass); pass 1 (and
                     // any non-custom-event handler) has nothing there yet, so fall

@@ -131,12 +131,12 @@ pub(super) fn wire_chip_args_and_outputs(
 
     // The chip body may have written to caller-visible vars — through a ref/
     // array param, a dissolved record field, OR a top-level var it references
-    // directly (e.g. `chip Bump() { g = g + 1 }` incrementing a global). Only
-    // the param cases were cleared before, so a global a chip wrote left the
-    // caller's cached Var_Get stale, and a read after the call saw the
-    // pre-call value. The instance body is a separate module, so we can't
-    // cheaply tell which caller vars it touched — blanket-reset every cache,
-    // exactly as the inline-mod path does after its body.
+    // directly (e.g. `chip Bump() { g = g + 1 }` incrementing a global).
+    // Clearing only the param-passed vars would leave a global write's cache
+    // stale, so a read after the call would see the pre-call value. The
+    // instance body is a separate module, so we can't cheaply tell which
+    // caller vars it touched — blanket-reset every cache, exactly as the
+    // inline-mod path does after its body.
     reset_var_get_caches(ctx);
 
     if !child_outputs.is_empty() {

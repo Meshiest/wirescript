@@ -181,7 +181,7 @@ mod tests {
 
     /// An inline nested-prefab block (`$```…```) must compile in the browser
     /// build: the inner source is compiled to its own `.brz` and embedded.
-    /// Before the nested compiler was wired up, this errored with "no nested
+    /// Without a nested compiler configured, this fails with "no nested
     /// compiler configured for this compile".
     #[test]
     fn nested_prefab_block_compiles_and_embeds() {

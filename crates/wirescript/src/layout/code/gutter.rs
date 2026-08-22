@@ -809,11 +809,10 @@ pub(super) fn lay_bus(
         // two constraints cannot disagree. Levels are tried upward from the
         // stop's own row, bounded by that row's top edge so a run never climbs
         // out of the row it serves, and each candidate must be both unused on
-        // the row and free in the lane's column. The search subsumes the old
-        // fixed pre-claim: a lane whose stops do not descend monotonically —
-        // possible only where two bands share a page and interleave their row
-        // keys — simply finds its next free level instead of stacking two
-        // rerouters in one cell.
+        // the row and free in the lane's column. A lane whose stops do not
+        // descend monotonically — possible only where two bands share a page
+        // and interleave their row keys — simply finds its next free level
+        // instead of stacking two rerouters in one cell.
         //
         // Falling back, in order: the base level un-staggered (the spec's
         // preference — a shared level is a drawing problem, leaving the row is

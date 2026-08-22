@@ -71,7 +71,6 @@ impl<'a> Parser<'a> {
         while self.peek().kind == TokenKind::DocComment {
             lines.push(self.peek().text.clone());
             self.advance();
-            // Skip newline after doc comment
             while self.peek().kind == TokenKind::Newline {
                 self.advance();
             }

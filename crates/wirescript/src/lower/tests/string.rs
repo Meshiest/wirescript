@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn string_literal_emits_concatenate_gate() {
-    // A bare string literal should produce a Concatenate gate, not a _Literal
     let r = compile("out x = \"hello\"");
     assert!(
         r.diagnostics
@@ -33,7 +32,7 @@ fn string_literal_emits_concatenate_gate() {
 fn string_in_select_inlines_as_variant() {
     // if-then-else with constant string branches inlines the strings directly
     // into the Select gate's wire_graph_variant inputs — no `String_Concatenate`
-    // wrapper (that was the pre-inline-support way of wiring a string in).
+    // wrapper.
     let r = compile("out x = if true then \"yes\" else \"no\"");
     assert_no_errors(&r);
     let select = r
@@ -42,7 +41,6 @@ fn string_in_select_inlines_as_variant() {
         .values()
         .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
         .expect("if-expr should create a Select gate");
-    // No concat wrappers remain.
     let concat_count = r
         .module
         .nodes
@@ -70,7 +68,6 @@ fn string_in_select_inlines_as_variant() {
         vec!["no".to_string(), "yes".to_string()],
         "both string branches should inline into the Select"
     );
-    // No input wires feed InputA/InputB — they're inline data now.
     let input_wires = r
         .module
         .wires
@@ -89,7 +86,6 @@ fn string_in_select_inlines_as_variant() {
 
 #[test]
 fn string_concat_op_works() {
-    // String concatenation with .. operator should produce Concatenate gates
     let r = compile("let a = \"hello\" .. \" \" .. \"world\"\nout x = a");
     assert!(
         r.diagnostics
@@ -118,7 +114,7 @@ fn string_concat_op_works() {
 #[test]
 fn constant_string_inlines_into_consumers() {
     // A constant string used in a wire-value context (array push, var init,
-    // comparison) folds into the consumer's data as a wire-variant — no legacy
+    // comparison) folds into the consumer's data as a wire-variant — no
     // `String_Concatenate` wrapper. Real concats (`a .. b`, wired inputs) are
     // unaffected (covered by `string_concat_op_works`).
     for src in [
@@ -143,7 +139,7 @@ fn constant_string_inlines_into_consumers() {
 
 #[test]
 fn empty_string_in_select_not_lost() {
-    // An empty string "" branch must still reach the Select — now inlined as an
+    // An empty string "" branch must still reach the Select — inlined as an
     // empty-string wire-variant (InputA = ""), not dropped.
     let r = compile("out x = if true then \"\" else \"fail\"");
     assert_no_errors(&r);
@@ -192,7 +188,7 @@ fn string_equality_lowers_to_native_compare() {
 
 #[test]
 fn string_var_stores_and_assigns() {
-    // Strings can be stored in vars now (WireGraphVariant `str`).
+    // Strings can be stored in vars (WireGraphVariant `str`).
     let r = compile("static var s: string = \"init\"\non RoundStart() { s = \"hello\" }");
     assert_no_errors(&r);
     assert!(
@@ -249,7 +245,6 @@ fn long_interpolation_splits_across_format_text_gates() {
 
 #[test]
 fn numeric_literal_still_uses_literal_node() {
-    // Non-string literals should still use the _Literal path (inlineable)
     let r = compile("out x = 42");
     let _has_literal = r
         .module
@@ -283,7 +278,7 @@ fn identical_constant_strings_dedup_within_chip() {
     let r = compile(src);
     assert_no_errors(&r);
     let concat = "BrickComponentType_WireGraph_Expr_String_Concatenate";
-    // 1 shared constant wrapper + 3 per-line `.. name` concats (was 6 before).
+    // 1 shared constant wrapper + 3 per-line `.. name` concats.
     assert_eq!(
         gate_count(&r, concat),
         4,

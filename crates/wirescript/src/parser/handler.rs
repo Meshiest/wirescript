@@ -73,9 +73,9 @@ impl<'a> Parser<'a> {
 
         // `on Foo(...)` where `Foo` is NOT a known event is a call-expression
         // trigger — `on ServerUptime()` fires whenever a builtin's pure value
-        // changes, and `on myMod(x, exec = go)` (Task 6: general/mod-exec
-        // triggers) fires on the call's own exec-typed output. Both desugar the
-        // same way, like any other expr trigger: `let _on_expr_N = Foo(...)` +
+        // changes, and `on myMod(x, exec = go)` fires on the call's own
+        // exec-typed output. Both desugar the same way, like any other expr
+        // trigger: `let _on_expr_N = Foo(...)` +
         // `on _on_expr_N`. The parser can't tell a builtin call from a
         // user-declared chip/mod call from a genuinely unknown name here (chips
         // and mods aren't tracked by the parser — they may be declared later in
@@ -230,9 +230,9 @@ impl<'a> Parser<'a> {
             self.parse_trigger()
         };
 
-        // Task 10: an event trigger is a CALL, uniform with `on <call> ->
-        // (…)` — `on RoundStart { }` must be written `on RoundStart() { }`.
-        // Recover as if `()` were present so the rest of the handler parses.
+        // An event trigger is a CALL, uniform with `on <call> -> (…)` — `on
+        // RoundStart { }` must be written `on RoundStart() { }`. Recover as
+        // if `()` were present so the rest of the handler parses.
         self.require_event_call_parens(&trigger);
 
         // Trigger args: the event call's parens hold config ONLY — string/
@@ -278,7 +278,7 @@ impl<'a> Parser<'a> {
                     let value = self.parse_expr();
                     config.push(HandlerConfigArg::Named { name, value });
                 } else if is_inline_output_bind {
-                    // A bare ident or `name: type` here used to bind the
+                    // A bare ident or `name: type` here would bind the
                     // event's data outputs inline; that form is removed —
                     // steer to the `->` capture instead.
                     let tok = self.expect(TokenKind::Ident, None);
@@ -304,10 +304,10 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RParen, None);
         }
 
-        // Optional `-> <pattern>` output capture (Task 5): binds the event's
-        // data outputs from a trailing tuple/record pattern. `->` is already a
+        // Optional `-> <pattern>` output capture: binds the event's data
+        // outputs from a trailing tuple/record pattern. `->` is already a
         // lexer token (mod/chip outputs use it) — this is grammar extension
-        // only. It is now the ONLY way to bind handler params (Task 8).
+        // only. It is the ONLY way to bind handler params.
         if self.match_tok(TokenKind::Arrow, None).is_some() {
             self.parse_handler_arrow_pattern(&trigger, &mut params);
         }
@@ -340,9 +340,9 @@ impl<'a> Parser<'a> {
     /// to reject records on custom events and, for records, to resolve field
     /// names against `catalog::events::find_event`'s data order).
     fn parse_handler_arrow_pattern(&mut self, trigger: &Trigger, params: &mut Vec<HandlerParam>) {
-        // `params` is always empty on entry: the trigger-args loop above can
-        // no longer produce params (Task 8 removed inline data-param
-        // parsing), so there is nothing here to guard against.
+        // `params` is always empty on entry: the trigger-args loop above
+        // never produces params (there is no inline data-param parsing), so
+        // there is nothing here to guard against.
         let trigger_name = match trigger {
             Trigger::Ident { name, .. } => Some(name.as_str()),
             _ => None,
@@ -545,7 +545,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Task 10: an event trigger is a CALL — `on RoundStart()` / `let x = on
+    /// An event trigger is a CALL — `on RoundStart()` / `let x = on
     /// RoundStart()`, never the bare `on RoundStart`. If `trigger` is a plain
     /// event-name `Ident` not immediately followed by `(`, emit the "must be
     /// called" error. Only built-in event idents are affected; non-event idents
@@ -577,7 +577,6 @@ impl<'a> Parser<'a> {
                 parts.push(first.clone());
             }
             parts.push(nxt);
-            // keep going
             let _ = save;
         }
         if parts.is_empty() {

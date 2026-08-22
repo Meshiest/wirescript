@@ -524,10 +524,6 @@ on go { PrintToConsole(\"${table[0]}\") }
     /// which never excludes a SIBLING, so every comment in the overlap is
     /// rendered once per sibling.
     ///
-    /// Measured on a real program before the fix: 951 own-line comments in the
-    /// source became 2958 comment bricks, with three sibling modules each
-    /// claiming ~940 of them.
-    ///
     /// Built from synthetic modules rather than lowered source because the
     /// shape is a property of the SPANS, and which nodes lowering hands to
     /// which chip is not something a fixture can pin down.
@@ -1101,9 +1097,7 @@ on go { PrintToConsole(\"${table[0]}\") }
     }
 
     /// Routing declared ports to the edges lets a chip end up with no body
-    /// nodes at all, so the page list comes back empty — a state the row
-    /// model could not previously reach, since declared ports used to
-    /// occupy a source row themselves.
+    /// nodes at all, so the page list comes back empty.
     #[test]
     fn a_ports_only_chip_still_places_and_stays_inside_the_plane() {
         let m = lowered(
@@ -1291,7 +1285,7 @@ on go { PrintToConsole(\"${table[0]}\") }
         let in_xs: Vec<i32> = boundary_ins.iter().map(|id| l.placements[id].x).collect();
         assert_ne!(in_xs[0], in_xs[1], "same-anchor pins must bump apart");
 
-        // Coverage and determinism now include the edge-pin path.
+        // Coverage and determinism checks apply to the edge-pin path too.
         let spawnable_count = chip.nodes.values().filter(|n| is_spawnable(n)).count();
         assert_eq!(l.placements.len(), spawnable_count);
         let l2 = layout_code(chip, &opts(), false);
@@ -2471,8 +2465,8 @@ on go {
                     "{name}: ...facing the gutter its value travels into"
                 );
                 // ...and it hands that value to a lane head on the same level,
-                // so the run out to the band is horizontal rather than the
-                // diagonal the gate's own port used to draw.
+                // so the run out to the band is horizontal rather than a
+                // diagonal from the gate's own port.
                 let head = &l.bus.nodes[through_source_side(&l, i)];
                 assert_eq!(
                     head.role,
@@ -2503,10 +2497,9 @@ on go {
         );
     }
 
-    /// The chain invariant, restated for the shape the source-side rerouter
-    /// makes rather than weakened by it.
+    /// The chain invariant, covering the shape the source-side rerouter makes.
     ///
-    /// A lane HEAD is fed from outside its chain — by a real port, or now by
+    /// A lane HEAD is fed from outside its chain — by a real port, or by
     /// the rerouter standing beside its producer, which is itself fed by that
     /// port and drives nothing else. Every OTHER lane brick must still be fed
     /// by a lane brick. That is what keeps a lane one value from one producer:

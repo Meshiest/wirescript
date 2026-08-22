@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
             if t.text == "-" {
                 let next = self.peek_at(1);
                 if next.kind == TokenKind::Int {
-                    self.advance(); // consume '-'
+                    self.advance();
                     let num = self.advance();
                     let cleaned: String = num.text.chars().filter(|c| *c != '_').collect();
                     // Prefer negating the parsed magnitude; fall back to parsing
@@ -143,7 +143,7 @@ impl<'a> Parser<'a> {
                         range: self.make_range(t.start, num.end),
                     };
                 } else if next.kind == TokenKind::Float {
-                    self.advance(); // consume '-'
+                    self.advance();
                     let num = self.advance();
                     let val: f64 = num.text.parse().unwrap_or(0.0);
                     return Expr::FloatLit {
@@ -346,7 +346,7 @@ impl<'a> Parser<'a> {
             let name_tok = self.advance();
             let name_range = self.make_range(name_tok.start, name_tok.end);
             let name = name_tok.text;
-            self.advance(); // '='
+            self.advance();
             let value = self.parse_expr();
             CallArg::Named {
                 name,
@@ -448,7 +448,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LBracket => {
                 let start = t.start;
-                self.advance(); // consume '['
+                self.advance();
                 let mut elements = Vec::new();
                 self.eat_newlines();
                 while !self.check(TokenKind::RBracket, None) && self.peek().kind != TokenKind::Eof {
@@ -567,10 +567,8 @@ impl<'a> Parser<'a> {
                         elements.push(self.parse_expr());
                     }
                     let end = self.expect(TokenKind::RParen, None);
-                    // Desugar to a record lit or keep as-is depending on AST support.
-                    // For now, use existing tuple handling: emit as a Call to a synthetic tuple constructor?
-                    // Actually, tuples in Wirescript are already handled by the chip output system.
-                    // Create a RecordLit with numeric field names for now:
+                    // Desugar to a record literal with numeric field names —
+                    // tuples are handled via the chip output system.
                     let fields: Vec<crate::ast::RecordLitField> = elements
                         .into_iter()
                         .enumerate()
@@ -737,7 +735,7 @@ impl<'a> Parser<'a> {
         while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
             // `[expr]` computed key, else a normal expression key.
             let key = if self.check(TokenKind::LBracket, None) {
-                self.advance(); // '['
+                self.advance();
                 let k = self.parse_expr();
                 self.expect(TokenKind::RBracket, None);
                 k
@@ -781,7 +779,6 @@ impl<'a> Parser<'a> {
                 .unwrap_or_else(|| self.tokens.last().unwrap())
         };
         let mut i = after_brace;
-        // Skip newlines after `{`
         while i < self.tokens.len() && get(i).kind == TokenKind::Newline {
             i += 1;
         }
@@ -870,8 +867,8 @@ impl<'a> Parser<'a> {
             if self.check(TokenKind::RBrace, None) || self.peek().kind == TokenKind::Eof {
                 break;
             }
-            // Try parsing as a statement first (let, var, assign, etc.)
-            // If it looks like a statement keyword, parse it as a statement
+            // `let`/`var`/`static` parse as statements; everything else falls
+            // through as an expression below.
             let is_stmt_kw = self.peek().kind == TokenKind::Kw
                 && matches!(self.peek().text.as_str(), "let" | "var" | "static");
             if is_stmt_kw {
@@ -884,7 +881,6 @@ impl<'a> Parser<'a> {
             // or an assignment statement
             let expr = self.parse_expr();
             self.eat_newlines();
-            // Check if there's an assignment operator
             if self.match_tok(TokenKind::Op, Some("=")).is_some() {
                 let value = self.parse_expr();
                 let range = self.make_range(expr.range().start, value.range().end);

@@ -1,15 +1,13 @@
 //! The one canonical `TypeExpr → Type` resolver.
 //!
-//! Before this module, ~5 call sites independently walked a `TypeExpr` (or
-//! matched a bare type name) into an `ir::Type`, and they drifted: the
-//! lowering-side resolvers were missing `zone`/`teleport`, so a
-//! `zone`/`teleport`-annotated value silently degraded to `Type::Any` once it
-//! reached lowering (even though typecheck had resolved it correctly).
-//! [`primitive`] is now the single primitive-name table, and [`resolve_type`]
-//! is the single structural resolver; every other resolver in the crate
-//! either delegates to these directly or (for `typecheck::resolve_type_expr`,
-//! which is entangled with the mutable scope stack) at least shares the
-//! primitive table.
+//! [`primitive`] is the single primitive-name table, and [`resolve_type`] is
+//! the single structural resolver; every other resolver in the crate either
+//! delegates to these directly or (for `typecheck::resolve_type_expr`, which
+//! is entangled with the mutable scope stack) at least shares the primitive
+//! table. A resolver with its own independent copy of this mapping risks
+//! drift — e.g. missing `zone`/`teleport` would silently degrade a
+//! `zone`/`teleport`-annotated value to `Type::Any` once it reached lowering,
+//! even though typecheck had resolved it correctly.
 
 use crate::collections::HashMap;
 
@@ -17,10 +15,7 @@ use crate::ast::TypeExpr;
 use crate::diagnostic::Diagnostic;
 use crate::ir::Type;
 
-/// The one primitive-name → Type table (single source of truth). Mirrors the
-/// full mapping formerly duplicated across `typecheck::primitive_name`,
-/// `analysis::types::type_from_name`, `lower::predeclare::type_of_type_expr`,
-/// and `lower::handler::type_expr_to_type`.
+/// The one primitive-name → Type table (single source of truth).
 pub fn primitive(name: &str) -> Option<Type> {
     Some(match name {
         "bool" => Type::Bool,
@@ -70,7 +65,7 @@ const MAX_ALIAS_DEPTH: u32 = 32;
 /// Context a [`resolve_type`] call resolves names against.
 pub struct ResolveCtx<'a> {
     /// In-scope generic type-parameter names (a `Name` matching one resolves
-    /// to `Type::Param`). Empty until generic parsing lands (P2).
+    /// to `Type::Param`).
     pub params: &'a [String],
     /// Type aliases visible to the caller (name → resolved type). Empty for
     /// the lowering-side callers; typecheck fills it from its scope so

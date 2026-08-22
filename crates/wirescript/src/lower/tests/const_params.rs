@@ -231,7 +231,7 @@ fn a_leading_const_param_does_not_shift_later_pins() {
     );
 }
 
-// Task 10: the receiver side of a `CustomEvent` handler must bake a named
+// The receiver side of a `CustomEvent` handler must bake a named
 // constant's resolved value as its `EventName`, exactly as the sender side
 // already does — otherwise a computed channel name can be sent but never
 // received (the two `EventName` properties would never match at runtime).
@@ -243,12 +243,11 @@ fn a_named_constant_bakes_as_a_receiver_channel_name() {
     assert_eq!(receiver_event_names(&m), vec!["evt_died".to_string()]);
 }
 
-// Task 10's actual point: a computed channel name sent via a named constant
-// must reach a receiver bound to the SAME constant — i.e. the sender's and
-// receiver's baked `EventName` values must be byte-identical, not just each
-// individually non-empty. Before Task 10 this compiled fine (the sender side
-// already folded named constants), but the receiver side rejected `CH`
-// outright (WS028), so the round trip never lowered at all.
+// A computed channel name sent via a named constant must reach a receiver
+// bound to the SAME constant — i.e. the sender's and receiver's baked
+// `EventName` values must be byte-identical, not just each individually
+// non-empty; a receiver that rejects a named constant like `CH` (WS028)
+// would leave the round trip never lowering at all.
 #[test]
 fn a_named_constant_round_trips_from_sender_to_receiver() {
     let m = lower_ok(
@@ -300,9 +299,6 @@ fn two_chip_call_sites_with_the_same_const_share_one_template() {
 }
 
 
-// ---------------------------------------------------------------------
-// Task 13 fix round 1.
-
 /// A `const` parameter's value has no wire — `lower_chip_call_inline` records
 /// it in `scoped_consts` instead of binding a port — so reading it in a plain
 /// WIRE position (`n + m`) has to resolve through the constant environment.
@@ -351,9 +347,8 @@ fn a_const_param_used_only_as_config_still_emits_no_literal_gate() {
     );
 }
 
-/// THE acceptance test for the feature's headline claim, and the one the
-/// brief's own Step-1 test could not make: a `const mod` call in a
-/// constant-only gate-config position must actually BAKE its value into the
+/// The acceptance test for the feature's headline claim: a `const mod` call
+/// in a constant-only gate-config position must actually BAKE its value into the
 /// gate. Typecheck accepting it (`assert_no_diags`) proves nothing on its own
 /// — lowering's `literal_for_property_port` folded only env-less literals and
 /// bare identifiers, so this program compiled clean with `EventName` unset and
@@ -373,9 +368,9 @@ fn a_const_mod_call_bakes_as_a_custom_event_channel_name() {
 }
 
 /// The same accept-but-drop hole, reached through a certified receiver-method
-/// call instead of a `const mod` call. Previously WS028 at typecheck; once
-/// typecheck was widened to the full evaluator, lowering had to follow or the
-/// gate shipped with no channel.
+/// call instead of a `const mod` call: lowering must evaluate certified
+/// method calls the same way typecheck's full evaluator does, or the gate
+/// ships with no channel.
 #[test]
 fn a_certified_method_call_bakes_as_a_custom_event_channel_name() {
     let m = lower_ok(
@@ -396,7 +391,7 @@ fn a_certified_method_call_bakes_as_a_custom_event_channel_name() {
 /// working programs both print exactly one `SendCustomEvent` gate and differ
 /// only in the component data the dump never renders. The same distinction was
 /// confirmed end-to-end against a real `.brdb` with brdb's `read_components`
-/// example (0 occurrences broken vs 1 fixed) — see the task report.
+/// example (0 occurrences broken vs 1 fixed).
 #[test]
 fn a_block_scope_const_destructure_bakes_a_custom_event_channel_name() {
     let m = lower_ok(

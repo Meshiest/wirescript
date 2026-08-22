@@ -191,7 +191,7 @@
             ws003("type Card = { baz: int }\nlet t: (Card, int) = ({ baz: \"s\" }, 5)"),
             "record-in-tuple wrong field type"
         );
-        // A record field's VALUE type is now checked (was names-only), incl. nested.
+        // A record field's VALUE type is checked too, including nested records.
         assert!(
             ws003("type Card = { baz: int }\nlet c: Card = { baz: \"s\" }"),
             "record field value type"
@@ -861,9 +861,8 @@
         );
     }
 
-    // ---- Task 5: user mod/chip + self-receiver calls routed through
-    // `check_args` (regression tests written BEFORE the swap; they pass
-    // against the pre-swap inline coerce loop too — see typecheck.rs) ----
+    // ---- user mod/chip + self-receiver calls routed through
+    // `check_args` ----
 
     #[test]
     fn ucc_non_generic_mod_arg_type_mismatch_is_ws003() {
@@ -1300,7 +1299,7 @@
         );
     }
 
-    // ---- Task 4: builtin/receiver calls routed through `check_args` ----
+    // ---- builtin/receiver calls routed through `check_args` ----
     #[test]
     fn call_too_few_args() {
         // Fewer positional args than a builtin requires — the "requires N
@@ -1355,7 +1354,7 @@
         assert_no_diags(&r);
     }
 
-    // ---- namespace call argument checking (acceptance #2) ----
+    // ---- namespace call argument checking ----
     // A namespaced call `ns.f(args)` previously routed straight to the
     // member's return type with NO argument checking at all — wrong types
     // and wrong arity were silent miscompiles. These pin `check_args` being
@@ -2327,14 +2326,14 @@
         );
     }
 
-    // ---- Task 10: comprehensive generic test coverage (bounded masks +
+    // ---- comprehensive generic test coverage (bounded masks +
     // max type params). Mask membership (`types::classes::class_mask`):
     // Scalar = {int, float}; Numeric = {int, float, vector, rotator, quat,
     // color}; Variant (unbounded `<T>`) = all 11 wire value variants.
     // `ws033_out_of_mask_arg_violates_bound` above already covers the plain
     // `<T: Numeric>` + `string` case; these add the Scalar/Numeric BOUNDARY
     // and the other machinery (check_args routing, body-checking, explicit
-    // type args, multi-param/nested resolution) named in the task brief. ----
+    // type args, multi-param/nested resolution). ----
 
     #[test]
     fn numeric_bound_call_site_accepts_every_mask_member() {
@@ -2367,7 +2366,7 @@
     #[test]
     fn scalar_bound_rejects_vector_precise_boundary() {
         // vector IS a member of Numeric but NOT of Scalar — the precise
-        // boundary between the two masks the task brief calls out.
+        // boundary between the two masks.
         let r = tc(
             "mod onlyScalar<T: Scalar>(v: T) -> T { return v }\n\
              in vec: vector\nlet x = onlyScalar(vec)\n",
@@ -2632,11 +2631,11 @@
             "annotated out value must be checked: {:?}",
             r.diagnostics
         );
-        assert_no_diags(&tc("chip { out x: int = 5 }")); // ok
-        assert_no_diags(&tc("chip { out s: string = 5 }")); // ViaString, still clean
+        assert_no_diags(&tc("chip { out x: int = 5 }"));
+        assert_no_diags(&tc("chip { out s: string = 5 }")); // ViaString coercion
     }
 
-    // ---- Task 4: return / emit / unannotated out checked against declared outputs ----
+    // ---- return / emit / unannotated out checked against declared outputs ----
 
     #[test]
     fn return_value_checked_against_declared_output() {
@@ -2759,7 +2758,7 @@
         );
     }
 
-    // P0-16c: a scalar has no fields, so a field access on one is a typo — it
+    // A scalar has no fields, so a field access on one is a typo — it
     // used to type `any` and lowering read the whole base value. The single
     // exception is projecting a single-output call result by its output name.
     #[test]
@@ -2793,7 +2792,7 @@
         );
     }
 
-    // P0-9: a typo'd event config/input arg matches no slot and silently no-ops
+    // A typo'd event config/input arg matches no slot and silently no-ops
     // at lowering — flag it WS041 (`on Clock(intreval = 2.0)`).
     #[test]
     fn unknown_event_config_arg_is_ws041() {
@@ -2812,7 +2811,7 @@
         );
     }
 
-    // P0-13: `let r: rotator = c.GetVelocity()` unwraps a `{Vector, Rotation}`
+    // `let r: rotator = c.GetVelocity()` unwraps a `{Vector, Rotation}`
     // record — lowering wires outputs[0] (Vector) into a rotator sink, so it must
     // be rejected, not silently miscompiled.
     #[test]
@@ -2829,7 +2828,7 @@
         );
     }
 
-    // P0-14: assigning to a scalar `let` binding type-checked clean then emitted
+    // Assigning to a scalar `let` binding type-checked clean then emitted
     // no gate (the write vanished) — flag it WS007.
     #[test]
     fn assign_to_scalar_let_is_ws007() {
@@ -2848,7 +2847,7 @@
         );
     }
 
-    // P0-16a: a tuple literal must never scalar-unwrap (`let x: int = (1, "abc")`).
+    // A tuple literal must never scalar-unwrap (`let x: int = (1, "abc")`).
     #[test]
     fn tuple_literal_as_scalar_is_ws003() {
         let r = tc("let x: int = (1, \"abc\")\nout o = x");
@@ -2859,7 +2858,7 @@
         );
     }
 
-    // P0-16b: a heterogeneous array literal in an exec-context assignment was
+    // A heterogeneous array literal in an exec-context assignment was
     // typed from element 0 and pushed the odd element with no check.
     #[test]
     fn heterogeneous_array_literal_is_ws003() {
@@ -2878,7 +2877,7 @@
         );
     }
 
-    // P0-17a: `==`/`!=` on the certified composite value variants
+    // `==`/`!=` on the certified composite value variants
     // (vector/rotator/quat/color) must be accepted; ordering stays scalar-only.
     #[test]
     fn composite_equality_is_accepted_ordering_is_not() {
@@ -2897,7 +2896,7 @@
         );
     }
 
-    // P0-17b: an `any[]` parameter must accept a concrete array argument.
+    // An `any[]` parameter must accept a concrete array argument.
     #[test]
     fn any_array_param_accepts_concrete_array() {
         let r = tc(
@@ -2910,7 +2909,7 @@
         );
     }
 
-    // Task 5: `const` is a GUARANTEE — a `const` binding whose initializer
+    // `const` is a GUARANTEE — a `const` binding whose initializer
     // cannot be evaluated at compile time is WS046. A `let` stays opportunistic.
     #[test]
     fn a_const_binding_must_evaluate_at_compile_time() {
@@ -2934,12 +2933,9 @@
 
     #[test]
     fn a_destructuring_const_binding_is_rejected() {
-        // `someRecord` is undefined — this stays WS046, but now via
-        // `ConstReason::NotConstant` (a runtime value) rather than the old
-        // blanket "destructuring can't be a compile-time constant" rejection
-        // Task 2 removed. See the tests below for the case this used to
-        // reject wrongly: a destructure of a value that genuinely IS
-        // constant.
+        // `someRecord` is undefined, so this is WS046 via
+        // `ConstReason::NotConstant` (a runtime value). See the tests below
+        // for a destructure of a value that genuinely IS constant.
         let r = tc("mod f() { const { a, b } = someRecord }");
         assert!(
             r.diagnostics.iter().any(|d| d.code == "WS046"),
@@ -2948,11 +2944,10 @@
         );
     }
 
-    // Task 2: compile-time record destructuring. `typecheck::decl`'s
-    // top-level `const` and `typecheck::stmt`'s block-scope `const` used to
-    // share one message rejecting EVERY destructuring `const` outright; both
-    // are separate call sites into `const_eval::bind_destructured` now, so
-    // each gets its own coverage below.
+    // Compile-time record destructuring. `typecheck::decl`'s top-level
+    // `const` and `typecheck::stmt`'s block-scope `const` are separate call
+    // sites into `const_eval::bind_destructured`, each covered separately
+    // below.
     //
     // A top-level destructured name must be a compile-time constant
     // EVERYWHERE a plain `const x = 1` is — which means it has to reach
@@ -3396,7 +3391,7 @@
         );
     }
 
-    // Task 6: `const` PARAMETERS are enforced the same way `const` bindings
+    // `const` PARAMETERS are enforced the same way `const` bindings
     // are — the argument must evaluate at compile time (WS046 if it can't).
     #[test]
     fn a_const_parameter_rejects_a_runtime_argument() {
@@ -3421,7 +3416,7 @@
         assert_no_diags(&tc("const N = 4\nmod g(n: const int) { }\nmod caller() { g(N * 2) }"));
     }
 
-    // Task 10: the sender side (`SendCustomEvent(CH, v)`) has always accepted a
+    // The sender side (`SendCustomEvent(CH, v)`) has always accepted a
     // named constant as its channel name; the receiver side (`on
     // CustomEvent(CH)`) used the environment-free `expr_to_literal` and rejected
     // it, so a computed channel name could be sent but never received.
@@ -3440,9 +3435,9 @@
         ));
     }
 
-    // Task 11: a bare identifier in enum config is an enum MEMBER name first —
-    // that must keep working exactly as before. Only when it names no member
-    // does it fall back to resolving through the constant environment.
+    // A bare identifier in enum config is an enum MEMBER name first —
+    // that must keep working. Only when it names no member does it fall
+    // back to resolving through the constant environment.
     #[test]
     fn an_enum_config_argument_may_name_a_constant() {
         assert_no_diags(&tc(
@@ -3454,7 +3449,7 @@
         ));
     }
 
-    // Task 13: a call to a `const mod` is itself compile-time-evaluable — the
+    // A call to a `const mod` is itself compile-time-evaluable — the
     // callee's body runs through `const_eval::interp::eval_call`, resolved
     // via `ConstCtx::lookup_mod`.
     //
@@ -3629,8 +3624,8 @@
     // `if constexpr` semantics: a const-evaluable condition drops the
     // untaken block from type-checking entirely, so a branch that wouldn't
     // even compile for THIS const value never gets checked — that's what
-    // lets one mod serve cases that share no API. Task 15 does the matching
-    // work on the lowering side (`lower_if`'s generalised elision).
+    // lets one mod serve cases that share no API. The matching work happens
+    // on the lowering side (`lower_if`'s generalised elision).
 
     #[test]
     fn a_dropped_branch_is_not_type_checked() {

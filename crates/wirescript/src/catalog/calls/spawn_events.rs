@@ -33,7 +33,6 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: None,
         },
     );
-    // Spawn an explosion of a given projectile/explosion class at an offset.
     m.insert(
         "SpawnExplosion",
         CallSpec {

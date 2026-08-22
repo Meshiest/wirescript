@@ -117,9 +117,9 @@
     }
     #[test]
     fn bool_to_string_stays_via_format() {
-        // The reverse direction is unaffected — bool → string still renders
-        // "true"/"false" text through the existing format-text path, not
-        // this new native-truthiness rule.
+        // bool → string still renders "true"/"false" text through the
+        // format-text path, distinct from the string→bool truthiness rule
+        // above.
         assert_eq!(coerce(&Type::Bool, &Type::String), CoerceRule::ViaString);
     }
     #[test]

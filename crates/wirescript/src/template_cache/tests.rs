@@ -7,7 +7,6 @@
         CompiledTemplate::from_module(m)
     }
 
-    // ── Test 1 ────────────────────────────────────────────────────────────────
     /// A → B → C chain: C should appear before B, B before A.
     #[test]
     fn topo_order_leaves_first() {
@@ -25,7 +24,6 @@
         assert!(pos("B") < pos("A"), "B must come before A");
     }
 
-    // ── Test 2 ────────────────────────────────────────────────────────────────
     /// A → C and B → C: C must appear before both A and B.
     #[test]
     fn topo_order_independent_modules_adjacent() {
@@ -41,7 +39,6 @@
         assert!(pos("C") < pos("B"), "C must come before B");
     }
 
-    // ── Test 3 ────────────────────────────────────────────────────────────────
     /// A → {C, D}; B → C; C and D are leaves.
     /// Expected: tier 0 = [C, D], A and B in later tiers.
     #[test]
@@ -70,7 +67,6 @@
         assert!(b_tier.unwrap() > 0, "B should be in a tier after 0");
     }
 
-    // ── Test 4 ────────────────────────────────────────────────────────────────
     /// Basic insert + get round-trip.
     #[test]
     fn cache_stores_and_retrieves() {
@@ -86,7 +82,6 @@
         assert!(cache.get("missing").is_none());
     }
 
-    // ── Test 5 ────────────────────────────────────────────────────────────────
     /// Diamond: A → B, C; B → D; C → D; D leaf.
     /// D must be in tier 0, B and C in the same tier, A last.
     #[test]
@@ -123,7 +118,6 @@
         assert!(pos("C") < pos("A"), "C before A");
     }
 
-    // ── Test 6 ────────────────────────────────────────────────────────────────
     /// A self-recursive dependency must not hang topo_order.
     #[test]
     fn self_recursive_does_not_hang() {
@@ -140,7 +134,6 @@
         );
     }
 
-    // ── Test 7 ────────────────────────────────────────────────────────────────
     /// Mutual recursion A → B, B → A must not hang.
     #[test]
     fn mutual_recursion_does_not_hang() {
@@ -156,7 +149,6 @@
         );
     }
 
-    // ── Test 8 ────────────────────────────────────────────────────────────────
     /// Both a "Used" and an "Unused" leaf module must appear in tier 0.
     #[test]
     fn unused_module_still_in_tiers() {
@@ -176,7 +168,6 @@
         );
     }
 
-    // ── Test 9 ────────────────────────────────────────────────────────────────
     /// A single module with no deps produces exactly one tier containing it.
     #[test]
     fn single_module_no_deps() {
@@ -188,7 +179,6 @@
         assert_eq!(tiers[0], vec!["Solo".to_string()]);
     }
 
-    // ── Test 11 ──────────────────────────────────────────────────────────────
     /// BFS reachability: Used+Dep reachable from Used; Unused is not.
     #[test]
     fn reachable_filters_unused() {
@@ -202,7 +192,6 @@
         assert!(!reachable.contains("Unused"));
     }
 
-    // ── Test 12 ──────────────────────────────────────────────────────────────
     /// BFS reachability: A→B→C; X not reachable from A.
     #[test]
     fn reachable_transitive() {
@@ -218,7 +207,6 @@
         assert!(!reachable.contains("X"));
     }
 
-    // ── Test 13 ──────────────────────────────────────────────────────────────
     /// scan_declarations finds chip and mod deps correctly.
     #[test]
     fn scan_finds_chip_and_mod_deps() {
@@ -238,7 +226,6 @@
         assert!(deps["process"].contains("ALU"));
     }
 
-    // ── Test 14 ──────────────────────────────────────────────────────────────
     /// scan_top_level_calls finds roots in top-level expressions.
     #[test]
     fn scan_top_level_calls_finds_roots() {
@@ -262,7 +249,6 @@
         );
     }
 
-    // ── Test 10 ───────────────────────────────────────────────────────────────
     /// A → B → C → D → E (5-node chain): 5 tiers, E first, A last.
     #[test]
     fn long_chain_correct_order() {

@@ -93,7 +93,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
 
     // ---- Rotation / quaternion -----------------------------
     // `rotator` = euler (Pitch/Yaw/Roll, used by entity rotation); `quat` =
-    // quaternion produced by the conversion gates. Concise, display-name-based.
+    // quaternion produced by the conversion gates.
     m.insert(
         "Rotation",
         vec_expr(
@@ -269,9 +269,6 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             Type::Float,
         ),
     );
-    // (Former `RotToDir` builtin removed: its gate `Expr_VecRotationToDirection`
-    // no longer exists in the build. Use `ToDirection` (RotationToDirection).)
-
     // ---- Vector (split) --------------------------------------------------
     m.insert(
         "SplitVec",

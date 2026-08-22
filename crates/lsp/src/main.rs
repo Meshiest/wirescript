@@ -515,10 +515,9 @@ struct Backend {
 }
 
 /// A loader that serves imports from the OPEN EDITOR BUFFERS first, falling back
-/// to disk. `analyze` previously resolved every import straight off disk, so an
-/// unsaved edit in an imported file was invisible to the files importing it —
-/// their diagnostics described the last SAVED version until you hit save. It
-/// also skips a disk read per import per keystroke for files already in memory.
+/// to disk, so an unsaved edit in an imported file is visible to the files that
+/// import it instead of their diagnostics describing the last saved version. Also
+/// skips a disk read per import per keystroke for files already in memory.
 ///
 /// Holds a snapshot (canonical path -> source) taken before `resolve` rather
 /// than the live `docs` mutex, since `analyze` re-locks that mutex afterwards.
@@ -546,12 +545,11 @@ impl Backend {
     /// Typecheck-only analysis for one document, publishing its diagnostics.
     ///
     /// Resource estimates (the gate counts hover shows) are recomputed here on
-    /// every analysis, including per keystroke. They were previously computed
-    /// only on open/save, with `did_change` carrying the previous map forward,
-    /// because `collect_estimates` lowers every chip/handler body. But
-    /// [`lookup_estimate`] keys by NAME, so a carried-forward map has no entry
-    /// at all for a mod added or renamed since the last save — it rendered with
-    /// no gate count while its neighbours had one, which reads as the estimate
+    /// every analysis, including per keystroke, rather than cached across
+    /// `did_change` calls: `collect_estimates` lowers every chip/handler body,
+    /// but [`lookup_estimate`] keys by NAME, so a carried-forward map would have
+    /// no entry for a mod added or renamed since the last save — it would render
+    /// with no gate count while its neighbours had one, reading as the estimate
     /// being broken rather than stale.
     ///
     /// Recomputing costs ~11% of one analysis (measured on the largest program
@@ -561,10 +559,10 @@ impl Backend {
     fn analyze(&self, uri: &Url, source: &str) -> Vec<Diagnostic> {
         let file = uri_to_file_string(uri);
 
-        // Parse ONCE and hand the result to resolve — it used to re-parse the
-        // same buffer internally, paying the entry parse twice per keystroke.
-        // The pre-resolve AST (kept for local analysis: references, semantic
-        // tokens, rename) is cloned off before resolve consumes the parse.
+        // Parse ONCE and hand the result to resolve, avoiding a second parse of
+        // the same buffer per keystroke. The pre-resolve AST (kept for local
+        // analysis: references, semantic tokens, rename) is cloned off before
+        // resolve consumes the parse.
         let pre_resolve = wirescript::parse(source, &file);
         let pre_resolve_ast = pre_resolve.ast.clone();
         // Snapshot the other open buffers so imports resolve against unsaved
@@ -706,10 +704,9 @@ impl Backend {
     }
 
     /// Re-analyze the other open documents that the changed file can actually
-    /// affect — i.e. those importing it (transitively). Previously EVERY open
-    /// document was re-analyzed on EVERY keystroke, so a keystroke cost
-    /// (open tabs + 1) full analyses; an unrelated open file paid the whole
-    /// bill for every character typed elsewhere.
+    /// affect — i.e. those importing it (transitively) — rather than every open
+    /// document, so a keystroke in one file doesn't cost (open tabs + 1) full
+    /// analyses for every other open file.
     async fn reanalyze_other_docs(&self, changed_uri: &Url) {
         let changed = FsLoader.canonical_path(&uri_to_file_string(changed_uri), ".");
         let others: Vec<(Url, String)> = {
@@ -2099,7 +2096,6 @@ fn build_completions(
         });
     }
 
-    // Keywords.
     for kw in KEYWORDS {
         items.push(CompletionItem {
             label: kw.to_string(),
@@ -2145,7 +2141,6 @@ fn build_completions(
         });
     }
 
-    // Built-in calls / functions.
     for (name, spec) in calls().iter() {
         let params_str: Vec<String> = spec
             .params
@@ -2177,7 +2172,6 @@ fn build_completions(
         });
     }
 
-    // Types.
     for ty in &[
         "int", "float", "bool", "string", "entity", "controller", "character", "vector",
         "rotator", "color", "exec",

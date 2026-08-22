@@ -356,11 +356,11 @@ impl<'a> Parser<'a> {
             let tok = self.advance();
             match tok.text.as_str() {
                 "label" => {
-                    // Fast path (unchanged): a single string literal —
-                    // `@label("text")`. Anything else inside the parens
-                    // (a named constant, arithmetic, …) parses as a general
-                    // expression and is const-folded to display text at
-                    // lowering (typecheck rejects a non-constant one).
+                    // Fast path: a single string literal — `@label("text")`.
+                    // Anything else inside the parens (a named constant,
+                    // arithmetic, …) parses as a general expression and is
+                    // const-folded to display text at lowering (typecheck
+                    // rejects a non-constant one).
                     let mut text: Option<(String, Pos)> = None;
                     let mut expr: Option<(Expr, Pos)> = None;
                     if self.match_tok(TokenKind::LParen, None).is_some() {

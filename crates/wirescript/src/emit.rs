@@ -204,10 +204,9 @@ pub fn build_world(
     // chip wall (remote wires — see save.rs add_wire).
     emit_port_rerouters(&mut world, &ctx, module, opts);
 
-    // Embed the full component catalog. The game's schema reader was fixed to
-    // load the whole catalog, so the minimal "only used components" embed (which
-    // worked around the old reader rejecting the full catalog) is no longer
-    // needed. Kept commented out in case an older build needs the workaround.
+    // Embed the full component catalog. `register_used_components()` below is a
+    // commented-out fallback that embeds only used components, for game builds
+    // whose schema reader rejects the full catalog.
     // world.register_used_components();
     // Registers every component type → struct name mapping and wire port name
     // on the World, so the save path can serialize component data.

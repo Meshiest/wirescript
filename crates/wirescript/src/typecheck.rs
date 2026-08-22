@@ -93,7 +93,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // top-level `out o: T`, so a body statement targeting it (`emit o = v`)
     // can be checked against `T` via `current_output_ty`. An unannotated
     // `out y = x` has no declared type to check against — it's excluded here
-    // and stays exactly as before (handled by `TopDecl::Out` directly).
+    // (handled by `TopDecl::Out` directly).
     // Pushed once for both check loops below (including the deferred named
     // chips, which see it as their enclosing scope's frame — a chip pushes
     // its own frame on top per combo, so the nearest-wins lookup still finds
@@ -106,7 +106,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // single-output check must key on the SAME total count — otherwise a lone
     // annotated out sitting beside an unannotated one would be checked here
     // while lowering drops the value. An `Any` frame entry coerces to Same, so
-    // `emit`/`out` to an unannotated output stays unchecked as before.
+    // `emit`/`out` to an unannotated output stays unchecked.
     //
     // `resolve_type_expr` is NOT pure — it emits (e.g. WS002 "unknown type").
     // Each annotation is resolved (and any error reported) again by the
@@ -202,16 +202,16 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
 }
 
 /// Two-pass typecheck: pass 1 typechecks with no custom-event slot inference
-/// (matching plain `typecheck`'s historical behavior), then infers unannotated
+/// (same as calling `typecheck` directly), then infers unannotated
 /// custom-event receiver slot types from in-unit senders
-/// (`infer_custom_event_slots`, Task 2) using pass 1's `type_of_expr`. If any
+/// (`infer_custom_event_slots`) using pass 1's `type_of_expr`. If any
 /// slot was inferred, a pass 2 re-typechecks the whole script with the
 /// inferred map wired in, so bodies see the inferred types (not `any`) and
 /// WS030 compares against them too. Pass 2's diagnostics include the
 /// inference pass's own (WS042 for uninferable slots).
 ///
-/// Returns the map alongside the result — Task 4 threads it into `lower` so
-/// emit can pick the right wire-port variant for each custom-event slot.
+/// Returns the map alongside the result so `lower` can pick the right
+/// wire-port variant for each custom-event slot.
 pub fn typecheck_with_inference(script: &Script, file: &str) -> (TypeCheckResult, CeSlotMap) {
     let empty = CeSlotMap::default();
     let pass1 = typecheck(script, file, &empty);

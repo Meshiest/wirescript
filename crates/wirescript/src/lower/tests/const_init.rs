@@ -97,8 +97,8 @@ fn constant_chain_through_a_const_mod_call_resolves_regardless_of_order() {
     //
     // `f` itself is declared before its own call site (inside `A`'s
     // initializer) — a call to a mod declared LATER than its caller is
-    // rejected outright (WS021, unrelated to and unaffected by this fix; see
-    // `a_const_mod_call_must_still_be_declared_before_its_use` in
+    // rejected outright (WS021, a separate concern from the ordering here;
+    // see `a_const_mod_call_must_still_be_declared_before_its_use` in
     // `tests/const_differential.rs`), so that is not the order being
     // exercised here.
     let v = baked_array(
@@ -122,8 +122,8 @@ fn a_destructured_constant_bakes() {
 #[test]
 fn a_destructured_constant_chain_resolves_regardless_of_order() {
     // The destructuring analogue of `constant_chain_resolves_regardless_of_order`
-    // above, and the ordering constraint the destructuring fix had to respect:
-    // the destructure is declared BEFORE the record it splits, and a third
+    // above, and the ordering constraint destructuring must respect: the
+    // destructure is declared BEFORE the record it splits, and a third
     // constant built from its names is declared before BOTH. `build_const_env`
     // iterates to a fixpoint — pass 1 evaluates `p`, pass 2 splits it into
     // `x`/`y`, pass 3 resolves `SUM` — so declaration order does not matter
@@ -294,14 +294,13 @@ fn cyclic_constants_do_not_hang_or_bake() {
     assert!(errors("let A = B + 1\nlet B = A + 1\nvar m: int[] = [A]").contains(&"WS003".to_string()));
 }
 
-// Minor: `lower::expr::wire_type_of_literal`'s `Literal::Object` arm used to
-// be `unreachable!()`; downgraded to `None` (the same "no wire form" shape
-// as its sibling Array/Map/Record/Asset arms) so a violated invariant would
-// be a diagnosable gap rather than a process abort. This pins the invariant
-// itself: `Literal::Object` is constructed ONLY by
-// `default_literal_for_var_type` — an object-family `Var` gate's placeholder
-// initial value — which never touches `const_eval`, so no `const`/`let`
-// expression can ever fold to one.
+// `lower::expr::wire_type_of_literal`'s `Literal::Object` arm returns `None`
+// (the same "no wire form" shape as its sibling Array/Map/Record/Asset arms),
+// so a violated invariant surfaces as a diagnosable gap rather than a process
+// abort. This pins the invariant itself: `Literal::Object` is constructed
+// ONLY by `default_literal_for_var_type` — an object-family `Var` gate's
+// placeholder initial value — which never touches `const_eval`, so no
+// `const`/`let` expression can ever fold to one.
 #[test]
 fn literal_object_is_never_produced_by_const_eval() {
     // Where `Literal::Object` DOES come from: a `Var` gate's own default.
@@ -422,8 +421,8 @@ fn a_const_if_inside_an_anonymous_chip_elides_like_a_top_level_one() {
 
 /// The post-binding assertion (`typecheck::let_binding::check_const_recorded`)
 /// fires when a `const` whose initializer EVALUATED is then not retrievable as
-/// a constant in its own scope — the failure that used to be invisible at the
-/// declaration and surfaced later, at a use, blamed on a different binding.
+/// a constant in its own scope — without it, the failure surfaces later, at a
+/// use, blamed on a different binding, rather than at the declaration.
 ///
 /// It is a NET: no shape enumerated here reaches it, and that is the point of
 /// the test — the realistic failure mode for an assertion like this is a FALSE

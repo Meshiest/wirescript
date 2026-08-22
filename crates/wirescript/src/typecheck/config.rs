@@ -7,19 +7,15 @@ use super::*;
 ///
 /// Being constant is necessary but NOT sufficient for a constant-only SCALAR
 /// config slot: a record, array or map is a perfectly good compile-time value
-/// with no single scalar to write into the gate's data field. Such a value used
-/// to be evaluated and then discarded unchecked, so it flowed all the way to
-/// emit and was resolved there by literal kind, two different wrong ways:
+/// with no single scalar to write into the gate's data field. Skipping this
+/// check lets such a value reach emit, where it is resolved by literal kind in
+/// two different wrong ways:
 ///
-///   - an ARRAY silently defaulted to a zero/empty value — a program that
-///     type-checked clean and baked config the author never wrote;
-///   - a RECORD reached `literal_to_boxed_native` / `literal_to_string`, which
-///     used to have no way to decline a value at all, aborting the entire
-///     compile with an `unreachable!` (a process abort, not a diagnostic —
-///     both now return `None` for a record, turned into a diagnosable
-///     `EmitError::UnrepresentableLiteral` by their caller, but this
-///     validator is still what catches the case with a proper WS028 instead
-///     of ever reaching emit).
+///   - an ARRAY silently defaults to a zero/empty value — a program that
+///     type-checks clean and bakes config the author never wrote;
+///   - a RECORD reaches `literal_to_boxed_native` / `literal_to_string`, which
+///     decline it via `EmitError::UnrepresentableLiteral` — a compile error
+///     instead of the more precise WS028 this validator gives.
 ///
 /// Rejecting these kinds at every scalar-config validation site closes both at
 /// once. The COMPOSITE config path (`validate_composite_config_arg`, for
@@ -197,11 +193,10 @@ pub(super) fn is_scalar_config_param(
 /// WS047) instead of the generic WS028 below — those only exist because a
 /// `const mod` call was attempted at all (a call chain too deep, or a
 /// certified evaluator declining the operands), so naming it precisely is
-/// strictly more useful than the pre-Task-13 "not a constant" wording, and
-/// no pre-Task-13 program could hit either reason (there was no call
-/// resolution here to fail this way). Every other reason keeps the ORIGINAL
-/// WS028 wording — existing tests (e.g. `var_prefab_still_rejected_as_ws028`)
-/// pin that a plain runtime `var` here stays WS028, not WS046.
+/// more useful than the generic "not a constant" wording. Every other reason
+/// keeps the ORIGINAL WS028 wording — existing tests (e.g.
+/// `var_prefab_still_rejected_as_ws028`) pin that a plain runtime `var` here
+/// stays WS028, not WS046.
 ///
 /// A successfully-evaluated value is additionally checked for scalar SHAPE via
 /// [`non_scalar_config_kind`] — see its doc comment for why being constant is

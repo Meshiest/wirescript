@@ -43,7 +43,6 @@ pub fn definition_at(
     line: usize,
     col: usize,
 ) -> Option<Location> {
-    // Check if cursor is on an import path or binding
     if let Some(loc) = find_import_definition(source, pre_resolve_ast, current_file, loader, line, col) {
         return Some(loc);
     }
@@ -281,7 +280,6 @@ fn resolve_field_definition(
         return None;
     }
 
-    // Find the object's symbol and its type, then locate the type declaration
     let obj_sym = symbols.iter().find(|s| s.name == obj_name)?;
     let ty_name = obj_sym.ty.as_deref()?;
     let type_sym = symbols.iter().find(|s| s.kind == "type" && s.name == ty_name)?;
@@ -289,7 +287,6 @@ fn resolve_field_definition(
     let type_source = file.as_ref().and_then(|_| loader.load(&type_sym.range.file, current_file).ok());
     let search_src = type_source.as_deref().unwrap_or(source);
 
-    // Search within the type definition's source lines for the field name
     let start_line = type_sym.range.start.line.saturating_sub(1) as usize;
     let end_line = (type_sym.range.end.line as usize).min(search_src.lines().count());
     for line_idx in start_line..end_line {

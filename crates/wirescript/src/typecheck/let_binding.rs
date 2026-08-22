@@ -292,13 +292,13 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                         // so its type is the record of exactly those fields —
                         // the type-level mirror of `bind_destructured`'s
                         // value-level rest rule, down to preserving the SOURCE
-                        // record's field order. Typing it `Any` (as this did
-                        // before) made `rest.y` type as `Any` too, so any use
-                        // of it — `rest.y == 222` — failed with WS004 "no
-                        // overload on Any, Int": `...rest` bound a value that
-                        // could not actually be read. Only a known
+                        // record's field order. Typing it `Any` would make
+                        // `rest.y` type as `Any` too, so any use of it —
+                        // `rest.y == 222` — would fail with WS004 "no
+                        // overload on Any, Int": `...rest` would bind a value
+                        // that could not actually be read. Only a known
                         // `Type::Record` source yields a precise type;
-                        // anything else stays `Any` exactly as before.
+                        // anything else stays `Any`.
                         let rest_ty = if let Type::Record(rec_fields) = t {
                             Type::Record(
                                 rec_fields
@@ -381,7 +381,6 @@ pub(super) fn check_let_type_annotation(
             let before = ctx.diagnostics.len();
             if let Type::Record(expected_fields) = &expected {
                 let type_name = crate::analysis::types::type_expr_str(te);
-                // Check each field/spread for extra fields
                 for f in fields {
                     match f {
                         RecordLitField::Named { name, range, .. } => {
@@ -425,7 +424,8 @@ pub(super) fn check_let_type_annotation(
                         }
                     }
                 }
-                // Check for missing fields (use the whole literal range)
+                // A missing field isn't caused by any one field/spread, so
+                // point the error at the whole literal.
                 if let Type::Record(inferred_fields) = inferred {
                     for (fname, _) in expected_fields {
                         if !inferred_fields.iter().any(|(n, _)| n == fname) {

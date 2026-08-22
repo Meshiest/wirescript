@@ -549,29 +549,27 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
     eval_expr(&probe.value, &cx, &mut Budget::default())
 }
 
-/// Task 1's motivating bug: `double(3) + 1`. `expr_to_literal_in` cannot fold
-/// either operand of `+` — it has no notion of a `const mod` call at all —
-/// and, before this task, `eval_expr` had no `BinOp` arm to fall back to
-/// either, so the call was never reached: `reason_for`'s own `BinOp` walk
-/// (which `eval_expr` fell back on) named it `NestedConstModCall` even though
-/// it stands as a plain operand of `+`, not truly unreachable.
+/// `double(3) + 1`: `expr_to_literal_in` cannot fold either operand of `+` —
+/// it has no notion of a `const mod` call at all — so `eval_expr`'s `BinOp`
+/// arm must resolve a nested call like this one itself, rather than leaving
+/// it to `reason_for`'s `BinOp` walk to (wrongly) name `NestedConstModCall`.
 #[test]
 fn a_const_mod_call_nested_in_a_binary_operator_evaluates() {
     let src = "const mod double(n: int) -> int { return n * 2 }";
     assert_eq!(eval_str_resolving(src, "double(3) + 1").unwrap(), Literal::Int(7));
 }
 
-/// Same bug, unary form: `-double(3)`.
+/// Unary form of the same case: `-double(3)`.
 #[test]
 fn a_const_mod_call_nested_in_a_unary_operator_evaluates() {
     let src = "const mod double(n: int) -> int { return n * 2 }";
     assert_eq!(eval_str_resolving(src, "-double(3)").unwrap(), Literal::Int(-6));
 }
 
-/// Same bug, inside a builtin constructor argument: `Vec`'s constructor match
-/// only ever saw already-literal-folded arguments before this task, so a
-/// `const mod` call standing as one of `Vec`'s arguments was invisible to it
-/// too.
+/// Same case, inside a builtin constructor argument: `Vec`'s constructor
+/// match only ever sees already-literal-folded arguments, so a `const mod`
+/// call standing as one of `Vec`'s arguments must be evaluated before the
+/// match runs, not left invisible to it.
 #[test]
 fn a_const_mod_call_nested_in_a_constructor_argument_evaluates() {
     let src = "const mod f(n: float) -> float { return n + 1.0 }";
@@ -581,8 +579,8 @@ fn a_const_mod_call_nested_in_a_constructor_argument_evaluates() {
     );
 }
 
-/// Both operands of `*` are themselves `const mod` calls — proves the fix
-/// isn't order-dependent (only the LEFT or only the RIGHT operand resolving).
+/// Both operands of `*` are themselves `const mod` calls, so this fails if
+/// only the LEFT or only the RIGHT operand resolves.
 #[test]
 fn const_mod_calls_on_both_sides_of_an_operator_evaluate() {
     let src = "const mod double(n: int) -> int { return n * 2 }";
@@ -624,9 +622,8 @@ fn constructor_named_arguments_bind_by_name_not_by_position() {
 }
 
 /// A named argument matching no parameter, or a positional one past the last
-/// parameter, has no constant form — it must stay the WS047 refusal it was
-/// before constructor arguments were evaluated here, never a value folded
-/// from the arguments that happened to bind.
+/// parameter, has no constant form — it must refuse with WS047, never fold a
+/// value from the arguments that happened to bind.
 #[test]
 fn a_constructor_argument_that_binds_no_parameter_is_refused() {
     for src in ["Vec(x = 1.0, y = 2.0, bogus = 3.0)", "Vec(1.0, 2.0, 3.0, 4.0)"] {
@@ -676,8 +673,7 @@ fn a_hole_in_a_constructors_arguments_is_refused_not_closed() {
 /// `bind_constructor_args`' doc comment claims and the runtime path does NOT
 /// share (`lower::call::builtin` is last-write-wins, lowering this to
 /// `x=2, y=3` with `z` unwired). Folding it would have to pick a winner
-/// silently, so it stays the error it was before this evaluator looked at
-/// constructor arguments at all.
+/// silently, so it stays an error instead.
 #[test]
 fn a_constructor_parameter_bound_twice_is_refused() {
     let err = eval_str("Vec(1.0, x = 2.0, y = 3.0)").unwrap_err();
@@ -977,7 +973,7 @@ fn a_shadow_after_a_mutation_nested_two_levels_deep_keeps_both_mutations() {
     );
 }
 
-// ---------- Task 2: compile-time record destructuring ----------
+// ---------- compile-time record destructuring ----------
 
 /// Parses `let <pattern_src> = <value_src>`, evaluates the value half
 /// through `eval_expr` (against an empty environment — every case below is a
@@ -1139,9 +1135,8 @@ fn bind_destructured_of_a_tuple_pattern_on_a_non_record_is_unsupported() {
 /// `LetBinding::Record { names }` (the plain, no-alias/no-rest destructure
 /// shape) is unreachable from the current parser — `let { x, y } = …` always
 /// produces `RecordDestruct` with plain `Named` fields — but
-/// `bind_destructured` still has to handle it correctly per its own
-/// contract (see the brief's Interfaces section), so it is constructed
-/// directly here rather than left as untested dead code.
+/// `bind_destructured` still has to handle it correctly, so it is
+/// constructed directly here rather than left as untested dead code.
 #[test]
 fn bind_destructured_handles_the_plain_record_binding_form_directly() {
     let binding = crate::ast::LetBinding::Record {
@@ -1197,11 +1192,9 @@ fn bound_names_agrees_with_bind_destructured() {
     }
 }
 
-/// The brief's "in a const mod body" site: `interp::exec_block`'s
-/// `Stmt::Let` arm is a code path entirely separate from
-/// `typecheck::decl`'s top-level site (before this task, the two rejected
-/// the SAME source with two DIFFERENT messages) — fixing one does not fix
-/// the other, so this exercises `bind_destructured` reached through the
+/// `interp::exec_block`'s `Stmt::Let` arm is a code path entirely separate
+/// from `typecheck::decl`'s top-level site — fixing one does not fix the
+/// other, so this exercises `bind_destructured` reached through the
 /// interpreter specifically.
 #[test]
 fn a_const_destructure_inside_a_const_mod_body_binds() {
@@ -1311,7 +1304,7 @@ fn a_branch_local_destructure_of_unbound_names_makes_every_name_vanish() {
     }
 }
 
-// ---------- Task 3: `out`-form multi-output const mods ----------
+// ---------- `out`-form multi-output const mods ----------
 
 /// The motivating bug: a `const mod` with `-> (a: int, b: int)` has no
 /// `return` to produce a value from — its outputs are set via `out`
@@ -1379,17 +1372,15 @@ fn an_unassigned_output_in_a_const_mod_is_an_error() {
     );
 }
 
-/// No regression: a single-output `const mod` (the pre-Task-3, and by far
-/// the most common, shape) must keep producing its `return` value exactly as
-/// before — `eval_call` must try `return` FIRST and only fall back to
-/// assembling a record from `out` statements when there was none.
+/// No regression: a single-output `const mod` (by far the most common shape)
+/// must keep producing its `return` value — `eval_call` tries `return` FIRST
+/// and only falls back to assembling a record from `out` statements when
+/// there was none.
 #[test]
 fn a_single_output_const_mod_still_returns_its_value() {
     let src = "const mod f(n: int) -> int { return n * 3 }";
     assert_eq!(eval_mod_call(src, &[Literal::Int(4)]).unwrap(), Literal::Int(12));
 }
-
-// ---------- Task 3 fix round 1 ----------
 
 /// ONE named output is NOT a record. `typecheck::call`'s
 /// `type_user_symbol_call` unwraps a single output to its bare type
@@ -1428,17 +1419,16 @@ fn a_two_named_output_const_mod_still_yields_a_record() {
 /// A SCALAR `return` in a mod that declares several named outputs has no
 /// meaning: lowering wires a returned value only through `output_count() ==
 /// 1` (or a record — see the test below), so with 2+ outputs the value is
-/// silently dropped there. Const evaluation used to let it win outright,
-/// yielding `Int(42)` where every consumer expected a record — a field read
-/// off it (`c.a`) then lowered to a `SplitColor` gate, silently
-/// reinterpreting the field as a colour channel.
+/// silently dropped there. Letting it through const evaluation would yield
+/// `Int(42)` where every consumer expects a record — a field read off it
+/// (`c.a`) would then lower to a `SplitColor` gate, silently reinterpreting
+/// the field as a colour channel.
 ///
-/// Both statement orderings are covered. Note this is an EVALUATION-time
-/// error, not a static one: an untaken guard `return` is never evaluated
-/// (the untaken branch of a const `if` is never walked at all), so the
-/// `before` case below only errors for the argument that actually takes the
-/// guard — which is correct, since an untaken return produces no value to
-/// hijack anything with.
+/// Both statement orderings are covered. This is an EVALUATION-time error,
+/// not a static one: an untaken guard `return` is never evaluated (the
+/// untaken branch of a const `if` is never walked at all), so the `before`
+/// case below only errors for the argument that actually takes the guard —
+/// an untaken return produces no value to hijack anything with.
 #[test]
 fn a_valued_scalar_return_in_a_multi_output_const_mod_is_an_error() {
     let cases: &[(&str, &str, i64)] = &[
@@ -1448,9 +1438,8 @@ fn a_valued_scalar_return_in_a_multi_output_const_mod_is_an_error() {
             1,
         ),
         (
-            // The guard-return spelling, which already miscompiled before
-            // this task: the `return` runs BEFORE any `out`, so nothing is
-            // collected when it wins.
+            // The guard-return spelling: the `return` runs BEFORE any `out`,
+            // so nothing is collected when it wins.
             "guard return before the outs",
             "const mod cfg(n: int) -> (a: int, b: int) { if n < 0 { return 0 }\n out a = n\n out b = n + 1 }",
             -1,
@@ -1480,14 +1469,12 @@ fn a_record_return_in_a_multi_output_const_mod_is_still_forwarded() {
     );
 }
 
-/// THE scoping property the brief called out as the hazard, and which had no
-/// test until this round: the `outputs` accumulator is threaded through the
-/// `Stmt::If` arm's recursive `exec_block` call, so an `out` inside a TAKEN
-/// branch is still visible to `eval_call` after the branch's own environment
-/// undo has run. Passing a fresh `&mut Vec::new()` there instead — the exact
-/// mutation that left all 1602 tests green before this test existed — makes
-/// `b` never reach `eval_call`, so the record can't be built and this fails
-/// with WS046 instead of a value.
+/// The scoping property this test guards: the `outputs` accumulator is
+/// threaded through the `Stmt::If` arm's recursive `exec_block` call, so an
+/// `out` inside a TAKEN branch is still visible to `eval_call` after the
+/// branch's own environment undo has run. Passing a fresh `&mut Vec::new()`
+/// there instead would make `b` never reach `eval_call`, so the record
+/// couldn't be built and this would fail with WS046 instead of a value.
 ///
 /// Both arms are asserted, so the test also fails if only the `then` side is
 /// threaded.
@@ -1545,9 +1532,8 @@ fn a_bare_return_in_a_multi_output_const_mod_stops_and_builds() {
 /// evaluating it and building the record from the signature (which ignores
 /// it) is precisely the shape typecheck already promises.
 ///
-/// Fix round 1 rejected this. That was an over-rejection of a real language
-/// feature, corrected in round 2; there is no signal separating a typo from
-/// an intentional body-declared output, so it cannot be narrowed either.
+/// There is no signal separating a typo from an intentional body-declared
+/// output, so rejecting one without the other isn't possible.
 #[test]
 fn an_out_naming_an_output_outside_the_signature_is_ignored_not_rejected() {
     let src = "const mod cfg(n: int) -> (a: int, b: int) { out a = n\n out zz = 999\n out b = n + 1 }";
@@ -1559,12 +1545,11 @@ fn an_out_naming_an_output_outside_the_signature_is_ignored_not_rejected() {
     );
 }
 
-/// The blocker fix round 1 left open: at arity 1 an `out` and a valued
-/// `return` can BOTH assign the one output, and the two halves of the
-/// compiler then disagree about which wins. Lowering keeps the FIRST
-/// assignment in SOURCE order and drops the rest; const evaluation
-/// short-circuits at the `return`. Measured on the pre-fix build, both
-/// reporting no errors:
+/// At arity 1 an `out` and a valued `return` can BOTH assign the one output,
+/// and the two halves of the compiler disagree about which wins: lowering
+/// keeps the FIRST assignment in SOURCE order and drops the rest, while
+/// const evaluation short-circuits at the `return`. Without a check, both
+/// report no errors:
 ///
 /// ```text
 /// mod pick(n: int) -> (r: int) { out r = 111  if n > 0 { return 222 } }
@@ -1610,8 +1595,8 @@ fn a_valued_return_after_an_earlier_out_is_an_error_at_arity_one() {
 
 /// The converse ordering AGREES and must stay legal: with the `return` first
 /// in source order, lowering's first-wins keeps the returned value and const
-/// evaluation returns the same thing. Measured on the pre-fix build — both
-/// spellings yield 222 — so rejecting this would break a working program.
+/// evaluation returns the same thing — rejecting this would break a working
+/// program.
 ///
 /// This is why the check is positional rather than "does this mod contain any
 /// `out`".
@@ -1638,11 +1623,11 @@ fn a_returned_record_is_reordered_to_declaration_order() {
 }
 
 /// The pre-existing "falls off the end" error must survive all of the above:
-/// a body that neither returns nor assigns any output still reports exactly
-/// what it did before this task, at the body's own range. Without the
-/// collected-is-empty fallback this would instead blame the anonymous `_`
-/// output of `-> int` as "never assigned", which is both a worse message and
-/// a worse range for by far the most common no-return mistake.
+/// a body that neither returns nor assigns any output still reports it, at
+/// the body's own range. Without the collected-is-empty fallback this would
+/// instead blame the anonymous `_` output of `-> int` as "never assigned",
+/// which is both a worse message and a worse range for by far the most
+/// common no-return mistake.
 #[test]
 fn a_body_that_produces_nothing_still_falls_off_the_end() {
     for src in [
@@ -1661,10 +1646,9 @@ fn a_body_that_produces_nothing_still_falls_off_the_end() {
 
 /// ...but a body that DID hit a `return` must not be described as falling off
 /// the end. Because the `-> T` arrow form synthesises a `_` output, the
-/// accurate "a `return` with no value" message was unreachable for every such
-/// mod after fix round 1 — every bare-`return` body reported the wrong thing.
-/// The error is blamed on the `return` statement itself, which is why `Flow`
-/// carries its range.
+/// accurate "a `return` with no value" message must stay reachable for such
+/// mods. The error is blamed on the `return` statement itself, which is why
+/// `Flow` carries its range.
 #[test]
 fn a_bare_return_that_produces_nothing_blames_the_return_not_the_body() {
     let src = "const mod f(n: int) -> int { return }";

@@ -397,7 +397,6 @@ impl<'a> Parser<'a> {
             let mut fields: Vec<RecordDestructField> = Vec::new();
             self.eat_newlines();
             while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
-                // `...rest`
                 if self.check(TokenKind::Op, Some("...")) {
                     let spread_start = self.advance().start;
                     let rest_tok = self.expect(TokenKind::Ident, None);

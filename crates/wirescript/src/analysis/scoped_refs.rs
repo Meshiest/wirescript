@@ -9,47 +9,47 @@
 //! declaration, never comments, strings, type-position names, other-scope
 //! identifiers, or unrelated files.
 //!
-//! This module builds up task by task:
-//! - Task 1: the binding inventory — [`build_scope_model`] walks the whole
-//!   AST and registers every VALUE binding with its scope extent.
-//! - Task 2: VALUE-position use collection (`Expr::Ident`, a call's callee,
+//! Structure:
+//! - The binding inventory — [`build_scope_model`] walks the whole AST and
+//!   registers every VALUE binding with its scope extent.
+//! - VALUE-position use collection (`Expr::Ident`, a call's callee,
 //!   record-shorthand, every sub-expression) plus [`references_at`] —
 //!   resolve the binding under a cursor and return every same-file site
 //!   bound to it. `cross_file` only distinguishes `Local` / `Exported` here;
-//!   `Imported` and type-namespace targets are later tasks.
-//! - Task 3 (this one): the TYPE namespace — `type` alias bindings and
-//!   per-decl `TypeParam` bindings, plus TYPE-position use collection over
-//!   every `TypeExpr` reachable from an annotation (`var`/`in`/`out`/
-//!   `buffer`/`param`/`let`/handler-capture/fn-return/chip-output types,
-//!   `type X = …`'s RHS, a `TypeParam`'s bound, and `Call.type_args`). Value
-//!   and type uses share one resolution pass ([`resolve_uses`]) that already
-//!   matches `Binding.ns == Use.ns`, so the two namespaces stay separate for
+//!   `Imported` and type-namespace targets are handled separately below.
+//! - The TYPE namespace — `type` alias bindings and per-decl `TypeParam`
+//!   bindings, plus TYPE-position use collection over every `TypeExpr`
+//!   reachable from an annotation (`var`/`in`/`out`/`buffer`/`param`/`let`/
+//!   handler-capture/fn-return/chip-output types, `type X = …`'s RHS, a
+//!   `TypeParam`'s bound, and `Call.type_args`). Value and type uses share
+//!   one resolution pass ([`resolve_uses`]) that already matches
+//!   `Binding.ns == Use.ns`, so the two namespaces stay separate for
 //!   free — a value binding named `character` is invisible to a
 //!   `TypeExpr::Name { name: "character", .. }` use and vice versa.
-//! - Task 4 (this one): [`prepare_rename_at`] — the rename entry point.
-//!   Finalizes cursor dispatch with the refusals `references_at` alone
-//!   doesn't cover: a lexer keyword, and a record FIELD name
-//!   (`Expr::FieldAccess.field`, `RecordLitField::Named.name`, a record
-//!   TYPE field's name). The builtin-type/unresolved-global refusal is
-//!   already implicit in `references_at` (an unresolved `Use` makes it
-//!   return `None`), so no extra check is needed for that case.
-//! - Task 5 (this one): cross-file resolution. `register_import` finally
-//!   fills in `TopDecl::Import(_)` (Task 1 left it a no-op): a NAMED import
-//!   specifier (`import { name }` / `import { orig as name }`) registers a
-//!   binding in BOTH namespaces under its local name, tagged with the
-//!   ORIGINAL exported name via `Binding::import_export`. `references_at`
-//!   checks that tag first, so a use of an imported name classifies as
-//!   `CrossFile::Imported` rather than `Local`/`Exported`. [`references_to_export`]
-//!   is the reverse direction — given another file's AST plus an exported
-//!   name, return every site (import specifier + uses) in THAT file that
-//!   traces back to it; a local shadow excludes itself for free via the
-//!   existing innermost-scope resolution rule. Namespace-member rename
-//!   (`u.foo`) stays deferred — `foo` is already refused via
-//!   `field_name_spans` (Task 4); only the alias `u` itself is renameable,
-//!   and only once `ImportKind::Namespace` grows its own binding in a later
-//!   task.
-//! - Later tasks add the LSP/WASM wiring — see
-//!   `docs/superpowers/plans/2026-08-12-scoped-rename-name-resolution.md`.
+//! - [`prepare_rename_at`] — the rename entry point. Finalizes cursor
+//!   dispatch with the refusals `references_at` alone doesn't cover: a
+//!   lexer keyword, and a record FIELD name (`Expr::FieldAccess.field`,
+//!   `RecordLitField::Named.name`, a record TYPE field's name). The
+//!   builtin-type/unresolved-global refusal is already implicit in
+//!   `references_at` (an unresolved `Use` makes it return `None`), so no
+//!   extra check is needed for that case.
+//! - Cross-file resolution. `register_import` fills in `TopDecl::Import(_)`
+//!   (otherwise left a no-op by the binding walk): a NAMED import specifier
+//!   (`import { name }` / `import { orig as name }`) registers a binding in
+//!   BOTH namespaces under its local name, tagged with the ORIGINAL exported
+//!   name via `Binding::import_export`. `references_at` checks that tag
+//!   first, so a use of an imported name classifies as `CrossFile::Imported`
+//!   rather than `Local`/`Exported`. [`references_to_export`] is the reverse
+//!   direction — given another file's AST plus an exported name, return
+//!   every site (import specifier + uses) in THAT file that traces back to
+//!   it; a local shadow excludes itself for free via the existing
+//!   innermost-scope resolution rule. Namespace-member rename (`u.foo`)
+//!   stays deferred — `foo` is already refused via `field_name_spans`; only
+//!   the alias `u` itself is renameable, and only once `ImportKind::Namespace`
+//!   grows its own binding.
+//!
+//! See `docs/superpowers/plans/2026-08-12-scoped-rename-name-resolution.md`
+//! for the LSP/WASM wiring layered on top of this module.
 
 use crate::ast::*;
 use crate::collections::HashSet;
@@ -91,11 +91,10 @@ pub struct RefSite {
 }
 
 /// Whether a resolved binding's uses can appear outside the current file.
-/// Task 2 only ever produces `Local` (every non-importable file-scope
-/// binding, plus every local/param/capture) or `Exported` (an importable
-/// file-scope chip/mod/fn/let/type/event, named for `import { name }` by
-/// sibling files). `Imported` — a name brought into *this* file from
-/// another one — is Task 5's job; nothing constructs it yet.
+/// `Local` covers every non-importable file-scope binding, plus every
+/// local/param/capture. `Exported` covers an importable file-scope
+/// chip/mod/fn/let/type/event, named for `import { name }` by sibling
+/// files. `Imported` is a name brought into *this* file from another one.
 #[derive(Clone, Debug)]
 pub enum CrossFile {
     Local,
@@ -115,8 +114,8 @@ pub struct RefTarget {
 }
 
 /// A single name-binding site: a declaration that introduces `name` into
-/// scope. Namespace-separated from [`Use`] (added in Task 2) — a `Binding`
-/// never itself represents a reference to another binding.
+/// scope. Namespace-separated from [`Use`] — a `Binding` never itself
+/// represents a reference to another binding.
 #[derive(Clone, Debug)]
 pub(crate) struct Binding {
     pub(crate) id: usize,
@@ -126,9 +125,8 @@ pub(crate) struct Binding {
     /// AST carries a dedicated range for it (`LetBinding::Ident`,
     /// `HandlerParam`, `RecordDestructField::Named`, …); falls back to the
     /// whole declaration's range for constructs the parser doesn't give a
-    /// narrower span (`VarDecl`, `ChipDecl`, `InDecl`, …— see the Task 1
-    /// report for the full list). Narrowing those is follow-up work, not
-    /// needed by this task's tests.
+    /// narrower span (`VarDecl`, `ChipDecl`, `InDecl`, …). Narrowing those
+    /// is follow-up work.
     pub(crate) name_range: SourceRange,
     /// `None` = visible for the whole file (file-scope decl); `Some(r)` =
     /// visible only within lexical extent `r` (the owning block/handler/
@@ -163,15 +161,14 @@ pub(crate) struct Binding {
     pub(crate) is_shorthand: bool,
     /// `Some(original_export_name)` for a binding registered from a NAMED
     /// import specifier (`import { name }` / `import { orig as name }`) — the
-    /// name to look up among the SOURCE file's exports (Task 5). `None` for
-    /// every other binding, including a `TopDecl::Namespace` alias (a
-    /// different, already-resolved construct — see `walk_top_decl`).
+    /// name to look up among the SOURCE file's exports. `None` for every
+    /// other binding, including a `TopDecl::Namespace` alias (a different,
+    /// already-resolved construct — see `walk_top_decl`).
     pub(crate) import_export: Option<String>,
 }
 
-/// One value- or type-position identifier *use*. Filled in by Task 2
-/// (value) / Task 3 (type); Task 1 leaves [`ScopeModel::uses`] empty, so
-/// nothing constructs a `Use` yet.
+/// One value- or type-position identifier *use*, populated by
+/// [`Walker::push_use`] (value) and [`Walker::push_type_use`] (type).
 #[derive(Clone, Debug)]
 pub(crate) struct Use {
     pub(crate) range: SourceRange,
@@ -194,16 +191,16 @@ pub(crate) struct Use {
 pub(crate) struct ScopeModel {
     pub(crate) bindings: Vec<Binding>,
     pub(crate) uses: Vec<Use>,
-    /// Task 4: spans of record FIELD names — never a rename target (the
-    /// plan's Global Constraints defer field rename). Covers
-    /// `Expr::FieldAccess.field` (the part of `obj.field` after the last
-    /// `.`), the KEY half of `RecordLitField::Named` (`name: value`), and a
-    /// `RecordTypeField`'s `name` (`name: Type` in a record type). None of
-    /// these AST nodes carry a name-only sub-range of their own (`field` is
-    /// a bare `String`; the containing node's own `range` spans the name
-    /// AND the value/type), so [`Walker`] computes each span by position
-    /// arithmetic — [`field_suffix_span`]/[`name_prefix_span`] — as it visits
-    /// these nodes during the Task 1-3 walk, rather than re-walking the tree.
+    /// Spans of record FIELD names — never a rename target (deferred per
+    /// the plan's Global Constraints). Covers `Expr::FieldAccess.field` (the
+    /// part of `obj.field` after the last `.`), the KEY half of
+    /// `RecordLitField::Named` (`name: value`), and a `RecordTypeField`'s
+    /// `name` (`name: Type` in a record type). None of these AST nodes carry
+    /// a name-only sub-range of their own (`field` is a bare `String`; the
+    /// containing node's own `range` spans the name AND the value/type), so
+    /// [`Walker`] computes each span by position arithmetic —
+    /// [`field_suffix_span`]/[`name_prefix_span`] — as it visits these nodes
+    /// during the AST walk, rather than re-walking the tree.
     /// [`prepare_rename_at`] checks this FIRST, before dispatching through
     /// [`references_at`]'s own cursor match: a coarser declaration's
     /// `name_range` can otherwise swallow a field cursor that falls inside
@@ -253,7 +250,7 @@ fn name_prefix_span(name: &str, range: &SourceRange) -> SourceRange {
 /// generic heads the parser desugars specially (`Array<V>`/`Ref<V>` fold
 /// into `TypeExpr::Array`/`Ref` at parse time; `Map` stays a `Generic`).
 /// None of these ever resolve to a user [`Binding`], so a `TypeExpr::Name`
-/// matching one is refused for rename rather than left dangling (Task 4).
+/// matching one is refused for rename rather than left dangling.
 pub(crate) const BUILTIN_TYPE_NAMES: &[&str] = &[
     "int", "float", "bool", "string", "entity", "controller", "character", "vector", "rotator",
     "color", "exec", "zone", "teleport", "Map", "Ref", "Array",
@@ -322,9 +319,9 @@ impl<'a> Walker<'a> {
 
     /// Mark the just-`push`ed binding as a named-import local, recording the
     /// ORIGINAL exported name it was imported under so `references_at` /
-    /// `references_to_export` can classify and find it (Task 5). Safe for the
-    /// same reason as `mark_last_shorthand`: `push` appends exactly one
-    /// binding immediately before this is called.
+    /// `references_to_export` can classify and find it. Safe for the same
+    /// reason as `mark_last_shorthand`: `push` appends exactly one binding
+    /// immediately before this is called.
     fn mark_last_import_export(&mut self, export_name: String) {
         if let Some(b) = self.model.bindings.last_mut() {
             b.import_export = Some(export_name);
@@ -352,7 +349,7 @@ impl<'a> Walker<'a> {
     /// bindings only in the same post-walk pass as value uses ([`resolve_uses`]) —
     /// a builtin name (`character`, `int`, `Map`, …) simply never matches a
     /// user [`Binding`] and stays `resolved: None`, which is exactly the
-    /// "not a rename target" outcome cursor dispatch needs (Task 4).
+    /// "not a rename target" outcome cursor dispatch needs.
     fn push_type_use(&mut self, name: String, range: SourceRange, coarse: bool) {
         self.model.uses.push(Use {
             range,
@@ -386,7 +383,7 @@ impl<'a> Walker<'a> {
             }
             TypeExpr::Record { fields, .. } => {
                 for f in fields {
-                    // Task 4: the field's own name is never a rename target.
+                    // The field's own name is never a rename target.
                     self.model.field_name_spans.push(name_prefix_span(&f.name, &f.range));
                     self.walk_type_expr(&f.typ);
                 }
@@ -412,8 +409,8 @@ impl<'a> Walker<'a> {
     fn walk_top_decl(&mut self, d: &TopDecl) {
         match d {
             // Cross-file: the namespace alias itself is a file-scope value
-            // binding, but its members are handled in the cross-file task
-            // (Task 5), not walked here.
+            // binding; its members are handled by cross-file resolution,
+            // not walked here.
             TopDecl::Namespace(ns) => {
                 self.push(
                     ns.name.clone(),
@@ -510,20 +507,20 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// `import { name }` / `import { orig as name }` bindings (Task 5). Each
-    /// named binding registers a file-scope binding under its LOCAL name
-    /// (`alias` if present, else `name`) at the import specifier's own span
-    /// — `ImportBinding.range` is the effective-identifier span per `ast.rs`,
+    /// `import { name }` / `import { orig as name }` bindings. Each named
+    /// binding registers a file-scope binding under its LOCAL name (`alias`
+    /// if present, else `name`) at the import specifier's own span —
+    /// `ImportBinding.range` is the effective-identifier span per `ast.rs`,
     /// so this is precise (`coarse: false`), not a whole-decl span. This
     /// module never resolves the source file (no filesystem — see the module
     /// doc), so whether the imported name denotes a value or a type isn't
-    /// knowable locally: register it in BOTH namespaces (two bindings,
-    /// same local name/range/export), so a value use binds the value copy
-    /// and a type use binds the type copy. Not importable itself (bringing a
-    /// name IN doesn't re-export it back out). `ImportKind::All`/`Namespace`
-    /// bring in no individually-named bindings and are out of this task's
-    /// scope (see the plan's Task 5 Deferral — the namespace alias itself,
-    /// once resolved, is a value binding via `TopDecl::Namespace` above).
+    /// knowable locally: register it in BOTH namespaces (two bindings, same
+    /// local name/range/export), so a value use binds the value copy and a
+    /// type use binds the type copy. Not importable itself (bringing a name
+    /// IN doesn't re-export it back out). `ImportKind::All`/`Namespace`
+    /// bring in no individually-named bindings and are handled separately —
+    /// the namespace alias itself, once resolved, is a value binding via
+    /// `TopDecl::Namespace` above.
     fn register_import(&mut self, imp: &ImportDecl) {
         let ImportKind::Named(bindings) = &imp.kind else {
             return;
@@ -650,15 +647,13 @@ impl<'a> Walker<'a> {
 
     /// Descend a handler's trigger (`on go`, `on MyEvent()`, `on
     /// split.Forward`, `on !a`, `on a | b`) so the trigger token itself is a
-    /// value-position use. Whole-branch review BLOCKER fix: `register_handler`
-    /// previously walked params/config/body but not `h.trigger`, so `on go` /
-    /// `on MyEvent` registered no [`Use`] at all — renaming an `in` exec port
-    /// or a user `event` left every handler that triggers on it dangling, and
-    /// the trigger token itself wasn't even a valid rename START point. A
-    /// builtin event name (`CharacterSpawned`, `Clock`, `ChatCommand`, …) or a
-    /// synthesized expr-trigger name (`_on_expr_N`) simply never matches a
-    /// user [`Binding`], so it resolves to `None` — the same safe no-op as an
-    /// unresolved builtin call.
+    /// value-position use — without this, renaming an `in` exec port or a
+    /// user `event` would leave every handler that triggers on it dangling,
+    /// and the trigger token itself wouldn't be a valid rename start point.
+    /// A builtin event name (`CharacterSpawned`, `Clock`, `ChatCommand`, …)
+    /// or a synthesized expr-trigger name (`_on_expr_N`) simply never
+    /// matches a user [`Binding`], so it resolves to `None` — the same safe
+    /// no-op as an unresolved builtin call.
     fn walk_trigger(&mut self, t: &Trigger) {
         match t {
             // `on go` / `on MyEvent` — the whole trigger IS the name token
@@ -904,11 +899,11 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Descends every `Expr` subtree solely to find nested statement-bearing
-    /// sub-blocks (`BlockExpr`, a `MatchExpr` arm's `MatchBody::Block`) so
-    /// their locals are registered with the right scope extent. Task 1
-    /// registers no bindings from plain value-position identifiers or calls
-    /// — that's value-use collection, added in Task 2.
+    /// Descends every `Expr` subtree so nested statement-bearing sub-blocks
+    /// (`BlockExpr`, a `MatchExpr` arm's `MatchBody::Block`) get their
+    /// locals registered with the right scope extent. Plain value-position
+    /// identifiers and calls register a USE (via `push_use`), never a
+    /// binding.
     fn walk_expr(&mut self, e: &Expr) {
         match e {
             Expr::Call { callee, args, type_args, .. } => {
@@ -932,8 +927,8 @@ impl<'a> Walker<'a> {
                 self.walk_expr(operand)
             }
             Expr::FieldAccess { obj, field, range } => {
-                // Task 4: the field half of `obj.field` is never a rename
-                // target (record fields are a deliberate deferral).
+                // The field half of `obj.field` is never a rename target
+                // (record fields are a deliberate deferral).
                 self.model.field_name_spans.push(field_suffix_span(field, range));
                 self.walk_expr(obj);
             }
@@ -966,8 +961,8 @@ impl<'a> Walker<'a> {
             Expr::RecordLit { fields, .. } => {
                 for f in fields {
                     match f {
-                        // Task 4: the KEY half of `name: value` is never a
-                        // rename target (only the value side is a use).
+                        // The KEY half of `name: value` is never a rename
+                        // target (only the value side is a use).
                         RecordLitField::Named { name, value, range } => {
                             self.model.field_name_spans.push(name_prefix_span(name, range));
                             self.walk_expr(value);
@@ -1131,8 +1126,8 @@ fn resolve_uses(model: &mut ScopeModel) {
 /// — the tie is broken by the identifier actually under the cursor
 /// (`word_at`), so clicking `bb` resolves to `bb`, not the first-registered
 /// `aa`. If that node is a use that didn't resolve to any binding
-/// (builtin/global), this returns `None` — Task 4 turns that into an
-/// explicit refusal path.
+/// (builtin/global), this returns `None` — [`prepare_rename_at`] turns that
+/// into an explicit refusal path.
 pub fn references_at(
     script: &Script,
     source: &str,
@@ -1142,8 +1137,8 @@ pub fn references_at(
 ) -> Option<(RefTarget, Vec<RefSite>)> {
     // `script`/`source` are always a single parsed file (this module does no
     // filesystem I/O — see the module doc), so `file` isn't needed to
-    // disambiguate anything yet. It's kept in the signature per the plan,
-    // ready for Task 5's cross-file callers.
+    // disambiguate anything. It's kept in the signature per the plan, for
+    // parity with `references_to_export`'s cross-file callers.
     let _ = file;
     let model = build_scope_model(script);
     let cursor_line = (line + 1) as u32;
@@ -1214,8 +1209,9 @@ pub fn references_at(
             // whose declaration still spells `orig`, nor a sibling importer
             // that chose a different alias. Classifying it `Local` keeps the
             // whole rename in-file (no cross-file scan, no defining-file
-            // resolution — which is what previously corrupted `mod orig(){…}`
-            // by narrowing its decl range against the local alias name).
+            // resolution — treating it as cross-file would corrupt
+            // `mod orig(){…}` by narrowing its decl range against the local
+            // alias name).
             CrossFile::Local
         } else {
             // NON-aliased import: the local name IS the export name, so
@@ -1396,9 +1392,9 @@ fn record_sem_span(
 /// - Every [`Binding`] gets the matching treatment: a TYPE binding emits
 ///   `Type`; a VALUE binding whose name the grammar would mis-color emits
 ///   its [`kind_token`]. Import bindings (`b.kind == "import"`) are skipped
-///   entirely — they're dual value/type-registered (Task 5's cross-file
-///   deferral), so classifying them here would be a guess, not a fact the
-///   resolver actually knows; the grammar's own coloring stands instead.
+///   entirely — they're dual value/type-registered, so classifying them
+///   here would be a guess, not a fact the resolver actually knows; the
+///   grammar's own coloring stands instead.
 ///
 /// A compiler-synthesized identifier that stands in for real user source (its
 /// range overlaps user code, so coloring it would mis-paint that code). The

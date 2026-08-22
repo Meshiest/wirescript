@@ -939,8 +939,8 @@ let r = Toggle(flag)",
 
 /// `&x` (address-of) passed to a `*T` param must bind the SAME var as bare `x`,
 /// so a write through the param reaches the caller's var. The `&` form (the
-/// documented `inc(&x)` idiom) used to bind the param to nothing — the inline
-/// ref-binding never unwrapped `Expr::RefOf` — silently dropping every write.
+/// documented `inc(&x)` idiom) needs the inline ref-binding to unwrap
+/// `Expr::RefOf`, or the param binds to nothing and every write is dropped.
 #[test]
 fn addr_of_arg_binds_ref_param_so_write_lands() {
     let r = compile(
@@ -1107,7 +1107,7 @@ on t {
 fn map_get_with_exec_arg_lowers_in_pure_context() {
     // `m.get(k, exec = <trigger>)` in a PURE binding drives the read off an
     // explicit trigger (mirrors the array `lut.get(i, exec = …)` path), so it must
-    // lower to a real Map_Get gate — not the `_Unsupported` placeholder it used to.
+    // lower to a real Map_Get gate — not the `_Unsupported` placeholder.
     // `Change(k).exec` is a bare-exec builtin result used as the trigger — the
     // same shape the user hit — so this also guards the `.exec`-on-exec lowering.
     let src = "\
@@ -1511,7 +1511,7 @@ fn unknown_non_function_call_is_not_ws021() {
 
 #[test]
 fn chip_constant_arg_folds_into_the_instance() {
-    // A constant argument used to cross the boundary as a real gate: the caller
+    // A constant argument folds into the instance instead of crossing the boundary as a real gate: the caller
     // built a `_Var` holding the value and wired it into the chip's input
     // rerouter, because a rerouter has no data struct to carry inline gate data.
     // That made `Bump(1)` strictly more expensive than the same call written as a
@@ -1652,7 +1652,7 @@ on t {
     }
 }
 
-// ── P0-1: template cache must key on call-site context, not the bare name ──
+// ── Template cache must key on call-site context, not the bare name ──
 
 /// No input port anywhere (top-level module or any nested chip body) may take
 /// more than one incoming wire. Two wires into one port is a load-time fan-in
@@ -1679,7 +1679,7 @@ fn assert_no_port_fanin(r: &LowerResult) {
 
 #[test]
 fn pure_then_exec_chip_call_gets_its_own_exec_body() {
-    // P0-1a: a chip called first in a PURE context (built with no exec boundary
+    // A chip called first in a PURE context (built with no exec boundary
     // pins) then in an EXEC context must NOT have the exec call reuse the pure
     // body. The template cache keyed on the bare chip name, so the exec call got
     // the pin-less body and its exec was wired into a data pin (dropped at
@@ -1714,7 +1714,7 @@ on go { r = Double(4) }";
 
 #[test]
 fn captured_var_then_input_arg_chip_call_no_fanin() {
-    // P0-1b: `SumInto(xs)` captures a var (no pin); `SumInto(ys)` pins an input.
+    // `SumInto(xs)` captures a var (no pin); `SumInto(ys)` pins an input.
     // Sharing one name-keyed body handed the 2nd call the 1st's (pin-less) body,
     // fanning ys's ref and the exec chain into a single pin. Keying on the
     // capture set gives each call the right body.
@@ -1735,7 +1735,7 @@ on go {
 
 #[test]
 fn same_named_chip_in_two_namespaces_get_distinct_bodies() {
-    // P0-1c: two `chip Helper` in different modules share a name-keyed cache
+    // Two `chip Helper` in different modules share a name-keyed cache
     // slot, so the 2nd call instantiates the 1st module's body. Keying on the
     // decl's source range (file + span) keeps them distinct.
     let one = "chip Helper() -> (v: int) { out v = 100 }";
@@ -1765,11 +1765,11 @@ on go {
     );
 }
 
-// ── P0-3: two `return expr` in a non-inline chip must not fan in on the output ──
+// ── Two `return expr` in a non-inline chip must not fan in on the output ──
 
 #[test]
 fn standalone_chip_two_returns_route_through_pseudovar() {
-    // P0-3: a standalone (non-inline) chip with two `return expr` must route both
+    // A standalone (non-inline) chip with two `return expr` must route both
     // through a return PseudoVar (Var_Set per return, one Var_Get after the union
     // → a single output wire), exactly like the inline path. `build_chip_module`
     // never set `mod_return_var`, so both returns wired straight into the output
@@ -1824,11 +1824,11 @@ on go { r = pick() }";
     );
 }
 
-// ── P0-4: multiple `emit out = v` sites must not fan in on the output ──
+// ── Multiple `emit out = v` sites must not fan in on the output ──
 
 #[test]
 fn multiple_emit_sites_to_one_output_route_through_backing_var() {
-    // P0-4: two handlers each `emit result = <v>` used to wire each value
+    // Two handlers each `emit result = <v>` would otherwise wire each value
     // straight into the output rerouter — a load-time fan-in with no diagnostic.
     // They must instead share a backing PseudoVar (a Var_Set per site), the var
     // feeding the output once (last-writer-wins).

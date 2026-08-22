@@ -125,9 +125,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 // not those gates end up wired to anything, silently
                 // defeating "a const mod call emits no gates". Typecheck
                 // already reported an argument that fails to evaluate
-                // (WS046), so a failure here is a defensive fallback (keep
-                // the pre-Task-13 wire-lowering behavior), not the expected
-                // path.
+                // (WS046), so a failure here is a defensive fallback, not
+                // the expected path.
                 if param.is_const {
                     let lookup = |n: &str| ctx.resolve_mod(n);
                     let mut budget = crate::const_eval::Budget::default();
@@ -327,11 +326,11 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // frame — the one `push_scope` opened above and `pop_scope` drops at the
     // end of this function — so it shadows a same-named outer declaration for
     // the WHOLE of this body (including any chip instantiated inside it, which
-    // clones the stack as it stands then) and is gone afterwards. No manual
-    // save/restore: an earlier version of this did the bookkeeping by hand and
-    // undid it HERE, before the body was lowered, which left a chip declared
-    // and instantiated inside this body resolving the outer declaration while
-    // an ordinary call beside it resolved the inner one.
+    // clones the stack as it stands then) and is gone afterwards. Doing this
+    // save/restore by hand and undoing it HERE, before the body is lowered,
+    // would leave a chip declared and instantiated inside this body
+    // resolving the outer declaration while an ordinary call beside it
+    // resolved the inner one.
     fn pre_declare_block_vars(ctx: &mut LowerCtx, block: &Block) {
         for s in &block.stmts {
             match s {
@@ -350,7 +349,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 // nested `var k` up here collided it with a same-named body-level
                 // `var k` (last-declared won the shared frame), which orphaned
                 // one gate and mis-scoped the body-level reads onto the nested
-                // storage. The block's own `lower_stmt` now declares it fresh
+                // storage. The block's own `lower_stmt` declares it fresh
                 // (see `needs_declaration`, current-frame).
                 Stmt::If(i) => {
                     pre_declare_block_chip_names(ctx, &i.then_block);
@@ -363,8 +362,8 @@ pub(in crate::lower) fn lower_chip_call_inline(
         }
     }
     /// Recurse a block for nested `chip`/`mod` NAMES only — the forward-reference
-    /// pre-declaration that `pre_declare_block_vars` keeps while no longer
-    /// hoisting block-scoped storage. Storage is intentionally skipped here.
+    /// pre-declaration that `pre_declare_block_vars` keeps. Storage is
+    /// intentionally skipped here.
     fn pre_declare_block_chip_names(ctx: &mut LowerCtx, block: &Block) {
         for s in &block.stmts {
             match s {
@@ -529,7 +528,6 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 get_id.port(WirePort::VarRef),
             );
             ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
-            // Wire Var_Get value to the output node
             if ctx.output_count() == 1 {
                 let out = ctx.first_output().unwrap().1.clone();
                 ctx.connect(

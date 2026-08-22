@@ -32,7 +32,7 @@ fn ns_record_field(t: Option<&Type>, name: &str) -> Option<Type> {
 /// acquiring a half-known type that could reject a use that works now.
 ///
 /// Members resolve against `ns_map` as built so far — source order. A forward
-/// reference yields `None` and stays `any`, as before. Spread and duplicate
+/// reference yields `None` and stays `any`. Spread and duplicate
 /// keys follow the same last-wins rule as `infer`'s record-literal arm.
 fn ns_value_type(ns_map: &HashMap<String, NsDeclInfo>, e: &Expr) -> Option<Type> {
     if let Some(t) = literal_expr_type(e) {
@@ -78,9 +78,8 @@ fn ns_value_type(ns_map: &HashMap<String, NsDeclInfo>, e: &Expr) -> Option<Type>
 /// declaration in `decls` (top-level and namespaced). Deliberately does NOT
 /// resolve the alias body here — it's still parametric (references its own
 /// free `type_params`, unbound until a use site supplies concrete args), so
-/// resolving it now would spuriously flag those params as unknown types (the
-/// pre-generics behavior the brief calls out). Instantiation happens lazily,
-/// per use, in `types::resolve::resolve_type`.
+/// resolving it now would spuriously flag those params as unknown types.
+/// Instantiation happens lazily, per use, in `types::resolve::resolve_type`.
 pub(super) fn collect_generic_aliases(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     for d in decls {
         match d {
@@ -174,7 +173,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 // value wire type. Reject `any` in the STORED position: the
                 // element for an array, the value for a map, else the type
                 // itself. (Matches the `array`/`map` decl checks below, so the
-                // `var` form has full parity now that those keywords are gone.)
+                // `var` form has full storage-type parity with them.)
                 let (stored, what) = match &inner {
                     Type::Array(elem) => (elem.as_ref(), "an array's element type"),
                     Type::Map(_, val) => (val.as_ref(), "a map's value type"),
@@ -670,7 +669,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             for f in fields {
                                 // `{ a: x }` binds `x` to field `a`; a `...rest`
                                 // binds a record of whatever is left, which this
-                                // doesn't reconstruct — it stays `any`, as before.
+                                // doesn't reconstruct — it stays `any`.
                                 if let RecordDestructField::Named { name, alias, .. } = f {
                                     let ty = ns_record_field(src.as_ref(), name);
                                     let bound = alias.as_ref().unwrap_or(name);

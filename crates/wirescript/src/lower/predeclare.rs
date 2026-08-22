@@ -190,11 +190,10 @@ pub(super) fn is_entity_family(t: &Type) -> bool {
 
 pub(super) use crate::types::mono::unwrap_ref;
 
-/// Default initial literal for Pseudo_Var data structs. Only covers
-/// primitive types that have a clean wire_graph_variant mapping.
-/// Object/entity types are omitted — the game defaults them correctly.
-/// Default initial literal for Pseudo_Var data structs so the game knows
-/// the variable's wire_graph_variant type. Every Var must have one.
+/// Default initial literal for Pseudo_Var data structs, so the game knows
+/// the variable's wire_graph_variant type. Only covers primitive types that
+/// have a clean wire_graph_variant mapping; object/entity types are omitted
+/// — the game defaults them correctly. Every Var must have one.
 ///
 /// `pub(crate)` because typecheck needs the same correctly-TYPED zero value:
 /// its `const`-parameter body-check seeds a type-shaped placeholder literal
@@ -250,8 +249,8 @@ pub type ConstEnv = crate::collections::HashMap<String, Literal>;
 /// `push_scope`). A binding declared directly in such a body is therefore a
 /// top-level binding that happens to be drawn inside a box, and its constant
 /// must live in the same environment as the rest — nothing else ever opens a
-/// `scoped_consts` frame for it, so before this descent an anonymous chip's
-/// `const` was recorded NOWHERE and read back as a runtime value.
+/// `scoped_consts` frame for it, so without this descent an anonymous chip's
+/// `const` would be recorded NOWHERE and would read back as a runtime value.
 ///
 /// Descends through nested anonymous chips (each shares the same parent scope
 /// in turn) and STOPS at anything that does open a scope of its own — a
@@ -335,10 +334,9 @@ pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
     // the same fixpoint as the top-level ones — see that function's comment.
     let lets = scope_lets(decls);
     let mut env = ConstEnv::default();
-    // Which decls have already produced their final answer, by position.
-    // Replaces the previous `env.contains_key(name)` guard, which could only
-    // ask about a SINGLE name and so had no meaning for a binding that
-    // introduces several. A decl is settled once its initializer EVALUATES:
+    // Which decls have already produced their final answer, by position — a
+    // bare `env.contains_key(name)` check has no meaning for a binding that
+    // introduces several names. A decl is settled once its initializer EVALUATES:
     // the resulting value is final, and `bind_destructured` is a pure
     // function of it, so neither the value nor the split can change on a
     // later pass. A decl whose initializer does NOT yet evaluate is left
@@ -372,9 +370,9 @@ pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
                 continue;
             };
             for (name, value) in pairs {
-                // FIRST declaration of a name wins, matching the previous
-                // `env.contains_key` guard: a duplicate must not overwrite
-                // it, or the fixpoint could alternate and never converge.
+                // FIRST declaration of a name wins: a duplicate must not
+                // overwrite it, or the fixpoint could alternate and never
+                // converge.
                 if env.contains_key(&name) {
                     continue;
                 }
@@ -588,8 +586,7 @@ fn expr_to_literal_impl(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
     let expr_to_literal = |e: &Expr| expr_to_literal_impl(e, env);
     match e {
         // -- Constant-environment forms: initializers only. --
-        // With no environment these fall through to `_ => None`, exactly as
-        // before this was added.
+        // With no environment these fall through to `_ => None`.
         Expr::Ident { name, .. } => env?.get(name).cloned(),
         Expr::BinOp {
             op, left, right, ..
@@ -599,7 +596,7 @@ fn expr_to_literal_impl(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
         {
             eval_const_unop(op, expr_to_literal(operand)?)
         }
-        // -- Always-constant forms (unchanged). --
+        // -- Always-constant forms. --
         Expr::IntLit { value, .. } => Some(Literal::Int(*value)),
         Expr::AtomLit { value, .. } => Some(Literal::Int(*value)),
         Expr::FloatLit { value, .. } => Some(Literal::Float(*value)),
@@ -702,7 +699,7 @@ fn expr_to_literal_lit(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
 ///
 /// Routes through `const_eval::eval_expr`, which tries the SAME
 /// `expr_to_literal_in` fold FIRST (see the seam note atop `const_eval::expr`)
-/// — so every element that baked before this still bakes byte-for-byte — and
+/// — so a plain-literal element still bakes byte-for-byte — and
 /// only then reaches for the certified evaluator's extra surface (a const-mod
 /// CALL per element, string methods/interpolation, ...) that plain literal
 /// folding cannot reach. `ctx` (rather than a bare `&ConstEnv`) is needed to
@@ -996,8 +993,6 @@ fn bake_map_init(
     if pairs.len() == entries.len() {
         properties.insert(*sym::INITIAL_VALUE, Literal::Map(pairs));
     } else {
-        // Non-constant entries can't bake at a (pure) decl; the map starts
-        // empty. (lowering handles the exec-context desugar for `m = {…}`.)
         ctx.warn(
             format!(
                 "'{name}' initializer has non-constant entries — they are dropped here; assign them inside an exec handler"
@@ -2054,8 +2049,8 @@ pub(super) fn pre_declare_output(
 
 #[cfg(test)]
 mod composite_config_const_env_tests {
-    // Task 11: `fold_mesh_colors`/`fold_ammo_override` resolve a bare
-    // identifier through the const environment before their normal syntactic
+    // `fold_mesh_colors`/`fold_ammo_override` resolve a bare identifier
+    // through the const environment before their normal syntactic
     // `Expr::Array`/`Expr::RecordLit` check. No current `const` source syntax
     // can bind an array/record value (array folding isn't wired into
     // `expr_to_literal_in` — see the doc comment on `expr_to_literal`), so

@@ -24,7 +24,6 @@ fn handler_allocates_handler_body_scope() {
         has_handler_body,
         "expected a HandlerBody scope for RoundStart"
     );
-    // Handler body's parent must be ModuleRoot.
     let hb = r
         .module
         .scopes

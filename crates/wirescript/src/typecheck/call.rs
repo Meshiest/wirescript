@@ -12,7 +12,7 @@ use crate::types::mono::{substitute, unwrap_ref};
 /// argument type — the least upper bound, not just "first arg wins". Left as
 /// the union, the result would satisfy no operator overload and every use of
 /// it would fail. When only one operand is concrete, the join is just that
-/// type (unchanged from the old behavior). When two operands have no common
+/// type. When two operands have no common
 /// widening (e.g. `Blend(vector, 1, t)`), that's a genuine incompatibility —
 /// emit `WS033` (the same code the generic-mod inference solver uses for an
 /// unwidenable conflict; this is the same kind of failure, just for a
@@ -401,16 +401,16 @@ pub(super) fn type_user_symbol_call(
         }
     };
     // Validate each argument against its (substituted) parameter type — the
-    // same coercion the wire layer applies (`PortsAreCompatible`), now routed
+    // same coercion the wire layer applies (`PortsAreCompatible`), routed
     // through the shared `sig::check_args` (arity already checked above as
-    // WS022, so `check_arity = false` here). User mod/chip calls previously
-    // skipped this entirely, so `f(int)` on a `vector` param — and a receiver
-    // call `x.m()` whose `x`'s type doesn't match `self` — passed clean and
-    // then miscompiled at the wire level. Skipped only for a spread (variable
-    // positional count, nothing to line up positionally); `check_args`'s own
-    // `Wire`-arm coerce already treats `Any`/`Opaque` args as always-`Same`
-    // and skips a still-generic (`Type::Param`-carrying) param — the latter
-    // left to the WS033 inference diagnostics above.
+    // WS022, so `check_arity = false` here). Skipping this would let
+    // `f(int)` on a `vector` param — or a receiver call `x.m()` whose `x`'s
+    // type doesn't match `self` — pass clean and then miscompile at the wire
+    // level. Skipped only for a spread (variable positional count, nothing
+    // to line up positionally); `check_args`'s own `Wire`-arm coerce already
+    // treats `Any`/`Opaque` args as always-`Same` and skips a still-generic
+    // (`Type::Param`-carrying) param — the latter left to the WS033
+    // inference diagnostics above.
     if !has_spread {
         check_args(
             ctx,
@@ -523,9 +523,9 @@ pub(super) fn sig_of_callspec(spec: &crate::catalog::calls::CallSpec) -> CallSig
 /// becomes `ParamKind::Const` (user mods have no config-menu params) and
 /// non-optional (user mods have no default params either). `subst` — the
 /// generic-inference result computed by the caller, `None` for a non-generic
-/// call — is applied to each param's type first, exactly like the pre-
-/// `check_args` inline coerce loop did; a param whose (possibly-substituted)
-/// type still carries a `Type::Param` is left alone here too — `check_args`'s
+/// call — is applied to each param's type first; a param whose
+/// (possibly-substituted) type still carries a `Type::Param` is left alone
+/// here too — `check_args`'s
 /// own `type_has_param` guard skips it. `config_gate` is `None`: a named arg
 /// that matches no declared param has no data-driven fallback to dispatch to
 /// for a user call.

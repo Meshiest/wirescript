@@ -175,7 +175,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         }
     }
 
-    // Try: general expression/call trigger (Task 6) - `on <expr> [-> <pattern>]
+    // Try: general expression/call trigger - `on <expr> [-> <pattern>]
     // { ... }` where `<expr>` is a mod/chip call, desugared by the parser into a
     // synthetic `_on_expr_N` trigger + a queued `let _on_expr_N = <expr>`. `on`
     // triggers on the call's own exec OUTPUT (a structural `Type::Exec` field in

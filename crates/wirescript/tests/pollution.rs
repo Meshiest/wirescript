@@ -153,7 +153,6 @@ on tick {
         chip_modules.len()
     );
 
-    // Pairwise disjoint.
     for i in 0..chip_modules.len() {
         for j in (i + 1)..chip_modules.len() {
             let ids_i: HashSet<NodeId> = chip_modules[i].1.nodes.keys().copied().collect();

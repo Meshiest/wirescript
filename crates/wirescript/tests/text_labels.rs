@@ -278,13 +278,11 @@ fn dynamic_int_label_wires_through_formattext() {
         "exactly one wire should drive a label Text port; wires = {:?}",
         r.world.wires
     );
-    // An int value is coerced to a string via a FormatText gate before the wire.
     assert_eq!(
         text_wires[0].source.port_name.to_string(),
         "Output",
         "an int label value is wired from a FormatText `Output`"
     );
-    // The target brick must actually carry the text component (not dangling).
     assert!(
         text_display_brick_ids(&r.world).contains(&text_wires[0].target.brick_id),
         "the label wire must target a real Component_TextDisplay"
@@ -322,8 +320,6 @@ fn dynamic_string_self_label_wires_value_directly() {
         "exactly one self-label Text wire; wires = {:?}",
         r.world.wires
     );
-    // A string value is wired directly from the variable's `Value` output — no
-    // FormatText coercion gate is inserted.
     assert_eq!(
         text_wires[0].source.port_name.to_string(),
         "Value",
@@ -406,7 +402,6 @@ fn module_label_wires_runtime_value_into_root_shell() {
         "one root dynamic-label wire; wires = {:?}",
         r.world.wires
     );
-    // The wire targets the ROOT microchip shell brick (bricks[0]).
     assert_eq!(
         Some(text_wires[0].target.brick_id),
         r.world.bricks[0].get_id(),

@@ -90,10 +90,9 @@ impl CompiledTemplate {
     }
 }
 
-/// Recursive body of [`CompiledTemplate::instantiate_with_map`]: stamp a fresh
-/// copy of `module` by reference — the old path deep-cloned every chip child
-/// into a throwaway `CompiledTemplate` before copying it AGAIN into the
-/// instance.
+/// Recursive body of [`CompiledTemplate::instantiate_with_map`]: stamps a
+/// fresh copy of `module` by reference, so each chip child is copied once
+/// instead of being deep-cloned into a throwaway `CompiledTemplate` first.
 fn stamp_module(
     src: &Module,
     external_refs: &[(String, NodeId)],

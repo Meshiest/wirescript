@@ -771,25 +771,23 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     // lowers the taken block STRAIGHT INTO THE PARENT SCOPE — no Branch gate,
     // and so no Var_Get cache snapshot/restore (see this function's doc
     // comment) — which is what makes it safe. Do not reimplement this as
-    // post-hoc deletion of an already-lowered branch. Generalises the old
-    // literal-bool-only elision (a bare `true`/`false`) to every
-    // compile-time-decidable condition built from const-DECLARED names
-    // (operators over them, certified method calls, ...) via
-    // `const_eval::eval_expr` — the same evaluator `typecheck::stmt`'s
-    // `Stmt::If` arm uses to decide which block NOT to check, so the two
-    // sides agree on exactly what's constant. `if_cond_const_ctx` restricts
-    // the environment to names actually spelled `const` (NOT a plain `let`
-    // that merely happens to fold — see its doc comment): the feature's own
-    // rule is that a program using no `const` compiles identically to
-    // before, so a condition built from a plain `let` must fall straight
-    // through to the general Branch path below, exactly as it did before
-    // this feature existed. The OLD second case (an ident bound to a
-    // literal-bool GATE, e.g. a plain mod param called with a literal
-    // argument) is not something `const_eval` can see — see
-    // `ident_literal_bool`'s doc comment — so it stays a separate, narrower
-    // fallback below, unaffected by the const-declared restriction (it
-    // never reads `const_lookup` at all). Only when NOT under `@nofold` —
-    // that annotation promises "nothing folded or elided", so a
+    // post-hoc deletion of an already-lowered branch. This covers a bare
+    // `true`/`false` and, more generally, every compile-time-decidable
+    // condition built from const-DECLARED names (operators over them,
+    // certified method calls, ...) via `const_eval::eval_expr` — the same
+    // evaluator `typecheck::stmt`'s `Stmt::If` arm uses to decide which
+    // block NOT to check, so the two sides agree on exactly what's
+    // constant. `if_cond_const_ctx` restricts the environment to names
+    // actually spelled `const` (NOT a plain `let` that merely happens to
+    // fold — see its doc comment): a program using no `const` must compile
+    // identically, so a condition built from a plain `let` falls straight
+    // through to the general Branch path below. A separate case: an ident
+    // bound to a literal-bool GATE (e.g. a plain mod param called with a
+    // literal argument) is not something `const_eval` can see — see
+    // `ident_literal_bool`'s doc comment — so it stays a narrower fallback
+    // below, unaffected by the const-declared restriction (it never reads
+    // `const_lookup` at all). Only when NOT under `@nofold` — that
+    // annotation promises "nothing folded or elided", so a
     // `@nofold`-scoped `if true {...}` must still lower a real Branch (fall
     // through to the general path below).
     if ctx.nofold_depth == 0 {
@@ -1035,7 +1033,7 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
 
     if let Some(ref value_expr) = s.value {
         if let Some(out) = ctx.lookup_output(&s.name).cloned() {
-            // P0-4: an output value-driven from more than one `emit` site is
+            // An output value-driven from more than one `emit` site is
             // backed by a PseudoVar (allocated by the pre-scan in `lower`). Each
             // site does a Var_Set into it on its own exec chain; the var's value
             // feeds the output once, after all handlers (so no fan-in). Never

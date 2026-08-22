@@ -64,7 +64,6 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         .filter(|w| node_set.contains(&w.source.node_id) && node_set.contains(&w.target.node_id))
         .collect();
 
-    // Build the graph.
     let mut g: DiGraphMap<&NodeId, ()> = DiGraphMap::new();
     for id in &node_ids {
         g.add_node(id);
@@ -184,7 +183,6 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
             uf.union(ui, vi);
         }
     }
-    // Bucket nodes by root.
     let mut wccs: HashMap<usize, Vec<&NodeId>> = HashMap::default();
     for (i, id) in node_ids.iter().enumerate() {
         wccs.entry(uf.find(i)).or_default().push(*id);

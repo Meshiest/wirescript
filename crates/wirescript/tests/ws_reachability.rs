@@ -68,9 +68,9 @@ fn ws002_is_reachable() {
 }
 
 // WS003 - type mismatch on assignment (vector -> int, inside exec) [typecheck]
-// NOTE: a bool RHS was tried first, but bool -> int is an automatic
-// coercion (CoerceRule::Coerce), not a mismatch — a vector RHS is a
-// genuine, unconditional mismatch (numeric<->vector never coerces).
+// NOTE: bool -> int is an automatic coercion (CoerceRule::Coerce), not a
+// mismatch — a vector RHS is a genuine, unconditional mismatch
+// (numeric<->vector never coerces).
 #[test]
 fn ws003_is_reachable() {
     let src = "var x: int = 0\nin start: exec\non start {\n  x = Vec(1.0, 2.0, 3.0)\n}\n";
