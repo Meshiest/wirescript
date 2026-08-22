@@ -94,6 +94,12 @@ pub fn is_map_method(name: &str) -> bool {
 /// the rest are void statements (`never`).
 pub fn map_return_type(method: &str, _key: &Type, value: &Type) -> Option<Type> {
     Some(match method {
+        // A record-valued map returns the value RECORD directly, so
+        // `m.get(k).field` and `p = m.get(k)` type-check like the `m[k]`
+        // subscript form (which the record-map lowering also fans out per
+        // field). There is no `Found` flag to expose alongside a record - the
+        // `{Value, Found}` pair is kept only for a scalar value.
+        "get" if matches!(value, Type::Record(_)) => value.clone(),
         "get" => Type::Record(vec![
             ("Value".into(), value.clone()),
             ("Found".into(), Type::Bool),

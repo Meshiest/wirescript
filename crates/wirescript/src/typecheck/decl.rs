@@ -287,10 +287,74 @@ pub(super) fn check_decl(
     ctx.with_nofold(decl_no_fold(d), |ctx| check_decl_inner(ctx, d));
 }
 
+/// The innermost record type backing a storage declaration — unwrapping a `ref`,
+/// the array element, or the map value — so an aggregate (`var p: Rec`,
+/// `Rec[]`, `Map<K, Rec>`) is checked from one place regardless of container.
+fn aggregate_record_fields(ty: &Type) -> Option<&Vec<(String, Type)>> {
+    match ty {
+        Type::Ref(inner) => aggregate_record_fields(inner),
+        Type::Array(e) => aggregate_record_fields(e),
+        Type::Map(_, v) => aggregate_record_fields(v),
+        Type::Record(f) => Some(f),
+        _ => None,
+    }
+}
+
+/// A record used as var/array/map STORAGE decomposes into one backing gate per
+/// field (see `lower::predeclare::declare_record_container`), so every leaf must
+/// be a value that a gate can hold. A reference-only field (`ref T`/zone/
+/// teleport/prefab) or an `exec` can't, and used to lower to a bogus `Pseudo_Var`
+/// with no diagnostic — reject it with WS049 instead. Nested records recurse;
+/// variant, array, and map fields are fine.
+fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &SourceRange) {
+    fn reason(ft: &Type) -> Option<&'static str> {
+        match ft {
+            Type::Ref(_) => Some("a reference (`*T`)"),
+            Type::Zone => Some("a `zone`"),
+            Type::Teleport => Some("a `teleport`"),
+            Type::PrefabRef => Some("a prefab reference"),
+            Type::Exec => Some("an `exec`"),
+            _ => None,
+        }
+    }
+    fn walk(ctx: &mut TypeCheckCtx, fields: &[(String, Type)], range: &SourceRange) {
+        for (name, ft) in fields {
+            if let Type::Record(sub) = ft {
+                walk(ctx, sub, range);
+            } else if let Some(reason) = reason(ft) {
+                ctx.emit(
+                    "WS049",
+                    format!(
+                        "record field `{name}` is {reason}, which can't be stored — a \
+                         record used as a variable, array, or map may only hold value \
+                         fields (numbers, strings, vectors, entities, nested records, \
+                         or arrays/maps)"
+                    ),
+                    range.clone(),
+                );
+            }
+        }
+    }
+    if let Some(fields) = aggregate_record_fields(ty) {
+        walk(ctx, fields, range);
+    }
+}
+
 fn check_decl_inner(
     ctx: &mut TypeCheckCtx,
     d: &TopDecl,
 ) {
+    // A record used as var/array/map storage must have only storable leaf fields.
+    let storage_type = match d {
+        TopDecl::Var(v) => Some((ctx.scope.lookup(&v.name).map(|s| s.ty.clone()), &v.range)),
+        TopDecl::Array(a) => Some((ctx.scope.lookup(&a.name).map(|s| s.ty.clone()), &a.range)),
+        TopDecl::Map(m) => Some((ctx.scope.lookup(&m.name).map(|s| s.ty.clone()), &m.range)),
+        _ => None,
+    };
+    if let Some((Some(ty), range)) = storage_type {
+        check_aggregate_record(ctx, &ty, &range.clone());
+    }
+
     match d {
         TopDecl::Var(v) => {
             if let Some(init) = &v.init {

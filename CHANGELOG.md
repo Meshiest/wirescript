@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+## 1.5.0
+
+- Records can now be stored. A record variable, array, or map (`var p: Point`, `var pts: Point[]`, `Map<K, Point>`) decomposes into one backing gate per field, so field reads/writes, whole-record assignment (`p = { x, y }`, `p = q`), and the container methods all lower to real gates: arrays get `push`/`pop`/`insert`/`remove`/`fill`/`resize`/`swap`/`reverse`/`clear`/`length` plus element access (`pts[i]`, `pts[i].x`, `pts[i] = rec`, `p = pts[i]`); maps get `set`/`get`/`has`/`remove`/`clear`/`length`/`keys` plus `m[k]` access. A record variable used to collapse to a single gate whose fields read a bogus vector swizzle, and a record pushed into an array lowered to a placeholder that did nothing.
+- A stored record with a field that has no storable value (a `ref`, `zone`, `teleport`, prefab reference, or `exec`) now reports `WS049` instead of silently backing it with an unusable gate.
+- A record-container method with no per-field meaning (`sort`/`shuffle`, the aggregates `sum`/`min`/`max`/`average`, `find`, and the dual-container `append`/`copyFrom`/`slice`/`values`) now reports `WS050` instead of silently lowering to a no-op placeholder.
+- A constant record-array/map initializer (`var pts: Point[] = [{ x: 1, y: 2 }]`) now bakes each field's column into its backing container; it used to compile clean but silently start empty. A record array's per-field arrays are also reachable directly as `pts.field` (struct-of-arrays access) — index, read, and aggregate a single column (`pts.x[i]`, `pts.x.sum()`, `pts.x.min()`). `pts.field.sort(descending?)` sorts the whole record by that field, keeping rows intact.
+
 ## 1.4.5
 
 - An operator or sibling call inside a namespaced module's `on` handler (`import * as L from "lib"` where lib has `on ReadBrickGrid() { arr.push(n << 10) }`) is now type-checked, so it lowers to a real gate instead of `_Unsupported`. Namespaced handlers began lowering in 1.4.4 but typecheck never descended into their bodies, so operators got no resolution.

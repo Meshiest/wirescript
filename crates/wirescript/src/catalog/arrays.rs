@@ -173,6 +173,13 @@ pub fn port_type(ty: &RawPortType, elem: &Type) -> Type {
 /// auto-unwraps to whichever field matches the use — e.g. `find` to its `int`
 /// `Index`). Returns `None` for unknown methods.
 pub fn array_return_type(method: &str, elem: &Type) -> Option<Type> {
+    // A record ELEMENT read (`pop`/`get`) yields the element record directly, so
+    // `p = pts.pop()` / `pts[i].field` type-check like a plain value read - there
+    // is no `IsEmpty`/`OutOfBounds` flag to pair with a record. The record-array
+    // lowering fans these out per field. Mirrors the record-valued map `get`.
+    if matches!(method, "pop" | "get") && matches!(elem, Type::Record(_)) {
+        return Some(elem.clone());
+    }
     let m = array_method(method)?;
     let gate = super::default_catalog().find_by_class(m.gate)?;
     // An output that shares a name with an input is the gate's pass-through of

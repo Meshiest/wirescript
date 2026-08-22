@@ -358,6 +358,144 @@ pub(super) fn match_increment_self(s: &Assign) -> Option<&Expr> {
     }
 }
 
+/// Emit a `Var_Set` (or, for buffer storage, a direct `Input` wire) writing an
+/// ALREADY-LOWERED `value_port` into `var_rec` on the current exec chain,
+/// advancing `current_exec` and invalidating the read cache. Extracted from the
+/// field-assignment path so the whole-record decomposition writes each leaf
+/// field identically. A non-buffer write in pure position (no `current_exec`)
+/// is a no-op, matching the caller's own guard.
+fn set_scalar_var(ctx: &mut LowerCtx, var_rec: &VarRecord, value_port: PortRef, range: &SourceRange) {
+    if var_rec.storage == VarStorage::Buffer {
+        ctx.connect(value_port, var_rec.node_id.port(WirePort::Input));
+        return;
+    }
+    let Some(exec_in) = ctx.current_exec else {
+        return;
+    };
+    let inner = var_rec.inner_type.clone();
+    let set_node = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::VAR_SET,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(inner.clone())),
+                },
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: inner.clone(),
+                },
+            ],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
+        },
+        note: None,
+        ..Default::default()
+    });
+    ctx.connect(exec_in, set_node.port(WirePort::Exec));
+    ctx.connect(
+        var_rec.node_id.port(WirePort::VarRef),
+        set_node.port(WirePort::VarRef),
+    );
+    ctx.connect(value_port, set_node.port(WirePort::Value));
+    ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
+    invalidate_var_cache(ctx, &var_rec.node_id);
+}
+
+/// Resolve a record-typed VALUE expression to its per-field binding map: a
+/// record literal (`{ x, y }`) lowers each field expr in place; an identifier or
+/// field chain naming a `Binding::Record` (a record var/let/input) forwards its
+/// field map. Returns `None` for a source with no field map yet (e.g. a
+/// record-returning call — handled by the `pending_*` machinery elsewhere, not
+/// here), leaving the assignment to fall through rather than miswire.
+pub(super) fn value_record_fields(
+    ctx: &mut LowerCtx,
+    value: &Expr,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    if let Expr::RecordLit { fields, .. } = value {
+        return Some(lower_record_lit(ctx, fields));
+    }
+    // `pts[i]` reads a record ARRAY element as a record value (per-field
+    // ArrayGet), so it can be assigned/pushed like any other record.
+    if let Expr::IndexAccess { obj, index, range } = value
+        && let Some(rec) = lower_record_array_index_value(ctx, obj, index, range)
+    {
+        return Some(rec);
+    }
+    // `m[k]` / `m.get(k)` reads a record MAP value as a record (per-field MapGet).
+    if matches!(value, Expr::IndexAccess { .. } | Expr::Call { .. })
+        && let Some(rec) = lower_record_map_key_value(ctx, value, value.range())
+    {
+        return Some(rec);
+    }
+    if let Some(Binding::Record(f)) = resolve_field_chain(ctx, value).cloned() {
+        return Some(f);
+    }
+    // A record-returning CALL that isn't one of the shapes above - `pts.pop()`, a
+    // record-returning mod/chip - stashes its per-field record in
+    // `pending_inline_record` when lowered. Lower it and take that.
+    if matches!(value, Expr::Call { .. }) {
+        let _ = lower_expr(ctx, value);
+        if let Some(rec) = ctx.pending_inline_record.take() {
+            return Some(rec);
+        }
+    }
+    None
+}
+
+/// Write a record value into a `Binding::Record` target, field by field: each
+/// leaf `Var` field is read from the matching source field (`binding_to_port`,
+/// which emits a `Var_Get` for a stored source) and written with `set_scalar_var`;
+/// nested record fields recurse. Container-typed fields (a record with an
+/// array/map field) are left for a follow-up and skipped here.
+fn assign_record(
+    ctx: &mut LowerCtx,
+    target_fields: &HashMap<crate::intern::Sym, Binding>,
+    value: &Expr,
+    range: &SourceRange,
+) {
+    let Some(src) = value_record_fields(ctx, value) else {
+        return;
+    };
+    assign_record_fields(ctx, target_fields, &src, range);
+}
+
+fn assign_record_fields(
+    ctx: &mut LowerCtx,
+    target: &HashMap<crate::intern::Sym, Binding>,
+    src: &HashMap<crate::intern::Sym, Binding>,
+    range: &SourceRange,
+) {
+    for (fname, tbind) in target.clone() {
+        let Some(sbind) = src.get(&fname).cloned() else {
+            continue;
+        };
+        match tbind {
+            Binding::Record(tf) => {
+                if let Binding::Record(sf) = sbind {
+                    assign_record_fields(ctx, &tf, &sf, range);
+                }
+            }
+            // Only a plain scalar var field is written here; array/map fields
+            // (a record holding a container) need their own rebuild and are a
+            // follow-up.
+            Binding::Var(tvar) if tvar.storage == VarStorage::Var => {
+                if let Some(port) = binding_to_port(ctx, &sbind, range) {
+                    set_scalar_var(ctx, &tvar, port, range);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     if let Expr::IndexAccess { obj, index, .. } = &s.target {
         // Map subscript `m[k] = v` desugars to a MapVar_Set (the same gate
@@ -392,7 +530,25 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             );
             return;
         }
+        // `m[k] = rec` where `m` is a record map: fan the record value across the
+        // parallel field maps at the shared key. Checked before the array path,
+        // which resolves only single arrays / record arrays.
+        if let Some(fields) = resolve_record_map(ctx, obj)
+            && lower_record_map_key_set(ctx, &fields, index, &s.value, &s.range)
+        {
+            return;
+        }
         lower_array_set(ctx, obj, index, &s.value, &s.range);
+        return;
+    }
+
+    // `pts[i].field = v` — write one field of a record array's element by
+    // indexing that field's parallel array. The target is a FieldAccess whose
+    // object is an IndexAccess, so neither the IndexAccess branch above nor the
+    // record field-chain branch below reaches it.
+    if let Expr::FieldAccess { obj, field, .. } = &s.target
+        && lower_record_array_field_index_set(ctx, obj, field, &s.value, &s.range)
+    {
         return;
     }
 
@@ -402,52 +558,35 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         && let Some(binding) = resolve_field_chain(ctx, &s.target).cloned()
         && let Binding::Var(var_rec) = binding
     {
-        let current_exec = match ctx.current_exec {
-            Some(e) => e,
-            None => return,
-        };
-        if var_rec.storage == VarStorage::Buffer {
-            let value_port = lower_expr(ctx, &s.value);
-            ctx.connect(value_port, var_rec.node_id.port(WirePort::Input));
+        if ctx.current_exec.is_none() {
             return;
         }
         let value_port = lower_expr(ctx, &s.value);
-        let exec_in = ctx.current_exec.unwrap_or(current_exec);
-        let inner = var_rec.inner_type.clone();
-        let set_node = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::VAR_SET,
-            source_range: s.range.clone(),
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::VAR_REF,
-                        ty: Type::Ref(Box::new(inner.clone())),
-                    },
-                    PortSpec {
-                        name: *sym::VALUE,
-                        ty: inner.clone(),
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
-            note: None,
-            ..Default::default()
-        });
-        ctx.connect(exec_in, set_node.port(WirePort::Exec));
-        ctx.connect(
-            var_rec.node_id.port(WirePort::VarRef),
-            set_node.port(WirePort::VarRef),
-        );
-        ctx.connect(value_port, set_node.port(WirePort::Value));
-        ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
-        invalidate_var_cache(ctx, &var_rec.node_id);
+        set_scalar_var(ctx, &var_rec, value_port, &s.range);
+        return;
+    }
+
+    // Whole-record assignment: `p = {..}` / `p = q` / `big.sub = {..}` where the
+    // target resolves to a `Binding::Record`. A record has no single storage
+    // gate, so decompose both sides field-by-field and write each leaf via its
+    // own `Var_Set`. Without this the assignment silently did nothing (no
+    // `_Unsupported`, no wire — a typechecked no-op).
+    let target_record = match &s.target {
+        Expr::Ident { name, .. } => match ctx.scope.get(name) {
+            Some(Binding::Record(f)) => Some(f.clone()),
+            _ => None,
+        },
+        Expr::FieldAccess { .. } => match resolve_field_chain(ctx, &s.target).cloned() {
+            Some(Binding::Record(f)) => Some(f),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(target_fields) = target_record {
+        if ctx.current_exec.is_none() {
+            return;
+        }
+        assign_record(ctx, &target_fields, &s.value, &s.range);
         return;
     }
 

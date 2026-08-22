@@ -321,7 +321,7 @@ let b: Point = { ...a, y: 99 }  // b.x == 1, b.y == 99
 
 Later fields override spread fields. Multiple spreads are allowed.
 
-Records are a compile-time abstraction -- they produce no wire graph gates. Each field resolves directly to the underlying binding of its value expression.
+A record *value* is a compile-time abstraction -- it produces no wire graph gates, and each field resolves directly to the underlying binding of its value expression. A record used as storage (a `var`, array, or map) is the exception: it decomposes into one gate per field. See [Records as storage](types.md#records-as-storage).
 
 ## Tuple Literals
 

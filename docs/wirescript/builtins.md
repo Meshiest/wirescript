@@ -284,6 +284,11 @@ Methods on an `array` variable. All run in exec context (they lower to ArrayVar
 exec gates), so call them inside `on` handlers / mods. Declare arrays with
 `var name: T[]` (see [statements](statements.md)).
 
+The element type can be a **record** (`var pts: Point[]`): the array is stored as
+one parallel array per field and each method fans out. `sort`/`shuffle`, the
+aggregates, and the dual-array ops have no per-field meaning there and are
+rejected with `WS050`. See [Records as storage](types.md#records-as-storage).
+
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `arr.push(value)` | `(value: T)` | Append an element |
@@ -1474,6 +1479,11 @@ of the generic `Map<K, V>` type. Keys must be `int`, `string`, or an object refe
 be any wire-storable scalar (int/float/bool/string/vector/rotator/quat/color/object).
 A map starts empty unless given a constant literal initializer (`= {}` is the explicit
 empty form).
+
+A map **value** can also be a **record** (`var m: Map<int, Point>`): the map is stored
+as one parallel map per field and `set`/`get`/`has`/`length`/`remove`/`clear`/`keys` fan
+out (`values`/`copyFrom` are `WS050`). A record can never be a map *key*. See
+[Records as storage](types.md#records-as-storage).
 
 ```wirescript
 var scores: Map<string, int>

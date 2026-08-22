@@ -180,6 +180,17 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 e,
             );
         }
+        // `soa.field.sort(desc?)` where `soa` is a record array: sort the WHOLE
+        // record by that field (reorder every sibling column via sortMultiple),
+        // instead of sorting the one column and desyncing the rows. Checked
+        // before the plain field-array method below, which would sort in place.
+        if field == "sort"
+            && let Expr::FieldAccess { obj: base, field: keyfield, .. } = obj.as_ref()
+            && let Some(rec) = resolve_record_array(ctx, base)
+            && let Some(port) = lower_record_array_field_sort(ctx, &rec, keyfield, args, range, e)
+        {
+            return port;
+        }
         // Record-resolved var methods: cpu.regs.push(val)
         if crate::catalog::arrays::is_array_method(field)
             && let Some(Binding::Var(var_rec)) = resolve_field_chain(ctx, obj).cloned()
@@ -209,6 +220,22 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 range,
                 e,
             );
+        }
+        // Record ARRAY method: `pts.push(rec)` where `pts` is a record array —
+        // a `Binding::Record` of parallel per-field arrays. `resolve_record_array`
+        // (not a bare `Binding::Record` match) is what keeps a method shared by
+        // both kinds — `length`/`remove`/`clear`/`get` — off a record MAP.
+        if crate::catalog::arrays::is_array_method(field)
+            && let Some(fields) = resolve_record_array(ctx, obj)
+        {
+            return lower_record_array_method(ctx, &fields, field, args, range, e);
+        }
+        // Record MAP method: `m.set(k, rec)` / `m.get(k)` where `m` is a record
+        // map — a `Binding::Record` of parallel per-field maps.
+        if crate::catalog::maps::is_map_method(field)
+            && let Some(fields) = resolve_record_map(ctx, obj)
+        {
+            return lower_record_map_method(ctx, &fields, field, args, range, e);
         }
         // Receiver method calls: entity.SetLocation(pos) -> SetLocation(entity, pos)
         if let Some(spec) = find_call(field)

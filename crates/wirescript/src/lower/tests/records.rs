@@ -1014,3 +1014,287 @@ fn mod_returning_record_local_forwards_fields() {
         );
     }
 }
+
+// ---- record-typed STORAGE (the aggregate feature) ----
+
+const PT: &str = "type Point = { x: int, y: int }\n";
+
+/// A record VARIABLE decomposes into one `Pseudo_Var` per field; `p.x` reads /
+/// `p.x = v` writes the right backing gate — no single-gate collapse and no
+/// bogus `SplitVector.X` swizzle (the prior silent miscompile).
+#[test]
+fn record_var_decomposes_into_per_field_vars() {
+    let r = compile(&format!(
+        "{PT}var p: Point = {{ x: 1, y: 2 }}\nout ox = p.x\nin s: exec\non s {{ p.x = 5 }}"
+    ));
+    assert_no_errors(&r);
+    assert_eq!(gate_count(&r, gc::PSEUDO_VAR), 2, "one Pseudo_Var per field");
+    assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0, "no swizzle on a record");
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::VAR_SET), 1, "p.x = 5 is one Var_Set");
+}
+
+/// A nested record variable decomposes recursively (a `Pseudo_Var` per leaf).
+#[test]
+fn nested_record_var_decomposes_per_leaf() {
+    let r = compile(
+        "type In = { a: int, b: int }\ntype Out = { p: In, q: int }\n\
+         var o: Out = { p: { a: 1, b: 2 }, q: 3 }\nout oa = o.p.a\n\
+         in s: exec\non s { o.p.a = 9 }",
+    );
+    assert_no_errors(&r);
+    assert_eq!(gate_count(&r, gc::PSEUDO_VAR), 3, "a, b, q each a Pseudo_Var");
+    assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
+    assert!(!has_gate(&r, "_Unsupported"));
+}
+
+/// Whole-record assignment `p = { .. }` writes each field (one Var_Set per
+/// field); it used to silently emit nothing.
+#[test]
+fn whole_record_literal_assignment_writes_each_field() {
+    let r = compile(&format!(
+        "{PT}var p: Point = {{ x: 1, y: 2 }}\nout ox = p.x\nin s: exec\non s {{ p = {{ x: 5, y: 6 }} }}"
+    ));
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::VAR_SET), 2, "one Var_Set per field");
+}
+
+/// Record-to-record assignment `p = q` reads each field of `q` and writes it to
+/// `p` (one Var_Get + one Var_Set per field).
+#[test]
+fn record_to_record_assignment_copies_each_field() {
+    let r = compile(&format!(
+        "{PT}var p: Point = {{ x: 1, y: 2 }}\nvar q: Point = {{ x: 3, y: 4 }}\n\
+         out ox = p.x\nin s: exec\non s {{ p = q }}"
+    ));
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::VAR_GET), 2, "read each field of q");
+    assert_eq!(gate_count(&r, gc::VAR_SET), 2, "write each field of p");
+}
+
+/// A record ARRAY is stored as one parallel `Pseudo_ArrayVar` per field, and
+/// `push` fans the record value across them.
+#[test]
+fn record_array_push_fans_out_per_field() {
+    let r = compile(&format!(
+        "{PT}var pts: Point[]\nin s: exec\non s {{ pts.push({{ x: 1, y: 2 }}) }}"
+    ));
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 2, "one array per field");
+    assert_eq!(gate_count(&r, gc::ARRAY_PUSH), 2, "push fans out per field");
+}
+
+/// `pts.length()` reads only the FIRST field's array (they share one count);
+/// the deterministic lockstep mutations fan out across every field.
+#[test]
+fn record_array_length_first_field_and_lockstep_mutations() {
+    let r = compile(&format!(
+        "{PT}var pts: Point[]\nvar n: int = 0\nin s: exec\n\
+         on s {{ pts.insert(0, {{ x: 5, y: 6 }})\n pts.fill({{ x: 0, y: 0 }})\n \
+         pts.remove(0)\n pts.clear()\n n = pts.length() }}"
+    ));
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::ARRAY_GET_LENGTH), 1, "length reads first field only");
+    assert_eq!(gate_count(&r, gc::ARRAY_INSERT), 2);
+    assert_eq!(gate_count(&r, gc::ARRAY_FILL), 2);
+    assert_eq!(gate_count(&r, gc::ARRAY_REMOVE_AT_INDEX), 2);
+    assert_eq!(gate_count(&r, gc::ARRAY_CLEAR), 2);
+}
+
+/// Record-array element indexing: `pts[i].x` reads that field's parallel array
+/// (an `ArrayVar_Get`, NOT a `SplitVector`); `pts[i].x = v` and `pts[i] = rec`
+/// write via `SetAtIndex`; `p = pts[i]` reads every field.
+#[test]
+fn record_array_index_read_write() {
+    let r = compile(&format!(
+        "{PT}var pts: Point[]\nvar gx: int = 0\nvar p: Point = {{ x: 0, y: 0 }}\n\
+         in s: exec\non s {{ pts.push({{ x: 1, y: 2 }})\n gx = pts[0].x\n \
+         pts[0].y = 7\n pts[0] = {{ x: 9, y: 8 }}\n p = pts[0] }}"
+    ));
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0, "no swizzle on a record element");
+    // gx = pts[0].x (1) + p = pts[0] (2 fields) = 3 ArrayVar_Get
+    assert_eq!(gate_count(&r, gc::ARRAY_GET), 3);
+    // pts[0].y = 7 (1) + pts[0] = {..} (2 fields) = 3 SetAtIndex
+    assert_eq!(gate_count(&r, gc::ARRAY_SET_AT_INDEX), 3);
+}
+
+/// A record MAP is stored as one parallel `Pseudo_MapVar` per field; `set`/`get`
+/// fan across the fields, `has`/`length` read the first field, and `remove`/
+/// `clear` fan out. `m.get(k).x`, `m[k].x`, `m[k] = rec`, and `p = m.get(k)` all
+/// lower to real gates (no swizzle, no placeholder).
+#[test]
+fn record_map_fans_out_per_field() {
+    let r = compile(&format!(
+        "{PT}var m: Map<int, Point>\nvar gx: int = 0\nvar p: Point = {{ x: 0, y: 0 }}\n\
+         var n: int = 0\nvar f: bool = false\nin s: exec\non s {{ \
+         m.set(0, {{ x: 1, y: 2 }})\n m[1] = {{ x: 3, y: 4 }}\n gx = m.get(0).x\n \
+         gx = m[1].x\n p = m.get(0)\n f = m.has(0)\n n = m.length()\n \
+         m.remove(0)\n m.clear() }}"
+    ));
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
+    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 2, "one map per field");
+    // set(1) + m[1]=(1) = 2 sets, each fanned to 2 fields = 4
+    assert_eq!(gate_count(&r, gc::MAP_SET), 4);
+    // get(0).x (1) + m[1].x (1) + p=m.get(0) (2) = 4
+    assert_eq!(gate_count(&r, gc::MAP_GET), 4);
+    assert_eq!(gate_count(&r, gc::MAP_HAS), 1, "has reads first field");
+    assert_eq!(gate_count(&r, gc::MAP_GET_LENGTH), 1, "length reads first field");
+    assert_eq!(gate_count(&r, gc::MAP_REMOVE), 2);
+    assert_eq!(gate_count(&r, gc::MAP_CLEAR), 2);
+}
+
+/// The safe record-array ops fan out; `sort`/`shuffle`/aggregates are rejected
+/// with WS050 (they'd desync or fold over whole records) rather than silently
+/// no-op'ing to a placeholder.
+#[test]
+fn record_array_pop_swap_resize_and_ws050() {
+    let r = compile(&format!(
+        "{PT}var pts: Point[]\nvar p: Point = {{ x: 0, y: 0 }}\nin s: exec\n\
+         on s {{ pts.push({{ x: 1, y: 2 }})\n pts.push({{ x: 3, y: 4 }})\n \
+         pts.swap(0, 1)\n pts.resize(3, {{ x: 9, y: 9 }})\n p = pts.pop() }}"
+    ));
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::ARRAY_SWAP), 2, "swap fans out per field");
+    assert_eq!(gate_count(&r, gc::ARRAY_RESIZE), 2, "resize fans out per field");
+    assert_eq!(gate_count(&r, gc::ARRAY_POP), 2, "pop fans out per field");
+
+    // sort has no per-field meaning on a record array -> WS050.
+    let bad = compile(&format!("{PT}var pts: Point[]\nin s: exec\non s {{ pts.sort() }}"));
+    assert!(
+        bad.diagnostics.iter().any(|d| d.code == "WS050"),
+        "pts.sort() must be WS050: {:?}",
+        bad.diagnostics
+    );
+}
+
+/// A record ARRAY / MAP constructor literal bakes per-field columns into each
+/// backing container's InitialValue (`var pts: Point[] = [{x:1,y:2},{x:3,y:4}]`
+/// bakes x -> [1,3], y -> [2,4]); it used to compile clean but silently start
+/// empty.
+#[test]
+fn record_container_constructor_bakes_per_field() {
+    let iv = crate::intern::intern("InitialValue");
+
+    let ra = compile(&format!(
+        "{PT}var pts: Point[] = [{{ x: 1, y: 2 }}, {{ x: 3, y: 4 }}]"
+    ));
+    assert_no_errors(&ra);
+    let cols: Vec<Vec<i64>> = ra
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::PSEUDO_ARRAY_VAR)
+        .filter_map(|n| match n.properties.get(&iv) {
+            Some(crate::ir::Literal::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(|l| match l {
+                        crate::ir::Literal::Int(i) => Some(*i),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert!(cols.contains(&vec![1, 3]), "x column [1,3] must bake; got {cols:?}");
+    assert!(cols.contains(&vec![2, 4]), "y column [2,4] must bake; got {cols:?}");
+
+    let rm = compile(&format!(
+        "{PT}var m: Map<int, Point> = {{ 0 => {{ x: 5, y: 6 }}, 1 => {{ x: 7, y: 8 }} }}"
+    ));
+    assert_no_errors(&rm);
+    let maps: usize = rm
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == gc::PSEUDO_MAP_VAR && n.properties.contains_key(&iv))
+        .count();
+    assert_eq!(maps, 2, "both field maps must bake an InitialValue");
+}
+
+/// Record storage imported from another module (plain `import "lib"`) decomposes
+/// into ONE set of per-field gates and is fully usable across the boundary.
+#[test]
+fn imported_record_storage_lowers() {
+    let lib = "type Point = { x: int, y: int }\n\
+               var p: Point = { x: 1, y: 2 }\nvar pts: Point[]\nvar m: Map<int, Point>";
+    let r = compile_multi(
+        "import \"lib\"\nvar a: int = 0\nin go: exec\n\
+         on go { p.x = 5\n pts.push({ x: 3, y: 4 })\n m.set(0, { x: 7, y: 8 })\n \
+         a = pts[0].y\n a = m.get(0).x }",
+        &[("lib", lib)],
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::PSEUDO_VAR), 3, "p.x, p.y + local a");
+    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 2, "pts.x, pts.y");
+    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 2, "m.x, m.y");
+}
+
+/// Record storage imported via a namespace (`import * as L`) lowers its field/
+/// index/method access (`L.p.x`, `L.pts.push`, `L.pts[i].y`, `L.m.get(k).x`).
+#[test]
+fn namespaced_record_storage_lowers() {
+    let lib = "type Point = { x: int, y: int }\n\
+               var p: Point = { x: 1, y: 2 }\nvar pts: Point[]\nvar m: Map<int, Point>";
+    let r = compile_multi(
+        "import * as L from \"lib\"\nvar a: int = 0\nin go: exec\n\
+         on go { L.pts.push({ x: 3, y: 4 })\n L.p.x = 5\n L.m.set(0, { x: 7, y: 8 })\n \
+         a = L.p.x\n a = L.pts[0].y\n a = L.m.get(0).x }",
+        &[("lib", lib)],
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0, "no swizzle across the import");
+    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 2);
+    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 2);
+}
+
+/// SoA field access resolves array methods on `pts.field` (the parallel array) -
+/// including `min`/`max`, which used to fall through to the no-receiver builtin
+/// check (WS036). And `pts.field.sort()` sorts the WHOLE record by that field via
+/// sortMultiple (reordering sibling columns), not the one column in isolation.
+#[test]
+fn soa_field_methods_and_sort_by_field() {
+    let r = compile(&format!(
+        "{PT}var a: int = 0\nvar b: int = 0\nin s: exec\n\
+         on s {{ var pts: Point[]\n pts.push({{x:5,y:1}})\n pts.push({{x:2,y:9}})\n \
+         a = pts.x.min()\n b = pts.x.max() }}"
+    ));
+    assert_no_errors(&r); // no WS036
+    assert_eq!(gate_count(&r, gc::ARRAY_MIN), 1);
+    assert_eq!(gate_count(&r, gc::ARRAY_MAX), 1);
+
+    let s = compile(&format!(
+        "{PT}in s: exec\non s {{ var pts: Point[]\n pts.push({{x:5,y:1}})\n \
+         pts.push({{x:2,y:9}})\n pts.x.sort() }}"
+    ));
+    assert_no_errors(&s);
+    assert_eq!(
+        gate_count(&s, gc::ARRAY_SORT_MULTIPLE), 1,
+        "sort by a field must use sortMultiple over the sibling columns"
+    );
+    assert_eq!(gate_count(&s, gc::ARRAY_SORT), 0, "not a single-column sort");
+
+    // A record wider than the gate's 8 columns sorts in groups of 7, each later
+    // group against a copy of the original key (so no 8-field limit).
+    let wide = compile(
+        "type W = { a:int,b:int,c:int,d:int,e:int,f:int,g:int,h:int,i:int,j:int,k:int,l:int }\n\
+         in s: exec\non s { var w: W[]\n w.push({a:1,b:1,c:1,d:1,e:1,f:1,g:1,h:1,i:1,j:1,k:1,l:1})\n w.a.sort() }",
+    );
+    assert_no_errors(&wide);
+    assert!(!has_gate(&wide, "_Unsupported"));
+    // 11 sibling columns -> groups of 7 + 4 -> 2 sortMultiple, 1 key copy.
+    assert_eq!(gate_count(&wide, gc::ARRAY_SORT_MULTIPLE), 2);
+    assert_eq!(gate_count(&wide, gc::ARRAY_COPY_FROM), 1);
+}

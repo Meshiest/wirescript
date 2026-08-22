@@ -204,7 +204,7 @@ type Point = { x: int, y: int }
 type State = { counter: *int, label: string }
 ```
 
-Records are a compile-time abstraction -- they do not generate wire graph gates. Each field resolves directly to its underlying binding (variable reference, local value, array, etc.).
+A record **value** -- a `let` binding, a record literal, a chip's multi-output result -- is a compile-time abstraction: it generates no gates, and each field resolves directly to its underlying binding (variable reference, local value, array, etc.). A record used as **storage** (a `var`, array, or map) is the exception -- see [Records as storage](#records-as-storage) below.
 
 **Interior mutability with `*T` fields**: A record field of type `*int` (or `ref int`) holds a reference to a mutable variable. Writing through the field mutates the original variable:
 
@@ -225,6 +225,79 @@ let i: Inner = { x }
 let o: Outer = { inner: i }
 on RoundStart() { o.inner.x = 42 }  // writes to x
 ```
+
+### Records as storage
+
+A record can back a `var`, an array, or a map. It decomposes into one storage
+gate **per field** (recursing through nested records), and every operation fans
+out across those per-field gates. This is what lets a record be mutated, indexed,
+and kept across ticks -- a plain record *value* cannot.
+
+```wirescript
+type Point = { x: int, y: int }
+
+on RoundStart() {
+  // A record VARIABLE: one Variable gate per field.
+  var p: Point = { x: 1, y: 2 }
+  p.x = 10                  // writes the x gate only, y untouched
+  p = { x: 7, y: 8 }        // whole-record assignment writes every field
+
+  var q: Point = { x: 0, y: 0 }
+  q = p                     // copies each field into q's own gates, not an alias
+  p.x = 99                  // ...so this does not change q.x
+
+  // A record ARRAY: parallel arrays, one per field.
+  var pts: Point[]
+  pts.push({ x: 3, y: 4 })  // pushes x into pts' x-array, y into its y-array
+  let first = pts[0].x      // reads the x-array at index 0
+  pts[0] = { x: 9, y: 9 }   // writes every field's array at index 0
+  let n = pts.length()      // the fields share a length; length reads the first
+
+  // A record MAP: parallel maps, one per field (same key type).
+  var m: Map<int, Point>
+  m.set(0, { x: 5, y: 6 })
+  let v = m.get(0).x        // reads the x-map at key 0
+}
+```
+
+A constant initializer bakes per field, so a record array or map can be
+constructed up front:
+
+```wirescript
+type Point = { x: int, y: int }
+var pts: Point[] = [{ x: 1, y: 2 }, { x: 3, y: 4 }]   // x-array [1,3], y-array [2,4]
+var grid: Map<int, Point> = { 0 => { x: 5, y: 6 } }   // x-map {0:5}, y-map {0:6}
+```
+
+**Struct-of-arrays access.** Because a record array is *stored* as one array per
+field, that field's array is directly reachable as `pts.field` -- a real
+`T[]` you can index (`pts.x[i]`), read (`pts.x.length()`, `pts.x.sum()`,
+`pts.x.min()`, `pts.x.find(v)`), or pass on. Sorting is special-cased so it stays
+safe: `pts.field.sort(descending?)` sorts the WHOLE record BY that field,
+reordering every sibling column to match, so rows stay intact (wide records sort
+in groups against a copy of the key, so there is no field-count limit).
+Everything else on a column acts on that
+column alone, which is powerful but sharp: mutating one field's array by itself
+(`pts.x.push(1)` without a matching `pts.y.push(...)`) breaks the row
+correspondence the whole-array ops rely on. Prefer the whole-record ops
+(`push`/`pop`/`pts[i]`) unless you specifically want a single column.
+
+**Which fields are allowed.** Every leaf field must be a value the wire graph can
+store -- a number, `bool`, `string`, `vector`/`rotator`/`color`, an entity type,
+or a nested record/array/map. A reference-only field (`*T`, `zone`, `teleport`, a
+prefab reference) or an `exec` field cannot be stored, and a record with one is
+rejected with `WS049`. (A record *value* may still carry a `*T` field for interior
+mutability, as above; only *storage* is restricted.)
+
+**Container operations.** A record array supports `push`, `pop`, `insert`,
+`remove`, `fill`, `resize`, `swap`, `reverse`, `clear`, `length`, and element
+access (`pts[i]`, `pts[i].field`, `pts[i] = rec`, `p = pts[i]`). Operations that
+reorder elements by *value* (`sort`, `shuffle`), fold *over* whole records
+(`sum`/`min`/`max`/`average`), or need a matching second container
+(`append`/`copyFrom`/`slice`) have no per-field meaning and are rejected with
+`WS050` -- index a scalar field instead. A record map supports `set`, `get`,
+`has`, `remove`, `clear`, `length`, `keys`, and `m[k]` access. A map **key**
+cannot be a record (`WS039`); keys must be a single wire value.
 
 ### Tuple Types (`(A, B, C)`)
 

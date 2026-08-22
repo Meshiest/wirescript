@@ -137,13 +137,37 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
             }
             Some(t)
         }
-        Expr::FieldAccess { obj, field, .. } => match container_receiver_type(ctx, obj)? {
-            Type::Record(fields) => fields
-                .iter()
-                .find(|(k, _)| k == field)
-                .map(|(_, t)| unwrap_ref(t)),
-            _ => None,
-        },
+        Expr::FieldAccess { obj, field, .. } => {
+            let recv = container_receiver_type(ctx, obj)?;
+            // A field of a scalar record is that field's own type; a field of a
+            // record ARRAY / MAP is that field's PARALLEL container (struct-of-
+            // arrays access): `pts.x` is `int[]`, `m.x` is `Map<K, int>`. Modelling
+            // this lets a field-array method (`pts.x.sum()`, `pts.x.min()`) resolve
+            // as an array/map method instead of falling through to the no-receiver
+            // builtin check (which wrongly rejected `min`/`max`).
+            let field_ty = |fields: &[(String, Type)]| {
+                fields
+                    .iter()
+                    .find(|(k, _)| k == field)
+                    .map(|(_, t)| unwrap_ref(t))
+            };
+            match recv {
+                Type::Record(fields) => field_ty(&fields),
+                Type::Array(inner) => match inner.as_ref() {
+                    Type::Record(fields) => {
+                        field_ty(fields).map(|t| Type::Array(Box::new(t)))
+                    }
+                    _ => None,
+                },
+                Type::Map(k, v) => match v.as_ref() {
+                    Type::Record(fields) => {
+                        field_ty(fields).map(|t| Type::Map(k.clone(), Box::new(t)))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

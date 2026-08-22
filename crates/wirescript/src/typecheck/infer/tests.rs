@@ -366,3 +366,25 @@ fn prefab_ref_in_if_is_ws031() {
         r.diagnostics
     );
 }
+
+#[test]
+fn record_storage_rejects_non_variant_field() {
+    // A record used as a variable/array/map decomposes into one gate per field,
+    // so a reference-only field (zone/teleport/ref/prefab/exec) can't be stored.
+    let p = parse("type T = { z: zone, n: int }\nvar t: T", "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(r.diagnostics.iter().any(|d| d.code == "WS049"), "{:?}", r.diagnostics);
+
+    // A record ARRAY element and a record MAP value are checked the same way.
+    let arr = parse("type T = { r: *int, n: int }\nvar ts: T[]", "test");
+    let ra = crate::typecheck::typecheck(&arr.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(ra.diagnostics.iter().any(|d| d.code == "WS049"));
+
+    // A value-only record (including nested + container fields) is accepted.
+    let ok = parse(
+        "type P = { x: int, y: int }\ntype Q = { p: P, tags: int[] }\nvar q: Q",
+        "test",
+    );
+    let ro = crate::typecheck::typecheck(&ok.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(!ro.diagnostics.iter().any(|d| d.code == "WS049"), "{:?}", ro.diagnostics);
+}

@@ -1025,6 +1025,11 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
         // `Literal::Map` InitialValue, so it is NOT unbaked; never double-report
         // it here with the generic "not a compile-time constant" message.
         Expr::MapLit { .. } => false,
+        // A record-literal initializer bakes PER FIELD into each backing
+        // `Pseudo_Var`'s InitialValue (see `record_field_storage`), so the whole
+        // record is never "unbaked" — the generic scalar warning would be a
+        // false positive (there is no single gate to bake it into).
+        Expr::RecordLit { .. } => false,
         e => expr_to_literal_in(e, &ctx.const_env).is_none(),
     };
     unbaked.then_some(init)
@@ -1072,7 +1077,29 @@ fn declare_array_var(
     properties: HashMap<crate::intern::Sym, Literal>,
     range: &SourceRange,
 ) -> NodeId {
-    let node_id = ctx.add_gate(AddNodeOpts {
+    let node_id = make_array_var_gate(ctx, &elem_type, properties, range);
+    ctx.scope.insert(
+        name,
+        Binding::Var(VarRecord {
+            node_id,
+            inner_type: elem_type,
+            get_node_for_handler: None,
+            storage: VarStorage::Array,
+        }),
+    );
+    node_id
+}
+
+/// Build just the `Pseudo_ArrayVar` gate (no scope binding) — the gate half of
+/// [`declare_array_var`], shared with [`record_field_storage`]'s per-field array
+/// backing so a record ARRAY field and a top-level array var cannot drift apart.
+fn make_array_var_gate(
+    ctx: &mut LowerCtx,
+    elem_type: &Type,
+    properties: HashMap<crate::intern::Sym, Literal>,
+    range: &SourceRange,
+) -> NodeId {
+    ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_ARRAY_VAR,
         source_range: range.clone(),
         ports: GateIO {
@@ -1085,17 +1112,7 @@ fn declare_array_var(
         properties,
         note: None,
         ..Default::default()
-    });
-    ctx.scope.insert(
-        name,
-        Binding::Var(VarRecord {
-            node_id,
-            inner_type: elem_type,
-            get_node_for_handler: None,
-            storage: VarStorage::Array,
-        }),
-    );
-    node_id
+    })
 }
 
 /// Build the backing `Pseudo_MapVar` gate for `name` and bind the name as a
@@ -1109,7 +1126,29 @@ fn declare_map_var(
     properties: HashMap<crate::intern::Sym, Literal>,
     range: &SourceRange,
 ) -> NodeId {
-    let node_id = ctx.add_gate(AddNodeOpts {
+    let node_id = make_map_var_gate(ctx, &map_type, properties, range);
+    ctx.scope.insert(
+        name,
+        Binding::Var(VarRecord {
+            node_id,
+            inner_type: map_type,
+            get_node_for_handler: None,
+            storage: VarStorage::Map,
+        }),
+    );
+    node_id
+}
+
+/// Build just the `Pseudo_MapVar` gate (no scope binding) — the gate half of
+/// [`declare_map_var`], shared with [`record_field_storage`]'s per-field map
+/// backing (a record MAP field).
+fn make_map_var_gate(
+    ctx: &mut LowerCtx,
+    map_type: &Type,
+    properties: HashMap<crate::intern::Sym, Literal>,
+    range: &SourceRange,
+) -> NodeId {
+    ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_MAP_VAR,
         source_range: range.clone(),
         ports: GateIO {
@@ -1122,17 +1161,359 @@ fn declare_map_var(
         properties,
         note: None,
         ..Default::default()
-    });
-    ctx.scope.insert(
-        name,
-        Binding::Var(VarRecord {
-            node_id,
-            inner_type: map_type,
-            get_node_for_handler: None,
-            storage: VarStorage::Map,
-        }),
-    );
-    node_id
+    })
+}
+
+/// Build just the `Pseudo_Var` scalar gate (no scope binding) — the gate half of
+/// [`pre_declare_var`]'s scalar tail, shared with [`record_field_storage`]'s
+/// per-field scalar backing.
+fn make_scalar_var_gate(
+    ctx: &mut LowerCtx,
+    inner_type: &Type,
+    properties: HashMap<crate::intern::Sym, Literal>,
+    range: &SourceRange,
+) -> NodeId {
+    ctx.add_gate(AddNodeOpts {
+        gate_class: gc::PSEUDO_VAR,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: inner_type.clone(),
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(inner_type.clone())),
+                },
+            ],
+        },
+        properties,
+        note: None,
+        ..Default::default()
+    })
+}
+
+/// The named fields of a record-literal initializer (`= { x: e, y }`), by field
+/// name, so [`record_field_storage`] can bake each backing gate's `InitialValue`
+/// from the matching sub-expression. Shorthand `{ x }` reads as `x: x`; spreads
+/// have no place in a pure decl initializer and are skipped.
+fn init_record_fields(init: Option<&Expr>) -> HashMap<String, &Expr> {
+    let mut out = HashMap::default();
+    let Some(Expr::RecordLit { fields, .. }) = init else {
+        return out;
+    };
+    for f in fields {
+        match f {
+            RecordLitField::Named { name, value, .. } => {
+                out.insert(name.clone(), value);
+            }
+            // `{ x }` shorthand carries no expression node to fold; the field
+            // falls back to its type default here (an explicit `x: x` bakes).
+            RecordLitField::Shorthand { .. } | RecordLitField::Spread { .. } => {}
+        }
+    }
+    out
+}
+
+/// Build the per-field STORAGE backing for one field of a record-typed
+/// variable, recursing for nested records. Each leaf field gets its own gate of
+/// the SAME KIND as the record's storage would be (a scalar record var's fields
+/// are scalar `Pseudo_Var`s; a record array/map's fields are `Pseudo_ArrayVar`/
+/// `Pseudo_MapVar`s — see [`declare_record_container`]). Returns the field's
+/// `Binding` (no scope insertion — it lives in the enclosing `Binding::Record`).
+///
+/// `kind` is the record's own storage kind: `Var` decomposes each field into a
+/// per-field variable of the field's type; `Array`/`Map` decompose each SCALAR
+/// field into a per-field array/map of that field's type (the parallel-arrays
+/// representation). Non-variant leaf fields are rejected by typecheck; this
+/// falls back to a scalar gate defensively.
+fn record_field_storage(
+    ctx: &mut LowerCtx,
+    kind: VarStorage,
+    label_base: &str,
+    field_name: &str,
+    field_typ: &TypeExpr,
+    init: Option<&Expr>,
+    map_key: Option<&Type>,
+    range: &SourceRange,
+) -> Binding {
+    let label = format!("{label_base}.{field_name}");
+    // A nested record (inline `{ … }` or via an alias) recurses regardless of
+    // the record's own storage kind — a record ARRAY of a record field is
+    // parallel arrays one level deeper. `record_fields_of` follows aliases at
+    // every level, which `resolve_local_type` (empty alias table) would not.
+    if let Some(sub_fields) = ctx.record_fields_of(field_typ) {
+        let sub_inits = init_record_fields(init);
+        let mut fmap = HashMap::default();
+        for f in &sub_fields {
+            fmap.insert(
+                crate::intern::intern(&f.name),
+                record_field_storage(
+                    ctx,
+                    kind,
+                    &label,
+                    &f.name,
+                    &f.typ,
+                    sub_inits.get(&f.name).copied(),
+                    map_key,
+                    range,
+                ),
+            );
+        }
+        return Binding::Record(fmap);
+    }
+    let field_type = ctx.resolve_local_type(field_typ);
+    let field_type = &field_type;
+    let mut properties = HashMap::default();
+    properties.insert(*sym::NAME_LABEL, Literal::String(label));
+    match kind {
+        // A record VARIABLE: each field is a per-field container matching the
+        // field's own type (scalar/array/map), exactly like a record input port.
+        VarStorage::Var => match field_type {
+            Type::Array(elem) => {
+                let node_id = make_array_var_gate(ctx, elem, properties, range);
+                Binding::Var(VarRecord {
+                    node_id,
+                    inner_type: (**elem).clone(),
+                    get_node_for_handler: None,
+                    storage: VarStorage::Array,
+                })
+            }
+            Type::Map(k, v) => {
+                let map_type = Type::Map(k.clone(), v.clone());
+                let node_id = make_map_var_gate(ctx, &map_type, properties, range);
+                Binding::Var(VarRecord {
+                    node_id,
+                    inner_type: map_type,
+                    get_node_for_handler: None,
+                    storage: VarStorage::Map,
+                })
+            }
+            scalar => {
+                let init_lit = init
+                    .and_then(expr_to_literal)
+                    .map(|lit| bake_string_bool(lit, scalar))
+                    .or_else(|| default_literal_for_var_type(scalar));
+                if let Some(lit) = init_lit {
+                    properties.insert(*sym::INITIAL_VALUE, lit);
+                }
+                let node_id = make_scalar_var_gate(ctx, scalar, properties, range);
+                Binding::Var(VarRecord {
+                    node_id,
+                    inner_type: scalar.clone(),
+                    get_node_for_handler: None,
+                    storage: VarStorage::Var,
+                })
+            }
+        },
+        // A record ARRAY: each scalar field backs onto its own parallel array of
+        // that field's element type. (Container-typed fields inside an array
+        // element are rejected by typecheck — no array-of-arrays.)
+        VarStorage::Array => {
+            let node_id = make_array_var_gate(ctx, field_type, properties, range);
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: field_type.clone(),
+                get_node_for_handler: None,
+                storage: VarStorage::Array,
+            })
+        }
+        // A record MAP: each scalar field backs onto its own parallel map from
+        // the SAME key type to that field's value type.
+        VarStorage::Map => {
+            let key = map_key.cloned().unwrap_or(Type::Any);
+            let map_type = Type::Map(Box::new(key), Box::new(field_type.clone()));
+            let node_id = make_map_var_gate(ctx, &map_type, properties, range);
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: map_type,
+                get_node_for_handler: None,
+                storage: VarStorage::Map,
+            })
+        }
+        VarStorage::Buffer => {
+            let node_id = make_scalar_var_gate(ctx, field_type, properties, range);
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: field_type.clone(),
+                get_node_for_handler: None,
+                storage: VarStorage::Var,
+            })
+        }
+    }
+}
+
+/// The value expression of field `name` in a record literal `row`; `None` if
+/// `row` isn't a record literal or lacks the field (shorthand `{ x }` has no
+/// expression to fold, so the field falls back to its default).
+fn record_lit_field_expr<'a>(row: &'a Expr, name: &str) -> Option<&'a Expr> {
+    let Expr::RecordLit { fields, .. } = row else {
+        return None;
+    };
+    fields.iter().find_map(|f| match f {
+        RecordLitField::Named { name: n, value, .. } if n == name => Some(value),
+        _ => None,
+    })
+}
+
+/// Fold an expression to a constant [`Literal`] through the certified evaluator,
+/// resolving `const mod` calls via the pass-1 lookup (same seam as
+/// [`array_elem_literal`]).
+fn fold_const(ctx: &LowerCtx, e: &Expr) -> Option<Literal> {
+    let lookup = |n: &str| ctx.resolve_mod_pass1(n);
+    let mut budget = crate::const_eval::Budget::default();
+    crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()
+}
+
+/// Set a container gate's `InitialValue` property.
+fn set_initial_value(ctx: &mut LowerCtx, node_id: NodeId, value: Literal) {
+    if let Some(node) = ctx.builder.module.nodes.get_mut(&node_id) {
+        std::sync::Arc::make_mut(&mut node.properties).insert(*sym::INITIAL_VALUE, value);
+    }
+}
+
+/// Bake the per-field columns of a record ARRAY literal into each backing array's
+/// `InitialValue`: `var foos: Foo[] = [{foo:1}, {foo:3}]` bakes `[1, 3]` into the
+/// `foo` array (recursing for nested record fields). A field whose column isn't
+/// fully constant is left empty (the array simply starts short that field's data;
+/// the whole-row literal path is a pure decl and can't emit runtime writes).
+fn bake_record_array_columns(
+    ctx: &mut LowerCtx,
+    rec: &HashMap<crate::intern::Sym, Binding>,
+    rows: &[&Expr],
+) {
+    for (fkey, binding) in rec {
+        let fname = crate::intern::resolve(*fkey).to_string();
+        let cols: Option<Vec<&Expr>> = rows.iter().map(|r| record_lit_field_expr(r, &fname)).collect();
+        let Some(cols) = cols else {
+            continue;
+        };
+        match binding {
+            Binding::Record(sub) => bake_record_array_columns(ctx, sub, &cols),
+            Binding::Var(v) if v.storage == VarStorage::Array => {
+                let elem = v.inner_type.clone();
+                let node_id = v.node_id;
+                let lits: Vec<Literal> = cols
+                    .iter()
+                    .filter_map(|e| fold_const(ctx, e))
+                    .map(|l| bake_string_bool(l, &elem))
+                    .collect();
+                if lits.len() == cols.len() {
+                    set_initial_value(ctx, node_id, Literal::Array(lits));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Bake the per-field entries of a record MAP literal into each backing map's
+/// `InitialValue`: `var m: Map<int, Point> = { 0 => {x:1, y:2} }` bakes `{0: 1}`
+/// into the `x` map and `{0: 2}` into `y` (recursing for nested record fields).
+/// `entries` is `(keyExpr, valueRecordExpr)` per entry.
+fn bake_record_map_pairs(
+    ctx: &mut LowerCtx,
+    rec: &HashMap<crate::intern::Sym, Binding>,
+    entries: &[(&Expr, &Expr)],
+) {
+    for (fkey, binding) in rec {
+        let fname = crate::intern::resolve(*fkey).to_string();
+        let cols: Option<Vec<(&Expr, &Expr)>> = entries
+            .iter()
+            .map(|(k, v)| record_lit_field_expr(v, &fname).map(|fe| (*k, fe)))
+            .collect();
+        let Some(cols) = cols else {
+            continue;
+        };
+        match binding {
+            Binding::Record(sub) => bake_record_map_pairs(ctx, sub, &cols),
+            Binding::Var(v) if v.storage == VarStorage::Map => {
+                let (key_ty, val_ty) = match &v.inner_type {
+                    Type::Map(k, vv) => ((**k).clone(), (**vv).clone()),
+                    _ => (Type::Any, Type::Any),
+                };
+                let node_id = v.node_id;
+                let pairs: Vec<(Literal, Literal)> = cols
+                    .iter()
+                    .filter_map(|(k, ve)| {
+                        Some((
+                            coerce_literal_to_type(fold_const(ctx, k)?, &key_ty),
+                            coerce_literal_to_type(fold_const(ctx, ve)?, &val_ty),
+                        ))
+                    })
+                    .collect();
+                if pairs.len() == cols.len() {
+                    set_initial_value(ctx, node_id, Literal::Map(pairs));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Bake a record ARRAY initializer (`= [{..}, ..]`) into the per-field arrays,
+/// once the `Binding::Record` for `name` already exists. Spreads have no constant
+/// form, so an initializer containing one bakes nothing (starts empty).
+fn bake_record_array_init(ctx: &mut LowerCtx, name: &str, elements: &[ArrayElem]) {
+    let Some(Binding::Record(rec)) = ctx.scope.get(name).cloned() else {
+        return;
+    };
+    let rows: Vec<&Expr> = elements
+        .iter()
+        .filter_map(|el| match el {
+            ArrayElem::Item(e) => Some(e),
+            ArrayElem::Spread(_) => None,
+        })
+        .collect();
+    if rows.len() != elements.len() {
+        return;
+    }
+    bake_record_array_columns(ctx, &rec, &rows);
+}
+
+/// Bake a record MAP initializer (`= { k => {..} }`) into the per-field maps.
+fn bake_record_map_init(ctx: &mut LowerCtx, name: &str, entries: &[crate::ast::MapLitEntry]) {
+    let Some(Binding::Record(rec)) = ctx.scope.get(name).cloned() else {
+        return;
+    };
+    let pairs: Vec<(&Expr, &Expr)> = entries.iter().map(|en| (&en.key, &en.value)).collect();
+    bake_record_map_pairs(ctx, &rec, &pairs);
+}
+
+/// Decompose a record-typed storage declaration (`var p: Rec`, `var a: Rec[]`,
+/// `var m: Map<K, Rec>`) into one `Binding::Record` of per-field backing gates,
+/// and bind it in scope under `name`. `kind` selects the per-field backing kind;
+/// `map_key` carries the map's key type for the `Map` case.
+fn declare_record_container(
+    ctx: &mut LowerCtx,
+    name: &str,
+    kind: VarStorage,
+    fields: &[crate::ast::RecordTypeField],
+    label_base: &str,
+    init: Option<&Expr>,
+    map_key: Option<&Type>,
+    range: &SourceRange,
+) {
+    let sub_inits = init_record_fields(init);
+    let mut record_fields = HashMap::default();
+    for f in fields {
+        record_fields.insert(
+            crate::intern::intern(&f.name),
+            record_field_storage(
+                ctx,
+                kind,
+                label_base,
+                &f.name,
+                &f.typ,
+                sub_inits.get(&f.name).copied(),
+                map_key,
+                range,
+            ),
+        );
+    }
+    ctx.scope.insert(name, Binding::Record(record_fields));
 }
 
 /// Give a `const` array/map its RUNTIME form: the same container gate a `var`
@@ -1232,6 +1613,17 @@ pub(super) fn materialize_const_container(
     ctx.lookup_var(name).cloned()
 }
 
+/// The VALUE type-expression of a `Map<K, V>` annotation (following an outer
+/// `*Map<..>` ref), so a record-valued map decomposes through the alias-aware
+/// `record_fields_of`. `None` for anything that isn't a `Map<_, _>`.
+fn map_value_typeexpr(te: Option<&TypeExpr>) -> Option<&TypeExpr> {
+    match te? {
+        TypeExpr::Generic { name, args, .. } if name == "Map" && args.len() == 2 => Some(&args[1]),
+        TypeExpr::Ref { inner, .. } => map_value_typeexpr(Some(inner)),
+        _ => None,
+    }
+}
+
 pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // `resolve_local_type` monomorphizes a `T` annotation inside a generic mod
     // body (and is identical to `type_of_type_expr` everywhere else).
@@ -1246,6 +1638,33 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // methods actually work. A `= [..]` initializer carries its constant
     // literals inline (mirrors the map path below).
     if let Type::Array(elem) = &inner_type {
+        // `var pts: Rec[]` — a record ARRAY decomposes into one parallel array
+        // per field (`pts.x`, `pts.y`), bound as a `Binding::Record` of
+        // `VarStorage::Array` fields. Every element op fans out across them (see
+        // `lower_record_array_method`). `record_fields_of` follows a `type P = {…}`
+        // alias on the element the resolved `Type` would not preserve.
+        if let Some(TypeExpr::Array { inner: elem_te, .. }) = d.typ.as_ref()
+            && let Some(fields) = ctx.record_fields_of(elem_te)
+        {
+            let label =
+                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+                    .unwrap_or_else(|| d.name.clone());
+            declare_record_container(
+                ctx,
+                &d.name,
+                VarStorage::Array,
+                &fields,
+                &label,
+                None,
+                None,
+                &d.range,
+            );
+            // Bake a constant `= [{..}, ..]` initializer into the per-field arrays.
+            if let Some(Expr::Array { elements, .. }) = &d.init {
+                bake_record_array_init(ctx, &d.name, elements);
+            }
+            return;
+        }
         let elem_type = elem.as_ref().clone();
         let mut properties = HashMap::default();
         let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
@@ -1272,6 +1691,31 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // methods work. A constant `= {...}` initializer bakes via
     // `bake_map_init`.
     if let Type::Map(key_ty, value_ty) = &inner_type {
+        // `var m: Map<K, Rec>` — a record VALUE decomposes into parallel per-field
+        // maps `Map<K, fieldType>`, keyed the same, bound as a `Binding::Record`.
+        // Every map op fans out across them (see `lower_record_map_method`).
+        if let Some(val_te) = map_value_typeexpr(d.typ.as_ref())
+            && let Some(fields) = ctx.record_fields_of(val_te)
+        {
+            let label =
+                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+                    .unwrap_or_else(|| d.name.clone());
+            declare_record_container(
+                ctx,
+                &d.name,
+                VarStorage::Map,
+                &fields,
+                &label,
+                None,
+                Some(key_ty),
+                &d.range,
+            );
+            // Bake a constant `= { k => {..} }` initializer into the per-field maps.
+            if let Some(Expr::MapLit { entries, .. }) = &d.init {
+                bake_record_map_init(ctx, &d.name, entries);
+            }
+            return;
+        }
         let (key_ty, value_ty) = (key_ty.as_ref().clone(), value_ty.as_ref().clone());
         let mut properties = HashMap::default();
         let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
@@ -1279,6 +1723,29 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         properties.insert(*sym::NAME_LABEL, Literal::String(label));
         bake_map_init(ctx, &mut properties, &d.name, &d.init, &key_ty, &value_ty);
         declare_map_var(ctx, &d.name, inner_type, properties, &d.range);
+        return;
+    }
+
+    // `var p: Rec` — a record variable decomposes into one per-field `Pseudo_Var`
+    // (recursing for nested records), bound as a `Binding::Record` so `p.field`
+    // reads/writes the right backing gate. Without this a record var collapsed
+    // to a single `Pseudo_Var` and `p.x` lowered to a bogus `SplitVector.X`
+    // swizzle — a silent miscompile. Mirrors the record INPUT-PORT expansion in
+    // `pre_declare_input`; `record_fields_of` follows a `type P = { … }` alias
+    // that `resolve_local_type`'s empty alias table cannot.
+    if let Some(fields) = d.typ.as_ref().and_then(|te| ctx.record_fields_of(te)) {
+        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+            .unwrap_or_else(|| d.name.clone());
+        declare_record_container(
+            ctx,
+            &d.name,
+            VarStorage::Var,
+            &fields,
+            &label,
+            d.init.as_ref(),
+            None,
+            &d.range,
+        );
         return;
     }
 
@@ -1373,6 +1840,24 @@ pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
 }
 
 pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
+    // A record element decomposes into parallel per-field arrays — same as the
+    // `var pts: Rec[]` form (see `pre_declare_var`'s array branch).
+    if let Some(fields) = ctx.record_fields_of(&d.element_type) {
+        declare_record_container(
+            ctx,
+            &d.name,
+            VarStorage::Array,
+            &fields,
+            &d.name,
+            None,
+            None,
+            &d.range,
+        );
+        if !d.init.is_empty() {
+            bake_record_array_init(ctx, &d.name, &d.init);
+        }
+        return;
+    }
     let elem_type = ctx.resolve_local_type(&d.element_type);
     // Constant initializer (`var foo: int[] = [1, 2, 3]`): every element must
     // be a literal. Carry the values as an `InitialValue` property the emitter
@@ -1402,6 +1887,25 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
 /// `MapVarRef`) and bind the name as a `VarStorage::Map` whose `inner_type`
 /// carries the whole `Type::Map(K, V)`. Mirrors [`pre_declare_array`].
 pub(super) fn pre_declare_map(ctx: &mut LowerCtx, d: &crate::ast::MapDecl) {
+    // A record VALUE decomposes into parallel per-field maps — same as the
+    // `var m: Map<K, Rec>` form (see `pre_declare_var`'s map branch).
+    if let Some(fields) = ctx.record_fields_of(&d.value_type) {
+        let key_type = ctx.resolve_local_type(&d.key_type);
+        declare_record_container(
+            ctx,
+            &d.name,
+            VarStorage::Map,
+            &fields,
+            &d.name,
+            None,
+            Some(&key_type),
+            &d.range,
+        );
+        if let Some(Expr::MapLit { entries, .. }) = &d.init {
+            bake_record_map_init(ctx, &d.name, entries);
+        }
+        return;
+    }
     let key_type = ctx.resolve_local_type(&d.key_type);
     let value_type = ctx.resolve_local_type(&d.value_type);
     let map_type = Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone()));

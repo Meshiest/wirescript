@@ -439,10 +439,77 @@ fn ident_at(s: &str) -> &str {
     &s[..end]
 }
 
+/// Column-0 `type Name = { f1: T1, f2: T2, .. }` declarations of one file, by
+/// type name -> ordered field names. Record types are file-private (an
+/// importer never spells the type name, only field/method access on the
+/// container it declares), so this is scoped per-file exactly like
+/// `scan_state_decls` below - and is in fact only ever consulted against the
+/// SAME file's own `var` lines.
+fn scan_record_types(src: &str) -> StdMap<String, Vec<String>> {
+    let mut out = StdMap::new();
+    for line in src.lines() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("type ") else { continue };
+        let name = ident_at(rest.trim_start());
+        if name.is_empty() {
+            continue;
+        }
+        let Some(open) = rest.find('{') else { continue };
+        let Some(close) = rest.rfind('}') else { continue };
+        if close <= open {
+            continue;
+        }
+        let fields: Vec<String> = rest[open + 1..close]
+            .split(',')
+            .filter_map(|part| {
+                let fname = ident_at(part.trim());
+                if fname.is_empty() { None } else { Some(fname.to_string()) }
+            })
+            .collect();
+        out.insert(name.to_string(), fields);
+    }
+    out
+}
+
+/// Classify a `var name<ANN>` annotation (`ANN` is everything after the name,
+/// up to a `=` initializer) as a record CONTAINER shape - `: Rec`, `: Rec[]`,
+/// `: Map<K, Rec>` - returning the storage kind the container's OWN form
+/// implies (not the field's) plus the bare type name. Doesn't check the type
+/// name is actually a known record - that's the caller's job, since a bare
+/// `: int` annotation is syntactically identical to `: SomeRecordAlias` here.
+fn record_container_kind(ann: &str) -> Option<(StoreKind, String)> {
+    let ann = ann.trim().strip_prefix(':')?.trim();
+    if let Some(inner) = ann.strip_suffix("[]") {
+        let inner = inner.trim();
+        return (!inner.is_empty()).then(|| (StoreKind::Array, inner.to_string()));
+    }
+    if let Some(rest) = ann.strip_prefix("Map<") {
+        let close = rest.find('>')?;
+        let value_ty = rest[..close].split(',').nth(1)?.trim();
+        return (!value_ty.is_empty()).then(|| (StoreKind::Map, value_ty.to_string()));
+    }
+    // A bare type name. Builtin scalar types are all lowercase
+    // (int/float/bool/string/vector/...), so an uppercase leading letter is
+    // the signal this MIGHT be a `type Name = {..}` alias - the caller
+    // confirms against the file's own record-type table.
+    let starts_upper = ann.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    (!ann.is_empty() && starts_upper).then(|| (StoreKind::Var, ann.to_string()))
+}
+
 /// Top-level (column-0) state declarations of one file. Anything indented -
 /// chip/mod/handler bodies - is deliberately ignored: nested `var`s create
 /// storage gates too, but under names this derivation never claims.
+///
+/// A `var` whose annotation names a record type declared in the SAME file
+/// (`type Rec = { a: .., b: .. }`) decomposes into one entry PER FIELD,
+/// labeled `"{name}.{field}"` - exactly the label
+/// `record_field_storage`/`declare_record_container` bakes onto each
+/// per-field backing gate, so the derivation and the compiler agree on
+/// identity without either side telling the other.
 fn scan_state_decls(src: &str) -> Vec<(StoreKind, String)> {
+    let records = scan_record_types(src);
     let mut out = Vec::new();
     for line in src.lines() {
         if line.starts_with(char::is_whitespace) {
@@ -458,6 +525,14 @@ fn scan_state_decls(src: &str) -> Vec<(StoreKind, String)> {
             // the annotation decides the storage class: `var x: Map<..>` is a
             // MapVar, `var x: T[]` an ArrayVar, anything else a plain Var
             let ann = rest[name.len()..].split('=').next().unwrap_or("");
+            if let Some((kind, type_name)) = record_container_kind(ann)
+                && let Some(fields) = records.get(&type_name)
+            {
+                for f in fields {
+                    out.push((kind, format!("{name}.{f}")));
+                }
+                continue;
+            }
             let kind = if ann.contains("Map<") {
                 StoreKind::Map
             } else if ann.contains("[]") {
@@ -543,9 +618,23 @@ fn scan_writes(
     const ARRAY_METHODS: [&str; 8] = [
         "push", "clear", "insert", "sort", "reverse", "shuffle", "fill", "resize",
     ];
+    // `add(kind, name)` covers the ordinary case (`name` is itself a
+    // declared storage name) AND the record-container case: a WHOLE-container
+    // write (`rv = {..}`, `arr.push(..)`, `arr[i] = {..}`, `m.set(..)`) fans
+    // out to every per-field backing gate the container decomposed into
+    // (`"{name}.{field}"` keys in `counts`), so a plain exact-match miss
+    // falls back to a prefix scan before giving up. Non-record bundles never
+    // have any `"name.field"` keys, so the fallback is a no-op there.
     let mut add = |kind: StoreKind, name: &str| {
         if counts.contains_key(&(kind, name.to_string())) {
             writes.insert((kind, name.to_string()));
+            return;
+        }
+        let prefix = format!("{name}.");
+        for (k, n) in counts.keys() {
+            if *k == kind && n.starts_with(&prefix) {
+                writes.insert((*k, n.clone()));
+            }
         }
     };
     // A write inside a `mod` / named-`chip` DECLARATION body only lowers when
@@ -639,7 +728,22 @@ fn scan_writes(
             || after.starts_with("-=")
             || after.starts_with("*=")
         {
-            add(StoreKind::Var, last);
+            // A record VAR field write (`rv.a = e`, or namespaced `N.rv.a =
+            // e`) needs the exact `"container.field"` key, not just `add`'s
+            // container-prefix fan-out (which is for a WHOLE-record write
+            // like `rv = {..}` and would be wrong here - it would mark every
+            // sibling field written too). Try the last two path segments
+            // first (this also transparently drops a leading namespace
+            // segment, since only the trailing pair can ever match a
+            // declared field key); fall back to the plain/whole-container
+            // path otherwise.
+            let field_key = (segs.len() >= 2)
+                .then(|| format!("{}.{}", segs[segs.len() - 2], segs[segs.len() - 1]))
+                .filter(|k| counts.contains_key(&(StoreKind::Var, k.clone())));
+            match field_key {
+                Some(k) => add(StoreKind::Var, &k),
+                None => add(StoreKind::Var, last),
+            }
         }
     }
 }
@@ -3141,8 +3245,31 @@ fn gen_import_canary(seed: u64) -> String {
         Named,
     }
 
+    // A record CONTAINER declared as importable module state: `var name: T`
+    // / `var name: T[]` / `var name: Map<int, T>` where `T` is a module-
+    // private `type T = { a: int, b: int }` alias declared alongside it (in
+    // the SAME file - record types don't cross the import boundary, only
+    // field/method access on the container does). Always exactly two `int`
+    // fields named `a`/`b` - the canary stays small and fully controlled;
+    // the interesting axis under test is the import/namespace boundary, not
+    // field-type diversity (the general-purpose fuzzer already exercises
+    // record field-type variety in pure `let`-bound contexts).
+    #[derive(Clone, Copy, PartialEq)]
+    enum RecKind {
+        Var,
+        Array,
+        Map,
+    }
+    #[derive(Clone)]
+    struct RecItem {
+        kind: RecKind,
+        name: String,
+        type_name: String,
+    }
+
     let n_mods = r.range(1, 3);
     let mut modules: Vec<Vec<CItem>> = Vec::new();
+    let mut rec_items: Vec<Vec<RecItem>> = Vec::new();
     // file index each module reads from (same-file re-import = known-good)
     let mut file_of: Vec<usize> = Vec::new();
     let mut imps: Vec<Imp> = Vec::new();
@@ -3151,6 +3278,7 @@ fn gen_import_canary(seed: u64) -> String {
             // re-import module 0's FILE under a second namespace: shared
             // state on purpose - must stay ONE gate and stay silent.
             modules.push(modules[0].clone());
+            rec_items.push(rec_items[0].clone());
             file_of.push(0);
             imps.push(Imp::Ns);
             continue;
@@ -3177,6 +3305,22 @@ fn gen_import_canary(seed: u64) -> String {
             items.push(CItem { kind: *r.pick(&KINDS), name });
         }
         modules.push(items);
+        // ~half the modules also carry a record container - occasionally
+        // (like the scalar items above) reusing module 0's container NAME
+        // under a freshly re-rolled kind, to stress the same
+        // storage-collapse-on-collision shape the scalar canary already
+        // covers, but for per-field record backing.
+        let mut ritems: Vec<RecItem> = Vec::new();
+        if r.chance(1, 2) {
+            let name = if i > 0 && r.chance(1, 3) && !rec_items[0].is_empty() {
+                r.pick(&rec_items[0]).name.clone()
+            } else {
+                format!("rc{i}")
+            };
+            let kind = *r.pick(&[RecKind::Var, RecKind::Array, RecKind::Map]);
+            ritems.push(RecItem { kind, name, type_name: format!("Rec{}", i + 1) });
+        }
+        rec_items.push(ritems);
         file_of.push(i);
         imps.push(match r.below(3) {
             0 => Imp::All,
@@ -3231,6 +3375,20 @@ fn gen_import_canary(seed: u64) -> String {
                 }
             }
         }
+        for rit in &rec_items[mi] {
+            let _ = writeln!(out, "type {} = {{ a: int, b: int }}", rit.type_name);
+            match rit.kind {
+                RecKind::Var => {
+                    let _ = writeln!(out, "var {}: {}", rit.name, rit.type_name);
+                }
+                RecKind::Array => {
+                    let _ = writeln!(out, "var {}: {}[]", rit.name, rit.type_name);
+                }
+                RecKind::Map => {
+                    let _ = writeln!(out, "var {}: Map<int, {}>", rit.name, rit.type_name);
+                }
+            }
+        }
     }
 
     // entry
@@ -3241,7 +3399,8 @@ fn gen_import_canary(seed: u64) -> String {
             Imp::All => entry.push(format!("import \"{file}\"")),
             Imp::Ns => entry.push(format!("import * as A{} from \"{file}\"", mi + 1)),
             Imp::Named => {
-                let names: Vec<&str> = items.iter().map(|it| it.name.as_str()).collect();
+                let mut names: Vec<&str> = items.iter().map(|it| it.name.as_str()).collect();
+                names.extend(rec_items[mi].iter().map(|it| it.name.as_str()));
                 entry.push(format!("import {{ {} }} from \"{file}\"", names.join(", ")));
             }
         }
@@ -3357,6 +3516,77 @@ fn gen_import_canary(seed: u64) -> String {
                 &mut rn,
                 &mut use_refw,
             );
+        }
+    }
+
+    // Record-container access. Ops written directly to `body` (not through
+    // `push_line`'s dedup - out of scope above, and unneeded: unlike the
+    // scalar collision path, nothing re-visits the same (mi, name) pair) -
+    // field access/write, whole-record assign, array push + index read +
+    // whole-element write, map set + index-field read. All verified against
+    // the real compiler in both bare and namespaced form before wiring in;
+    // the one namespaced pothole (`.get(k).a` on a MAP typing its result as
+    // `Any`, the same gap as a namespaced array's `.length()`) is gated
+    // behind `bare` below rather than "fixed" here - it's the pre-existing
+    // namespaced-method-call limitation, not a record bug.
+    for (mi, ritems) in rec_items.iter().enumerate() {
+        for rit in ritems {
+            let (path, bare) = match imps[mi] {
+                Imp::Ns => (format!("A{}.{}", mi + 1, rit.name), false),
+                _ => (rit.name.clone(), true),
+            };
+            match rit.kind {
+                RecKind::Var => {
+                    body.push(format!(
+                        "  {path} = {{ a: {}, b: {} }}",
+                        r.below(9),
+                        r.below(9)
+                    ));
+                    rn += 1;
+                    let rv = format!("r{rn}");
+                    body.push(format!("  let {rv} = {path}.a"));
+                    int_reads.push(rv);
+                    if r.chance(2, 3) {
+                        body.push(format!("  {path}.a = {path}.a + {}", r.range(1, 5)));
+                    }
+                }
+                RecKind::Array => {
+                    body.push(format!(
+                        "  {path}.push({{ a: {}, b: {} }})",
+                        r.below(9),
+                        r.below(9)
+                    ));
+                    rn += 1;
+                    let rv = format!("r{rn}");
+                    body.push(format!("  let {rv} = {path}[0].a"));
+                    int_reads.push(rv);
+                    if r.chance(1, 2) {
+                        body.push(format!(
+                            "  {path}[0] = {{ a: {}, b: {} }}",
+                            r.below(9),
+                            r.below(9)
+                        ));
+                    }
+                }
+                RecKind::Map => {
+                    let key = r.below(5);
+                    body.push(format!(
+                        "  {path}.set({key}, {{ a: {}, b: {} }})",
+                        r.below(9),
+                        r.below(9)
+                    ));
+                    rn += 1;
+                    let rv = format!("r{rn}");
+                    body.push(format!("  let {rv} = {path}[{key}].a"));
+                    int_reads.push(rv);
+                    if bare {
+                        rn += 1;
+                        let rv2 = format!("r{rn}");
+                        body.push(format!("  let {rv2} = {path}.get({key}).a"));
+                        int_reads.push(rv2);
+                    }
+                }
+            }
         }
     }
 
@@ -3681,6 +3911,50 @@ import * as H from \"ho1\"";
     } else {
         eprintln!(
             "[selftest] ok: operator in a namespaced handler lowers to a gate (namespaced-handler type-check holds)"
+        );
+    }
+
+    // 8. KNOWN-GOOD: record-typed CONTAINERS (var/array/map) declared in an
+    // imported module and driven entirely through a namespace alias - field
+    // access/write, whole-record assign, array push + index-field read +
+    // whole-element write, map set + index-field read. Every shape here was
+    // hand-verified against the real compiler before being wired into the
+    // generator; the oracle must stay SILENT (no _Unsupported placeholder,
+    // no dropped-write, no storage-collapse across the per-field backing
+    // gates `record_field_storage` decomposes each container into).
+    let rec = "\
+//!ws-file mr1
+type Rec = { a: int, b: int }
+var rv: Rec
+var ra: Rec[]
+var rm: Map<int, Rec>
+//!ws-file main
+import * as R from \"mr1\"
+in t: exec
+var acc: int = 0
+on t {
+  R.rv = { a: 1, b: 2 }
+  R.rv.a = R.rv.a + 3
+  let r1 = R.rv.a
+  R.ra.push({ a: 3, b: 4 })
+  R.ra[0] = { a: 9, b: 9 }
+  let r2 = R.ra[0].a
+  R.rm.set(1, { a: 5, b: 6 })
+  let r3 = R.rm[1].a
+  acc = acc + r1 + r2 + r3
+}
+out o: int = acc.Value";
+    let out = run_pipeline(rec);
+    let f = out.findings();
+    if out.has_errors() || !f.is_empty() {
+        eprintln!(
+            "[selftest] FAIL: namespaced record-container canary fired: findings {:?} / errors {:?}",
+            f, out.error_diags
+        );
+        ok = false;
+    } else {
+        eprintln!(
+            "[selftest] ok: namespaced record var/array/map (field rw, whole-record assign, push/set) is silent"
         );
     }
     ok
