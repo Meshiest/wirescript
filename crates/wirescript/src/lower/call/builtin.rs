@@ -10,6 +10,9 @@ pub(in crate::lower) fn lower_builtin_call(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
+    // Expand `...tuple` spreads into per-element positional args before binding.
+    let expanded = expand_spread_args(ctx, args);
+    let args = &expanded[..];
     // Check for explicit `exec` named arg — allows exec gates in pure contexts
     let explicit_exec = args.iter().find_map(|a| match a {
         CallArg::Named { name, value, .. } if name == "exec" => Some(value),

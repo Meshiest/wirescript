@@ -318,6 +318,11 @@ pub struct ChipDecl {
     /// too (a `mod` is a `ChipDecl` with `inline: true`).
     pub type_params: Vec<TypeParam>,
     pub inputs: Vec<Param>,
+    /// A trailing `...name` variadic parameter: at each call site the leftover
+    /// positional args past `inputs` are captured into an index-keyed tuple bound
+    /// to this name. Only meaningful for an inline `mod` (the whole call resolves
+    /// at compile time). `None` for a fixed-arity signature.
+    pub rest: Option<String>,
     pub outputs: Vec<NamedOutput>,
     pub body: Block,
     pub range: SourceRange,

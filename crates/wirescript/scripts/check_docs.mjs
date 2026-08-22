@@ -37,7 +37,10 @@ const scratch = mkdtempSync(join(tmpdir(), "ws-doccheck-"));
 
 /** Parse a markdown file into checkable wirescript blocks. */
 function extractBlocks(text) {
-  const lines = text.split("\n");
+  // Split on either newline style: a CRLF doc file leaves a trailing `\r` on
+  // every line, which the fence regexes' `$` won't match — so a `\n`-only split
+  // silently skips every block in that file.
+  const lines = text.split(/\r?\n/);
   const blocks = [];
   let pendingPrelude = "";
   let i = 0;

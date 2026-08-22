@@ -19,6 +19,68 @@ pub(super) use inline::*;
 mod instance;
 pub(super) use instance::*;
 
+/// Expand each `...tuple` spread argument into one `TuplePick` positional arg per
+/// element, so the ordinary positional binding wires every element into its own
+/// param/port. Arity comes from the spread expression's tuple/record type
+/// (recorded by typecheck); an unresolved / non-tuple spread expands to nothing
+/// (typecheck already reported it). A call with no spreads is returned as-is.
+pub(in crate::lower) fn expand_spread_args(ctx: &LowerCtx, args: &[CallArg]) -> Vec<CallArg> {
+    if !args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
+        return args.to_vec();
+    }
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        match a {
+            // A tuple/record LITERAL (a tuple `(a, b)` desugars to a numeric-field
+            // record literal) expands to its field value expressions directly — a
+            // literal isn't a resolvable binding, so a `TuplePick` on it would not
+            // lower. Each value then lowers in place.
+            CallArg::Spread(t @ Expr::RecordLit { fields, .. }) => {
+                let _ = t;
+                for f in fields {
+                    match f {
+                        crate::ast::RecordLitField::Named { value, .. } => {
+                            out.push(CallArg::Positional(value.clone()))
+                        }
+                        crate::ast::RecordLitField::Shorthand { name, range } => {
+                            out.push(CallArg::Positional(Expr::Ident {
+                                name: name.clone(),
+                                range: range.clone(),
+                            }))
+                        }
+                        crate::ast::RecordLitField::Spread { .. } => {}
+                    }
+                }
+            }
+            // A bound tuple (`let t = (a, b)`) or a field chain reaching one: pick
+            // each element by index (resolves through its `Binding::Record`). Arity
+            // comes from the live binding when the spread reaches one — a variadic
+            // `...rest` is bound per call site and has no single static tuple type,
+            // so the type map alone (checked once at the mod's declaration) would
+            // under-count it. Fall back to the recorded type otherwise.
+            CallArg::Spread(t) => {
+                let n = match resolve_field_chain(ctx, t) {
+                    Some(Binding::Record(fields)) => fields.len(),
+                    _ => match crate::types::mono::unwrap_ref(&ctx.type_of(t)) {
+                        Type::Tuple(elems) => elems.len(),
+                        Type::Record(fields) => fields.len(),
+                        _ => 0,
+                    },
+                };
+                for i in 0..n {
+                    out.push(CallArg::Positional(Expr::TuplePick {
+                        obj: Box::new(t.clone()),
+                        index: i,
+                        range: t.range().clone(),
+                    }));
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
 pub(super) fn lower_chip_call(
     ctx: &mut LowerCtx,
     chip_decl: &ChipDecl,

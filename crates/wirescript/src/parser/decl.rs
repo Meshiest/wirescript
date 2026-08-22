@@ -887,7 +887,7 @@ impl<'a> Parser<'a> {
         }
         let name = self.expect(TokenKind::Ident, None).text;
         let type_params = self.parse_type_params();
-        let inputs = self.parse_param_list();
+        let (inputs, rest) = self.parse_param_list();
         let outputs = if self.match_tok(TokenKind::Arrow, None).is_some() {
             self.parse_chip_outputs()
         } else {
@@ -899,6 +899,7 @@ impl<'a> Parser<'a> {
             name,
             type_params,
             inputs,
+            rest,
             outputs,
             body,
             range: self.make_range(start, end),
@@ -997,7 +998,7 @@ impl<'a> Parser<'a> {
         let start = self.expect(TokenKind::Kw, Some("mod")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let type_params = self.parse_type_params();
-        let mut inputs = self.parse_param_list();
+        let (mut inputs, rest) = self.parse_param_list();
         // `const mod f(...)`: every parameter is implicitly const, regardless
         // of whether the parameter itself was written with a `const` modifier.
         if is_const {
@@ -1016,6 +1017,7 @@ impl<'a> Parser<'a> {
             name,
             type_params,
             inputs,
+            rest,
             outputs,
             body,
             range: self.make_range(start, end),
@@ -1028,13 +1030,27 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_param_list(&mut self) -> Vec<Param> {
+    /// Returns the fixed parameters plus, if present, the name of a trailing
+    /// `...ident` variadic parameter that captures the leftover positional args
+    /// into a compile-time tuple at each call site.
+    fn parse_param_list(&mut self) -> (Vec<Param>, Option<String>) {
         self.expect(TokenKind::LParen, None);
         let mut params = Vec::new();
+        let mut rest_param: Option<String> = None;
         let mut synth_counter = 0usize;
         self.eat_stmt_end();
         while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
             let pstart = self.peek().start;
+
+            // Trailing variadic capture: `...rest` as the final parameter. Must
+            // be last; anything after it is a parse error at the closing paren.
+            if self.check(TokenKind::Op, Some("...")) {
+                self.advance();
+                let rest_tok = self.expect(TokenKind::Ident, None);
+                rest_param = Some(rest_tok.text);
+                self.eat_newlines();
+                break;
+            }
 
             // Record destructuring pattern: `{ x, y, ...rest }: Type`
             if self.check(TokenKind::LBrace, None) {
@@ -1161,7 +1177,7 @@ impl<'a> Parser<'a> {
         // Tolerate a line break between the parameter list and what follows
         // (`-> (outputs)` or the body brace on the next line).
         self.eat_newlines();
-        params
+        (params, rest_param)
     }
 
     fn parse_chip_outputs(&mut self) -> Vec<NamedOutput> {
@@ -1215,7 +1231,7 @@ impl<'a> Parser<'a> {
             kw.end,
         );
         let name = self.expect(TokenKind::Ident, None).text;
-        let params = self.parse_param_list();
+        let (params, _rest) = self.parse_param_list();
         let return_type = if self.match_tok(TokenKind::Arrow, None).is_some() {
             Some(self.parse_type())
         } else {

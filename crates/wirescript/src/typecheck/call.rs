@@ -247,6 +247,30 @@ pub(super) fn output_record_type(
 /// the `sig::check_args` arg-coercion pass — it must be the FULL `CallArg`
 /// list, receiver included as its own leading `CallArg::Positional` for a
 /// method call (mirroring `positional_arg_types`).
+/// The number of positional args a `...t` spread contributes, or `None` when its
+/// arity isn't statically known (a non-tuple / unresolved type — the call stays
+/// arity-dynamic then). A tuple/record LITERAL counts its fields; a bound
+/// tuple/record uses its recorded type.
+fn spread_arity(ctx: &TypeCheckCtx, t: &Expr) -> Option<usize> {
+    if let Expr::RecordLit { fields, .. } = t {
+        return Some(
+            fields
+                .iter()
+                .filter(|f| matches!(f, crate::ast::RecordLitField::Named { .. }))
+                .count(),
+        );
+    }
+    let r = t.range();
+    let ty = ctx
+        .type_of_expr
+        .get(&(r.file.clone(), r.start.offset, r.end.offset))?;
+    match unwrap_ref(ty) {
+        Type::Tuple(e) => Some(e.len()),
+        Type::Record(f) => Some(f.len()),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn type_user_symbol_call(
     ctx: &mut TypeCheckCtx,
@@ -285,25 +309,45 @@ pub(super) fn type_user_symbol_call(
     // Argument-count check. User chips/mods/fns have no default parameters, so
     // the positional-argument count must equal the parameter count — each param
     // (including a whole-record or destructured one, and the `self` receiver)
-    // takes exactly one positional arg. A spread makes the count dynamic, so
-    // skip the check then. A mismatch would otherwise leave a param unbound,
-    // silently reading 0 / an empty value.
-    if let Some(sig) = &sym.signature
-        && !has_spread
-    {
+    // takes exactly one positional arg. A `...tuple` spread contributes its
+    // element count; the check runs whenever every spread's arity is known,
+    // staying dynamic (skipped) only for a spread of unknown/non-tuple type.
+    if let Some(sig) = &sym.signature {
         let expected = sig.params.len();
-        if positional_count != expected {
+        let mut effective = positional_count;
+        let mut all_known = true;
+        for a in args {
+            if let CallArg::Spread(t) = a {
+                match spread_arity(ctx, t) {
+                    Some(n) => effective += n,
+                    None => all_known = false,
+                }
+            }
+        }
+        // A variadic mod (`...rest`) fixes only the leading params; the trailing
+        // args are captured, so the count just has to REACH the fixed count.
+        let count_wrong = if sig.variadic {
+            effective < expected
+        } else {
+            effective != expected
+        };
+        if all_known && count_wrong {
+            let expectation = if sig.variadic {
+                format!("at least {expected} argument{}", if expected == 1 { "" } else { "s" })
+            } else {
+                format!("{expected} argument{}", if expected == 1 { "" } else { "s" })
+            };
             ctx.emit(
                 "WS022",
                 format!(
-                    "`{name}` expects {expected} argument{} but {positional_count} {} given",
-                    if expected == 1 { "" } else { "s" },
-                    if positional_count == 1 { "was" } else { "were" },
+                    "`{name}` expects {expectation} but {effective} {} given",
+                    if effective == 1 { "was" } else { "were" },
                 ),
                 name_range.clone(),
             );
         }
     }
+    let _ = has_spread;
     let Some(sig) = &sym.signature else {
         // The callee resolved to a non-callable symbol — a var / let / array /
         // buffer / input / param, not a mod, chip, or function. Without this the

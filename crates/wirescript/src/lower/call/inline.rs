@@ -10,6 +10,9 @@ pub(in crate::lower) fn lower_chip_call_inline(
     type_args: &[TypeExpr],
     _range: &SourceRange,
 ) -> PortRef {
+    // Expand `...tuple` spreads into per-element positional args before binding.
+    let expanded = expand_spread_args(ctx, args);
+    let args = &expanded[..];
     // This call's output nodes don't exist yet, so any wire touching them
     // lands at an index >= this. The output-source lookups and the
     // output-node removal below only scan this tail instead of the whole
@@ -183,6 +186,26 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 val_bindings.push((param.name.clone(), val_port, t));
             }
         }
+    }
+
+    // A `...rest` variadic parameter captures every positional arg past the
+    // fixed params into a compile-time tuple, keyed `"0"`,`"1"`,… — exactly what
+    // a tuple literal `(a, b, …)` lowers to. A later `...rest` in the body then
+    // splats it back through `expand_spread_args`. Built in the caller's scope
+    // (like the other arg bindings) so its elements reference the caller's vars.
+    if let Some(rest_name) = &chip_decl.rest {
+        let start = chip_decl.inputs.len().min(positional_args.len());
+        let rest_fields: Vec<RecordLitField> = positional_args[start..]
+            .iter()
+            .enumerate()
+            .map(|(i, e)| RecordLitField::Named {
+                name: i.to_string(),
+                value: (*e).clone(),
+                range: e.range().clone(),
+            })
+            .collect();
+        let record = lower_record_lit(ctx, &rest_fields);
+        record_bindings.push((rest_name.clone(), record));
     }
 
     // The callee body is lowered into the CALLER's ctx, so the caller's own

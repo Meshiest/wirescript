@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 1.6.0
+
+- A `...tuple` spread now expands into a call's positional arguments. `SendGlobalCustomEvent(name, ...t)` splats a tuple across the event's data slots, and `f(...t)` / `f(a, ...rest)` binds each element to consecutive parameters (a tuple literal `...(a, b)`, a bound tuple, or a field chain reaching one). Over-filling a fixed-arity callee reports the usual arity error, and spreading a non-tuple is a `WS003`. Spread arguments used to be silently dropped.
+- A `mod` can take a trailing `...rest` variadic parameter that captures every argument past its fixed params. Each call site binds `rest` to a compile-time tuple of the extra args, and a `...rest` in the body splats them onward, so `mod broadcast(name: const string, ...rest) { SendGlobalCustomEvent(name, ...rest) }` forwards any number of values. A call must still supply the fixed params (fewer is `WS022`). Only `mod`s may be variadic; a `...rest` on a `chip` is `WS052`.
+
 ## 1.5.0
 
 - Added a `null` literal. It adopts its target type and produces that type's zero/unset value (`entity`/`character`/`controller` -> an unset object, a number -> `0`, `bool` -> `false`, `string` -> `""`, vector/rotation/color -> zero) in any typed position: a `var`/`out` initializer, an assignment, a call argument, or a record field. `null` for a container, record, or reference-only type has no value and reports `WS051`; a bare `let x = null` with no target types as `any`.

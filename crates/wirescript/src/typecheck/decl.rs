@@ -831,6 +831,25 @@ fn check_decl_inner(
                         );
                     }
                 }
+                // A `...rest` variadic capture is bound once here with arity
+                // unknown (the body is checked a single time; each call site
+                // captures a different tuple). Type it `any` so a `...rest`
+                // spread in the body forwards leniently (an arity-dynamic
+                // spread the callee accepts) and any incidental `rest` use stays
+                // quiet — lowering supplies the real per-call elements.
+                if let Some(rest_name) = &c.rest {
+                    ctx.scope.declare(
+                        rest_name,
+                        SymbolInfo {
+                            kind: SymbolKind::Param,
+                            name: rest_name.clone(),
+                            ty: Type::Any,
+                            decl_range: c.range.clone(),
+                            signature: None,
+                            event_data: None,
+                        },
+                    );
+                }
                 // Push this combo's declared-output frame (nearest wins over
                 // the module frame) so `return`/`emit`/an unannotated `out`
                 // inside the body can be checked against it. Built AFTER the

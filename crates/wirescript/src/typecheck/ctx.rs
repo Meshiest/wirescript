@@ -37,6 +37,11 @@ pub struct EventDataField {
 #[derive(Clone, Debug)]
 pub struct FnOrChipSig {
     pub params: Vec<EventDataField>,
+    /// The mod has a trailing `...rest` variadic parameter: `params` lists only
+    /// the FIXED params, and a call may pass any number of extra trailing args
+    /// (captured per call site into a compile-time tuple bound to `rest`). Only
+    /// ever set for an inline `mod`.
+    pub variadic: bool,
     pub outputs: Vec<EventDataField>,
     /// Generic type params declared on a `mod`/`chip<T, ...>` decl, each
     /// paired with its resolved mask (the concrete types it may bind to).

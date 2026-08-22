@@ -105,6 +105,13 @@ pub struct CallSignature {
 /// whose fixed `Param` list can't enumerate their legal names (e.g.
 /// `arr.sortMultiple(other, descending = true)`) pass `false` for both.
 #[allow(clippy::too_many_arguments)]
+/// One positional argument slot: a real argument expression, or a single element
+/// spliced in from a `...tuple` spread (which carries only its type).
+enum PosSlot<'a> {
+    Arg(&'a Expr),
+    Elem(Type, SourceRange),
+}
+
 pub fn check_args(
     ctx: &mut TypeCheckCtx,
     sig: &CallSignature,
@@ -114,13 +121,60 @@ pub fn check_args(
     check_named: bool,
     range: &SourceRange,
 ) {
-    let positional: Vec<&Expr> = args
-        .iter()
-        .filter_map(|a| match a {
-            CallArg::Positional(e) => Some(e),
-            _ => None,
-        })
-        .collect();
+    // Positional slots, with a `...tuple` spread expanded to one slot per
+    // element (an ELEMENT slot carries just its type — there is no per-element
+    // expression to run the full argument check on). A spread of a non-tuple, or
+    // of a still-unresolved `any`, is reported/ignored here.
+    let mut slots: Vec<PosSlot> = Vec::new();
+    for a in args {
+        match a {
+            CallArg::Positional(e) => slots.push(PosSlot::Arg(e)),
+            // A tuple/record LITERAL spread: check each field VALUE as a real
+            // argument (matches how lowering expands it).
+            CallArg::Spread(Expr::RecordLit { fields, .. }) => {
+                for f in fields {
+                    if let crate::ast::RecordLitField::Named { value, .. } = f {
+                        slots.push(PosSlot::Arg(value));
+                    }
+                }
+            }
+            CallArg::Spread(t) => {
+                let key = {
+                    let r = t.range();
+                    (r.file.clone(), r.start.offset, r.end.offset)
+                };
+                let tt = ctx
+                    .type_of_expr
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| crate::typecheck::infer::infer(ctx, t));
+                match unwrap_ref(&tt) {
+                    Type::Tuple(elems) => {
+                        for el in elems {
+                            slots.push(PosSlot::Elem(el, t.range().clone()));
+                        }
+                    }
+                    // A multi-output result splats in declaration order.
+                    Type::Record(fields) => {
+                        for (_, ft) in fields {
+                            slots.push(PosSlot::Elem(ft, t.range().clone()));
+                        }
+                    }
+                    // Unresolved — don't cascade a spurious error.
+                    Type::Any => {}
+                    other => ctx.emit(
+                        "WS003",
+                        format!(
+                            "spread `...` expects a tuple, got {}",
+                            crate::analysis::types::type_str(&other)
+                        ),
+                        t.range().clone(),
+                    ),
+                }
+            }
+            CallArg::Named { .. } => {}
+        }
+    }
 
     if check_arity {
         let avail = sig.params.len().saturating_sub(pos_base);
@@ -138,7 +192,7 @@ pub fn check_args(
             .iter()
             .filter(|p| !p.optional && !named.contains(&p.name.as_str()))
             .count();
-        if positional.len() > avail {
+        if slots.len() > avail {
             ctx.emit(
                 "WS011",
                 format!(
@@ -146,11 +200,11 @@ pub fn check_args(
                     sig.name,
                     avail,
                     if avail == 1 { "" } else { "s" },
-                    positional.len(),
+                    slots.len(),
                 ),
                 range.clone(),
             );
-        } else if positional.len() < required_count {
+        } else if slots.len() < required_count {
             ctx.emit(
                 "WS011",
                 format!(
@@ -158,19 +212,41 @@ pub fn check_args(
                     sig.name,
                     required_count,
                     if required_count == 1 { "" } else { "s" },
-                    positional.len(),
+                    slots.len(),
                 ),
                 range.clone(),
             );
         }
     }
 
-    for (i, arg_expr) in positional.iter().enumerate() {
+    for (i, slot) in slots.iter().enumerate() {
         let idx = pos_base + i;
         if idx >= sig.params.len() {
             break;
         }
-        check_one_arg(ctx, sig, &sig.params[idx], arg_expr);
+        match slot {
+            PosSlot::Arg(arg_expr) => check_one_arg(ctx, sig, &sig.params[idx], arg_expr),
+            PosSlot::Elem(ty, r) => {
+                // A spread element has only a type; coerce it against the wire
+                // param directly (config params can't be spread-filled).
+                let param = &sig.params[idx];
+                if matches!(param.kind, ParamKind::Wire | ParamKind::Const)
+                    && !crate::typecheck::type_has_param(&param.ty)
+                    && coerce(&unwrap_ref(ty), &unwrap_ref(&param.ty)) == CoerceRule::Mismatch
+                {
+                    ctx.emit(
+                        "WS003",
+                        format!(
+                            "spread element for '{}': expected {}, got {}",
+                            param.name,
+                            crate::analysis::types::type_str(&unwrap_ref(&param.ty)),
+                            crate::analysis::types::type_str(&unwrap_ref(ty)),
+                        ),
+                        r.clone(),
+                    );
+                }
+            }
+        }
     }
 
     // Named args: config params validate against the schema (enum member,

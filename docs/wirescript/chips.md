@@ -615,6 +615,45 @@ mod slide(a: *int, b: *int, c: *int, d: *int) {
 }
 ```
 
+### Variadic Parameters (`...rest`)
+
+A `mod` (only a `mod`, never a `chip`) can end its parameter list with a `...rest`
+variadic that captures every argument past the fixed parameters. Because a mod is
+inlined at each call site, `rest` is a compile-time tuple of the actual extra
+arguments -- there is no runtime variadic. A `...rest` in the body then splats that
+tuple onward into another call, one element per positional slot:
+
+```wirescript
+mod broadcast(name: const string, ...rest) {
+  SendGlobalCustomEvent(name, ...rest)
+}
+
+in amount: int
+in kind: float
+in go: exec
+on go {
+  broadcast("hit", amount, kind)   // -> SendGlobalCustomEvent("hit", amount, kind)
+}
+```
+
+The fixed parameters are still required (passing fewer is an arity error); only the
+trailing count is open. The same `...tuple` splat works on any call -- spread a bound
+tuple, a tuple literal, or a multi-output result into consecutive arguments:
+
+```wirescript
+mod add3(a: int, b: int, c: int) -> (r: int) { return a + b + c }
+
+in n: int
+let pair = (2, 3)
+out total = add3(n, ...pair)         // -> add3(n, 2, 3)
+```
+
+Because the body is type-checked once (at the declaration, where the captured arity
+isn't known yet), a `...rest` forward is not statically arity-checked against a
+fixed-arity target -- it is validated when the mod inlines at each call. Forwarding
+into `SendCustomEvent`/`SendGlobalCustomEvent` (whose data slots accept any type) is
+the common case and always sound.
+
 ### `mod` vs `chip`
 
 | Feature | `chip` | `mod` |

@@ -104,6 +104,7 @@ See [`const` -- Compile-Time Binding](statements.md#const----compile-time-bindin
 | `WS049` | A record used as a variable, array, or map has a field whose type can't be stored — a reference (`*T`), `zone`, `teleport`, prefab reference, or `exec`. A stored record decomposes into one backing gate per field, and those types have no storable value. | `type T = { z: zone }` then `var t: T` |
 | `WS050` | A method with no per-field meaning was called on a record array or map. A record container is stored as parallel per-field gates, so `sort`/`shuffle` (would desync the fields), the aggregates (`sum`/`min`/`max`/`average`), `find`, and the dual-container ops (`append`/`copyFrom`/`slice`/`values`) are not available. Use `pts[i]` / `m[k]` for element access. | `var pts: Point[]` then `pts.sort()` |
 | `WS051` | `null` was used for a type that has no null value. `null` adopts its target type and produces that type's zero / unset — valid for a number, `bool`, `string`, `vector`/`rotator`/`quat`/`color`, or an entity/character/controller, but not for a container, record, or reference-only type (which have their own empty forms). | `var a: int[] = null` |
+| `WS052` | A `...rest` variadic parameter was declared on a `chip`. Only a `mod` may be variadic: a mod inlines per call site (so the trailing args are captured into a compile-time tuple), while a physical microchip instantiates once and cannot vary its pin count per call. Change the `chip` to a `mod`. | `chip C(a: int, ...rest)` |
 
 ## Gate & event config
 

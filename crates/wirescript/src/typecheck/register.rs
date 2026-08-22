@@ -309,6 +309,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     decl_range: f.range.clone(),
                     signature: Some(FnOrChipSig {
                         params,
+                        variadic: false,
                         outputs: vec![EventDataField {
                             name: "_".into(),
                             ty: ret,
@@ -415,6 +416,23 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         .unwrap_or_else(|| c.range.clone()),
                 );
             }
+            // A `...rest` variadic capture is resolved at each call site by
+            // inlining the body with the trailing args (see `lower/call/inline`).
+            // A physical microchip (`chip`, not `mod`) instantiates once and can't
+            // vary its pin count per call, so a variadic there would silently drop
+            // the captured args — reject it at the declaration.
+            if !c.inline && c.rest.is_some() {
+                ctx.emit(
+                    "WS052",
+                    format!(
+                        "`{}` is a chip, but only a `mod` may take a `...rest` variadic \
+                         parameter (a chip instantiates once and cannot capture a \
+                         per-call argument list) — make it a `mod`",
+                        c.name
+                    ),
+                    c.range.clone(),
+                );
+            }
             declare_or_dup(
                 ctx,
                 &c.name,
@@ -425,6 +443,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     decl_range: c.range.clone(),
                     signature: Some(FnOrChipSig {
                         params,
+                        variadic: c.rest.is_some(),
                         outputs,
                         type_params: type_param_masks,
                     }),

@@ -2505,3 +2505,75 @@ fn null_literal_bakes_the_type_default() {
     assert!(vals.iter().any(|l| matches!(l, crate::ir::Literal::Int(0))), "int null -> Int(0): {vals:?}");
     assert!(vals.iter().any(|l| matches!(l, crate::ir::Literal::Bool(false))), "bool null -> Bool(false): {vals:?}");
 }
+
+/// `...tuple` splats a bound tuple across consecutive positional args — into a
+/// builtin's data slots and a user mod's params (the R1 spread-into-args fix).
+#[test]
+fn spread_tuple_into_call_args() {
+    use crate::ir::port_registry::WirePort;
+    let r = compile(
+        "in a: int\nin b: float\nin go: exec\n\
+         on go { let t = (a, b)\n SendGlobalCustomEvent(\"c\", ...t) }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    let send = find_gate(&r, "BrickComponentType_WireGraphPseudo_SendCustomEvent_Global");
+    let ports: Vec<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.target.node_id == send)
+        .map(|w| w.target.port)
+        .collect();
+    assert!(
+        ports.contains(&WirePort::DataIn1) && ports.contains(&WirePort::DataIn2),
+        "spread must wire the tuple into DataIn1 + DataIn2: {ports:?}"
+    );
+
+    // A user mod: `add3(...t)` binds each element to a param.
+    let m = compile(
+        "mod add3(a: int, b: int, c: int) -> int { return a + b + c }\n\
+         in n: int\nout r = add3(...(n, 2, 3))",
+    );
+    assert_no_errors(&m);
+    assert!(!has_gate(&m, "_Unsupported"), "spread into mod params must bind");
+}
+
+/// A `...rest` variadic mod captures the trailing call args into a compile-time
+/// tuple and a `...rest` in its body splats them back — both into a builtin's
+/// data slots and into another (fixed-arity) mod's params.
+#[test]
+fn variadic_mod_captures_and_splats() {
+    use crate::ir::port_registry::WirePort;
+    let r = compile(
+        "in a: int\nin b: float\nin go: exec\n\
+         mod broadcast(name: const string, ...rest) { SendGlobalCustomEvent(name, ...rest) }\n\
+         on go { broadcast(\"dmg\", a, b) }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    let send = find_gate(&r, "BrickComponentType_WireGraphPseudo_SendCustomEvent_Global");
+    let ports: Vec<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.target.node_id == send)
+        .map(|w| w.target.port)
+        .collect();
+    assert!(
+        ports.contains(&WirePort::DataIn1) && ports.contains(&WirePort::DataIn2),
+        "captured rest must wire into DataIn1 + DataIn2: {ports:?}"
+    );
+
+    // Forwarding the captured rest into a fixed-arity user mod.
+    let m = compile(
+        "mod add3(x: int, y: int, z: int) -> int { return x + y + z }\n\
+         mod sum3(base: int, ...rest) -> int { return add3(base, ...rest) }\n\
+         var total: int = 0\nin go: exec\non go { total = sum3(1, 2, 3) }",
+    );
+    assert_no_errors(&m);
+    assert!(
+        !has_gate(&m, "_Unsupported"),
+        "variadic forward into a mod must bind every element"
+    );
+}

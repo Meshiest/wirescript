@@ -408,3 +408,55 @@ fn null_typing() {
         assert!(r.diagnostics.iter().any(|d| d.code == "WS051"), "{bad}: {:?}", r.diagnostics);
     }
 }
+
+#[test]
+fn spread_arg_typing() {
+    let tc = |src: &str| {
+        let p = parse(src, "test");
+        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    };
+    // Over-length spread into a fixed-arity mod -> WS022.
+    let over = tc("mod add2(a: int, b: int) -> int { return a + b }\nout r = add2(...(1, 2, 3))");
+    assert!(over.diagnostics.iter().any(|d| d.code == "WS022"), "{:?}", over.diagnostics);
+    // A spread of a non-tuple -> WS003.
+    let bad = tc("in n: int\nin go: exec\non go { SendGlobalCustomEvent(\"c\", ...n) }");
+    assert!(bad.diagnostics.iter().any(|d| d.code == "WS003"), "{:?}", bad.diagnostics);
+    // A correct-arity spread is clean.
+    let ok = tc("mod add2(a: int, b: int) -> int { return a + b }\nin n: int\nout r = add2(...(n, 2))");
+    assert!(!ok.diagnostics.iter().any(|d| matches!(d.code.as_str(), "WS022" | "WS003")), "{:?}", ok.diagnostics);
+}
+
+#[test]
+fn variadic_mod_arity_and_placement() {
+    let tc = |src: &str| {
+        let p = parse(src, "test");
+        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    };
+    // A variadic mod accepts extra trailing args past its fixed params: clean.
+    let ok = tc(
+        "mod f(a: int, ...rest) -> int { return a }\n\
+         var t: int = 0\nin go: exec\non go { t = f(1, 2, 3, 4) }",
+    );
+    assert!(
+        !ok.diagnostics.iter().any(|d| d.code == "WS022"),
+        "variadic accepts surplus args: {:?}",
+        ok.diagnostics
+    );
+    // ...but still requires the FIXED params -> WS022 when too few.
+    let few = tc(
+        "mod g(a: int, b: int, ...rest) -> int { return a + b }\n\
+         var t: int = 0\nin go: exec\non go { t = g(1) }",
+    );
+    assert!(
+        few.diagnostics.iter().any(|d| d.code == "WS022"),
+        "too few for the fixed params: {:?}",
+        few.diagnostics
+    );
+    // A `...rest` on a physical chip (not a mod) is rejected -> WS052.
+    let chip = tc("chip Bad(a: int, ...rest) { out r = a }");
+    assert!(
+        chip.diagnostics.iter().any(|d| d.code == "WS052"),
+        "variadic chip rejected: {:?}",
+        chip.diagnostics
+    );
+}

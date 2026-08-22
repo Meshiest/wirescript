@@ -122,6 +122,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 name: f.name.clone(),
                 type_params: Vec::new(),
                 inputs: f.params.clone(),
+                rest: None,
                 outputs,
                 body: Block {
                     stmts: vec![Stmt::Return {
