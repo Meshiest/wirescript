@@ -8,6 +8,13 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         Expr::AtomLit { value, .. } => literal_node(ctx, e, Type::Int, Literal::Int(*value)),
         Expr::FloatLit { value, .. } => literal_node(ctx, e, Type::Float, Literal::Float(*value)),
         Expr::BoolLit { value, .. } => literal_node(ctx, e, Type::Bool, Literal::Bool(*value)),
+        // `null` lowers to its resolved type's zero/default (typecheck recorded
+        // the type via `check_null`): an unset object, `0`, `false`, `""`, …
+        Expr::NullLit { .. } => {
+            let t = unwrap_ref(&ctx.type_of(e));
+            let lit = default_literal_for_var_type(&t).unwrap_or(Literal::Float(0.0));
+            literal_node(ctx, e, t, lit)
+        }
         Expr::StringLit { value, .. } => {
             literal_node(ctx, e, Type::String, Literal::String(value.clone()))
         }

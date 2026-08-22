@@ -103,6 +103,7 @@ See [`const` -- Compile-Time Binding](statements.md#const----compile-time-bindin
 | `WS048` | Const evaluation gave up — the call chain is too deep or took too many steps (guards a runaway or self-referential `const mod` chain against a stack overflow, since a `const mod` calling itself type-checks fine). | a `const mod` that calls itself, reached from a constant-only position such as a custom-event channel name |
 | `WS049` | A record used as a variable, array, or map has a field whose type can't be stored — a reference (`*T`), `zone`, `teleport`, prefab reference, or `exec`. A stored record decomposes into one backing gate per field, and those types have no storable value. | `type T = { z: zone }` then `var t: T` |
 | `WS050` | A method with no per-field meaning was called on a record array or map. A record container is stored as parallel per-field gates, so `sort`/`shuffle` (would desync the fields), the aggregates (`sum`/`min`/`max`/`average`), `find`, and the dual-container ops (`append`/`copyFrom`/`slice`/`values`) are not available. Use `pts[i]` / `m[k]` for element access. | `var pts: Point[]` then `pts.sort()` |
+| `WS051` | `null` was used for a type that has no null value. `null` adopts its target type and produces that type's zero / unset — valid for a number, `bool`, `string`, `vector`/`rotator`/`quat`/`color`, or an entity/character/controller, but not for a container, record, or reference-only type (which have their own empty forms). | `var a: int[] = null` |
 
 ## Gate & event config
 

@@ -2485,3 +2485,23 @@ fn map_and_record_literals_disambiguate() {
     let rec = parse("type P = { x: int }\nlet p: P = { x: 1 }\n", "test");
     assert!(rec.diagnostics.is_empty(), "{:?}", rec.diagnostics);
 }
+
+/// `null` adopts its target type and bakes that type's zero/default: an unset
+/// object for an entity, `0` for an int, `false` for a bool.
+#[test]
+fn null_literal_bakes_the_type_default() {
+    let r = compile("var e: entity = null\nvar i: int = null\nvar b: bool = null\nout oe: entity = e");
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    let iv = crate::intern::intern("InitialValue");
+    let vals: Vec<_> = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter_map(|n| n.properties.get(&iv).cloned())
+        .collect();
+    assert!(vals.iter().any(|l| matches!(l, crate::ir::Literal::Object)), "entity null -> Object: {vals:?}");
+    assert!(vals.iter().any(|l| matches!(l, crate::ir::Literal::Int(0))), "int null -> Int(0): {vals:?}");
+    assert!(vals.iter().any(|l| matches!(l, crate::ir::Literal::Bool(false))), "bool null -> Bool(false): {vals:?}");
+}

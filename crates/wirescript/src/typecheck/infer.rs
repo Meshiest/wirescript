@@ -243,6 +243,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         Expr::FloatLit { .. } => Type::Float,
         Expr::StringLit { .. } => Type::String,
         Expr::BoolLit { .. } => Type::Bool,
+        // `null` is polymorphic — it has no type on its own, so a bare inferred
+        // position (`let x = null`) reads as `any`. A TYPED position resolves it
+        // to that type via `check`/`check_null` (var/out init, assignment, a
+        // call arg, a record field), which is where `null` earns a real value.
+        Expr::NullLit { .. } => Type::Any,
         Expr::InterpLit { parts, .. } => {
             // Match legacy exactly: unwrap a leading `Ref` off the part's type
             // before the string-coercion check, so an interpolated var ref
@@ -1385,8 +1390,85 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
 }
 
 pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
+    // `null` is polymorphic: it takes the expected type and lowers to that type's
+    // zero/default. Resolve it here (before the generic infer+coerce), recording
+    // the resolved type so lowering emits the right default literal.
+    if let Expr::NullLit { .. } = e {
+        return check_null(ctx, e, expected);
+    }
+    // Push a record type into a record literal so each field value is CHECKED
+    // against its target type (a `null` field resolves to it) rather than
+    // inferred blind. Guarded to a plain, exactly-matching set of named fields;
+    // any spread / shorthand / arity mismatch defers to the infer+coerce below,
+    // which reports the structural error unchanged.
+    if let Expr::RecordLit { fields, .. } = e
+        && let Type::Record(ftypes) = unwrap_ref(expected)
+        && let Some(named) = fields
+            .iter()
+            .map(|f| match f {
+                RecordLitField::Named { name, value, .. } => Some((name.clone(), value)),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+        && named.len() == ftypes.len()
+        && ftypes
+            .iter()
+            .all(|(fname, _)| named.iter().any(|(k, _)| k == fname))
+    {
+        for (fname, ftype) in &ftypes {
+            let val = named.iter().find(|(k, _)| k == fname).map(|(_, v)| *v).unwrap();
+            check(ctx, val, ftype);
+        }
+        let r = e.range();
+        let rec = Type::Record(ftypes);
+        ctx.type_of_expr
+            .insert((r.file.clone(), r.start.offset, r.end.offset), rec.clone());
+        return rec;
+    }
     let t = infer(ctx, e);
     coerce_or_emit(ctx, &t, expected, e.range());
+    t
+}
+
+/// Whether `null` can stand in for `t`: any stored VALUE type — a number, bool,
+/// string, vector/rotator/quat/color, or an entity/character/controller (the
+/// unset object). Records and containers have their own empty forms (`{}` / `[]`),
+/// and reference-only / exec types carry no value. `Any` is permitted so an
+/// already-unknown target doesn't pile on a second error.
+fn null_typeable(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::String
+            | Type::Vector
+            | Type::Rotator
+            | Type::Quat
+            | Type::Color
+            | Type::Entity
+            | Type::Character
+            | Type::Controller
+            | Type::Any
+    )
+}
+
+fn check_null(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
+    let t = unwrap_ref(expected);
+    if !null_typeable(&t) {
+        ctx.emit(
+            "WS051",
+            format!(
+                "`null` has no value for type `{}` — it is only valid for a number, bool, \
+                 string, vector/rotator/color, or an entity/character/controller",
+                crate::analysis::type_str(&t)
+            ),
+            e.range().clone(),
+        );
+    }
+    let r = e.range();
+    ctx.type_of_expr
+        .insert((r.file.clone(), r.start.offset, r.end.offset), t.clone());
     t
 }
 

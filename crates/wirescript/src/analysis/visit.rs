@@ -235,6 +235,7 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
         | Expr::FloatLit { .. }
         | Expr::StringLit { .. }
         | Expr::BoolLit { .. }
+        | Expr::NullLit { .. }
         | Expr::AssetRef { .. }
         | Expr::PrefabRef { .. }
         | Expr::NestedPrefab { .. }

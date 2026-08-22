@@ -463,53 +463,45 @@ fn check_decl_inner(
         }
         TopDecl::Out(b) => {
             if let Some(value) = &b.value {
-                let value_ty = ctx.in_pure(|ctx| infer::infer(ctx, value));
-                // An unannotated `out y = a.push(5)` would publish a nothing;
-                // reject a void-mutation `Never` (an annotated out already
-                // mismatches via `coerce_or_emit` below).
-                if b.typ.is_none() {
-                    reject_never_value(ctx, &unwrap_ref(&value_ty), value.range(), &b.name);
-                }
-                // When out has ref type and value is a var, override to show "ref" in hover
-                if let Some(ref te) = b.typ {
+                if let Some(te) = &b.typ {
                     let resolved = resolve_type_expr(ctx, te);
                     warn_any_annotation(ctx, &resolved, type_expr_range(te));
+                    // When out has ref type and value is a var, override to show "ref" in hover
                     if matches!(resolved, Type::Ref(_))
                         && let Expr::Ident { range, .. } = value
                     {
                         ctx.var_read_contexts
                             .remove(&(range.file.clone(), range.start.offset));
                     }
-                    // An annotated out must accept its value (WS003 on a
-                    // genuine mismatch; coercions — including string → bool,
-                    // which lowers to an inserted `!= ""` compare at the
-                    // port — pass). Both sides unwrap refs so `out y: *int
-                    // = x` compares int against int, the ref-ness being the
-                    // exposure mode rather than a value type.
-                    infer::coerce_or_emit(
-                        ctx,
-                        &unwrap_ref(&value_ty),
-                        &unwrap_ref(&resolved),
-                        value.range(),
-                    );
-                }
-                if b.typ.is_none()
-                    && let Expr::Ident { name, .. } = value
-                    && let Some(sym) = ctx.scope.lookup(name)
-                    && sym.kind == SymbolKind::Var
-                {
-                    ctx.diagnostics.push(Diagnostic {
-                                    severity: Severity::Warning,
-                                    code: "WS017".into(),
-                                    message: format!(
-                                        "out '{}' infers type from var '{}' — add explicit type: \
-                                         `out {}: {} = {}` for value, or `out {}: *{} = {}` for ref",
-                                        b.name, name,
-                                        b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
-                                        b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
-                                    ),
-                                    range: b.range.clone(),
-                                });
+                    // An annotated out must accept its value: `check` coerces it
+                    // into the port type (WS003 on a genuine mismatch; the string
+                    // → bool `!= ""` compare and friends pass) AND resolves a
+                    // bidirectional literal like `null` to the port's type. Both
+                    // sides unwrap refs so `out y: *int = x` compares int against
+                    // int, the ref-ness being the exposure mode, not a value type.
+                    ctx.in_pure(|ctx| infer::check(ctx, value, &unwrap_ref(&resolved)));
+                } else {
+                    // An unannotated `out y = a.push(5)` would publish a nothing;
+                    // reject a void-mutation `Never`.
+                    let value_ty = ctx.in_pure(|ctx| infer::infer(ctx, value));
+                    reject_never_value(ctx, &unwrap_ref(&value_ty), value.range(), &b.name);
+                    if let Expr::Ident { name, .. } = value
+                        && let Some(sym) = ctx.scope.lookup(name)
+                        && sym.kind == SymbolKind::Var
+                    {
+                        ctx.diagnostics.push(Diagnostic {
+                            severity: Severity::Warning,
+                            code: "WS017".into(),
+                            message: format!(
+                                "out '{}' infers type from var '{}' — add explicit type: \
+                                 `out {}: {} = {}` for value, or `out {}: *{} = {}` for ref",
+                                b.name, name,
+                                b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
+                                b.name, crate::analysis::types::type_str(&unwrap_ref(&sym.ty)), name,
+                            ),
+                            range: b.range.clone(),
+                        });
+                    }
                 }
             }
         }

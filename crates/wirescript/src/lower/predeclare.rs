@@ -1025,6 +1025,9 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
         // record is never "unbaked" — the generic scalar warning would be a
         // false positive (there is no single gate to bake it into).
         Expr::RecordLit { .. } => false,
+        // `null` bakes to the var's type default (the `or_else` fallback below),
+        // which IS its value — never unbaked.
+        Expr::NullLit { .. } => false,
         e => expr_to_literal_in(e, &ctx.const_env).is_none(),
     };
     unbaked.then_some(init)

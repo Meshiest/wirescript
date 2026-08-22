@@ -517,6 +517,12 @@ impl<'a> Parser<'a> {
                     range: self.make_range(t.start, t.end),
                 }
             }
+            TokenKind::Kw if t.text == "null" => {
+                self.advance();
+                Expr::NullLit {
+                    range: self.make_range(t.start, t.end),
+                }
+            }
             TokenKind::Kw if t.text == "if" => {
                 self.advance();
                 let cond = self.parse_expr();

@@ -388,3 +388,23 @@ fn record_storage_rejects_non_variant_field() {
     let ro = crate::typecheck::typecheck(&ok.ast, "test", &crate::typecheck::CeSlotMap::default());
     assert!(!ro.diagnostics.iter().any(|d| d.code == "WS049"), "{:?}", ro.diagnostics);
 }
+
+#[test]
+fn null_typing() {
+    let tc = |src: &str| {
+        let p = parse(src, "test");
+        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    };
+    // Accepted for value types (var/out/assign/arg/record field).
+    let ok = tc(
+        "type P = { x: int, e: entity }\nmod f(n: int, ent: entity) { }\n\
+         var i: int = null\nvar e: entity = null\nvar p: P = { x: null, e: null }\n\
+         in go: exec\non go { i = null\n f(null, null) }",
+    );
+    assert!(!ok.diagnostics.iter().any(|d| d.code == "WS051"), "{:?}", ok.diagnostics);
+    // Rejected for types with no null value: container, record, reference-only.
+    for bad in ["var a: int[] = null", "type P = { x: int }\nvar p: P = null"] {
+        let r = tc(bad);
+        assert!(r.diagnostics.iter().any(|d| d.code == "WS051"), "{bad}: {:?}", r.diagnostics);
+    }
+}

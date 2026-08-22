@@ -787,6 +787,11 @@ pub enum Expr {
         value: bool,
         range: SourceRange,
     },
+    /// `null` — a polymorphic literal that adopts its expected type and produces
+    /// that type's zero/default (an unset object, `0`, `false`, `""`, …).
+    NullLit {
+        range: SourceRange,
+    },
     Ident {
         name: String,
         range: SourceRange,
@@ -926,6 +931,7 @@ impl Expr {
             | Expr::StringLit { range, .. }
             | Expr::InterpLit { range, .. }
             | Expr::BoolLit { range, .. }
+            | Expr::NullLit { range, .. }
             | Expr::Ident { range, .. }
             | Expr::FieldAccess { range, .. }
             | Expr::IndexAccess { range, .. }
@@ -955,6 +961,7 @@ impl Expr {
             | Expr::StringLit { range, .. }
             | Expr::InterpLit { range, .. }
             | Expr::BoolLit { range, .. }
+            | Expr::NullLit { range, .. }
             | Expr::Ident { range, .. }
             | Expr::FieldAccess { range, .. }
             | Expr::IndexAccess { range, .. }

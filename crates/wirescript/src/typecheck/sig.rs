@@ -277,6 +277,12 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     if crate::typecheck::type_has_param(&param.ty) {
         return;
     }
+    // `null` adopts the param's type (resolve + record + coerce via `check`),
+    // rather than the `any` a bare inference would give it.
+    if matches!(arg_expr, Expr::NullLit { .. }) {
+        crate::typecheck::infer::check(ctx, arg_expr, &param.ty);
+        return;
+    }
     // The Call-arm preamble already inferred every wire arg into
     // ctx.type_of_expr (via infer::infer) in THIS pass, immediately before
     // check_args runs — read that back instead of re-inferring, so an arg

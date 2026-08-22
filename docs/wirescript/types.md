@@ -105,6 +105,29 @@ on ZoneEntered(zone = z) -> (character) {   // wire the zone into the event
 
 To teleport an entity to a raw **position** (a vector), use `SetLocation` -- the `Teleport` gates require a teleport point, not a coordinate.
 
+### The `null` literal
+
+`null` is a polymorphic literal that adopts its target type and produces that
+type's zero value: an unset object for `entity`/`character`/`controller`, `0` for
+a number, `false` for `bool`, `""` for `string`, the zero vector / rotation /
+color. It needs a known target type -- a `var`/`out` annotation, an assignment, a
+call argument, or a record field:
+
+```wirescript
+var target: entity = null      // an unset object reference
+var score: int = null          // 0
+in go: exec
+on go { target = null }        // clear the reference
+
+type Slot = { owner: entity, count: int }
+var slot: Slot = { owner: null, count: null }
+```
+
+`null` is only valid for a value type. A container, record, or reference-only
+type (`int[]`, `Map<K, V>`, a record, `*T`, `zone`) has no null value and reports
+`WS051` -- use its own empty form (`[]`, `{}`) instead. A bare `let x = null` with
+no target types as `any`.
+
 ## Compound Types
 
 ### Reference Types (`ref T`)
