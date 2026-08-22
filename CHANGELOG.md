@@ -4,6 +4,8 @@
 
 - A `...tuple` spread now expands into a call's positional arguments. `SendGlobalCustomEvent(name, ...t)` splats a tuple across the event's data slots, and `f(...t)` / `f(a, ...rest)` binds each element to consecutive parameters (a tuple literal `...(a, b)`, a bound tuple, or a field chain reaching one). Over-filling a fixed-arity callee reports the usual arity error, and spreading a non-tuple is a `WS003`. Spread arguments used to be silently dropped.
 - A `mod` can take a trailing `...rest` variadic parameter that captures every argument past its fixed params. Each call site binds `rest` to a compile-time tuple of the extra args, and a `...rest` in the body splats them onward, so `mod broadcast(name: const string, ...rest) { SendGlobalCustomEvent(name, ...rest) }` forwards any number of values. A call must still supply the fixed params (fewer is `WS022`). Only `mod`s may be variadic; a `...rest` on a `chip` is `WS052`.
+- Compile progress now accounts for embedded prefabs: the reported step total grows by one per `$./file` reference and inline `$```...``` ` block, so the editor indicator advances through them instead of appearing to stall on the final phase.
+- The editor's compile status indicator no longer lingers after a build finishes; it is shown only while a compile is actually running.
 
 ## 1.5.0
 

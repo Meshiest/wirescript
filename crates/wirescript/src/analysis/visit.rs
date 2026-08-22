@@ -230,6 +230,11 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
                 visit_expr(&en.value, on_call);
             }
         }
+        // Embedded-prefab leaves fire `on_call` too (like a `Call` does), so a
+        // caller can count / locate every `$./file` reference and `$```…``` `
+        // block; the existing `on_call` users all filter for `Expr::Call` and
+        // ignore these.
+        Expr::PrefabRef { .. } | Expr::NestedPrefab { .. } => on_call(e),
         Expr::IntLit { .. }
         | Expr::AtomLit { .. }
         | Expr::FloatLit { .. }
@@ -237,8 +242,6 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
         | Expr::BoolLit { .. }
         | Expr::NullLit { .. }
         | Expr::AssetRef { .. }
-        | Expr::PrefabRef { .. }
-        | Expr::NestedPrefab { .. }
         | Expr::Ident { .. } => {}
     }
 }

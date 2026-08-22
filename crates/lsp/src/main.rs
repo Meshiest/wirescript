@@ -1323,7 +1323,7 @@ impl LanguageServer for Backend {
         let rt = tokio::runtime::Handle::current();
         let compile_result = tokio::task::spawn_blocking(move || {
             let progress_cb: wirescript::ProgressCallback =
-                Box::new(move |p: wirescript::CompileProgress| {
+                std::sync::Arc::new(move |p: wirescript::CompileProgress| {
                     let client = client.clone();
                     rt.spawn(async move {
                         client.send_notification::<CompileProgressNotification>(

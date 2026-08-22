@@ -429,15 +429,17 @@ export function activate(context: ExtensionContext) {
     workspace.onDidSaveTextDocument(clearBuildDiagnostics),
   );
 
-  // Listen for compile progress from LSP
+  // Listen for compile progress from LSP. The compile command below owns the
+  // indicator's lifecycle (shows it on start, clears it when the request
+  // resolves); a progress notification only refreshes the step counter WHILE a
+  // compile is actually in flight. `done` and any late/out-of-order notification
+  // are ignored — they arrive fire-and-forget and used to strand the spinner
+  // when a non-`done` was delivered last.
+  let compiling = false;
   client.onNotification("wirescript/compileProgress", (params: any) => {
-    if (params.done) {
-      compileStatus.text = `$(check) Compiled`;
-      setTimeout(() => compileStatus.hide(), 5000);
-    } else {
-      compileStatus.text = `$(sync~spin) Compiling: ${params.step}/${params.total}`;
-      compileStatus.show();
-    }
+    if (!compiling || params.done) return;
+    compileStatus.text = `$(sync~spin) Compiling: ${params.step}/${params.total}`;
+    compileStatus.show();
   });
 
   // Compile and copy .brz to clipboard as file drop (for Brickadia paste)
@@ -452,6 +454,7 @@ export function activate(context: ExtensionContext) {
       const baseName = path.basename(doc.uri.fsPath, ".ws");
       const outPath = path.join(os.tmpdir(), `${baseName}.brz`);
 
+      compiling = true;
       compileStatus.text = "$(sync~spin) Compiling...";
       compileStatus.show();
 
@@ -471,6 +474,10 @@ export function activate(context: ExtensionContext) {
           `Wirescript compile failed: ${err.message || err}`,
         );
         return;
+      } finally {
+        // The request has resolved — the compile is truly done, so stop
+        // honoring any further (late) progress notifications for the spinner.
+        compiling = false;
       }
 
       // Build errors come back located — render them in the Problems panel + as
@@ -537,6 +544,9 @@ export function activate(context: ExtensionContext) {
           5000,
         );
       }
+      // Success is reported via the transient status-bar message above; clear the
+      // persistent compile indicator so it doesn't linger after the build.
+      compileStatus.hide();
     }),
   );
 }

@@ -34,3 +34,43 @@
             out.err().map(|e| e.to_string())
         );
     }
+
+    /// The compile-progress total grows by one step per embedded prefab (each
+    /// `$./file` reference / inline `$```…``` ` block), so the bar reflects the
+    /// per-prefab sub-compiles instead of stalling on the emit phase.
+    #[test]
+    fn progress_total_counts_nested_prefabs() {
+        let src = "in go: exec\non go {\n  \
+                   let a = SpawnPrefab(prefab = $```\nvar n: int = 0\n```)\n  \
+                   let b = SpawnPrefab(prefab = $```\nvar m: int = 0\n```)\n}";
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u32, u32, bool)>::new()));
+        let cb: ProgressCallback = {
+            let seen = seen.clone();
+            std::sync::Arc::new(move |p: CompileProgress| {
+                seen.lock().unwrap().push((p.step, p.total, p.done));
+            })
+        };
+        let r = compile_with_progress(
+            CompileInput {
+                source: src,
+                file: "prog_test.ws",
+                module_name: None,
+                fold_mode: FoldMode::Auto,
+            },
+            EmitOptions::default(),
+            cb,
+        );
+        assert!(r.is_ok(), "compile failed: {:?}", r.err().map(|e| e.to_string()));
+        let events = seen.lock().unwrap();
+        let max_total = events.iter().map(|(_, t, _)| *t).max().unwrap();
+        assert_eq!(max_total, 6, "two nested prefabs -> total 4 + 2; events: {events:?}");
+        // A per-prefab step fires during emit, so the bar advances past the four
+        // fixed phases rather than stalling at 4/N.
+        let max_step = events
+            .iter()
+            .filter(|(_, _, done)| !done)
+            .map(|(s, _, _)| *s)
+            .max()
+            .unwrap();
+        assert!(max_step > 4, "per-prefab steps must advance past 4; events: {events:?}");
+    }

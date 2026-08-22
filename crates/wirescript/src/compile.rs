@@ -187,7 +187,7 @@ pub struct CompileProgress {
     pub done: bool,
 }
 
-pub type ProgressCallback = Box<dyn Fn(CompileProgress) + Send>;
+pub type ProgressCallback = std::sync::Arc<dyn Fn(CompileProgress) + Send + Sync>;
 
 pub fn compile_with_progress(
     input: CompileInput<'_>,
@@ -209,17 +209,27 @@ fn compile_with_opts_inner(
     mut opts: EmitOptions,
     progress: Option<ProgressCallback>,
 ) -> Result<CompileResult, CompileError> {
-    const TOTAL_STEPS: u32 = 4;
-    let step = std::cell::Cell::new(0u32);
-    let report = |progress: &Option<ProgressCallback>| {
-        let s = step.get() + 1;
-        step.set(s);
-        if let Some(cb) = progress {
-            cb(CompileProgress {
-                step: s,
-                total: TOTAL_STEPS,
-                done: false,
-            });
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // Four fixed phases (resolve, lower, layout, emit), plus one step per embedded
+    // prefab — each is its own sub-compile during emit, so the total grows to
+    // `4 + <nested prefab count>` once the AST is parsed (below). Shared via Arc
+    // so the per-prefab wrappers (which must be `Send + Sync`) can advance it too.
+    const BASE_STEPS: u32 = 4;
+    let step = std::sync::Arc::new(AtomicU32::new(0));
+    let total = std::sync::Arc::new(AtomicU32::new(BASE_STEPS));
+    let report = {
+        let step = step.clone();
+        let total = total.clone();
+        let progress = progress.clone();
+        move || {
+            let s = step.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(cb) = &progress {
+                cb(CompileProgress {
+                    step: s,
+                    total: total.load(Ordering::Relaxed),
+                    done: false,
+                });
+            }
         }
     };
 
@@ -236,8 +246,23 @@ fn compile_with_opts_inner(
         opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
     }
 
-    report(&progress);
+    report();
     let resolved = resolve(source, file, &FsLoader);
+    // Grow the progress total by the number of embedded prefabs (each `$./file`
+    // reference and each inline `$```…``` ` block is a sub-compile the emit step
+    // does), so the bar advances through them instead of stalling on emit.
+    {
+        let mut n_prefabs = 0u32;
+        crate::analysis::visit_program(&resolved.ast, &mut |_| {}, &mut |e| {
+            if matches!(
+                e,
+                crate::ast::Expr::PrefabRef { .. } | crate::ast::Expr::NestedPrefab { .. }
+            ) {
+                n_prefabs += 1;
+            }
+        });
+        total.store(BASE_STEPS + n_prefabs, Ordering::Relaxed);
+    }
     // An explicit top-of-file module doc (a `///` block separated from the first
     // decl by a blank line) is the root header; otherwise fall back to the first
     // declaration's doc comment.
@@ -261,7 +286,7 @@ fn compile_with_opts_inner(
         std::sync::Arc::new(cache)
     };
 
-    report(&progress);
+    report();
     let lowered = lower(LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -296,7 +321,7 @@ fn compile_with_opts_inner(
         return Err(CompileError::HasErrors(errors));
     }
 
-    report(&progress);
+    report();
     let lopts = layout_options_for(&resolved.ast, Some(resolved.source_map.clone()));
     let lr = layout_with_opts(&lowered.module, &lopts);
 
@@ -310,13 +335,47 @@ fn compile_with_opts_inner(
         );
     }
 
-    report(&progress);
+    // Advance the bar once per embedded prefab as emit compiles/reads each one.
+    // Guarded on progress being active so a plain compile keeps its resolvers
+    // (and their exact behavior) untouched. Clamp to the total in case emit
+    // resolves a prefab more often than the source references it.
+    if progress.is_some() {
+        let tick: std::sync::Arc<dyn Fn() + Send + Sync> = {
+            let step = step.clone();
+            let total = total.clone();
+            let progress = progress.clone();
+            std::sync::Arc::new(move || {
+                if let Some(cb) = &progress {
+                    let tot = total.load(Ordering::Relaxed);
+                    let s = (step.fetch_add(1, Ordering::Relaxed) + 1).min(tot);
+                    cb(CompileProgress { step: s, total: tot, done: false });
+                }
+            })
+        };
+        if let Some(inner) = opts.nested_compiler.take() {
+            let tick = tick.clone();
+            opts.nested_compiler = Some(crate::emit::NestedCompiler::new(move |src, depth| {
+                tick();
+                (inner.0)(src, depth)
+            }));
+        }
+        if let Some(inner) = opts.prefab_resolver.take() {
+            let tick = tick.clone();
+            opts.prefab_resolver = Some(PrefabResolver::new(move |path| {
+                tick();
+                (inner.0)(path)
+            }));
+        }
+    }
+
+    report();
     let brz = emit_brz(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
 
     if let Some(ref cb) = progress {
+        let tot = total.load(Ordering::Relaxed);
         cb(CompileProgress {
-            step: TOTAL_STEPS,
-            total: TOTAL_STEPS,
+            step: tot,
+            total: tot,
             done: true,
         });
     }
