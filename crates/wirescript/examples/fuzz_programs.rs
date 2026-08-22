@@ -1262,6 +1262,9 @@ struct ModSig {
     // true for the generic-identity-mod entries registered by gen_mod's form-6
     // arm — lets call sites opt into emitting explicit `<Type>` type arguments.
     generic: bool,
+    // true when the mod has a trailing `...rest` variadic parameter — call sites
+    // may pass extra trailing args past `params` (captured into `rest`).
+    variadic: bool,
 }
 
 #[derive(Clone)]
@@ -1715,6 +1718,16 @@ impl Gen {
                 _ => return None,
             }
         }
+        // A variadic candidate (`...rest`) accepts extra trailing args past its
+        // fixed params — append a few so the per-call-site rest capture sees real
+        // trailing args (0 also valid: an empty rest).
+        let is_variadic = self.mods.iter().any(|m| m.name == name && m.variadic);
+        if is_variadic {
+            for _ in 0..self.rng.range(0, 3) {
+                let t = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
+                args.push(self.expr(sc, t, d.saturating_sub(1)));
+            }
+        }
         // Explicit type-argument call syntax `f<int>(...)` on the generic mods
         // registered by gen_mod's form-6 arm. `ty` is already the concrete
         // type this candidate was selected for (it's `T`, since every
@@ -1724,6 +1737,17 @@ impl Gen {
         let is_generic = self.mods.iter().any(|m| m.name == name && m.generic);
         if is_generic && self.rng.chance(1, 3) {
             return Some(format!("{name}<{}>({})", ty.name(), args.join(", ")));
+        }
+        // Occasionally forward the arguments as an inline `...tuple` spread
+        // (`f(...(a, b))`), exercising the spread -> positional expansion and the
+        // per-element type check. Only when every param is a plain value and
+        // there are >=2 args (a 1-tuple `(x)` is just a parenthesized expr, and a
+        // record element can't ride a value tuple). Arity and element types line
+        // up by construction, so a valid program stays valid — a `_Unsupported`
+        // or dropped wire out of this is a real spread-lowering bug.
+        let all_val = params.iter().all(|(_, p)| matches!(p, PTy::Val(_)));
+        if all_val && !is_generic && !is_variadic && args.len() >= 2 && self.rng.chance(1, 4) {
+            return Some(format!("{name}(...({}))", args.join(", ")));
         }
         Some(format!("{name}({})", args.join(", ")))
     }
@@ -2301,6 +2325,12 @@ impl Gen {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
+                // Occasionally give the mod a trailing `...rest` variadic that its
+                // body never reads — call sites append extra trailing args past the
+                // fixed params (captured, dropped). Exercises the parse of `...rest`,
+                // the WS022 arity relaxation, and the per-call-site rest capture.
+                let make_variadic = self.rng.chance(1, 5);
+                let sig = if make_variadic { format!("{sig}, ...rest") } else { sig };
                 // multi-return via if?
                 if self.rng.chance(1, 2) {
                     let c = self.expr(&body_sc, Ty::Bool, 2);
@@ -2321,6 +2351,7 @@ impl Gen {
                     ret: Some(RetTy::Val(rt)),
                     pure_call: true,
                     generic: false,
+                    variadic: make_variadic,
                 });
             }
             // exec mod with ref params
@@ -2343,7 +2374,7 @@ impl Gen {
                     stmts.join("\n")
                 };
                 self.blocks.push(format!("mod {name}({sig}) {{\n{body}\n}}"));
-                self.mods.push(ModSig { name, params, ret: None, pure_call: false, generic: false });
+                self.mods.push(ModSig { name, params, ret: None, pure_call: false, generic: false, variadic: false });
             }
             // destructured record param mod
             4 => {
@@ -2374,6 +2405,7 @@ impl Gen {
                     ret: Some(RetTy::Val(Ty::Int)),
                     pure_call: true,
                     generic: false,
+                    variadic: false,
                 });
             }
             // record-literal return mod
@@ -2396,6 +2428,7 @@ impl Gen {
                     ret: Some(RetTy::Rec(ridx)),
                     pure_call: true,
                     generic: false,
+                    variadic: false,
                 });
             }
             // Unbounded `<T>` generic identity mod, structurally identical to
@@ -2425,6 +2458,7 @@ impl Gen {
                         ret: Some(RetTy::Val(t)),
                         pure_call: true,
                         generic: true,
+                        variadic: false,
                     });
                 }
             }
@@ -2444,6 +2478,7 @@ impl Gen {
             ret: Some(RetTy::Val(Ty::Int)),
             pure_call: true,
             generic: false,
+            variadic: false,
         });
     }
 

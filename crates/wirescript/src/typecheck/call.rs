@@ -450,25 +450,27 @@ pub(super) fn type_user_symbol_call(
     // WS022, so `check_arity = false` here). Skipping this would let
     // `f(int)` on a `vector` param — or a receiver call `x.m()` whose `x`'s
     // type doesn't match `self` — pass clean and then miscompile at the wire
-    // level. Skipped only for a spread (variable positional count, nothing
-    // to line up positionally); `check_args`'s own `Wire`-arm coerce already
+    // level. This runs for a `...tuple` spread too: `check_args` expands the
+    // spread into per-element slots and coerces each against its param, so a
+    // mismatched element (`g(...(1, aVector))` on `int` params) is caught the
+    // same as if written out. A spread whose arity isn't statically known (a
+    // `...rest` typed `any`) contributes no slots, so it stays lenient rather
+    // than firing spurious errors. `check_args`'s own `Wire`-arm coerce already
     // treats `Any`/`Opaque` args as always-`Same` and skips a still-generic
     // (`Type::Param`-carrying) param — the latter left to the WS033
     // inference diagnostics above.
-    if !has_spread {
-        check_args(
-            ctx,
-            &sig_of_fnchip(name, sig, subst.as_ref()),
-            args,
-            0,
-            /* check_arity */ false,
-            // A user mod/chip DOES know its full param list, so flag an unknown
-            // named arg (`g(1, bogus = 5)`) as WS041 — the arity check is off
-            // only to avoid double-reporting count against WS022 above.
-            /* check_named */ true,
-            call_range,
-        );
-    }
+    check_args(
+        ctx,
+        &sig_of_fnchip(name, sig, subst.as_ref()),
+        args,
+        0,
+        /* check_arity */ false,
+        // A user mod/chip DOES know its full param list, so flag an unknown
+        // named arg (`g(1, bogus = 5)`) as WS041 — the arity check is off
+        // only to avoid double-reporting count against WS022 above.
+        /* check_named */ true,
+        call_range,
+    );
     let out_ty = |t: &Type| match &subst {
         Some(s) => substitute(t, s),
         None => t.clone(),

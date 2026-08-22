@@ -424,6 +424,19 @@ fn spread_arg_typing() {
     // A correct-arity spread is clean.
     let ok = tc("mod add2(a: int, b: int) -> int { return a + b }\nin n: int\nout r = add2(...(n, 2))");
     assert!(!ok.diagnostics.iter().any(|d| matches!(d.code.as_str(), "WS022" | "WS003")), "{:?}", ok.diagnostics);
+    // A spread ELEMENT whose type mismatches its user-mod param is caught (arity
+    // is right, but the second element is a vector for an int param) — the same
+    // WS003 the written-out `add2(1, aVector)` gets. Previously the whole arg
+    // check was skipped for any spread, so this slipped through silently.
+    let bad_elem = tc(
+        "mod add2(a: int, b: int) -> int { return a + b }\n\
+         let t = (1, Vec(0.0, 0.0, 0.0))\nout r = add2(...t)",
+    );
+    assert!(
+        bad_elem.diagnostics.iter().any(|d| d.code == "WS003"),
+        "spread element type mismatch into a user mod must be WS003: {:?}",
+        bad_elem.diagnostics
+    );
 }
 
 #[test]
