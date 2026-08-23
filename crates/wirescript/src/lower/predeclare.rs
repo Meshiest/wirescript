@@ -256,6 +256,12 @@ pub type ConstEnv = crate::collections::HashMap<String, Literal>;
 /// in turn) and STOPS at anything that does open a scope of its own — a
 /// handler, a named `chip`/`mod` body, an `if` block. Those already record
 /// their body constants into their own `scoped_consts` frame.
+/// A `let x: exec` local exec signal (parser-desugared to `= 0`), which must
+/// never be collected as a constant (see the call site in `build_const_env`).
+fn is_exec_signal_let(l: &LetDecl) -> bool {
+    matches!(&l.typ, Some(TypeExpr::Name { name, .. }) if name == "exec")
+}
+
 fn scope_lets(decls: &[TopDecl]) -> Vec<&LetDecl> {
     fn walk_block<'a>(block: &'a Block, out: &mut Vec<&'a LetDecl>) {
         for s in &block.stmts {
@@ -346,6 +352,15 @@ pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
         let mut changed = false;
         for (i, l) in lets.iter().enumerate() {
             if settled[i] {
+                continue;
+            }
+            // A `let x: exec` local signal is parser-desugared to `= 0`; that `0`
+            // is a placeholder for a signal, not a constant value. Registering it
+            // makes a later use of the signal resolve the NAME to `0`, which then
+            // inlines `0` into a builtin's exec wire port (e.g. SpawnPrefab's
+            // `destroyAll`) instead of wiring the signal. Never bind an exec let.
+            if is_exec_signal_let(l) {
+                settled[i] = true;
                 continue;
             }
             let cx = crate::const_eval::ConstCtx {

@@ -567,6 +567,15 @@ impl<'a> TypeCheckCtx<'a> {
             range,
         });
     }
+
+    pub fn warn(&mut self, code: &str, message: impl Into<String>, range: SourceRange) {
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            code: code.to_string(),
+            message: message.into(),
+            range,
+        });
+    }
 }
 
 // ---------- result ----------

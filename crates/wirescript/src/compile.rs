@@ -204,6 +204,40 @@ pub fn compile_with_opts(
     on_compile_stack(move || compile_with_opts_inner(input, opts, None))
 }
 
+/// Run the front-end through lowering (resolve -> typecheck -> lower -> cycle
+/// analysis) and return EVERY diagnostic, without emitting. This is the diagnostic
+/// surface `wirescript-check` reports: it includes the lowering-stage `WSP001`
+/// placeholder warnings a typecheck-only pass can't see. A program that lowers to
+/// an `_Unsupported` gate is "no errors" to typecheck yet a real miscompile, so a
+/// check that stops at typecheck silently passes it. Runs on the big compile
+/// stack like the other entry points.
+pub fn diagnostics_only(input: CompileInput<'_>) -> Vec<Diagnostic> {
+    on_compile_stack(move || {
+        let resolved = resolve(input.source, input.file, &FsLoader);
+        let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, input.file);
+        let template_cache = std::sync::Arc::new(TemplateCache::new());
+        let lowered = lower(LowerInput {
+            ast: &resolved.ast,
+            type_of_expr: &tc.type_of_expr,
+            op_resolutions: &tc.op_resolutions,
+            file: input.file,
+            module_name: input.module_name,
+            template_cache,
+            doc_comments: &resolved.doc_comments,
+            fold_mode: input.fold_mode,
+            ce_slots: &ce_slots,
+        });
+        let cycles = crate::analyze::analyze_cycles(&lowered.module);
+        resolved
+            .diagnostics
+            .into_iter()
+            .chain(tc.diagnostics)
+            .chain(lowered.diagnostics)
+            .chain(cycles.diagnostics)
+            .collect()
+    })
+}
+
 fn compile_with_opts_inner(
     input: CompileInput<'_>,
     mut opts: EmitOptions,

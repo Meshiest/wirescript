@@ -422,8 +422,12 @@ cold ones** (one gate body, and nothing is waiting).
   to module scope collapses that to three -- but only do it when every call site
   is alone in its statement, because module scratch is shared and two calls in
   one expression will race.
-- **A `mod` with a return type costs a storage gate per call site** for the
-  returned value. Unavoidable short of writing to a module var instead.
+- **A `mod`'s return path depends on its SHAPE.** A mod whose body is a single
+  expression returns through a wire and costs about one gate per call site. A mod
+  with an early `return` returns through a storage gate, which is opaque to the
+  constant folder, and costs several times more per site. Rewriting an
+  early-return helper as one expression is usually the cheapest change available
+  to it.
 - **Storage survives everything.** Guarding a feature behind a false constant
   removes its logic but not its `var` declarations. Nothing prunes unused state,
   and the compiler never warns about it.

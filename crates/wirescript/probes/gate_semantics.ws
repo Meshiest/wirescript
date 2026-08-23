@@ -1,7 +1,7 @@
 /// Gate semantics probe — prints one CASE line per observed interaction.
 /// Paste into a local world; it runs itself (ReadBrickGrid fires on paste).
 /// Bump VERSION whenever the case matrix changes.
-let VERSION = 4
+let VERSION = 5
 
 let grid = ReadBrickGrid()
 
@@ -753,7 +753,7 @@ mod runDeferredOps() {
 // -- ExtendedMath: transcendental / pow / atan2 / min / max / log / clamp /
 // -- floored-mod / abs / sign / negate / deg<->rad. Float output. -----------
 mod runExtendedMath() {
-  caseLine("BEGIN extendedMath 30")
+  caseLine("BEGIN extendedMath 38")
   caseLine("CASE MathSin float:1.0 -> ${sin(Opaque(1.0))}")
   caseLine("CASE MathCos float:1.0 -> ${cos(Opaque(1.0))}")
   caseLine("CASE MathTan float:1.0 -> ${tan(Opaque(1.0))}")
@@ -784,6 +784,14 @@ mod runExtendedMath() {
   caseLine("CASE MathClamp float:5.0 float:0.0 float:1.0 -> ${clamp(Opaque(5.0), Opaque(0.0), Opaque(1.0))}")
   caseLine("CASE MathModuloFloored float:7.0 float:3.0 -> ${fmod(Opaque(7.0), Opaque(3.0))}")
   caseLine("CASE MathModuloFloored float:-1.0 float:3.0 -> ${fmod(Opaque(-1.0), Opaque(3.0))}")
+  caseLine("CASE MathAbs int:-4 -> ${abs(Opaque(-4))}")
+  caseLine("CASE MathSign int:-3 -> ${sign(Opaque(-3))}")
+  caseLine("CASE MathSign int:2 -> ${sign(Opaque(2))}")
+  caseLine("CASE MathSign int:0 -> ${sign(Opaque(0))}")
+  caseLine("CASE MathNegate int:5 -> ${-Opaque(5)}")
+  caseLine("CASE MathMin int:3 int:7 -> ${min(Opaque(3), Opaque(7))}")
+  caseLine("CASE MathMax int:3 int:7 -> ${max(Opaque(3), Opaque(7))}")
+  caseLine("CASE MathClamp int:5 int:0 int:1 -> ${clamp(Opaque(5), Opaque(0), Opaque(1))}")
   caseLine("END extendedMath")
 }
 

@@ -425,9 +425,8 @@ fn spread_arg_typing() {
     let ok = tc("mod add2(a: int, b: int) -> int { return a + b }\nin n: int\nout r = add2(...(n, 2))");
     assert!(!ok.diagnostics.iter().any(|d| matches!(d.code.as_str(), "WS022" | "WS003")), "{:?}", ok.diagnostics);
     // A spread ELEMENT whose type mismatches its user-mod param is caught (arity
-    // is right, but the second element is a vector for an int param) — the same
-    // WS003 the written-out `add2(1, aVector)` gets. Previously the whole arg
-    // check was skipped for any spread, so this slipped through silently.
+    // is right, but the second element is a vector for an int param): the same
+    // WS003 the written-out `add2(1, aVector)` gets.
     let bad_elem = tc(
         "mod add2(a: int, b: int) -> int { return a + b }\n\
          let t = (1, Vec(0.0, 0.0, 0.0))\nout r = add2(...t)",
@@ -471,5 +470,92 @@ fn variadic_mod_arity_and_placement() {
         chip.diagnostics.iter().any(|d| d.code == "WS052"),
         "variadic chip rejected: {:?}",
         chip.diagnostics
+    );
+}
+
+#[test]
+fn parked_kick_emit_before_await() {
+    let tc = |src: &str| {
+        let p = parse(src, "test");
+        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    };
+    // A plain `emit s` then a same-chain `await s` parks forever -> WS053 (warning).
+    let bad = tc(
+        "in go: exec\nlet s: exec\nvar n: int = 0\n\
+         on go { emit s\n  await s\n  if n < 5 { buffer emit s } }",
+    );
+    assert!(
+        bad.diagnostics
+            .iter()
+            .any(|d| d.code == "WS053" && d.severity == crate::diagnostic::Severity::Warning),
+        "plain emit-before-await must warn WS053: {:?}",
+        bad.diagnostics
+    );
+    // A buffered kick is correct (lands next tick, after the await arms) -> no WS053.
+    let ok = tc(
+        "in go: exec\nlet s: exec\nvar n: int = 0\n\
+         on go { buffer emit s\n  await s\n  if n < 5 { buffer emit s } }",
+    );
+    assert!(
+        !ok.diagnostics.iter().any(|d| d.code == "WS053"),
+        "buffered kick must not warn: {:?}",
+        ok.diagnostics
+    );
+    // Emit and await of DIFFERENT signals -> no WS053.
+    let diff = tc("in go: exec\nlet s: exec\nlet t: exec\non go { emit s\n  await t }");
+    assert!(
+        !diff.diagnostics.iter().any(|d| d.code == "WS053"),
+        "different signals must not warn: {:?}",
+        diff.diagnostics
+    );
+}
+
+#[test]
+fn await_custom_event_captures_data() {
+    use crate::diagnostic::Severity;
+    let tc = |src: &str| {
+        let p = parse(src, "test");
+        crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    };
+    // An ANNOTATED capture types the value (DataOut1) and is clean.
+    let typed = tc(
+        "in go: exec\nvar a: int = 0\n\
+         on go { let foo: int = await CustomEvent(\"c\")\n  a = foo }",
+    );
+    assert!(
+        !typed.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "typed event capture must be accepted: {:?}",
+        typed.diagnostics
+    );
+    assert!(
+        !typed.diagnostics.iter().any(|d| d.code == "WS055"),
+        "an annotated capture must not warn WS055: {:?}",
+        typed.diagnostics
+    );
+    // An UNANNOTATED capture still works but warns WS055 (type can't be inferred).
+    let bare = tc(
+        "in go: exec\nvar a: int = 0\n\
+         on go { let foo = await CustomEvent(\"c\")\n  a = foo }",
+    );
+    assert!(
+        bare.diagnostics
+            .iter()
+            .any(|d| d.code == "WS055" && d.severity == Severity::Warning),
+        "untyped event capture must warn WS055: {:?}",
+        bare.diagnostics
+    );
+    // A bare `await CustomEvent(...)` (no capture) just waits - no warning.
+    let wait = tc("in go: exec\nvar a: int = 0\non go { await CustomEvent(\"c\")\n  a = 1 }");
+    assert!(
+        !wait.diagnostics.iter().any(|d| d.code == "WS055"),
+        "bare await (no capture) must not warn: {:?}",
+        wait.diagnostics
+    );
+    // The handler receiver form is still fine.
+    let ok = tc("var total: int = 0\non CustomEvent(\"c\") -> (p: int, t: int) { total = p + t }");
+    assert!(
+        !ok.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "handler receiver must be accepted: {:?}",
+        ok.diagnostics
     );
 }

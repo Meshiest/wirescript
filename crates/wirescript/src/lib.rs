@@ -24,7 +24,7 @@ pub mod template;
 pub mod template_cache;
 pub mod types;
 
-pub use compile::{compile, compile_with_opts, compile_with_progress, compile_to_world, disk_prefab_resolver, CompileError, CompileInput, CompileResult, CompileWorldResult, CompileProgress, FoldMode, ProgressCallback};
+pub use compile::{compile, compile_with_opts, compile_with_progress, compile_to_world, diagnostics_only, disk_prefab_resolver, CompileError, CompileInput, CompileResult, CompileWorldResult, CompileProgress, FoldMode, ProgressCallback};
 pub use diagnostic::{Diagnostic, Pos, Severity, SourceRange};
 pub use emit::{build_world, emit_brz, field_enum_type, field_enum_values, EmitError, EmitOptions, NestedCompiler, Placement, PrefabResolver};
 #[cfg(feature = "brdb-full")]

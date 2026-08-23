@@ -115,8 +115,16 @@ for (const md of mdFiles) {
       // (WS007). The `...`/`…` ellipsis (the docs' "elided code" convention) is
       // also tolerated. A genuinely un-parseable fragment can opt out with
       // ` ```wirescript ignore`.
+      //
+      // A parse error is Error-severity (label `ERROR`); the WSP001 the LOWERING
+      // stage emits for an `_Unsupported` placeholder is a WARN, and is tolerated
+      // like the other semantic issues: a fragment referencing an undefined name
+      // lowers its use to a placeholder, which is not syntax rot.
       const realParseErrs = errLines.filter(
-        (l) => /WSP\d/.test(l) && !/unexpected token '(\.\.\.|…)'/.test(l),
+        (l) =>
+          /WSP\d/.test(l) &&
+          /\bERROR\b/.test(l) &&
+          !/unexpected token '(\.\.\.|…)'/.test(l),
       );
       if (realParseErrs.length > 0) {
         failures.push({ md, line: b.startLine, code: b.code, errors: realParseErrs.join("\n") });

@@ -713,10 +713,17 @@ pub struct BufferSpec {
 #[derive(Clone, Debug)]
 pub struct AwaitStmt {
     pub binding: Option<String>,
-    /// `let { a, b: alias } = await sig` — record-destructured payload fields
+    /// The `: T` annotation on a `let x: T = await ...` binding, if written. Used
+    /// to type the captured value of `let x = await CustomEvent("c")` (the
+    /// event's first data output) when the sender doesn't pin it by inference.
+    pub binding_type: Option<TypeExpr>,
+    /// `let { a, b: alias } = await sig`: record-destructured payload fields
     /// as `(field, local name)` pairs. Each field reads the signal's ferried
     /// payload store of that name.
     pub destructure: Option<Vec<(String, String)>>,
+    /// `let (a, b) = await CustomEvent("c")`: tuple-destructured POSITIONAL
+    /// capture of an event's data outputs (`a` = DataOut1, `b` = DataOut2).
+    pub tuple_destructure: Option<Vec<String>>,
     pub value_expr: Option<Expr>,
     pub exec_expr: Expr,
     /// `@nofold`: every IR node lowered from this declaration's subtree

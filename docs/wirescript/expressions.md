@@ -202,6 +202,14 @@ Use `\$` to include a literal `$`:
 let price = "Cost: \$${amount}"
 ```
 
+> **Both arms evaluate.** An `if` expression compiles to a `Select` fed by both
+> results, so the arm that is not chosen is computed and discarded. The branch
+> picks which value is used, it does not skip work. Two consequences: an
+> expensive expression in the untaken arm still costs its gates every tick, and
+> an arm that would fail on bad input (an out-of-range slice, a divide by zero)
+> still runs -- gates yield a default rather than faulting, which is why this is
+> safe, but it means an arm cannot be used to guard another.
+
 ## Conditional Expressions (if-then-else)
 
 The `if-then-else` expression evaluates to one of two values based on a condition. It is a pure expression that compiles to a Select gate.

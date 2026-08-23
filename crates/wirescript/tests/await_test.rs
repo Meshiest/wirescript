@@ -106,3 +106,44 @@ on start {
 }"));
 }
 
+
+// --- await CustomEvent data capture ---
+
+#[test]
+fn await_custom_event_typed_capture_compiles() {
+    // `let foo: int = await CustomEvent("c")` captures the event's DataOut1,
+    // typed by the annotation; compiles end-to-end, no WS055.
+    let src = "in go: exec\nvar x: int = 0\n\
+               on go { let foo: int = await CustomEvent(\"c\")\n  x = foo }";
+    assert!(compiles(src), "typed event capture must compile");
+    assert!(
+        !diag_codes(src).iter().any(|c| c == "WS055"),
+        "annotated capture must not warn WS055"
+    );
+}
+
+#[test]
+fn await_custom_event_untyped_capture_warns_but_compiles() {
+    // Without an annotation the capture still works but warns WS055 (the wire
+    // defaults to float).
+    let src = "in go: exec\nvar x: int = 0\n\
+               on go { let foo = await CustomEvent(\"c\")\n  x = foo }";
+    assert!(compiles(src), "untyped event capture must still compile");
+    assert!(
+        diag_codes(src).iter().any(|c| c == "WS055"),
+        "untyped capture must warn WS055"
+    );
+}
+
+#[test]
+fn await_custom_event_tuple_positional_capture() {
+    // `let (p, t) = await CustomEvent("c")` captures data outputs positionally
+    // (p = DataOut1, t = DataOut2). Compiles; untyped -> WS055.
+    let src = "in go: exec\nvar a: int = 0\nvar b: int = 0\n\
+               on go { let (p, t) = await CustomEvent(\"c\")\n  a = p\n  b = t }";
+    assert!(compiles(src), "tuple event capture must compile");
+    assert!(
+        diag_codes(src).iter().any(|c| c == "WS055"),
+        "untyped tuple capture must warn WS055"
+    );
+}

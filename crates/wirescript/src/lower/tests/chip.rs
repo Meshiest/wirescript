@@ -1325,6 +1325,36 @@ fn spawn_prefab_body_local_let_reaches_prefab_property() {
 }
 
 #[test]
+fn spawn_prefab_destroy_all_wires_a_local_exec_signal() {
+    // A local `let sig: exec` fed to `destroyAll =` must WIRE into the spawner's
+    // DestroyAll pin. The signal is parser-desugared to `= 0`; if that `0` leaks
+    // into the const env, `destroyAll = sig` folds the name to `0` and inlines it
+    // as a config property, emitting NO wire (the spawned prefabs are then never
+    // destroyed).
+    use crate::ir::port_registry::WirePort;
+    let src = "in fire: exec\nin go: exec\nlet sig: exec\nvar made: int = 0\n\
+               on fire { emit sig }\n\
+               on go { let e = SpawnPrefab(prefab = $./foo.brz, destroyAll = sig)\n  made = made + 1 }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let spawner = find_gate(&r, gc::PREFAB_SPAWNER);
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == spawner && w.target.port == WirePort::DestroyAll),
+        "destroyAll = <local signal> must wire into the DestroyAll pin: {:?}",
+        r.module.wires
+    );
+    assert!(
+        !r.module.nodes[&spawner]
+            .properties
+            .contains_key(&crate::intern::intern(WirePort::DestroyAll.as_str())),
+        "DestroyAll must be wired, not baked as a constant property"
+    );
+}
+
+#[test]
 fn exec_named_arg_drives_chip_body_outside_exec_context() {
     // Outside exec contexts, exec chips take their trigger as an `exec =`
     // named arg: `let r = Init(TB, exec = s)` at top level. The body's push

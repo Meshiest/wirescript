@@ -1,5 +1,5 @@
 use std::{env, fs, path::Path, process};
-use wirescript::{resolve, typecheck::typecheck_with_inference, FsLoader, Severity};
+use wirescript::{diagnostics_only, CompileInput, FoldMode, Severity};
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -28,16 +28,21 @@ fn main() {
             }
         };
 
-        let resolved = resolve(&source, &file_str, &FsLoader);
-        // Match compile/LSP/wasm: run the two-phase inference so custom-event
-        // slot types are inferred from in-unit senders and WS042 is emitted for
-        // slots that stay uninferable.
-        let tc = typecheck_with_inference(&resolved.ast, &file_str).0;
-
-        let diags: Vec<_> = resolved
-            .diagnostics
+        // Run the full front-end through lowering (not just typecheck): the
+        // lowering stage is what emits the `WSP001` "_Unsupported placeholder"
+        // warnings for a construct that type-checks clean but has no real lowering
+        // (e.g. destructuring a payload the awaited signal doesn't carry). A
+        // typecheck-only check reports "no errors" for those and lets a silent
+        // miscompile through. `diagnostics_only` mirrors `compile` up to (not
+        // including) emit, on the big compile stack.
+        let all = diagnostics_only(CompileInput {
+            source: &source,
+            file: &file_str,
+            module_name: None,
+            fold_mode: FoldMode::Auto,
+        });
+        let diags: Vec<_> = all
             .iter()
-            .chain(tc.diagnostics.iter())
             .filter(|d| d.range.file.as_ref() == file_str || d.range.file.is_empty())
             .collect();
 

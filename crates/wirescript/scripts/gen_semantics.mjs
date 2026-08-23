@@ -14,7 +14,7 @@ import { dirname, join } from 'path';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(SCRIPT_DIR, '..', 'data', 'gate_semantics.json');
 
-export const EXPECTED_PROBE_VERSION = 4;
+export const EXPECTED_PROBE_VERSION = 5;
 
 const GATE_CLASS = {
   CompareEqual: 'BrickComponentType_WireGraph_Expr_CompareEqual',

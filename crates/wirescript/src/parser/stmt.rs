@@ -512,7 +512,9 @@ impl<'a> Parser<'a> {
         let end = exec_expr.range().end;
         Stmt::Await(AwaitStmt {
             binding,
+            binding_type: None,
             destructure: None,
+            tuple_destructure: None,
             value_expr,
             exec_expr,
             no_fold: false,

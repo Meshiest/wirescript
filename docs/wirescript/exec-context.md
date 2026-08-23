@@ -340,7 +340,7 @@ per-gate cost.
 ```wirescript ignore
 var index = 0
 let loop: exec
-emit loop
+buffer emit loop
 await loop
 if index < arr.length() {
   BroadcastChatMessage(arr[index])
@@ -348,6 +348,14 @@ if index < arr.length() {
   buffer emit loop      // next iteration, one tick later
 }
 ```
+
+**The entry kick must be buffered too, not just the back edge.** `emit` fires
+immediately, while the `await` on the next line is what ARMS the resume, so a
+plain `emit loop` is gone before anything is listening: the chain parks at the
+await, neither branch is ever reached, and no completion signal is emitted.
+There is no diagnostic, and the statements before the await still run, so it
+reads as half-working rather than stopped. `buffer emit` lands on the following
+tick, after the await has armed.
 
 ### Sleep / SleepTicks
 

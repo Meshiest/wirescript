@@ -38,6 +38,8 @@ mod resolve;
 pub(crate) use resolve::*;
 mod labels;
 use labels::*;
+mod parked_kick;
+use parked_kick::*;
 mod config;
 use config::*;
 mod custom_events;
@@ -89,6 +91,9 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // different call paths below (top-level, nested in chip/anon-chip bodies,
     // statement-level).
     check_label_exprs(&mut ctx, &script.decls);
+    // A plain `emit X` that a same-chain `await X` follows parks the chain forever
+    // (the emit fires before the await arms): WS053, suggesting `buffer emit X`.
+    check_parked_kicks(&mut ctx, &script.decls);
     // Module-level output frame: the declared types of every ANNOTATED
     // top-level `out o: T`, so a body statement targeting it (`emit o = v`)
     // can be checked against `T` via `current_output_ty`. An unannotated

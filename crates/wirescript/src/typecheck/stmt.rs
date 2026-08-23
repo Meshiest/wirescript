@@ -428,21 +428,77 @@ fn check_stmt_inner(
             } else {
                 exec_ty
             };
+            // Awaiting a CustomEvent/GlobalCustomEvent captures its DATA outputs
+            // (`DataOut1..8`): a single `let x = await CustomEvent("c")` binds `x`
+            // to the first data output, and a tuple `let (p, t) = ...` binds them
+            // POSITIONALLY (p = DataOut1, t = DataOut2). The gate's data ports are
+            // `any` in-game unless typed, so an untyped capture defaults to a float
+            // wire and mis-delivers non-float data; the single-binding value is
+            // typed by the `let x: T` annotation, and an untyped one is a WS055
+            // nudge. `let v = await x on CustomEvent(...)` (a value IS captured) is
+            // the plain trigger form and is unaffected.
+            let event_capture = is_custom_event_call(&a.exec_expr) && a.value_expr.is_none();
+
             if let Some(ref binding) = a.binding {
+                let ty = if event_capture {
+                    match &a.binding_type {
+                        Some(te) => resolve_type_expr(ctx, te),
+                        None => {
+                            ctx.warn(
+                                "WS055",
+                                format!(
+                                    "the awaited event's data type can't be inferred here - annotate it \
+                                     (`let {binding}: T = await CustomEvent(\"...\")`); an untyped capture \
+                                     wires as a float and mis-delivers non-float data"
+                                ),
+                                a.range.clone(),
+                            );
+                            Type::Any
+                        }
+                    }
+                } else {
+                    val_ty
+                };
                 ctx.scope.declare(
                     binding,
                     SymbolInfo {
                         kind: SymbolKind::LetBinding,
                         name: binding.clone(),
-                        ty: val_ty,
+                        ty,
                         decl_range: a.range.clone(),
                         signature: None,
                         event_data: None,
                     },
                 );
             }
+            // `let (p, t) = await CustomEvent(...)`: positional data-output capture.
+            // No per-field annotation surface, so each is `any` with one WS055 nudge.
+            if let Some(ref names) = a.tuple_destructure {
+                if event_capture {
+                    ctx.warn(
+                        "WS055",
+                        "tuple-captured event data is untyped (each field wires as a float) - capture typed \
+                         values one at a time (`let p: T = await CustomEvent(\"...\")`), or receive them with \
+                         a handler (`on CustomEvent(\"...\") -> (p: T, ...)`)",
+                        a.range.clone(),
+                    );
+                }
+                for local in names {
+                    ctx.scope.declare(
+                        local,
+                        SymbolInfo {
+                            kind: SymbolKind::LetBinding,
+                            name: local.clone(),
+                            ty: Type::Any,
+                            decl_range: a.range.clone(),
+                            signature: None,
+                            event_data: None,
+                        },
+                    );
+                }
+            }
             // `let { a, b } = await sig`: type each destructured local from the
-            // signal's recorded payload record (Any when unknown).
+            // signal's recorded ferried-payload record (Any when unknown).
             if let Some(ref fields) = a.destructure {
                 let payload_ty = match &a.exec_expr {
                     Expr::Ident { name, .. } => ctx.signal_payload_types.get(name).cloned(),
@@ -766,4 +822,15 @@ fn describe_cond(e: &Expr) -> String {
         Expr::FieldAccess { obj, field, .. } => format!("{}.{field}", describe_cond(obj)),
         _ => "the condition".to_string(),
     }
+}
+
+/// True when `e` is a `CustomEvent("name")` / `GlobalCustomEvent("name")`
+/// event-trigger call: the receiver side of a custom-event channel, which
+/// exposes `DataOut1..8`. Used to type an `await CustomEvent(...)` data capture.
+fn is_custom_event_call(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Call { callee, .. }
+            if matches!(callee.as_ref(), Expr::Ident { name, .. } if name == "CustomEvent" || name == "GlobalCustomEvent")
+    )
 }

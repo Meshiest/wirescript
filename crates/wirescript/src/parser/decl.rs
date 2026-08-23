@@ -497,7 +497,7 @@ impl<'a> Parser<'a> {
             }
             let paren_end = self.expect(TokenKind::RParen, None).end;
             let binding = LetBinding::Tuple {
-                names,
+                names: names.clone(),
                 rest,
                 range: self.make_range(paren_start, paren_end),
             };
@@ -507,6 +507,17 @@ impl<'a> Parser<'a> {
                 None
             };
             self.expect(TokenKind::Op, Some("="));
+            // `let (a, b) = await CustomEvent("c")`: POSITIONAL capture of the
+            // event's data outputs (a = DataOut1, b = DataOut2).
+            if self.check(TokenKind::Kw, Some("await")) {
+                let await_start = self.advance().start;
+                if let Stmt::Await(mut a) = self.parse_await_inner(await_start, None) {
+                    a.tuple_destructure = Some(names);
+                    a.range = self.make_range(start, a.range.end);
+                    self.eat_stmt_end();
+                    return TopDecl::Await(a);
+                }
+            }
             let value = self.parse_expr();
             let end = value.range().end;
             self.eat_stmt_end();
@@ -600,11 +611,14 @@ impl<'a> Parser<'a> {
                 range: self.make_range(start, end),
             });
         }
-        // `let name = await expr [on trigger]`
+        // `let name[: T] = await expr [on trigger]`: carry the `: T` annotation
+        // onto the await so `let x: int = await CustomEvent("c")` can type the
+        // captured event-data value.
         if self.check(TokenKind::Kw, Some("await")) {
             let await_start = self.advance().start;
             if let Stmt::Await(mut a) = self.parse_await_inner(await_start, None) {
                 a.binding = Some(name);
+                a.binding_type = typ;
                 a.range = self.make_range(start, a.range.end);
                 self.eat_stmt_end();
                 return TopDecl::Await(a);

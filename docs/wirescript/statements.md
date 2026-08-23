@@ -216,6 +216,14 @@ chip Outer(t: exec) {
 - String interpolation (`"a${1 + 1}b"`) and the certified string/math builtin
   methods (`.ToUpper()`, `.Trim()`, `.Length()`, `sin`, `sqrt`, ...), when
   every operand is constant.
+- **`abs`, `min`, `max`, `clamp` fold on FLOAT constants but not INT ones.**
+  `min(3.0, 7.0)` folds; `min(3, 7)` emits a gate. This is a coverage gap, not a
+  language rule: the certified fold pass only folds a gate on an input shape the
+  in-game probe actually recorded, and these four were only ever probed with
+  float inputs (unlike `+`/`-`/`*`, which were probed with ints and fold). Until
+  the probe is rerun with int inputs, either use a float literal (`max(n, 0.0)`)
+  where a float result is fine, or write the constant directly. A single
+  non-folding op strands everything downstream of it.
 - The `Vec`/`Rotation`/`Color` constructors.
 - Array and map literals, indexing (`arr[i]`, `m[k]`), and `.length()`.
 - Record literals and field access (`.field`), including nested records.
@@ -1415,12 +1423,28 @@ await signal                         // resume when signal fires
 let val = await signal               // capture the signal's ferried payload
 let { a, b } = await signal          // destructure a record payload
 let val = await value on trigger     // capture value when trigger fires
+let n: int = await CustomEvent("c")  // wait for an event, capture its data
 await a || b                         // race -- first signal wins
 await Sleep(_, delay = 1.0)          // sleep 1 second using _ armed flag
 await SleepTicks(_, delay = 5)       // sleep 5 ticks
 ```
 
 Each `await` creates an armed flag (`static var bool`) that guards the continuation. The continuation only fires once per arming, preventing repeated triggers.
+
+### Awaiting a Custom Event
+
+`await CustomEvent("chan")` (or `GlobalCustomEvent`) suspends until a matching `SendCustomEvent` fires, and a binding captures its data:
+
+```wirescript
+in go: exec
+var last: int = 0
+on go {
+  let amount: int = await CustomEvent("dmg")   // resume + capture DataOut1
+  last = amount
+}
+```
+
+Annotate the binding's type (`let amount: int = ...`): the event's data ports are untyped in-game, so the annotation is what makes the wire carry the right variant. Without it the value defaults to a float and mis-delivers non-float data ([`WS055`](diagnostics.md)). A **tuple** `let (p, t) = await CustomEvent("c")` captures the data outputs positionally (`p` = DataOut1, `t` = DataOut2) but has no place to annotate them, so prefer one typed binding per value, or the handler form `on CustomEvent("c") -> (p: int, t: float) { ... }` when you want several typed at once. A bare `await CustomEvent("c")` with no binding just waits for the event.
 
 ### The `_` Placeholder
 

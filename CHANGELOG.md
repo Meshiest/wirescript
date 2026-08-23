@@ -6,6 +6,10 @@
 - A `mod` can take a trailing `...rest` variadic parameter that captures every argument past its fixed params. Each call site binds `rest` to a compile-time tuple of the extra args, and a `...rest` in the body splats them onward, so `mod broadcast(name: const string, ...rest) { SendGlobalCustomEvent(name, ...rest) }` forwards any number of values. A call must still supply the fixed params (fewer is `WS022`). Only `mod`s may be variadic; a `...rest` on a `chip` is `WS052`.
 - Compile progress now accounts for embedded prefabs: the reported step total grows by one per `$./file` reference and inline `$```...``` ` block, so the editor indicator advances through them instead of appearing to stall on the final phase.
 - The editor's compile status indicator no longer lingers after a build finishes; it is shown only while a compile is actually running.
+- `SpawnPrefab(..., destroyAll = sig)` fed a local `let sig: exec` signal now wires the signal into the spawner's destroy pin; it used to silently emit no wire (the name folded to the placeholder `0` an `exec` let carries), so only an input port reached the pin and spawned prefabs were never destroyed.
+- `wirescript-check` now runs through lowering, so it surfaces the same `_Unsupported`-placeholder warnings `compile` emits (a file that lowers to a placeholder no longer reports "no errors").
+- New `WS053`: a plain `emit X` in the same chain as a following `await X` warns that the kick fires before the await arms (parking the chain forever); use `buffer emit X`.
+- `await CustomEvent("c")` can now capture the event's data inline: `let n: int = await CustomEvent("c")` suspends until the event fires and binds the first data output (typed by the annotation). A tuple `let (p, t) = ...` captures data outputs positionally. Annotate the type or the wire defaults to a float (`WS055` warns when it can't be determined). Bare `await CustomEvent("c")` (no binding) just waits.
 
 ## 1.5.0
 

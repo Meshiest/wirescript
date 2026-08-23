@@ -200,8 +200,8 @@
                 }
             }
         }
-        assert_eq!(replayed + refused + blank, 405, "table case count changed — re-audit");
-        assert_eq!(replayed, 371); // +45 v4: 30 extendedMath + 9 bitwise + 6 rounding
+        assert_eq!(replayed + refused + blank, 413, "table case count changed - re-audit");
+        assert_eq!(replayed, 379); // +45 v4: 30 extendedMath + 9 bitwise + 6 rounding; +8 v5: int abs/sign*3/negate/min/max/clamp (float output)
         assert_eq!(refused, 28, "3 math-with-string + 11 FormatText + 4 multibyte + 10 deferredOps");
         assert_eq!(blank, 6, "MakeRotation/MakeQuaternion/MakeColor/MakeColorSRGB/MakeColorHex/\
             InvertRotation — blank==blank proves nothing, see BLANK_RENDER_ONLY");

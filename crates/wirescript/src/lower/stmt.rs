@@ -1397,6 +1397,30 @@ fn write_signal_payload(ctx: &mut LowerCtx, sig: &str, value_expr: &Expr) {
     chain_var_set(ctx, store, value_port, ty);
 }
 
+/// True when `node` is a CustomEvent/GlobalCustomEvent receiver gate: the ones
+/// that expose `DataOut1..8` for an `await CustomEvent(...)` data capture.
+fn is_event_data_gate(ctx: &LowerCtx, node: NodeId) -> bool {
+    ctx.builder.module.nodes.get(&node).is_some_and(|n| {
+        n.gate_class == gc::PSEUDO_CUSTOM_EVENT || n.gate_class == gc::PSEUDO_CUSTOM_EVENT_GLOBAL
+    })
+}
+
+/// Set the declared type of `node`'s output `port` (used to type an awaited
+/// event's captured `DataOut` port from the `let x: T` annotation, so the game's
+/// wire variant matches instead of defaulting to float).
+fn retype_output_port(ctx: &mut LowerCtx, node: NodeId, port: WirePort, ty: Type) {
+    if let Some(n) = ctx.builder.module.nodes.get_mut(&node) {
+        let io = std::sync::Arc::make_mut(&mut n.ports);
+        let name = crate::intern::intern(port.as_str());
+        for p in io.outputs.iter_mut() {
+            if p.name == name {
+                p.ty = ty;
+                return;
+            }
+        }
+    }
+}
+
 pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     // 1. Create a static bool var for the armed flag (initially false)
     let armed_id = ctx.add_gate(AddNodeOpts {
@@ -1652,6 +1676,14 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             chain_var_get(ctx, store, ty)
         } else if let Some(ref val_expr) = a.value_expr {
             lower_expr(ctx, val_expr)
+        } else if is_event_data_gate(ctx, exec_port.node_id) {
+            // `let foo[: T] = await CustomEvent("c")`: capture the event's first
+            // data output (`DataOut1`). Retype that port to the annotation so the
+            // game delivers the right variant (an unset data port wires as float).
+            if let Some(te) = &a.binding_type {
+                retype_output_port(ctx, exec_port.node_id, WirePort::DataOut1, type_of_type_expr(te));
+            }
+            exec_port.node_id.port(WirePort::DataOut1)
         } else {
             exec_port
         };
@@ -1661,8 +1693,28 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         );
     }
 
-    // 9. `let { a, b } = await sig`: read each destructured payload store on
-    // the resumed chain and bind the locals.
+    // 9a. `let (p, t) = await CustomEvent("c")`: capture the event's data outputs
+    // POSITIONALLY (p = DataOut1, t = DataOut2). Untyped (typecheck warns WS055).
+    if let Some(ref names) = a.tuple_destructure {
+        if is_event_data_gate(ctx, exec_port.node_id) {
+            const DATA: [WirePort; 8] = [
+                WirePort::DataOut1, WirePort::DataOut2, WirePort::DataOut3, WirePort::DataOut4,
+                WirePort::DataOut5, WirePort::DataOut6, WirePort::DataOut7, WirePort::DataOut8,
+            ];
+            for (i, local) in names.iter().enumerate() {
+                if let Some(&port) = DATA.get(i) {
+                    ctx.scope.insert(
+                        local,
+                        Binding::Local(LocalRecord { port: exec_port.node_id.port(port) }),
+                    );
+                }
+            }
+        }
+        return;
+    }
+
+    // 9b. `let { a, b } = await sig`: read each destructured payload store on
+    // the resumed chain and bind the locals (a local signal's ferried payload).
     if let Some(ref fields) = a.destructure {
         for (field, local) in fields {
             let store = signal_name_of(&a.exec_expr)
