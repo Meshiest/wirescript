@@ -876,6 +876,20 @@ impl<'a> LowerCtx<'a> {
         });
     }
 
+    pub(super) fn warn_code(
+        &mut self,
+        code: &'static str,
+        msg: impl Into<String>,
+        range: &SourceRange,
+    ) {
+        self.diagnostics.push(Diagnostic {
+            severity: crate::diagnostic::Severity::Warning,
+            code: code.into(),
+            message: msg.into(),
+            range: range.clone(),
+        });
+    }
+
     pub(super) fn error(
         &mut self,
         code: &'static str,

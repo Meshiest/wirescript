@@ -1,15 +1,19 @@
-//! Cycle checking.
+//! Post-lowering graph checks: cycle barriers and dangling exec triggers.
 //!
 //! Every cycle in the wire graph must pass through a tick-crossing
 //! barrier (BufferTicks/BufferSeconds/QueueTicks/QueueSeconds/EdgeDetector).
 //! We run Tarjan's SCC and for every non-trivial
 //! component verify a barrier is present.
+//!
+//! Separately, an exec gate whose `Exec` trigger input has no incoming wire
+//! never runs, so it is a dropped statement (WS058). This runs on the folded
+//! graph, so const-evaluated bodies are already gone and cannot false-positive.
 
 use crate::collections::{HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
 use crate::ir::port_registry::WirePort;
-use crate::ir::{Module, Node, NodeId};
+use crate::ir::{Module, Node, NodeId, NodeKind};
 
 const BARRIER_CLASSES: &[&str] = &[
     "BrickComponentType_WireGraphPseudo_BufferTicks",
@@ -38,6 +42,7 @@ pub fn analyze_cycles(root: &Module) -> CycleResult {
 }
 
 fn analyze_module(m: &Module, out: &mut CycleResult) {
+    check_dangling_exec(m, &mut out.diagnostics);
     let adj = build_adjacency(m);
     for scc in tarjan(&adj) {
         if scc.len() == 1 && !has_self_loop(&adj, &scc[0]) {
@@ -53,6 +58,43 @@ fn analyze_module(m: &Module, out: &mut CycleResult) {
             out.diagnostics.push(emit_cycle_diagnostic(m, &adj, &scc));
         }
         out.strongly_connected.push(scc);
+    }
+}
+
+/// Warn (WS058) for any exec gate whose `Exec` trigger input has no incoming
+/// wire. Such a gate never fires, so its statement was lowered but left off
+/// every exec chain - a mod/chip body reached from a pure position drops this
+/// way. Only `Gate` nodes are checked: events are triggered by the game, input
+/// rerouters are external entry points, and chips/outputs are containers.
+/// Cross-module exec always routes through a rerouter, so a gate's `Exec` wire
+/// is always in the gate's own module - a per-module scan suffices.
+fn check_dangling_exec(m: &Module, out: &mut Vec<Diagnostic>) {
+    let mut wired: HashSet<(NodeId, WirePort)> = HashSet::default();
+    for w in &m.wires {
+        if w.source.port == WirePort::Layout || w.target.port == WirePort::Layout {
+            continue;
+        }
+        wired.insert((w.target.node_id, w.target.port));
+    }
+    for node in m.nodes.values() {
+        if node.kind != NodeKind::Gate {
+            continue;
+        }
+        let has_exec_in = node
+            .ports
+            .inputs
+            .iter()
+            .any(|p| p.name == *crate::intern::sym::EXEC);
+        if has_exec_in && !wired.contains(&(node.id, WirePort::Exec)) {
+            out.push(Diagnostic::warning(
+                "WS058",
+                "an exec gate here has no trigger wired into its `Exec` input, so it never \
+                 runs. A mod or chip body reached from a pure position (`let x = f()`) drops \
+                 this way; call it in an exec context (an `on` handler) or pass `exec = <trigger>`."
+                    .to_string(),
+                node.source_range.clone(),
+            ));
+        }
     }
 }
 

@@ -497,6 +497,20 @@ fn assign_record_fields(
 }
 
 pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
+    // An assignment is an exec statement, so with no exec chain to run on it is
+    // dropped: a mod/chip body used as a value (`let x = f()`), or a top-level
+    // assignment outside any handler. `Assign` never reaches here through the
+    // pure-chip declaration path, so a missing exec chain always means a drop.
+    if ctx.current_exec.is_none() {
+        ctx.warn_code(
+            "WS058",
+            "this assignment has no exec chain to run on, so it never happens. It sits in a \
+             pure position - a mod or chip body used as a value (`let x = f()`), or a \
+             statement outside any `on` handler. Run it in an exec context, or pass \
+             `exec = <trigger>` to the call.",
+            &s.range,
+        );
+    }
     if let Expr::IndexAccess { obj, index, .. } = &s.target {
         // Map subscript `m[k] = v` desugars to a MapVar_Set (the same gate
         // `m.set(k, v)` lowers to) — mirrors the read desugar in

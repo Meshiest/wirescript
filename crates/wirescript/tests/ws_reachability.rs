@@ -441,6 +441,13 @@ fn ws057_is_reachable() {
     assert!(diags(src).contains(&"WS057".to_string()));
 }
 
+// WS058 - an exec statement (an assignment) dropped in a pure position [lower]
+#[test]
+fn ws058_is_reachable() {
+    let src = "static var x: int = 0\nmod bump() { x = x + 1 }\nlet dummy = bump()\n";
+    assert!(diags(src).contains(&"WS058".to_string()));
+}
+
 // WSP001 - lexer error: unexpected character [parse/lexer]
 #[test]
 fn wsp001_is_reachable() {

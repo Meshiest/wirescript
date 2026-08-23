@@ -24,6 +24,7 @@
 - A statement written after a nested `on` handler inside a handler body stays on the outer exec chain rather than binding to the nested handler's trigger.
 - New `WS057`: `emit X` is an error when `X` is not an `out` port or a `let ...: exec` signal (an input port, a `var`, or an `out`/signal declared outside an enclosing named `chip`).
 - New `WS056`: `let v = await sig` on a signal that carries no payload is an error. Emit a value (`emit sig = ...`) or capture one with `await <expr> on sig`.
+- New `WS058` (warning): an exec statement that never runs is flagged
 
 ## 1.5.0
 
