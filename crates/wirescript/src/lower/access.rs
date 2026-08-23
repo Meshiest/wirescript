@@ -195,14 +195,20 @@ pub(super) fn lower_field_access(
         return port;
     }
 
-    // `pts[i].field` — one field of a record array's element. The chain resolve
-    // above can't see through the index subscript, so read the field's parallel
-    // array here before the swizzle / SplitVector fallback claims `.x`/`.y`.
-    if let Some(port) = lower_record_array_field_index(ctx, obj, field, range) {
+    // `pts[i].f1.f2…` — a field (possibly nested) of a record array's element.
+    // The chain resolve above can't see through the index subscript, so read
+    // the field's parallel array here before the swizzle / SplitVector fallback
+    // claims `.x`/`.y` (and before it claims a genuine `.a`/`.b`/`.r`/`.g` record
+    // field as a colour component). Uses the whole expr `e`, so a nested path
+    // like `pts[i].inner.a` resolves rather than degrading to a placeholder.
+    if let Some(port) = lower_record_array_field_path(ctx, e, range) {
         return port;
     }
-    // `m[k].field` / `m.get(k).field` — one field of a record map's value.
-    if let Some(port) = lower_record_map_field_at(ctx, obj, field, range) {
+    // `m[k].f1.f2…` / `m.get(k).f1.f2…` — a field (possibly nested) of a record
+    // map's value. Uses the whole expr `e`, so a nested path resolves rather than
+    // degrading to a placeholder (and before the swizzle fallback claims a
+    // genuine `.a`/`.b`/`.x`/`.y` record field as a colour/vector component).
+    if let Some(port) = lower_record_map_field_path(ctx, e, range) {
         return port;
     }
 
@@ -835,16 +841,6 @@ pub(super) fn resolve_record_map(
     }
 }
 
-fn record_map_field(
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    field: &str,
-) -> Option<VarRecord> {
-    match fields.get(&crate::intern::intern(field)) {
-        Some(Binding::Var(v)) if v.storage == VarStorage::Map => Some(v.clone()),
-        _ => None,
-    }
-}
-
 /// `m[key]` / `m.get(key)` — recover the map base expr and the key expr from
 /// either spelling, so both route through the same record-map read/field paths.
 fn record_map_key_source(expr: &Expr) -> Option<(&Expr, &Expr)> {
@@ -862,40 +858,6 @@ fn record_map_key_source(expr: &Expr) -> Option<(&Expr, &Expr)> {
         }
         _ => None,
     }
-}
-
-fn map_get_at(
-    ctx: &mut LowerCtx,
-    mv: &VarRecord,
-    key: &Expr,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    ctx.current_exec?;
-    let (key_ty, val_ty) = map_kv(mv);
-    let key_port = lower_expr(ctx, key);
-    Some(map_exec_op(
-        ctx,
-        range,
-        mv.node_id.port(WirePort::MapVarRef),
-        gc::MAP_GET,
-        vec![(WirePort::Key, key_ty, key_port)],
-        vec![(WirePort::Value, val_ty), (WirePort::BFound, Type::Bool)],
-        WirePort::Value,
-    ))
-}
-
-/// `pts.field` — read one field of a record map's value by `m.get(k).field` or
-/// `m[k].field`. `None` if `obj` isn't a record-map key access.
-pub(super) fn lower_record_map_field_at(
-    ctx: &mut LowerCtx,
-    obj: &Expr,
-    field: &str,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    let (base, key) = record_map_key_source(obj)?;
-    let fields = resolve_record_map(ctx, base)?;
-    let mv = record_map_field(&fields, field)?;
-    map_get_at(ctx, &mv, key, range)
 }
 
 /// `m.get(k)` / `m[k]` as a record VALUE — read every parallel field map at the
@@ -1369,56 +1331,73 @@ pub(super) fn resolve_record_array(
     }
 }
 
-/// `arr[index]` for an already-resolved array var — the element `Value` port.
-/// Used by the record-array `pts[i].field` read. `None` in pure context.
-fn array_get_at(
-    ctx: &mut LowerCtx,
-    arr: &VarRecord,
-    index: &Expr,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    ctx.current_exec?;
-    let index_port = lower_expr(ctx, index);
-    Some(array_exec_op(
-        ctx,
-        range,
-        arr.node_id.port(WirePort::ArrayVarRef),
-        gc::ARRAY_GET,
-        vec![(WirePort::Index, Type::Int, index_port)],
-        vec![
-            (WirePort::Value, arr.inner_type.clone()),
-            (WirePort::BOutOfBounds, Type::Bool),
-        ],
-        WirePort::Value,
-    ))
+/// Decompose `arr[i].f1.f2…` into the array base, the index expr, and the
+/// trailing field path (source order). Both named fields (`.inner`) and tuple
+/// picks (`.0`) contribute a path segment, so a record whose field is itself a
+/// tuple decomposes the same way. `None` unless `e` is field/tuple accesses
+/// wrapping an index access.
+fn split_record_array_access(e: &Expr) -> Option<(&Expr, &Expr, Vec<String>)> {
+    let mut path: Vec<String> = Vec::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::FieldAccess { obj, field, .. } => {
+                path.push(field.clone());
+                cur = obj;
+            }
+            Expr::TuplePick { obj, index, .. } => {
+                path.push(index.to_string());
+                cur = obj;
+            }
+            Expr::IndexAccess { obj, index, .. } => {
+                path.reverse();
+                return Some((obj, index, path));
+            }
+            _ => return None,
+        }
+    }
 }
 
-/// `arr[index] = value` for an already-resolved array var. Used by the
-/// record-array `pts[i].field = v` write. No-op in pure context.
-fn array_set_at(
-    ctx: &mut LowerCtx,
-    arr: &VarRecord,
-    index: &Expr,
-    value: &Expr,
-    range: &SourceRange,
-) {
-    if ctx.current_exec.is_none() {
-        return;
+/// Walk a record field map along `path`, returning the binding the LAST segment
+/// names. Every earlier segment must name a nested record to descend through;
+/// a non-record earlier segment (or any missing name) yields `None`. `path`
+/// must be non-empty.
+fn navigate_record_fields<'a>(
+    fields: &'a HashMap<crate::intern::Sym, Binding>,
+    path: &[String],
+) -> Option<&'a Binding> {
+    let mut cur = fields;
+    for (i, seg) in path.iter().enumerate() {
+        let b = cur.get(&crate::intern::intern(seg))?;
+        if i + 1 == path.len() {
+            return Some(b);
+        }
+        match b {
+            Binding::Record(sub) => cur = sub,
+            _ => return None,
+        }
     }
-    let index_port = lower_expr(ctx, index);
-    let value_port = lower_expr(ctx, value);
-    array_exec_op(
-        ctx,
-        range,
-        arr.node_id.port(WirePort::ArrayVarRef),
-        gc::ARRAY_SET_AT_INDEX,
-        vec![
-            (WirePort::Index, Type::Int, index_port),
-            (WirePort::Value, arr.inner_type.clone(), value_port),
-        ],
-        vec![],
-        WirePort::ExecOut,
-    );
+    None
+}
+
+/// The first leaf `Local` port of a lowered record value, in name-sorted order,
+/// descending through nested records. A record auto-unwraps to this port when
+/// used where a scalar is expected. `None` for an empty record.
+fn first_leaf_port(rec: &HashMap<crate::intern::Sym, Binding>) -> Option<PortRef> {
+    let mut names: Vec<crate::intern::Sym> = rec.keys().copied().collect();
+    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    for k in names {
+        match rec.get(&k) {
+            Some(Binding::Local(l)) => return Some(l.port),
+            Some(Binding::Record(sub)) => {
+                if let Some(p) = first_leaf_port(sub) {
+                    return Some(p);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The array var backing one field of a record array (`pts[i].field` /
@@ -1434,43 +1413,268 @@ fn record_array_field(
     }
 }
 
-/// `pts[i].field` — read one field of a record array's element by indexing that
-/// field's parallel array. `None` if `obj` isn't a record-array index or the
-/// field isn't a scalar parallel array.
-pub(super) fn lower_record_array_field_index(
+/// `pts[i].f1.f2…` — read a field of a record array's element by indexing the
+/// parallel arrays. A path landing on a SCALAR leaf yields that element's
+/// `Value` port; a path landing on a NESTED RECORD reads every leaf of that
+/// sub-record at the shared index into a `Binding::Record` value (stashed in
+/// `pending_inline_record` for a record consumer) and returns its first leaf
+/// port so a scalar consumer still auto-unwraps. `None` unless `e` is a
+/// record-array field path that resolves, with an exec context to read on.
+pub(super) fn lower_record_array_field_path(
     ctx: &mut LowerCtx,
-    obj: &Expr,
-    field: &str,
+    e: &Expr,
     range: &SourceRange,
 ) -> Option<PortRef> {
-    let Expr::IndexAccess { obj: base, index, .. } = obj else {
+    let (base, index, path) = split_record_array_access(e)?;
+    if path.is_empty() {
         return None;
-    };
+    }
     let fields = resolve_record_array(ctx, base)?;
-    let arr = record_array_field(&fields, field)?;
-    array_get_at(ctx, &arr, index, range)
+    let binding = navigate_record_fields(&fields, &path)?.clone();
+    ctx.current_exec?;
+    let index_port = lower_expr(ctx, index);
+    match binding {
+        Binding::Var(v) if v.storage == VarStorage::Array => Some(array_exec_op(
+            ctx,
+            range,
+            v.node_id.port(WirePort::ArrayVarRef),
+            gc::ARRAY_GET,
+            vec![(WirePort::Index, Type::Int, index_port)],
+            vec![
+                (WirePort::Value, v.inner_type.clone()),
+                (WirePort::BOutOfBounds, Type::Bool),
+            ],
+            WirePort::Value,
+        )),
+        Binding::Record(sub) => {
+            let rec = record_array_index_read(ctx, &sub, index_port, range);
+            let primary = first_leaf_port(&rec)?;
+            ctx.pending_inline_record = Some(rec);
+            Some(primary)
+        }
+        _ => None,
+    }
 }
 
-/// `pts[i].field = v` — write one field of a record array's element.
-/// Returns `true` when it handled the assignment.
-pub(super) fn lower_record_array_field_index_set(
+/// `pts[i].inner` as a record VALUE — the nested-record analogue of
+/// [`lower_record_array_index_value`]. `None` unless `e` is a record-array field
+/// path landing on a nested record, with an exec context to read on.
+pub(super) fn lower_record_array_field_path_value(
     ctx: &mut LowerCtx,
-    obj: &Expr,
-    field: &str,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    let (base, index, path) = split_record_array_access(e)?;
+    if path.is_empty() {
+        return None;
+    }
+    let fields = resolve_record_array(ctx, base)?;
+    let Binding::Record(sub) = navigate_record_fields(&fields, &path)?.clone() else {
+        return None;
+    };
+    ctx.current_exec?;
+    let index_port = lower_expr(ctx, index);
+    Some(record_array_index_read(ctx, &sub, index_port, range))
+}
+
+/// `pts[i].f1.f2… = value` — write a field of a record array's element. A
+/// SCALAR-leaf path writes that field's parallel array; a NESTED-RECORD path
+/// fans the record value across the sub-record's parallel arrays at the shared
+/// index. Returns `true` when it handled the assignment.
+pub(super) fn lower_record_array_field_path_set(
+    ctx: &mut LowerCtx,
+    target: &Expr,
     value: &Expr,
     range: &SourceRange,
 ) -> bool {
-    let Expr::IndexAccess { obj: base, index, .. } = obj else {
+    let Some((base, index, path)) = split_record_array_access(target) else {
         return false;
     };
+    if path.is_empty() {
+        return false;
+    }
     let Some(fields) = resolve_record_array(ctx, base) else {
         return false;
     };
-    let Some(arr) = record_array_field(&fields, field) else {
+    let Some(binding) = navigate_record_fields(&fields, &path).cloned() else {
         return false;
     };
-    array_set_at(ctx, &arr, index, value, range);
-    true
+    if ctx.current_exec.is_none() {
+        return true;
+    }
+    match binding {
+        Binding::Var(v) if v.storage == VarStorage::Array => {
+            let index_port = lower_expr(ctx, index);
+            let value_port = lower_expr(ctx, value);
+            array_exec_op(
+                ctx,
+                range,
+                v.node_id.port(WirePort::ArrayVarRef),
+                gc::ARRAY_SET_AT_INDEX,
+                vec![
+                    (WirePort::Index, Type::Int, index_port),
+                    (WirePort::Value, v.inner_type.clone(), value_port),
+                ],
+                vec![],
+                WirePort::ExecOut,
+            );
+            true
+        }
+        Binding::Record(sub) => {
+            let Some(src) = crate::lower::stmt::value_record_fields(ctx, value) else {
+                return false;
+            };
+            let index_port = lower_expr(ctx, index);
+            record_array_set_walk(ctx, &sub, &src, index_port, range);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Decompose `m[k].f1.f2…` / `m.get(k).f1.f2…` into the map base, the key expr,
+/// and the trailing field path. The map counterpart of
+/// [`split_record_array_access`]; the base recognises BOTH key-access spellings
+/// via [`record_map_key_source`]. `None` unless field/tuple accesses wrap a map
+/// key access.
+fn split_record_map_access(e: &Expr) -> Option<(&Expr, &Expr, Vec<String>)> {
+    let mut path: Vec<String> = Vec::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::FieldAccess { obj, field, .. } => {
+                path.push(field.clone());
+                cur = obj;
+            }
+            Expr::TuplePick { obj, index, .. } => {
+                path.push(index.to_string());
+                cur = obj;
+            }
+            _ => {
+                let (base, key) = record_map_key_source(cur)?;
+                path.reverse();
+                return Some((base, key, path));
+            }
+        }
+    }
+}
+
+/// `m[k].f1.f2…` — read a field of a record map's value by keying the parallel
+/// maps. The map analogue of [`lower_record_array_field_path`]: a SCALAR-leaf
+/// path yields that field's `MapVar_Get` value; a NESTED-RECORD path reads every
+/// leaf of the sub-record at the shared key into a `Binding::Record` value
+/// (stashed in `pending_inline_record`) and returns its first leaf port.
+pub(super) fn lower_record_map_field_path(
+    ctx: &mut LowerCtx,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let (base, key, path) = split_record_map_access(e)?;
+    if path.is_empty() {
+        return None;
+    }
+    let fields = resolve_record_map(ctx, base)?;
+    let binding = navigate_record_fields(&fields, &path)?.clone();
+    ctx.current_exec?;
+    let key_port = lower_expr(ctx, key);
+    match binding {
+        Binding::Var(v) if v.storage == VarStorage::Map => {
+            let (key_ty, val_ty) = map_kv(&v);
+            Some(map_exec_op(
+                ctx,
+                range,
+                v.node_id.port(WirePort::MapVarRef),
+                gc::MAP_GET,
+                vec![(WirePort::Key, key_ty, key_port)],
+                vec![(WirePort::Value, val_ty), (WirePort::BFound, Type::Bool)],
+                WirePort::Value,
+            ))
+        }
+        Binding::Record(sub) => {
+            let rec = record_map_key_read(ctx, &sub, key_port, range);
+            let primary = first_leaf_port(&rec)?;
+            ctx.pending_inline_record = Some(rec);
+            Some(primary)
+        }
+        _ => None,
+    }
+}
+
+/// `m[k].inner` as a record VALUE — the nested-record analogue of
+/// [`lower_record_map_key_value`]. `None` unless `e` is a record-map field path
+/// landing on a nested record, with an exec context to read on.
+pub(super) fn lower_record_map_field_path_value(
+    ctx: &mut LowerCtx,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    let (base, key, path) = split_record_map_access(e)?;
+    if path.is_empty() {
+        return None;
+    }
+    let fields = resolve_record_map(ctx, base)?;
+    let Binding::Record(sub) = navigate_record_fields(&fields, &path)?.clone() else {
+        return None;
+    };
+    ctx.current_exec?;
+    let key_port = lower_expr(ctx, key);
+    Some(record_map_key_read(ctx, &sub, key_port, range))
+}
+
+/// `m[k].f1.f2… = value` — write a field of a record map's value. A SCALAR-leaf
+/// path writes that field's parallel map; a NESTED-RECORD path fans the record
+/// value across the sub-record's parallel maps at the shared key. Returns `true`
+/// when it handled the assignment.
+pub(super) fn lower_record_map_field_path_set(
+    ctx: &mut LowerCtx,
+    target: &Expr,
+    value: &Expr,
+    range: &SourceRange,
+) -> bool {
+    let Some((base, key, path)) = split_record_map_access(target) else {
+        return false;
+    };
+    if path.is_empty() {
+        return false;
+    }
+    let Some(fields) = resolve_record_map(ctx, base) else {
+        return false;
+    };
+    let Some(binding) = navigate_record_fields(&fields, &path).cloned() else {
+        return false;
+    };
+    if ctx.current_exec.is_none() {
+        return true;
+    }
+    match binding {
+        Binding::Var(v) if v.storage == VarStorage::Map => {
+            let (key_ty, val_ty) = map_kv(&v);
+            let key_port = lower_expr(ctx, key);
+            let value_port = lower_expr(ctx, value);
+            map_exec_op(
+                ctx,
+                range,
+                v.node_id.port(WirePort::MapVarRef),
+                gc::MAP_SET,
+                vec![
+                    (WirePort::Key, key_ty, key_port),
+                    (WirePort::Value, val_ty, value_port),
+                ],
+                vec![],
+                WirePort::ExecOut,
+            );
+            true
+        }
+        Binding::Record(sub) => {
+            let Some(src) = crate::lower::stmt::value_record_fields(ctx, value) else {
+                return false;
+            };
+            let key_port = lower_expr(ctx, key);
+            record_map_set_walk(ctx, &sub, &src, key_port, range);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// `pts[i]` as a record VALUE — read every parallel field array at the shared

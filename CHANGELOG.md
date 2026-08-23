@@ -19,6 +19,7 @@
 - `==` and `!=` between two whole record values report `WS004`. Comparing a multi-output result to a scalar (`arr.pop() == 5`) still works.
 - A `...rest` parameter in a destructured `mod` parameter types as the record of the remaining fields, and a tuple-typed field inside a record annotation (`type T = { pair: (int, int) }`) type-checks correctly.
 - A record literal used as a spread source (`{ ...{ ...p, y: 2 }, x: 9 }`) or read directly (`({ x: 1, y: 2 }).x`) resolves its fields.
+- A nested record inside a record array or map decomposes to leaf columns like a flat field: `arr[i].inner.a` / `m[k].inner.a` read and write a single leaf, `arr[i].inner` / `m[k].inner` read and write the whole sub-record, and `let row = arr[i]` binds the element as a record value.
 - Namespaced member access is stricter. Reading a missing or non-value member (`L.nope`, or a namespaced `out` port) and a nested path (`A.B.bar()`) report `WS002`; a named-argument call through a namespace reports `WS022` when the positional count is wrong. A namespaced container read (`S.scores.get(k)`), `&S.g`, and an import used only as a handler trigger type-check cleanly.
 - An `if` expression written directly inside a string interpolation (`"${if n < 10 then "0" else ""}${n}"`) emits its comparison and select.
 - Passing a non-lvalue (a literal, expression, `let`, `arr[i]`, or call result) to a `*T`/`ref` parameter reports `WS008`.

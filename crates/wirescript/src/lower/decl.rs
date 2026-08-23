@@ -1007,6 +1007,39 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         }
     }
 
+    // `let row = pts[i]` / `let inr = pts[i].inner` — a record value read from a
+    // record ARRAY/MAP element. The `resolve_field_chain` block above forwards
+    // only record LOCALS; an indexed or field-path record source lowers its
+    // per-field reads through `value_record_fields` here. Gated on a record type
+    // and a non-call source (a record-returning CALL is handled below via
+    // `pending_inline_record`), so a scalar or call RHS never routes here.
+    if matches!(
+        &d.value,
+        Expr::IndexAccess { .. } | Expr::FieldAccess { .. } | Expr::TuplePick { .. }
+    ) && matches!(ctx.type_of(&d.value), Type::Record(_))
+        && let Some(src) = crate::lower::stmt::value_record_fields(ctx, &d.value)
+    {
+        match &d.binding {
+            LetBinding::Ident { name, .. } => {
+                ctx.scope.insert(&name, Binding::Record(src));
+                return;
+            }
+            LetBinding::RecordDestruct {
+                fields: destruct_fields,
+                ..
+            } => {
+                install_record_destruct(ctx, &src, destruct_fields);
+                return;
+            }
+            LetBinding::Tuple { names, rest, .. } => {
+                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
+                install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     let rhs_port = lower_expr(ctx, &d.value);
     let rhs_type = ctx.type_of(&d.value);
 

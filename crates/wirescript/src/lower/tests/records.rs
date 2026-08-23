@@ -1110,6 +1110,45 @@ fn record_array_index_read_write() {
     assert_eq!(gate_count(&r, gc::ARRAY_SET_AT_INDEX), 3);
 }
 
+/// A NESTED record inside a record array decomposes to leaf-field parallel
+/// arrays just like flat fields, so every depth of access lowers to real gates:
+/// `arr[i].inner.a` (nested scalar read/write), `arr[i].inner` (whole nested
+/// record read/write), and `let row = arr[i]` (whole element read). The nested
+/// path also wins over the swizzle fallback, so genuine `.a`/`.b` fields read
+/// their column instead of a bogus `SplitColor` component.
+#[test]
+fn nested_record_array_field_path() {
+    let r = compile(
+        "type Inner = { a: int, b: int }\n\
+         type Outer = { n: int, inner: Inner }\n\
+         var arr: Outer[]\n\
+         var gna: int = 0\n\
+         var ib: Inner = { a: 0, b: 0 }\n\
+         var row: Outer = { n: 0, inner: { a: 0, b: 0 } }\n\
+         in s: exec\n\
+         on s {\n\
+           arr.push({ n: 1, inner: { a: 2, b: 3 } })\n\
+           gna = arr[0].inner.a\n\
+           arr[0].inner.a = 9\n\
+           ib = arr[0].inner\n\
+           arr[0].inner = { a: 7, b: 8 }\n\
+           row = arr[0]\n\
+           arr[0] = { n: 4, inner: { a: 5, b: 6 } }\n\
+         }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "nested record-array access must not placeholder");
+    assert_eq!(gate_count(&r, gc::SPLIT_COLOR), 0, "a genuine `.a`/`.b` field must not swizzle");
+    assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
+    // n, inner.a, inner.b -> 3 parallel arrays.
+    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 3, "one array per leaf field");
+    assert_eq!(gate_count(&r, gc::ARRAY_PUSH), 3, "push fans to every leaf");
+    // arr[0].inner.a (1) + arr[0].inner (2) + arr[0] (3) = 6 reads.
+    assert_eq!(gate_count(&r, gc::ARRAY_GET), 6);
+    // inner.a=9 (1) + inner={..} (2) + arr[0]={..} (3) = 6 writes.
+    assert_eq!(gate_count(&r, gc::ARRAY_SET_AT_INDEX), 6);
+}
+
 /// A record MAP is stored as one parallel `Pseudo_MapVar` per field; `set`/`get`
 /// fan across the fields, `has`/`length` read the first field, and `remove`/
 /// `clear` fan out. `m.get(k).x`, `m[k].x`, `m[k] = rec`, and `p = m.get(k)` all
@@ -1135,6 +1174,42 @@ fn record_map_fans_out_per_field() {
     assert_eq!(gate_count(&r, gc::MAP_GET_LENGTH), 1, "length reads first field");
     assert_eq!(gate_count(&r, gc::MAP_REMOVE), 2);
     assert_eq!(gate_count(&r, gc::MAP_CLEAR), 2);
+}
+
+/// A NESTED record inside a record MAP decomposes to leaf-field parallel maps
+/// the same way arrays do, so every depth of value access lowers to real gates
+/// (`m[k].inner.a` read/write, `m[k].inner` whole read/write, `row = m[k]`).
+/// The nested path wins over the swizzle fallback, so a genuine `.a`/`.b` field
+/// reads its column rather than a bogus `SplitColor` off a placeholder.
+#[test]
+fn nested_record_map_field_path() {
+    let r = compile(
+        "type Inner = { a: int, b: int }\n\
+         type Outer = { n: int, inner: Inner }\n\
+         var m: Map<int, Outer>\n\
+         var gna: int = 0\n\
+         var ib: Inner = { a: 0, b: 0 }\n\
+         var row: Outer = { n: 0, inner: { a: 0, b: 0 } }\n\
+         in s: exec\n\
+         on s {\n\
+           m.set(0, { n: 1, inner: { a: 2, b: 3 } })\n\
+           gna = m[0].inner.a\n\
+           m[0].inner.a = 9\n\
+           ib = m[0].inner\n\
+           m[0].inner = { a: 7, b: 8 }\n\
+           row = m[0]\n\
+         }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "nested record-map access must not placeholder");
+    assert_eq!(gate_count(&r, gc::SPLIT_COLOR), 0, "a genuine `.a`/`.b` field must not swizzle");
+    assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
+    // n, inner.a, inner.b -> 3 parallel maps.
+    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 3, "one map per leaf field");
+    // set (3, fans to every leaf) + inner.a=9 (1) + inner={..} (2) = 6.
+    assert_eq!(gate_count(&r, gc::MAP_SET), 6);
+    // m[0].inner.a (1) + m[0].inner (2) + m[0] (3) = 6 reads.
+    assert_eq!(gate_count(&r, gc::MAP_GET), 6);
 }
 
 /// The safe record-array ops fan out; `sort`/`shuffle`/aggregates are rejected

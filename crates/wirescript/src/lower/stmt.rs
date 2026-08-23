@@ -458,6 +458,22 @@ pub(super) fn value_record_fields(
     {
         return Some(rec);
     }
+    // `pts[i].inner` reads a NESTED record field of a record ARRAY element as a
+    // record value (per-field ArrayGet), so it flows like any other record
+    // source. A `pts[i].scalar` field goes through the scalar path instead
+    // (this returns `None` for it), so only whole nested records land here.
+    if matches!(value, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
+        && let Some(rec) = lower_record_array_field_path_value(ctx, value, value.range())
+    {
+        return Some(rec);
+    }
+    // `m[k].inner` / `m.get(k).inner` — the same for a NESTED record field of a
+    // record MAP value (per-field MapGet).
+    if matches!(value, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
+        && let Some(rec) = lower_record_map_field_path_value(ctx, value, value.range())
+    {
+        return Some(rec);
+    }
     // `m[k]` / `m.get(k)` reads a record MAP value as a record (per-field MapGet).
     if matches!(value, Expr::IndexAccess { .. } | Expr::Call { .. })
         && let Some(rec) = lower_record_map_key_value(ctx, value, value.range())
@@ -585,12 +601,21 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
-    // `pts[i].field = v` — write one field of a record array's element by
-    // indexing that field's parallel array. The target is a FieldAccess whose
-    // object is an IndexAccess, so neither the IndexAccess branch above nor the
-    // record field-chain branch below reaches it.
-    if let Expr::FieldAccess { obj, field, .. } = &s.target
-        && lower_record_array_field_index_set(ctx, obj, field, &s.value, &s.range)
+    // `pts[i].f1.f2… = v` — write a field (possibly nested) of a record array's
+    // element by fanning across the parallel arrays at the shared index. The
+    // target is a FieldAccess/TuplePick chain over an IndexAccess, so neither
+    // the IndexAccess branch above nor the record field-chain branch below
+    // reaches it.
+    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
+        && lower_record_array_field_path_set(ctx, &s.target, &s.value, &s.range)
+    {
+        return;
+    }
+
+    // `m[k].f1.f2… = v` — the same for a record MAP value, fanning across the
+    // parallel maps at the shared key (the map spelling of the branch above).
+    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
+        && lower_record_map_field_path_set(ctx, &s.target, &s.value, &s.range)
     {
         return;
     }

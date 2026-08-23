@@ -314,12 +314,16 @@ mutability, as above; only *storage* is restricted.)
 
 **Container operations.** A record array supports `push`, `pop`, `insert`,
 `remove`, `fill`, `resize`, `swap`, `reverse`, `clear`, `length`, and element
-access (`pts[i]`, `pts[i].field`, `pts[i] = rec`, `p = pts[i]`). Operations that
+access (`pts[i]`, `pts[i].field`, `pts[i] = rec`, `p = pts[i]`). A nested-record
+field is reachable to any depth, since the storage decomposes to leaf columns:
+`pts[i].inner.a` reads or writes one leaf, and `pts[i].inner` reads or writes the
+whole sub-record at that index. Operations that
 reorder elements by *value* (`sort`, `shuffle`), fold *over* whole records
 (`sum`/`min`/`max`/`average`), or need a matching second container
 (`append`/`copyFrom`/`slice`) have no per-field meaning and are rejected with
 `WS050` -- index a scalar field instead. A record map supports `set`, `get`,
-`has`, `remove`, `clear`, `length`, `keys`, and `m[k]` access. A map **key**
+`has`, `remove`, `clear`, `length`, `keys`, and `m[k]` access, with the same
+depth of nested-field access (`m[k].inner.a`, `m[k].inner`). A map **key**
 cannot be a record (`WS039`); keys must be a single wire value.
 
 ### Tuple Types (`(A, B, C)`)
