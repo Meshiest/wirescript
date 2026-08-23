@@ -546,11 +546,16 @@ fn inline_bare_scalar_literals(module: &mut Module) {
             drop_wires.push(i);
         }
     }
-    drop_wires.sort_unstable();
-    drop_wires.dedup();
-    for i in drop_wires.into_iter().rev() {
-        module.wires.remove(i);
-    }
+    // Drop the carried wires in one pass. `retain` visits each wire once (O(W));
+    // removing them individually with `Vec::remove` shifted the tail per drop
+    // (O(D*W)) and dominated literal-dense programs.
+    let drop: crate::collections::HashSet<usize> = drop_wires.into_iter().collect();
+    let mut wire_idx = 0usize;
+    module.wires.retain(|_| {
+        let keep = !drop.contains(&wire_idx);
+        wire_idx += 1;
+        keep
+    });
     for child in module.chips.values_mut() {
         inline_bare_scalar_literals(child);
     }
@@ -829,7 +834,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
         };
     }
     // Write data-only port values onto their targets, then drop the wires that
-    // carried them (highest index first, so earlier indices stay valid).
+    // carried them in one retain pass.
     let mut drop_wires: Vec<usize> = Vec::with_capacity(inlines.len());
     for (i, target_id, port, lit) in inlines {
         if let Some(target) = module.nodes.get_mut(&target_id) {
@@ -837,11 +842,16 @@ fn materialize_unfoldable_constants(module: &mut Module) {
         }
         drop_wires.push(i);
     }
-    drop_wires.sort_unstable();
-    drop_wires.dedup();
-    for i in drop_wires.into_iter().rev() {
-        module.wires.remove(i);
-    }
+    // Drop the carried wires in one pass. `retain` visits each wire once (O(W));
+    // removing them individually with `Vec::remove` shifted the tail per drop
+    // (O(D*W)) and dominated literal-dense programs.
+    let drop: crate::collections::HashSet<usize> = drop_wires.into_iter().collect();
+    let mut wire_idx = 0usize;
+    module.wires.retain(|_| {
+        let keep = !drop.contains(&wire_idx);
+        wire_idx += 1;
+        keep
+    });
     for child_module in module.chips.values_mut() {
         materialize_unfoldable_constants(child_module);
     }
@@ -1159,10 +1169,12 @@ fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) 
 /// outputs) or a duplicated inline-`mod` body is emitted once and fans out to
 /// its consumers instead of once per use.
 ///
-/// Runs to a fixpoint: merging two gates makes their consumers' incoming-source
-/// sets structurally equal, which exposes the next layer of duplicates. Keyed on
-/// `chip_id` (like `dedup_constant_gates`) so a keeper never lands in a
-/// different partition module than a consumer.
+/// Runs as a single dependency-ordered pass: a pure gate's key is a function of
+/// its inputs' CANONICAL sources, so visiting inputs before consumers (a
+/// topological order over the eligible-gate subgraph) lets one pass find every
+/// merge the old whole-tree-rescan fixpoint found, in O(nodes + wires) instead of
+/// O(nodes x expression-depth). Keyed on `chip_id` (like `dedup_constant_gates`)
+/// so a keeper never lands in a different partition module than a consumer.
 ///
 /// Excludes anything whose output isn't a pure function of its current inputs:
 /// non-`Expr_*` classes (the rerouter, exec/IO gates), the stateful
@@ -1200,7 +1212,7 @@ fn cse_pure_gates(root: &mut Module) {
         format!("{}\u{1}{props:?}\u{1}{ins:?}", n.gate_class)
     }
 
-    fn collect(module: &mut Module, redirect: &mut HashMap<NodeId, NodeId>) {
+    fn cse_module(module: &mut Module, redirect: &mut HashMap<NodeId, NodeId>) {
         // Per-node incoming data wires (skip Layout edges — they're not inputs).
         let mut incoming: HashMap<NodeId, Vec<(WirePort, NodeId, WirePort)>> = HashMap::default();
         for w in &module.wires {
@@ -1212,37 +1224,88 @@ fn cse_pure_gates(root: &mut Module) {
                 .or_default()
                 .push((w.target.port, w.source.node_id, w.source.port));
         }
-        let mut groups: HashMap<(Option<NodeId>, String), Vec<NodeId>> = HashMap::default();
-        for (id, n) in &module.nodes {
-            if eligible(n) {
-                groups
-                    .entry((n.chip_id, cse_key(n, incoming.get(id))))
-                    .or_default()
-                    .push(*id);
+
+        // In-degree over the eligible-gate subgraph (an edge is an eligible
+        // source feeding an eligible consumer), for a Kahn topological order.
+        let eligible_ids: HashSet<NodeId> = module
+            .nodes
+            .iter()
+            .filter(|(_, n)| eligible(n))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut indeg: HashMap<NodeId, usize> = HashMap::default();
+        let mut succ: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
+        for id in &eligible_ids {
+            let preds: HashSet<NodeId> = incoming
+                .get(id)
+                .into_iter()
+                .flatten()
+                .map(|(_, sid, _)| *sid)
+                .filter(|sid| eligible_ids.contains(sid))
+                .collect();
+            indeg.insert(*id, preds.len());
+            for p in preds {
+                succ.entry(p).or_default().push(*id);
             }
         }
-        for mut group in groups.into_values() {
-            if group.len() < 2 {
-                continue;
+        let mut queue: Vec<NodeId> = indeg
+            .iter()
+            .filter(|(_, d)| **d == 0)
+            .map(|(id, _)| *id)
+            .collect();
+        queue.sort_unstable(); // deterministic keeper selection
+
+        // One pass in dependency order. A node's key is built from its incoming
+        // sources canonicalized through the merges already committed; topo order
+        // guarantees those are final, so a single visit suffices. Gates trapped
+        // in a combinational cycle (later rejected by `analyze`) never reach
+        // in-degree zero and are simply left unmerged.
+        let mut seen: HashMap<(Option<NodeId>, String), NodeId> = HashMap::default();
+        let mut qi = 0;
+        while qi < queue.len() {
+            let id = queue[qi];
+            qi += 1;
+            if let Some(n) = module.nodes.get(&id) {
+                let key_ins: Option<Vec<(WirePort, NodeId, WirePort)>> = incoming.get(&id).map(|ins| {
+                    ins.iter()
+                        .map(|(tp, sid, sp)| (*tp, *redirect.get(sid).unwrap_or(sid), *sp))
+                        .collect()
+                });
+                let key = (n.chip_id, cse_key(n, key_ins.as_ref()));
+                match seen.get(&key) {
+                    Some(&keeper) => {
+                        redirect.insert(id, keeper);
+                        module.nodes.remove(&id);
+                    }
+                    None => {
+                        seen.insert(key, id);
+                    }
+                }
             }
-            group.sort_unstable(); // deterministic keeper (lowest id)
-            let keeper = group[0];
-            for dup in &group[1..] {
-                redirect.insert(*dup, keeper);
-                module.nodes.remove(dup);
+            // Release consumers whose last eligible predecessor was just handled.
+            let mut newly: Vec<NodeId> = Vec::new();
+            if let Some(cs) = succ.get(&id) {
+                for &c in cs {
+                    if let Some(d) = indeg.get_mut(&c) {
+                        *d -= 1;
+                        if *d == 0 {
+                            newly.push(c);
+                        }
+                    }
+                }
             }
+            newly.sort_unstable();
+            queue.extend(newly);
         }
+
         for child in module.chips.values_mut() {
-            collect(child, redirect);
+            cse_module(child, redirect);
         }
     }
 
-    loop {
-        let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
-        collect(root, &mut redirect);
-        if redirect.is_empty() {
-            break;
-        }
+    let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
+    cse_module(root, &mut redirect);
+    if !redirect.is_empty() {
         apply_gate_redirect(root, &redirect);
     }
 }

@@ -566,6 +566,10 @@ pub(super) fn emit_module(
     // ── Pass 3: emit this module's wires ──
     let layout_port_id = WirePort::Layout;
     let port_index = build_port_index(module, &ctx.node_brick_ids);
+    // Single-driver invariant: a real input port accepts exactly one source.
+    // Records the source already drawn into each (target, port) so a second,
+    // DISTINCT source is caught as a fan-in below.
+    let mut driver: HashMap<(NodeId, WirePort), (NodeId, WirePort)> = HashMap::default();
     for w in &module.wires {
         if w.source.port == layout_port_id || w.target.port == layout_port_id {
             continue;
@@ -586,6 +590,30 @@ pub(super) fn emit_module(
         let dst_class = ctx.class_index.get(&w.target.node_id);
         if matches!(dst_class, Some(c) if *c == gc::LITERAL || *c == gc::UNSUPPORTED) {
             continue;
+        }
+        // Two DISTINCT sources into one input port load-fail the whole save. An
+        // exact-duplicate wire (same source) is drawn as before; bus-lane fan-in
+        // is already suppressed above, and literal/unsupported sources were
+        // skipped (they inline, not wire).
+        let tgt_key = (w.target.node_id, w.target.port);
+        let src_key = (w.source.node_id, w.source.port);
+        match driver.get(&tgt_key) {
+            Some(&existing) if existing != src_key => {
+                return Err(EmitError::FanIn(format!(
+                    "{}.{} is driven by two sources: {}.{} and {}.{} (a lowering bug — \
+                     the save would fail to load)",
+                    w.target.node_id,
+                    w.target.port.as_str(),
+                    existing.0,
+                    existing.1.as_str(),
+                    w.source.node_id,
+                    w.source.port.as_str(),
+                )));
+            }
+            Some(_) => {}
+            None => {
+                driver.insert(tgt_key, src_key);
+            }
         }
         match wire_to_connection_indexed(w, &ctx.node_brick_ids, &ctx.class_index, &port_index) {
             Ok(conn) => world.add_wire(conn),

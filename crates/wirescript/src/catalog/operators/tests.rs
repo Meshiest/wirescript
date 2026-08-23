@@ -138,6 +138,22 @@
     }
 
     #[test]
+    fn negate_resolves_by_ast_spelling() {
+        // The AST carries unary negate as "-" (same spelling as binary subtract).
+        // resolve_op maps it to the table's "-u" key by arity, so every caller
+        // resolves it, not only the ones that remember to remap (an un-remapped
+        // `-x` in a generic mod otherwise fell through to a stale fallback type).
+        let ri = resolve_op("-", &[Type::Int]).expect("unary - on int");
+        assert!(matches!(ri.result, Type::Int));
+        assert_eq!(ri.gate_class, "BrickComponentType_WireGraph_Expr_MathNegate");
+        let rf = resolve_op("-", &[Type::Float]).expect("unary - on float");
+        assert!(matches!(rf.result, Type::Float));
+        // Binary "-" (arity 2) stays subtract; the remap is arity-gated.
+        let sub = resolve_op("-", &[Type::Int, Type::Int]).expect("binary -");
+        assert_eq!(sub.gate_class, "BrickComponentType_WireGraph_Expr_MathSubtract");
+    }
+
+    #[test]
     fn bitwise_coerces_bool_to_int() {
         let r = resolve_op("<<", &[Type::Bool, Type::Int]).unwrap();
         assert!(matches!(r.result, Type::Int));

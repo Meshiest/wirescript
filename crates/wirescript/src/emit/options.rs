@@ -162,4 +162,13 @@ pub enum EmitError {
         field: String,
         literal: crate::ir::Literal,
     },
+    /// Two DISTINCT sources drive the same input port (a fan-in). A real wire
+    /// input takes exactly one source; a save with two serializes as format-valid
+    /// but the game rejects the WHOLE save at load ("Failed to connect wire").
+    /// Fatal, and always a lowering bug (a stranded return/emit fan-in, a
+    /// duplicated `out`, a chip called from both top level and a handler) rather
+    /// than user error — catching it here turns a load-failing `.brz` into a
+    /// diagnosable compile failure.
+    #[error("fan-in: {0}")]
+    FanIn(String),
 }

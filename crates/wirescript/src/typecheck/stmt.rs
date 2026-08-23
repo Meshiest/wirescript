@@ -817,7 +817,22 @@ fn infer_assign_target(
             Type::Map(_, v) => *v,
             _ => Type::Any,
         }
+    } else if matches!(e, Expr::FieldAccess { .. } | Expr::TuplePick { .. }) {
+        // A record/tuple field target (`p.x = 5`, `pts[i].inner.a = v`) is an
+        // lvalue that lowering resolves; kept permissive (typed `any`) as before.
+        Type::Any
     } else {
+        // Any other target shape (a call result `f() = 5`, a literal, an
+        // operator expression) is not an lvalue. It used to fall through to
+        // `any` and be silently dropped at lowering; inside a handler even the
+        // WS058/WS007 guards don't fire. Reject it.
+        ctx.emit(
+            "WS007",
+            "this isn't a writable target; only a variable, an array/map \
+             element, or a record field can be assigned"
+                .to_string(),
+            e.range().clone(),
+        );
         Type::Any
     }
 }

@@ -434,9 +434,9 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         }
         Expr::UnOp { op, operand, range } => {
             let operand_t = infer(ctx, operand);
-            let op_key = if op == "-" { "-u" } else { op.as_str() };
             let unwrapped = op_operand_type(&operand_t);
-            let rule = resolve_op(op_key, &[unwrapped]);
+            // `resolve_op` maps unary `-` to the table's `-u` key internally.
+            let rule = resolve_op(op.as_str(), &[unwrapped]);
             if let Some(r) = rule {
                 let result = r.result.clone();
                 ctx.op_resolutions.insert(
@@ -635,6 +635,26 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         );
                     }
                     unwrap_ref(&ot)
+                }
+                // A component-typed value has a CLOSED set of component fields
+                // (checked above: vector x/y/z, color r/g/b/a, rotator
+                // pitch/yaw/roll). A field outside its own set is a typo or a
+                // swizzle borrowed from another component type (`v.r`,
+                // `color.x`, `rot.x`, `v.w`), and must not fall through to a
+                // silent `any`. Lowering dispatches Split gates on the field
+                // NAME alone, so `v.r` would feed the vector into a SplitColor:
+                // a real gate with a wrong value and, until now, no diagnostic.
+                // Flag it as a typo, exactly like a scalar field access.
+                (Type::Vector | Type::Color | Type::Rotator | Type::Quat, _) => {
+                    ctx.emit(
+                        "WS010",
+                        format!(
+                            "no field `{field}` on {}",
+                            crate::analysis::types::type_str(&ot)
+                        ),
+                        range.clone(),
+                    );
+                    Type::Any
                 }
                 _ => Type::Any,
             }

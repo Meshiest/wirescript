@@ -615,6 +615,12 @@ fn type_kind_matches(want: &Type, got: &Type) -> bool {
 /// for mixed-type arithmetic).
 pub fn resolve_op(op: &str, arg_types: &[Type]) -> Option<&'static OpRule> {
     let arity = arg_types.len() as u8;
+    // Unary `-` is keyed `-u` in the table (binary `-` is subtract). Reconcile the
+    // AST spelling here, at the single resolution point, so every caller resolves
+    // negate rather than only the ones that remember to remap. A `-x` inside a
+    // generic mod otherwise resolved to nothing and fell through to a stale
+    // fallback type: a silent miscompile.
+    let op = if op == "-" && arity == 1 { "-u" } else { op };
     let spec = operators()
         .iter()
         .find(|s| s.op == op && s.arity == arity)?;

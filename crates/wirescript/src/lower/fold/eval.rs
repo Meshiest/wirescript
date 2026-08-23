@@ -812,7 +812,9 @@ fn string_substring(s: Option<&Value>, start: Option<&Value>, len: Option<&Value
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len() as i64;
     let actual_start = if *start < 0 { (n + *start).max(0) } else { (*start).min(n) };
-    let end = (actual_start + *len).min(n);
+    // Saturating: a near-i64::MAX length must clamp to the string end, not
+    // overflow to a negative `end` that panics the slice below.
+    let end = actual_start.saturating_add(*len).min(n);
     let slice: String = chars[actual_start as usize..end as usize].iter().collect();
     string_result_ok(&slice)
 }

@@ -109,6 +109,84 @@ fn tuple_return_named_outputs_no_placeholder() {
     assert!(!has(src, "WSP001"), "{:?}", diags(src));
 }
 
+// --- C1: a component field borrowed from another component type (or a typo)
+//     is WS010, not a silent SplitColor/SplitVector fed the wrong-typed value.
+#[test]
+fn c1_cross_type_component_access_is_ws010() {
+    // `v.r` on a vector previously compiled clean and emitted a SplitColor.
+    let vr = "in go: exec\nvar v: vector = Vec(1.0,2.0,3.0)\nvar f: float = 0.0\non go { f = v.r }\n";
+    assert!(has(vr, "WS010"), "{:?}", diags(vr));
+    let cx = "in go: exec\nvar c: color = Color(1.0,0.0,0.0)\nvar f: float = 0.0\non go { f = c.x }\n";
+    assert!(has(cx, "WS010"), "{:?}", diags(cx));
+}
+
+#[test]
+fn c1_valid_component_access_stays_clean() {
+    let src = "in go: exec\nvar v: vector = Vec(1.0,2.0,3.0)\nvar c: color = Color(1.0,0.0,0.0)\n\
+               var f: float = 0.0\non go { f = v.x }\non go { f = c.g }\n";
+    assert!(!has(src, "WS010"), "{:?}", diags(src));
+}
+
+// --- C2: a negated union / double negation trigger is WS001, not a silently
+//     dropped handler.
+#[test]
+fn c2_negated_union_trigger_is_ws001() {
+    let un = "in a: exec\nin b: exec\nstatic var f: int = 0\non !(a | b) { f = 1 }\n";
+    assert!(has(un, "WS001"), "{:?}", diags(un));
+    let dbl = "in a: exec\nstatic var f: int = 0\non !!a { f = 1 }\n";
+    assert!(has(dbl, "WS001"), "{:?}", diags(dbl));
+}
+
+#[test]
+fn c2_valid_negated_and_union_triggers_stay_clean() {
+    let src = "in a: exec\nin b: exec\nstatic var f: int = 0\non !a { f = 1 }\non (a | b) { f = 2 }\n";
+    assert!(!has(src, "WS001"), "{:?}", diags(src));
+}
+
+// --- C3: assigning to a non-lvalue (a call result, a literal) is WS007, not a
+//     silently dropped assignment.
+#[test]
+fn c3_assign_to_call_result_is_ws007() {
+    let src = "mod f() -> int { return 1 }\nin go: exec\non go { f() = 5 }\n";
+    assert!(has(src, "WS007"), "{:?}", diags(src));
+}
+
+#[test]
+fn c3_assign_to_var_field_element_stays_clean() {
+    let src = "type P = { x: int, y: int }\nin go: exec\nstatic var p: P = { x: 0, y: 0 }\n\
+               static var arr: int[]\non go {\n  p.x = 5\n  arr.push(0)\n  arr[0] = 9\n}\n";
+    assert!(!has(src, "WS007"), "{:?}", diags(src));
+}
+
+// --- C4: two sources into one input port (here a duplicate `out o`) is an emit
+//     fan-in error, not a format-valid `.brz` the game rejects at load.
+#[test]
+fn c4_fan_in_is_an_emit_error() {
+    let input = CompileInput {
+        source: "in x: int\nout o = x + 1\nout o = x + 2\n",
+        file: "c4.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    };
+    match compile(input) {
+        Err(CompileError::Emit(e)) => {
+            assert!(format!("{e:?}").contains("FanIn"), "expected FanIn, got {e:?}")
+        }
+        Ok(_) => panic!("fan-in must be rejected, not compiled to a broken .brz"),
+        Err(other) => panic!("expected an emit fan-in error, got {other:?}"),
+    }
+}
+
+// --- C6: `Substring` with a near-i64::MAX length must clamp to the string end
+//     (a constant-folded fold path), not overflow into a slice-range panic.
+#[test]
+fn c6_substring_huge_length_does_not_panic() {
+    // If the fold overflowed, `diags` would panic (the test process would crash)
+    // rather than return; reaching the assert at all proves it clamped.
+    let src = "out r = \"hello\".Substring(1, 9223372036854775807)\n";
+    assert!(!has(src, "WSP001"), "{:?}", diags(src));
+}
+
 // --- `return a, b` (parens optional) parses and behaves like `return (a, b)`.
 #[test]
 fn tuple_return_optional_parens() {

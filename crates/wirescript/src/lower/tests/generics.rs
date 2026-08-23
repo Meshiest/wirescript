@@ -1015,3 +1015,20 @@ fn truncated_combo_check_still_catches_single_param_op_error() {
         tc.diagnostics.iter().map(|d| d.code.to_string()).collect::<Vec<_>>()
     );
 }
+
+/// Unary negate inside a generic mod (and one generic mod calling another over a
+/// negated value) monomorphizes to a real MathNegate per concrete type. The
+/// operator table keys negate as `-u` but the AST spelling is `-`; the
+/// monomorphizer resolved the raw `-` and previously found no rule, falling back
+/// to a stale type instead of emitting the gate.
+#[test]
+fn generic_negate_monomorphizes() {
+    let src = "mod neg<T: int | float>(x: T) -> T { return -x }\n\
+               mod useit<T: int | float>(x: T) -> T { let n = neg(x)\n return n }\n\
+               in gi: int\nin gf: float\nout ri = useit(gi)\nout rf = useit(gf)\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "negate must resolve, not placeholder");
+    // int and float monomorphs each emit one negate.
+    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_MathNegate"), 2);
+}

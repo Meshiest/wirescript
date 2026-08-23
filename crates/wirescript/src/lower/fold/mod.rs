@@ -1052,132 +1052,187 @@ fn drop_boundary_feeds(module: &mut Module, dead_feeds: &HashSet<NodeId>) {
     }
 }
 
-/// Exec-reachability cleanup: repeat to a fixpoint — a `NodeKind::Gate` node
-/// declaring at least one `Type::Exec` input port whose TOTAL incoming exec
-/// wire count (summed across every such port) is zero has lost its trigger;
-/// remove it and every wire touching it. This eats a dead chain
-/// transitively (each removal can strand its own successor). Events, chip
-/// boundary IO (`Input`/`Output` kinds), Variables (no exec input port),
-/// and `_nofold` nodes survive by construction — the total-across-all-ports
-/// rule also keeps a `Union` alive as long as ANY of its several exec inputs
-/// still has a wire (only `prune_dead_exec_unions` may splice/remove those).
+/// Exec-reachability cleanup: a `NodeKind::Gate` node declaring at least one
+/// `Type::Exec` input port whose TOTAL incoming exec wire count (summed across
+/// every such port) is zero has lost its trigger; remove it and every wire
+/// touching it. This eats a dead chain transitively: removing an untriggered
+/// gate strands its exec successors. Events, chip boundary IO
+/// (`Input`/`Output` kinds), Variables (no exec input port), and `_nofold`
+/// nodes survive by construction — the total-across-all-ports rule also keeps
+/// a `Union` alive as long as ANY of its several exec inputs still has a wire
+/// (only `prune_dead_exec_unions` may splice/remove those).
+///
+/// Rerouters (e.g. `Opaque`'s identity carrier) are excluded explicitly, not
+/// only by the "declares no exec input" test, so a future Rerouter variant that
+/// grows one doesn't silently start getting swept as untriggered.
+///
+/// Computes the dead set with a forward worklist over per-node exec-in totals:
+/// seed with untriggered gates, and when a gate dies decrement the exec total of
+/// each successor it fed, enqueuing any that reach zero. One scan plus the
+/// worklist is O(nodes + wires), where the old rescan-to-fixpoint was
+/// O(chain-length x (nodes + wires)); the least fixed point is identical.
 fn sweep_dead_exec(root: &mut Module) {
-    loop {
-        let mut in_counts: HashMap<(NodeId, WirePort), usize> = HashMap::default();
-        tally_incoming(root, &mut in_counts);
-        let mut dead: HashSet<NodeId> = HashSet::default();
-        collect_dead_exec(root, &in_counts, &mut dead);
-        if dead.is_empty() {
-            break;
+    // Pass 1: each gate's exec input ports, and which gates are sweep-eligible.
+    let mut exec_ports: HashMap<NodeId, HashSet<WirePort>> = HashMap::default();
+    let mut eligible: HashSet<NodeId> = HashSet::default();
+    fn scan_nodes(
+        module: &Module,
+        exec_ports: &mut HashMap<NodeId, HashSet<WirePort>>,
+        eligible: &mut HashSet<NodeId>,
+    ) {
+        for (id, n) in &module.nodes {
+            if n.kind != NodeKind::Gate
+                || n.properties.contains_key(&*sym::NO_FOLD)
+                || n.gate_class == gc::REROUTER
+            {
+                continue;
+            }
+            let ports: HashSet<WirePort> = n
+                .ports
+                .inputs
+                .iter()
+                .filter(|p| p.ty == Type::Exec)
+                .map(|p| WirePort::from_name(resolve(p.name)))
+                .collect();
+            if !ports.is_empty() {
+                eligible.insert(*id);
+                exec_ports.insert(*id, ports);
+            }
         }
+        for child in module.chips.values() {
+            scan_nodes(child, exec_ports, eligible);
+        }
+    }
+    scan_nodes(root, &mut exec_ports, &mut eligible);
+
+    // Pass 2: exec-in total per gate, and for each gate the successors it feeds
+    // exec into (so a removal can decrement their totals).
+    let mut exec_total: HashMap<NodeId, usize> = HashMap::default();
+    let mut exec_succ: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
+    fn scan_wires(
+        module: &Module,
+        exec_ports: &HashMap<NodeId, HashSet<WirePort>>,
+        exec_total: &mut HashMap<NodeId, usize>,
+        exec_succ: &mut HashMap<NodeId, Vec<NodeId>>,
+    ) {
+        for w in &module.wires {
+            if exec_ports
+                .get(&w.target.node_id)
+                .is_some_and(|ports| ports.contains(&w.target.port))
+            {
+                *exec_total.entry(w.target.node_id).or_default() += 1;
+                exec_succ
+                    .entry(w.source.node_id)
+                    .or_default()
+                    .push(w.target.node_id);
+            }
+        }
+        for child in module.chips.values() {
+            scan_wires(child, exec_ports, exec_total, exec_succ);
+        }
+    }
+    scan_wires(root, &exec_ports, &mut exec_total, &mut exec_succ);
+
+    let mut dead: HashSet<NodeId> = HashSet::default();
+    let mut work: Vec<NodeId> = eligible
+        .iter()
+        .filter(|id| exec_total.get(id).copied().unwrap_or(0) == 0)
+        .copied()
+        .collect();
+    while let Some(d) = work.pop() {
+        if !dead.insert(d) {
+            continue;
+        }
+        if let Some(succs) = exec_succ.get(&d) {
+            for &t in succs {
+                if let Some(c) = exec_total.get_mut(&t) {
+                    *c = c.saturating_sub(1);
+                    if *c == 0 && eligible.contains(&t) && !dead.contains(&t) {
+                        work.push(t);
+                    }
+                }
+            }
+        }
+    }
+    if !dead.is_empty() {
         remove_dead_nodes(root, &dead);
     }
 }
 
-fn tally_incoming(module: &Module, counts: &mut HashMap<(NodeId, WirePort), usize>) {
-    for w in &module.wires {
-        *counts.entry((w.target.node_id, w.target.port)).or_default() += 1;
-    }
-    for child in module.chips.values() {
-        tally_incoming(child, counts);
-    }
-}
-
-fn collect_dead_exec(
-    module: &Module,
-    in_counts: &HashMap<(NodeId, WirePort), usize>,
-    dead: &mut HashSet<NodeId>,
-) {
-    for (id, n) in &module.nodes {
-        if n.kind != NodeKind::Gate || n.properties.contains_key(&*sym::NO_FOLD) {
-            continue;
-        }
-        // Rerouters (e.g. `Opaque`'s identity carrier) are currently
-        // protected from this sweep only IMPLICITLY: a Rerouter declares no
-        // `Type::Exec` input port at all, so the `peek().is_none()` check
-        // below already skips it before the exec-trigger accounting runs.
-        // Exclude the gate class explicitly too, so a future Rerouter
-        // variant that DOES grow an Exec input port doesn't silently start
-        // getting swept as "untriggered" by this pass.
-        if n.gate_class == gc::REROUTER {
-            continue;
-        }
-        let mut exec_ports = n.ports.inputs.iter().filter(|p| p.ty == Type::Exec).peekable();
-        if exec_ports.peek().is_none() {
-            continue;
-        }
-        let total: usize = exec_ports
-            .map(|p| {
-                in_counts
-                    .get(&(*id, WirePort::from_name(resolve(p.name))))
-                    .copied()
-                    .unwrap_or(0)
-            })
-            .sum();
-        if total == 0 {
-            dead.insert(*id);
-        }
-    }
-    for child in module.chips.values() {
-        collect_dead_exec(child, in_counts, dead);
-    }
-}
-
-/// Pure demand sweep: repeat to a fixpoint — a `NodeKind::Gate` node that is
-/// a literal or a pure `Expr_*` gate, not `_nofold`, with zero outgoing
-/// non-`Layout` wires has no consumer left; remove it and its incoming
-/// wires. Rerouters/boundary nodes are never `Expr_*`-classed, so the
+/// Pure demand sweep: a `NodeKind::Gate` node that is a literal or a pure
+/// `Expr_*` gate, not `_nofold`, with zero outgoing non-`Layout` wires has no
+/// consumer left; remove it and its incoming wires, which can strand whatever
+/// fed it. Rerouters/boundary nodes are never `Expr_*`-classed, so the
 /// opaque-probe barrier is preserved automatically.
+///
+/// Computes the dead set with a worklist over per-node out-degree: seed with
+/// zero-consumer pure gates, and when a gate dies decrement the out-degree of
+/// each source that fed it, enqueuing any that reach zero. One scan plus the
+/// worklist is O(nodes + wires), where the old rescan-to-fixpoint was
+/// O(chain-length x (nodes + wires)). The result is the identical least fixed
+/// point (a pure gate whose every consumer is dead or absent).
 fn sweep_dead_pure(root: &mut Module, protected: &HashSet<NodeId>) {
-    loop {
-        let mut out_counts: HashMap<NodeId, usize> = HashMap::default();
-        tally_outgoing(root, &mut out_counts);
-        let mut dead: HashSet<NodeId> = HashSet::default();
-        collect_dead_pure(root, &out_counts, protected, &mut dead);
-        if dead.is_empty() {
-            break;
+    let mut out_deg: HashMap<NodeId, usize> = HashMap::default();
+    let mut in_sources: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
+    let mut pure_eligible: HashSet<NodeId> = HashSet::default();
+
+    fn scan(
+        module: &Module,
+        protected: &HashSet<NodeId>,
+        out_deg: &mut HashMap<NodeId, usize>,
+        in_sources: &mut HashMap<NodeId, Vec<NodeId>>,
+        pure_eligible: &mut HashSet<NodeId>,
+    ) {
+        for w in &module.wires {
+            if w.source.port != WirePort::Layout {
+                *out_deg.entry(w.source.node_id).or_default() += 1;
+                in_sources
+                    .entry(w.target.node_id)
+                    .or_default()
+                    .push(w.source.node_id);
+            }
         }
+        for (id, n) in &module.nodes {
+            let is_pure_class = n.gate_class == gc::LITERAL
+                || n.gate_class
+                    .starts_with("BrickComponentType_WireGraph_Expr_");
+            if n.kind == NodeKind::Gate
+                && !n.properties.contains_key(&*sym::NO_FOLD)
+                && !protected.contains(id)
+                && is_pure_class
+            {
+                pure_eligible.insert(*id);
+            }
+        }
+        for child in module.chips.values() {
+            scan(child, protected, out_deg, in_sources, pure_eligible);
+        }
+    }
+    scan(root, protected, &mut out_deg, &mut in_sources, &mut pure_eligible);
+
+    let mut dead: HashSet<NodeId> = HashSet::default();
+    let mut work: Vec<NodeId> = pure_eligible
+        .iter()
+        .filter(|id| out_deg.get(id).copied().unwrap_or(0) == 0)
+        .copied()
+        .collect();
+    while let Some(d) = work.pop() {
+        if !dead.insert(d) {
+            continue;
+        }
+        if let Some(srcs) = in_sources.get(&d) {
+            for &s in srcs {
+                if let Some(c) = out_deg.get_mut(&s) {
+                    *c = c.saturating_sub(1);
+                    if *c == 0 && pure_eligible.contains(&s) && !dead.contains(&s) {
+                        work.push(s);
+                    }
+                }
+            }
+        }
+    }
+    if !dead.is_empty() {
         remove_dead_nodes(root, &dead);
-    }
-}
-
-fn tally_outgoing(module: &Module, counts: &mut HashMap<NodeId, usize>) {
-    for w in &module.wires {
-        if w.source.port != WirePort::Layout {
-            *counts.entry(w.source.node_id).or_default() += 1;
-        }
-    }
-    for child in module.chips.values() {
-        tally_outgoing(child, counts);
-    }
-}
-
-fn collect_dead_pure(
-    module: &Module,
-    out_counts: &HashMap<NodeId, usize>,
-    protected: &HashSet<NodeId>,
-    dead: &mut HashSet<NodeId>,
-) {
-    for (id, n) in &module.nodes {
-        if n.kind != NodeKind::Gate || n.properties.contains_key(&*sym::NO_FOLD) {
-            continue;
-        }
-        // A label source has no IR consumer (its wire is added at emit); keep
-        // it and, transitively, everything feeding it via real wires.
-        if protected.contains(id) {
-            continue;
-        }
-        let is_pure_class =
-            n.gate_class == gc::LITERAL || n.gate_class.starts_with("BrickComponentType_WireGraph_Expr_");
-        if !is_pure_class {
-            continue;
-        }
-        if out_counts.get(id).copied().unwrap_or(0) == 0 {
-            dead.insert(*id);
-        }
-    }
-    for child in module.chips.values() {
-        collect_dead_pure(child, out_counts, protected, dead);
     }
 }
 

@@ -7,9 +7,24 @@ use crate::types::mono::unwrap_ref;
 pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
     let (name, range) = match &h.trigger {
         Trigger::Ident { name, range } => (name, range),
-        Trigger::Not { inner, .. } => match inner.as_ref() {
+        Trigger::Not { inner, range } => match inner.as_ref() {
             Trigger::Ident { name, range } => (name, range),
-            _ => return,
+            // `on !obj.field` is a valid negated field trigger (lowering handles
+            // it); it binds no capture params here, so return without erroring.
+            Trigger::Field { .. } => return,
+            // `on !(a | b)` (negated union) and `on !!x` (double negation) have
+            // no lowering form — the whole handler was silently dropped with no
+            // diagnostic. Reject rather than vanish.
+            _ => {
+                ctx.emit(
+                    "WS001",
+                    "a `!` trigger must negate a single event, input, or var \
+                     (`on !x`), not a union or another `!`"
+                        .to_string(),
+                    range.clone(),
+                );
+                return;
+            }
         },
         _ => return,
     };

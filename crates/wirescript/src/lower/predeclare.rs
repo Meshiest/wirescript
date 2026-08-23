@@ -1398,7 +1398,7 @@ fn bake_record_array_columns(
     rows: &[&Expr],
 ) {
     for (fkey, binding) in rec {
-        let fname = crate::intern::resolve(*fkey).to_string();
+        let fname = crate::intern::resolve(*fkey);
         let cols: Option<Vec<&Expr>> = rows.iter().map(|r| record_lit_field_expr(r, &fname)).collect();
         let Some(cols) = cols else {
             continue;
@@ -1432,7 +1432,7 @@ fn bake_record_map_pairs(
     entries: &[(&Expr, &Expr)],
 ) {
     for (fkey, binding) in rec {
-        let fname = crate::intern::resolve(*fkey).to_string();
+        let fname = crate::intern::resolve(*fkey);
         let cols: Option<Vec<(&Expr, &Expr)>> = entries
             .iter()
             .map(|(k, v)| record_lit_field_expr(v, &fname).map(|fe| (*k, fe)))

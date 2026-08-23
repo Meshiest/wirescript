@@ -806,7 +806,7 @@ pub(super) fn reject_const_container_mutation(
 /// (`Map<K, fieldType>`) — a record map is stored as one map per record field.
 fn leaf_maps(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     let mut out = Vec::new();
     for k in names {
         match fields.get(&k) {
@@ -883,7 +883,7 @@ fn record_map_key_read(
 ) -> HashMap<crate::intern::Sym, Binding> {
     let mut out = HashMap::default();
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     for k in names {
         match fields.get(&k) {
             Some(Binding::Record(sub)) => {
@@ -937,7 +937,7 @@ fn record_map_set_walk(
     range: &SourceRange,
 ) {
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     for k in names {
         let Some(sbind) = src.get(&k).cloned() else {
             continue;
@@ -1239,7 +1239,7 @@ pub(super) fn lower_map_method(
 /// array per record field.
 fn leaf_arrays(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     let mut out = Vec::new();
     for k in names {
         match fields.get(&k) {
@@ -1271,7 +1271,7 @@ fn record_array_value_op(
     scalar: Option<(WirePort, PortRef)>,
 ) -> Option<PortRef> {
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     let mut ret = ctx.current_exec;
     for k in names {
         let Some(sbind) = src.get(&k).cloned() else {
@@ -1385,7 +1385,7 @@ fn navigate_record_fields<'a>(
 /// used where a scalar is expected. `None` for an empty record.
 fn first_leaf_port(rec: &HashMap<crate::intern::Sym, Binding>) -> Option<PortRef> {
     let mut names: Vec<crate::intern::Sym> = rec.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     for k in names {
         match rec.get(&k) {
             Some(Binding::Local(l)) => return Some(l.port),
@@ -1702,7 +1702,7 @@ fn record_array_index_read(
 ) -> HashMap<crate::intern::Sym, Binding> {
     let mut out = HashMap::default();
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     for k in names {
         match fields.get(&k) {
             Some(Binding::Record(sub)) => {
@@ -1761,7 +1761,7 @@ fn record_array_set_walk(
     range: &SourceRange,
 ) {
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     for k in names {
         let Some(sbind) = src.get(&k).cloned() else {
             continue;
@@ -2071,7 +2071,7 @@ fn record_array_pop(
 ) -> HashMap<crate::intern::Sym, Binding> {
     let mut out = HashMap::default();
     let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s).to_string());
+    names.sort_by_key(|s| crate::intern::resolve(*s));
     for k in names {
         match fields.get(&k) {
             Some(Binding::Record(sub)) => {

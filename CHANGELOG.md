@@ -28,6 +28,10 @@
 - New `WS056`: `let v = await sig` on a signal that carries no payload is an error. Emit a value (`emit sig = ...`) or capture one with `await <expr> on sig`.
 - New `WS058` (warning): an exec statement that never runs is flagged
 - A tuple `return (a, b)` to a `mod` with named multi-outputs wires each element to the matching output in declaration order, so `let (a, b) = f()` reads the returned values.
+- Three constructs that type-checked but built no working circuit now report an error instead of compiling to a silent miscompile: a component field that isn't on its type (`v.r` on a vector, `color.x`) reports `WS010` rather than emitting a wrong-typed `SplitColor`/`SplitVector`; a negated-union or double-negation handler trigger (`on !(a | b)`, `on !!x`) reports `WS001` rather than dropping the whole handler; and assigning to a non-lvalue (`f() = 5`) reports `WS007` rather than dropping the assignment.
+- Emit rejects a wire fan-in (two sources driving one input port, such as a duplicate `out o`) with a compile error, rather than writing a format-valid save the game refuses to load.
+- Unary negate (`-x`) resolves correctly during generic-`mod` monomorphization, so a generic `-x` emits a negate gate with the right numeric type.
+- A constant `Substring` with a very large length clamps to the string end instead of overflowing into a panic.
 
 ## 1.5.0
 
