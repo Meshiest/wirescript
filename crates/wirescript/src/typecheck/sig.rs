@@ -19,7 +19,7 @@ use crate::types::coerce::{CoerceRule, coerce};
 use crate::types::mono::unwrap_ref;
 
 use super::{
-    TypeCheckCtx, validate_composite_config_arg, validate_data_driven_config,
+    SymbolKind, TypeCheckCtx, validate_composite_config_arg, validate_data_driven_config,
     validate_enum_config_arg, validate_scalar_config_arg,
 };
 
@@ -352,6 +352,44 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // never contain `Type::Param`, so this is a no-op for them.
     if crate::typecheck::type_has_param(&param.ty) {
         return;
+    }
+    // A `*T` / `ref T` parameter captures a whole variable by reference, so its
+    // argument must denote one. A literal, expression, call, `arr[i]` element,
+    // or scalar `let` has no ref pin, and the inline binder silently drops such
+    // a call, so reject it here. `&x` is validated separately (WS008 in infer),
+    // and a record-field chain is left permissive (the binder resolves it).
+    // `arr[i]` is excluded even though it is otherwise ref-able: a scalar
+    // ref cannot capture one array element (the game has only a whole-array ref
+    // pin).
+    if matches!(&param.ty, Type::Ref(_)) && !matches!(arg_expr, Expr::RefOf { .. }) {
+        let ok = match arg_expr {
+            Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
+                Some(s) => {
+                    matches!(s.kind, SymbolKind::Var | SymbolKind::Array | SymbolKind::Map)
+                        || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
+                        || (s.kind == SymbolKind::In && matches!(unwrap_ref(&s.ty), Type::Array(_)))
+                        || (s.kind == SymbolKind::LetBinding
+                            && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)))
+                }
+                // Undefined ident: reported as WS002 elsewhere, do not pile on.
+                None => true,
+            },
+            Expr::FieldAccess { .. } => true,
+            _ => false,
+        };
+        if !ok {
+            ctx.emit(
+                "WS008",
+                format!(
+                    "cannot pass a non-lvalue to ref parameter '{}': `*T`/`ref` needs a \
+                     variable or ref parameter, not a literal, expression, `let`, `arr[i]`, \
+                     or call",
+                    param.name
+                ),
+                arg_expr.range().clone(),
+            );
+            return;
+        }
     }
     // `null` adopts the param's type (resolve + record + coerce via `check`),
     // rather than the `any` a bare inference would give it.

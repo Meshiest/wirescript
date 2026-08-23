@@ -590,6 +590,26 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
+    // A record field that resolves to a non-`var` backing (a field of a
+    // `let`/input/literal record) has no storage gate, so writing it cannot
+    // produce any wire. Reject it like assigning a `let` rather than dropping
+    // it silently. A `var`-backed field is written by the `Binding::Var` branch
+    // above and never reaches here.
+    if let Expr::FieldAccess { field, .. } = &s.target
+        && let Some(binding) = resolve_field_chain(ctx, &s.target).cloned()
+        && matches!(binding, Binding::Local(_) | Binding::Input(_))
+    {
+        ctx.error(
+            "WS007",
+            format!(
+                "cannot assign to `{field}`: it is a field of a `let`/input record and is \
+                 read-only; only `var`-backed record fields are assignable"
+            ),
+            &s.range,
+        );
+        return;
+    }
+
     let var_name = match &s.target {
         Expr::Ident { name, .. } => name.clone(),
         _ => return,
@@ -1021,6 +1041,20 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
     // so same-named signals in different bodies stay separate.
     let sig_key = ctx.signal_key(&s.name);
     if !is_output && sig_key.is_none() {
+        // `emit` targets an `out` port or a `let ...: exec` signal. Every other
+        // target has no wire and would otherwise compile to nothing: an `in`
+        // port, a `var`, an undefined name, or an `out`/signal declared outside
+        // an enclosing named `chip`, whose fresh scope cannot see it.
+        ctx.error(
+            "WS057",
+            format!(
+                "`emit {}` has no target in scope: `emit` fires an `out` port or a \
+                 `let ...: exec` signal. An input port, a `var`, or an `out`/signal declared \
+                 outside an enclosing named `chip` is not a valid target",
+                s.name
+            ),
+            &s.range,
+        );
         return;
     }
     // Outputs are keyed by their plain name (resolved via lookup_output at
@@ -1685,7 +1719,25 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             }
             exec_port.node_id.port(WirePort::DataOut1)
         } else {
-            exec_port
+            // `let v = await sig` on a signal with no payload: there is nothing
+            // to capture. Wiring `exec_port` (the signal's exec source) into a
+            // value port produces a garbage value, so report it and bind a
+            // literal default instead of emitting an exec-into-value wire.
+            ctx.error(
+                "WS056",
+                format!(
+                    "`await {binding_name}` binds no value: the signal carries no payload. \
+                     Emit a value (`emit <sig> = ...`), capture with `await <expr> on <sig>`, \
+                     or drop the `let`"
+                ),
+                &a.range,
+            );
+            let zero = Expr::IntLit {
+                value: 0,
+                text: "0".to_string(),
+                range: a.range.clone(),
+            };
+            lower_expr(ctx, &zero)
         };
         ctx.scope.insert(
             &binding_name,

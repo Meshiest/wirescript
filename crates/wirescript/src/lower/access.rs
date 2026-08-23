@@ -183,6 +183,18 @@ pub(super) fn lower_field_access(
     }
     // If it's a nested record, we can't return a single port — fall through.
 
+    // A field read on a record LITERAL such as `({...}).field`. Because
+    // `resolve_field_chain` walks only names and chains, read the field from the
+    // literal's lowered per-field bindings before the swizzle / SplitVector
+    // fallback claims `.x`/`.y`.
+    if matches!(obj, Expr::RecordLit { .. })
+        && let Some(fields) = crate::lower::stmt::value_record_fields(ctx, obj)
+        && let Some(binding) = fields.get(&crate::intern::intern(field)).cloned()
+        && let Some(port) = binding_to_port(ctx, &binding, range)
+    {
+        return port;
+    }
+
     // `pts[i].field` — one field of a record array's element. The chain resolve
     // above can't see through the index subscript, so read the field's parallel
     // array here before the swizzle / SplitVector fallback claims `.x`/`.y`.

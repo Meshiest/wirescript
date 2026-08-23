@@ -751,6 +751,34 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             );
                         }
                     }
+                    // Container members carry a value type so a namespaced
+                    // read (`S.scores.get(k)`, `S.arr.pop()`) can type its
+                    // element/value instead of falling through to `any`.
+                    TopDecl::Array(a) => {
+                        let inner = resolve_type_expr(ctx, &a.element_type);
+                        ns_map.insert(
+                            a.name.clone(),
+                            NsDeclInfo {
+                                kind: SymbolKind::Array,
+                                return_type: None,
+                                params: Vec::new(),
+                                value_type: Some(Type::Array(Box::new(inner))),
+                            },
+                        );
+                    }
+                    TopDecl::Map(m) => {
+                        let key = resolve_type_expr(ctx, &m.key_type);
+                        let value = resolve_type_expr(ctx, &m.value_type);
+                        ns_map.insert(
+                            m.name.clone(),
+                            NsDeclInfo {
+                                kind: SymbolKind::Map,
+                                return_type: None,
+                                params: Vec::new(),
+                                value_type: Some(Type::Map(Box::new(key), Box::new(value))),
+                            },
+                        );
+                    }
                     _ => {}
                 }
             }

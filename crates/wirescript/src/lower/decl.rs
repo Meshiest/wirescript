@@ -508,7 +508,10 @@ fn lower_chip_body(ctx: &mut LowerCtx, block: &Block) {
     }
     for s in &block.stmts {
         let is_handler_stmt = matches!(s, Stmt::Handler(_) | Stmt::AnonChip(_));
-        if !ctx.handler_end_execs.is_empty() && !is_handler_stmt {
+        // Only flush when there is no ambient exec chain (see the same guard in
+        // `lower/handler.rs::lower_block`): a statement after a nested `on`
+        // inside a chip body must stay on the outer chain.
+        if !ctx.handler_end_execs.is_empty() && !is_handler_stmt && ctx.current_exec.is_none() {
             flush_handler_end_execs(ctx);
         }
         if is_pure_chip_stmt(s) {
@@ -1184,11 +1187,12 @@ pub(super) fn lower_record_lit(
                 }
             }
             RecordLitField::Spread { value, .. } => {
-                // ...expr — expr must resolve to a Binding::Record.
-                if let Some(Binding::Record(src_fields)) = resolve_field_chain(ctx, value).cloned()
-                {
+                // A `...expr` spread merges the fields of any record value (a
+                // scope binding, a nested record literal, an index/map read, or
+                // a record-returning call), later fields overriding earlier ones.
+                if let Some(src_fields) = crate::lower::stmt::value_record_fields(ctx, value) {
                     for (k, v) in src_fields {
-                        map.insert(k, v); // later fields override
+                        map.insert(k, v);
                     }
                 }
             }

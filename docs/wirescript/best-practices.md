@@ -399,10 +399,21 @@ There is no construction that gives concurrency from a single body:
 | Back-edge loop (`await`) | 1 | N |
 | Self-event fan-out | 1 | N |
 | One send to N distinct receivers | N | **1** |
+| N sends on N DISTINCT channels | N | **1** |
 
-**Firing an event N times gives one invocation per tick**, at any tick rate --
-measured at 240Hz and 60Hz, and the tick COUNT was identical. Fan-out is a loop
-with nicer ergonomics, not a way to parallelise.
+**Firing THE SAME event N times gives one invocation per tick**. Repeating one
+channel is a loop with nicer ergonomics, not a way to parallelise.
+
+**The limit is per channel, not global.** Sends on DIFFERENT channels in one exec
+chain all land in the same tick. N distinct channels move N payloads in one tick, and an
+event carries up to eight data fields, which is 8N values per tick without
+serialising anything.
+
+That matters because the obvious way around "an event cannot carry an array" is
+to concatenate values into one string and split them apart at the receiver. That
+packing is expensive and usually unnecessary: six rows of three fields measured
+**95 gates** packed-and-unpacked against **27** over three parallel channels
+carrying six fields each.
 
 But **one send reaching many receivers costs one tick total.** Send count is
 expensive; receiver count is free. So broadcast one packed payload and let each

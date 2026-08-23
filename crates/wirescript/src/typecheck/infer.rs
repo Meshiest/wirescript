@@ -138,6 +138,19 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
             Some(t)
         }
         Expr::FieldAccess { obj, field, .. } => {
+            // A namespaced container member (`S.scores`, `S.arr`): read the
+            // member's registered container type directly. The namespace symbol
+            // itself is typeless (`any`), so recursing into it would drop the
+            // element/value type and mistype the method result as `any`.
+            if let Expr::Ident { name: ns, .. } = obj.as_ref()
+                && ctx.scope.lookup(ns).map(|s| s.kind) == Some(SymbolKind::Namespace)
+            {
+                return ctx
+                    .namespaces
+                    .get(ns)
+                    .and_then(|m| m.get(field))
+                    .and_then(|info| info.value_type.clone());
+            }
             let recv = container_receiver_type(ctx, obj)?;
             // A field of a scalar record is that field's own type; a field of a
             // record ARRAY / MAP is that field's PARALLEL container (struct-of-
@@ -453,28 +466,47 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         } => {
             let lt = infer(ctx, left);
             let rt = infer(ctx, right);
-            let lt_u = op_operand_type(&lt);
-            let rt_u = op_operand_type(&rt);
-            let rule = resolve_op(op, &[lt_u, rt_u]);
-            if let Some(r) = rule {
-                let result = r.result.clone();
-                ctx.op_resolutions.insert(
-                    (range.file.clone(), range.start.offset, range.end.offset),
-                    r.clone(),
-                );
-                result
-            } else {
-                let code = if matches!(op.as_str(), "&" | "|" | "^" | "<<" | ">>") {
-                    "WS011"
-                } else {
-                    "WS004"
-                };
+            // Comparing two whole records has no lowering: each operand's
+            // first-field projection in `op_operand_type` lets `rec == rec`
+            // typecheck, then both sides lower to `_Unsupported`. A record
+            // compared against a scalar is left alone, since that projection is
+            // the legitimate multi-output auto-unwrap (`ParseInt(s) == 42` reads
+            // the gate's first output). A direct CALL operand is never a bare
+            // record for this purpose; it auto-unwraps at lowering.
+            let bare_record = |e: &Expr, t: &Type| {
+                matches!(unwrap_ref(t), Type::Record(_)) && !matches!(e, Expr::Call { .. })
+            };
+            if bare_record(left.as_ref(), &lt) && bare_record(right.as_ref(), &rt) {
                 ctx.emit(
-                    code,
-                    format!("no overload for '{op}' on {:?}, {:?}", lt, rt),
+                    "WS004",
+                    format!("operator '{op}' cannot be applied to two record values"),
                     range.clone(),
                 );
                 Type::Any
+            } else {
+                let lt_u = op_operand_type(&lt);
+                let rt_u = op_operand_type(&rt);
+                let rule = resolve_op(op, &[lt_u, rt_u]);
+                if let Some(r) = rule {
+                    let result = r.result.clone();
+                    ctx.op_resolutions.insert(
+                        (range.file.clone(), range.start.offset, range.end.offset),
+                        r.clone(),
+                    );
+                    result
+                } else {
+                    let code = if matches!(op.as_str(), "&" | "|" | "^" | "<<" | ">>") {
+                        "WS011"
+                    } else {
+                        "WS004"
+                    };
+                    ctx.emit(
+                        code,
+                        format!("no overload for '{op}' on {:?}, {:?}", lt, rt),
+                        range.clone(),
+                    );
+                    Type::Any
+                }
             }
         }
         Expr::FieldAccess { obj, field, range } => {
@@ -492,6 +524,27 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     .and_then(|info| info.value_type.clone())
             {
                 return ty;
+            }
+            // A namespace member that is missing (`L.nope`) or is not a readable
+            // value (`L.total`, where `total` is an `out`/`in`/buffer with no
+            // value type, or a bare callable used as a value): error, matching
+            // the plain/selective forms, instead of falling through to `any` and
+            // lowering to `_Unsupported`.
+            if let Expr::Ident { name: ns_name, .. } = obj.as_ref()
+                && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
+            {
+                let present = ctx
+                    .namespaces
+                    .get(ns_name.as_str())
+                    .map(|m| m.contains_key(field.as_str()))
+                    .unwrap_or(false);
+                let msg = if present {
+                    format!("'{field}' is not a readable value in namespace '{ns_name}'")
+                } else {
+                    format!("'{field}' not found in namespace '{ns_name}'")
+                };
+                ctx.emit("WS002", msg, range.clone());
+                return Type::Any;
             }
             let ot = infer(ctx, obj);
             if let Type::Ref(inner) = &ot {
@@ -1055,7 +1108,31 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                                     .collect(),
                                 config_gate: None,
                             };
-                            check_args(ctx, &sig, args, 0, true, true, fa_range);
+                            // Named args are dropped at lowering for user
+                            // Fn/Chip calls, so validate arity on POSITIONAL
+                            // count only, matching the local call contract. A
+                            // named-only call (`L.sub(b=2, a=10)`) otherwise
+                            // passed arity here and then silently dropped every
+                            // arg into `_Unsupported` pins.
+                            let positional_count = args
+                                .iter()
+                                .filter(|a| matches!(a, CallArg::Positional(_)))
+                                .count();
+                            let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
+                            if !has_spread && positional_count != params.len() {
+                                ctx.emit(
+                                    "WS022",
+                                    format!(
+                                        "`{field}` expects {} argument{} but {} {} given",
+                                        params.len(),
+                                        if params.len() == 1 { "" } else { "s" },
+                                        positional_count,
+                                        if positional_count == 1 { "was" } else { "were" },
+                                    ),
+                                    fa_range.clone(),
+                                );
+                            }
+                            check_args(ctx, &sig, args, 0, false, true, fa_range);
                         }
                         match ret {
                             Some(ret) => return resolve_type_expr(ctx, &ret),
@@ -1383,6 +1460,20 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     fa_range.clone(),
                 );
                 return Type::Any;
+            }
+            // Every resolvable call form returned above. A callee whose object
+            // is itself a field access (`A.B.bar(...)`) is an unresolved
+            // nested-namespace path; error rather than lower to `_Unsupported`
+            // with exit 0. A single-level `x.method()` stays permissive here.
+            if let Expr::FieldAccess { obj, field, range } = callee.as_ref()
+                && matches!(obj.as_ref(), Expr::FieldAccess { .. })
+            {
+                let _ = infer(ctx, obj);
+                ctx.emit(
+                    "WS002",
+                    format!("cannot resolve call to '{field}'"),
+                    range.clone(),
+                );
             }
             Type::Any
         }

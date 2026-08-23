@@ -487,19 +487,17 @@ impl<'a> Parser<'a> {
                             start: expr_origin,
                             end: _,
                         } => {
-                            let sub = parse(&source, self.file);
-                            let mut expr = sub
-                                .ast
-                                .decls
-                                .into_iter()
-                                .find_map(|d| match d {
-                                    TopDecl::ExprStmt(es) => Some(es.expr),
-                                    _ => None,
-                                })
-                                .unwrap_or(Expr::StringLit {
-                                    value: String::new(),
-                                    range: self.make_range(t.start, t.end),
-                                });
+                            // Parse the `${...}` body as an EXPRESSION via
+                            // `parse_expr`. A module parse only yields an
+                            // `ExprStmt` for a bare expression statement, so an
+                            // interpolated `if ... then ... else` (a statement
+                            // `if`, or unparseable) produces no expression and
+                            // the slot renders empty. `parse_expr` also surfaces
+                            // parse errors inside the `${...}`.
+                            let lexed = crate::lexer::lex(&source, self.file);
+                            let mut sub = Parser::new(lexed.tokens, self.file, lexed.diagnostics);
+                            let mut expr = sub.parse_expr();
+                            self.diagnostics.extend(sub.diagnostics);
                             shift_expr_offsets(&mut expr, expr_origin);
                             InterpPart::Expr(Box::new(expr))
                         }

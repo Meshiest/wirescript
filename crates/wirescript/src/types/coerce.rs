@@ -245,8 +245,9 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         // Named records: match by field name, ref-insensitively.
         if fa.len() == fb.len()
             && fa.iter().all(|(k1, t1)| {
-                fb.iter()
-                    .any(|(k2, t2)| k1 == k2 && type_eq(peel_ref(t1), peel_ref(t2)))
+                fb.iter().any(|(k2, t2)| {
+                    k1 == k2 && matches!(coerce(peel_ref(t1), peel_ref(t2)), CoerceRule::Same)
+                })
             })
         {
             return CoerceRule::Same;

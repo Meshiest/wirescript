@@ -700,6 +700,28 @@ pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
             None => false,
         },
         Expr::IndexAccess { obj, .. } => is_ref_able(ctx, obj),
+        // A namespaced state member (`S.g`): ref-able when the member is a
+        // var/array/map, exactly like its plain-imported form. Lowering wires
+        // `&S.g` correctly, so without this arm the `&` check would wrongly
+        // reject it as WS008.
+        Expr::FieldAccess { obj, field, .. } => {
+            if let Expr::Ident { name: ns, .. } = obj.as_ref()
+                && ctx.scope.lookup(ns).map(|s| s.kind) == Some(SymbolKind::Namespace)
+            {
+                return ctx
+                    .namespaces
+                    .get(ns)
+                    .and_then(|m| m.get(field))
+                    .map(|info| {
+                        matches!(
+                            info.kind,
+                            SymbolKind::Var | SymbolKind::Array | SymbolKind::Map
+                        )
+                    })
+                    .unwrap_or(false);
+            }
+            false
+        }
         _ => false,
     }
 }

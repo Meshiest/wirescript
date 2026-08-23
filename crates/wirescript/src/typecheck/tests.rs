@@ -1428,7 +1428,7 @@
     }
 
     #[test]
-    fn namespace_call_wrong_arity_is_ws011() {
+    fn namespace_call_wrong_arity_is_ws022() {
         use crate::resolve::resolve;
         let loader = ns_util_loader();
         let resolved = resolve(
@@ -1437,9 +1437,11 @@
             &loader,
         );
         let r = typecheck(&resolved.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+        // A namespaced user mod/chip call uses the same positional-arity check
+        // as a local call (WS022), not the builtin WS011 path.
         assert!(
-            r.diagnostics.iter().any(|d| d.code == "WS011"),
-            "expected WS011 for namespaced call arity mismatch: {:?}",
+            r.diagnostics.iter().any(|d| d.code == "WS022"),
+            "expected WS022 for namespaced call arity mismatch: {:?}",
             r.diagnostics
         );
     }

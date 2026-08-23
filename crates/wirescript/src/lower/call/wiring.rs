@@ -72,36 +72,27 @@ pub(super) fn wire_chip_args_and_outputs(
 
         let resolved_rec = ctx.record_fields_of(&param.typ);
         if let Some(fields) = &resolved_rec {
-            if let Some(Binding::Record(rec_fields)) = resolve_field_chain(ctx, arg_expr).cloned() {
-                for field in fields {
-                    let port_name = format!("{}_{}", param.name, field.name);
-                    if caller_captures.contains_key(&port_name) {
-                        continue;
-                    }
-                    let mc_input = child_inputs[input_idx];
-                    input_idx += 1;
-                    let field_sym = crate::intern::intern(&field.name);
-                    if let Some(binding) = rec_fields.get(&field_sym) {
-                        match binding {
-                            Binding::Var(var_rec) => {
-                                let vr = if var_rec.storage == VarStorage::Array {
-                                    var_rec.node_id.port(WirePort::ArrayVarRef)
-                                } else {
-                                    var_rec.node_id.port(WirePort::VarRef)
-                                };
-                                ctx.connect(vr, mc_input.port(WirePort::RerInput));
-                            }
-                            Binding::Local(local) => {
-                                ctx.connect(local.port, mc_input.port(WirePort::RerInput));
-                            }
-                            Binding::Input(inp) => {
-                                ctx.connect(
-                                    inp.node_id.port(WirePort::RerOutput),
-                                    mc_input.port(WirePort::RerInput),
-                                );
-                            }
-                            _ => {}
-                        }
+            // Resolve the record argument's per-field bindings from any value
+            // form (a scope binding, a record literal, an index/map read, or a
+            // record-returning call). Every non-captured field consumes one
+            // child pin, so `input_idx` advances per field regardless of whether
+            // a source binding was found, keeping later pins index-aligned.
+            let rec_fields = value_record_fields(ctx, arg_expr);
+            for field in fields {
+                let port_name = format!("{}_{}", param.name, field.name);
+                if caller_captures.contains_key(&port_name) {
+                    continue;
+                }
+                let mc_input = child_inputs[input_idx];
+                input_idx += 1;
+                let field_sym = crate::intern::intern(&field.name);
+                let binding = rec_fields
+                    .as_ref()
+                    .and_then(|rf| rf.get(&field_sym))
+                    .cloned();
+                if let Some(binding) = binding {
+                    if let Some(src) = binding_to_port(ctx, &binding, &field.range) {
+                        ctx.connect(src, mc_input.port(WirePort::RerInput));
                     }
                 }
             }

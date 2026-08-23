@@ -735,9 +735,30 @@ fn collect_idents_in_decls(decls: &[TopDecl]) -> HashSet<String> {
     idents
 }
 
+/// A handler's trigger names a use of whatever it fires on: `on trig { }` uses
+/// `trig`, `on A.done` uses `A`. Without counting these, an import used ONLY as
+/// a trigger reports WS014 "unused import" and Organize Imports deletes it.
+fn collect_idents_in_trigger(t: &Trigger, idents: &mut HashSet<String>) {
+    match t {
+        Trigger::Ident { name, .. } => {
+            idents.insert(name.clone());
+        }
+        Trigger::Field { obj, .. } => {
+            idents.insert(obj.clone());
+        }
+        Trigger::Not { inner, .. } => collect_idents_in_trigger(inner, idents),
+        Trigger::Union { parts, .. } => {
+            for p in parts {
+                collect_idents_in_trigger(p, idents);
+            }
+        }
+    }
+}
+
 fn collect_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {
     match d {
         TopDecl::Handler(h) => {
+            collect_idents_in_trigger(&h.trigger, idents);
             // The event's CONFIG args count as uses: `on Clock(interval = TICK)`
             // reads TICK to configure the gate, not in the body. Missing these
             // would report the import unused (WS014) — and Organize Imports
@@ -953,6 +974,7 @@ fn collect_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
             // inside a chip as an unused import of CH — and Organize Imports
             // would then delete it, breaking the handler it names.
             Stmt::Handler(h) => {
+                collect_idents_in_trigger(&h.trigger, idents);
                 for arg in &h.config {
                     match arg {
                         HandlerConfigArg::Positional(e) => collect_idents_in_expr(e, idents),

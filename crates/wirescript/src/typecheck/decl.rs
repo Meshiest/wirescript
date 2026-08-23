@@ -752,6 +752,8 @@ fn check_decl_inner(
                         );
                         match pattern {
                             crate::ast::ParamPattern::Record { fields, .. } => {
+                                let mut consumed: crate::collections::HashSet<&str> =
+                                    crate::collections::HashSet::default();
                                 for field in fields {
                                     match field {
                                         crate::ast::RecordDestructField::Named {
@@ -767,6 +769,7 @@ fn check_decl_inner(
                                             } else {
                                                 Type::Any
                                             };
+                                            consumed.insert(name.as_str());
                                             ctx.scope.declare(
                                                 bind_name,
                                                 SymbolInfo {
@@ -780,12 +783,25 @@ fn check_decl_inner(
                                             );
                                         }
                                         crate::ast::RecordDestructField::Rest { name, .. } => {
+                                            let rest_ty = if let Type::Record(rec_fields) = &pt {
+                                                Type::Record(
+                                                    rec_fields
+                                                        .iter()
+                                                        .filter(|(k, _)| {
+                                                            !consumed.contains(k.as_str())
+                                                        })
+                                                        .cloned()
+                                                        .collect(),
+                                                )
+                                            } else {
+                                                Type::Any
+                                            };
                                             ctx.scope.declare(
                                                 name,
                                                 SymbolInfo {
                                                     kind: SymbolKind::Param,
                                                     name: name.clone(),
-                                                    ty: Type::Any,
+                                                    ty: rest_ty,
                                                     decl_range: p.range.clone(),
                                                     signature: None,
                                                     event_data: None,

@@ -782,7 +782,12 @@ pub(super) fn lower_block(ctx: &mut LowerCtx, block: &Block) {
     }
     for s in &block.stmts {
         let is_handler_stmt = matches!(s, Stmt::Handler(_) | Stmt::AnonChip(_));
-        if !ctx.handler_end_execs.is_empty() && !is_handler_stmt {
+        // Flushing overwrites `current_exec` with the nested handlers' ends,
+        // which is only correct when there is no ambient chain (the top-level
+        // case). Inside a handler/chip body with a live chain, a statement after
+        // a nested independent-trigger `on` must stay on the outer chain, not be
+        // re-parented onto the nested trigger.
+        if !ctx.handler_end_execs.is_empty() && !is_handler_stmt && ctx.current_exec.is_none() {
             flush_handler_end_execs(ctx);
         }
         lower_stmt(ctx, s);

@@ -427,6 +427,20 @@ fn ws043_is_reachable() {
     assert!(diags(src).contains(&"WS043".to_string()));
 }
 
+// WS056 - `let v = await sig` on a signal that carries no payload [lower]
+#[test]
+fn ws056_is_reachable() {
+    let src = "let sig: exec\non start { emit sig }\non go { let v = await sig }\nin start: exec\nin go: exec\n";
+    assert!(diags(src).contains(&"WS056".to_string()));
+}
+
+// WS057 - `emit` to a target that is neither an out port nor an exec signal [lower]
+#[test]
+fn ws057_is_reachable() {
+    let src = "in go: exec\non go { emit go }\n";
+    assert!(diags(src).contains(&"WS057".to_string()));
+}
+
 // WSP001 - lexer error: unexpected character [parse/lexer]
 #[test]
 fn wsp001_is_reachable() {

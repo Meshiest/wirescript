@@ -2,14 +2,28 @@
 
 ## 1.6.0
 
-- A `...tuple` spread now expands into a call's positional arguments. `SendGlobalCustomEvent(name, ...t)` splats a tuple across the event's data slots, and `f(...t)` / `f(a, ...rest)` binds each element to consecutive parameters (a tuple literal `...(a, b)`, a bound tuple, or a field chain reaching one). Over-filling a fixed-arity callee reports the usual arity error, and spreading a non-tuple is a `WS003`. Spread arguments used to be silently dropped.
+- A `...tuple` spread now expands into a call's positional arguments. `SendGlobalCustomEvent(name, ...t)` splats a tuple across the event's data slots, and `f(...t)` / `f(a, ...rest)` binds each element to consecutive parameters (a tuple literal `...(a, b)`, a bound tuple, or a field chain reaching one). Over-filling a fixed-arity callee reports the usual arity error, and spreading a non-tuple is a `WS003`.
 - A `mod` can take a trailing `...rest` variadic parameter that captures every argument past its fixed params. Each call site binds `rest` to a compile-time tuple of the extra args, and a `...rest` in the body splats them onward, so `mod broadcast(name: const string, ...rest) { SendGlobalCustomEvent(name, ...rest) }` forwards any number of values. A call must still supply the fixed params (fewer is `WS022`). Only `mod`s may be variadic; a `...rest` on a `chip` is `WS052`.
-- Compile progress now accounts for embedded prefabs: the reported step total grows by one per `$./file` reference and inline `$```...``` ` block, so the editor indicator advances through them instead of appearing to stall on the final phase.
-- The editor's compile status indicator no longer lingers after a build finishes; it is shown only while a compile is actually running.
-- `SpawnPrefab(..., destroyAll = sig)` fed a local `let sig: exec` signal now wires the signal into the spawner's destroy pin; it used to silently emit no wire (the name folded to the placeholder `0` an `exec` let carries), so only an input port reached the pin and spawned prefabs were never destroyed.
-- `wirescript-check` now runs through lowering, so it surfaces the same `_Unsupported`-placeholder warnings `compile` emits (a file that lowers to a placeholder no longer reports "no errors").
-- New `WS053`: a plain `emit X` in the same chain as a following `await X` warns that the kick fires before the await arms (parking the chain forever); use `buffer emit X`.
 - `await CustomEvent("c")` can now capture the event's data inline: `let n: int = await CustomEvent("c")` suspends until the event fires and binds the first data output (typed by the annotation). A tuple `let (p, t) = ...` captures data outputs positionally. Annotate the type or the wire defaults to a float (`WS055` warns when it can't be determined). Bare `await CustomEvent("c")` (no binding) just waits.
+
+### Fixes
+
+- Compile progress now accounts for embedded prefabs: the reported step total grows by one per `$./file` reference and inline `$```...``` ` block, so the editor indicator advances through them as it compiles.
+- The editor's compile status indicator shows only while a compile is actually running.
+- `SpawnPrefab(..., destroyAll = sig)` fed a local `let sig: exec` signal wires the signal into the spawner's destroy pin, so those prefabs are destroyed (a local `exec` `let` folds to a placeholder `0`, so it needs this dedicated wiring).
+- `wirescript-check` runs through lowering, so it surfaces the same `_Unsupported`-placeholder warnings `compile` emits.
+- New `WS053`: a plain `emit X` in the same chain as a following `await X` warns that the kick fires before the await arms (parking the chain forever); use `buffer emit X`.
+- A record passed to a `chip` wires its fields: a record literal argument (`Foo({ x: a, y: 2 })`), a field whose value is a `var` (read by value, not through the reference port), and a destructured chip parameter (`chip f({ x, y }: P)`) all bind correctly.
+- Assigning a field of a `let`, input-port, or literal record (`p.x = 5` where `p` is not a `var`) reports `WS007`. A `var`-backed record field stays assignable.
+- `==` and `!=` between two whole record values report `WS004`. Comparing a multi-output result to a scalar (`arr.pop() == 5`) still works.
+- A `...rest` parameter in a destructured `mod` parameter types as the record of the remaining fields, and a tuple-typed field inside a record annotation (`type T = { pair: (int, int) }`) type-checks correctly.
+- A record literal used as a spread source (`{ ...{ ...p, y: 2 }, x: 9 }`) or read directly (`({ x: 1, y: 2 }).x`) resolves its fields.
+- Namespaced member access is stricter. Reading a missing or non-value member (`L.nope`, or a namespaced `out` port) and a nested path (`A.B.bar()`) report `WS002`; a named-argument call through a namespace reports `WS022` when the positional count is wrong. A namespaced container read (`S.scores.get(k)`), `&S.g`, and an import used only as a handler trigger type-check cleanly.
+- An `if` expression written directly inside a string interpolation (`"${if n < 10 then "0" else ""}${n}"`) emits its comparison and select.
+- Passing a non-lvalue (a literal, expression, `let`, `arr[i]`, or call result) to a `*T`/`ref` parameter reports `WS008`.
+- A statement written after a nested `on` handler inside a handler body stays on the outer exec chain rather than binding to the nested handler's trigger.
+- New `WS057`: `emit X` is an error when `X` is not an `out` port or a `let ...: exec` signal (an input port, a `var`, or an `out`/signal declared outside an enclosing named `chip`).
+- New `WS056`: `let v = await sig` on a signal that carries no payload is an error. Emit a value (`emit sig = ...`) or capture one with `await <expr> on sig`.
 
 ## 1.5.0
 

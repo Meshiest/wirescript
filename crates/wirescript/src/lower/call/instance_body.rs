@@ -314,6 +314,36 @@ pub(super) fn build_chip_module(
                 .insert(&inp.name, Binding::Input(NodeRecord { node_id, ty: t }));
         }
     }
+    // Apply destructuring patterns declared on chip params: the record is bound
+    // above under the synthetic param name, so expand it into the named fields
+    // the body reads. A `chip f({x, y}: P)` otherwise leaves `x`/`y` unbound.
+    for inp in &chip_decl.inputs {
+        let Some(pattern) = &inp.pattern else {
+            continue;
+        };
+        let base = child_ctx.scope.get(&inp.name).cloned();
+        match pattern {
+            crate::ast::ParamPattern::Record { fields, .. } => {
+                if let Some(Binding::Record(src)) = base {
+                    crate::lower::decl::install_record_destruct(&mut child_ctx, &src, fields);
+                }
+            }
+            crate::ast::ParamPattern::Tuple { names, rest } => {
+                if let Some(Binding::Record(src)) = base {
+                    let order: Vec<String> = (0..names.len().max(src.len()))
+                        .map(|i| i.to_string())
+                        .collect();
+                    crate::lower::decl::install_tuple_destruct(
+                        &mut child_ctx,
+                        &src,
+                        names,
+                        rest.as_ref(),
+                        &order,
+                    );
+                }
+            }
+        }
+    }
     for out in &chip_decl.outputs {
         let t = if is_generic {
             child_ctx.resolve_local_type(&out.typ)
