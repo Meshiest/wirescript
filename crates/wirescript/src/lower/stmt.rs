@@ -164,7 +164,36 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             lower_buffer_body(ctx, b);
         }
         Stmt::Return { value, .. } => {
-            if let Some(Expr::RecordLit { fields, .. }) = value {
+            // A tuple return `(v0, v1, ...)` to a mod with multiple NAMED
+            // outputs wires each element onto the matching output in declaration
+            // order, the same delivery as `emit out_i = v_i`. A tuple parses to
+            // an index-keyed record; without this it is stashed as one return
+            // record and the caller's `let (a, b) = f()` reads the unwired output
+            // nodes as `_Unsupported`. A single tuple/record output (count 1) and
+            // a named `{ a, b }` record both keep the record path below.
+            let tuple_to_multi = if let Some(Expr::RecordLit { fields, .. }) = value {
+                ctx.output_count() > 1
+                    && fields.iter().all(|f| {
+                        matches!(f, RecordLitField::Named { name, .. } if name.parse::<usize>().is_ok())
+                    })
+            } else {
+                false
+            };
+            if tuple_to_multi {
+                if let Some(Expr::RecordLit { fields, .. }) = value {
+                    let rec = lower_record_lit(ctx, fields);
+                    let outs = ctx.ordered_outputs();
+                    for (i, out) in outs.iter().enumerate() {
+                        let key = crate::intern::intern(&i.to_string());
+                        if let Some(binding) = rec.get(&key).cloned()
+                            && let Some(port) =
+                                binding_to_port(ctx, &binding, &SourceRange::default())
+                        {
+                            ctx.connect(port, out.node_id.port(WirePort::RerInput));
+                        }
+                    }
+                }
+            } else if let Some(Expr::RecordLit { fields, .. }) = value {
                 // A record-literal return: `-> { a, b }` is a single record-typed
                 // output, and a bare record literal is not a standalone
                 // expression, so destructure it into a field->binding map. The

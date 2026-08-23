@@ -5,6 +5,7 @@
 - A `...tuple` spread now expands into a call's positional arguments. `SendGlobalCustomEvent(name, ...t)` splats a tuple across the event's data slots, and `f(...t)` / `f(a, ...rest)` binds each element to consecutive parameters (a tuple literal `...(a, b)`, a bound tuple, or a field chain reaching one). Over-filling a fixed-arity callee reports the usual arity error, and spreading a non-tuple is a `WS003`.
 - A `mod` can take a trailing `...rest` variadic parameter that captures every argument past its fixed params. Each call site binds `rest` to a compile-time tuple of the extra args, and a `...rest` in the body splats them onward, so `mod broadcast(name: const string, ...rest) { SendGlobalCustomEvent(name, ...rest) }` forwards any number of values. A call must still supply the fixed params (fewer is `WS022`). Only `mod`s may be variadic; a `...rest` on a `chip` is `WS052`.
 - `await CustomEvent("c")` can now capture the event's data inline: `let n: int = await CustomEvent("c")` suspends until the event fires and binds the first data output (typed by the annotation). A tuple `let (p, t) = ...` captures data outputs positionally. Annotate the type or the wire defaults to a float (`WS055` warns when it can't be determined). Bare `await CustomEvent("c")` (no binding) just waits.
+- A tuple return's parentheses are optional: `return a, b, c` returns the same tuple as `return (a, b, c)`, and `.0`/`.1` access the elements.
 
 ### Fixes
 
@@ -25,6 +26,7 @@
 - New `WS057`: `emit X` is an error when `X` is not an `out` port or a `let ...: exec` signal (an input port, a `var`, or an `out`/signal declared outside an enclosing named `chip`).
 - New `WS056`: `let v = await sig` on a signal that carries no payload is an error. Emit a value (`emit sig = ...`) or capture one with `await <expr> on sig`.
 - New `WS058` (warning): an exec statement that never runs is flagged
+- A tuple `return (a, b)` to a `mod` with named multi-outputs wires each element to the matching output in declaration order, so `let (a, b) = f()` reads the returned values.
 
 ## 1.5.0
 

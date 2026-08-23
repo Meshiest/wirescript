@@ -335,7 +335,49 @@ impl<'a> Parser<'a> {
                         self.peek().kind,
                         TokenKind::Newline | TokenKind::Semi | TokenKind::RBrace | TokenKind::Eof
                     ) {
-                        Some(self.parse_expr())
+                        let first = self.parse_expr();
+                        // `return a, b, c` - parens optional on a tuple return.
+                        // Collect the comma-separated list into the same
+                        // index-keyed record `(a, b, c)` produces.
+                        if self.check(TokenKind::Comma, None) {
+                            let mut elements = vec![first];
+                            while self.match_tok(TokenKind::Comma, None).is_some() {
+                                if matches!(
+                                    self.peek().kind,
+                                    TokenKind::Newline
+                                        | TokenKind::Semi
+                                        | TokenKind::RBrace
+                                        | TokenKind::Eof
+                                ) {
+                                    break;
+                                }
+                                elements.push(self.parse_expr());
+                            }
+                            let r0 = elements.first().unwrap().range().clone();
+                            let rn = elements.last().unwrap().range().clone();
+                            let fields: Vec<crate::ast::RecordLitField> = elements
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, expr)| {
+                                    let range = expr.range().clone();
+                                    crate::ast::RecordLitField::Named {
+                                        name: i.to_string(),
+                                        value: expr,
+                                        range,
+                                    }
+                                })
+                                .collect();
+                            Some(Expr::RecordLit {
+                                fields,
+                                range: crate::diagnostic::SourceRange {
+                                    file: r0.file,
+                                    start: r0.start,
+                                    end: rn.end,
+                                },
+                            })
+                        } else {
+                            Some(first)
+                        }
                     } else {
                         None
                     };

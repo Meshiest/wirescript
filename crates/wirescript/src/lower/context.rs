@@ -986,6 +986,18 @@ impl<'a> LowerCtx<'a> {
             })
     }
 
+    /// Every output node in declaration order, for wiring a tuple return
+    /// positionally onto a mod's named outputs.
+    pub(super) fn ordered_outputs(&self) -> Vec<NodeRecord> {
+        self.scope
+            .iter_within(crate::scope::ScopeTag::MODULE)
+            .filter_map(|(_, b)| match b {
+                Binding::Output(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn lookup_chip(&self, name: &str) -> Option<&std::sync::Arc<ChipDecl>> {
         match self.scope.get(name) {
             Some(Binding::Chip(c)) => Some(c),

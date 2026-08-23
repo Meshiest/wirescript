@@ -99,3 +99,24 @@ fn s6_await_valueless_signal_is_ws056() {
     let src = "let sig: exec\nstatic var captured: int = 0\non start { emit sig }\non go {\n  let v = await sig\n  captured = v\n}\nin start: exec\nin go: exec\n";
     assert!(has(src, "WS056"), "{:?}", diags(src));
 }
+
+// --- A tuple `return` to a mod with named multi-outputs distributes each
+//     element to the matching output; `let (a, b) = f()` used to read
+//     `_Unsupported` placeholders.
+#[test]
+fn tuple_return_named_outputs_no_placeholder() {
+    let src = "mod pair(x: int) -> (a: int, b: int) {\n  return (x, x + 1)\n}\nstatic var res: int = 0\nin go: exec\non go {\n  let (a, b) = pair(3)\n  res = a * 10 + b\n}\n";
+    assert!(!has(src, "WSP001"), "{:?}", diags(src));
+}
+
+// --- `return a, b` (parens optional) parses and behaves like `return (a, b)`.
+#[test]
+fn tuple_return_optional_parens() {
+    let src = "mod pair(x: int) -> (a: int, b: int) {\n  return x, x + 1\n}\nstatic var res: int = 0\nin go: exec\non go {\n  let (a, b) = pair(3)\n  res = a * 10 + b\n}\n";
+    let d = diags(src);
+    assert!(
+        !d.iter().any(|c| c == "WSP001" || c == "WS002"),
+        "{:?}",
+        d
+    );
+}
