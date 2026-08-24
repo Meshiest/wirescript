@@ -980,6 +980,16 @@ fn check_decl_inner(
             for d in &ns.decls {
                 register_decl(ctx, d);
             }
+            // Seal name resolution at this frame: a free name in a namespaced
+            // body must bind to a SIBLING member (registered just above) or a
+            // language global (events / math / builtin types resolve via the
+            // catalog and `resolve_type_expr`, not this stack), never fall
+            // through to the importer's same-named top-level state. Without
+            // this, `lib` `on go { q = q + 1 }` with no `q`/`go` of its own
+            // silently type-checks against — and wires to — main's `go`/`q`
+            // (N1). Restored before the frame pops.
+            let sealed_floor = ctx.scope.depth() - 1;
+            let prev_floor = ctx.scope.set_floor(sealed_floor);
             for d in &ns.decls {
                 if matches!(
                     d,
@@ -1004,6 +1014,7 @@ fn check_decl_inner(
                     check_decl(ctx, d);
                 }
             }
+            ctx.scope.set_floor(prev_floor);
             ctx.pop_scope();
         }
         TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}

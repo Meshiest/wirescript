@@ -25,6 +25,30 @@ pub(super) fn pre_declare_chip_name(ctx: &mut LowerCtx, c: &ChipDecl) {
     }
 }
 
+/// Pre-declare a top-level storage/input decl, deduped by source location.
+/// When the same SOURCE declaration was already lowered — reached through
+/// another import of the same file (a plain + `import * as` pair, `import {g}`
+/// + `import {g as h}`, or a diamond) — bind `name` to the existing gate
+/// instead of running `predeclare` to create a duplicate. Otherwise lower it
+/// and record the resulting binding under its source location. A DIFFERENT
+/// file's same-named decl has a distinct location, so real collisions still
+/// get their own gate. See `LowerCtx::import_state_dedup` (N2/N3).
+fn dedup_import_state(
+    ctx: &mut LowerCtx,
+    range: &SourceRange,
+    name: &str,
+    predeclare: impl FnOnce(&mut LowerCtx),
+) {
+    if let Some(binding) = ctx.reuse_import_state(range) {
+        ctx.scope.insert(name, binding);
+        return;
+    }
+    predeclare(ctx);
+    if let Some(binding) = ctx.scope.get(name).cloned() {
+        ctx.record_import_state(range, binding);
+    }
+}
+
 pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
     match d {
         // Record the chip/mod name — WITHOUT touching `ctx.scope` (see
@@ -35,11 +59,21 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Chip(c) => pre_declare_chip_name(ctx, c),
         // Var/buffer gates are created HERE (pass 1), not in lower_decl's
         // with_nofold wrap — honor the decl's @nofold during registration.
-        TopDecl::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
-        TopDecl::Array(a) => pre_declare_array(ctx, a),
-        TopDecl::Map(m) => pre_declare_map(ctx, m),
-        TopDecl::Buffer(b) => pre_declare_buffer(ctx, b),
-        TopDecl::In(i) => pre_declare_input(ctx, i),
+        // Each storage/input decl is deduped by source location: the same
+        // source declaration reached through several imports of one file
+        // (plain + `import * as`, `import {g}` + `import {g as h}`, a diamond)
+        // shares ONE gate instead of one per import (N2/N3).
+        TopDecl::Var(v) => dedup_import_state(ctx, &v.range, &v.name, |ctx| {
+            ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v))
+        }),
+        TopDecl::Array(a) => {
+            dedup_import_state(ctx, &a.range, &a.name, |ctx| pre_declare_array(ctx, a))
+        }
+        TopDecl::Map(m) => dedup_import_state(ctx, &m.range, &m.name, |ctx| pre_declare_map(ctx, m)),
+        TopDecl::Buffer(b) => {
+            dedup_import_state(ctx, &b.range, &b.name, |ctx| pre_declare_buffer(ctx, b))
+        }
+        TopDecl::In(i) => dedup_import_state(ctx, &i.range, &i.name, |ctx| pre_declare_input(ctx, i)),
         TopDecl::Out(o) => ctx.with_nofold(o.no_fold, |ctx| {
             pre_declare_output(
                 ctx,

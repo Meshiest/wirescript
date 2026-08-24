@@ -26,6 +26,15 @@ struct Frame<V> {
 /// Key type is `Sym` — interned symbol handle (4 bytes, Copy).
 pub struct Scope<V> {
     frames: Vec<Frame<V>>,
+    /// Lowest frame index `get`/`get_mut` name resolution may see; 0 (the
+    /// default) means every frame is visible. Raised temporarily while a
+    /// NAMESPACED body (`import * as ns`) is checked or lowered, so a free
+    /// name there resolves against the namespace's own members and language
+    /// globals (events / math resolve via the catalog, NOT this stack) rather
+    /// than falling through to the importer's same-named top-level state.
+    /// Only the by-name lookups honor it — the `iter*` sweeps (type aliases,
+    /// chip closure capture) deliberately still see every frame. See N1.
+    floor: usize,
 }
 
 impl<V> Default for Scope<V> {
@@ -38,6 +47,7 @@ impl<V> Scope<V> {
     pub fn new() -> Self {
         Self {
             frames: vec![Frame { tag: ScopeTag::ROOT, entries: HashMap::default() }],
+            floor: 0,
         }
     }
 
@@ -50,6 +60,25 @@ impl<V> Scope<V> {
             return;
         }
         self.frames.pop();
+        // A caller that popped below a raised floor without restoring it would
+        // otherwise leave `floor` past the top of the stack; clamp so lookups
+        // stay well-defined.
+        self.floor = self.floor.min(self.frames.len());
+    }
+
+    /// Number of frames on the stack (always >= 1). The top frame's index is
+    /// `depth() - 1`.
+    pub fn depth(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Seal by-name resolution below `floor`: `get`/`get_mut` ignore every
+    /// frame with index < `floor`. Returns the previous floor so the caller
+    /// can restore it. See the `floor` field.
+    pub fn set_floor(&mut self, floor: usize) -> usize {
+        let prev = self.floor;
+        self.floor = floor.min(self.frames.len());
+        prev
     }
 
     pub fn get(&self, key: &str) -> Option<&V> {
@@ -58,7 +87,7 @@ impl<V> Scope<V> {
     }
 
     pub fn get_sym(&self, key: Sym) -> Option<&V> {
-        for frame in self.frames.iter().rev() {
+        for frame in self.frames[self.floor..].iter().rev() {
             if let Some(v) = frame.entries.get(&key) {
                 return Some(v);
             }
@@ -82,7 +111,7 @@ impl<V> Scope<V> {
     }
 
     pub fn get_mut_sym(&mut self, key: Sym) -> Option<&mut V> {
-        for frame in self.frames.iter_mut().rev() {
+        for frame in self.frames[self.floor..].iter_mut().rev() {
             if let Some(v) = frame.entries.get_mut(&key) {
                 return Some(v);
             }

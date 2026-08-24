@@ -125,42 +125,92 @@ pub enum FoldMode {
 /// sites left the output reached from two drivers with no backing var — a
 /// load-time fan-in on its `RER_Input`. An output reached from more than one
 /// site (or one conditional site) needs a backing store.
-fn count_output_value_emits(ast: &Script) -> HashMap<String, (usize, bool)> {
-    // Per output: (number of `emit out = …` sites, whether ANY site is inside a
-    // conditional). A conditional emit needs a backing var even when it is the
-    // ONLY site — otherwise the single-site fast path wires the value straight
-    // to the output rerouter, UNCONDITIONALLY, and the branch's taken-exec is
-    // left dead (`if c { emit r = v }` made `r` continuously equal `v`).
-    fn walk(block: &Block, in_branch: bool, counts: &mut HashMap<String, (usize, bool)>) {
-        for s in &block.stmts {
-            match s {
-                Stmt::Emit(e) if e.value.is_some() => {
-                    let entry = counts.entry(e.name.clone()).or_insert((0, false));
-                    entry.0 += 1;
-                    entry.1 |= in_branch;
-                }
-                Stmt::If(i) => {
-                    walk(&i.then_block, true, counts);
-                    if let Some(eb) = &i.else_block {
-                        walk(eb, true, counts);
-                    }
-                }
-                // Anon chip / a handler nested in one: same output scope as here.
-                Stmt::AnonChip(ac) => walk(&ac.body, in_branch, counts),
-                Stmt::Handler(h) => walk(&h.body, in_branch, counts),
-                _ => {}
+/// Accumulate `emit <output> = …` sites from a block into `counts` — per
+/// output, `(number of value-emit sites, whether ANY site is inside a
+/// conditional)`. Recurses into `if` branches, anonymous `chip { … }` bodies,
+/// and nested handlers (an anon chip SHARES its parent's outputs). A
+/// conditional emit needs a backing var even as the ONLY site, else the
+/// single-site fast path wires the value straight to the rerouter,
+/// UNCONDITIONALLY, leaving the branch's taken-exec dead.
+pub(super) fn count_emits_in_block(
+    block: &Block,
+    in_branch: bool,
+    counts: &mut HashMap<String, (usize, bool)>,
+) {
+    for s in &block.stmts {
+        match s {
+            Stmt::Emit(e) if e.value.is_some() => {
+                let entry = counts.entry(e.name.clone()).or_insert((0, false));
+                entry.0 += 1;
+                entry.1 |= in_branch;
             }
+            Stmt::If(i) => {
+                count_emits_in_block(&i.then_block, true, counts);
+                if let Some(eb) = &i.else_block {
+                    count_emits_in_block(eb, true, counts);
+                }
+            }
+            Stmt::AnonChip(ac) => count_emits_in_block(&ac.body, in_branch, counts),
+            Stmt::Handler(h) => count_emits_in_block(&h.body, in_branch, counts),
+            _ => {}
         }
     }
+}
+
+fn count_output_value_emits(ast: &Script) -> HashMap<String, (usize, bool)> {
     let mut counts = HashMap::default();
     for d in &ast.decls {
         match d {
-            TopDecl::Handler(h) => walk(&h.body, false, &mut counts),
-            TopDecl::AnonChip(ac) => walk(&ac.body, false, &mut counts),
+            TopDecl::Handler(h) => count_emits_in_block(&h.body, false, &mut counts),
+            TopDecl::AnonChip(ac) => count_emits_in_block(&ac.body, false, &mut counts),
             _ => {}
         }
     }
     counts
+}
+
+/// Give output `name` a backing PseudoVar (idempotent). An output value-driven
+/// from more than one `emit` site — or one conditional site, or a default plus
+/// any emit — can't take a wire per site (two wires into the output rerouter is
+/// a load-time fan-in): each site does a `Var_Set` into this var, and the var
+/// feeds the output once (`lower/mod.rs`'s finalize step). `lookup_output` must
+/// already resolve `name` (its rerouter pre-declared) or this is a no-op.
+pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str) {
+    if ctx.output_backing_vars.contains_key(name) {
+        return;
+    }
+    let Some(out) = ctx.lookup_output(name).cloned() else {
+        return;
+    };
+    let inner = out.ty.clone();
+    let var_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::PSEUDO_VAR,
+        source_range: SourceRange::default(),
+        ports: GateIO {
+            inputs: vec![],
+            outputs: vec![
+                PortSpec {
+                    name: *sym::VALUE,
+                    ty: inner.clone(),
+                },
+                PortSpec {
+                    name: *sym::VAR_REF,
+                    ty: Type::Ref(Box::new(inner.clone())),
+                },
+            ],
+        },
+        note: Some("out_backing"),
+        ..Default::default()
+    });
+    ctx.output_backing_vars.insert(
+        name.to_string(),
+        VarRecord {
+            node_id: var_id,
+            inner_type: inner,
+            get_node_for_handler: None,
+            storage: VarStorage::Var,
+        },
+    );
 }
 
 pub fn lower(input: LowerInput<'_>) -> LowerResult {
@@ -232,6 +282,8 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         // stays empty for a chip body, which has no `import * as`).
         importer_names: HashSet::default(),
         ns_mod_scopes: HashMap::default(),
+        import_state_dedup: crate::collections::HashMap::default(),
+        import_behavior_lowered: crate::collections::HashSet::default(),
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -268,38 +320,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         if count < 2 && !in_branch && !has_default {
             continue;
         }
-        let Some(out) = ctx.lookup_output(&name).cloned() else {
-            continue;
-        };
-        let inner = out.ty.clone();
-        let var_id = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::PSEUDO_VAR,
-            source_range: SourceRange::default(),
-            ports: GateIO {
-                inputs: vec![],
-                outputs: vec![
-                    PortSpec {
-                        name: *sym::VALUE,
-                        ty: inner.clone(),
-                    },
-                    PortSpec {
-                        name: *sym::VAR_REF,
-                        ty: Type::Ref(Box::new(inner.clone())),
-                    },
-                ],
-            },
-            note: Some("out_backing"),
-            ..Default::default()
-        });
-        ctx.output_backing_vars.insert(
-            name,
-            VarRecord {
-                node_id: var_id,
-                inner_type: inner,
-                get_node_for_handler: None,
-                storage: VarStorage::Var,
-            },
-        );
+        create_output_backing_var(&mut ctx, &name);
     }
     // Pass 2: lower bodies.
     for d in &input.ast.decls {
@@ -1657,6 +1678,8 @@ pub fn compile_chip_template(
         // stays empty for a chip body, which has no `import * as`).
         importer_names: HashSet::default(),
         ns_mod_scopes: HashMap::default(),
+        import_state_dedup: crate::collections::HashMap::default(),
+        import_behavior_lowered: crate::collections::HashSet::default(),
     };
 
     for inp in &chip_decl.inputs {

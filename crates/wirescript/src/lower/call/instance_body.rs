@@ -159,6 +159,12 @@ pub(super) fn build_chip_module(
         pass1_chips: ctx.pass1_chips.clone(),
         importer_names: ctx.importer_names.clone(),
         ns_mod_scopes: ctx.ns_mod_scopes.clone(),
+        // A chip body is its own module and performs no import merge — these
+        // stay empty (its per-instance state must NEVER dedup across instances
+        // by source location, which is exactly why the dedup lives only at the
+        // entry module's import sites, not inside `pre_declare_var`).
+        import_state_dedup: crate::collections::HashMap::default(),
+        import_behavior_lowered: crate::collections::HashSet::default(),
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so

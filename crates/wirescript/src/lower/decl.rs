@@ -90,7 +90,15 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::Out(b) => ctx.with_nofold(b.no_fold, |ctx| {
             lower_out_binding(ctx, &b.name, b.value.as_ref(), &b.range)
         }),
-        TopDecl::Handler(h) => ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h)),
+        // Dedup an imported handler reached through several imports of one file
+        // (a plain + `import * as` pair) so its behaviour installs once, not
+        // once per import. A non-imported handler has a unique location and is
+        // always first-seen, so this never affects an ordinary program. See N2.
+        TopDecl::Handler(h) => {
+            if ctx.first_import_of_behavior(&h.range) {
+                ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h));
+            }
+        }
         TopDecl::Event(e) => ctx.with_nofold(e.no_fold, |ctx| lower_event_decl(ctx, e)),
         TopDecl::Let(l) => ctx.with_nofold(l.no_fold, |ctx| lower_let_decl(ctx, l)),
         TopDecl::Buffer(b) => lower_buffer_body(ctx, b),
@@ -254,43 +262,63 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // namespace and, for an importer-owned name, restores the
                     // importer's own bare binding at the end of the arm.
                     TopDecl::Array(a) => {
-                        let owned = ctx.importer_names.contains(&a.name);
-                        let saved = owned.then(|| ctx.scope.get(&a.name).cloned()).flatten();
-                        pre_declare_array(ctx, a);
-                        route_ns_member(
-                            ctx, &a.name, &mut ns_decls, &mut ns_value_names,
-                            &mut ns_restores, saved, owned,
-                        );
+                        if let Some(existing) = ctx.reuse_import_state(&a.range) {
+                            ns_decls.insert(a.name.clone(), existing);
+                        } else {
+                            let owned = ctx.importer_names.contains(&a.name);
+                            let saved = owned.then(|| ctx.scope.get(&a.name).cloned()).flatten();
+                            pre_declare_array(ctx, a);
+                            record_ns_member_state(ctx, &a.range, &a.name);
+                            route_ns_member(
+                                ctx, &a.name, &mut ns_decls, &mut ns_value_names,
+                                &mut ns_restores, saved, owned,
+                            );
+                        }
                     }
                     TopDecl::Map(m) => {
-                        let owned = ctx.importer_names.contains(&m.name);
-                        let saved = owned.then(|| ctx.scope.get(&m.name).cloned()).flatten();
-                        pre_declare_map(ctx, m);
-                        route_ns_member(
-                            ctx, &m.name, &mut ns_decls, &mut ns_value_names,
-                            &mut ns_restores, saved, owned,
-                        );
+                        if let Some(existing) = ctx.reuse_import_state(&m.range) {
+                            ns_decls.insert(m.name.clone(), existing);
+                        } else {
+                            let owned = ctx.importer_names.contains(&m.name);
+                            let saved = owned.then(|| ctx.scope.get(&m.name).cloned()).flatten();
+                            pre_declare_map(ctx, m);
+                            record_ns_member_state(ctx, &m.range, &m.name);
+                            route_ns_member(
+                                ctx, &m.name, &mut ns_decls, &mut ns_value_names,
+                                &mut ns_restores, saved, owned,
+                            );
+                        }
                     }
                     TopDecl::Var(v) => {
-                        let owned = ctx.importer_names.contains(&v.name);
-                        let saved = owned.then(|| ctx.scope.get(&v.name).cloned()).flatten();
-                        ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v));
-                        // Module-level = pure: a non-constant init is dropped.
-                        ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true));
-                        route_ns_member(
-                            ctx, &v.name, &mut ns_decls, &mut ns_value_names,
-                            &mut ns_restores, saved, owned,
-                        );
+                        if let Some(existing) = ctx.reuse_import_state(&v.range) {
+                            ns_decls.insert(v.name.clone(), existing);
+                        } else {
+                            let owned = ctx.importer_names.contains(&v.name);
+                            let saved = owned.then(|| ctx.scope.get(&v.name).cloned()).flatten();
+                            ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v));
+                            // Module-level = pure: a non-constant init is dropped.
+                            ctx.with_nofold(v.no_fold, |ctx| warn_unbaked_var_init(ctx, v, true));
+                            record_ns_member_state(ctx, &v.range, &v.name);
+                            route_ns_member(
+                                ctx, &v.name, &mut ns_decls, &mut ns_value_names,
+                                &mut ns_restores, saved, owned,
+                            );
+                        }
                     }
                     TopDecl::Buffer(b) => {
-                        let owned = ctx.importer_names.contains(&b.name);
-                        let saved = owned.then(|| ctx.scope.get(&b.name).cloned()).flatten();
-                        pre_declare_buffer(ctx, b);
-                        ns_buffers.push(b);
-                        route_ns_member(
-                            ctx, &b.name, &mut ns_decls, &mut ns_value_names,
-                            &mut ns_restores, saved, owned,
-                        );
+                        if let Some(existing) = ctx.reuse_import_state(&b.range) {
+                            ns_decls.insert(b.name.clone(), existing);
+                        } else {
+                            let owned = ctx.importer_names.contains(&b.name);
+                            let saved = owned.then(|| ctx.scope.get(&b.name).cloned()).flatten();
+                            pre_declare_buffer(ctx, b);
+                            record_ns_member_state(ctx, &b.range, &b.name);
+                            ns_buffers.push(b);
+                            route_ns_member(
+                                ctx, &b.name, &mut ns_decls, &mut ns_value_names,
+                                &mut ns_restores, saved, owned,
+                            );
+                        }
                     }
                     // An imported module's `in`/`out` PORTS. Without these the
                     // declarations were dropped entirely: `on ns.trigger { … }`
@@ -299,13 +327,18 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // importing module's chip, exactly as a local `in`/`out`
                     // does, and are reachable both bare and as `ns.name`.
                     TopDecl::In(i) => {
-                        let owned = ctx.importer_names.contains(&i.name);
-                        let saved = owned.then(|| ctx.scope.get(&i.name).cloned()).flatten();
-                        pre_declare_input(ctx, i);
-                        route_ns_member(
-                            ctx, &i.name, &mut ns_decls, &mut ns_value_names,
-                            &mut ns_restores, saved, owned,
-                        );
+                        if let Some(existing) = ctx.reuse_import_state(&i.range) {
+                            ns_decls.insert(i.name.clone(), existing);
+                        } else {
+                            let owned = ctx.importer_names.contains(&i.name);
+                            let saved = owned.then(|| ctx.scope.get(&i.name).cloned()).flatten();
+                            pre_declare_input(ctx, i);
+                            record_ns_member_state(ctx, &i.range, &i.name);
+                            route_ns_member(
+                                ctx, &i.name, &mut ns_decls, &mut ns_value_names,
+                                &mut ns_restores, saved, owned,
+                            );
+                        }
                     }
                     TopDecl::Out(o) => {
                         let owned = ctx.importer_names.contains(&o.name);
@@ -335,6 +368,30 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     _ => {}
                 }
             }
+            // A namespaced `out` reached by 2+ emits, a conditional emit, or a
+            // default-plus-emit needs a backing var exactly like a top-level one,
+            // but the top-level pass-1b prescan does not descend into `ns.decls`.
+            // Create it HERE — the output rerouter exists (pre-declared above) and
+            // this runs before the default/emit wiring below — so those drivers
+            // route through the var instead of fanning in on the rerouter's
+            // `RER_Input`, which fails to load in-game (4b).
+            {
+                let mut emit_counts = crate::collections::HashMap::default();
+                for h in &ns_handlers {
+                    crate::lower::count_emits_in_block(&h.body, false, &mut emit_counts);
+                }
+                for ac in &ns_anon_chips {
+                    crate::lower::count_emits_in_block(&ac.body, false, &mut emit_counts);
+                }
+                for o in &ns_outputs {
+                    let (count, in_branch) =
+                        emit_counts.get(&o.name).copied().unwrap_or((0, false));
+                    if count < 2 && !in_branch && o.value.is_none() {
+                        continue;
+                    }
+                    crate::lower::create_output_backing_var(ctx, &o.name);
+                }
+            }
             // Wire buffer initializers only after every ns member is in scope
             // (an init may reference a member declared after it). Only buffers
             // pre-declared above — a name the importer already owns stays its.
@@ -360,11 +417,33 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     ns_decls.insert(name, binding);
                 }
             }
+            // Lower this module's own `on` handlers in a frame SEALED to this
+            // module's own members. Seeding the frame from `ns_decls` and
+            // raising the scope floor to it means a free name in the handler
+            // resolves to a sibling member (or a language global — events/math
+            // resolve via the catalog, not this stack), never falling through
+            // to the importer's same-named top-level state. Without the seal,
+            // `lib` `on go { q = q + 1 }` with no `q`/`go` of its own silently
+            // wired to the importer's `go`/`q` (N1). `ns_decls` is fully
+            // populated by now (it's consumed into the Namespace binding below).
             // Lower this module's own `on` handlers, now that its members are in
             // scope and still bound to the bare names (before the restore below),
             // so a handler body reads/writes THIS module's members even when
-            // another namespace exports the same names.
+            // another namespace exports the same names. The N1 leak (a free name
+            // resolving to the importer's same-named state) is caught at
+            // TYPECHECK — where the namespace body is checked under a sealed
+            // scope floor — so a leaking program never reaches emit. Sealing
+            // HERE too was redundant and actively harmful: the floor also hid the
+            // namespace's own outputs (which `lookup_output` reads through the
+            // scope), silently dropping a legitimate `emit <own out>`.
             for h in ns_handlers {
+                // Dedup by source location: the same imported `on` handler
+                // reached through several imports of one file installs its
+                // behaviour ONCE, not once per import (which on shared state
+                // would N-count every write). See N2.
+                if !ctx.first_import_of_behavior(&h.range) {
+                    continue;
+                }
                 ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h));
             }
             // Anonymous chips: pre-declare (create the chip node + inner vars,
@@ -415,6 +494,18 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
 /// Either way the member always gets its OWN gate — the collapse bug was the
 /// old path SKIPPING a member whose bare name a prior namespace/local already
 /// held, which aliased the two onto one storage gate.
+/// Record the gate a freshly pre-declared namespace state member produced, so
+/// a LATER re-import of the same source location (another `import * as`, or a
+/// plain/named import of the same file) reuses it instead of duplicating.
+/// Captured right after pre-declaration, while the fresh binding is still the
+/// member's bare name in scope — before `route_ns_member` may restore an
+/// importer-owned name over it. See [`LowerCtx::import_state_dedup`] (N2).
+fn record_ns_member_state(ctx: &mut LowerCtx, range: &SourceRange, name: &str) {
+    if let Some(binding) = ctx.scope.get(name).cloned() {
+        ctx.record_import_state(range, binding);
+    }
+}
+
 fn route_ns_member(
     ctx: &LowerCtx,
     name: &str,

@@ -510,6 +510,23 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
         }
         Expr::FieldAccess { obj, field, range } => {
+            // A namespace that TRAVELED in privately (a pulled-in module's own
+            // `import * as`) is not nameable from this file — reading through it
+            // is a missing import here, reported like any unknown base rather
+            // than silently resolving the leak (N11).
+            if let Expr::Ident { name: ns_name, range: ns_range } = obj.as_ref()
+                && ctx.namespace_hidden_here(ns_name, &ns_range.file)
+            {
+                ctx.emit(
+                    "WS002",
+                    format!(
+                        "unknown identifier '{ns_name}' — no namespace, variable, or \
+                         value named '{ns_name}' is in scope (is an import missing?)"
+                    ),
+                    ns_range.clone(),
+                );
+                return Type::Any;
+            }
             // `ns.member` on an `import * as ns` namespace: the namespace symbol
             // itself is typeless (`any`), so without this the whole reference
             // typed `any` and every use of it against a concrete type was a
@@ -1125,8 +1142,8 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 field,
                 range: fa_range,
             } = callee.as_ref()
-                && let Expr::Ident { name: ns_name, .. } = obj.as_ref()
-                && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
+                && let Expr::Ident { name: ns_name, range: ns_range } = obj.as_ref()
+                && ctx.namespace_visible(ns_name, &ns_range.file)
             {
                 let ns_lookup = ctx
                     .namespaces
@@ -1413,9 +1430,14 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     name,
                     range: base_range,
                 } = obj.as_ref()
-                && ctx.scope.lookup(name).is_none()
+                && (ctx.scope.lookup(name).is_none()
+                    || ctx.namespace_hidden_here(name, &base_range.file))
                 && find_call(name).is_none()
             {
+                // A namespace hidden here is one that TRAVELED in privately (a
+                // pulled-in module's own `import * as`) — naming it directly is
+                // a missing import in THIS file, so it reports the same as a
+                // genuinely-undefined base rather than resolving the leak (N11).
                 ctx.emit(
                     "WS002",
                     format!(

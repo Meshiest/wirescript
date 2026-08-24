@@ -15,6 +15,10 @@
 - A nested record passed as a chip parameter now wires every field, instead of collapsing the inner record to one unwired input.
 - A tuple parameter on a chip (`chip f((a, b): (int, int)) { }`) now binds its elements, instead of leaving the body reading unresolved values.
 - LSP: hovering a record field written through an array index (`arr[i].field = v`) now shows the field's type.
+- An `on` handler in an `import * as` module no longer resolves a free name against the importing file's state; an undefined name there is now reported instead of silently wiring to a same-named importer variable.
+- State imported from one file both plainly and through `import * as` (or via `import { g }` plus `import { g as h }`) now shares one storage gate instead of duplicating into two that drift apart.
+- A namespace a module imports privately (`import * as B`) no longer leaks to files that import that module; naming it from another file is an undefined identifier.
+- A namespaced output written by more than one `emit`, or by a conditional or defaulted one, now routes through a backing variable instead of fanning two wires into its port (which failed to load).
 
 ## 1.6.0
 

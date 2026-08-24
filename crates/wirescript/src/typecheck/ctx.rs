@@ -85,6 +85,15 @@ impl Scope {
     pub fn pop(&mut self) {
         self.inner.pop();
     }
+    /// Number of open frames (>= 1); the top frame's index is `depth() - 1`.
+    pub fn depth(&self) -> usize {
+        self.inner.depth()
+    }
+    /// Seal by-name lookups below `floor` (see [`crate::scope::Scope::set_floor`]).
+    /// Returns the previous floor for restoration.
+    pub fn set_floor(&mut self, floor: usize) -> usize {
+        self.inner.set_floor(floor)
+    }
     /// Declare in the top-most frame. Returns the prior info if any.
     pub fn declare(&mut self, name: &str, info: SymbolInfo) -> Option<SymbolInfo> {
         self.inner.insert(name, info)
@@ -544,6 +553,37 @@ impl<'a> TypeCheckCtx<'a> {
             _ => None,
         }
     }
+    /// An `import * as ns` alias is visible ONLY within the file whose import
+    /// introduced it — the namespace symbol's `decl_range.file`. A namespace a
+    /// module privately imports and a pulled-in declaration calls through
+    /// TRAVELS into an importer (so that declaration still resolves once
+    /// inlined), but it must not leak into the importer's OWN code: the
+    /// importer never wrote that `import * as`, so `ns.member` there should be
+    /// an unknown identifier, not a silent resolution. `ref_file` is the file
+    /// of the reference being resolved. A namespace is only ever legitimately
+    /// named in its own declaring file, so this uniform rule leaves every
+    /// same-file use (including a traveling namespace used by its origin
+    /// file's own decls) untouched. An empty origin file (synthetic) is
+    /// treated as visible everywhere. See N11.
+    pub(super) fn namespace_visible(&self, ns_name: &str, ref_file: &str) -> bool {
+        match self.scope.lookup(ns_name) {
+            Some(sym) if sym.kind == SymbolKind::Namespace => {
+                let origin = sym.decl_range.file.as_ref();
+                origin.is_empty() || origin == ref_file
+            }
+            _ => false,
+        }
+    }
+
+    /// True when `name` IS a namespace symbol but is hidden from `ref_file`
+    /// (a traveling alias referenced outside its origin file) — so a call/read
+    /// through it must be treated as a dangling base (WS002) rather than a
+    /// silent resolution of the leaked namespace. See [`Self::namespace_visible`].
+    pub(super) fn namespace_hidden_here(&self, name: &str, ref_file: &str) -> bool {
+        matches!(self.scope.lookup(name), Some(s) if s.kind == SymbolKind::Namespace)
+            && !self.namespace_visible(name, ref_file)
+    }
+
     pub fn exec_mode(&self) -> ExecMode {
         *self.exec_stack.last().unwrap_or(&ExecMode::Pure)
     }

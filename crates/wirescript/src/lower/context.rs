@@ -367,6 +367,21 @@ pub(super) struct LowerCtx<'a> {
     /// same source) map to one entry.
     pub(super) ns_mod_scopes:
         crate::collections::HashMap<(String, usize), std::sync::Arc<HashMap<String, Binding>>>,
+    /// Source-location dedup for STATE reached through multiple imports of one
+    /// file — plain + `import * as`, `import {g}` + `import {g as h}`, or a
+    /// diamond. Keyed by a decl's `(file, start.offset)`: the same SOURCE
+    /// declaration however it was imported. The FIRST import to lower it
+    /// creates the gate and records it here; a later import binds its
+    /// (possibly aliased or namespaced) name to that same gate rather than a
+    /// duplicate. A DIFFERENT file's same-named decl has a distinct key, so
+    /// genuine collisions still get their own gate. See N2/N3.
+    pub(super) import_state_dedup: crate::collections::HashMap<(String, usize), Binding>,
+    /// Companion of `import_state_dedup` for BEHAVIOUR decls (handlers, anon
+    /// chips) that carry no reusable binding: the set of source locations
+    /// already lowered, so the same `on` handler pulled in through several
+    /// imports of one file installs its behaviour ONCE instead of firing N
+    /// times (which, on shared state, N-counts every increment).
+    pub(super) import_behavior_lowered: crate::collections::HashSet<(String, usize)>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -478,6 +493,31 @@ impl<'a> LowerCtx<'a> {
         self.scoped_consts.push(HashMap::default());
         self.scoped_const_declared.push(HashSet::default());
         self.pass1_chips.push(HashMap::default());
+    }
+
+    /// If a state decl at `range`'s source location was already lowered — the
+    /// same source declaration pulled in through another import of the same
+    /// file — return its binding to reuse rather than create a duplicate gate.
+    /// See `import_state_dedup`.
+    pub(super) fn reuse_import_state(&self, range: &SourceRange) -> Option<Binding> {
+        self.import_state_dedup
+            .get(&(range.file.to_string(), range.start.offset))
+            .cloned()
+    }
+
+    /// Record `binding` as the gate produced for the state decl at `range`, so
+    /// a later re-import of that same source location reuses it.
+    pub(super) fn record_import_state(&mut self, range: &SourceRange, binding: Binding) {
+        self.import_state_dedup
+            .insert((range.file.to_string(), range.start.offset), binding);
+    }
+
+    /// Returns `true` the FIRST time a behaviour decl (handler / anon chip) at
+    /// `range` is seen and `false` on every re-import, so the caller lowers it
+    /// exactly once. See `import_behavior_lowered`.
+    pub(super) fn first_import_of_behavior(&mut self, range: &SourceRange) -> bool {
+        self.import_behavior_lowered
+            .insert((range.file.to_string(), range.start.offset))
     }
 
     /// Pop the frame pushed by `push_scope`.

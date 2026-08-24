@@ -553,3 +553,179 @@ fn namespaced_handler_operator_lowers_to_a_gate() {
         "`n << 10` must lower to a shift gate"
     );
 }
+
+/// N1: a free name in a namespaced module's `on` handler must NOT resolve to
+/// the importer's same-named top-level state. `lib`'s `on go { q = q + 1 }`
+/// (with no `go`/`q` of its own) once SILENTLY wired to main's `go`/`q`; the
+/// namespace body is now checked under a sealed scope floor, so those names are
+/// undefined and reported (WS001 for the trigger, WS002 for the body). The
+/// diagnostic aborts compilation, so the leak can never ship — the fix is that
+/// it is no longer silent, not that lowering (which never runs to completion
+/// here) rewires it.
+#[test]
+fn namespaced_handler_free_name_does_not_leak_to_importer_state() {
+    let (tc, _lr) = compile_with_lib(
+        "on go { q = q + 1 }",
+        "import * as L from \"lib\"\nin go: exec\nvar q: int = 0\nout result: int = q",
+    );
+    assert!(
+        tc.diagnostics.iter().any(|d| d.code == "WS002"),
+        "the leaked body identifier must be reported undefined, got {:?}",
+        tc.diagnostics
+    );
+    assert!(
+        tc.diagnostics.iter().any(|d| d.code == "WS001"),
+        "the leaked trigger must be reported unknown, got {:?}",
+        tc.diagnostics
+    );
+}
+
+/// N2: the SAME file's state imported both plain and via `import * as` must
+/// resolve to ONE gate (docs promise one shared gate), and its handler must
+/// install once. Previously `g` and `S.g` diverged into two gates each with
+/// its own increment handler — a double-count on every `bump`.
+#[test]
+fn same_file_state_via_plain_and_namespace_shares_one_gate() {
+    let (tc, lr) = compile_with_lib(
+        "var g: int = 0\nin bump: exec\non bump { g = g + 1 }",
+        "import \"lib\"\nimport * as S from \"lib\"\nout a: int = g\nout b: int = S.g",
+    );
+    assert_clean(&tc, &lr);
+    let vars = lr
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class.contains("Pseudo_Var"))
+        .count();
+    assert_eq!(vars, 1, "g and S.g must share ONE storage gate, got {vars}");
+    let incs = lr
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class.contains("Var_Increment"))
+        .count();
+    assert_eq!(incs, 1, "the imported handler must install once, got {incs}");
+}
+
+/// N3: `import { g }` + `import { g as h }` of the same var must share ONE
+/// gate. The old dedup keyed on the (aliased) name, so `h` slipped past it and
+/// got its own gate diverging from `g`.
+#[test]
+fn same_file_var_via_named_and_aliased_shares_one_gate() {
+    let (tc, lr) = compile_with_lib(
+        "var g: int = 0",
+        "import { g } from \"lib\"\nimport { g as h } from \"lib\"\nout a: int = g\nout b: int = h",
+    );
+    assert_clean(&tc, &lr);
+    let vars = lr
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class.contains("Pseudo_Var"))
+        .count();
+    assert_eq!(vars, 1, "g and its alias h must share ONE storage gate, got {vars}");
+}
+
+/// N11: a namespace a module privately imports (`a` does `import * as B`) must
+/// not leak to a plain importer of that module. `main` imports `a` but not `b`,
+/// so its own `B.bar()` is an unknown identifier — not a silent resolution of
+/// the alias that traveled in for `a`'s `useB`.
+#[test]
+fn private_namespace_does_not_leak_to_plain_importer() {
+    let (tc, _lr) = compile_with_libs(
+        &[
+            (
+                "a.ws",
+                "import * as B from \"b\"\nmod useB() -> int { return B.bar() }",
+            ),
+            ("b.ws", "mod bar() -> int { return 7 }"),
+        ],
+        "import \"a\"\nout r: int = B.bar()",
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .any(|d| d.code == "WS002" && d.message.contains("'B'")),
+        "main's direct B.bar() must be WS002 (B private to a.ws), got {:?}",
+        tc.diagnostics
+    );
+}
+
+/// 4b: a namespaced `out` reached by a default plus an `emit` must be
+/// var-backed, not fanned in. The top-level pass-1b backing-var prescan does
+/// not descend into `ns.decls`, so `out r = 0` + `emit r = 5` drove the output
+/// rerouter from two sources (the default and the emit) — a load-time fan-in.
+#[test]
+fn namespaced_output_default_plus_emit_has_single_driver() {
+    let (tc, lr) = compile_with_lib(
+        "in go: exec\nout r: int = 0\non go { emit r = 5 }",
+        "import * as L from \"lib\"",
+    );
+    assert_clean(&tc, &lr);
+    let out_id = lr
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .map(|n| n.id)
+        .expect("the namespaced output must be a port of the module");
+    let drivers = lr
+        .module
+        .wires
+        .iter()
+        .filter(|w| {
+            w.target.node_id == out_id
+                && w.target.port == crate::ir::port_registry::WirePort::RerInput
+        })
+        .count();
+    assert_eq!(
+        drivers, 1,
+        "a namespaced defaulted out + emit must be var-backed (one driver), not a fan-in"
+    );
+    assert!(
+        lr.module.nodes.values().any(|n| n.note == Some("out_backing")),
+        "a backing var must have been created for the namespaced output"
+    );
+}
+
+/// The N11 visibility rule must still let the TRAVELING namespace serve its
+/// origin file's own decls: `main` calling `a`'s `useB()` (whose body uses
+/// `B.bar()`) resolves and inlines cleanly, because that reference lives in
+/// a.ws, where `B` is in scope.
+#[test]
+fn traveling_namespace_still_serves_its_origin_files_decls() {
+    let (tc, lr) = compile_with_libs(
+        &[
+            (
+                "a.ws",
+                "import * as B from \"b\"\nmod useB() -> int { return B.bar() }",
+            ),
+            ("b.ws", "mod bar() -> int { return 7 }"),
+        ],
+        "import \"a\"\nout r: int = useB()",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        !has_unsupported(&lr.module),
+        "useB's B.bar() must resolve, not lower to a placeholder"
+    );
+}
+
+/// The N1 seal must still let a namespaced handler reach its OWN module's
+/// members: `lib`'s `on tick { counter = counter + 1 }` wires its increment to
+/// lib's own `tick`/`counter`. Guards against over-sealing.
+#[test]
+fn namespaced_handler_wires_its_own_members() {
+    let (tc, lr) = compile_with_lib(
+        "in tick: exec\nvar counter: int = 0\non tick { counter = counter + 1 }\nout count: int = counter",
+        "import * as L from \"lib\"\nout shown: int = L.counter",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        lr.module
+            .nodes
+            .values()
+            .any(|n| n.gate_class.contains("Var_Increment")),
+        "a namespaced handler referencing its own members must still lower its write"
+    );
+}
