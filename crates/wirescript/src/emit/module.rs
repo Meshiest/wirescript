@@ -380,7 +380,17 @@ pub(super) fn emit_module(
         let label_spec = match effective_class_str {
             "BrickComponentType_Internal_MicrochipInput"
             | "BrickComponentType_Internal_MicrochipOutput" => {
-                microchip_io_label(node).map(|s| (s, LABEL_LINE_HEIGHT))
+                let label = microchip_io_label(node);
+                // A container access gate (Var/ArrayVar/MapVar_*) reads its small
+                // tag by tracing its ref wire back to the source's label. When the
+                // source is an INPUT PIN rather than a `Pseudo_*Var` — a
+                // reference-passed `in xs: T[]` / `in m: Map<..>` — record the
+                // pin's name here too, so a get/set on an input-backed container
+                // is tagged with the input's name instead of nothing.
+                if let Some(name) = &label {
+                    ctx.var_labels.insert(**id, name.clone());
+                }
+                label.map(|s| (s, LABEL_LINE_HEIGHT))
             }
             "BrickComponentType_WireGraphPseudo_Var"
             | "BrickComponentType_WireGraphPseudo_ArrayVar"

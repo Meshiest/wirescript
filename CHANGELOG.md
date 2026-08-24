@@ -32,6 +32,9 @@
 - Emit rejects a wire fan-in (two sources driving one input port, such as a duplicate `out o`) with a compile error, rather than writing a format-valid save the game refuses to load.
 - Unary negate (`-x`) resolves correctly during generic-`mod` monomorphization, so a generic `-x` emits a negate gate with the right numeric type.
 - A constant `Substring` with a very large length clamps to the string end instead of overflowing into a panic.
+- New `WS059`: `Change`/`Changed` (and the `Edge` detectors) on a reference or container (a `Map`, an array, a `*T` ref, a `zone`, or a `teleport`) is an error, since a change/edge detector watches a single wire value and those carry none. Watch a scalar the container produces instead.
+- A map access gate (`m.get(k)` and friends) is colored by its value type, like the var and array access gates, rather than a neutral grey.
+- A get/set on a reference-passed container input (`in m: Map<K,V>` / `in xs: T[]`) is tagged with the input port's name, matching how an access on a stored `var` is tagged.
 
 ## 1.5.0
 

@@ -177,6 +177,25 @@ fn c4_fan_in_is_an_emit_error() {
     }
 }
 
+// --- `Change`/`Changed` on a reference or container (map/array/`*T`/zone/
+//     teleport) is WS059: the detector watches a single wire value, and those
+//     carry none, so it used to compile to a dead gate.
+#[test]
+fn change_on_a_map_is_ws059() {
+    let m = "in m: Map<int, int>\nstatic var v: int = 0\non Change(m) { v = 1 }\n";
+    assert!(has(m, "WS059"), "{:?}", diags(m));
+    // Nested inside a `Union(...)` trigger is caught too (the whole trigger is
+    // an expr trigger, so every `Change` arg is type-checked).
+    let u = "in a: Map<int,int>\nin b: int[]\nstatic var v: int = 0\non Union(Change(a), Change(b)) { v = 1 }\n";
+    assert!(has(u, "WS059"), "{:?}", diags(u));
+}
+
+#[test]
+fn change_on_a_scalar_stays_clean() {
+    let src = "in x: int\nin s: string\nstatic var v: int = 0\non Change(x) { v = 1 }\non Change(s) { v = 2 }\n";
+    assert!(!has(src, "WS059"), "{:?}", diags(src));
+}
+
 // --- C6: `Substring` with a near-i64::MAX length must clamp to the string end
 //     (a constant-folded fold path), not overflow into a slice-range panic.
 #[test]

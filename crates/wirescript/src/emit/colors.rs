@@ -108,6 +108,17 @@ pub(super) fn color_for_node(
             return color_for_type(&ref_port.ty);
         }
     }
+    // Map access gates (`MapVar_Get`/`_Has`/`_GetLength`/…) carry the value they
+    // read or test on their own non-exec output (a `.get` on a `Map<_, string>`
+    // outputs a string), so colour by that instead of the neutral exec-gate grey
+    // below — matching how Var/ArrayVar access gates colour by the value they
+    // touch. A gate with no non-exec output (`MapVar_Set`/`_Clear`) still falls
+    // through to grey.
+    if node.gate_class.contains("Exec_MapVar_")
+        && let Some(p) = node.ports.outputs.iter().find(|p| !matches!(p.ty, Type::Exec))
+    {
+        return color_for_type(&p.ty);
+    }
     let takes_exec = node.ports.inputs.iter().any(|p| matches!(p.ty, Type::Exec));
     if takes_exec {
         return C_GREY;
@@ -182,5 +193,51 @@ fn color_for_type(t: &Type) -> Color {
         // Brick, Record, Tuple, Union, Any, Never, Exec) falls
         // back to the struct-ish light-orange bucket.
         _ => C_STRUCT,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intern::intern;
+    use crate::ir::port_registry::WirePort;
+    use crate::ir::{GateIO, Module, Node, NodeId, NodeKind, PortSpec};
+
+    fn map_get(value_ty: Type) -> Node {
+        Node {
+            id: NodeId::fresh(),
+            kind: NodeKind::Gate,
+            gate_class: "BrickComponentType_WireGraph_Exec_MapVar_Get",
+            properties: std::sync::Arc::new(crate::collections::HashMap::default()),
+            ports: std::sync::Arc::new(GateIO {
+                inputs: vec![
+                    PortSpec { name: intern("Exec"), ty: Type::Exec },
+                    PortSpec { name: intern("MapVarRef"), ty: Type::Ref(Box::new(Type::Any)) },
+                    PortSpec { name: intern("Key"), ty: Type::String },
+                ],
+                outputs: vec![
+                    PortSpec { name: intern("ExecOut"), ty: Type::Exec },
+                    PortSpec { name: intern("Value"), ty: value_ty },
+                    PortSpec { name: intern("bFound"), ty: Type::Bool },
+                ],
+            }),
+            source_range: crate::diagnostic::SourceRange::default(),
+            chip_id: None,
+            chain_id: None,
+            scope_id: crate::ir::ROOT_SCOPE_ID,
+            note: None,
+        }
+    }
+
+    /// A map access gate colours by the value it reads (its own non-exec
+    /// output), not the neutral exec-gate grey — so `m.get(k)` on a string map
+    /// reads green like any other string source.
+    #[test]
+    fn map_access_gate_colours_by_its_value_not_grey() {
+        let module = Module::new("t");
+        let idx: StdMap<(NodeId, WirePort), NodeId> = StdMap::new();
+        assert_eq!(color_for_node(&map_get(Type::String), &module, &idx), C_STRING);
+        assert_eq!(color_for_node(&map_get(Type::Float), &module, &idx), C_FLOAT);
+        assert_ne!(color_for_node(&map_get(Type::String), &module, &idx), C_GREY);
     }
 }

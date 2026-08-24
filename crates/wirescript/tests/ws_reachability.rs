@@ -448,6 +448,13 @@ fn ws058_is_reachable() {
     assert!(diags(src).contains(&"WS058".to_string()));
 }
 
+// WS059 - Change/Changed on a reference or container (no single value to watch) [typecheck]
+#[test]
+fn ws059_is_reachable() {
+    let src = "in m: Map<int, int>\nstatic var v: int = 0\non Change(m) { v = 1 }\n";
+    assert!(diags(src).contains(&"WS059".to_string()));
+}
+
 // WSP001 - lexer error: unexpected character [parse/lexer]
 #[test]
 fn wsp001_is_reachable() {

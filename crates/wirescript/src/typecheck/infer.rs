@@ -993,6 +993,31 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                             ctx.emit("WS007", format!("exec call '{name}' outside an exec context (pass exec = ... to override)"), range.clone());
                         }
                     }
+                    // Change/Edge detectors watch a single wire VALUE. A reference
+                    // or container arg (a `*T`/zone/teleport ref, or a map/array)
+                    // has no value to watch — the detector observes the reference,
+                    // which never "changes" — so `Change(m)` / `Changed(zone)`
+                    // type-checked as `any` and lowered to an invalid, dead gate.
+                    if (c.gate_class.contains("ChangeDetector")
+                        || c.gate_class.contains("EdgeDetector"))
+                        && let Some(CallArg::Positional(arg)) = args.first()
+                    {
+                        let at = infer(ctx, arg);
+                        if is_reference_type(&at)
+                            || matches!(unwrap_ref(&at), Type::Map(_, _) | Type::Array(_))
+                        {
+                            ctx.emit(
+                                "WS059",
+                                format!(
+                                    "`{name}` can't watch a {} — a change/edge detector \
+                                     observes a single wire value, and a reference or container \
+                                     (map, array, `*T`, zone, teleport) has none",
+                                    crate::analysis::types::type_str(&unwrap_ref(&at))
+                                ),
+                                range.clone(),
+                            );
+                        }
+                    }
                     // Random rides the PrimMath variant like the math operators:
                     // its min/max may be a vector/rotator/quat/color (a
                     // per-component random on the same gate), and the result then
