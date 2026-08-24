@@ -220,55 +220,16 @@ pub(super) fn build_chip_module(
         if inp.is_const {
             continue;
         }
-        let resolved_record = child_ctx.record_fields_of(&inp.typ);
+        let resolved_record = child_ctx.record_or_tuple_fields(&inp.typ);
         if let Some(fields) = &resolved_record {
-            let mut record_fields = HashMap::default();
-            for field in fields {
-                let port_name = format!("{}_{}", inp.name, field.name);
-                let ft = if is_generic {
-                    child_ctx.resolve_local_type(&field.typ)
-                } else {
-                    type_of_type_expr(&field.typ)
-                };
-                // Array / Map / ref fields bind a container ref-port; a scalar
-                // field is a plain by-value input. Classifying via
-                // `container_binding` (not an `Array`/`Ref`-only match) is what
-                // lets a `Map<K,V>` record field wire its `MapVarRef` instead of
-                // silently lowering its methods to `_Unsupported`.
-                let container = super::context::container_binding(&field.typ, &ft);
-
-                if let Some(captured) = container
-                    .is_some()
-                    .then(|| caller_captures.get(&port_name))
-                    .flatten()
-                {
-                    record_fields.insert(
-                        crate::intern::intern(&field.name),
-                        Binding::Var(VarRecord {
-                            node_id: captured.node_id,
-                            inner_type: captured.inner_type.clone(),
-                            get_node_for_handler: None,
-                            storage: captured.storage,
-                        }),
-                    );
-                    continue;
-                }
-
-                let node_id = child_ctx.add_input(&port_name, ft.clone(), chip_decl.range.clone());
-                let binding = match container {
-                    Some((storage, inner)) => Binding::Var(VarRecord {
-                        node_id,
-                        inner_type: inner,
-                        get_node_for_handler: None,
-                        storage,
-                    }),
-                    None => Binding::Input(NodeRecord {
-                        node_id,
-                        ty: ft.clone(),
-                    }),
-                };
-                record_fields.insert(crate::intern::intern(&field.name), binding);
-            }
+            let record_fields = explode_record_param_pins(
+                &mut child_ctx,
+                &inp.name,
+                fields,
+                is_generic,
+                caller_captures,
+                &chip_decl.range,
+            );
             child_ctx
                 .scope
                 .insert(&inp.name, Binding::Record(record_fields));
@@ -557,4 +518,77 @@ pub(super) fn build_chip_module(
     let mut module = child_ctx.builder.module;
     module.scope_captures = compute_scope_captures(&module);
     module
+}
+
+/// Explode a record-typed chip param into its LEAF input pins, returning the
+/// `Binding::Record` the body reads fields through. A container field (array /
+/// map / ref) is one ref pin, a NESTED record field recurses into its own leaf
+/// pins (a nested `Binding::Record`), and a scalar field is one by-value pin.
+/// The caller-side `wire_record_param_pins` mirrors this recursion exactly, so
+/// the child pins line up index-for-index with the argument wires.
+fn explode_record_param_pins(
+    child_ctx: &mut LowerCtx,
+    prefix: &str,
+    fields: &[crate::ast::RecordTypeField],
+    is_generic: bool,
+    caller_captures: &HashMap<String, VarRecord>,
+    chip_range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
+    let mut record_fields = HashMap::default();
+    for field in fields {
+        let port_name = format!("{prefix}_{}", field.name);
+        let ft = if is_generic {
+            child_ctx.resolve_local_type(&field.typ)
+        } else {
+            type_of_type_expr(&field.typ)
+        };
+        // Array / Map / ref fields bind a container ref-port; classified via
+        // `container_binding` so a `Map<K,V>` field wires its `MapVarRef`.
+        let container = super::context::container_binding(&field.typ, &ft);
+        if let Some(captured) = container
+            .is_some()
+            .then(|| caller_captures.get(&port_name))
+            .flatten()
+        {
+            record_fields.insert(
+                crate::intern::intern(&field.name),
+                Binding::Var(VarRecord {
+                    node_id: captured.node_id,
+                    inner_type: captured.inner_type.clone(),
+                    get_node_for_handler: None,
+                    storage: captured.storage,
+                }),
+            );
+            continue;
+        }
+        if let Some((storage, inner)) = container {
+            let node_id = child_ctx.add_input(&port_name, ft.clone(), chip_range.clone());
+            record_fields.insert(
+                crate::intern::intern(&field.name),
+                Binding::Var(VarRecord {
+                    node_id,
+                    inner_type: inner,
+                    get_node_for_handler: None,
+                    storage,
+                }),
+            );
+            continue;
+        }
+        // A nested record/tuple recurses into per-leaf pins; a scalar is one pin.
+        if let Some(sub) = child_ctx.record_or_tuple_fields(&field.typ) {
+            let nested =
+                explode_record_param_pins(child_ctx, &port_name, &sub, is_generic, caller_captures, chip_range);
+            record_fields.insert(crate::intern::intern(&field.name), Binding::Record(nested));
+        } else {
+            let node_id = child_ctx.add_input(&port_name, ft.clone(), chip_range.clone());
+            record_fields.insert(
+                crate::intern::intern(&field.name),
+                Binding::Input(NodeRecord {
+                    node_id,
+                    ty: ft.clone(),
+                }),
+            );
+        }
+    }
+    record_fields
 }

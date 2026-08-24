@@ -711,6 +711,34 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
+    /// Like [`record_fields_of`], but also expands a TUPLE type `(A, B, …)` into
+    /// index-named fields ("0", "1", …). A tuple chip/mod param thus explodes
+    /// into per-element pins exactly like a record, and its `ParamPattern::Tuple`
+    /// destructure (keyed by index) binds the element names — without this a
+    /// tuple param fell to a single by-value pin and its names stayed unbound.
+    pub(super) fn record_or_tuple_fields(
+        &self,
+        te: &crate::ast::TypeExpr,
+    ) -> Option<Vec<crate::ast::RecordTypeField>> {
+        if let Some(fields) = self.record_fields_of(te) {
+            return Some(fields);
+        }
+        if let crate::ast::TypeExpr::Tuple { fields, .. } = te {
+            return Some(
+                fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| crate::ast::RecordTypeField {
+                        name: i.to_string(),
+                        typ: t.clone(),
+                        range: t.range().clone(),
+                    })
+                    .collect(),
+            );
+        }
+        None
+    }
+
     pub(super) fn op_for(&self, e: &Expr) -> Option<&OpRule> {
         let r = e.range();
         self.op_resolutions

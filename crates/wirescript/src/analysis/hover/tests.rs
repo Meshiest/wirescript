@@ -22,6 +22,18 @@
         )
     }
 
+    /// Hovering a record field written as an assignment target through an array
+    /// index (`tk[i].phase = v`) resolves the field's type. The assignment-target
+    /// inference used to type the field access `any` without inferring `tk[i]`,
+    /// so the type map had no entry for the object and the field hover failed.
+    #[test]
+    fn hover_field_on_array_index_assignment_target() {
+        let src = "type Slot = { phase: int, wantStart: bool }\nvar tk: Slot[]\nin go: exec\non go { tk[0].phase = 5 }\n";
+        let col = src.lines().nth(3).unwrap().find("phase").unwrap() + 1;
+        let h = hover_for(src, 3, col).expect("hover on tk[0].phase should resolve");
+        assert!(h.contains("phase") && h.contains("int"), "got: {h}");
+    }
+
     #[test]
     fn fill_record_generates_missing_fields_recursively() {
         let src = "type Card = { foo: string, bar: { baz: int }, baq: { fred: string } }\nlet c: Card = {\n\n}";

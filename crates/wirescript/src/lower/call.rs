@@ -59,18 +59,28 @@ pub(in crate::lower) fn expand_spread_args(ctx: &LowerCtx, args: &[CallArg]) -> 
             // so the type map alone (checked once at the mod's declaration) would
             // under-count it. Fall back to the recorded type otherwise.
             CallArg::Spread(t) => {
+                let ty = ctx.type_of(t);
+                let inner = crate::types::mono::unwrap_ref(&ty);
                 let n = match resolve_field_chain(ctx, t) {
                     Some(Binding::Record(fields)) => fields.len(),
-                    _ => match crate::types::mono::unwrap_ref(&ctx.type_of(t)) {
+                    _ => match &inner {
                         Type::Tuple(elems) => elems.len(),
                         Type::Record(fields) => fields.len(),
                         _ => 0,
                     },
                 };
-                for i in 0..n {
-                    out.push(CallArg::Positional(Expr::TuplePick {
+                // Pick each element by its declared KEY, not a numeric index. A
+                // tuple literal binds its record by "0"/"1", but a multi-output
+                // CALL result binds it by output NAME, so a numeric `TuplePick`
+                // missed the call-result case and lowered to `_Unsupported`.
+                // `tuple_positions` yields the ordered keys from the type (field
+                // names for a record, "0".."n" for a tuple), and a `FieldAccess`
+                // resolves both spellings — including an inline `...f()`, via the
+                // record-returning-call field projection in `lower_field_access`.
+                for key in crate::lower::decl::tuple_positions(&inner, n) {
+                    out.push(CallArg::Positional(Expr::FieldAccess {
                         obj: Box::new(t.clone()),
-                        index: i,
+                        field: key,
                         range: t.range().clone(),
                     }));
                 }

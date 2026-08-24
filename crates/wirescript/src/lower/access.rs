@@ -173,6 +173,32 @@ pub(super) fn lower_field_access(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
+    // A field access on an if-expression distributes over the branches:
+    // `(if c then a else b).f` becomes `if c then a.f else b.f`. An aggregate
+    // if-expr's branches carry no single wire, so without this a scalar field
+    // (`.u`) fell to an `_Unsupported` placeholder and a swizzle (`.x`) to a
+    // Split* over two placeholders. The rewritten branches are scalar, so the
+    // Select the if-expr lowers to picks between the two field values.
+    if let Expr::IfExpr {
+        cond,
+        then_branch,
+        else_branch,
+        range: if_range,
+    } = obj
+    {
+        let branch_field = |br: &Expr| Expr::FieldAccess {
+            obj: Box::new(br.clone()),
+            field: field.to_string(),
+            range: range.clone(),
+        };
+        let distributed = Expr::IfExpr {
+            cond: cond.clone(),
+            then_branch: Box::new(branch_field(then_branch)),
+            else_branch: Box::new(branch_field(else_branch)),
+            range: if_range.clone(),
+        };
+        return lower_expr(ctx, &distributed);
+    }
     // Try resolving through record bindings first.
     // The full expression `e` is `obj.field`, so resolve_field_chain on `e`
     // walks the entire chain (potentially nested: `a.b.c`).
@@ -418,6 +444,31 @@ pub(super) fn lower_index_access(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
+    // An index on an if-expression distributes over the branches:
+    // `(if c then a else b)[i]` becomes `if c then a[i] else b[i]`, so each
+    // branch indexes its own container instead of the if-expr failing to
+    // resolve as a container (scalar-element arrays; a record-element array
+    // still hits the record-value limit inside a branch).
+    if let Expr::IfExpr {
+        cond,
+        then_branch,
+        else_branch,
+        range: if_range,
+    } = obj
+    {
+        let branch_index = |br: &Expr| Expr::IndexAccess {
+            obj: Box::new(br.clone()),
+            index: Box::new(index.clone()),
+            range: range.clone(),
+        };
+        let distributed = Expr::IfExpr {
+            cond: cond.clone(),
+            then_branch: Box::new(branch_index(then_branch)),
+            else_branch: Box::new(branch_index(else_branch)),
+            range: if_range.clone(),
+        };
+        return lower_expr(ctx, &distributed);
+    }
     if let Some(port) = lower_index_access_runtime(ctx, obj, index, range) {
         return port;
     }

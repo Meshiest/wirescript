@@ -10,6 +10,11 @@
 - A record-typed module output (`out p: Point = { .. }`) now dissolves into per-field boundary pins instead of dangling.
 - A whole-array assignment from a record-array literal (`arr = [rec, rec]`) now rebuilds the array instead of being silently dropped.
 - A constant read through an `import * as ns` namespace (`ns.NAME`) now folds, so it works in constant-only positions (array initializer, channel name, label).
+- Spreading a tuple that came from a multi-output `mod` call (`f(n, ...g())`, or a bound `let t = g()` then `f(n, ...t)`) now expands its elements instead of dropping them.
+- A field or index access on an aggregate-typed `if` expression (`(if c then a else b).x`, `(if c then a else b)[i]`) now distributes over the branches instead of dropping to a placeholder.
+- A nested record passed as a chip parameter now wires every field, instead of collapsing the inner record to one unwired input.
+- A tuple parameter on a chip (`chip f((a, b): (int, int)) { }`) now binds its elements, instead of leaving the body reading unresolved values.
+- LSP: hovering a record field written through an array index (`arr[i].field = v`) now shows the field's type.
 
 ## 1.6.0
 

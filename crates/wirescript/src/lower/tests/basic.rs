@@ -2644,3 +2644,26 @@ fn variadic_mod_captures_and_splats() {
         "variadic forward into a mod must bind every element"
     );
 }
+
+/// Spreading a tuple that ORIGINATED from a multi-output mod call expands like
+/// `let (a, b) = f()` — one output per positional slot — instead of a numeric
+/// TuplePick that missed the name-keyed call record and left `_Unsupported`.
+#[test]
+fn spread_multi_output_call_result_binds() {
+    // (c1) bound call result
+    let r = compile(
+        "mod two() -> (a: int, b: int) { return 1, 2 }\n\
+         in n: int\nin go: exec\n\
+         on go { let p = two()\n SendGlobalCustomEvent(\"c\", n, ...p) }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "bound call-result spread must bind");
+    // (c2) inline call result
+    let m = compile(
+        "mod two() -> (a: int, b: int) { return 1, 2 }\n\
+         in n: int\nin go: exec\n\
+         on go { SendGlobalCustomEvent(\"c\", n, ...two()) }",
+    );
+    assert_no_errors(&m);
+    assert!(!has_gate(&m, "_Unsupported"), "inline call-result spread must bind");
+}

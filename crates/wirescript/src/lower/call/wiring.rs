@@ -70,32 +70,24 @@ pub(super) fn wire_chip_args_and_outputs(
             continue;
         }
 
-        let resolved_rec = ctx.record_fields_of(&param.typ);
+        let resolved_rec = ctx.record_or_tuple_fields(&param.typ);
         if let Some(fields) = &resolved_rec {
             // Resolve the record argument's per-field bindings from any value
             // form (a scope binding, a record literal, an index/map read, or a
-            // record-returning call). Every non-captured field consumes one
-            // child pin, so `input_idx` advances per field regardless of whether
-            // a source binding was found, keeping later pins index-aligned.
+            // record-returning call), then wire each LEAF pin. A nested record
+            // field recurses into its own leaf pins (matching the body-side
+            // explode), so `input_idx` advances one per leaf in lockstep with pin
+            // creation and later pins stay index-aligned.
             let rec_fields = value_record_fields(ctx, arg_expr);
-            for field in fields {
-                let port_name = format!("{}_{}", param.name, field.name);
-                if caller_captures.contains_key(&port_name) {
-                    continue;
-                }
-                let mc_input = child_inputs[input_idx];
-                input_idx += 1;
-                let field_sym = crate::intern::intern(&field.name);
-                let binding = rec_fields
-                    .as_ref()
-                    .and_then(|rf| rf.get(&field_sym))
-                    .cloned();
-                if let Some(binding) = binding {
-                    if let Some(src) = binding_to_port(ctx, &binding, &field.range) {
-                        ctx.connect(src, mc_input.port(WirePort::RerInput));
-                    }
-                }
-            }
+            wire_record_param_pins(
+                ctx,
+                &param.name,
+                fields,
+                rec_fields.as_ref(),
+                child_inputs,
+                &mut input_idx,
+                caller_captures,
+            );
             continue;
         }
 
@@ -136,5 +128,59 @@ pub(super) fn wire_chip_args_and_outputs(
         // Side-effect-only chip — no output value. NodeId(0) is never
         // allocated so any wire referencing it will be caught as invalid.
         NodeId(0).port(WirePort::Output)
+    }
+}
+
+/// Wire a record argument's LEAF sources into the child's per-leaf input pins.
+/// Recurses into a nested-record field the SAME way the body-side explode does
+/// (`explode_record_param_pins`), consuming one pin per leaf so `input_idx`
+/// stays lockstep with pin creation. The recurse-vs-leaf choice is made purely
+/// from the field's syntactic type (a container is a single ref pin; a record
+/// recurses; a scalar is one pin), so both sides always agree.
+fn wire_record_param_pins(
+    ctx: &mut LowerCtx,
+    prefix: &str,
+    fields: &[crate::ast::RecordTypeField],
+    value_fields: Option<&HashMap<crate::intern::Sym, Binding>>,
+    child_inputs: &[NodeId],
+    input_idx: &mut usize,
+    caller_captures: &HashMap<String, VarRecord>,
+) {
+    for field in fields {
+        let port_name = format!("{prefix}_{}", field.name);
+        let is_container = crate::lower::context::container_storage(&field.typ).is_some();
+        if !is_container
+            && let Some(sub) = ctx.record_or_tuple_fields(&field.typ)
+        {
+            let nested_value = value_fields
+                .and_then(|vf| vf.get(&crate::intern::intern(&field.name)))
+                .and_then(|b| match b {
+                    Binding::Record(m) => Some(m.clone()),
+                    _ => None,
+                });
+            wire_record_param_pins(
+                ctx,
+                &port_name,
+                &sub,
+                nested_value.as_ref(),
+                child_inputs,
+                input_idx,
+                caller_captures,
+            );
+            continue;
+        }
+        if caller_captures.contains_key(&port_name) {
+            continue;
+        }
+        let mc_input = child_inputs[*input_idx];
+        *input_idx += 1;
+        let binding = value_fields
+            .and_then(|vf| vf.get(&crate::intern::intern(&field.name)))
+            .cloned();
+        if let Some(binding) = binding
+            && let Some(src) = binding_to_port(ctx, &binding, &field.range)
+        {
+            ctx.connect(src, mc_input.port(WirePort::RerInput));
+        }
     }
 }

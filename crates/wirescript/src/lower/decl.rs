@@ -1291,7 +1291,7 @@ pub(super) fn install_record_destruct(
 /// `"1"`, …) and a multi-output `mod` call as a NAME-keyed one in its
 /// signature's declaration order. Falls back to index keys when the type is
 /// not a record, which is exactly the pre-existing behaviour.
-fn tuple_positions(ty: &Type, arity: usize) -> Vec<String> {
+pub(super) fn tuple_positions(ty: &Type, arity: usize) -> Vec<String> {
     match ty {
         Type::Record(fields) => fields.iter().map(|(n, _)| n.clone()).collect(),
         _ => (0..arity).map(|i| i.to_string()).collect(),

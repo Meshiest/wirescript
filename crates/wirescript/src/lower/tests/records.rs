@@ -1438,3 +1438,93 @@ fn record_array_whole_assign_from_literal_fans_clear_push() {
     assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"), 2);
     assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"), 4);
 }
+
+/// A field access on an aggregate-typed if-expression distributes over the
+/// branches (`(if c then a else b).u` -> `if c then a.u else b.u`), lowering to
+/// a Select over the two field values instead of an `_Unsupported`/Split*.
+#[test]
+fn if_expr_field_access_distributes_over_branches() {
+    let r = compile(
+        "type P = { u: int, v: int }\nin c: bool\n\
+         let a: P = { u: 1, v: 2 }\nlet b: P = { u: 3, v: 4 }\nout r = (if c then a else b).u",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "record if-expr field must not degrade");
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+}
+
+/// An index on an aggregate-typed if-expression distributes over the branches
+/// (`(if c then a else b)[i]` -> `if c then a[i] else b[i]`) for scalar arrays.
+#[test]
+fn if_expr_index_access_distributes_over_branches() {
+    let r = compile(
+        "in c: bool\nin go: exec\nvar a: int[]\nvar b: int[]\nvar o: int\n\
+         on go {\n  a.push(1)\n  b.push(4)\n  o = (if c then a else b)[0]\n}",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "array if-expr index must not degrade");
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+}
+
+/// A NESTED record passed as a chip param explodes recursively into per-leaf
+/// pins on both the body and caller sides, so `o.inr.a` reads its own pin
+/// instead of re-splitting the first param pin via SplitColor, and the outer
+/// arg wire is not dropped.
+#[test]
+fn nested_record_chip_param_explodes_recursively() {
+    let r = compile(
+        "type Inner = { a: int, b: int }\ntype Outer = { inr: Inner, c: int }\n\
+         chip Sink(o: Outer) -> (r: int) { out r = o.inr.a + o.c }\n\
+         in n: int\nout total = Sink({ inr: { a: n, b: 2 }, c: 3 })",
+    );
+    assert_no_errors(&r);
+    fn any_gate(m: &crate::ir::Module, class: &str) -> bool {
+        m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| any_gate(c, class))
+    }
+    assert!(!any_gate(&r.module, "_Unsupported"), "nested record chip param must bind");
+    assert!(
+        !any_gate(&r.module, "BrickComponentType_WireGraph_Expr_SplitColor")
+            && !any_gate(&r.module, "BrickComponentType_WireGraph_Expr_SplitVector"),
+        "o.inr.a must read its own leaf pin, not SplitColor the first input"
+    );
+    // The caller's `n` arg must wire into the chip (before the fix the nested
+    // arg wire was dropped, because binding_to_port on a Record returned None).
+    let n_input = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    assert!(
+        r.module.wires.iter().any(|w| w.source.node_id == n_input),
+        "the nested record arg `n` must wire into the chip, not be dropped"
+    );
+    // Inside the chip body, `o.inr.a + o.c` feeds a MathAdd from two leaf pins.
+    let add = r
+        .module
+        .chips
+        .values()
+        .flat_map(|c| c.nodes.values())
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .expect("chip body must contain the o.inr.a + o.c add");
+    assert_eq!(add.ports.inputs.len(), 2, "both record leaves must feed the add");
+}
+
+/// A TUPLE parameter on a chip signature explodes into per-element pins on both
+/// sides (like a record), so the `(a, b)` destructure binds the names instead of
+/// leaving the body reading `_Unsupported`. The mod form already worked.
+#[test]
+fn chip_tuple_param_pattern_binds() {
+    let r = compile(
+        "chip adder((a, b): (int, int)) -> (s: int) { out s = a + b }\n\
+         in x: int\nout r = adder((x, 1))",
+    );
+    assert_no_errors(&r);
+    fn any_gate(m: &crate::ir::Module, class: &str) -> bool {
+        m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| any_gate(c, class))
+    }
+    assert!(!any_gate(&r.module, "_Unsupported"), "chip tuple param names must bind");
+    let add = r
+        .module
+        .chips
+        .values()
+        .flat_map(|c| c.nodes.values())
+        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .expect("chip body must contain a + b");
+    assert_eq!(add.ports.inputs.len(), 2, "both tuple elements must feed the add");
+}

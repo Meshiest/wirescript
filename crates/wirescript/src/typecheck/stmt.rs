@@ -817,9 +817,14 @@ fn infer_assign_target(
             Type::Map(_, v) => *v,
             _ => Type::Any,
         }
-    } else if matches!(e, Expr::FieldAccess { .. } | Expr::TuplePick { .. }) {
+    } else if let Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } = e {
         // A record/tuple field target (`p.x = 5`, `pts[i].inner.a = v`) is an
-        // lvalue that lowering resolves; kept permissive (typed `any`) as before.
+        // lvalue that lowering resolves; the target itself stays permissive
+        // (typed `any`) as before. Infer the OBJECT for its side effect —
+        // recording its type in the type_map — so hover can resolve a field
+        // access written as an assignment target (`tk[i].phase = v`): without a
+        // recorded type for `tk[i]`, the field hover had nothing to read.
+        infer::infer(ctx, obj);
         Type::Any
     } else {
         // Any other target shape (a call result `f() = 5`, a literal, an
