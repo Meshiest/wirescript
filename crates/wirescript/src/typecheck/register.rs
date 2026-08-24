@@ -779,6 +779,48 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             },
                         );
                     }
+                    // Ports read as VALUES through the namespace: `L.count`
+                    // reads the output's value, `L.tick` the input's. An
+                    // annotated port carries its declared type; an unannotated
+                    // `out y = x` has none to resolve at registration and reads
+                    // as `any`. Without these, a namespaced port read was WS002
+                    // "not found in namespace" and lowered to `_Unsupported`.
+                    TopDecl::Out(o) => {
+                        let ty = o.typ.as_ref().map(|te| resolve_type_expr(ctx, te));
+                        ns_map.insert(
+                            o.name.clone(),
+                            NsDeclInfo {
+                                kind: SymbolKind::Out,
+                                return_type: None,
+                                params: Vec::new(),
+                                value_type: ty,
+                            },
+                        );
+                    }
+                    TopDecl::In(i) => {
+                        let ty = resolve_type_expr(ctx, &i.typ);
+                        ns_map.insert(
+                            i.name.clone(),
+                            NsDeclInfo {
+                                kind: SymbolKind::In,
+                                return_type: None,
+                                params: Vec::new(),
+                                value_type: Some(ty),
+                            },
+                        );
+                    }
+                    TopDecl::Buffer(b) => {
+                        let ty = b.typ.as_ref().map(|te| resolve_type_expr(ctx, te));
+                        ns_map.insert(
+                            b.name.clone(),
+                            NsDeclInfo {
+                                kind: SymbolKind::Buffer,
+                                return_type: None,
+                                params: Vec::new(),
+                                value_type: ty,
+                            },
+                        );
+                    }
                     _ => {}
                 }
             }

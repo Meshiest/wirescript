@@ -651,6 +651,70 @@ fn private_namespace_does_not_leak_to_plain_importer() {
     );
 }
 
+/// Reading a namespaced `out` member (`L.count`) resolves to the output's
+/// value instead of WS002 "not found in namespace" plus an `_Unsupported`
+/// placeholder. `In`/`Out` were absent from the typecheck namespace map and
+/// the output's binding never reached the lowering map.
+#[test]
+fn reading_a_namespaced_output_member_resolves() {
+    let (tc, lr) = compile_with_lib(
+        "var counter: int = 0\nin tick: exec\non tick { counter = counter + 1 }\nout count: int = counter",
+        "import * as L from \"lib\"\nout shown: int = L.count",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        !has_unsupported(&lr.module),
+        "L.count must resolve, not lower to a placeholder"
+    );
+}
+
+/// Reading a namespaced `in` member (`L.level`) as a value resolves too.
+#[test]
+fn reading_a_namespaced_input_member_resolves() {
+    let (tc, lr) = compile_with_lib(
+        "in level: int",
+        "import * as L from \"lib\"\nout shown: int = L.level",
+    );
+    assert_clean(&tc, &lr);
+    assert!(
+        !has_unsupported(&lr.module),
+        "L.level must resolve, not lower to a placeholder"
+    );
+}
+
+/// A namespaced defaulted output with NO emit is a plain direct drive: one
+/// driver, no backing var. (The 4b backing-var pass must not fire on it just
+/// because it has a default - only an actually-emitted output needs backing.)
+#[test]
+fn namespaced_defaulted_output_no_emit_has_single_driver() {
+    let (tc, lr) = compile_with_lib(
+        "var counter: int = 0\nout count: int = counter",
+        "import * as L from \"lib\"",
+    );
+    assert_clean(&tc, &lr);
+    let out_id = lr
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .map(|n| n.id)
+        .expect("the namespaced output must exist");
+    let drivers = lr
+        .module
+        .wires
+        .iter()
+        .filter(|w| {
+            w.target.node_id == out_id
+                && w.target.port == crate::ir::port_registry::WirePort::RerInput
+        })
+        .count();
+    assert_eq!(drivers, 1, "a no-emit defaulted output must have one direct driver");
+    assert!(
+        !lr.module.nodes.values().any(|n| n.note == Some("out_backing")),
+        "a no-emit defaulted output must not get a backing var"
+    );
+}
+
 /// 4b: a namespaced `out` reached by a default plus an `emit` must be
 /// var-backed, not fanned in. The top-level pass-1b backing-var prescan does
 /// not descend into `ns.decls`, so `out r = 0` + `emit r = 5` drove the output

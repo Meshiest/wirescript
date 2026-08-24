@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+## 1.6.2
+
+### Fixes
+
+- Reading a namespaced `out` or `in` member (`L.count`, `L.level`) now resolves to the port's value instead of reporting "not found in namespace" and lowering to a placeholder.
+- A namespaced defaulted output with no `emit` (`out count = counter`) is a single direct drive again, instead of also getting a backing variable that fanned two wires into its port (which failed to load).
+
 ## 1.6.1
 
 - `.exec` names an event's exec output, so a data-carrying event composes into `Union(...)`; `Union` also takes an exec receiver, so `a.Union(b)` chains left-associatively.

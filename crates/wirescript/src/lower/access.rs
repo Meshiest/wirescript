@@ -106,7 +106,12 @@ pub(super) fn binding_to_port(
             }
             Some(var_rec.node_id.port(WirePort::Value))
         }
-        Binding::Record(_) | Binding::Output(_) | Binding::Chip(_) | Binding::Namespace(_) => None,
+        // Reading an output's VALUE (a namespaced `L.count`): source its
+        // rerouter, which mirrors whatever drives the port from inside its
+        // module. Writing an output goes through `lookup_output`/`emit`, a
+        // separate path, so this only ever fires on a genuine read.
+        Binding::Output(out) => Some(out.node_id.port(WirePort::RerOutput)),
+        Binding::Record(_) | Binding::Chip(_) | Binding::Namespace(_) => None,
     }
 }
 

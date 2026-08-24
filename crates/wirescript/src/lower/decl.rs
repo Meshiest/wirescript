@@ -362,6 +362,19 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                             ctx, &o.name, &mut ns_decls, &mut ns_value_names,
                             &mut ns_restores, saved, owned,
                         );
+                        // The output's binding lives under its mangled scope key,
+                        // so `route_ns_member`'s bare-name capture misses it.
+                        // Insert it into this namespace's map so `L.count` reads
+                        // the output's value (`binding_to_port` on `Binding::Output`
+                        // sources its rerouter); without it the read lowered to an
+                        // `_Unsupported` placeholder.
+                        if let Some(binding) = ctx
+                            .scope
+                            .get(&crate::lower::context::output_scope_key(&o.name))
+                            .cloned()
+                        {
+                            ns_decls.insert(o.name.clone(), binding);
+                        }
                     }
                     TopDecl::Handler(h) => ns_handlers.push(h),
                     TopDecl::AnonChip(ac) => ns_anon_chips.push(ac),
@@ -386,7 +399,13 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 for o in &ns_outputs {
                     let (count, in_branch) =
                         emit_counts.get(&o.name).copied().unwrap_or((0, false));
-                    if count < 2 && !in_branch && o.value.is_none() {
+                    // Only an output actually EMITTED to needs a backing var (an
+                    // output with no emit is a plain direct drive), and then only
+                    // when it has 2+ emits, a conditional emit, or a default it
+                    // would otherwise fan in with. The top-level prescan gets the
+                    // `count == 0` exclusion for free by iterating only emitted
+                    // outputs; here we scan every output, so exclude it directly.
+                    if count == 0 || (count < 2 && !in_branch && o.value.is_none()) {
                         continue;
                     }
                     crate::lower::create_output_backing_var(ctx, &o.name);
