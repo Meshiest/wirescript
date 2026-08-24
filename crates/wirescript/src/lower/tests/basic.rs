@@ -1457,6 +1457,73 @@ fn union_trigger_lowers_body_per_part() {
     }
 }
 
+/// `.exec` names the exec output of a data-carrying event. `GlobalCustomEvent`
+/// carries data slots, so `GlobalCustomEvent(c)` types as a record with its exec
+/// output FIRST; `.exec` selects that output explicitly so the event composes
+/// into a `Union(...)` trigger. Without it, `.exec` was WS010 "no field `exec`".
+#[test]
+fn data_carrying_event_exec_composes_into_union() {
+    let r = compile(
+        "var v: int = 0\nin reset: exec\n\
+         on Union(reset, GlobalCustomEvent(\"ping\").exec) { v = v + 1 }",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "GlobalCustomEvent(...).exec must resolve to the event's exec output, not _Unsupported"
+    );
+    // The event gate's exec output must drive the Union trigger.
+    let evt = find_gate(&r, "BrickComponentType_WireGraphPseudo_CustomEvent_Global");
+    let union = find_gate(&r, "BrickComponentType_WireGraph_Exec_Union");
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == evt && w.target.node_id == union),
+        "the event's exec output must wire into the Union"
+    );
+}
+
+/// `a.Union(b)` is the receiver form of `Union(a, b)`: the object binds the
+/// first exec param, so a wide fan-in reads as a left-associative chain.
+#[test]
+fn union_exec_receiver_desugars_to_union_call() {
+    let r = compile("var v: int = 0\nin a: exec\nin b: exec\non a.Union(b) { v = v + 1 }");
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    let union = find_gate(&r, "BrickComponentType_WireGraph_Exec_Union");
+    // Both exec inputs must reach the single Union.
+    let inputs: Vec<crate::ir::NodeId> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_Internal_MicrochipInput")
+        .map(|(id, _)| *id)
+        .collect();
+    for inp in &inputs {
+        assert!(
+            wired_reachable(&r, *inp, union),
+            "each exec input must reach the Union receiver gate"
+        );
+    }
+}
+
+/// `a.Union(b).Union(c)` chains left-associatively: two Union gates, one per
+/// `.Union` in the chain — the same shape as nested `Union(Union(a, b), c)`.
+#[test]
+fn union_exec_receiver_chains_left_associatively() {
+    let r = compile(
+        "var v: int = 0\nin a: exec\nin b: exec\nin c: exec\non a.Union(b).Union(c) { v = v + 1 }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_Union"),
+        2,
+        "a two-link .Union chain must emit two Union gates"
+    );
+}
+
 /// A captured handler with a NON-event trigger (`let e = on go { … }` where
 /// `go` is an exec input) lowers its body and captures its exit as `e`. The body
 /// used to be dropped entirely — `lower_event_decl` returned unless the trigger

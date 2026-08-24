@@ -572,6 +572,17 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             if (field == "value" || field == "Value") && !matches!(ot, Type::Record(_)) {
                 return unwrap_ref(&ot);
             }
+            // `.exec` names the exec output of an event/exec-producing expression.
+            // A data-carrying event (`GlobalCustomEvent(c) -> (n)`) types as a
+            // record with its exec output FIRST, so `.exec` selects that field
+            // explicitly and lets the event compose into `Union(...)`; on a bare
+            // exec value it is the identity.
+            if field == "exec"
+                && (matches!(ot, Type::Exec)
+                    || matches!(&ot, Type::Record(fs) if matches!(fs.first(), Some((_, Type::Exec)))))
+            {
+                return Type::Exec;
+            }
             if let Type::Record(fields) = &ot {
                 if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
                     return t.clone();

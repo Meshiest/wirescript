@@ -1,5 +1,16 @@
 # Wirescript Changelog
 
+## 1.6.1
+
+- `.exec` names an event's exec output, so a data-carrying event composes into `Union(...)`; `Union` also takes an exec receiver, so `a.Union(b)` chains left-associatively.
+
+### Fixes
+
+- An inline record-returning `mod` call read by field (`f(x).sum`) now projects the field instead of an `_Unsupported` placeholder.
+- A record-typed module output (`out p: Point = { .. }`) now dissolves into per-field boundary pins instead of dangling.
+- A whole-array assignment from a record-array literal (`arr = [rec, rec]`) now rebuilds the array instead of being silently dropped.
+- A constant read through an `import * as ns` namespace (`ns.NAME`) now folds, so it works in constant-only positions (array initializer, channel name, label).
+
 ## 1.6.0
 
 - A `...tuple` spread now expands into a call's positional arguments. `SendGlobalCustomEvent(name, ...t)` splats a tuple across the event's data slots, and `f(...t)` / `f(a, ...rest)` binds each element to consecutive parameters (a tuple literal `...(a, b)`, a bound tuple, or a field chain reaching one). Over-filling a fixed-arity callee reports the usual arity error, and spreading a non-tuple is a `WS003`.

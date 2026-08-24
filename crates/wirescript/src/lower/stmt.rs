@@ -634,6 +634,34 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
+    // `recArr = [rec0, rec1, ...]` on a RECORD array (a `Binding::Record` of
+    // parallel per-field arrays): rebuild it at runtime like the scalar array
+    // path, fanned across the fields — clear all field arrays, then push / append
+    // each element. Must precede the whole-record-assign branch below: a record
+    // array is ALSO a `Binding::Record`, so that branch would otherwise claim it
+    // and `assign_record` would silently drop the array literal. Reuses the
+    // record-array method lowering, so an element that is a record literal, a
+    // record var, or a tuple-pick of a record all wire.
+    if ctx.current_exec.is_some()
+        && let Expr::Array { elements, .. } = &s.value
+        && let Some(fields) = crate::lower::access::resolve_record_array(ctx, &s.target)
+    {
+        crate::lower::access::lower_record_array_method(
+            ctx, &fields, "clear", &[], &s.range, &s.value,
+        );
+        for el in elements {
+            let arg = [CallArg::Positional(el.expr().clone())];
+            let method = match el {
+                ArrayElem::Item(_) => "push",
+                ArrayElem::Spread(_) => "append",
+            };
+            crate::lower::access::lower_record_array_method(
+                ctx, &fields, method, &arg, el.range(), &s.value,
+            );
+        }
+        return;
+    }
+
     // Whole-record assignment: `p = {..}` / `p = q` / `big.sub = {..}` where the
     // target resolves to a `Binding::Record`. A record has no single storage
     // gate, so decompose both sides field-by-field and write each leaf via its
@@ -2072,6 +2100,17 @@ pub(super) fn lower_out_binding(
     _range: &SourceRange,
 ) {
     let Some(value) = value else { return };
+    // A record-typed boundary output was exploded into per-field pins
+    // (`pre_declare_output`); wire each field's source into its own pin instead
+    // of falling through to the single-wire path below.
+    if let Some(Binding::Record(out_fields)) = ctx
+        .scope
+        .get(&crate::lower::context::output_scope_key(name))
+        .cloned()
+    {
+        wire_record_output(ctx, &out_fields, value, _range);
+        return;
+    }
     let out = match ctx.lookup_output(name).cloned() {
         Some(o) => o,
         None => return,
@@ -2118,4 +2157,40 @@ pub(super) fn lower_out_binding(
         return;
     }
     ctx.connect(port, out.node_id.port(WirePort::RerInput));
+}
+
+/// Wire a record value into a record-typed boundary output's per-field pins.
+/// The value resolves to a field -> source-binding map (a record literal, a
+/// record var/`let`, or a record-returning inline call), and each field's source
+/// port drives the matching output pin. Nested-record fields carry no single
+/// port and are left for the caller's field-array path, matching the input side.
+fn wire_record_output(
+    ctx: &mut LowerCtx,
+    out_fields: &crate::collections::HashMap<crate::intern::Sym, Binding>,
+    value: &Expr,
+    range: &SourceRange,
+) {
+    let src: Option<crate::collections::HashMap<crate::intern::Sym, Binding>> =
+        if let Expr::RecordLit { fields, .. } = value {
+            Some(lower_record_lit(ctx, fields))
+        } else if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, value).cloned() {
+            Some(fields)
+        } else if matches!(value, Expr::Call { .. }) {
+            ctx.pending_inline_record = None;
+            let _ = lower_expr(ctx, value);
+            ctx.pending_inline_record.take()
+        } else {
+            None
+        };
+    let Some(src) = src else { return };
+    for (fname, out_binding) in out_fields {
+        let Binding::Output(out_rec) = out_binding else {
+            continue;
+        };
+        if let Some(src_binding) = src.get(fname)
+            && let Some(port) = crate::lower::access::binding_to_port(ctx, src_binding, range)
+        {
+            ctx.connect(port, out_rec.node_id.port(WirePort::RerInput));
+        }
+    }
 }

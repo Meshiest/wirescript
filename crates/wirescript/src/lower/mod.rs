@@ -1768,6 +1768,7 @@ pub fn compile_chip_template(
                     o.label.as_deref(),
                     o.label_expr.as_ref(),
                     o.invisible,
+                    false,
                     &o.range,
                 );
             }

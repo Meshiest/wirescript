@@ -1359,3 +1359,82 @@ fn soa_field_methods_and_sort_by_field() {
     assert_eq!(gate_count(&wide, gc::ARRAY_SORT_MULTIPLE), 2);
     assert_eq!(gate_count(&wide, gc::ARRAY_COPY_FROM), 1);
 }
+
+/// An inline record-returning mod call read immediately by field
+/// (`adder(n, 1).sum`, no intermediate `let`) projects the field out of the
+/// call's stashed multi-output record instead of degrading to `_Unsupported`.
+#[test]
+fn inline_record_call_field_access_projects_field() {
+    let r = compile(
+        "mod adder(x: int, y: int) -> { sum: int, diff: int } {\n\
+           return { sum: x + y, diff: x - y }\n\
+         }\nin n: int\nout total = adder(n, 1).sum",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !has_gate(&r, "_Unsupported"),
+        "inline f().sum must project the field, not degrade to a placeholder"
+    );
+    let input = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
+    let out = *r.module.outputs.first().unwrap();
+    assert!(
+        wired_reachable(&r, input, out),
+        "the input `n` must reach `total` through the sum adder"
+    );
+}
+
+/// A record-typed top-level output (`out p: Rec = { .. }`) explodes into
+/// per-field boundary pins, each wired from its field's source. It used to
+/// dangle: one pin driven by a placeholder / lossy single wire.
+#[test]
+fn record_out_binding_wires_per_field_pins() {
+    let lit = compile("type Rec = { foo: int, bar: int }\nout p: Rec = { foo: 1, bar: 2 }");
+    assert_no_errors(&lit);
+    assert!(
+        !has_gate(&lit, "_Unsupported"),
+        "a record out literal must materialise, not placeholder"
+    );
+    assert!(
+        !lit.module.outputs.is_empty(),
+        "the record output must produce boundary pins"
+    );
+    for out_id in &lit.module.outputs {
+        assert!(
+            lit.module.wires.iter().any(|w| w.target.node_id == *out_id),
+            "every record-output field pin must have an incoming driver"
+        );
+    }
+
+    // A record-returning call and a record var both wire per-field too.
+    let call = compile(
+        "type Rec = { foo: int, bar: int }\nin n: int\n\
+         mod mk(v: int) -> Rec { return { foo: v, bar: v } }\nout p: Rec = mk(n)",
+    );
+    assert_no_errors(&call);
+    assert!(!has_gate(&call, "_Unsupported"));
+    for out_id in &call.module.outputs {
+        assert!(
+            call.module.wires.iter().any(|w| w.target.node_id == *out_id),
+            "record-returning call must drive every output field pin"
+        );
+    }
+}
+
+/// Whole-array assignment from a record-array literal (`arr = [rec, rec]`) fans
+/// clear + push across the parallel per-field arrays. A record array is also a
+/// `Binding::Record`, so the whole-record-assign path used to claim it and drop
+/// the array literal silently.
+#[test]
+fn record_array_whole_assign_from_literal_fans_clear_push() {
+    let r = compile(
+        "type DoubleInt = { a: int, b: int }\n\
+         let pair = ({ a: 10, b: 20 }, { a: -10, b: -20 })\n\
+         var arr: DoubleInt[]\n\
+         on ReadBrickGrid() { arr = [pair.0, pair.1] }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    // 2 field arrays cleared; each of 2 elements pushed to each field (2 clears, 4 pushes).
+    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"), 2);
+    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"), 4);
+}

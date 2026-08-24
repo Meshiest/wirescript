@@ -210,6 +210,18 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // concern — runtime record field access is resolved entirely in
         // `lower::access` via scope bindings, never through `Literal`.
         Expr::FieldAccess { obj, field, range } => {
+            // A namespaced constant member (`Other.value`, `Other` an
+            // `import * as` alias): seeded into the env under `"Other.value"` by
+            // `build_const_env`. Resolved before evaluating `obj`, which is a
+            // namespace (not a value) and would otherwise fail as NotConstant.
+            // Skipped when a local const of the same name shadows the alias, so
+            // that record's field wins (matching runtime resolution).
+            if let Expr::Ident { name: ns, .. } = obj.as_ref()
+                && !cx.consts.contains_key(ns.as_str())
+                && let Some(v) = cx.consts.get(&format!("{ns}.{field}"))
+            {
+                return Ok(v.clone());
+            }
             return match eval_expr(obj, cx, budget)? {
                 Literal::Record(entries) => match entries.into_iter().find(|(n, _)| n == field) {
                     Some((_, v)) => Ok(v),

@@ -342,26 +342,40 @@ pub(super) fn lower_field_access(
             obj_port.node_id.port(port_id)
         }
         _ => {
-            // `field` may name an output port on the gate an inline call
-            // lowers to — e.g. `.Found` / `.Index` on `arr.find(x)` used
-            // directly, without first binding the result to a `let`. Lower the
-            // call (emitting its gate) and resolve the field to a sibling
-            // output port, exactly as the bound-ident path above does. Without
-            // this, `obj` is never lowered and the field access degrades to an
+            // `.exec` names the exec output of an exec-producing expression: a
+            // bare exec value (identity), or an event/call that carries data
+            // alongside its exec (`GlobalCustomEvent(c) -> (n)`, typed as a
+            // record with the exec output FIRST). A data-carrying event lowers
+            // with its exec port as the primary output (see the event-call
+            // dispatch), so lowering the object yields that exec directly. Lets
+            // a data-carrying event compose into `Union(...)` explicitly.
+            if field == "exec" {
+                let ot = ctx.type_of(obj);
+                if matches!(ot, Type::Exec)
+                    || matches!(&ot, Type::Record(fs) if matches!(fs.first(), Some((_, Type::Exec))))
+                {
+                    return lower_expr(ctx, obj);
+                }
+            }
+            // `field` may name an output on the gate an inline call lowers to.
+            // An inline mod stashes its multi-output record (field -> source
+            // binding) instead of exposing named ports, so prefer that stash and
+            // project the field out of it — exactly as `lower_let_decl` binds
+            // `let r = f()` then reads `r.field`. A chip / builtin / event call
+            // instead lowers to a real gate with sibling output ports (`.Found`
+            // / `.Index` on `arr.find(x)`); resolve those by name. Without
+            // either, `obj` is never lowered and the field access degrades to an
             // `_Unsupported` placeholder — silently dropping the call.
             if let Expr::Call { .. } = obj {
                 let obj_port = lower_expr(ctx, obj);
-                if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
+                if let Some(record) = ctx.pending_inline_record.take()
+                    && let Some(binding) = record.get(&crate::intern::intern(field))
+                    && let Some(port) = binding_to_port(ctx, binding, range)
+                {
                     return port;
                 }
-                // `.exec` on a call whose result IS an exec (e.g. `Change(x).exec`,
-                // where the exec output port is named `OnChanged`, not `exec`)
-                // denotes that exec — return the call's exec output directly rather
-                // than degrading to an `_Unsupported` placeholder. Mirrors how a
-                // chip's `.exec` completion field resolves via the named-port path
-                // above; this covers builtins that return a bare exec.
-                if field == "exec" && matches!(ctx.type_of(obj), Type::Exec) {
-                    return obj_port;
+                if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
+                    return port;
                 }
             }
             synthesise_unsupported(ctx, e)

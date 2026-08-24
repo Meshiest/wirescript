@@ -238,9 +238,12 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // compiler auto-inserts to rejoin exec paths. `Branch(cond, exec)` routes an
     // exec to `.A` or `.B` on `cond` (the gate an `if` lowers to). Both are pure
     // (no surrounding exec chain): their inputs ARE the exec signals they act on.
-    m.insert(
-        "Union",
-        vec_expr(
+    //
+    // `Union` also takes an exec receiver, so `a.Union(b)` == `Union(a, b)` and a
+    // wide fan-in reads as a left-associative chain
+    // (`a.Union(b).Union(c)`) instead of nested `Union(Union(a, b), c)`.
+    m.insert("Union", {
+        let mut union = vec_expr(
             "Union",
             gc::UNION,
             vec![
@@ -249,8 +252,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             WirePort::ExecOut,
             Type::Exec,
-        ),
-    );
+        );
+        union.receiver = Some(Type::Exec);
+        union
+    });
     m.insert(
         "Branch",
         vec_expr_record(

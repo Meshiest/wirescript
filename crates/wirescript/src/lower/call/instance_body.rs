@@ -398,6 +398,7 @@ pub(super) fn build_chip_module(
                         o.label.as_deref(),
                         o.label_expr.as_ref(),
                         o.invisible,
+                        false,
                         &o.range,
                     )
                 });

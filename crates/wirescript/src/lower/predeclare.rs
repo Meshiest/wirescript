@@ -50,6 +50,7 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 o.label.as_deref(),
                 o.label_expr.as_ref(),
                 o.invisible,
+                true,
                 &o.range,
             )
         }),
@@ -340,6 +341,19 @@ pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
     // the same fixpoint as the top-level ones — see that function's comment.
     let lets = scope_lets(decls);
     let mut env = ConstEnv::default();
+    // Namespaced constants: an `import * as Ns` module's top-level `let`/`const`
+    // values are reachable as `Ns.name`. Evaluate each namespace's env in
+    // ISOLATION (its lets see only its own module's consts, not the importer's),
+    // then lift them into `"Ns.name"` keys so an importer's const initializer can
+    // fold a namespaced member (`[Other.value]`). Seeded before the fixpoint so a
+    // root const that reads a namespaced member settles.
+    for d in decls {
+        if let TopDecl::Namespace(ns) = d {
+            for (name, value) in build_const_env(&ns.decls) {
+                env.entry(format!("{}.{}", ns.name, name)).or_insert(value);
+            }
+        }
+    }
     // Which decls have already produced their final answer, by position — a
     // bare `env.contains_key(name)` check has no meaning for a binding that
     // introduces several names. A decl is settled once its initializer EVALUATES:
@@ -2033,8 +2047,39 @@ pub(super) fn pre_declare_output(
     label: Option<&str>,
     label_expr: Option<&Expr>,
     invisible: bool,
+    // True only for the top-level module boundary. A record output there dissolves
+    // into per-field pins (below); inlined mods and chip instances instead route
+    // records through `pending_out_records` at their call site and rely on a
+    // single `Binding::Output` per declared output, so they pass false.
+    boundary: bool,
     range: &SourceRange,
 ) {
+    // A record-typed output port dissolves into one sub-port per field, bound as
+    // a `Record` so `out p: Rec = rec` wires each field to its own boundary pin —
+    // the output analogue of `pre_declare_input`. Without this a record output
+    // collapsed to a single pin and its value fell through to a lossy single wire
+    // (or an `_Unsupported` placeholder for a record literal), leaving the output
+    // dangling. Only the top-level boundary needs this (see `boundary`).
+    if boundary
+        && let Some(te) = typ
+        && let Some(fields) = ctx.record_fields_of(te)
+    {
+        let mut record_fields = HashMap::default();
+        for field in &fields {
+            let port_name = format!("{name}_{}", field.name);
+            let ft = type_of_type_expr(&field.typ);
+            let node_id = ctx.add_output(&port_name, ft.clone(), range.clone());
+            record_fields.insert(
+                crate::intern::intern(&field.name),
+                Binding::Output(NodeRecord { node_id, ty: ft }),
+            );
+        }
+        ctx.scope.insert(
+            &crate::lower::context::output_scope_key(name),
+            Binding::Record(record_fields),
+        );
+        return;
+    }
     // An explicit annotation IS the port's type — the value coerces INTO it
     // (typecheck validates the pair; the `ctx.connect` choke point inserts
     // any adapter, e.g. the string → bool `!= ""` compare). Deriving the

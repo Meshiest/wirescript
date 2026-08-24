@@ -416,6 +416,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
             None,
             None,
             false,
+            false,
             &out.range,
         );
         if let Some(r) = ctx.lookup_output(&out.name) {

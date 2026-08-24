@@ -401,7 +401,7 @@ let jmp = input.Jump       // bool
 need to reference that completion signal — to sequence on it (`await`), handle it
 (`on`), or wire it into another gate's `exec =`.
 
-Two cases resolve through `.exec`:
+Three cases resolve through `.exec`:
 
 - **A call that returns a bare `exec`.** Some builtins produce an exec whose
   underlying port has a gate-specific name (e.g. a `Change` detector's exec port
@@ -425,6 +425,28 @@ Two cases resolve through `.exec`:
     await t.exec             // resumes after InitTables ran
   }
   ```
+
+- **An event that also carries data.** A data-carrying event expression (a
+  custom event with data outputs) is a record whose exec output comes first, so
+  `.exec` names that trigger explicitly and lets the event compose with other
+  exec signals:
+
+  ```wirescript
+  in reset: exec
+  on Union(reset, CustomEvent("ping").exec) {   // fires on reset OR the event
+    ctrl.DisplayText("announced")
+  }
+  ```
+
+`Union` also takes an exec receiver, so `a.Union(b)` is `Union(a, b)` and a wide
+fan-in reads as a left-associative chain instead of nested `Union(Union(...))`:
+
+```wirescript
+in reset: exec
+on reset.Union(CustomEvent("ping").exec).Union(Change(score)) {
+  ctrl.DisplayText("announced")
+}
+```
 
 See [Explicit Exec Argument](exec-context.md#4-explicit-exec-argument) and
 [Exec Chips](chips.md#exec-chips).

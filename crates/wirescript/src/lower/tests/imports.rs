@@ -357,29 +357,33 @@ on go { SendCustomEvent(LEAF_CH, 1) }";
 }
 
 /// NAMESPACE access to an imported constant (`import * as ns` then `ns.NAME`)
-/// is NOT compile-time: `const_eval` has no model for a namespace, so
-/// `eval_expr`'s `FieldAccess` arm evaluates the namespace itself and reports
-/// "'ns' is a runtime value". The value still works as a RUNTIME one (below),
-/// and every constant-only position rejects it loudly — WS003 here, WS028 for
-/// a channel name, WS040 for a label — rather than baking an empty value,
-/// which is why this is pinned as a known limit and not a silent miscompile.
-/// The named-import spelling above is the supported way to use one constantly.
+/// is compile-time: `build_const_env` evaluates each imported namespace's
+/// constants in isolation and seeds them under `"ns.NAME"` keys, and
+/// `const_eval`'s `FieldAccess` arm resolves a namespaced member from those, so
+/// a namespaced const bakes into a constant-only slot exactly like a named
+/// import. (It also still works as a runtime value — see below.)
 #[test]
-fn a_namespaced_const_is_not_compile_time() {
-    use crate::resolve::{MemLoader, resolve};
-    let loader = MemLoader {
-        files: [("lib.ws".to_string(), CONST_LIB.to_string())]
-            .into_iter()
-            .collect(),
-    };
-    let resolved = resolve(
-        "import * as lib from \"lib\"\nvar m: int[] = [lib.SLOTS, 12345]",
-        "main",
-        &loader,
+fn a_namespaced_const_folds_at_compile_time() {
+    let entry = "import * as lib from \"lib\"\nvar m: int[] = [lib.SLOTS, 12345]";
+    assert_eq!(
+        baked_array_multi(entry, &[("lib", CONST_LIB)]),
+        vec![crate::ir::Literal::Int(4), crate::ir::Literal::Int(12345)]
     );
-    let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-    let codes: Vec<&str> = tc.diagnostics.iter().map(|d| d.code.as_ref()).collect();
-    assert!(codes.contains(&"WS003"), "expected a loud refusal, got {codes:?}");
+}
+
+/// A namespaced record VALUE folds inside a (record-)array initializer
+/// (`var arr: T[] = [Other.value]`), the multi-file record-value form of the
+/// namespaced-const fold above. This was a false WS003 "elements must be
+/// constant literals" because the namespaced member never reached the env.
+#[test]
+fn a_namespaced_record_value_folds_in_a_record_array_init() {
+    let lib = "type DoubleInt = { a: int, b: int }\nlet value = { a: 10, b: 20 }";
+    let r = compile_multi(
+        "import * as Other from \"test2\"\nvar arr: Other.DoubleInt[] = [Other.value]",
+        &[("test2", lib)],
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate_class(&r, "_Unsupported"));
 }
 
 /// The same namespaced constant used as a RUNTIME value is fine, which is what
