@@ -48,10 +48,23 @@ chip { chip { var inner: int = 0 } var outer: int = 0 }\n";
         let lr = crate::layout::layout(&module);
         let wall = assign_wall_slots(&module, &lr, (0, 0, 6));
 
-        // Root: bottom edge just above the chip brick's top face.
+        // Root: bottom edge at least just above the chip brick's top face. The
+        // whole assembly is lifted when a nested plane would otherwise sit
+        // underground (this fixture nests deeply enough to trigger it), so the
+        // root can be higher than the nominal clearance but never lower.
         let chip_top = 6.0 + 2.0; // pos.z + half height
         let root_bottom = wall.root.location.z - wall.root.extent.x as f32;
-        assert_eq!(root_bottom, chip_top + WALL_ROOT_CLEARANCE);
+        assert!(root_bottom >= chip_top + WALL_ROOT_CLEARANCE);
+
+        // No plane's bottom edge sits below the deployment brick's top face:
+        // nothing is buried in the ground when pasted at ground level.
+        for s in std::iter::once(&wall.root).chain(wall.chips.values()) {
+            assert!(
+                s.location.z - s.extent.x as f32 >= chip_top,
+                "a chip plane is underground: bottom {} < floor {chip_top}",
+                s.location.z - s.extent.x as f32
+            );
+        }
 
         // Depth-1 planes (A, B, anon) share a column left edge past the
         // root's right edge.

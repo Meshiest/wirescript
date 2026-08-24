@@ -2,10 +2,13 @@
 
 ## 1.6.2
 
+- Raise microchips so nested ones are not underground
+
 ### Fixes
 
 - Reading a namespaced `out` or `in` member (`L.count`, `L.level`) now resolves to the port's value instead of reporting "not found in namespace" and lowering to a placeholder.
 - A namespaced defaulted output with no `emit` (`out count = counter`) is a single direct drive again, instead of also getting a backing variable that fanned two wires into its port (which failed to load).
+- Indexing a record-array or record-map column (`pts.x[i]`, `m.x[k]`) now reads the field's value instead of typing `any` and dropping to a placeholder; it works in expressions (a comparison, arithmetic), not just a bare `let`.
 
 ## 1.6.1
 

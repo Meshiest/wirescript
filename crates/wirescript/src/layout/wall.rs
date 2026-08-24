@@ -118,7 +118,7 @@ pub fn assign_wall_slots(
     let root_extent = plane_extent(lr);
 
     // The root sits directly above the chip brick, unchanged.
-    let root = WallSlot {
+    let mut root = WallSlot {
         location: Vector3f {
             x: cx as f32,
             y: cy as f32,
@@ -200,6 +200,27 @@ pub fn assign_wall_slots(
             .zip(centres)
             .map(|(plane, z)| (z, plane.module, plane.lr))
             .collect();
+    }
+
+    // Lift the whole assembly so no plane's bottom edge sits below the
+    // deployment brick's top (the paste anchor / ground). A nested plane
+    // anchors on its chip brick's world Z, so a brick low in its parent can
+    // push a tall child plane underground (measured: a child plane bottom at
+    // z = -8 while the brick sits at z = 0). Shifting every plane up by the
+    // deficit keeps their relative anchoring intact (the bricks a child
+    // anchors on live in these same planes and shift with them) while raising
+    // the boards clear of the ground. The deployment brick stays at `chip_pos`.
+    let floor = cz as f32 + CHIP_BRICK_HALF_HEIGHT;
+    let min_bottom = std::iter::once(&root)
+        .chain(chips.values())
+        .map(|s| s.location.z - s.extent.x as f32)
+        .fold(f32::INFINITY, f32::min);
+    let lift = (floor - min_bottom).max(0.0);
+    if lift > 0.0 {
+        root.location.z += lift;
+        for slot in chips.values_mut() {
+            slot.location.z += lift;
+        }
     }
 
     WallLayout { root, chips }

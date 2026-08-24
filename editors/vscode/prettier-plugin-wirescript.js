@@ -78,10 +78,21 @@ function formatWirescript(source, tabWidth, useTabs) {
     // Join a statement-form `else` onto the previous closing brace:
     // `}\n  else {` → `} else {`. The expression form (`if c then x` then
     // `else y`) has no preceding `}`, so it stays on its own line.
+    //
+    // `else if` is NOT joined: chaining every `else if` onto the previous `}`
+    // collapses a whole multi-line if/else-if ladder onto one line (each rung
+    // joins onto the already-joined line before it). A ladder the author wrote
+    // across several lines stays that way; only a terminal plain `else {` folds
+    // back onto its `}`.
+    // The `}` must also belong to the `if` HEAD, not another rung: a terminal
+    // `else {` following an `else if { … }` stays on its own line so the whole
+    // ladder reads consistently (only a bare `if { … } else { … }` folds up).
     if (
       /^else(\s|\{|$)/.test(trimmed) &&
+      !/^else\s+if\b/.test(trimmed) &&
       result.length > 0 &&
-      result[result.length - 1].trimEnd().endsWith("}")
+      result[result.length - 1].trimEnd().endsWith("}") &&
+      !result[result.length - 1].trimStart().startsWith("else")
     ) {
       result[result.length - 1] =
         result[result.length - 1].trimEnd() + " " + trimmed;

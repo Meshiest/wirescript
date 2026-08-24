@@ -1149,6 +1149,34 @@ fn nested_record_array_field_path() {
     assert_eq!(gate_count(&r, gc::ARRAY_SET_AT_INDEX), 6);
 }
 
+/// R13: indexing a record-array COLUMN (`pts.x[i]`) reads the field's column as
+/// a real `ArrayVar_Get` and types as the field, not `Any`. Because the type is
+/// right it also works inside an expression (a comparison), which used to fall
+/// to `_Unsupported` after a WS004 (Any) killed operator resolution.
+#[test]
+fn record_array_column_index() {
+    let r = compile(
+        "type P = { x: int, y: int }\n\
+         var pts: P[]\n\
+         var a: int = 0\n\
+         var c: bool = false\n\
+         in s: exec\n\
+         on s {\n\
+           pts.push({ x: 10, y: 20 })\n\
+           a = pts.x[0]\n\
+           c = pts.x[0] != 5\n\
+         }",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "indexing a column must not placeholder");
+    // Both `a = pts.x[0]` and the comparison operand read the `x` column.
+    assert_eq!(gate_count(&r, gc::ARRAY_GET), 2, "each pts.x[i] reads its column");
+    assert!(
+        r.module.nodes.values().any(|n| n.gate_class.contains("CompareNotEqual")),
+        "the != on a column value must resolve to a real compare, not a placeholder"
+    );
+}
+
 /// A record MAP is stored as one parallel `Pseudo_MapVar` per field; `set`/`get`
 /// fan across the fields, `has`/`length` read the first field, and `remove`/
 /// `clear` fan out. `m.get(k).x`, `m[k].x`, `m[k] = rec`, and `p = m.get(k)` all

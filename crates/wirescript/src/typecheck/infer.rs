@@ -600,6 +600,28 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             {
                 return Type::Exec;
             }
+            // A field access on a record ARRAY or MAP is a COLUMN: `pts.x`
+            // where `pts: P[]` is the `x` column (an array of the field's
+            // type), and `m.x` on a record map maps keys to the field's type.
+            // This types `pts.x[i]` (indexing a column) and `pts.x.sum()` (a
+            // column method) as the field instead of `Any` — without it,
+            // indexing a column fell to `_Unsupported` and any op on it was a
+            // WS004 (Any). (R13.)
+            {
+                let base = unwrap_ref(&ot);
+                if let Type::Array(elem) = &base
+                    && let Type::Record(fields) = elem.as_ref()
+                    && let Some((_, t)) = fields.iter().find(|(k, _)| k == field)
+                {
+                    return Type::Array(Box::new(t.clone()));
+                }
+                if let Type::Map(k, val) = &base
+                    && let Type::Record(fields) = val.as_ref()
+                    && let Some((_, t)) = fields.iter().find(|(kk, _)| kk == field)
+                {
+                    return Type::Map(k.clone(), Box::new(t.clone()));
+                }
+            }
             if let Type::Record(fields) = &ot {
                 if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
                     return t.clone();
