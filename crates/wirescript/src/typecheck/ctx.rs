@@ -305,6 +305,14 @@ pub struct TypeCheckCtx<'a> {
     /// `typecheck::tests`) — a disagreement means code gets type-checked but
     /// not lowered, or lowered without ever being checked.
     pub dropped_ranges: Vec<(SourceRange, String)>,
+    /// Memoized `mod`/`chip`-is-exec-requiring answers, keyed by bare name (see
+    /// [`infer::mod_is_exec_requiring`](crate::typecheck::infer::mod_is_exec_requiring)).
+    /// A mod whose INLINED direct flow reads or writes a container (or calls an
+    /// exec builtin, or transitively calls such a mod) is exec-requiring, so a
+    /// PURE call of it is the silent-miscompile the WS007 exec-call check
+    /// rejects. Scanning the body is O(body) per distinct callee name, so the
+    /// answer is cached here rather than recomputed at every call site.
+    pub(super) exec_requiring_memo: crate::collections::HashMap<String, bool>,
     /// The expected type `check(ctx, e, expected)` pushes down for the single
     /// node it is checking, consumed once at the top of `infer_node`. Only a
     /// generic enum construction reads it: `let n: Option<int> = None` takes
@@ -344,6 +352,7 @@ impl<'a> TypeCheckCtx<'a> {
             // `mod_decls`'s own doc comment).
             mod_decls: vec![HashMap::default()],
             dropped_ranges: Vec::new(),
+            exec_requiring_memo: crate::collections::HashMap::default(),
             expected_ty: None,
         }
     }

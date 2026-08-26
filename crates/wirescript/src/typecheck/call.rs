@@ -362,6 +362,29 @@ pub(super) fn type_user_symbol_call(
         );
         return Type::Any;
     };
+    // Exec-requiring mod called from a PURE position. A mod whose inlined body
+    // reads or writes a container (or does so transitively) demands an exec
+    // context; the per-op WS007 is deferred inside the body (checked in exec
+    // mode) so an exec-only mod stays legal, but a pure call inlines those ops
+    // into pure context, where a container read yields the container REFERENCE
+    // instead of a value and silently miscompiles. Mirror the builtin exec-call
+    // WS007: fire unless the call supplies its own `exec =` trigger. Only
+    // mods/chips (`SymbolKind::Chip`) are scannable via `resolve_mod`; a plain
+    // `fn` never hosts a container op, so it is left alone.
+    if ctx.exec_mode() != ExecMode::Exec
+        && !has_exec_arg
+        && sym.kind == SymbolKind::Chip
+        && infer::mod_is_exec_requiring(ctx, name)
+    {
+        ctx.emit(
+            "WS007",
+            format!(
+                "exec call '{name}' outside an exec context (its body reads or writes a \
+                 container; pass exec = ... or call it from an exec handler)"
+            ),
+            name_range.clone(),
+        );
+    }
     // Arg-driven inference for a generic mod/chip call: collect an equality
     // constraint from every (declared param type, inferred arg type) pair, solve
     // for each type param, and substitute the result into the output types

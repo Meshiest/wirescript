@@ -312,10 +312,37 @@ pub(super) fn count_return_values(block: &Block) -> usize {
                     count += count_return_values(else_block);
                 }
             }
+            // A refutable bind's blocks host returns too (a `let else`'s
+            // diverging `else`, an `if let`'s arms). Omitting them undercounts a
+            // mod's returns, so the early-return storage is never allocated and
+            // every `return` in the construct silently drops its value.
+            Stmt::LetElse(l) => count += count_return_values(&l.else_block),
+            Stmt::IfLet(i) => {
+                count += count_return_values(&i.then_block);
+                if let Some(else_block) = &i.else_block {
+                    count += count_return_values(else_block);
+                }
+            }
+            Stmt::ExprStmt(es) => count += count_returns_in_expr_blocks(&es.expr),
             _ => {}
         }
     }
     count
+}
+
+/// Returns inside the block-bodied arms of a statement-form `match` (which is
+/// an `ExprStmt` holding a `MatchExpr`, not its own `Stmt` variant). A value
+/// arm carries no block, so it contributes none.
+fn count_returns_in_expr_blocks(e: &Expr) -> usize {
+    let Expr::MatchExpr { arms, .. } = e else {
+        return 0;
+    };
+    arms.iter()
+        .map(|arm| match &arm.body {
+            MatchBody::Block(b) => count_return_values(b),
+            MatchBody::Expr(_) => 0,
+        })
+        .sum()
 }
 
 pub(super) fn block_contains_return(block: &Block) -> bool {
@@ -329,6 +356,26 @@ pub(super) fn block_contains_return(block: &Block) -> bool {
                 if let Some(else_block) = &if_stmt.else_block
                     && block_contains_return(else_block)
                 {
+                    return true;
+                }
+            }
+            Stmt::LetElse(l) => {
+                if block_contains_return(&l.else_block) {
+                    return true;
+                }
+            }
+            Stmt::IfLet(i) => {
+                if block_contains_return(&i.then_block) {
+                    return true;
+                }
+                if let Some(else_block) = &i.else_block
+                    && block_contains_return(else_block)
+                {
+                    return true;
+                }
+            }
+            Stmt::ExprStmt(es) => {
+                if count_returns_in_expr_blocks(&es.expr) > 0 {
                     return true;
                 }
             }

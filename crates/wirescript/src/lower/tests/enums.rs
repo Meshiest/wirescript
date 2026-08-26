@@ -1125,3 +1125,26 @@ fn qualified_builtin_enum_data_driven_config_bakes_discriminant() {
     );
 }
 
+
+// Regression: a mod whose returns live inside a `let else` (or `if let` /
+// match-statement) block must be put in early-return mode, or every `return`
+// silently drops its value. A let-else mod called from exec must route both
+// returns through ret_set storage so the caller reads a real value.
+#[test]
+fn let_else_mod_routes_returns_through_ret_set_storage() {
+    let r = compile(
+        "enum Opt { Has(int), Nothing }\n\
+         mod unwrapOr(o: Opt, fb: int) -> int { let Has(x) = o else { return fb }\n return x }\n\
+         static var opt: Opt = Opt.Has(7)\n\
+         in go: exec\nvar r: int = 0\n\
+         on go { r = unwrapOr(opt, 0) }\n",
+    );
+    assert_no_errors(&r);
+    let ret_sets = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == crate::ir::gate_class::VAR_SET && n.note == Some("ret_set"))
+        .count();
+    assert!(ret_sets >= 2, "both returns must write ret_set storage, got {ret_sets}");
+}

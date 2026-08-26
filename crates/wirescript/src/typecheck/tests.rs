@@ -4182,3 +4182,141 @@
              on Clock(interval = 1.0, enabled = true, onTime = T) { x = x + 1 }",
         ));
     }
+
+    // ---- exec-requiring mod called from a pure position (WS007) ----
+    //
+    // A mod whose inlined body reads/writes a container is exec-requiring; the
+    // per-op WS007 is deferred inside the body (checked in exec mode), so a
+    // pure call of it silently inlined a container read into pure context and
+    // miscompiled (the read yielded the map REFERENCE, not a value). The
+    // call-site check turns that into a loud WS007.
+
+    fn has_ws007(r: &TypeCheckResult) -> bool {
+        r.diagnostics.iter().any(|d| d.code == "WS007")
+    }
+
+    #[test]
+    fn pure_call_of_a_container_reading_mod_is_ws007() {
+        let r = tc(
+            "var m: Map<int, string>\n\
+             in go: exec\n\
+             on go { m.set(1, \"x\") }\n\
+             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
+             out bad = tag(1)",
+        );
+        assert!(
+            has_ws007(&r),
+            "a pure call of a map-reading mod must be WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn exec_call_of_a_container_reading_mod_is_clean() {
+        // The SAME mod called from an exec handler must stay legal.
+        assert_no_diags(&tc(
+            "var m: Map<int, string>\n\
+             var res: string\n\
+             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
+             in go: exec\n\
+             on go { m.set(1, \"x\"); res = tag(1) }",
+        ));
+    }
+
+    #[test]
+    fn an_uncalled_container_reading_mod_is_clean() {
+        // A map-reading mod that is never called must not fire on its own.
+        assert_no_diags(&tc(
+            "var m: Map<int, string>\n\
+             in go: exec\n\
+             on go { m.set(1, \"x\") }\n\
+             mod tag(k: int) -> string { let v = m.get(k); return v.Value }",
+        ));
+    }
+
+    #[test]
+    fn a_pure_arithmetic_mod_called_from_pure_is_clean() {
+        // No container op, no exec builtin: a pure mod stays pure-callable.
+        assert_no_diags(&tc(
+            "mod dbl(k: int) -> int { return k * 2 }\n\
+             out good = dbl(21)",
+        ));
+    }
+
+    #[test]
+    fn a_transitively_container_reading_mod_pure_call_is_ws007() {
+        // `outer` reads no container directly but calls `inner`, which does.
+        let r = tc(
+            "var m: Map<int, string>\n\
+             in go: exec\n\
+             on go { m.set(1, \"x\") }\n\
+             mod inner(k: int) -> string { let v = m.get(k); return v.Value }\n\
+             mod outer(k: int) -> string { return inner(k) }\n\
+             out bad = outer(1)",
+        );
+        assert!(
+            has_ws007(&r),
+            "a pure call of a transitively map-reading mod must be WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_subscript_reading_mod_pure_call_is_ws007() {
+        // The `m[k]` subscript form is exec-requiring the same as `m.get(k)`.
+        let r = tc(
+            "var m: Map<int, string>\n\
+             in go: exec\n\
+             on go { m.set(1, \"x\") }\n\
+             mod tag(k: int) -> string { return m[k] }\n\
+             out bad = tag(1)",
+        );
+        assert!(
+            has_ws007(&r),
+            "a pure call of a subscript-reading mod must be WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_pure_call_with_an_exec_arg_override_is_clean() {
+        // Passing `exec = <trigger>` supplies the exec context the pure call
+        // otherwise lacks, so the override must silence WS007 (mirrors the
+        // builtin exec-call and container-method exemptions).
+        let r = tc(
+            "var m: Map<int, string>\n\
+             in go: exec\n\
+             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
+             out bad = tag(1, exec = go)",
+        );
+        assert!(
+            !has_ws007(&r),
+            "an `exec =` override must suppress the exec-call WS007: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_self_mod_named_like_a_container_method_is_not_over_fired() {
+        // `sort` is a catalog array method name, but here it is a pure user
+        // self-mod on a record: the receiver is not a container, so the call
+        // must NOT be mistaken for an exec-requiring container op.
+        assert_no_diags(&tc(
+            "type Point = { x: int, y: int }\n\
+             mod sort(self: Point) -> int { return self.x + self.y }\n\
+             let p: Point = { x: 1, y: 2 }\n\
+             out good = p.sort()",
+        ));
+    }
+
+    #[test]
+    fn a_const_receiver_read_mod_pure_call_is_clean() {
+        // A read on a `const`-declared container is exempt from the exec rule
+        // (it should const-fold), so a pure call of a mod that only does that
+        // must stay clean.
+        assert_no_diags(&tc(
+            "const m: Map<int, string> = { 1 => \"x\" }\n\
+             mod tag(k: int) -> string { let v = m.get(k); return v.Value }\n\
+             out ok = tag(1)",
+        ));
+    }

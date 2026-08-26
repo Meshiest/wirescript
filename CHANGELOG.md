@@ -10,6 +10,11 @@
 - Enum and int conversion: `value.ToInt()` is an alias for `.Discriminant`, and `Enum.FromInt(n)` builds a value from a (possibly runtime) int tag with payloads defaulted to zero. The `EnumToInt` / `IntToEnum` builtins (renamed from `EnumToInteger` / `IntegerToEnum`) are the gate-backed twins: they now require an enum-typed value instead of accepting `any`, fold a compile-time-known value to its tag, and use the game gate at runtime. `IntToEnum`'s result enum type is pinned by the target (`WS063` when it can't be).
 - Editor support for enums: completion of variants, enum type names, and `.Discriminant`; a fill-missing-arms code action; and hover and go-to-definition on enum types, variants, and named payload fields.
 
+### Fixes
+
+- Calling a `mod` that reads or writes a container in its body (`m.get(k)`, `arr[i]`, `m.set(...)`) from a pure position now reports `WS007`, instead of silently wiring the container reference into the caller.
+- A reference inside an `emit`, `await`, or `buffer` statement now counts as a use, so a genuinely-used import is no longer falsely reported unused (`WS014`) or dropped by Organize Imports.
+
 ## 1.6.2
 
 - Raise microchips so nested ones are not underground

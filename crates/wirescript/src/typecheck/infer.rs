@@ -7,7 +7,8 @@
 //! variant, no fallback.
 
 use crate::ast::{
-    ArrayElem, CallArg, Expr, InterpPart, MatchBody, Pattern, RecordLitField, VariantPattern,
+    ArrayElem, Block, CallArg, Expr, InterpPart, MatchBody, Pattern, RecordLitField, Stmt,
+    VariantPattern,
 };
 use crate::catalog::calls::find_call;
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
@@ -249,6 +250,294 @@ fn container_call_exec_exempt(
         .iter()
         .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
     const_read || has_exec_arg
+}
+
+/// Whether `args` carries an explicit `exec = <trigger>` named argument, which
+/// supplies the exec context an otherwise-pure call site lacks. Mirrors the
+/// `has_exec_arg` test the builtin exec-call WS007 (below) and
+/// `container_call_exec_exempt` (above) both apply.
+fn call_has_exec_arg(args: &[CallArg]) -> bool {
+    args.iter()
+        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"))
+}
+
+/// Whether the `mod`/`chip` named `name` is EXEC-REQUIRING: its inlined direct
+/// flow performs an operation that would itself demand an exec context in pure
+/// position (a container read/write, an exec builtin, or a transitive call to
+/// another exec-requiring mod). A mod's body is type-checked in exec mode (see
+/// `decl.rs`'s `in_exec` around the chip-body check), so the per-op WS007 is
+/// DEFERRED there - correct, because a mod called only from exec must stay
+/// legal. But inlining such a mod at a PURE call site drops those ops into pure
+/// context, where a container `.get`/`[k]` produces the container REFERENCE
+/// instead of a value and silently miscompiles. The call-site check in
+/// `type_user_symbol_call` uses this to turn that miscompile into a loud WS007.
+///
+/// Memoized in `ctx.exec_requiring_memo` keyed on `name`, so a mod called from
+/// many pure sites is scanned once. The scan is TRANSITIVE across mod calls,
+/// with a visited set breaking recursion cycles; only the top-level query is
+/// memoized (an intermediate answer computed while an ancestor is mid-scan
+/// could be a cycle-cut false negative, so it is left uncached and recomputed
+/// on its own query).
+///
+/// Precision notes (this must never over-fire on valid code):
+/// - A container method is recognized only when the receiver actually resolves
+///   to an `Array`/`Map` here (via `container_receiver_type`), so a user
+///   self-mod that merely shares a name with a catalog method (`x.sort()` on a
+///   record) is NOT mistaken for a container op.
+/// - The exemptions match the direct checks exactly (`container_call_exec_exempt`
+///   for a const-receiver read or an `exec =` arg; `index_access_is_const` for a
+///   fully constant subscript).
+/// - Independently exec-rooted or separately-compiled body regions - a nested
+///   `on` handler, a nested `chip`/anon-chip - are NOT scanned: their ops keep
+///   their own exec context regardless of how this mod is called.
+/// - A receiver that resolves only inside the mod's own scope (a mod parameter
+///   or a body-local container, not visible at the call site) is not detected;
+///   that residual case keeps the pre-existing behavior rather than risking a
+///   false positive.
+pub(super) fn mod_is_exec_requiring(ctx: &mut TypeCheckCtx, name: &str) -> bool {
+    if let Some(&cached) = ctx.exec_requiring_memo.get(name) {
+        return cached;
+    }
+    let mut visited = crate::collections::HashSet::default();
+    let result = mod_body_requires_exec(ctx, name, &mut visited);
+    ctx.exec_requiring_memo.insert(name.to_string(), result);
+    result
+}
+
+fn mod_body_requires_exec(
+    ctx: &TypeCheckCtx,
+    name: &str,
+    visited: &mut crate::collections::HashSet<String>,
+) -> bool {
+    // A back-edge to a mod already on the current scan stack contributes no new
+    // op (a mod is never exec-requiring purely through recursion), so cut it.
+    if !visited.insert(name.to_string()) {
+        return false;
+    }
+    let requires = match ctx.resolve_mod(name) {
+        Some(decl) => block_requires_exec(ctx, &decl.body, visited),
+        None => false,
+    };
+    visited.remove(name);
+    requires
+}
+
+fn block_requires_exec(
+    ctx: &TypeCheckCtx,
+    block: &Block,
+    visited: &mut crate::collections::HashSet<String>,
+) -> bool {
+    block
+        .stmts
+        .iter()
+        .any(|s| stmt_requires_exec(ctx, s, visited))
+}
+
+fn stmt_requires_exec(
+    ctx: &TypeCheckCtx,
+    stmt: &Stmt,
+    visited: &mut crate::collections::HashSet<String>,
+) -> bool {
+    match stmt {
+        // Independently exec-rooted / separately compiled: not part of this
+        // mod's inlined pure flow, so their ops keep their own exec context.
+        Stmt::Handler(_) | Stmt::AnonChip(_) | Stmt::ChipDecl(_) | Stmt::In(_) => false,
+        Stmt::Assign(a) => {
+            expr_requires_exec(ctx, &a.target, visited)
+                || expr_requires_exec(ctx, &a.value, visited)
+        }
+        Stmt::Emit(e) => e
+            .value
+            .as_ref()
+            .is_some_and(|v| expr_requires_exec(ctx, v, visited)),
+        Stmt::Await(a) => {
+            a.value_expr
+                .as_ref()
+                .is_some_and(|v| expr_requires_exec(ctx, v, visited))
+                || expr_requires_exec(ctx, &a.exec_expr, visited)
+        }
+        Stmt::If(i) => {
+            expr_requires_exec(ctx, &i.cond, visited)
+                || block_requires_exec(ctx, &i.then_block, visited)
+                || i.else_block
+                    .as_ref()
+                    .is_some_and(|b| block_requires_exec(ctx, b, visited))
+        }
+        Stmt::IfLet(i) => {
+            expr_requires_exec(ctx, &i.scrutinee, visited)
+                || block_requires_exec(ctx, &i.then_block, visited)
+                || i.else_block
+                    .as_ref()
+                    .is_some_and(|b| block_requires_exec(ctx, b, visited))
+        }
+        Stmt::Let(l) => expr_requires_exec(ctx, &l.value, visited),
+        Stmt::LetElse(l) => {
+            expr_requires_exec(ctx, &l.scrutinee, visited)
+                || block_requires_exec(ctx, &l.else_block, visited)
+        }
+        Stmt::OutBinding(ob) => ob
+            .value
+            .as_ref()
+            .is_some_and(|v| expr_requires_exec(ctx, v, visited)),
+        Stmt::ExprStmt(es) => expr_requires_exec(ctx, &es.expr, visited),
+        Stmt::Var(v) => v
+            .init
+            .as_ref()
+            .is_some_and(|e| expr_requires_exec(ctx, e, visited)),
+        Stmt::Buffer(b) => expr_requires_exec(ctx, &b.init, visited),
+        Stmt::Array(ad) => ad
+            .init
+            .iter()
+            .any(|el| expr_requires_exec(ctx, el.expr(), visited)),
+        Stmt::Map(md) => md
+            .init
+            .as_ref()
+            .is_some_and(|e| expr_requires_exec(ctx, e, visited)),
+        Stmt::Return { value, .. } => value
+            .as_ref()
+            .is_some_and(|e| expr_requires_exec(ctx, e, visited)),
+    }
+}
+
+fn expr_requires_exec(
+    ctx: &TypeCheckCtx,
+    e: &Expr,
+    visited: &mut crate::collections::HashSet<String>,
+) -> bool {
+    match e {
+        Expr::Call { callee, args, .. } => {
+            // A container method call (`m.get(k)`, `arr.push(v)`): every catalog
+            // method lowers to an `Exec_*` gate, so it is exec-requiring unless
+            // exempt (const-receiver read / `exec =` arg). Recognized only when
+            // the receiver actually resolves to a container here, so a same-named
+            // user self-mod is not misread.
+            let mut handled = false;
+            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
+                let mutates = match container_receiver_type(ctx, obj) {
+                    Some(Type::Array(_)) => {
+                        crate::catalog::arrays::array_method(field).map(|m| m.mutates)
+                    }
+                    Some(Type::Map(_, _)) => {
+                        crate::catalog::maps::map_method(field).map(|m| m.mutates)
+                    }
+                    _ => None,
+                };
+                if let Some(mutates) = mutates {
+                    handled = true;
+                    if !container_call_exec_exempt(ctx, mutates, obj, args) {
+                        return true;
+                    }
+                }
+            }
+            if !handled {
+                match callee.as_ref() {
+                    // A builtin whose CallSpec is exec-form, called without an
+                    // `exec =` override (mirrors the builtin WS007 below).
+                    Expr::Ident { name, .. } => {
+                        if let Some(c) = find_call(name) {
+                            if c.exec && !call_has_exec_arg(args) {
+                                return true;
+                            }
+                        } else if mod_body_requires_exec(ctx, name, visited) {
+                            // A transitive call to another user mod.
+                            return true;
+                        }
+                    }
+                    // The receiver spelling of the same two cases: an exec-form
+                    // receiver builtin (`e.GetLocation()`), else a user
+                    // `self`-receiver mod (`v.helper(o)`) scanned transitively.
+                    Expr::FieldAccess { field, .. } => {
+                        if let Some(c) = find_call(field).filter(|c| c.receiver.is_some()) {
+                            if c.exec && !call_has_exec_arg(args) {
+                                return true;
+                            }
+                        } else if mod_body_requires_exec(ctx, field, visited) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            expr_requires_exec(ctx, callee, visited)
+                || args.iter().any(|a| match a {
+                    CallArg::Positional(x) | CallArg::Spread(x) => {
+                        expr_requires_exec(ctx, x, visited)
+                    }
+                    CallArg::Named { value, .. } => expr_requires_exec(ctx, value, visited),
+                })
+        }
+        Expr::IndexAccess { obj, index, .. } => {
+            let is_container = matches!(
+                container_receiver_type(ctx, obj),
+                Some(Type::Array(_)) | Some(Type::Map(_, _))
+            );
+            if is_container && !index_access_is_const(ctx, e) {
+                return true;
+            }
+            expr_requires_exec(ctx, obj, visited) || expr_requires_exec(ctx, index, visited)
+        }
+        Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => {
+            expr_requires_exec(ctx, obj, visited)
+        }
+        Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
+            expr_requires_exec(ctx, operand, visited)
+        }
+        Expr::BinOp { left, right, .. } => {
+            expr_requires_exec(ctx, left, visited) || expr_requires_exec(ctx, right, visited)
+        }
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_requires_exec(ctx, cond, visited)
+                || expr_requires_exec(ctx, then_branch, visited)
+                || expr_requires_exec(ctx, else_branch, visited)
+        }
+        Expr::BlockExpr { stmts, value, .. } => {
+            stmts.iter().any(|s| stmt_requires_exec(ctx, s, visited))
+                || expr_requires_exec(ctx, value, visited)
+        }
+        Expr::MatchExpr {
+            scrutinee, arms, ..
+        } => {
+            expr_requires_exec(ctx, scrutinee, visited)
+                || arms.iter().any(|arm| match &arm.body {
+                    MatchBody::Expr(x) => expr_requires_exec(ctx, x, visited),
+                    MatchBody::Block(b) => block_requires_exec(ctx, b, visited),
+                })
+        }
+        Expr::InterpLit { parts, .. } => parts.iter().any(|p| match p {
+            InterpPart::Expr(x) => expr_requires_exec(ctx, x, visited),
+            InterpPart::Lit(_) => false,
+        }),
+        Expr::RecordLit { fields, .. } | Expr::VariantCtor { fields, .. } => {
+            fields.iter().any(|f| match f {
+                RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
+                    expr_requires_exec(ctx, value, visited)
+                }
+                RecordLitField::Shorthand { .. } => false,
+            })
+        }
+        Expr::Array { elements, .. } => elements
+            .iter()
+            .any(|el| expr_requires_exec(ctx, el.expr(), visited)),
+        Expr::MapLit { entries, .. } => entries.iter().any(|en| {
+            expr_requires_exec(ctx, &en.key, visited)
+                || expr_requires_exec(ctx, &en.value, visited)
+        }),
+        Expr::IntLit { .. }
+        | Expr::AtomLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::NullLit { .. }
+        | Expr::Ident { .. }
+        | Expr::AssetRef { .. }
+        | Expr::PrefabRef { .. }
+        | Expr::NestedPrefab { .. } => false,
+    }
 }
 
 /// Infer every field VALUE of a `VariantCtor`'s braced body with no target

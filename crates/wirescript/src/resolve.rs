@@ -1006,6 +1006,22 @@ fn collect_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
                 }
                 collect_idents_in_block(&c.body, idents);
             }
+            // `emit out = f(x)`, `await f(x)`, and `buffer b = f(x)` all reference
+            // whatever their value expression names. Omitting them here reports a
+            // genuinely-used import as unused (WS014), and Organize Imports would
+            // then delete it. Mirrors `collect_runtime_idents_in_block`.
+            Stmt::Emit(e) => {
+                if let Some(v) = &e.value {
+                    collect_idents_in_expr(v, idents);
+                }
+            }
+            Stmt::Await(a) => {
+                if let Some(v) = &a.value_expr {
+                    collect_idents_in_expr(v, idents);
+                }
+                collect_idents_in_expr(&a.exec_expr, idents);
+            }
+            Stmt::Buffer(b) => collect_idents_in_expr(&b.init, idents),
             _ => {}
         }
     }
