@@ -872,3 +872,190 @@ chip a(uid: string) -> int {
             );
         }
     }
+
+    // ---------- enum hover: user enums ----------
+
+    const SHAPE_ENUM_SRC: &str = "enum Shape { Empty, Circle(float), Rect(float, float) }\nvar s: Shape = Shape.Empty\nin go: exec\non go {\n  let d = s.Discriminant\n  let c = Shape.Circle\n  let cd = Shape.Circle.Discriminant\n}\n";
+
+    #[test]
+    fn hover_user_enum_type_name_in_var_decl_shows_enum_and_variants() {
+        // Hovering the TYPE name in `var s: Shape` shows it is an
+        // enum and lists its variants (with payload shapes).
+        let l = SHAPE_ENUM_SRC.lines().nth(1).unwrap();
+        let col = l.find("Shape").unwrap() + 1;
+        let h = hover_for(SHAPE_ENUM_SRC, 1, col).expect("enum type name should hover");
+        assert!(h.contains("enum Shape"), "should say it's an enum: {h}");
+        assert!(h.contains("Empty"), "should list Empty: {h}");
+        assert!(h.contains("Circle(float)"), "should show Circle's payload shape: {h}");
+        assert!(h.contains("Rect(float, float)"), "should show Rect's payload shape: {h}");
+    }
+
+    #[test]
+    fn hover_user_enum_type_name_in_construction_path_shows_enum_and_variants() {
+        // Hovering the `Shape` half of `Shape.Circle` also resolves
+        // to the enum (not the variant - that's a separate word/case).
+        let l = SHAPE_ENUM_SRC.lines().nth(5).unwrap();
+        let col = l.find("Shape").unwrap() + 1;
+        let h = hover_for(SHAPE_ENUM_SRC, 5, col).expect("enum type name in ctor path should hover");
+        assert!(h.contains("enum Shape"), "should say it's an enum: {h}");
+        assert!(h.contains("Empty") && h.contains("Circle") && h.contains("Rect"), "should list all variants: {h}");
+    }
+
+    #[test]
+    fn hover_user_enum_variant_in_construction_path_shows_discriminant() {
+        // Hovering the `Circle` in `Shape.Circle` shows
+        // the variant + its discriminant (Empty=0, Circle=1 by declaration order).
+        let l = SHAPE_ENUM_SRC.lines().nth(5).unwrap();
+        let col = l.find("Circle").unwrap() + 1;
+        let h = hover_for(SHAPE_ENUM_SRC, 5, col).expect("variant should hover");
+        assert!(h.contains("Shape.Circle"), "should name the owning enum + variant: {h}");
+        assert!(h.contains("(float)"), "should show the payload shape: {h}");
+        assert!(h.contains("Discriminant") && h.contains('1'), "should show discriminant 1: {h}");
+    }
+
+    #[test]
+    fn hover_enum_value_discriminant_yields_int() {
+        // `s.Discriminant` where `s: Shape` already
+        // resolves through the generic field-type hover (`type_map` types
+        // `.Discriminant` as `Type::Int` regardless of the object), which is
+        // useful as-is - it says the projection yields `int`.
+        let l = SHAPE_ENUM_SRC.lines().nth(4).unwrap();
+        let col = l.find("Discriminant").unwrap() + 1;
+        let h = hover_for(SHAPE_ENUM_SRC, 4, col).expect(".Discriminant on an enum value should hover");
+        assert!(h.contains("Discriminant") && h.contains("int"), "should show it yields int: {h}");
+    }
+
+    #[test]
+    fn hover_enum_variant_path_discriminant_shows_compile_time_constant() {
+        // `Shape.Circle.Discriminant` is a compile-time
+        // CONSTANT equal to Circle's discriminant (1), not just `int`.
+        let l = SHAPE_ENUM_SRC.lines().nth(6).unwrap();
+        let col = l.find("Discriminant").unwrap() + 1;
+        let h = hover_for(SHAPE_ENUM_SRC, 6, col).expect("variant-path .Discriminant should hover");
+        assert!(h.contains("Shape.Circle.Discriminant"), "should name the full path: {h}");
+        assert!(h.contains("= 1"), "should show the constant value 1: {h}");
+        assert!(h.to_lowercase().contains("compile-time constant"), "should say it's a compile-time constant: {h}");
+    }
+
+    #[test]
+    fn hover_enum_typed_variable_shows_its_type() {
+        // Hovering an enum-typed var already shows
+        // its declared type via the ordinary var hover.
+        let l = SHAPE_ENUM_SRC.lines().nth(1).unwrap();
+        let col = l.find(" s:").unwrap() + 1;
+        let h = hover_for(SHAPE_ENUM_SRC, 1, col).expect("var s should hover");
+        assert!(h.contains("var s: Shape"), "should show the enum type: {h}");
+    }
+
+    // ---------- enum hover: named payload field keys ----------
+
+    const BOX_ENUM_SRC: &str = "enum Shape { Box { w: float, h: float } }\nout b = Shape.Box { w: 1.0, h: 2.0 }\n";
+
+    #[test]
+    fn hover_construction_field_key_shows_declared_type() {
+        // Hovering `w` in `Shape.Box { w: 1.0, h: 2.0 }` shows its declared
+        // type from `enum Shape { Box { w: float, h: float } }`.
+        let l = BOX_ENUM_SRC.lines().nth(1).unwrap();
+        let col = l.find("w:").unwrap() + 1;
+        let h = hover_for(BOX_ENUM_SRC, 1, col).expect("construction field key should hover");
+        assert!(h.contains("w: float"), "should show the field's declared type: {h}");
+        assert!(h.contains("Shape.Box"), "should name the owning enum + variant: {h}");
+    }
+
+    #[test]
+    fn hover_construction_second_field_key_shows_its_own_type() {
+        let l = BOX_ENUM_SRC.lines().nth(1).unwrap();
+        let col = l.find("h:").unwrap() + 1;
+        let h = hover_for(BOX_ENUM_SRC, 1, col).expect("second field key should hover");
+        assert!(h.contains("h: float"), "should show h's own declared type: {h}");
+    }
+
+    #[test]
+    fn hover_construction_field_value_does_not_show_field_hover() {
+        // The VALUE side (`1.0`) is not a field key; falls through to the
+        // ordinary literal/no-hover path rather than the field-key hover.
+        let l = BOX_ENUM_SRC.lines().nth(1).unwrap();
+        let col = l.find("1.0").unwrap();
+        let h = hover_for(BOX_ENUM_SRC, 1, col);
+        assert!(
+            h.is_none_or(|h| !h.contains("Named payload field")),
+            "the value side should not show the field-key hover"
+        );
+    }
+
+    // ---------- enum hover: built-in game enums ----------
+
+    const EASING_SRC: &str = "var e: EasingFunction = EasingFunction.Bounce\nin go: exec\non go {\n  let d = e.Discriminant\n  let cd = EasingFunction.Bounce.Discriminant\n}\n";
+
+    #[test]
+    fn hover_builtin_enum_type_name_notes_built_in_game_enum() {
+        // Hovering `EasingFunction` says it's a built-in
+        // game enum and lists its variants.
+        let l = EASING_SRC.lines().next().unwrap();
+        let col = l.find("EasingFunction").unwrap() + 1;
+        let h = hover_for(EASING_SRC, 0, col).expect("built-in enum type name should hover");
+        assert!(h.contains("enum EasingFunction"), "should say it's an enum: {h}");
+        assert!(h.to_lowercase().contains("built-in game enum"), "should note it's built-in: {h}");
+        assert!(h.contains("Bounce"), "should list Bounce among the variants: {h}");
+    }
+
+    #[test]
+    fn hover_builtin_enum_type_name_in_construction_path() {
+        // The `EasingFunction` half of
+        // `EasingFunction.Bounce` also resolves to the enum.
+        let l = EASING_SRC.lines().next().unwrap();
+        let col = l.rfind("EasingFunction").unwrap() + 1;
+        let h = hover_for(EASING_SRC, 0, col).expect("built-in enum type name in ctor path should hover");
+        assert!(h.contains("enum EasingFunction"), "should say it's an enum: {h}");
+    }
+
+    #[test]
+    fn hover_builtin_enum_variant_shows_real_schema_discriminant() {
+        // Hovering `Bounce` in `EasingFunction.Bounce`
+        // shows the REAL schema discriminant from the catalog, not an
+        // auto-numbered index.
+        let want = crate::catalog::enum_member_value("EBREasingFunction", "Bounce")
+            .expect("Bounce is a real EBREasingFunction member");
+        let l = EASING_SRC.lines().next().unwrap();
+        let col = l.rfind("Bounce").unwrap() + 1;
+        let h = hover_for(EASING_SRC, 0, col).expect("built-in variant should hover");
+        assert!(h.contains("EasingFunction.Bounce"), "should name the owning enum + variant: {h}");
+        assert!(
+            h.contains(&format!("`{want}`")) || h.contains(&format!("{want}")),
+            "should show the real schema discriminant {want}: {h}"
+        );
+    }
+
+    #[test]
+    fn hover_builtin_enum_variant_path_discriminant_shows_real_constant() {
+        // `EasingFunction.Bounce.Discriminant`
+        // shows the real schema constant, matching `enum_member_value`.
+        let want = crate::catalog::enum_member_value("EBREasingFunction", "Bounce")
+            .expect("Bounce is a real EBREasingFunction member");
+        let l = EASING_SRC.lines().nth(4).unwrap();
+        let col = l.find("Discriminant").unwrap() + 1;
+        let h = hover_for(EASING_SRC, 4, col).expect("built-in variant-path .Discriminant should hover");
+        assert!(h.contains("EasingFunction.Bounce.Discriminant"), "should name the full path: {h}");
+        assert!(h.contains(&format!("= {want}")), "should show the real constant {want}: {h}");
+    }
+
+    #[test]
+    fn hover_builtin_enum_typed_variable_shows_its_type() {
+        // Hovering an enum-typed var
+        // already shows its declared type via the ordinary var hover.
+        let l = EASING_SRC.lines().next().unwrap();
+        let col = l.find(" e:").unwrap() + 1;
+        let h = hover_for(EASING_SRC, 0, col).expect("var e should hover");
+        assert!(h.contains("var e: EasingFunction"), "should show the enum type: {h}");
+    }
+
+    #[test]
+    fn hover_builtin_enum_value_discriminant_yields_int() {
+        // `e.Discriminant` where `e:
+        // EasingFunction` already resolves through the generic field-type
+        // hover, showing it yields `int`.
+        let l = EASING_SRC.lines().nth(3).unwrap();
+        let col = l.find("Discriminant").unwrap() + 1;
+        let h = hover_for(EASING_SRC, 3, col).expect(".Discriminant on a built-in enum value should hover");
+        assert!(h.contains("Discriminant") && h.contains("int"), "should show it yields int: {h}");
+    }

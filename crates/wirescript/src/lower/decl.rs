@@ -110,6 +110,9 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
         TopDecl::AnonChip(ac) => lower_anon_chip(ctx, ac),
         TopDecl::Assign(a) => lower_assign(ctx, a),
         TopDecl::If(i) => lower_if(ctx, i),
+        // Shared struct with the statement forms - lower identically.
+        TopDecl::IfLet(i) => lower_if_let(ctx, i),
+        TopDecl::LetElse(l) => lower_let_else(ctx, l),
         TopDecl::ExprStmt(es) => {
             lower_expr(ctx, &es.expr);
         }
@@ -149,7 +152,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             };
             lower_chip_decl(ctx, &chip);
         }
-        TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
+        TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) | TopDecl::Enum(_) => {}
         TopDecl::Namespace(ns) => {
             let mut ns_decls: HashMap<String, Binding> = HashMap::default();
             let mut ns_buffers = Vec::new();

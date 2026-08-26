@@ -19,6 +19,12 @@ fn count(m: &Module) -> usize {
     m.nodes.len() + m.chips.values().map(count).sum::<usize>()
 }
 
+/// Whether `m` or any of its nested chip modules contains a node of gate
+/// class `class`. Mirrors `count`'s recursion into `m.chips`.
+fn has_gate_class(m: &Module, class: &str) -> bool {
+    m.nodes.values().any(|n| n.gate_class == class) || m.chips.values().any(|c| has_gate_class(c, class))
+}
+
 /// Resolve, typecheck and lower `source`, asserting no errors at any stage.
 ///
 /// Folding is FORCED OFF, so any gate that disappears did so because const
@@ -220,6 +226,62 @@ fn a_const_binding_folds_into_a_literal_position() {
         "runtime.ws",
     );
     assert!(c < r, "const form ({c} gates) must emit fewer than the runtime form ({r})");
+}
+
+/// Task 16: a `match` whose scrutinee's `__disc` is compile-time known lowers
+/// to exactly the taken arm -- no `Expr_Select` gate at all, even under
+/// `ForceOff` (`lower_ok`'s fold-mode guarantee, see its own doc comment).
+/// This elision is gated on `nofold_depth`, a SEPARATE axis from the
+/// certified fold pass `fold_mode` controls -- `ForceOff` isolates it exactly
+/// like `a_non_const_mod_initializer_keeps_its_gates` isolates the
+/// const-mod-call skip above.
+///
+/// The runtime (non-const) form is the load-bearing control: without it, "no
+/// Select gate" could just as easily mean "this program never reaches the
+/// Select-emitting code at all" as "the elision fired". Both forms match the
+/// same `Shape` value shape -- only `const` vs `static var` differs.
+#[test]
+fn a_const_scrutinee_match_emits_no_select() {
+    let folded = lower_ok(
+        "enum Shape { Empty, Circle(float) }\n\
+         const s = Shape.Circle(3.0)\n\
+         out area = match s { Circle(r) => r, Empty => 0.0 }\n",
+        "const_match.ws",
+    );
+    assert!(
+        !has_gate_class(&folded, gate_class::SELECT),
+        "a const-scrutinee match must emit no Expr_Select gate"
+    );
+
+    let runtime = lower_ok(
+        "enum Shape { Empty, Circle(float) }\n\
+         static var s: Shape = Shape.Circle(3.0)\n\
+         out area = match s { Circle(r) => r, Empty => 0.0 }\n",
+        "runtime_match.ws",
+    );
+    assert!(
+        has_gate_class(&runtime, gate_class::SELECT),
+        "control: a runtime-scrutinee match must still build a real Select tree"
+    );
+}
+
+/// Task 21: the built-in `Option<T>` prelude, matched via a BARE construction
+/// scrutinee (`match Some(7) { ... }` - no `enum` declaration, no `Option.`
+/// qualification, and no named `const`/`static var` binding at all) elides
+/// the Select gate exactly like the qualified, explicitly-`const`-bound
+/// scrutinee does above (`a_const_scrutinee_match_emits_no_select`) - proof
+/// that `const_eval::expr::eval_bare_variant_ctor` resolves the bare
+/// construction, not just typecheck's/lowering's live-construction path.
+#[test]
+fn a_bare_prelude_variant_scrutinee_match_emits_no_select() {
+    let folded = lower_ok(
+        "out area = match Some(7) { Some(x) => x, None => 0 }\n",
+        "bare_const_match.ws",
+    );
+    assert!(
+        !has_gate_class(&folded, gate_class::SELECT),
+        "a bare-constructed Option scrutinee match must emit no Expr_Select gate"
+    );
 }
 
 /// The headline claim of the whole feature: a CALL to a `const mod` — not

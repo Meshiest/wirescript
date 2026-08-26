@@ -163,6 +163,8 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             // handler body) is silently dropped and the input dangles.
             lower_buffer_body(ctx, b);
         }
+        Stmt::IfLet(i) => lower_if_let(ctx, i),
+        Stmt::LetElse(l) => lower_let_else(ctx, l),
         Stmt::Return { value, .. } => {
             // A tuple return `(v0, v1, ...)` to a mod with multiple NAMED
             // outputs wires each element onto the matching output in declaration
@@ -483,10 +485,21 @@ pub(super) fn value_record_fields(
     if let Some(Binding::Record(f)) = resolve_field_chain(ctx, value).cloned() {
         return Some(f);
     }
-    // A record-returning CALL that isn't one of the shapes above - `pts.pop()`, a
-    // record-returning mod/chip - stashes its per-field record in
-    // `pending_inline_record` when lowered. Lower it and take that.
-    if matches!(value, Expr::Call { .. }) {
+    // A record-returning CALL that isn't one of the shapes above - `pts.pop()`,
+    // a record-returning mod/chip - OR an enum CONSTRUCTION reaching this
+    // point (`Dir.E`, `Shape.Circle(5.0)`, `Box.Dims { w, h }` - every check
+    // above only resolves an EXISTING record binding, never a fresh
+    // construction) stashes its per-field record in `pending_inline_record`
+    // when lowered (see `try_lower_enum_ctor` in `lower/expr.rs` for the
+    // construction case). Lower it and take that. The construction forms are
+    // gated on the value's own CHECKED type (rather than unconditionally
+    // routing every `FieldAccess` through here) so an ordinary non-record
+    // field access - which this function correctly has no binding for -
+    // still falls through to `None` below without a wasted lowering.
+    let may_produce_record = matches!(value, Expr::Call { .. } | Expr::VariantCtor { .. })
+        || matches!(ctx.type_of(value), Type::Enum { .. });
+    if may_produce_record {
+        ctx.pending_inline_record = None;
         let _ = lower_expr(ctx, value);
         if let Some(rec) = ctx.pending_inline_record.take() {
             return Some(rec);
@@ -1103,6 +1116,439 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     for id in then_touched.iter().chain(else_touched.iter()) {
         invalidate_var_cache(ctx, id);
     }
+}
+
+/// Lower a `match` used as a STATEMENT (a live exec chain, block-bodied arms)
+/// `if let <pattern> = <scrutinee> { then } else { else }` - a refutable-pattern
+/// conditional. It desugars to a two-arm match (`<pattern> => then`, `_ => else`)
+/// - or a one-arm match with a `Fail` pass-through when there is no `else` - and
+/// routes straight through [`lower_match_stmt`], so the `disc == variant`
+/// Branch, the ExecOutA/ExecOutB split, the rejoining `Union`, and the capture
+/// binding are all the shared match machinery, not a second walker.
+pub(super) fn lower_if_let(ctx: &mut LowerCtx, i: &IfLet) {
+    let mut arms = vec![MatchArm {
+        pattern: i.pattern.clone(),
+        body: MatchBody::Block(i.then_block.clone()),
+        range: i.then_block.range.clone(),
+    }];
+    if let Some(else_b) = &i.else_block {
+        arms.push(MatchArm {
+            pattern: Pattern::Wildcard(else_b.range.clone()),
+            body: MatchBody::Block(else_b.clone()),
+            range: else_b.range.clone(),
+        });
+    }
+    lower_match_stmt(ctx, &i.scrutinee, &arms, &i.range);
+}
+
+/// `let <pattern> = <scrutinee> else { <diverge> }` - a refutable binding that
+/// runs the diverging `else` when it fails. It walks the SAME one-arm `Decision`
+/// (`matchtree::build`) `if let` drives through `lower_match_stmt`, so EVERY
+/// disc mismatch at ANY nesting level routes to the `else` - a nested pattern
+/// like `Some(Some(x))` tests both discs, not just the outer one. Unlike `if
+/// let`, the paths do NOT rejoin through a `Union`: the fully-matching leaf
+/// binds all captures into the CURRENT scope (visible to the rest of the
+/// enclosing block) and continues `current_exec`; every non-matching path runs
+/// the `else` block (which typecheck forced to diverge - WS062), so its exec
+/// never returns to the main chain.
+pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
+    // Pure position (no exec chain): nothing to thread, same as `lower_if`.
+    let Some(entry_exec) = ctx.current_exec else {
+        return;
+    };
+    let range = l.range.clone();
+    let scrut_ty = unwrap_ref(&ctx.type_of(&l.scrutinee));
+
+    // The one-arm decision tree for the FULL (possibly nested) pattern. Every
+    // `Switch` case leads deeper toward the single `Leaf`; every `Fail`/default
+    // is a mismatch that routes to the diverging `else`.
+    let decision = crate::lower::matchtree::build(
+        &ctx.enum_defs,
+        &scrut_ty,
+        std::slice::from_ref(&l.pattern),
+    );
+
+    // The scrutinee's `__disc` + payload-slot record (a NAMED var/let/param
+    // through the scope). An enum I/O port has no such record - loud placeholder.
+    let Some(root) = match_scrutinee_record(ctx, &l.scrutinee) else {
+        synthesise_unsupported_range(ctx, &range);
+        return;
+    };
+
+    ctx.current_exec = Some(entry_exec);
+    let cont = lower_let_else_decision(ctx, &decision, &root, &l.pattern, &l.else_block, entry_exec, &range);
+    // Continue on the fully-matched path. A decision with no reachable match
+    // leaf (should not happen for a well-typed single-variant pattern) leaves
+    // exec on the entry so following statements are not silently stranded.
+    ctx.current_exec = cont.or(Some(entry_exec));
+}
+
+/// Walk one `Decision` node for a `let ... else`, entering on `entry_exec`.
+/// Returns the exec on which the FULLY-matched path continues (there is exactly
+/// one such leaf), or `None` for a path that reaches the diverging `else`.
+#[allow(clippy::too_many_arguments)]
+fn lower_let_else_decision(
+    ctx: &mut LowerCtx,
+    decision: &crate::lower::matchtree::Decision,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    pattern: &Pattern,
+    else_block: &Block,
+    entry_exec: PortRef,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    use crate::lower::matchtree::Decision;
+    match decision {
+        Decision::Leaf(_) => {
+            // Full match: bind every capture (all nesting levels) as a
+            // compile-time slot move into the CURRENT scope, then continue here.
+            ctx.current_exec = Some(entry_exec);
+            let mut captures = Vec::new();
+            collect_pattern_captures(pattern, &mut Vec::new(), &mut captures);
+            for (name, slot_path) in captures {
+                if let Some(binding) = navigate_capture(root, &slot_path) {
+                    ctx.scope.insert(&name, binding);
+                }
+            }
+            Some(entry_exec)
+        }
+        // A disc mismatch at some level: run the diverging `else`; never rejoin.
+        Decision::Fail => {
+            ctx.current_exec = Some(entry_exec);
+            lower_block(ctx, else_block);
+            None
+        }
+        Decision::Switch { path, cases, default } => {
+            ctx.current_exec = Some(entry_exec);
+            let disc_port = read_disc_at_path(ctx, root, path, range)
+                .unwrap_or_else(|| synthesise_unsupported_range(ctx, range));
+            let head_exec = ctx.current_exec.unwrap_or(entry_exec);
+            lower_let_else_switch(ctx, disc_port, cases, default.as_deref(), root, pattern, else_block, head_exec, range)
+        }
+    }
+}
+
+/// Chain a `Switch`'s cases as `Branch`es on `disc == k` for a `let ... else`.
+/// The matching case's sub-decision runs on `ExecOutA` (toward the leaf), the
+/// remaining cases/default on `ExecOutB` (toward the `else`). No `Union`: the
+/// single match leaf's continuation propagates up, and each `else` path
+/// diverges. The `else` chain's Var_Get reads fire only on its `ExecOutB`, so
+/// they are snapshot/restored around it and never leak to the match path.
+#[allow(clippy::too_many_arguments)]
+fn lower_let_else_switch(
+    ctx: &mut LowerCtx,
+    disc_port: PortRef,
+    cases: &[(i64, crate::lower::matchtree::Decision)],
+    default: Option<&crate::lower::matchtree::Decision>,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    pattern: &Pattern,
+    else_block: &Block,
+    entry_exec: PortRef,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let Some(((k, sub), rest)) = cases.split_first() else {
+        // Past the last case: the default sub-decision (a `Fail` -> `else`), or
+        // the `else` directly when there is no default.
+        return match default {
+            Some(d) => lower_let_else_decision(ctx, d, root, pattern, else_block, entry_exec, range),
+            None => {
+                ctx.current_exec = Some(entry_exec);
+                lower_block(ctx, else_block);
+                None
+            }
+        };
+    };
+
+    ctx.current_exec = Some(entry_exec);
+    let cond_port = emit_disc_eq(ctx, disc_port, *k, range);
+    let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
+    let branch = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::BRANCH,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::B_COND,
+                    ty: Type::Bool,
+                },
+            ],
+            outputs: vec![
+                PortSpec {
+                    name: *sym::EXEC_OUT_A,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::EXEC_OUT_B,
+                    ty: Type::Exec,
+                },
+            ],
+        },
+        ..Default::default()
+    });
+    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
+    ctx.connect(cond_port, branch.port(WirePort::BCond));
+
+    // NON-matching (ExecOutB): the remaining cases, ending in the diverging
+    // `else`. Bracket its var caches so its reads never leak to the match path.
+    let pre_branch_caches = snapshot_var_caches(ctx);
+    let else_cont = lower_let_else_switch(
+        ctx,
+        disc_port,
+        rest,
+        default,
+        root,
+        pattern,
+        else_block,
+        branch.port(WirePort::ExecOutB),
+        range,
+    );
+    restore_var_caches(ctx, &pre_branch_caches);
+
+    // MATCHING (ExecOutA): descend toward the leaf - this carries the
+    // continuation. Lowered last so `current_exec` ends on the match path.
+    let match_cont =
+        lower_let_else_decision(ctx, sub, root, pattern, else_block, branch.port(WirePort::ExecOutA), range);
+
+    match_cont.or(else_cont)
+}
+
+/// to an exec-threaded `Branch`/`Union` tree - the statement twin of
+/// `lower_match_expr`. Both walk the same Task-13 `Decision`: a `Switch` reads
+/// `__disc` at its path and each case becomes an `if disc == k { arm } else
+/// { rest }` (a `Branch`, the arm on `ExecOutA`, the remaining cases/default on
+/// `ExecOutB`, the two exits rejoined by a `Union`). The returned port is the
+/// final exec continuation; the `Stmt::ExprStmt` caller discards it and reads
+/// `current_exec` for what follows.
+pub(super) fn lower_match_stmt(
+    ctx: &mut LowerCtx,
+    scrutinee: &Expr,
+    arms: &[MatchArm],
+    range: &SourceRange,
+) -> PortRef {
+    // Mirror `lower_if`'s guard: no exec chain, nothing to thread.
+    let Some(entry_exec) = ctx.current_exec else {
+        return synthesise_unsupported_range(ctx, range);
+    };
+    let scrut_ty = unwrap_ref(&ctx.type_of(scrutinee));
+    let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
+    let decision = crate::lower::matchtree::build(&ctx.enum_defs, &scrut_ty, &arm_patterns);
+
+    // The scrutinee resolves to its `__disc` + payload-slot `Binding::Record`
+    // (Task 6) - a NAMED scrutinee through the scope, an INLINE construction by
+    // lowering it (see `match_scrutinee_record`, shared with `lower_match_expr`).
+    // A scrutinee with no record decomposition (an enum INPUT port, a
+    // typecheck-error program) is a loud `_Unsupported` placeholder.
+    let Some(root) = match_scrutinee_record(ctx, scrutinee) else {
+        return synthesise_unsupported_range(ctx, range);
+    };
+
+    // Const-elision fast path (Task 16): the statement twin of
+    // `lower_match_expr`'s own -- see that function's doc comment for the
+    // `nofold_depth`/`if_cond_const_ctx` rationale, identical here. On
+    // success, every arm OTHER than the taken one is dropped: none of their
+    // statements ran, so typecheck's blanket "check every arm" (there is no
+    // const-elision on that side for `match` -- every arm is always checked,
+    // the safe over-checking direction) still agrees with lowering on which
+    // ranges never executed, matching `lower_if`'s `dropped_ranges` bookkeeping.
+    if ctx.nofold_depth == 0
+        && let Some(leaf) = try_const_decision(ctx, &decision, scrutinee)
+    {
+        let taken = match &leaf {
+            crate::lower::matchtree::Decision::Leaf(i) => Some(*i),
+            _ => None,
+        };
+        for (j, arm) in arms.iter().enumerate() {
+            if Some(j) != taken {
+                ctx.dropped_ranges.push(arm.range.clone());
+            }
+        }
+        let exit = lower_decision_stmt(ctx, &leaf, &root, arms, entry_exec, range);
+        ctx.current_exec = exit;
+        return exit.unwrap_or(entry_exec);
+    }
+
+    let exit = lower_decision_stmt(ctx, &decision, &root, arms, entry_exec, range);
+    ctx.current_exec = exit;
+    exit.unwrap_or(entry_exec)
+}
+
+/// Thread exec through one `Decision`, entering on `entry_exec`. Returns the
+/// exit exec, or `None` when the taken path terminates its own chain (e.g. a
+/// buffered `emit` as an arm's last statement).
+fn lower_decision_stmt(
+    ctx: &mut LowerCtx,
+    decision: &crate::lower::matchtree::Decision,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    arms: &[MatchArm],
+    entry_exec: PortRef,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    use crate::lower::matchtree::Decision;
+    match decision {
+        Decision::Leaf(i) => {
+            ctx.current_exec = Some(entry_exec);
+            lower_match_arm_stmt(ctx, &arms[*i], root);
+            ctx.current_exec.take()
+        }
+        // No arm matched (only reachable for a non-exhaustive match, already a
+        // WS054): the exec falls through unchanged, running nothing.
+        Decision::Fail => Some(entry_exec),
+        Decision::Switch { path, cases, default } => {
+            ctx.current_exec = Some(entry_exec);
+            let disc_port = read_disc_at_path(ctx, root, path, range)
+                .unwrap_or_else(|| synthesise_unsupported_range(ctx, range));
+            // Reading `__disc` may have inserted an exec-taking `Var_Get`; the
+            // first branch's Exec input picks up from the advanced chain head.
+            let head_exec = ctx.current_exec.unwrap_or(entry_exec);
+            lower_switch_cases(ctx, disc_port, cases, default.as_deref(), root, arms, head_exec, range)
+        }
+    }
+}
+
+/// Chain a `Switch`'s cases as nested `Branch`es on `disc == k`: the head case's
+/// arm runs on `ExecOutA`, the remaining cases (then the `default`, or a `Fail`
+/// pass-through) on `ExecOutB`, and the two exits rejoin through a `Union`. The
+/// snapshot/restore var-cache discipline is `lower_if`'s: only vars an arm
+/// actually wrote get invalidated at the join, so a read that dominates the
+/// split survives while a branch-local read never leaks to a sibling.
+#[allow(clippy::too_many_arguments)]
+fn lower_switch_cases(
+    ctx: &mut LowerCtx,
+    disc_port: PortRef,
+    cases: &[(i64, crate::lower::matchtree::Decision)],
+    default: Option<&crate::lower::matchtree::Decision>,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    arms: &[MatchArm],
+    entry_exec: PortRef,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let Some(((k, sub), rest)) = cases.split_first() else {
+        // Past the last case: the default sub-decision, or a Fail pass-through.
+        return match default {
+            Some(d) => lower_decision_stmt(ctx, d, root, arms, entry_exec, range),
+            None => Some(entry_exec),
+        };
+    };
+
+    let pre_branch_caches = snapshot_var_caches(ctx);
+
+    ctx.current_exec = Some(entry_exec);
+    let cond_port = emit_disc_eq(ctx, disc_port, *k, range);
+    // Building the compare is pure, but re-read the chain head the way
+    // `lower_if` does so a future exec-taking disc path stays wired correctly.
+    let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
+    let branch = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::BRANCH,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::EXEC,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::B_COND,
+                    ty: Type::Bool,
+                },
+            ],
+            outputs: vec![
+                PortSpec {
+                    name: *sym::EXEC_OUT_A,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::EXEC_OUT_B,
+                    ty: Type::Exec,
+                },
+            ],
+        },
+        ..Default::default()
+    });
+    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
+    ctx.connect(cond_port, branch.port(WirePort::BCond));
+
+    // THEN: this case's arm (or nested switch) on ExecOutA.
+    let then_end = lower_decision_stmt(ctx, sub, root, arms, branch.port(WirePort::ExecOutA), range);
+    let then_touched = cache_touched_since(ctx, &pre_branch_caches);
+
+    // ELSE: the remaining cases / default on ExecOutB. Drop the THEN chain's
+    // scratch reads first - they only fire on ExecOutA.
+    restore_var_caches(ctx, &pre_branch_caches);
+    let else_end = lower_switch_cases(
+        ctx,
+        disc_port,
+        rest,
+        default,
+        root,
+        arms,
+        branch.port(WirePort::ExecOutB),
+        range,
+    );
+    let else_touched = cache_touched_since(ctx, &pre_branch_caches);
+
+    let union = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::UNION,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::EXEC_A,
+                    ty: Type::Exec,
+                },
+                PortSpec {
+                    name: *sym::EXEC_B,
+                    ty: Type::Exec,
+                },
+            ],
+            outputs: vec![PortSpec {
+                name: *sym::EXEC_OUT,
+                ty: Type::Exec,
+            }],
+        },
+        ..Default::default()
+    });
+    if let Some(e) = then_end {
+        ctx.connect(e, union.port(WirePort::ExecA));
+    }
+    if let Some(e) = else_end {
+        ctx.connect(e, union.port(WirePort::ExecB));
+    }
+    // Post-join cache state: restore the pre-branch reads, then invalidate every
+    // var either side wrote (mirrors `lower_if`'s join).
+    restore_var_caches(ctx, &pre_branch_caches);
+    for id in then_touched.iter().chain(else_touched.iter()) {
+        invalidate_var_cache(ctx, id);
+    }
+    Some(union.port(WirePort::ExecOut))
+}
+
+/// Lower one arm's body on the current exec chain, its payload captures bound as
+/// compile-time slot moves (no gate) - the statement twin of `lower_match_arm`.
+fn lower_match_arm_stmt(
+    ctx: &mut LowerCtx,
+    arm: &MatchArm,
+    root: &HashMap<crate::intern::Sym, Binding>,
+) {
+    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
+    let mut captures = Vec::new();
+    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
+    for (name, slot_path) in captures {
+        if let Some(binding) = navigate_capture(root, &slot_path) {
+            ctx.scope.insert(&name, binding);
+        }
+    }
+    match &arm.body {
+        MatchBody::Block(block) => lower_block(ctx, block),
+        // A statement-position expression arm runs for its side effects; its
+        // value has no consumer (the match statement yields nothing).
+        MatchBody::Expr(expr) => {
+            lower_expr(ctx, expr);
+        }
+    }
+    ctx.pop_scope();
 }
 
 /// `cond` resolves (through the current scope) to a `_Literal` gate carrying
@@ -2100,6 +2546,27 @@ pub(super) fn lower_out_binding(
     _range: &SourceRange,
 ) {
     let Some(value) = value else { return };
+    // An ENUM value driving an output port has no materialization yet: the
+    // out-port isn't decomposed into `__disc` + slot pins (unlike a record,
+    // which `pre_declare_output` DOES explode), so both the construction path
+    // and a record-returning enum call below would stash the value into
+    // `pending_out_records` and, for a top-level (non-inlined) out, silently
+    // drop it - a dead, unwired output with no feedback. Make that LOUD (the
+    // same WSP001 not-yet-materialized idiom the earlier `VariantCtor` stub
+    // used) and stop, rather than emit dead gates. Scoped strictly to
+    // `Type::Enum` values - a record out-port (which IS wired, field-wise,
+    // below) is untouched, and a missing/`Any` type falls through unchanged.
+    if matches!(ctx.type_of(value), Type::Enum { .. }) {
+        ctx.warn(
+            format!(
+                "an enum value can't drive the output `{name}` yet - enum output-port \
+                 materialization is not implemented, so this output is left unwired and \
+                 the enum's tag and payload are dropped"
+            ),
+            value.range(),
+        );
+        return;
+    }
     // A record-typed boundary output was exploded into per-field pins
     // (`pre_declare_output`); wire each field's source into its own pin instead
     // of falling through to the single-wire path below.

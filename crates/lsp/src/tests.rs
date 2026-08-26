@@ -212,6 +212,75 @@
     }
 
     #[test]
+    fn match_arm_completes_variants() {
+        // Cursor in arm-head position inside `match s {  }` (s: Shape) offers
+        // the enum's variant names as candidate patterns. `col` is computed
+        // against LINE 2's own text (not the whole multi-line `src`), same
+        // convention as `plain_value_slot_offers_in_scope_idents_not_arg_names`
+        // above - a whole-`src` offset would overshoot a middle-of-line target.
+        let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s {  }\n";
+        let line = 2;
+        let col = src.lines().nth(line).unwrap().find("match s { ").unwrap() + "match s { ".len();
+        let ls = labels(src, line, col);
+        assert!(ls.iter().any(|l| l == "Circle"), "variant missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "Empty"), "variant missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "Rect"), "variant missing: {ls:?}");
+    }
+
+    #[test]
+    fn discriminant_completes_after_value() {
+        // `s.` on an enum-typed value offers `.Discriminant`.
+        let src = "enum S { A, B }\nin s: S\nout d = s.\n";
+        let line = 2;
+        let col = src.lines().nth(line).unwrap().find("s.").unwrap() + "s.".len();
+        let ls = labels(src, line, col);
+        assert!(ls.iter().any(|l| l == "Discriminant"), "Discriminant missing: {ls:?}");
+    }
+
+    #[test]
+    fn bare_enum_type_receiver_completes_variants() {
+        // `Shape.` (the enum TYPE name, not a value) offers its variant
+        // names, matching the compiler's own `Enum.Variant` construction
+        // syntax rather than a value's `.Discriminant`.
+        let src = "enum Shape { Empty, Circle(float) }\nout d = Shape.\n";
+        let line = 1;
+        let col = src.lines().nth(line).unwrap().find("Shape.").unwrap() + "Shape.".len();
+        let ls = labels(src, line, col);
+        assert!(ls.iter().any(|l| l == "Circle"), "variant missing: {ls:?}");
+        assert!(ls.iter().any(|l| l == "Empty"), "variant missing: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "Discriminant"), "Discriminant should not appear on a type name: {ls:?}");
+    }
+
+    #[test]
+    fn shadowed_enum_name_receiver_offers_no_variants() {
+        // A value binding (`Shape: int` param) whose name equals the enum's
+        // SHADOWS the type, so `Shape.` here is a (invalid) field access on an
+        // int, never variant construction - the completion must not offer the
+        // enum's variants. Mirrors the compiler's own shadow guard
+        // (`resolve_variant_for_construction`).
+        let src = "enum Shape { Empty, Circle(float) }\nmod useShape(Shape: int) -> int { return Shape. }\n";
+        let line = 1;
+        let col = src.lines().nth(line).unwrap().find("return Shape.").unwrap()
+            + "return Shape.".len();
+        let ls = labels(src, line, col);
+        assert!(!ls.iter().any(|l| l == "Empty"), "shadowed enum leaked a variant: {ls:?}");
+        assert!(!ls.iter().any(|l| l == "Circle"), "shadowed enum leaked a variant: {ls:?}");
+    }
+
+    #[test]
+    fn match_arm_after_block_arm_completes_variants() {
+        // A block-bodied arm may omit its trailing comma, so the cursor on the
+        // line after `Empty => { 1 }` is still an arm head and must offer the
+        // remaining variants.
+        let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => { 1.0 }\n  \n}\n";
+        let line = 4; // the blank arm-head line between the block arm and `}`
+        let col = 2;
+        let ls = labels(src, line, col);
+        assert!(ls.iter().any(|l| l == "Circle"), "variant missing after block arm: {ls:?}");
+        assert!(ls.iter().any(|l| l == "Empty"), "variant missing after block arm: {ls:?}");
+    }
+
+    #[test]
     fn plain_value_slot_offers_in_scope_idents_not_arg_names() {
         // In a non-enum / non-asset value slot (`textId = <here>`), completion
         // offers in-scope identifiers, NOT the call's argument names.
@@ -497,6 +566,59 @@
         );
     }
 
+    #[test]
+    fn type_annotation_completes_builtin_game_enum_name() {
+        // `var e: <here>` offers the built-in game enum type names (e.g.
+        // `EasingFunction`), the same list a hand-declared `enum` would show
+        // once it has a symbol. Game enums never get one, so they're seeded
+        // straight from the catalog into the type-name completion list.
+        let src = "var e: Eas";
+        let ls = labels(src, 0, src.len());
+        assert!(ls.iter().any(|l| l == "EasingFunction"), "EasingFunction missing: {ls:?}");
+    }
+
+    #[test]
+    fn bare_builtin_game_enum_type_receiver_completes_variants() {
+        // `EasingFunction.` (the built-in enum TYPE name, no `enum` decl
+        // anywhere in the file) offers its variant names, same as a
+        // user-declared enum's bare type receiver.
+        let src = "out d = EasingFunction.\n";
+        let col = src.find("EasingFunction.").unwrap() + "EasingFunction.".len();
+        let ls = labels(src, 0, col);
+        assert!(ls.iter().any(|l| l == "Bounce"), "Bounce missing: {ls:?}");
+    }
+
+    #[test]
+    fn qualified_builtin_game_enum_variant_completes_discriminant() {
+        // `EasingFunction.Bounce.` (a bare variant VALUE of a built-in game
+        // enum) offers `.Discriminant`, same as any other enum-typed value
+        // receiver. `member_receiver_at` only reports the identifier directly
+        // before the dot (`Bounce`, not the qualified `EasingFunction.Bounce`),
+        // so this only works if a bare variant name resolves to its uniquely
+        // owning enum.
+        let src = "out d = EasingFunction.Bounce.\n";
+        let col = src.find("EasingFunction.Bounce.").unwrap() + "EasingFunction.Bounce.".len();
+        let ls = labels(src, 0, col);
+        assert!(ls.iter().any(|l| l == "Discriminant"), "Discriminant missing: {ls:?}");
+    }
+
+    #[test]
+    fn config_arg_value_offers_qualified_builtin_enum_variant_alongside_bare_name() {
+        // A config-arg value slot backed by a built-in game enum (`Easing`'s
+        // `function` param, backed by `EBREasingFunction`) offers the
+        // qualified `EasingFunction.Bounce` form alongside the existing bare
+        // `Bounce` suggestion, so an author can disambiguate at the call site
+        // the same way they would construct the value directly.
+        let src = "on go { let e = Easing(0.0, 1.0, 0.5, function = ) }\nin go: exec";
+        let col = src.find("function = ").unwrap() + "function = ".len();
+        let ls = labels(src, 0, col);
+        assert!(ls.iter().any(|l| l == "Bounce"), "bare member missing: {ls:?}");
+        assert!(
+            ls.iter().any(|l| l == "EasingFunction.Bounce"),
+            "qualified member missing: {ls:?}"
+        );
+    }
+
     // ---------- end-to-end LSP rename / references (scoped resolver) ----------
 
     /// A fresh `Backend` wired through the real `LanguageServer` trait (so its
@@ -536,6 +658,47 @@
             text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position { line, character },
         }
+    }
+
+    /// Run the real `code_action` handler for a zero-width range at
+    /// `(line, col)` and return only the `CodeAction` variants (none of this
+    /// server's actions are bare `Command`s).
+    async fn code_action_at(service: &LspService<Backend>, uri: &Url, line: u32, col: u32) -> Vec<CodeAction> {
+        let pos = Position { line, character: col };
+        let resp = service
+            .inner()
+            .code_action(CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: Range { start: pos, end: pos },
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        resp.into_iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => Some(ca),
+                CodeActionOrCommand::Command(_) => None,
+            })
+            .collect()
+    }
+
+    /// The `new_text` of a code action's first `TextEdit`.
+    fn first_edit_text(action: &CodeAction) -> String {
+        action
+            .edit
+            .as_ref()
+            .and_then(|e| e.changes.as_ref())
+            .and_then(|c| c.values().next())
+            .and_then(|edits| edits.first())
+            .map(|e| e.new_text.clone())
+            .expect("code action has a text edit")
     }
 
     /// A tempdir under a name unique to this test + the process, so parallel
@@ -1202,4 +1365,48 @@ on CharacterSpawned() -> (character) {
         }).await.unwrap().expect("hover");
         let HoverContents::Markup(m) = h.contents else { panic!("expected markup") };
         assert!(m.value.contains("Removed at compile time"), "got {:?}", m.value);
+    }
+
+    // ---------- fill missing match arms (Task 22) ----------
+
+    /// A `match` covering only `Circle` is missing `Empty` and `Rect`; the
+    /// code action must offer both as witness arms, reusing the same
+    /// witness engine (`typecheck::patterns::analyze`) the compiler's own
+    /// WS054 exhaustiveness diagnostic runs. The placeholder body is a plain
+    /// `todo`, never LSP snippet syntax (`${...}`), which this client would
+    /// insert verbatim and fail to parse.
+    #[tokio::test]
+    async fn fill_missing_match_arms_offers_the_witnesses() {
+        let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s {\n  Circle(r) => 1.0,\n}\n";
+        let uri = Url::parse("file:///t.ws").unwrap();
+        let service = build_backend();
+        open_doc(&service, &uri, src);
+
+        // cursor on the `match` line
+        let actions = code_action_at(&service, &uri, 2, 10).await;
+        let fill = actions
+            .iter()
+            .find(|a| a.title.contains("Fill missing match arms"))
+            .expect("action offered");
+        let text = first_edit_text(fill);
+        assert!(text.contains("Empty"), "missing Empty witness: {text:?}");
+        assert!(text.contains("Rect("), "missing Rect witness: {text:?}");
+        assert!(text.contains("todo"), "missing plain placeholder body: {text:?}");
+        assert!(!text.contains("${"), "must not emit LSP snippet syntax: {text:?}");
+    }
+
+    /// A `match` already covering every variant offers no fill action; the
+    /// action must not appear when there's nothing to fill.
+    #[tokio::test]
+    async fn exhaustive_match_offers_no_fill_action() {
+        let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Circle(r) => 1.0,\n  Empty => 0.0,\n}\n";
+        let uri = Url::parse("file:///t2.ws").unwrap();
+        let service = build_backend();
+        open_doc(&service, &uri, src);
+
+        let actions = code_action_at(&service, &uri, 2, 10).await;
+        assert!(
+            !actions.iter().any(|a| a.title.contains("Fill missing match arms")),
+            "an exhaustive match must not offer a fill action: {actions:?}"
+        );
     }

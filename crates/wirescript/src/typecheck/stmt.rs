@@ -14,6 +14,40 @@ pub(super) fn check_block(
     ctx.pop_scope();
 }
 
+/// Does `block` diverge on every path - end in a terminating statement so exec
+/// cannot fall through past it? Used by `let ... else` (WS062): the `else` must
+/// diverge, since the pattern's binding is unavailable on the non-match path.
+///
+/// Conservative: a block diverges when its LAST statement is a `return` or an
+/// `emit` (the exec ends there), or an `if`/`if let`/`match` whose branches ALL
+/// diverge. Anything else (including an empty block) does not.
+fn block_diverges(block: &Block) -> bool {
+    match block.stmts.last() {
+        Some(Stmt::Return { .. }) | Some(Stmt::Emit(_)) => true,
+        Some(Stmt::If(i)) => {
+            i.else_block
+                .as_ref()
+                .is_some_and(|eb| block_diverges(&i.then_block) && block_diverges(eb))
+        }
+        Some(Stmt::IfLet(i)) => {
+            i.else_block
+                .as_ref()
+                .is_some_and(|eb| block_diverges(&i.then_block) && block_diverges(eb))
+        }
+        Some(Stmt::ExprStmt(es)) => match &es.expr {
+            Expr::MatchExpr { arms, .. } => {
+                !arms.is_empty()
+                    && arms.iter().all(|a| match &a.body {
+                        MatchBody::Block(b) => block_diverges(b),
+                        MatchBody::Expr(_) => false,
+                    })
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 pub(super) fn check_anon_chip_stmts(
     ctx: &mut TypeCheckCtx,
     stmts: &[Stmt],
@@ -317,6 +351,46 @@ fn check_stmt_inner(
                 }
             }
         }
+        Stmt::LetElse(l) => {
+            // A refutable pattern can never be `const`: `let <pattern> = e else`
+            // may fail to match, so its binding is not a compile-time constant.
+            // Task 18 parsed and silently dropped the `const`; reject it here.
+            if l.is_const {
+                ctx.emit(
+                    "WS046",
+                    "a refutable pattern cannot be `const`: `let <pattern> = ... else` \
+                     may fail to match, so its binding is not a compile-time constant",
+                    l.range.clone(),
+                );
+            }
+            let scrut_ty = unwrap_ref(&infer::infer(ctx, &l.scrutinee));
+            if !matches!(scrut_ty, Type::Enum { .. }) {
+                ctx.emit(
+                    "WS066",
+                    format!(
+                        "`let ... else` requires an enum scrutinee, but this is {}",
+                        crate::analysis::types::type_str(&scrut_ty)
+                    ),
+                    l.scrutinee.range().clone(),
+                );
+            }
+            // The `else` block runs only when the pattern fails; its captures are
+            // NOT in scope there. Check it in its own scope, then require it to
+            // diverge on every path - the binding is unavailable past this point
+            // on the non-match path, so a fall-through is WS062.
+            check_block(ctx, &l.else_block);
+            if !block_diverges(&l.else_block) {
+                ctx.emit(
+                    "WS062",
+                    "the `else` block of a `let ... else` must diverge on every path \
+                     (end in `return`/`emit`, or an `if`/`match` whose arms all diverge)",
+                    l.else_block.range.clone(),
+                );
+            }
+            // Bind the pattern's captures into the CURRENT scope (the
+            // continuation), so the rest of the enclosing block can read them.
+            infer::check_match_pattern(ctx, &l.pattern, &scrut_ty);
+        }
         Stmt::Assign(a) => {
             if ctx.exec_mode() != ExecMode::Exec {
                 ctx.emit(
@@ -607,6 +681,32 @@ fn check_stmt_inner(
                         check_block(ctx, else_b);
                     }
                 }
+            }
+        }
+        Stmt::IfLet(i) => {
+            let scrut_ty = unwrap_ref(&infer::infer(ctx, &i.scrutinee));
+            if !matches!(scrut_ty, Type::Enum { .. }) {
+                ctx.emit(
+                    "WS066",
+                    format!(
+                        "`if let` requires an enum scrutinee, but this is {}",
+                        crate::analysis::types::type_str(&scrut_ty)
+                    ),
+                    i.scrutinee.range().clone(),
+                );
+            }
+            // The captures are scoped to the THEN block only. Bind them in a
+            // fresh scope, then check the then-block's statements in it (mirrors
+            // how `Expr::MatchExpr` scopes an arm's captures to its body).
+            ctx.push_scope();
+            infer::check_match_pattern(ctx, &i.pattern, &scrut_ty);
+            for s in &i.then_block.stmts {
+                check_stmt(ctx, s);
+            }
+            ctx.pop_scope();
+            // The `else` block never sees the captures - a plain block scope.
+            if let Some(else_b) = &i.else_block {
+                check_block(ctx, else_b);
             }
         }
         Stmt::ExprStmt(es) => {

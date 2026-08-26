@@ -91,6 +91,11 @@ fn type_eq(a: &Type, b: &Type) -> bool {
         // arm is defensive since substitution normally removes params before
         // coercion.
         (Param(a), Param(b)) => a == b,
+        // Enums are nominal: same declaration name, and their generic args
+        // (e.g. `Option<int>`'s `[Int]`) compare pairwise equal.
+        (Enum { name: n1, args: a1 }, Enum { name: n2, args: a2 }) => {
+            n1 == n2 && a1.len() == a2.len() && a1.iter().zip(a2).all(|(x, y)| type_eq(x, y))
+        }
         _ => false,
     }
 }

@@ -110,6 +110,7 @@ pub fn eval_call(
     let mut call_cx = ConstCtx {
         consts: env,
         module_consts: cx.module_consts.clone(),
+        enum_defs: cx.enum_defs.clone(),
         lookup_mod: cx.lookup_mod,
     };
 
@@ -534,6 +535,7 @@ fn exec_block(
                     let mut branch_cx = ConstCtx {
                         consts: cx.consts.clone(),
                         module_consts: cx.module_consts.clone(),
+                        enum_defs: cx.enum_defs.clone(),
                         lookup_mod: cx.lookup_mod,
                     };
                     let (result, branch_shadowed) =

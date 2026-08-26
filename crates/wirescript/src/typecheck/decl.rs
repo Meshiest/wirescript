@@ -257,7 +257,27 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
         );
         return t;
     }
-    infer::infer(ctx, &l.value)
+    // Expose the let's annotation as the expected-type hint, so a generic enum
+    // construction whose variant can't pin a type parameter takes it from the
+    // annotation (`let n: Option<int> = Option.None`) instead of WS063 - the
+    // same push `check` does for an annotated `out`. The annotation's own
+    // value-vs-type check (`check_let_type_annotation`) re-resolves and owns the
+    // authoritative diagnostics, so any this resolution emits is dropped to
+    // avoid double-reporting a malformed annotation.
+    let prev = match &l.typ {
+        Some(te) => {
+            let before = ctx.diagnostics.len();
+            let resolved = resolve_type_expr(ctx, te);
+            ctx.diagnostics.truncate(before);
+            Some(ctx.expected_ty.replace(resolved))
+        }
+        None => None,
+    };
+    let t = infer::infer(ctx, &l.value);
+    if let Some(prev) = prev {
+        ctx.expected_ty = prev;
+    }
+    t
 }
 
 /// Whether this declaration carries `@nofold`. Mirrors the set of
@@ -563,6 +583,9 @@ fn check_decl_inner(
                 }
             }
         }
+        // A top-level `let ... else` is checked exactly like the statement form
+        // (`Stmt::LetElse`) - the `LetElse` struct is shared.
+        TopDecl::LetElse(l) => check_stmt(ctx, &Stmt::LetElse(l.clone())),
         TopDecl::Fn(f) => {
             ctx.push_scope();
             for p in &f.params {
@@ -969,6 +992,9 @@ fn check_decl_inner(
             }
             check_stmt(ctx, &Stmt::If(i.clone()));
         }
+        // A top-level `if let` is checked exactly like the statement form
+        // (`Stmt::IfLet`) - the `IfLet` struct is shared.
+        TopDecl::IfLet(i) => check_stmt(ctx, &Stmt::IfLet(i.clone())),
         TopDecl::Namespace(ns) => {
             // A namespaced (`import * as ns`) mod body references its sibling
             // constants and mods by BARE name, and those mods are inlined at
@@ -1017,6 +1043,6 @@ fn check_decl_inner(
             ctx.scope.set_floor(prev_floor);
             ctx.pop_scope();
         }
-        TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) => {}
+        TopDecl::Import(_) | TopDecl::TypeAlias(_) | TopDecl::Await(_) | TopDecl::Enum(_) => {}
     }
 }

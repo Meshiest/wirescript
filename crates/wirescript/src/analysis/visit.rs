@@ -52,6 +52,10 @@ fn visit_decl<'a>(
         }
         TopDecl::Fn(f) => visit_expr(&f.body, on_call),
         TopDecl::Let(l) => visit_expr(&l.value, on_call),
+        TopDecl::LetElse(l) => {
+            visit_expr(&l.scrutinee, on_call);
+            visit_block(&l.else_block, on_handler, on_call);
+        }
         TopDecl::Var(v) => {
             if let Some(e) = &v.init {
                 visit_expr(e, on_call);
@@ -68,6 +72,7 @@ fn visit_decl<'a>(
             visit_expr(&a.value, on_call);
         }
         TopDecl::If(i) => visit_if(i, on_handler, on_call),
+        TopDecl::IfLet(i) => visit_if_let(i, on_handler, on_call),
         TopDecl::ExprStmt(es) => visit_expr(&es.expr, on_call),
         _ => {}
     }
@@ -96,7 +101,12 @@ fn visit_stmt<'a>(
         Stmt::AnonChip(ac) => visit_block(&ac.body, on_handler, on_call),
         Stmt::ChipDecl(c) => visit_block(&c.body, on_handler, on_call),
         Stmt::If(i) => visit_if(i, on_handler, on_call),
+        Stmt::IfLet(i) => visit_if_let(i, on_handler, on_call),
         Stmt::Let(l) => visit_expr(&l.value, on_call),
+        Stmt::LetElse(l) => {
+            visit_expr(&l.scrutinee, on_call);
+            visit_block(&l.else_block, on_handler, on_call);
+        }
         Stmt::Assign(a) => {
             visit_expr(&a.target, on_call);
             visit_expr(&a.value, on_call);
@@ -139,6 +149,18 @@ fn visit_if<'a>(
     on_call: &mut dyn FnMut(&'a Expr),
 ) {
     visit_expr(&i.cond, on_call);
+    visit_block(&i.then_block, on_handler, on_call);
+    if let Some(eb) = &i.else_block {
+        visit_block(eb, on_handler, on_call);
+    }
+}
+
+fn visit_if_let<'a>(
+    i: &'a IfLet,
+    on_handler: &mut dyn FnMut(&'a Handler),
+    on_call: &mut dyn FnMut(&'a Expr),
+) {
+    visit_expr(&i.scrutinee, on_call);
     visit_block(&i.then_block, on_handler, on_call);
     if let Some(eb) = &i.else_block {
         visit_block(eb, on_handler, on_call);
@@ -208,6 +230,12 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
         Expr::MatchExpr {
             scrutinee, arms, ..
         } => {
+            // Also fires `on_call` on the `MatchExpr` node itself (like the
+            // `Call` arm above). The "fill missing match arms" code action
+            // (Task 22) uses this to locate the enclosing `match` at a
+            // cursor position; existing `on_call` closures all filter for
+            // `Expr::Call`/`PrefabRef`/`NestedPrefab` and so ignore it.
+            on_call(e);
             visit_expr(scrutinee, on_call);
             for arm in arms {
                 match &arm.body {
@@ -228,6 +256,23 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
             for en in entries {
                 visit_expr(&en.key, on_call);
                 visit_expr(&en.value, on_call);
+            }
+        }
+        Expr::VariantCtor { path, fields, .. } => {
+            // Also fires `on_call` on the `VariantCtor` node itself (like the
+            // `MatchExpr` arm above), so a caller can inspect its `fields` -
+            // e.g. go-to-definition / hover on a named payload field's key
+            // (`analysis::definition::resolve_enum_field_construction_definition`,
+            // `analysis::hover::hover_enum_field_construction`).
+            on_call(e);
+            visit_expr(path, on_call);
+            for f in fields {
+                match f {
+                    RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
+                        visit_expr(value, on_call)
+                    }
+                    RecordLitField::Shorthand { .. } => {}
+                }
             }
         }
         // Embedded-prefab leaves fire `on_call` too (like a `Call` does), so a

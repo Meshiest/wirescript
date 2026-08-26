@@ -385,7 +385,7 @@ fn an_anonymous_chip_body_const_may_read_a_top_level_const() {
 
 /// A `const mod` declared in an anonymous chip body is registered into the
 /// parent scope by `predeclare`'s own `AnonChip` arm, so a `const` anywhere in
-/// the module can CALL it — `scope_const_mods` has to descend for the same
+/// the module can CALL it. `scope_mods` has to descend for the same
 /// reason `scope_lets` does.
 #[test]
 fn a_const_mod_in_an_anonymous_chip_body_resolves() {

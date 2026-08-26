@@ -142,6 +142,46 @@ pub(super) fn register_builtin_events(ctx: &mut TypeCheckCtx) {
     }
 }
 
+/// Seed the built-in `Option<T>`/`Result<T, E>` prelude (`enums::prelude_enum_defs`)
+/// and the built-in game enums (`enums::game_enum_defs`) into `ctx.enum_defs`
+/// and declare their type-name scope symbols - the same `SymbolKind::Type`
+/// entry `TopDecl::Enum`'s own registration below declares for a user enum,
+/// so `Option<int>`/`Result<int, string>` and a game enum like
+/// `EasingFunction` all resolve as types with no `enum` declaration anywhere
+/// in the program. Run alongside `register_builtin_events`, i.e. BEFORE
+/// `collect_enum_defs`'s pre-pass over `decls` - a user enum that redeclares
+/// one of these names then overwrites this seed in `ctx.enum_defs` (matching
+/// `enums::build_registry`'s identical merge order) while `declare_or_dup`
+/// still reports the redeclaration (`WS013`), same as any other duplicate
+/// top-level name.
+///
+/// Bare variant names (`Some`/`None`/`Ok`/`Err` used unqualified) are NOT
+/// declared here - they are not scope symbols at all, only enum members.
+/// Resolving `Some(42)` to `Option.Some(42)` happens in `infer.rs`, keyed off
+/// this same `ctx.enum_defs` entry (see `resolve_bare_variant_enum`).
+pub(super) fn register_builtin_enums(ctx: &mut TypeCheckCtx) {
+    for def in crate::typecheck::enums::prelude_enum_defs()
+        .into_iter()
+        .chain(crate::typecheck::enums::game_enum_defs())
+    {
+        ctx.scope.declare(
+            &def.name,
+            SymbolInfo {
+                kind: SymbolKind::Type,
+                name: def.name.clone(),
+                ty: Type::Enum {
+                    name: def.name.clone(),
+                    args: vec![],
+                },
+                decl_range: SourceRange::default(),
+                signature: None,
+                event_data: None,
+            },
+        );
+        Arc::make_mut(&mut ctx.enum_defs).insert(def.name.clone(), def);
+    }
+}
+
 // ---------- decl registration (1st pass) ----------
 
 pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
@@ -526,15 +566,45 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 );
             }
         }
+        TopDecl::Enum(e) => {
+            // Discriminants were already assigned by the `collect_enum_defs`
+            // pre-pass (before registration runs, alongside
+            // `collect_generic_aliases`); this just declares the name as a
+            // resolvable type, the same way `TopDecl::TypeAlias` does, so a
+            // use (`E`, a variant match, ...) finds it and `declare_or_dup`
+            // catches a duplicate name (WS013). A generic enum (`enum
+            // Option<T> { ... }`) seeds the bare name here too -
+            // instantiation against concrete type args is a later phase.
+            declare_or_dup(
+                ctx,
+                &e.name,
+                SymbolInfo {
+                    kind: SymbolKind::Type,
+                    name: e.name.clone(),
+                    ty: Type::Enum {
+                        name: e.name.clone(),
+                        args: vec![],
+                    },
+                    decl_range: e.range.clone(),
+                    signature: None,
+                    event_data: None,
+                },
+            );
+        }
         TopDecl::Out(_)
         | TopDecl::Let(_)
+        | TopDecl::LetElse(_)
         | TopDecl::Handler(_)
         | TopDecl::Assign(_)
         | TopDecl::If(_)
+        | TopDecl::IfLet(_)
         | TopDecl::ExprStmt(_)
         | TopDecl::Import(_)
         | TopDecl::Await(_) => {
-            // Resolved before typecheck.
+            // Resolved before typecheck. `LetElse`/`IfLet`'s pattern captures
+            // are NOT registered here (same as a plain `Stmt::Let`/match arm
+            // capture) - Task 19 gives them real pass-1 registration if
+            // needed.
         }
         TopDecl::Namespace(ns) => {
             declare_or_dup(

@@ -8,14 +8,17 @@
 
 use std::sync::Arc;
 
-use crate::ast::{ArrayElem, CallArg, ChipDecl, Expr, InterpPart, RecordLitField};
+use crate::ast::{ArrayElem, CallArg, ChipDecl, Expr, InterpPart, MatchArm, MatchBody, RecordLitField};
 use crate::collections::HashMap;
 use crate::diagnostic::SourceRange;
-use crate::ir::Literal;
+use crate::ir::{Literal, Type};
 use crate::lower::fold::eval::{self as fold_eval, Value};
+use crate::lower::matchtree::{self, Decision};
 use crate::lower::{
-    eval_const_binop, eval_const_unop, expr_to_literal_in, fold_constructor, ConstEnv,
+    collect_pattern_captures, eval_const_binop, eval_const_unop, expr_to_literal_in,
+    fold_constructor, ConstEnv,
 };
+use crate::typecheck::enums::EnumDef;
 
 use super::error::{ConstError, ConstReason};
 use super::interp::Budget;
@@ -93,6 +96,16 @@ pub struct ConstCtx<'a> {
     /// it), so each site builds its own short-lived closure over `ctx` and
     /// passes it in alongside the rest of `ConstCtx`.
     pub lookup_mod: Option<&'a dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
+    /// Every declared `enum`, by name: what `eval_expr` resolves an
+    /// `Enum.Variant`/`.Discriminant` reference against (see the `FieldAccess`
+    /// and `Call`/`VariantCtor` arms below). Owned like `consts`/`module_consts`
+    /// rather than borrowed like `lookup_mod`: a second lifetime parameter here
+    /// would force every `const_ctx()`-style call site to prove its `&self`
+    /// borrow outlives an unrelated caller-supplied `'a`. The registry is
+    /// shared via `Arc`, so a clone is a refcount bump, not a deep copy. It is
+    /// the same tradeoff `module_consts`/`consts` already make by being full
+    /// clones rather than borrows.
+    pub enum_defs: Arc<crate::collections::HashMap<String, crate::typecheck::enums::EnumDef>>,
 }
 
 /// `budget` bounds a `const mod` CALL reached from anywhere inside `e` — a
@@ -117,6 +130,26 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
     // never folds these (baking them is `predeclare.rs`'s job, not this
     // evaluator's), so they always reach this match.
     match e {
+        // Bare unit-variant reference (`None` for `Option.None`): the
+        // const-eval mirror of the qualified `Enum.Variant` bare-reference
+        // fold in the `FieldAccess` arm below, keyed off the SAME
+        // `resolve_bare_variant_enum` search the `Call` arm's
+        // `eval_bare_variant_ctor` and `typecheck`/`lower`'s own bare
+        // resolution use, so all stages agree on what a bare name means.
+        // `None` (not this shape) falls through to `expr_to_literal_in`'s
+        // already-tried named-constant lookup and then to `reason_for` below
+        // - an ordinary identifier that isn't a variant is unaffected.
+        Expr::Ident { name, .. } => {
+            if let Some(enum_name) = resolve_bare_variant_enum(cx, name)
+                && let Some(def) = cx.enum_defs.get(enum_name)
+                && let Some(vdef) = def.variants.iter().find(|v| &v.name == name)
+            {
+                return Ok(Literal::Record(vec![(
+                    "__disc".to_string(),
+                    Literal::Int(vdef.discriminant),
+                )]));
+            }
+        }
         Expr::InterpLit { parts, range } => return eval_interp(parts, range, cx, budget),
         // `[a, b, ...c]`: every element must itself be constant. A spread has
         // no constant form (arrays only support spread as an exec-context
@@ -222,6 +255,37 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
             {
                 return Ok(v.clone());
             }
+            // `<value>.Discriminant` / `Enum.Variant.Discriminant`: mirrors
+            // `lower::access::lower_discriminant`'s two forms so const and
+            // runtime agree on the tag. `None` when `obj` is neither shape
+            // (e.g. a genuine record field literally named `Discriminant`),
+            // so this falls through to the general resolution below instead
+            // of manufacturing an error for something that was never this
+            // construction at all.
+            if field == "Discriminant"
+                && let Some(result) = eval_discriminant(obj, cx, budget)
+            {
+                return result;
+            }
+            // A bare `Enum.Variant` reference (`Shape.Empty`, or a payload
+            // variant named without constructing, e.g. `Shape.Circle` used
+            // only for its `.Discriminant`): folds to `{ __disc: N }` with no
+            // payload slots, mirroring `lower::predeclare::static_enum_ctor`'s
+            // identical FieldAccess arm, which treats this same bare-path
+            // shape as constructing with no KNOWN payload regardless of the
+            // variant's own payload shape. Shadow-guarded like the
+            // namespaced-const check above: a const binding shadowing the
+            // enum's name wins.
+            if let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+                && !cx.consts.contains_key(enum_name.as_str())
+                && let Some(def) = cx.enum_defs.get(enum_name)
+                && let Some(vdef) = def.variants.iter().find(|v| &v.name == field)
+            {
+                return Ok(Literal::Record(vec![(
+                    "__disc".to_string(),
+                    Literal::Int(vdef.discriminant),
+                )]));
+            }
             return match eval_expr(obj, cx, budget)? {
                 Literal::Record(entries) => match entries.into_iter().find(|(n, _)| n == field) {
                     Some((_, v)) => Ok(v),
@@ -299,6 +363,48 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                 }),
             };
         }
+        // `match scrutinee { pattern => body, ... }`: `Expr::IfExpr`'s
+        // take-one-branch discipline generalized from a bool to an enum tag.
+        // Evaluates `scrutinee` to its `Literal::Record` (`__disc` + payload
+        // slots -- the same shape enum construction folds to above), then
+        // evaluates ONLY the taken arm's body; every other arm is never
+        // evaluated. Reuses `lower::matchtree::build`/`resolve_const_leaf`,
+        // the SAME decision-tree walk `lower::expr`'s own const-elision fast
+        // path (`try_const_decision`) uses, so the two can never pick a
+        // different arm for the same const scrutinee.
+        //
+        // Unlike lowering -- which resolves an ambiguous bare
+        // `Pattern::Binding` unit-variant name (`Empty`, no parens) against
+        // the right `EnumDef` by reading the scrutinee's TYPE off
+        // `ctx.type_of` -- this evaluator has no type inference to consult, so
+        // `scrutinee_enum` identifies the governing enum from the arms' own
+        // unambiguous `Pattern::Variant` citations instead, and this arm
+        // REFUSES (falls through to `reason_for` below) rather than guess
+        // when that is impossible: no `Pattern::Variant` appears anywhere
+        // (every arm is a bare name or `_`), or the cited names identify more
+        // than one declared enum. Refusing is always safe -- it only costs
+        // this optimization, never a wrong value.
+        Expr::MatchExpr { scrutinee, arms, range } => {
+            let scrut_lit = eval_expr(scrutinee, cx, budget)?;
+            if let Literal::Record(_) = &scrut_lit
+                && let Some(edef) = scrutinee_enum(&cx.enum_defs, arms)
+            {
+                let scrut_ty = Type::Enum { name: edef.name.clone(), args: vec![] };
+                let arm_patterns: Vec<crate::ast::Pattern> =
+                    arms.iter().map(|a| a.pattern.clone()).collect();
+                let decision = matchtree::build(&cx.enum_defs, &scrut_ty, &arm_patterns);
+                return match matchtree::resolve_const_leaf(&decision, &scrut_lit) {
+                    Decision::Leaf(i) => eval_match_arm_body(&arms[i], &scrut_lit, cx, budget),
+                    Decision::Fail => Err(ConstError {
+                        reason: ConstReason::Unsupported("a non-exhaustive const match"),
+                        range: range.clone(),
+                    }),
+                    Decision::Switch { .. } => {
+                        unreachable!("resolve_const_leaf always returns a terminal node")
+                    }
+                };
+            }
+        }
         // `a + b` where a part is a `const mod` call: `expr_to_literal_in`
         // folded neither operand, because it cannot see mod calls at all.
         // Recurse through THIS function (which can), then apply the exact
@@ -359,6 +465,68 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                 if let Some(result) = eval_method_call(obj, field, args, range, cx, budget) {
                     return result;
                 }
+                // `Shape.Circle(5.0)`: positional enum-variant construction
+                // (see `eval_enum_call_ctor`'s own doc comment).
+                if let Some(result) = eval_enum_call_ctor(obj, field, args, range, cx, budget) {
+                    return result;
+                }
+                // `Shape.FromInt(2)`: tag-only enum construction (see
+                // `eval_enum_from_int`'s own doc comment).
+                if let Some(result) = eval_enum_from_int(obj, field, args, range, cx, budget) {
+                    return result;
+                }
+                // `<enum value>.ToInt()`: the const mirror of `.Discriminant`
+                // (see `eval_discriminant`), taking no arguments. Same
+                // registry-or-record resolution as `.Discriminant` itself.
+                if field == "ToInt"
+                    && args.is_empty()
+                    && let Some(result) = eval_discriminant(obj, cx, budget)
+                {
+                    return result;
+                }
+            }
+            // `EnumToInt(<const enum>)` / `IntToEnum(n, wrap?)`: the
+            // const mirrors of `.ToInt()` / `Enum.FromInt(n)`, so a
+            // compile-time use (a `const`, or a const `match` scrutinee) folds
+            // the same way. Shadow-guarded on a const value of the same name.
+            if let Expr::Ident { name, .. } = callee.as_ref()
+                && !cx.consts.contains_key(name.as_str())
+            {
+                // `EnumToInt(v)` folds to `v`'s discriminant, exactly like
+                // `v.ToInt()` (see `eval_discriminant`). A runtime argument
+                // declines with `Err` (not constant); a non-enum argument is a
+                // typecheck error the fold need not model soundly.
+                if name == "EnumToInt"
+                    && let Some(CallArg::Positional(v)) = args.first()
+                {
+                    return eval_discriminant(v, cx, budget).unwrap_or_else(|| {
+                        Err(ConstError {
+                            reason: ConstReason::Unsupported("EnumToInt argument"),
+                            range: range.clone(),
+                        })
+                    });
+                }
+                // `IntToEnum(n)` folds to a tag-only `{ __disc: n }` record,
+                // matching `Enum.FromInt(n)`'s const fold (payload slots default
+                // at runtime). The enum's concrete type is irrelevant to the
+                // tag-only record. An explicit `wrap` (a second arg) clamps an
+                // out-of-range tag - a gate behavior the fold cannot reproduce,
+                // so only the bare one-argument form folds.
+                if name == "IntToEnum"
+                    && args.len() == 1
+                    && let Some(CallArg::Positional(v)) = args.first()
+                {
+                    let n = eval_expr(v, cx, budget)?;
+                    return Ok(Literal::Record(vec![("__disc".to_string(), n)]));
+                }
+            }
+            // `Some(42)`: bare positional enum-variant construction - the
+            // unqualified sibling of `eval_enum_call_ctor` just above, see
+            // `eval_bare_variant_ctor`'s own doc comment.
+            if let Expr::Ident { name, .. } = callee.as_ref()
+                && let Some(result) = eval_bare_variant_ctor(name, args, range, cx, budget)
+            {
+                return result;
             }
             // `Vec`/`Rotation`/`Color`: `expr_to_literal_in` folds these only
             // when every argument is ALREADY a literal on its own face — it
@@ -399,10 +567,134 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                 return super::interp::eval_call(&decl, &arg_lits, cx, budget);
             }
         }
+        // `Shape.Box { w: 1.0, h: 2.0 }`: named-payload enum-variant
+        // construction, the braced-record-shaped sibling of the positional
+        // `Expr::Call` form above. `path` is always `Enum.Variant` for real
+        // construction syntax (see `Expr::VariantCtor`'s own doc comment).
+        // Folds to a `Literal::Record` when the variant AND every field
+        // resolve; anything else (an unknown enum/variant, a field that
+        // fails to const-eval, a spread) falls through to `reason_for` below
+        // rather than returning here. This arm only ever RETURNS on
+        // success, exactly like the plain-Ident const-mod check above. The
+        // construction still lowers fine at runtime through
+        // `lower::expr::lower_enum_ctor` either way.
+        Expr::VariantCtor { path, fields, .. } => {
+            if let Expr::FieldAccess { obj, field: variant, .. } = path.as_ref()
+                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+                && !cx.consts.contains_key(enum_name.as_str())
+                && let Some(def) = cx.enum_defs.get(enum_name)
+                && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
+            {
+                let mut entries = vec![("__disc".to_string(), Literal::Int(vdef.discriminant))];
+                let mut folded = true;
+                for f in fields {
+                    let (name, value_expr) = match f {
+                        RecordLitField::Named { name, value, .. } => (name.clone(), value.clone()),
+                        RecordLitField::Shorthand { name, range } => (
+                            name.clone(),
+                            Expr::Ident { name: name.clone(), range: range.clone() },
+                        ),
+                        RecordLitField::Spread { .. } => {
+                            folded = false;
+                            break;
+                        }
+                    };
+                    match eval_expr(&value_expr, cx, budget) {
+                        Ok(v) => entries.push((format!("__{variant}_{name}"), v)),
+                        Err(_) => {
+                            folded = false;
+                            break;
+                        }
+                    }
+                }
+                if folded {
+                    return Ok(Literal::Record(entries));
+                }
+            }
+        }
         _ => {}
     }
     let (reason, range) = reason_for(e, cx);
     Err(ConstError { reason, range })
+}
+
+/// The single `EnumDef` these `arms`' unambiguous `Pattern::Variant`
+/// citations identify (see `Expr::MatchExpr`'s own doc comment above for
+/// why this evaluator, unlike lowering, must derive the enum this way). Only
+/// `Pattern::Variant { variant, .. }` cells count as a citation -- a bare
+/// `Pattern::Binding`/`Pattern::Wildcard` names nothing unambiguous on its
+/// own. `None` when no arm cites a variant at all, or when the cited names
+/// match more than one declared enum (ambiguous -- refuse rather than pick
+/// one, the same "refuse rather than guess" discipline `bind_constructor_args`
+/// documents for its own hole-handling).
+fn scrutinee_enum<'e>(
+    enum_defs: &'e HashMap<String, EnumDef>,
+    arms: &[MatchArm],
+) -> Option<&'e EnumDef> {
+    let mut cited: Vec<&str> = Vec::new();
+    for arm in arms {
+        if let crate::ast::Pattern::Variant { variant, .. } = &arm.pattern
+            && !cited.contains(&variant.as_str())
+        {
+            cited.push(variant.as_str());
+        }
+    }
+    if cited.is_empty() {
+        return None;
+    }
+    let mut found: Option<&EnumDef> = None;
+    for edef in enum_defs.values() {
+        if cited.iter().all(|name| edef.variants.iter().any(|v| &v.name == name)) {
+            if found.is_some() {
+                return None; // ambiguous across two declared enums -- refuse
+            }
+            found = Some(edef);
+        }
+    }
+    found
+}
+
+/// Evaluate the taken arm's body (`Decision::Leaf`'s const-eval twin of
+/// `lower::expr::lower_match_arm`): binds the arm's payload captures as
+/// EXTRA compile-time constants -- read off the scrutinee literal via
+/// `matchtree::navigate_capture_literal`, the same slot-path shape
+/// `collect_pattern_captures` produces for the lowered `Binding::Record`
+/// walk -- layered on top of the caller's `cx.consts`, then evaluates the
+/// body in that extended environment. `module_consts`/`enum_defs`/
+/// `lookup_mod` pass through unchanged: only the LOCAL capture names are new,
+/// exactly like a mod-body call's parameter bindings (`interp::eval_call`) --
+/// this is a scoped extension of `cx`, not a fresh top-level environment.
+///
+/// A block-bodied arm has no expression value at all -- this evaluator is
+/// only ever asked for a match's VALUE -- and is refused rather than silently
+/// yielding a zero.
+fn eval_match_arm_body(
+    arm: &MatchArm,
+    scrut_lit: &Literal,
+    cx: &ConstCtx,
+    budget: &mut Budget,
+) -> Result<Literal, ConstError> {
+    let MatchBody::Expr(body) = &arm.body else {
+        return Err(ConstError {
+            reason: ConstReason::Unsupported("a block-bodied match arm"),
+            range: arm.range.clone(),
+        });
+    };
+    let mut captures = Vec::new();
+    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
+    let mut consts = cx.consts.clone();
+    for (name, slot_path) in captures {
+        if let Some(lit) = matchtree::navigate_capture_literal(scrut_lit, &slot_path) {
+            consts.insert(name, lit);
+        }
+    }
+    let inner_cx = ConstCtx {
+        consts,
+        module_consts: cx.module_consts.clone(),
+        enum_defs: cx.enum_defs.clone(),
+        lookup_mod: cx.lookup_mod,
+    };
+    eval_expr(body, &inner_cx, budget)
 }
 
 /// Bind a foldable constructor's call arguments to its CATALOG parameters
@@ -526,6 +818,196 @@ fn bind_constructor_args(
         lits.push(eval_expr(arg, cx, budget)?);
     }
     Ok(lits)
+}
+
+/// `.Discriminant`'s two const-evaluable forms. See the call site in
+/// `eval_expr`'s `FieldAccess` arm. `None` when `obj` is neither shape (a
+/// genuine record field literally spelled `Discriminant`, or a
+/// typecheck-error program), so the caller falls through to the ordinary
+/// field-access handling instead of manufacturing an error for a case that
+/// was never this construction at all.
+fn eval_discriminant(
+    obj: &Expr,
+    cx: &ConstCtx,
+    budget: &mut Budget,
+) -> Option<Result<Literal, ConstError>> {
+    // A bare variant PATH (`Shape.Circle`): the registry alone gives the
+    // discriminant. `obj` here names a TYPE, not a value, so it is never
+    // evaluated. Shadow-guarded like the namespaced-const check above: a
+    // const binding shadowing the enum's name wins.
+    if let Expr::FieldAccess { obj: enum_obj, field: variant, .. } = obj
+        && let Expr::Ident { name: enum_name, .. } = enum_obj.as_ref()
+        && !cx.consts.contains_key(enum_name.as_str())
+        && let Some(def) = cx.enum_defs.get(enum_name)
+        && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
+    {
+        return Some(Ok(Literal::Int(vdef.discriminant)));
+    }
+    // An enum VALUE: evaluate `obj` and read its `__disc` slot, the exact
+    // field name `lower::predeclare::build_enum_fields` bakes for runtime
+    // storage, the same key this evaluator's own construction folds
+    // (below) write, so both agree on where the tag lives.
+    match eval_expr(obj, cx, budget) {
+        Ok(Literal::Record(entries)) => {
+            entries.into_iter().find(|(n, _)| n == "__disc").map(|(_, v)| Ok(v))
+        }
+        Ok(_) => None,
+        Err(err) => Some(Err(err)),
+    }
+}
+
+/// `Shape.Circle(5.0)`: positional enum-variant construction whose callee is
+/// `Enum.Variant` and every argument is positional. `None` when this isn't
+/// that shape at all (`enum_name` isn't a known, unshadowed enum, or `field`
+/// isn't one of its variants). The caller falls through to its other
+/// `Expr::Call` handling. Once the variant IS recognized, a non-positional
+/// argument or one that fails to const-eval declines the WHOLE construction
+/// (`Err`, blaming the offending argument) rather than folding a partial
+/// record. The construction still lowers fine at runtime through
+/// `lower::expr::lower_enum_ctor` either way, so a decline here is a normal
+/// "not constant", not a compiler error.
+fn eval_enum_call_ctor(
+    obj: &Expr,
+    variant: &str,
+    args: &[CallArg],
+    range: &SourceRange,
+    cx: &ConstCtx,
+    budget: &mut Budget,
+) -> Option<Result<Literal, ConstError>> {
+    let Expr::Ident { name: enum_name, .. } = obj else { return None };
+    if cx.consts.contains_key(enum_name.as_str()) {
+        return None; // shadowed by a value of the same name
+    }
+    let def = cx.enum_defs.get(enum_name)?;
+    let vdef = def.variants.iter().find(|v| &v.name == variant)?;
+
+    let mut fields = vec![("__disc".to_string(), Literal::Int(vdef.discriminant))];
+    for (i, a) in args.iter().enumerate() {
+        let CallArg::Positional(v) = a else {
+            // A named/spread argument on a positional variant is already a
+            // typecheck error, with nothing sound to fold.
+            return Some(Err(ConstError {
+                reason: ConstReason::Unsupported("this variant construction"),
+                range: range.clone(),
+            }));
+        };
+        match eval_expr(v, cx, budget) {
+            Ok(lit) => fields.push((format!("__{variant}_{i}"), lit)),
+            Err(err) => return Some(Err(err)),
+        }
+    }
+    Some(Ok(Literal::Record(fields)))
+}
+
+/// `Enum.FromInt(2)`: tag-only enum construction. Folds to `{ __disc: n }`
+/// with NO payload slots - every payload defaults to zero at runtime, so a
+/// const value carries no slot literals, mirroring
+/// `lower::expr::try_lower_enum_from_int`. `None` when this isn't that shape
+/// (`field` is not `FromInt`, `enum_name` isn't a known, unshadowed enum, or
+/// the enum has a variant literally named `FromInt` - an ordinary construction
+/// handled by [`eval_enum_call_ctor`]). A missing / non-constant argument
+/// declines the fold with `Err` rather than a partial record; the construction
+/// still lowers fine at runtime either way, so a decline is a normal "not
+/// constant", not a compiler error.
+fn eval_enum_from_int(
+    obj: &Expr,
+    field: &str,
+    args: &[CallArg],
+    range: &SourceRange,
+    cx: &ConstCtx,
+    budget: &mut Budget,
+) -> Option<Result<Literal, ConstError>> {
+    if field != "FromInt" {
+        return None;
+    }
+    let Expr::Ident { name: enum_name, .. } = obj else { return None };
+    if cx.consts.contains_key(enum_name.as_str()) {
+        return None; // shadowed by a value of the same name
+    }
+    let def = cx.enum_defs.get(enum_name)?;
+    if def.variants.iter().any(|v| v.name == "FromInt") {
+        return None; // a real variant named FromInt is an ordinary construction
+    }
+    // Exactly one positional int argument (typecheck enforces this): fold it as
+    // the tag. A missing positional is an ill-formed call with nothing to fold.
+    let Some(CallArg::Positional(v)) = args.first() else {
+        return Some(Err(ConstError {
+            reason: ConstReason::Unsupported("this enum construction"),
+            range: range.clone(),
+        }));
+    };
+    match eval_expr(v, cx, budget) {
+        Ok(lit) => Some(Ok(Literal::Record(vec![("__disc".to_string(), lit)]))),
+        Err(err) => Some(Err(err)),
+    }
+}
+
+/// Bare-name variant resolution - the const-eval call into the single-sourced
+/// `enums::resolve_bare_variant_enum`, supplying const-eval's OWN shadow
+/// predicate so the lookup + uniqueness rule can never drift from typecheck's
+/// or lowering's (all three call the same helper).
+///
+/// Const-eval has no `scope`, so it reconstructs typecheck's shadow set from
+/// the three name-sources it DOES carry, all subsets of typecheck's full scope:
+/// - `consts` - `let`/`const` VALUE bindings (a value named after a variant).
+/// - `enum_defs` - a user enum whose NAME collides with a variant
+///   (`enum Some { .. }`); typecheck shadows it via that enum's type symbol.
+/// - `lookup_mod` - a user `mod`/`chip` named after a variant (`mod Some`);
+///   typecheck shadows it via its chip symbol. `lookup_mod` returns any mod,
+///   const OR not (see `build_const_env`'s all-mods `scope_mods` and the other
+///   sites' `resolve_mod`), so a plain `mod Some` is caught here too - the
+///   residual gap this term closes. Without it, `build_const_env` folded
+///   `let y = Some(5)` (with a user `mod Some` in scope) to the prelude record
+///   while typecheck resolved it as an ordinary mod call.
+///
+/// The one typecheck shadow const-eval cannot see is a runtime `var`/`type`-
+/// alias named after a variant, but using such a name in bare value/call
+/// position is itself a typecheck error, so no CLEAN program reaches this fold
+/// with such a shadow; any construction this declines falls back to runtime
+/// lowering (lower's fuller rule) anyway. Every term above is a SUBSET of
+/// typecheck's shadow set, so this never RESOLVES a bare name typecheck rejected.
+fn resolve_bare_variant_enum<'c>(cx: &'c ConstCtx, name: &str) -> Option<&'c str> {
+    crate::typecheck::enums::resolve_bare_variant_enum(&cx.enum_defs, name, |n| {
+        cx.consts.contains_key(n)
+            || cx.enum_defs.contains_key(n)
+            || cx.lookup_mod.is_some_and(|f| f(n).is_some())
+    })
+}
+
+/// `Some(42)`: bare positional enum-variant construction - the unqualified
+/// sibling of [`eval_enum_call_ctor`]'s `Enum.Variant(args)` form, keyed off
+/// the RESOLVED enum (via [`resolve_bare_variant_enum`]) rather than any
+/// surface qualification, so `Some(42)` folds identically to `Option.Some(42)`.
+/// `None` when this isn't that shape at all (`name` isn't a scope-unshadowed,
+/// unique variant name) - the caller falls through to its other `Expr::Call`
+/// handling.
+fn eval_bare_variant_ctor(
+    name: &str,
+    args: &[CallArg],
+    range: &SourceRange,
+    cx: &ConstCtx,
+    budget: &mut Budget,
+) -> Option<Result<Literal, ConstError>> {
+    let enum_name = resolve_bare_variant_enum(cx, name)?;
+    let def = cx.enum_defs.get(enum_name)?;
+    let vdef = def.variants.iter().find(|v| &v.name == name)?;
+
+    let mut fields = vec![("__disc".to_string(), Literal::Int(vdef.discriminant))];
+    for (i, a) in args.iter().enumerate() {
+        let CallArg::Positional(v) = a else {
+            // A named/spread argument on a positional variant is already a
+            // typecheck error - nothing sound to fold.
+            return Some(Err(ConstError {
+                reason: ConstReason::Unsupported("this variant construction"),
+                range: range.clone(),
+            }));
+        };
+        match eval_expr(v, cx, budget) {
+            Ok(lit) => fields.push((format!("__{name}_{i}"), lit)),
+            Err(err) => return Some(Err(err)),
+        }
+    }
+    Some(Ok(Literal::Record(fields)))
 }
 
 /// `t.length()` on a const array/map. `None` means this isn't a candidate at
@@ -806,6 +1288,9 @@ fn reason_for(e: &Expr, cx: &ConstCtx) -> (ConstReason, SourceRange) {
             (ConstReason::Unsupported("a record literal"), e.range().clone())
         }
         Expr::FieldAccess { .. } => (ConstReason::Unsupported("field access"), e.range().clone()),
+        Expr::VariantCtor { .. } => {
+            (ConstReason::Unsupported("a variant construction"), e.range().clone())
+        }
         _ => (ConstReason::Unsupported("this expression"), e.range().clone()),
     }
 }

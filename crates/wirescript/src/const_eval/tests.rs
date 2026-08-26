@@ -7,6 +7,7 @@ fn empty_ctx() -> ConstCtx<'static> {
     ConstCtx {
         consts: crate::collections::HashMap::default(),
         module_consts: crate::collections::HashMap::default(),
+        enum_defs: Arc::new(crate::collections::HashMap::default()),
         lookup_mod: None,
     }
 }
@@ -16,6 +17,20 @@ fn eval_str(src_expr: &str) -> Result<Literal, ConstError> {
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
     let crate::ast::TopDecl::Let(l) = &p.ast.decls[0] else { panic!("expected a let") };
     eval_expr(&l.value, &empty_ctx(), &mut Budget::default())
+}
+
+/// Parses `src` (a whole script, typically an `enum` declaration plus a
+/// top-level `const`/`let`), builds its whole-module `ConstEnv` the same way
+/// a real compile does (`lower::build_const_env`, including the enum
+/// registry), and returns the bound value for `name`.
+fn eval_ok(src: &str, name: &str) -> Literal {
+    let p = crate::parse(src, "test");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
+    env.get(name)
+        .unwrap_or_else(|| panic!("'{name}' did not evaluate to a compile-time constant; env = {env:?}"))
+        .clone()
 }
 
 /// Parses `src`, takes its first `mod`/`chip` declaration, and calls it with
@@ -71,12 +86,13 @@ fn eval_mod_call_with(
     // Mirrors `TypeCheckCtx::const_ctx`: `module_consts` is the top-level env
     // alone, `consts` is that env with the caller's open scope frames merged
     // on top.
-    let module_consts = crate::lower::build_const_env(&p.ast.decls);
+    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let mut consts = module_consts.clone();
     for (name, lit) in caller_locals {
         consts.insert(name, lit);
     }
-    let cx = ConstCtx { consts, module_consts, lookup_mod: None };
+    let cx = ConstCtx { consts, module_consts, enum_defs: Arc::new(enum_defs), lookup_mod: None };
     eval_call(decl, args, &cx, &mut budget)
 }
 
@@ -371,6 +387,71 @@ fn a_const_if_expression_only_evaluates_the_taken_arm() {
     assert_eq!(eval_str("if false then someRuntimeThing else 9").unwrap(), Literal::Int(9));
 }
 
+/// A `const` binding whose value is itself a `match` expression
+/// folds to the taken arm's value -- `Expr::MatchExpr`'s own const-eval arm.
+/// Uses `eval_ok` (not `eval_str`/`empty_ctx`) because folding a real enum
+/// construction needs the enum registry `build_const_env` builds.
+#[test]
+fn a_const_match_folds_to_the_taken_arms_value() {
+    let lit = eval_ok(
+        "enum Shape { Empty, Circle(float) }\n\
+         const AREA = match Shape.Circle(3.0) { Circle(r) => r, Empty => 0.0 }\n",
+        "AREA",
+    );
+    assert_eq!(lit, Literal::Float(3.0));
+}
+
+/// The other arm: a scrutinee whose `__disc` names the UNIT variant takes
+/// that arm's value, not the payload one -- proves the fold reads the actual
+/// disc rather than always taking the first (or last) arm.
+#[test]
+fn a_const_match_takes_the_matching_unit_variant_arm() {
+    let lit = eval_ok(
+        "enum Shape { Empty, Circle(float) }\n\
+         const AREA = match Shape.Empty { Circle(r) => r, Empty => 0.0 }\n",
+        "AREA",
+    );
+    assert_eq!(lit, Literal::Float(0.0));
+}
+
+/// The scrutinee need not be an inline construction -- a `const` NAME bound to
+/// one folds the same way, proving the match reads the scrutinee's VALUE
+/// (via `eval_expr`, which resolves a named constant through `cx.consts`),
+/// not its syntactic shape.
+#[test]
+fn a_const_match_on_a_named_constant_scrutinee_still_folds() {
+    let lit = eval_ok(
+        "enum Shape { Empty, Circle(float) }\n\
+         const s = Shape.Circle(5.0)\n\
+         const AREA = match s { Circle(r) => r, Empty => 0.0 }\n",
+        "AREA",
+    );
+    assert_eq!(lit, Literal::Float(5.0));
+}
+
+/// A match with no unambiguous `Pattern::Variant` citation anywhere (every
+/// arm is a bare unit-variant name) has no way for this evaluator to
+/// identify the governing enum without type inference -- it refuses rather
+/// than guess, which is always safe (it only costs the fold, never a wrong
+/// value): the binding is left unresolved, exactly like any other
+/// `const` initializer this evaluator cannot fold.
+#[test]
+fn a_const_match_with_no_variant_citation_does_not_fold() {
+    let p = crate::parse(
+        "enum Dir { N, E }\n\
+         const D = match Dir.N { N => 1, E => 2 }\n",
+        "test",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
+    assert!(
+        env.get("D").is_none(),
+        "a match with no Pattern::Variant citation must not fold, got {:?}",
+        env.get("D")
+    );
+}
+
 #[test]
 fn evaluates_const_collections() {
     assert_eq!(
@@ -479,11 +560,13 @@ fn eval_mod_call_resolving(
         .iter()
         .find(|c| c.name == callee_name)
         .unwrap_or_else(|| panic!("no decl named '{callee_name}'"));
-    let module_consts = crate::lower::build_const_env(&p.ast.decls);
+    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
     let cx = ConstCtx {
         consts: module_consts.clone(),
         module_consts,
+        enum_defs: Arc::new(enum_defs),
         lookup_mod: Some(&lookup),
     };
     eval_call(decl, args, &cx, &mut Budget::default())
@@ -536,7 +619,8 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
         })
         .collect();
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
-    let module_consts = crate::lower::build_const_env(&p.ast.decls);
+    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let crate::ast::TopDecl::Let(probe) = p.ast.decls.last().expect("expected at least one decl")
     else {
         panic!("expected the last decl to be `let probe = ...`")
@@ -544,6 +628,7 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
     let cx = ConstCtx {
         consts: module_consts.clone(),
         module_consts,
+        enum_defs: Arc::new(enum_defs),
         lookup_mod: Some(&lookup),
     };
     eval_expr(&probe.value, &cx, &mut Budget::default())
@@ -1665,4 +1750,208 @@ fn a_bare_return_that_produces_nothing_blames_the_return_not_the_body() {
         "must blame the `return` statement itself: {:?}",
         err.range
     );
+}
+
+// ---------- enum const evaluation ----------
+
+/// `Shape.Circle.Discriminant` is a compile-time int: a bare variant PATH's
+/// `.Discriminant` resolves straight from the enum registry, no `obj`
+/// evaluation involved.
+#[test]
+fn const_enum_discriminant_folds() {
+    let v = eval_ok("enum Shape { Empty, Circle(float) }\nconst D = Shape.Circle.Discriminant\n", "D");
+    assert_eq!(v, Literal::Int(1));
+}
+
+/// A unit variant reference folds to `{ __disc: N }` with no payload slots,
+/// and reading `.Discriminant` back off THAT value (not off the bare path)
+/// agrees with the registry.
+#[test]
+fn const_unit_variant_folds_and_its_discriminant_reads_back() {
+    let src = "enum Dir { N, E, S, W }\nconst d = Dir.E\nconst D = d.Discriminant\n";
+    assert_eq!(eval_ok(src, "D"), Literal::Int(1));
+}
+
+/// Positional construction folds every argument into `__{Variant}_{index}`
+/// slots alongside `__disc`, matching `lower::predeclare::build_enum_fields`'s
+/// slot-key format exactly (so a const-folded value and a runtime-baked one
+/// agree on where the payload lives).
+#[test]
+fn const_positional_variant_construction_folds_its_slots() {
+    let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+               const r = Shape.Rect(1.0, 2.0)\n";
+    assert_eq!(
+        eval_ok(src, "r"),
+        Literal::Record(vec![
+            ("__disc".to_string(), Literal::Int(2)),
+            ("__Rect_0".to_string(), Literal::Float(1.0)),
+            ("__Rect_1".to_string(), Literal::Float(2.0)),
+        ])
+    );
+}
+
+/// `.Discriminant` on a positionally-constructed value reads back through
+/// its `__disc` slot, exactly like the unit-variant case above.
+#[test]
+fn const_positional_variant_discriminant_reads_back() {
+    let src = "enum Shape { Empty, Circle(float) }\n\
+               const D = Shape.Circle(5.0).Discriminant\n";
+    assert_eq!(eval_ok(src, "D"), Literal::Int(1));
+}
+
+/// `.ToInt()` is an exact alias for `.Discriminant` in const position too: a
+/// variant path folds straight from the registry, and a stored value reads its
+/// `__disc` slot.
+#[test]
+fn const_enum_to_int_folds_like_discriminant() {
+    let a = eval_ok("enum Shape { Empty, Circle(float) }\nconst A = Shape.Circle.ToInt()\n", "A");
+    assert_eq!(a, Literal::Int(1));
+    let b = eval_ok("enum Dir { N, E, S, W }\nconst d = Dir.S\nconst B = d.ToInt()\n", "B");
+    assert_eq!(b, Literal::Int(2));
+}
+
+/// `Enum.FromInt(n)` folds to a tag-only record `{ __disc: n }` with no payload
+/// slots (payloads default at runtime), matching the bare-variant-path fold.
+#[test]
+fn const_enum_from_int_folds_to_tag_only_record() {
+    let v = eval_ok(
+        "enum Shape { Empty, Circle(float), Rect(float, float) }\nconst e = Shape.FromInt(2)\n",
+        "e",
+    );
+    assert_eq!(v, Literal::Record(vec![("__disc".to_string(), Literal::Int(2))]));
+    // `FromInt(1)` also folds when the tagged variant, here `Circle`, is a
+    // unit variant with no payload.
+    let one = eval_ok("enum Shape { Empty, Circle }\nconst e = Shape.FromInt(1)\n", "e");
+    assert_eq!(one, Literal::Record(vec![("__disc".to_string(), Literal::Int(1))]));
+}
+
+/// A const match on a `FromInt` value routes by the tag: disc 2 is `Rect`, so
+/// the `Rect` arm is the one taken. The arm bodies ignore the (defaulted,
+/// unreadable-in-const) payload captures.
+#[test]
+fn const_from_int_match_takes_arm_by_tag() {
+    let v = eval_ok(
+        "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+         const picked = match Shape.FromInt(2) { Rect(w, h) => 20, Circle(r) => 10, _ => 0 }\n",
+        "picked",
+    );
+    assert_eq!(v, Literal::Int(20));
+}
+
+/// `EnumToInt(<const enum>)` folds to its discriminant int, the const
+/// mirror of `.ToInt()` - a variant literal and a `const` value both fold.
+#[test]
+fn const_enum_to_integer_folds_to_disc() {
+    let a = eval_ok(
+        "enum Shape { Empty, Circle(float) }\nconst A = EnumToInt(Shape.Circle(1.0))\n",
+        "A",
+    );
+    assert_eq!(a, Literal::Int(1));
+    let b = eval_ok(
+        "enum Dir { N, E, S, W }\nconst d = Dir.S\nconst B = EnumToInt(d)\n",
+        "B",
+    );
+    assert_eq!(b, Literal::Int(2));
+}
+
+/// `IntToEnum(n)` folds to a tag-only `{ __disc: n }` record, matching
+/// `Enum.FromInt(n)`'s const fold (payload slots default at runtime); the enum's
+/// concrete type is irrelevant to the tag-only record.
+#[test]
+fn const_integer_to_enum_folds_to_tag_only_record() {
+    let e = eval_ok(
+        "enum Shape { Empty, Circle(float), Rect(float, float) }\nconst e = IntToEnum(2)\n",
+        "e",
+    );
+    assert_eq!(e, Literal::Record(vec![("__disc".to_string(), Literal::Int(2))]));
+}
+
+/// A const `match` over `IntToEnum(n)` routes by the tag: disc 2 is `Rect`.
+#[test]
+fn const_integer_to_enum_match_takes_arm_by_tag() {
+    let v = eval_ok(
+        "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+         const picked = match IntToEnum(2) { Rect(w, h) => 20, Circle(r) => 10, _ => 0 }\n",
+        "picked",
+    );
+    assert_eq!(v, Literal::Int(20));
+}
+
+/// A real variant literally named `FromInt` still constructs normally in const
+/// position - the tag-only constructor never shadows a genuine variant.
+#[test]
+fn const_variant_named_from_int_constructs_normally() {
+    let v = eval_ok("enum E { A, FromInt(int) }\nconst e = E.FromInt(3)\n", "e");
+    assert_eq!(
+        v,
+        Literal::Record(vec![
+            ("__disc".to_string(), Literal::Int(1)),
+            ("__FromInt_0".to_string(), Literal::Int(3)),
+        ])
+    );
+}
+
+/// Named-field (`VariantCtor`) construction folds each field into
+/// `__{Variant}_{fieldName}`, the braced-syntax sibling of the positional
+/// case above.
+#[test]
+fn const_named_variant_construction_folds_its_slots() {
+    let src = "enum Shape { Empty, Box { w: float, h: float } }\n\
+               const b = Shape.Box { w: 1.0, h: 2.0 }\n";
+    assert_eq!(
+        eval_ok(src, "b"),
+        Literal::Record(vec![
+            ("__disc".to_string(), Literal::Int(1)),
+            ("__Box_w".to_string(), Literal::Float(1.0)),
+            ("__Box_h".to_string(), Literal::Float(2.0)),
+        ])
+    );
+}
+
+/// A non-const positional argument declines the WHOLE construction (falls
+/// back to runtime lowering) rather than folding a partial record. `D`
+/// never settles, so it is simply absent from `build_const_env`'s result.
+#[test]
+fn const_variant_construction_with_a_non_const_argument_does_not_fold() {
+    let src = "enum Shape { Empty, Circle(float) }\n\
+               var live: float = 0.0\n\
+               const D = Shape.Circle(live).Discriminant\n";
+    let p = crate::parse(src, "test");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
+    assert!(
+        env.get("D").is_none(),
+        "a construction with a non-const argument must not fold, got {:?}",
+        env.get("D")
+    );
+}
+
+/// A user `mod`/`chip` named after a prelude variant SHADOWS
+/// the bare prelude variant in const-eval, matching typecheck. `build_const_env`
+/// (a production path feeding both `TypeCheckCtx::const_env` and
+/// `LowerCtx::const_env`) folds `let y = Some(5)`; typecheck resolves `Some(5)`
+/// as an ordinary call to the user `mod Some`, so const-eval MUST NOT resolve
+/// it to the prelude `Option.Some` instead - a `Literal::Record` with `__disc`
+/// here would be the exact typecheck-vs-const-eval disagreement the shadow
+/// alignment forbids. A plain `mod Some` is not a `const mod`, so const-eval
+/// refuses to fold the call at all: `y` is simply absent (falls back to runtime
+/// lowering), like the non-const-argument case above.
+#[test]
+fn a_user_mod_named_after_a_prelude_variant_shadows_it_in_const_eval() {
+    let src = "mod Some(x: int) -> (r: int) { return x + 1 }\n\
+               let y = Some(5)\n";
+    let p = crate::parse(src, "test");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
+    match env.get("y") {
+        None => {}
+        Some(Literal::Record(fields)) if fields.iter().any(|(k, _)| k == "__disc") => panic!(
+            "`Some(5)` wrongly folded to the prelude variant record instead of \
+             shadowing to the user `mod Some`: {:?}",
+            env.get("y")
+        ),
+        Some(other) => panic!("unexpected fold for `y`: {other:?}"),
+    }
 }

@@ -33,6 +33,47 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
     {
         return prim;
     }
+    // A known non-generic enum name resolves directly to `Type::Enum`,
+    // ahead of the alias-map fallback below. `ctx.enum_defs` is populated
+    // by the `collect_enum_defs` pre-pass before any decl is registered, so
+    // this resolves regardless of where the `enum` itself sits in the file
+    // (the scope-declared `SymbolKind::Type` symbol registration order is
+    // NOT a safe substitute for that). A generic enum (`enum Option<T>`)
+    // falls through to the ordinary alias/WS002 path here: instantiating
+    // it against concrete type args is a later phase, not this fast path.
+    if let TypeExpr::Name { name, .. } = t
+        && let Some(def) = ctx.enum_defs.get(name)
+        && def.type_params.is_empty()
+    {
+        return Type::Enum {
+            name: name.clone(),
+            args: vec![],
+        };
+    }
+    // A known enum applied to type arguments (`Option<int>`) resolves to a
+    // concrete `Type::Enum { args }`, arity-checked against the enum's declared
+    // type parameters (mirrors the generic type-alias arity check in the
+    // canonical resolver). Handled here rather than in `types::resolve`, which
+    // carries no enum registry - same reason the non-generic enum name resolves
+    // in this fast path above. `Array`/`Map`/`Ref` and a generic type alias
+    // aren't enums, so they fall through to the canonical resolver unchanged.
+    if let TypeExpr::Generic { name, args, range } = t
+        && let Some(arity) = ctx.enum_defs.get(name).map(|d| d.type_params.len())
+    {
+        let resolved_args: Vec<Type> = args.iter().map(|a| resolve_type_expr(ctx, a)).collect();
+        if resolved_args.len() != arity {
+            ctx.emit(
+                "WS002",
+                format!(
+                    "`{name}` expects {arity} type argument(s), got {}",
+                    resolved_args.len()
+                ),
+                range.clone(),
+            );
+            return Type::Enum { name: name.clone(), args: vec![Type::Any; arity] };
+        }
+        return Type::Enum { name: name.clone(), args: resolved_args };
+    }
     let aliases = ctx.scope.type_aliases();
     let mut diags = Vec::new();
     let result = {

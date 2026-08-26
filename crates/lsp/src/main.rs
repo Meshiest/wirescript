@@ -10,7 +10,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    collection_kind, field_name_at, fill_record_at, find_asset_refs, find_enclosing_call, find_name_range,
+    collection_kind, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs, find_enclosing_call, find_name_range,
     format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names,
     prepare_rename_at, receiver_methods, record_field_names, references_at, references_to_export,
     rename_edit_text, resolve_symbol, semantic_tokens, swizzle_fields, type_str,
@@ -933,40 +933,86 @@ impl LanguageServer for Backend {
         // record, offer to insert the missing fields with type-appropriate
         // defaults (recursing into nested records). Reuses the server's resolved
         // symbols, so nested / aliased / imported record types work.
+        //
+        // "Fill missing match arms" (Task 22): on/inside a `match` whose written
+        // arms don't cover its scrutinee enum, offer to insert the missing arms
+        // as witness patterns (`typecheck::patterns::analyze`, Task 11, the same
+        // witness engine the compiler's own WS054 exhaustiveness diagnostic
+        // uses), so the arms it offers are exactly the ones WS054 would otherwise
+        // complain about. Each arm gets a plain `todo` placeholder body baked
+        // into `new_text`. This server advertises no snippet capability and the
+        // lsp-types version in use has no SnippetTextEdit, so LSP snippet syntax
+        // (`${N:todo}` tab-stops) would land in the buffer as literal characters
+        // that fail to parse; plain `todo` parses (an undefined identifier the
+        // author replaces) and is the correct behavior until snippet edits are
+        // supported.
         let uri = &params.text_document.uri;
         let pos = params.range.start;
         let (line, col) = (pos.line as usize, pos.character as usize);
-        let fill = match self.docs.lock() {
-            Ok(docs) => docs
-                .get(uri)
-                .and_then(|doc| fill_record_at(&doc.source, &doc.symbols, line, col)),
-            Err(_) => None,
+
+        let (record_fill, match_fill) = match self.docs.lock() {
+            Ok(docs) => match docs.get(uri) {
+                Some(doc) => (
+                    fill_record_at(&doc.source, &doc.symbols, line, col),
+                    fill_match_arms_at(&doc.source, &doc.symbols, &doc.type_map, &doc.pre_resolve_ast, line, col),
+                ),
+                None => (None, None),
+            },
+            Err(_) => (None, None),
         };
-        let Some(fill) = fill else {
-            return Ok(None);
-        };
-        let at = Position {
-            line: fill.line as u32,
-            character: fill.col as u32,
-        };
-        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-        changes.insert(
-            uri.clone(),
-            vec![TextEdit {
-                range: Range { start: at, end: at },
-                new_text: fill.text,
-            }],
-        );
-        let action = CodeAction {
-            title: "Fill record fields".into(),
-            kind: Some(CodeActionKind::QUICKFIX),
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
+
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+        if let Some(fill) = record_fill {
+            let at = Position {
+                line: fill.line as u32,
+                character: fill.col as u32,
+            };
+            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: Range { start: at, end: at },
+                    new_text: fill.text,
+                }],
+            );
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Fill record fields".into(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
-        Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]))
+            }));
+        }
+        if let Some(fill) = match_fill {
+            let at = Position {
+                line: fill.line as u32,
+                character: fill.col as u32,
+            };
+            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: Range { start: at, end: at },
+                    new_text: fill.text,
+                }],
+            );
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Fill missing match arms".into(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        }
+
+        if actions.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(actions))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -1498,10 +1544,13 @@ async fn main() {
 fn member_completions(
     var_name: &str,
     symbols: &[SymbolDef],
+    source: &str,
     line: usize,
     col: usize,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
+
+    let enum_registry = enum_registry_from_source(source);
 
     // `arr[i].` — an indexed read, not the array itself. Its members are the
     // array-get gate's outputs (the element `Value` and the `OutOfBounds`
@@ -1530,7 +1579,10 @@ fn member_completions(
 
     let sym = resolve_symbol(symbols, var_name, line, col);
 
-    // Field name (record field / swizzle component) completion item.
+    // Field name (record field / swizzle component) completion item. Declared
+    // ahead of the bare enum-type receiver check below so that check's bare-
+    // variant fallback can also reach `push_type_members` (which closes over
+    // `field_item`).
     let field_item = |name: String| CompletionItem {
         label: name.clone(),
         kind: Some(CompletionItemKind::FIELD),
@@ -1538,9 +1590,19 @@ fn member_completions(
         insert_text: Some(name),
         ..Default::default()
     };
-    // Method + swizzle members valid for a typed value: swizzle fields, builtin
-    // receiver-methods, then in-scope user `self`-mods whose receiver matches.
+    // Method + swizzle members valid for a typed value: an enum-typed value's
+    // `.Discriminant`, swizzle fields, builtin receiver-methods, then
+    // in-scope user `self`-mods whose receiver matches.
     let push_type_members = |ty: &str, items: &mut Vec<CompletionItem>| {
+        if enum_registry.contains_key(ty) {
+            items.push(CompletionItem {
+                label: "Discriminant".to_string(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(format!("{ty} discriminant (int)")),
+                insert_text: Some("Discriminant".to_string()),
+                ..Default::default()
+            });
+        }
         for f in swizzle_fields(ty) {
             items.push(field_item(f.to_string()));
         }
@@ -1562,6 +1624,42 @@ fn member_completions(
             });
         }
     };
+
+    // Bare enum-type receiver (`Shape.<here>`): a variant PATH ready for
+    // construction or `.Discriminant`, not a value. Only when the name is NOT
+    // shadowed by a value binding: `collect_symbols_for_file` emits no symbol
+    // for an `enum` decl itself, so an unshadowed enum name resolves to `None`
+    // (or, defensively, a `type` symbol), whereas a `var`/`let`/param/mod of
+    // the same name resolves to that value here and must win. This mirrors the
+    // compiler's own shadow guard (`infer.rs`'s
+    // `resolve_variant_for_construction`: a value symbol whose name equals the
+    // enum's shadows the type, so the name is NOT a construction site).
+    if sym.is_none_or(|s| s.kind == "type") {
+        if let Some(def) = enum_registry.get(var_name) {
+            push_variant_completions(&mut items, def);
+            return items;
+        }
+        // A bare variant name used as a value receiver (`EasingFunction.
+        // Bounce.`, or any `Enum.Variant.` chain) arrives here as just
+        // `Variant`, because `member_receiver_at` only reports the identifier
+        // directly before the dot, discarding the `Enum.` qualifier. Resolve
+        // it the same way the compiler resolves a bare variant
+        // (`resolve_bare_variant_enum`): on a UNIQUE owning enum, treat the
+        // receiver as a value of that enum type, offering `.Discriminant`
+        // (via `push_type_members`) exactly as a directly-typed value would.
+        // An ambiguous or unknown bare name yields no owner and falls through
+        // unchanged.
+        if let Some(owner) = wirescript::typecheck::enums::resolve_bare_variant_enum(
+            &enum_registry,
+            var_name,
+            |n| enum_registry.contains_key(n),
+        ) {
+            push_type_members(owner, &mut items);
+            if !items.is_empty() {
+                return items;
+            }
+        }
+    }
 
     // Collection methods come from the receiver's declared type (resolved through
     // type aliases): a `Map<K, V>` gets the map table, `T[]` or an `array` decl
@@ -1749,6 +1847,206 @@ fn nested_block_at(
     None
 }
 
+/// The `enum` declarations visible in `source`, keyed by name, plus the
+/// built-in `Option`/`Result` prelude - reparsed on demand so enum-aware
+/// completions don't require threading a cached AST/type-checked document
+/// through every completion path. Gated by a fast substring check: a file
+/// with no `enum ` keyword at all cannot contain a `TopDecl::Enum`, so
+/// skipping the reparse in that case returns the exact same registry
+/// (`build_registry` only reads `TopDecl::Enum` entries out of `decls`) that
+/// a full parse would, at zero cost for the common no-enum file.
+fn enum_registry_from_source(
+    source: &str,
+) -> wirescript::collections::HashMap<String, wirescript::typecheck::enums::EnumDef> {
+    if !source.contains("enum ") {
+        return wirescript::typecheck::enums::build_registry(&[]);
+    }
+    let ast = wirescript::parse(source, "completion").ast;
+    wirescript::typecheck::enums::build_registry(&ast.decls)
+}
+
+/// Push a completion item for each variant of `def` - the user-enum analog of
+/// `push_enum_member_completions` below, used both for `match`-arm-head
+/// pattern completion and for a bare `Enum.<here>` variant-path receiver.
+fn push_variant_completions(items: &mut Vec<CompletionItem>, def: &wirescript::typecheck::enums::EnumDef) {
+    for v in &def.variants {
+        items.push(CompletionItem {
+            label: v.name.clone(),
+            kind: Some(CompletionItemKind::ENUM_MEMBER),
+            detail: Some(format!("{} variant", def.name)),
+            insert_text: Some(v.name.clone()),
+            ..Default::default()
+        });
+    }
+}
+
+/// If the cursor sits in a `match <scrutinee> { <here> }` arm-head position -
+/// directly inside the match's own arm-list braces, at or past the last arm
+/// separator (a `,`, or a comma-less block arm's closing `}`, or the opening
+/// brace) and before any `=>` of an in-progress arm - return the scrutinee's
+/// raw source text (trimmed). `None` inside a pattern's own parens
+/// (`Circle(<here>)`), inside an arm's body (`Empty => { <here> }` or past
+/// its `=>`), or outside any match at all.
+///
+/// Scans the whole prefix up to the cursor once, like `find_enclosing_call`
+/// above, skipping strings/comments and tracking brace/paren/bracket nesting
+/// with a small frame stack. Only the innermost `{ }` opened directly by a
+/// `match <expr>` is tagged `MatchArms`; every other brace/paren/bracket is
+/// an opaque `Other` frame, except the block body of an arm (a `{` whose arm
+/// is `AwaitingBody`, the state right after `=>`), which is tagged `ArmBlock`
+/// so that popping it returns the enclosing arm to `Head`. That mirrors the
+/// parser: a block-bodied arm may omit the trailing comma
+/// (`parser/expr.rs`), so the cursor after a comma-less `Empty => { .. }` is
+/// still an arm head. A scrutinee expression that itself contains a raw `{`
+/// (a record literal, e.g. `match f(){x:1} { ... }`) is not handled - the
+/// `{` would be mistaken for the arms brace - but that shape is rare enough
+/// not to be worth the extra bookkeeping here.
+fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Option<String> {
+    let offset = line_col_to_offset(source, line, col);
+    let prefix = &source[..offset];
+    let bytes = prefix.as_bytes();
+
+    // Per-arm position within a `MatchArms` frame: `Head` is pattern position
+    // (the only state that offers variant completions); `AwaitingBody` is the
+    // gap right after `=>` before the body's first token (which decides block
+    // vs expression body); `InBody` is anywhere in an expression body.
+    #[derive(PartialEq)]
+    enum ArmState {
+        Head,
+        AwaitingBody,
+        InBody,
+    }
+
+    enum Frame {
+        MatchArms { scrutinee: String, state: ArmState },
+        Other,
+        // The `{ }` block body of a match arm; popping it returns the
+        // enclosing arm to `Head` (a block arm may drop its trailing comma).
+        ArmBlock,
+    }
+
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut pending_match_start: Option<usize> = None;
+    let mut in_string: Option<u8> = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_line_comment {
+            if c == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if c == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                in_block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if let Some(q) = in_string {
+            if c == b'\\' {
+                i += 2; // skip the escaped char
+            } else {
+                if c == q {
+                    in_string = None;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // The first non-trivia token after `=>` fixes the body shape: a `{`
+        // opens a block body (handled below), anything else is an expression
+        // body, so a later `{` in it (a record literal) is not the arm block.
+        if !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'{') {
+            if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
+                if *state == ArmState::AwaitingBody {
+                    *state = ArmState::InBody;
+                }
+            }
+        }
+        match c {
+            b'"' | b'\'' => {
+                in_string = Some(c);
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                in_line_comment = true;
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                in_block_comment = true;
+                i += 2;
+            }
+            b'{' => {
+                if let Some(start) = pending_match_start.take() {
+                    let scrutinee = prefix[start..i].trim().to_string();
+                    stack.push(Frame::MatchArms { scrutinee, state: ArmState::Head });
+                } else if matches!(
+                    stack.last(),
+                    Some(Frame::MatchArms { state: ArmState::AwaitingBody, .. })
+                ) {
+                    stack.push(Frame::ArmBlock);
+                } else {
+                    stack.push(Frame::Other);
+                }
+                i += 1;
+            }
+            b'}' => {
+                let popped = stack.pop();
+                if matches!(popped, Some(Frame::ArmBlock)) {
+                    if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
+                        *state = ArmState::Head;
+                    }
+                }
+                i += 1;
+            }
+            b'(' | b'[' => {
+                stack.push(Frame::Other);
+                i += 1;
+            }
+            b')' | b']' => {
+                stack.pop();
+                i += 1;
+            }
+            b',' => {
+                if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
+                    *state = ArmState::Head;
+                }
+                i += 1;
+            }
+            b'=' if bytes.get(i + 1) == Some(&b'>') => {
+                if let Some(Frame::MatchArms { state, .. }) = stack.last_mut() {
+                    *state = ArmState::AwaitingBody;
+                }
+                i += 2;
+            }
+            _ if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if &prefix[start..i] == "match" {
+                    pending_match_start = Some(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    match stack.last() {
+        Some(Frame::MatchArms { scrutinee, state: ArmState::Head }) if !scrutinee.is_empty() => {
+            Some(scrutinee.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Push a completion item for each member of enum `et`. `filter_text` is set to
 /// whatever is already typed (`value_so_far`) so VS Code keeps showing every
 /// sibling even when the cursor sits at the end of a complete member. Shared by
@@ -1761,6 +2059,39 @@ fn push_enum_member_completions(items: &mut Vec<CompletionItem>, et: &str, value
             kind: Some(CompletionItemKind::ENUM_MEMBER),
             detail: Some(format!("{et} member")),
             insert_text: Some(v),
+            filter_text: Some(filter.clone()),
+            ..Default::default()
+        });
+    }
+}
+
+/// Push a QUALIFIED completion item (`EasingFunction.Bounce`) for each variant
+/// of the built-in game enum backed by schema enum `et`, if any, alongside
+/// [`push_enum_member_completions`]'s bare-name items, so a config value slot
+/// resolves to a schema enum offers both the bare member and the qualified
+/// form an author would use to construct the value directly. `et` is the raw
+/// schema type (`config_enum_for_named_arg`'s return); at most one built-in
+/// game enum maps to it, found via [`wirescript::catalog::game_enum_schema_type`].
+/// A no-op for a schema enum with no built-in game-enum counterpart.
+fn push_qualified_builtin_game_enum_variant_completions(
+    items: &mut Vec<CompletionItem>,
+    et: &str,
+    value_so_far: &str,
+) {
+    let filter = value_so_far.trim().to_string();
+    let Some(def) = wirescript::typecheck::enums::game_enum_defs()
+        .into_iter()
+        .find(|def| wirescript::catalog::game_enum_schema_type(&def.name) == Some(et))
+    else {
+        return;
+    };
+    for v in &def.variants {
+        let label = format!("{}.{}", def.name, v.name);
+        items.push(CompletionItem {
+            label: label.clone(),
+            kind: Some(CompletionItemKind::ENUM_MEMBER),
+            detail: Some(format!("{} variant", def.name)),
+            insert_text: Some(label),
             filter_text: Some(filter.clone()),
             ..Default::default()
         });
@@ -1867,7 +2198,25 @@ fn build_completions(
     // belongs to the callee, cursor at an arg boundary) yields no receiver here
     // and falls through to param completion below.
     if let Some(var_name) = member_receiver_at(source, line, col) {
-        return member_completions(&var_name, symbols, line, col);
+        return member_completions(&var_name, symbols, source, line, col);
+    }
+
+    // Match-arm-head position (`match <scrutinee> { <here> }`): if the
+    // scrutinee resolves to a registered enum, offer its variant names as
+    // patterns (`Circle`, `Empty`, ...). Checked before call-param
+    // completion for the same reason as member access above - a `match`
+    // isn't itself a call, but its arm head can sit inside one lexically
+    // (`foo(x = match s { <here> })`), and the arm-head reading must win.
+    if let Some(scrutinee) = match_arm_head_scrutinee_at(source, line, col) {
+        if let Some(ty) = resolve_symbol(symbols, &scrutinee, line, col).and_then(|s| s.ty.as_deref()) {
+            let registry = enum_registry_from_source(source);
+            if let Some(def) = registry.get(ty) {
+                push_variant_completions(&mut items, def);
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
     }
 
     // Named params inside a function call: `Call(<here>)`.
@@ -1886,6 +2235,7 @@ fn build_completions(
                     param_name,
                 ) {
                     push_enum_member_completions(&mut items, et, value_so_far);
+                    push_qualified_builtin_game_enum_variant_completions(&mut items, et, value_so_far);
                     if !items.is_empty() {
                         return items;
                     }
@@ -1980,6 +2330,7 @@ fn build_completions(
                     wirescript::catalog::config_enum_for_named_arg(call_name.as_str(), param_name)
                 {
                     push_enum_member_completions(&mut items, et, value_so_far);
+                    push_qualified_builtin_game_enum_variant_completions(&mut items, et, value_so_far);
                     if !items.is_empty() {
                         return items;
                     }
@@ -2179,6 +2530,20 @@ fn build_completions(
         items.push(CompletionItem {
             label: ty.to_string(),
             kind: Some(CompletionItemKind::CLASS),
+            ..Default::default()
+        });
+    }
+
+    // Built-in game enum type names (`EasingFunction` and friends). Unlike a
+    // user-declared `enum`, these have no `TopDecl::Enum` and so never appear
+    // in `symbols`; offer them here so `var e: <here>` completes them the
+    // same as any hardcoded scalar type above.
+    for def in wirescript::typecheck::enums::game_enum_defs() {
+        items.push(CompletionItem {
+            label: def.name.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some("game enum".to_string()),
+            insert_text: Some(def.name),
             ..Default::default()
         });
     }

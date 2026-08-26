@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{
-    Block, CallArg, ChipDecl, Expr, If, InterpPart, RecordLitField, Script, Stmt, TopDecl,
+    Block, CallArg, ChipDecl, Expr, If, IfLet, InterpPart, RecordLitField, Script, Stmt, TopDecl,
 };
 use crate::template::{CompiledTemplate, InlineModEntry};
 
@@ -216,6 +216,13 @@ impl TemplateCache {
                 TopDecl::If(i) => {
                     collect_calls_in_if(i, &known, &mut found);
                 }
+                TopDecl::IfLet(i) => {
+                    collect_calls_in_if_let(i, &known, &mut found);
+                }
+                TopDecl::LetElse(l) => {
+                    collect_calls_in_expr(&l.scrutinee, &known, &mut found);
+                    collect_calls_in_block(&l.else_block, &known, &mut found);
+                }
                 TopDecl::ExprStmt(es) => collect_calls_in_expr(&es.expr, &known, &mut found),
                 TopDecl::Var(v) => {
                     if let Some(init) = &v.init {
@@ -335,6 +342,11 @@ fn collect_calls_in_stmt(stmt: &Stmt, known: &HashSet<String>, out: &mut HashSet
             collect_calls_in_expr(&a.value, known, out);
         }
         Stmt::If(i) => collect_calls_in_if(i, known, out),
+        Stmt::IfLet(i) => collect_calls_in_if_let(i, known, out),
+        Stmt::LetElse(l) => {
+            collect_calls_in_expr(&l.scrutinee, known, out);
+            collect_calls_in_block(&l.else_block, known, out);
+        }
         Stmt::ExprStmt(es) => collect_calls_in_expr(&es.expr, known, out),
         Stmt::Var(v) => {
             if let Some(init) = &v.init {
@@ -362,6 +374,14 @@ fn collect_calls_in_stmt(stmt: &Stmt, known: &HashSet<String>, out: &mut HashSet
 
 fn collect_calls_in_if(i: &If, known: &HashSet<String>, out: &mut HashSet<String>) {
     collect_calls_in_expr(&i.cond, known, out);
+    collect_calls_in_block(&i.then_block, known, out);
+    if let Some(eb) = &i.else_block {
+        collect_calls_in_block(eb, known, out);
+    }
+}
+
+fn collect_calls_in_if_let(i: &IfLet, known: &HashSet<String>, out: &mut HashSet<String>) {
+    collect_calls_in_expr(&i.scrutinee, known, out);
     collect_calls_in_block(&i.then_block, known, out);
     if let Some(eb) = &i.else_block {
         collect_calls_in_block(eb, known, out);
@@ -459,6 +479,18 @@ fn collect_calls_in_expr(expr: &Expr, known: &HashSet<String>, out: &mut HashSet
             for e in entries {
                 collect_calls_in_expr(&e.key, known, out);
                 collect_calls_in_expr(&e.value, known, out);
+            }
+        }
+        Expr::VariantCtor { path, fields, .. } => {
+            collect_calls_in_expr(path, known, out);
+            for f in fields {
+                match f {
+                    RecordLitField::Named { value, .. } => collect_calls_in_expr(value, known, out),
+                    RecordLitField::Spread { value, .. } => {
+                        collect_calls_in_expr(value, known, out)
+                    }
+                    RecordLitField::Shorthand { .. } => {}
+                }
             }
         }
         // Literals and bare identifiers have nothing to recurse into.

@@ -147,6 +147,17 @@ pub(super) fn shift_expr_offsets(expr: &mut Expr, origin: Pos) {
                 shift_expr_offsets(&mut e.value, origin);
             }
         }
+        Expr::VariantCtor { path, fields, .. } => {
+            shift_expr_offsets(path, origin);
+            for f in fields.iter_mut() {
+                match f {
+                    RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
+                        shift_expr_offsets(value, origin);
+                    }
+                    RecordLitField::Shorthand { .. } => {}
+                }
+            }
+        }
         _ => {}
     }
 }

@@ -247,6 +247,7 @@ impl<'a> Parser<'a> {
                     let decl = self.parse_let_decl(false);
                     match decl {
                         TopDecl::Let(v) => return Some(Stmt::Let(v)),
+                        TopDecl::LetElse(v) => return Some(Stmt::LetElse(v)),
                         TopDecl::Await(a) => return Some(Stmt::Await(a)),
                         // A captured event parsed here has already consumed its
                         // whole body; without an explicit `return None` control
@@ -297,6 +298,7 @@ impl<'a> Parser<'a> {
                         let decl = self.parse_let_decl(/*is_const=*/ true);
                         match decl {
                             TopDecl::Let(v) => return Some(Stmt::Let(v)),
+                            TopDecl::LetElse(v) => return Some(Stmt::LetElse(v)),
                             TopDecl::Await(a) => return Some(Stmt::Await(a)),
                             TopDecl::Event(e) => {
                                 self.error(
@@ -389,6 +391,16 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "if" => return Some(self.parse_if_stmt()),
+                "match" => {
+                    let start = t.start;
+                    let expr = self.parse_match_expr();
+                    let end = expr.range().end;
+                    self.eat_stmt_end();
+                    return Some(Stmt::ExprStmt(ExprStmt {
+                        range: self.make_range(start, end),
+                        expr,
+                    }));
+                }
                 "chip" => match self.parse_chip_decl(false, None, None, false, false) {
                     TopDecl::AnonChip(ac) => return Some(Stmt::AnonChip(ac)),
                     TopDecl::Chip(c) => return Some(Stmt::ChipDecl(c)),
@@ -566,15 +578,60 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_if_stmt(&mut self) -> Stmt {
         let start = self.expect(TokenKind::Kw, Some("if")).start;
-        let cond = self.parse_expr();
+        if self.check(TokenKind::Kw, Some("let")) {
+            self.advance();
+            let pattern = self.parse_pattern();
+            self.expect(TokenKind::Op, Some("="));
+            // Header position: a trailing `{` opens the then-block, so
+            // suppress braced variant construction, same as the scrutinee of
+            // `match`/plain `if` (`if let Some(x) = f.bar { }` is not
+            // `f.bar { }`).
+            let scrutinee = self.parse_expr_no_brace_construct();
+            let then_block = self.parse_block();
+            let else_block = self.parse_if_else_tail();
+            let end = else_block
+                .as_ref()
+                .map(|b| b.range.end)
+                .unwrap_or(then_block.range.end);
+            return Stmt::IfLet(IfLet {
+                pattern,
+                scrutinee,
+                then_block,
+                else_block,
+                range: self.make_range(start, end),
+            });
+        }
+        // Header position: a trailing `{` opens the body block, so suppress
+        // braced variant construction (`if f.bar { }` is not `f.bar { }`).
+        let cond = self.parse_expr_no_brace_construct();
         let then_block = self.parse_block();
+        let else_block = self.parse_if_else_tail();
+        let end = else_block
+            .as_ref()
+            .map(|b| b.range.end)
+            .unwrap_or(then_block.range.end);
+        Stmt::If(If {
+            cond,
+            then_block,
+            else_block,
+            range: self.make_range(start, end),
+        })
+    }
+
+    /// The optional `else { ... }` / `else if ...` tail shared by `if` and
+    /// `if let`. An `else if`/`else if let` recurses into `parse_if_stmt` and
+    /// wraps the resulting `Stmt::If`/`Stmt::IfLet` as the sole statement of
+    /// a synthetic block (so the AST shape stays a plain `Option<Block>`
+    /// regardless of which form the chained branch took).
+    fn parse_if_else_tail(&mut self) -> Option<Block> {
         self.eat_newlines();
-        let else_block = if self.match_tok(TokenKind::Kw, Some("else")).is_some() {
+        if self.match_tok(TokenKind::Kw, Some("else")).is_some() {
             self.eat_newlines();
             if self.check(TokenKind::Kw, Some("if")) {
                 let inner = self.parse_if_stmt();
                 let r = match &inner {
                     Stmt::If(i) => i.range.clone(),
+                    Stmt::IfLet(i) => i.range.clone(),
                     _ => unreachable!(),
                 };
                 Some(Block {
@@ -586,16 +643,6 @@ impl<'a> Parser<'a> {
             }
         } else {
             None
-        };
-        let end = else_block
-            .as_ref()
-            .map(|b| b.range.end)
-            .unwrap_or(then_block.range.end);
-        Stmt::If(If {
-            cond,
-            then_block,
-            else_block,
-            range: self.make_range(start, end),
-        })
+        }
     }
 }

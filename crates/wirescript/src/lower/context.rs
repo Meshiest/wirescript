@@ -161,6 +161,26 @@ pub(super) struct LowerCtx<'a> {
     /// port/param would silently degrade to a single `any` port and its field
     /// accesses would lower to `_Unsupported`/swizzle gates.
     pub(super) generic_type_aliases: HashMap<String, crate::types::resolve::GenericAlias>,
+    /// Enum registry: `Name -> EnumDef` (variants, each with its assigned
+    /// discriminant and payload shape). Mirrors `typecheck::TypeCheckCtx::enum_defs`,
+    /// seeded once up front from the whole program by
+    /// `typecheck::enums::build_registry` (see `lower::lower`), the same
+    /// whole-file pre-pass style `generic_type_aliases` uses, so a use resolves
+    /// regardless of where in the file the `enum` itself is declared.
+    ///
+    /// **Enum value layout** (the "Shared representation" contract every
+    /// enum-consuming site in this module follows): an enum value lowers to a
+    /// `Binding::Record` (interned-`Sym`-keyed) whose fields are `__disc` - an
+    /// int binding, a `Literal::Int` for a statically-known variant or a
+    /// `Pseudo_Var`-backed `Binding::Var` (read via `Var_Get`) for a
+    /// stored/merged one - plus one payload slot per (variant, field):
+    /// positional field `i` of variant `V` -> interned `__{V}_{i}`; named field
+    /// `f` of variant `V` -> `__{V}_{f}`. A nested-enum payload slot is itself a
+    /// `Binding::Record`. A freshly constructed KNOWN variant binds only
+    /// `__disc` plus its own slots; a stored enum `var` allocates the SUPERSET
+    /// - `__disc` plus every variant's slots - so a merge from any branch
+    /// writes into the same storage gates.
+    pub(super) enum_defs: std::sync::Arc<HashMap<String, crate::typecheck::enums::EnumDef>>,
     /// Pending emit exec paths per output name, each tagged with the exec
     /// chain (handler) it was emitted on. Accumulated during lowering, flushed
     /// to union chains at the end so each output gets one wire. The chain tag
@@ -567,6 +587,7 @@ impl<'a> LowerCtx<'a> {
         crate::const_eval::ConstCtx {
             consts: self.const_lookup(),
             module_consts: (*self.const_env).clone(),
+            enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
     }
@@ -650,6 +671,7 @@ impl<'a> LowerCtx<'a> {
         crate::const_eval::ConstCtx {
             consts: self.const_lookup_declared_only(),
             module_consts: (*self.const_env).clone(),
+            enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
     }
@@ -699,6 +721,40 @@ impl<'a> LowerCtx<'a> {
     /// a wrong (Number-defaulted) variant for every generic storage/return
     /// gate.
     pub(super) fn resolve_local_type(&self, te: &crate::ast::TypeExpr) -> Type {
+        // A known non-generic enum name resolves directly to `Type::Enum`,
+        // ahead of the generic-alias/primitive resolver below - mirrors
+        // `typecheck::resolve_type_expr`'s own enum fast path. Without this an
+        // enum-typed annotation (`var d: Dir`) fell through to `resolve_type`'s
+        // "unknown type" fallback (`Type::Any`, diagnostic discarded here),
+        // and `pre_declare_var`'s `Type::Enum` branch never triggered. A
+        // generic enum (`enum Option<T>`) falls through to the ordinary path,
+        // same as typecheck's fast path - instantiation is a later phase.
+        if let crate::ast::TypeExpr::Name { name, .. } = te
+            && let Some(def) = self.enum_defs.get(name)
+            && def.type_params.is_empty()
+        {
+            return Type::Enum {
+                name: name.clone(),
+                args: vec![],
+            };
+        }
+        // A generic enum applied to type arguments (`Option<int>`) resolves to
+        // `Type::Enum { args }` here too, mirroring `typecheck::resolve_type_expr`
+        // - the canonical resolver below carries no enum registry. Each argument
+        // resolves through this same method (so a `T` argument in a generic mod
+        // body is substituted to its monomorph). The enum itself is never a
+        // `Type::Param`, so the outer mono substitution is unneeded here.
+        if let crate::ast::TypeExpr::Generic { name, args, .. } = te
+            && let Some(arity) = self.enum_defs.get(name).map(|d| d.type_params.len())
+        {
+            let resolved_args: Vec<Type> = args.iter().map(|a| self.resolve_local_type(a)).collect();
+            let args = if resolved_args.len() == arity {
+                resolved_args
+            } else {
+                vec![Type::Any; arity]
+            };
+            return Type::Enum { name: name.clone(), args };
+        }
         // Generic aliases resolve on BOTH paths (a `Pair<int>` annotation must
         // become its record `Type`, not `Any`); non-generic name aliases stay
         // empty here, matching `type_of_type_expr`'s long-standing behavior.

@@ -14,6 +14,7 @@ mod const_if;
 mod const_init;
 mod const_params;
 mod cse;
+mod enums;
 mod flatten;
 mod fold;
 mod fusion;

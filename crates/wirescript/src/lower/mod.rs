@@ -48,6 +48,10 @@ use stmt::*;
 
 mod expr;
 use expr::*;
+// `const_eval::expr`'s own `MatchExpr` arm reuses the same capture-path
+// collection as `lower_match_arm`/`lower_match_arm_stmt` (see that
+// function's doc comment).
+pub(crate) use expr::collect_pattern_captures;
 
 mod ops;
 use ops::*;
@@ -60,6 +64,10 @@ use access::*;
 
 pub(crate) mod boundary_pins;
 pub(crate) mod flatten;
+
+// Maranget decision-tree builder for `match` lowering. Self-contained; the
+// match-expr / match-stmt lowering (later tasks) walks the `Decision` it emits.
+pub(crate) mod matchtree;
 
 // Certified constant-fold pass. Exposed as `#[doc(hidden)] pub` rather than
 // `pub(crate)` so the `--fold-diff` differential fuzz harness
@@ -150,8 +158,35 @@ pub(super) fn count_emits_in_block(
                     count_emits_in_block(eb, true, counts);
                 }
             }
+            // `if let`/`let else` are conditional emit sites too: an `if let`'s
+            // then/else run on the match/non-match branch, and a `let else`'s
+            // `else` on the non-match branch. Without recursing here an output
+            // emitted from inside one gets no backing var, so two sites fan into
+            // one rerouter (a load-time FanIn at emit).
+            Stmt::IfLet(i) => {
+                count_emits_in_block(&i.then_block, true, counts);
+                if let Some(eb) = &i.else_block {
+                    count_emits_in_block(eb, true, counts);
+                }
+            }
+            Stmt::LetElse(l) => count_emits_in_block(&l.else_block, true, counts),
             Stmt::AnonChip(ac) => count_emits_in_block(&ac.body, in_branch, counts),
             Stmt::Handler(h) => count_emits_in_block(&h.body, in_branch, counts),
+            // A `match` STATEMENT arm is a conditional emit site, exactly like
+            // an `if` branch: recurse into each block-bodied arm with
+            // `in_branch = true`, so an output emitted from an arm gets a
+            // backing var (two arms driving one rerouter is a load-time fan-in,
+            // and even a lone arm emit wired unconditionally strands the taken
+            // branch's exec).
+            Stmt::ExprStmt(es) => {
+                if let Expr::MatchExpr { arms, .. } = &es.expr {
+                    for arm in arms {
+                        if let MatchBody::Block(b) = &arm.body {
+                            count_emits_in_block(b, true, counts);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -222,6 +257,14 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         .and_then(|s| s.to_str());
     let builder = ModuleBuilder::new(input.module_name.or(file_stem).unwrap_or("main"));
     let diagnostics: Vec<Diagnostic> = Vec::new();
+    // Built once, up front, and reused for both `ctx.enum_defs` and
+    // `build_const_env` below, the same registry a `const` enum-value
+    // initializer's own const evaluation reads its discriminant from
+    // (`const_eval::ConstCtx::enum_defs`), so lowering can never disagree
+    // with itself about a tag. Wrapped in `Arc` here so every later
+    // `.clone()` of `ctx.enum_defs` (per const-evaluation, per scope, per
+    // mod/chip inlining) is a refcount bump rather than a deep copy.
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&input.ast.decls));
 
     let mut ctx = LowerCtx {
         builder,
@@ -250,6 +293,11 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             m
         },
         generic_type_aliases: collect_generic_type_aliases(&input.ast.decls),
+        // The enum registry is built by the SHARED `enums::build_registry`
+        // (which numbers via `enums::variant_defs`) so lowering reads the exact
+        // discriminant typecheck assigned - one source of truth for the tag,
+        // never a re-derivation.
+        enum_defs: enum_defs.clone(),
         pending_emits: HashMap::default(),
         output_backing_vars: HashMap::default(),
         exec_signal_hubs: HashMap::default(),
@@ -265,7 +313,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         pending_out_records: HashMap::default(),
         chip_call_stack: Vec::new(),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
-        const_env: Arc::new(predeclare::build_const_env(&input.ast.decls)),
+        const_env: Arc::new(predeclare::build_const_env(&input.ast.decls, &enum_defs)),
         const_declared: Arc::new(predeclare::build_const_declared_names(&input.ast.decls)),
         immutable_containers: HashSet::default(),
         is_root_module: true,
@@ -1643,6 +1691,12 @@ pub fn compile_chip_template(
         // record aliases from inline literals only, matching the empty
         // `type_aliases` above — keep the generic map empty for parity.
         generic_type_aliases: HashMap::default(),
+        // No whole-program `decls` slice available here to re-run
+        // `typecheck::enums::build_registry` against, so an enum-typed var in
+        // this isolated estimation path falls back to a bare scalar (see
+        // `declare_enum_container`'s unknown-enum fallback), the same graceful
+        // degradation as the empty alias maps above.
+        enum_defs: Arc::new(HashMap::default()),
         pending_emits: HashMap::default(),
         output_backing_vars: HashMap::default(),
         exec_signal_hubs: HashMap::default(),

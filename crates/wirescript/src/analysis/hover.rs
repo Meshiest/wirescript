@@ -1,5 +1,5 @@
 use crate::collections::HashMap;
-use crate::ast::{CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Script, Stmt, TopDecl, Trigger, TypeExpr};
+use crate::ast::{CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Pattern, Script, Stmt, TopDecl, Trigger, TypeExpr};
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
 use crate::diagnostic::SourceRange;
@@ -66,7 +66,7 @@ fn literal_display(lit: &Literal) -> String {
     const MAX_CHARS: usize = 200;
     let s = literal_display_inner(lit);
     if s.chars().count() > MAX_CHARS {
-        format!("{}…", s.chars().take(MAX_CHARS).collect::<String>())
+        format!("{}...", s.chars().take(MAX_CHARS).collect::<String>())
     } else {
         s
     }
@@ -109,7 +109,7 @@ fn literal_display_inner(lit: &Literal) -> String {
         }
         Literal::Asset { asset_type, asset_name } => format!("${asset_type}/{asset_name}"),
         Literal::PrefabRef { path } => format!("${path}"),
-        Literal::NestedPrefab { .. } => "$```…```".to_string(),
+        Literal::NestedPrefab { .. } => "$```...```".to_string(),
     }
 }
 
@@ -144,10 +144,11 @@ fn literal_display_inner(lit: &Literal) -> String {
 fn const_hover_value(source: &str, file: &str, target_off: usize) -> Option<Literal> {
     let parsed = crate::parser::parse(source, file);
     let script = &parsed.ast;
-    let module_env = crate::lower::build_const_env(&script.decls);
+    let enum_defs = crate::typecheck::enums::build_registry(&script.decls);
+    let module_env = crate::lower::build_const_env(&script.decls, &enum_defs);
     let mods = const_mod_table(&script.decls);
     let lookup_mod = |name: &str| mods.get(name).cloned();
-    eval_const_at(&script.decls, target_off, &module_env, &module_env, &lookup_mod)
+    eval_const_at(&script.decls, target_off, &module_env, &module_env, &enum_defs, &lookup_mod)
 }
 
 /// Every top-level `const mod`, by name — mirrors the table
@@ -168,10 +169,21 @@ type LookupMod<'a> = dyn Fn(&str) -> Option<std::sync::Arc<ChipDecl>> + 'a;
 /// Evaluate one expression against `env`/`module_env`, discarding any error —
 /// hover has no diagnostic to attach a reason to, so "couldn't evaluate" and
 /// "evaluated to something surprising" are both just `None`.
-fn eval_one(expr: &Expr, env: &ConstEnv, module_env: &ConstEnv, lookup_mod: &LookupMod) -> Option<Literal> {
+fn eval_one(
+    expr: &Expr,
+    env: &ConstEnv,
+    module_env: &ConstEnv,
+    enum_defs: &HashMap<String, crate::typecheck::enums::EnumDef>,
+    lookup_mod: &LookupMod,
+) -> Option<Literal> {
+    // `enum_defs` here is a borrowed `&HashMap` (this function's own
+    // parameter), not an `Arc`, so this hover-only path still pays a deep
+    // clone rather than a refcount bump; hover queries are not the hot loop
+    // this refactor targets.
     let cx = crate::const_eval::ConstCtx {
         consts: env.clone(),
         module_consts: module_env.clone(),
+        enum_defs: std::sync::Arc::new(enum_defs.clone()),
         lookup_mod: Some(lookup_mod),
     };
     let mut budget = crate::const_eval::Budget::default();
@@ -190,6 +202,7 @@ fn eval_const_at(
     target_off: usize,
     env0: &ConstEnv,
     module_env: &ConstEnv,
+    enum_defs: &HashMap<String, crate::typecheck::enums::EnumDef>,
     lookup_mod: &LookupMod,
 ) -> Option<Literal> {
     let mut env = env0.clone();
@@ -197,10 +210,13 @@ fn eval_const_at(
         match d {
             TopDecl::Let(l) => {
                 if l.range.start.offset == target_off {
-                    return l.is_const.then(|| eval_one(&l.value, &env, module_env, lookup_mod)).flatten();
+                    return l
+                        .is_const
+                        .then(|| eval_one(&l.value, &env, module_env, enum_defs, lookup_mod))
+                        .flatten();
                 }
                 if let LetBinding::Ident { name, .. } = &l.binding {
-                    if let Some(v) = eval_one(&l.value, &env, module_env, lookup_mod) {
+                    if let Some(v) = eval_one(&l.value, &env, module_env, enum_defs, lookup_mod) {
                         env.insert(name.clone(), v);
                     }
                 }
@@ -208,14 +224,14 @@ fn eval_const_at(
             // A named mod/chip body is its OWN scope: reset to the module
             // env alone (no outer locals, and — deliberately — no params).
             TopDecl::Chip(c) if range_contains_offset(&c.range, target_off) => {
-                return eval_const_in_block(&c.body, target_off, module_env, module_env, lookup_mod);
+                return eval_const_in_block(&c.body, target_off, module_env, module_env, enum_defs, lookup_mod);
             }
             // An anonymous chip shares its parent's scope.
             TopDecl::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
-                return eval_const_in_block(&ac.body, target_off, &env, module_env, lookup_mod);
+                return eval_const_in_block(&ac.body, target_off, &env, module_env, enum_defs, lookup_mod);
             }
             TopDecl::Namespace(ns) if range_contains_offset(&ns.range, target_off) => {
-                return eval_const_at(&ns.decls, target_off, env0, module_env, lookup_mod);
+                return eval_const_at(&ns.decls, target_off, env0, module_env, enum_defs, lookup_mod);
             }
             _ => {}
         }
@@ -230,6 +246,7 @@ fn eval_const_in_block(
     target_off: usize,
     env0: &ConstEnv,
     module_env: &ConstEnv,
+    enum_defs: &HashMap<String, crate::typecheck::enums::EnumDef>,
     lookup_mod: &LookupMod,
 ) -> Option<Literal> {
     let mut env = env0.clone();
@@ -237,27 +254,30 @@ fn eval_const_in_block(
         match s {
             Stmt::Let(l) => {
                 if l.range.start.offset == target_off {
-                    return l.is_const.then(|| eval_one(&l.value, &env, module_env, lookup_mod)).flatten();
+                    return l
+                        .is_const
+                        .then(|| eval_one(&l.value, &env, module_env, enum_defs, lookup_mod))
+                        .flatten();
                 }
                 if let LetBinding::Ident { name, .. } = &l.binding {
-                    if let Some(v) = eval_one(&l.value, &env, module_env, lookup_mod) {
+                    if let Some(v) = eval_one(&l.value, &env, module_env, enum_defs, lookup_mod) {
                         env.insert(name.clone(), v);
                     }
                 }
             }
             Stmt::ChipDecl(c) if range_contains_offset(&c.range, target_off) => {
-                return eval_const_in_block(&c.body, target_off, module_env, module_env, lookup_mod);
+                return eval_const_in_block(&c.body, target_off, module_env, module_env, enum_defs, lookup_mod);
             }
             Stmt::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
-                return eval_const_in_block(&ac.body, target_off, &env, module_env, lookup_mod);
+                return eval_const_in_block(&ac.body, target_off, &env, module_env, enum_defs, lookup_mod);
             }
             Stmt::If(i) if range_contains_offset(&i.then_block.range, target_off) => {
-                return eval_const_in_block(&i.then_block, target_off, &env, module_env, lookup_mod);
+                return eval_const_in_block(&i.then_block, target_off, &env, module_env, enum_defs, lookup_mod);
             }
             Stmt::If(i) => {
                 if let Some(eb) = &i.else_block {
                     if range_contains_offset(&eb.range, target_off) {
-                        return eval_const_in_block(eb, target_off, &env, module_env, lookup_mod);
+                        return eval_const_in_block(eb, target_off, &env, module_env, enum_defs, lookup_mod);
                     }
                 }
             }
@@ -319,9 +339,13 @@ pub fn hover_at(
         .or_else(|| hover_on_keyword(source, &word, resource_estimates, line))
         .or_else(|| hover_record_or_type_field(source, symbols, doc_comments, &word, line, col))
         .or_else(|| hover_namespace_member(source, symbols, doc_comments, resource_estimates, &word, line, col))
+        .or_else(|| hover_enum_discriminant_variant_path(source, file, &word, line, col))
+        .or_else(|| hover_enum_variant_path(source, file, symbols, &word, line, col))
+        .or_else(|| hover_enum_field_construction(source, file, &word, line, col))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
         .or_else(|| hover_generic_call(source, file, symbols, doc_comments, resource_estimates, type_map, &word, line, col))
         .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
+        .or_else(|| hover_enum_type_name(source, file, &word))
         .or_else(|| hover_type_or_class(&word))
 }
 
@@ -350,7 +374,7 @@ fn builtin_type_desc(word: &str) -> Option<&'static str> {
 }
 
 /// Hover for a bare type word: a generic **constraint class** (`Scalar` /
-/// `Numeric` / `Variant`), or a built-in primitive type (`int`, `vector`, …).
+/// `Numeric` / `Variant`), or a built-in primitive type (`int`, `vector`, ...).
 /// Runs after user-symbol lookup so a user type alias of the same name still
 /// wins; these names are otherwise not declared symbols.
 fn hover_type_or_class(word: &str) -> Option<String> {
@@ -507,7 +531,7 @@ fn hover_if_keyword(
 /// value expression that shares a param's name (`delay = delay`) hovers as the
 /// symbol it is, not as the param docs.
 /// The scalar kind a `Type` renders a default value as, or `None` for a
-/// non-scalar (entity/vector/…) with no displayable constant default.
+/// non-scalar (entity/vector/...) with no displayable constant default.
 fn scalar_kind_of(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::Bool => Some("bool"),
@@ -566,9 +590,9 @@ fn gate_field_default(_gate_class: &str, _field: &str, _kind: &str) -> Option<St
 /// A gate data-struct field's registered COMPOSITE default (vector / color /
 /// rotator / quat), rendered for display. Reads the struct default the same way
 /// [`gate_field_default`] reads scalars, then pulls the composite's named
-/// sub-fields (`X`/`Y`/`Z`, `R`/`G`/`B`/`A`, `Pitch`/`Yaw`/`Roll`, …) through the
+/// sub-fields (`X`/`Y`/`Z`, `R`/`G`/`B`/`A`, `Pitch`/`Yaw`/`Roll`, ...) through the
 /// `AsBrdbValue` struct-property accessor. Colors are stored LINEAR and shown as
-/// their sRGB hex (`#181425`); vectors/rotators show a `Vec(…)`/`Rotation(…)`
+/// their sRGB hex (`#181425`); vectors/rotators show a `Vec(...)`/`Rotation(...)`
 /// constructor. `None` when the gate registers no such default or `ty` isn't a
 /// composite the emitter can bake.
 #[cfg(feature = "brdb-full")]
@@ -846,11 +870,11 @@ fn hover_map_method(word: &str, map_display: &str) -> Option<String> {
 
 /// Built-in event names like `RoundStart`, `CharacterSpawned`, `Clock`, etc.
 /// Shows the call's config/input args in the parens and, when the event
-/// carries data, the `-> (…)` tuple capture that binds it.
+/// carries data, the `-> (...)` tuple capture that binds it.
 fn hover_builtin_event(word: &str) -> Option<String> {
     let evt = find_event(word)?;
     // Config/inputs are the only things allowed inside the call parens; event
-    // data outputs are bound via the trailing `-> (…)` tuple capture.
+    // data outputs are bound via the trailing `-> (...)` tuple capture.
     let is_custom = matches!(evt.surface_name, "CustomEvent" | "GlobalCustomEvent");
     let mut cfg_parts: Vec<String> = Vec::new();
     if is_custom {
@@ -871,7 +895,7 @@ fn hover_builtin_event(word: &str) -> Option<String> {
         .iter()
         .map(|d| format!("{}: {}", d.name, type_str(&d.ty)))
         .collect();
-    // e.g. `on CustomEvent("name") -> (data1: any, …)`.
+    // e.g. `on CustomEvent("name") -> (data1: any, ...)`.
     let arrow = if data_parts.is_empty() {
         String::new()
     } else {
@@ -892,7 +916,7 @@ fn hover_builtin_event(word: &str) -> Option<String> {
 /// Context-aware hover for the custom-event channel words — both the receiver
 /// TRIGGER (`on CustomEvent` / `on GlobalCustomEvent`) and the SEND call
 /// (`SendCustomEvent` / `SendGlobalCustomEvent`, including the receiver form
-/// `e.SendCustomEvent(…)`). Resolves the channel's data slots (names + types)
+/// `e.SendCustomEvent(...)`). Resolves the channel's data slots (names + types)
 /// from every receiver declaration and matching sender in the file, and renders
 /// the full typed signature — e.g. `on CustomEvent("init") -> (p: character)` or
 /// `SendCustomEvent("init", p: character)`. Returns `None` when the word is not a
@@ -939,7 +963,7 @@ fn hover_custom_event(
         format!("{word}({})", parts.join(", "))
     } else {
         // A trigger's parens hold config/inputs only (here, just the channel
-        // name); the data slots bind via the `-> (…)` tuple capture.
+        // name); the data slots bind via the `-> (...)` tuple capture.
         let arrow = if data_parts.is_empty() {
             String::new()
         } else {
@@ -956,7 +980,7 @@ fn hover_custom_event(
 /// The literal channel name of the `send_name`
 /// (`SendCustomEvent`/`SendGlobalCustomEvent`) CALL whose callee identifier
 /// contains byte offset `off` — handles both the plain call and the receiver
-/// form `e.SendCustomEvent(…)`.
+/// form `e.SendCustomEvent(...)`.
 fn ce_send_channel_at(script: &Script, send_name: &str, off: usize) -> Option<String> {
     let mut channel = None;
     {
@@ -1252,6 +1276,291 @@ fn hover_config_enum_value(source: &str, word: &str, line: usize, col: usize) ->
     ))
 }
 
+// ---------- language-level `enum` hover (user + built-in game enums) ----------
+//
+// The functions in this block hover a Wirescript `enum` *type* (a
+// [`crate::typecheck::enums::EnumDef`]) - distinct from `hover_config_enum_value`
+// above, which hovers a raw brdb *schema* enum member written as a gate config
+// value (`direction = X_Negative`). A user `enum` re-parses `source` to build
+// the same [`crate::typecheck::enums::build_registry`] the compiler itself
+// resolves against (the same trick [`hover_custom_event`] and
+// [`const_hover_value`] use); a built-in GAME enum (`EasingFunction`, ...) is
+// resolved straight from the catalog, since it needs no source at all.
+
+/// A variant's payload shape, rendered the way its construction site would
+/// read: empty for a unit variant, `(float, float)` for positional, `{ x:
+/// float, y: float }` for named. Mirrors `infer::render_pattern`'s bracket
+/// choice, but for the variant's DECLARED type shape rather than a matched
+/// pattern.
+fn render_variant_payload(v: &crate::typecheck::enums::VariantDef) -> String {
+    use crate::typecheck::enums::Payload;
+    match &v.payload {
+        Payload::Unit => String::new(),
+        Payload::Positional(types) => {
+            let parts: Vec<String> = types.iter().map(super::types::type_expr_str).collect();
+            format!("({})", parts.join(", "))
+        }
+        Payload::Named(fields) => {
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|(n, t)| format!("{n}: {}", super::types::type_expr_str(t)))
+                .collect();
+            format!(" {{ {} }}", parts.join(", "))
+        }
+    }
+}
+
+/// Hover for a bare enum TYPE name (`Shape` in `var s: Shape`, or the `Shape`
+/// in a `Shape.Circle` variant path): what it is (a user `enum` vs a built-in
+/// game enum) and its variant list. Runs after [`hover_user_symbol`] in the
+/// dispatch chain, so a value symbol of the same name (a `var`/`let`/mod, ...)
+/// always wins - an enum type name is never itself a registered value symbol.
+fn hover_enum_type_name(source: &str, file: &str, word: &str) -> Option<String> {
+    // Built-in game enum: resolved straight from the catalog's memoized table
+    // (a cheap linear scan, no reparse) - checked first since it applies to
+    // every file, unlike a user `enum`.
+    if let Some(v) = hover_builtin_game_enum_type(word) {
+        return Some(v);
+    }
+    // Prelude (`Option`/`Result`): cheap to build (two entries), no reparse.
+    if let Some(def) = crate::typecheck::enums::prelude_enum_defs().into_iter().find(|d| d.name == word) {
+        return Some(render_user_or_prelude_enum_hover(&def, false));
+    }
+    // A user `enum`: only worth a reparse when the file could plausibly
+    // declare one (mirrors the LSP's own `enum_registry_from_source` fast path).
+    if !source.contains("enum ") {
+        return None;
+    }
+    let parsed = crate::parser::parse(source, file);
+    let e = find_top_level_enum_decl(&parsed.ast.decls, word)?;
+    let def = crate::typecheck::enums::EnumDef {
+        name: e.name.clone(),
+        type_params: e.type_params.clone(),
+        variants: crate::typecheck::enums::variant_defs(e),
+    };
+    Some(render_user_or_prelude_enum_hover(&def, true))
+}
+
+/// Find a top-level `TopDecl::Enum` named `name`, recursing into namespaces.
+fn find_top_level_enum_decl<'a>(decls: &'a [crate::ast::TopDecl], name: &str) -> Option<&'a crate::ast::EnumDecl> {
+    for d in decls {
+        match d {
+            TopDecl::Enum(e) if e.name == name => return Some(e),
+            TopDecl::Namespace(ns) => {
+                if let Some(e) = find_top_level_enum_decl(&ns.decls, name) {
+                    return Some(e);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Render hover for a user-declared or prelude `EnumDef`: its signature plus a
+/// `Variants:` list (each with its payload shape).
+fn render_user_or_prelude_enum_hover(def: &crate::typecheck::enums::EnumDef, is_user: bool) -> String {
+    let generics = if def.type_params.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<&str> = def.type_params.iter().map(|tp| tp.name.as_str()).collect();
+        format!("<{}>", names.join(", "))
+    };
+    let mut out = format!("```wirescript\nenum {}{generics}\n```", def.name);
+    let variants: Vec<String> = def
+        .variants
+        .iter()
+        .map(|v| format!("`{}{}`", v.name, render_variant_payload(v)))
+        .collect();
+    out += &format!("\n\nVariants: {}", variants.join(", "));
+    if !is_user {
+        out += "\n\n*Built-in prelude enum.*";
+    }
+    out
+}
+
+/// Hover for a built-in GAME enum type name (`EasingFunction`, `Direction`,
+/// ...): resolved directly from the catalog's schema-derived table
+/// ([`crate::catalog::game_enum_schema_type`], a cheap lookup with no
+/// reparse), listing each cleaned variant name with its real schema
+/// discriminant ([`crate::catalog::enum_member_value`]).
+fn hover_builtin_game_enum_type(word: &str) -> Option<String> {
+    let schema_type = crate::catalog::game_enum_schema_type(word)?;
+    let variants: Vec<String> = crate::catalog::enum_member_names(schema_type)
+        .into_iter()
+        .map(|raw| {
+            let clean = crate::catalog::clean_game_enum_variant(&raw);
+            let disc = crate::catalog::enum_member_value(schema_type, &raw).unwrap_or(0);
+            format!("`{clean}` = {disc}")
+        })
+        .collect();
+    Some(format!(
+        "```wirescript\nenum {word}\n```\n\n*Built-in game enum* (schema `{schema_type}`).\n\nVariants: {}",
+        variants.join(", ")
+    ))
+}
+
+/// Hover for a VARIANT in a construction path (`Shape.Circle`,
+/// `EasingFunction.Bounce`) - the variant token itself, not the enum name
+/// before it: its owning enum, payload shape, and real discriminant integer.
+/// Reparses `source` to build the full registry (user enums + prelude +
+/// built-in game enums, exactly `crate::typecheck::enums::build_registry`,
+/// the same table the compiler resolves `Enum.Variant` against), so a
+/// built-in and a user enum hover identically here.
+///
+/// Only fires on a `.`-preceded word whose preceding identifier is NOT
+/// shadowed by a value symbol (`var`/`let`/mod/...) - mirrors the compiler's own
+/// shadow rule in `resolve_variant_for_construction`: a value binding of the
+/// same name as an enum wins, so that name is not a construction site.
+fn hover_enum_variant_path(
+    source: &str,
+    file: &str,
+    symbols: &[SymbolDef],
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    let l = source.lines().nth(line)?;
+    let start = word_start_in_line(l, col);
+    if start == 0 || l.as_bytes()[start - 1] != b'.' {
+        return None;
+    }
+    let obj_end = start - 1;
+    let obj_start = word_start_in_line(l, obj_end);
+    let enum_name = &l[obj_start..obj_end];
+    if enum_name.is_empty() || super::resolve_symbol(symbols, enum_name, line, col).is_some() {
+        return None;
+    }
+
+    let parsed = crate::parser::parse(source, file);
+    let registry = crate::typecheck::enums::build_registry(&parsed.ast.decls);
+    let def = registry.get(enum_name)?;
+    let vdef = def.variants.iter().find(|v| v.name == word)?;
+    let is_user = find_top_level_enum_decl(&parsed.ast.decls, enum_name).is_some();
+
+    let mut out = format!(
+        "```wirescript\n{enum_name}.{}{}\n```\n\n**Discriminant:** `{}`",
+        vdef.name,
+        render_variant_payload(vdef),
+        vdef.discriminant
+    );
+    if !is_user {
+        out += "\n\n*Built-in enum member.*";
+    }
+    Some(out)
+}
+
+/// Hover for a named payload FIELD's KEY in an enum-variant CONSTRUCTION
+/// (`Shape.Box { w: 1.0, h: 2.0 }` - the `w`/`h`): its declared type, read
+/// off `enum Shape { Box { w: float, ... } }`.
+///
+/// Reparses `source` like its sibling enum hovers ([`hover_enum_type_name`],
+/// [`hover_enum_variant_path`]) rather than taking a pre-resolved AST. The
+/// field-key-span derivation mirrors
+/// `analysis::definition::resolve_enum_field_construction_definition`'s: a
+/// `RecordLitField::Named`'s `range` spans the WHOLE `key: value` (see
+/// `parser::expr::parse_record_lit`), not just the key, so the key span is
+/// derived from the field name's byte length rather than read off a
+/// dedicated sub-range.
+fn hover_enum_field_construction(source: &str, file: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    let line_str = source.lines().nth(line)?;
+    let word_off = line_offset_at(source, line) + word_start_in_line(line_str, col);
+
+    let parsed = crate::parser::parse(source, file);
+    let mut hit: Option<(String, String)> = None; // (enum name, variant name)
+    {
+        let mut on_handler = |_: &Handler| {};
+        let mut on_call = |e: &Expr| {
+            if hit.is_some() {
+                return;
+            }
+            let Expr::VariantCtor { path, fields, .. } = e else {
+                return;
+            };
+            for f in fields {
+                let (name, key_start, key_end) = match f {
+                    crate::ast::RecordLitField::Named { name, range, .. } => {
+                        (name.as_str(), range.start.offset, range.start.offset + name.len())
+                    }
+                    crate::ast::RecordLitField::Shorthand { name, range } => {
+                        (name.as_str(), range.start.offset, range.end.offset)
+                    }
+                    crate::ast::RecordLitField::Spread { .. } => continue,
+                };
+                if name != word || word_off < key_start || word_off > key_end {
+                    continue;
+                }
+                let Expr::FieldAccess { obj, field: variant, .. } = path.as_ref() else {
+                    continue;
+                };
+                let Expr::Ident { name: enum_name, .. } = obj.as_ref() else {
+                    continue;
+                };
+                hit = Some((enum_name.clone(), variant.clone()));
+            }
+        };
+        super::visit::visit_program(&parsed.ast, &mut on_handler, &mut on_call);
+    }
+    let (enum_name, variant_name) = hit?;
+
+    let registry = crate::typecheck::enums::build_registry(&parsed.ast.decls);
+    let def = registry.get(&enum_name)?;
+    let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
+    let crate::typecheck::enums::Payload::Named(field_defs) = &vdef.payload else {
+        return None;
+    };
+    let (_, ty) = field_defs.iter().find(|(n, _)| n == word)?;
+    Some(format!(
+        "```wirescript\n{word}: {}\n```\n\nNamed payload field of `{enum_name}.{variant_name}`.",
+        super::types::type_expr_str(ty)
+    ))
+}
+
+/// Hover for `.Discriminant` on a variant PATH (`Shape.Circle.Discriminant`,
+/// `EasingFunction.Bounce.Discriminant`): the discriminant is a compile-time
+/// CONSTANT here (the variant is named, not merely typed), so this reports
+/// the actual integer rather than just `int`.
+///
+/// An ordinary enum VALUE's `.Discriminant` (`s.Discriminant` where `s:
+/// Shape`) is a two-identifier chain, not three (`Enum.Variant.Discriminant`),
+/// so it does not match here and is left to the generic field-type hover in
+/// [`resolve_field_hover`], which already resolves it to `field Discriminant:
+/// int` via `type_map` (the typechecker types `.Discriminant` as `Type::Int`
+/// regardless of whether the object is a bare value or a variant path - see
+/// `infer.rs`'s `field == "Discriminant"` arm).
+fn hover_enum_discriminant_variant_path(source: &str, file: &str, word: &str, line: usize, col: usize) -> Option<String> {
+    if word != "Discriminant" {
+        return None;
+    }
+    let l = source.lines().nth(line)?;
+    let start = word_start_in_line(l, col);
+    if start == 0 || l.as_bytes()[start - 1] != b'.' {
+        return None;
+    }
+    let variant_end = start - 1;
+    let variant_start = word_start_in_line(l, variant_end);
+    if variant_start == 0 || l.as_bytes()[variant_start - 1] != b'.' {
+        return None; // a two-identifier chain (`s.Discriminant`) - not a variant path.
+    }
+    let variant_name = &l[variant_start..variant_end];
+    let enum_end = variant_start - 1;
+    let enum_start = word_start_in_line(l, enum_end);
+    let enum_name = &l[enum_start..enum_end];
+    if enum_name.is_empty() {
+        return None;
+    }
+
+    let parsed = crate::parser::parse(source, file);
+    let registry = crate::typecheck::enums::build_registry(&parsed.ast.decls);
+    let def = registry.get(enum_name)?;
+    let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
+    Some(format!(
+        "```wirescript\n{enum_name}.{variant_name}.Discriminant: int = {}\n```\n\n\
+         Compile-time constant - the discriminant of `{enum_name}.{variant_name}`.",
+        vdef.discriminant
+    ))
+}
+
 /// Is the hovered word actually being used as a call or method access — i.e.
 /// preceded by `.` (`recv.method`) or immediately followed by `(` (`call(...)`)?
 /// Call/method hovers only fire in these positions, so a plain identifier that
@@ -1483,14 +1792,14 @@ fn hover_record_or_type_field(
 /// Hover for a USAGE (call site) of a generic `mod`/`chip`: show the type
 /// arguments *resolved for this call* in the angle brackets — e.g.
 /// `mod assert<int>(want: int, got: int, label: string)` instead of the
-/// declaration's `mod assert<T: int | float | string>(want: T, …)`.
+/// declaration's `mod assert<T: int | float | string>(want: T, ...)`.
 ///
 /// Re-parses `source` (identical byte offsets, so `type_map` still resolves
 /// each argument's inferred type — the same trick [`hover_custom_event`] uses),
 /// finds the `Expr::Call` whose callee identifier spans the cursor, locates the
 /// callee's generic declaration, and re-runs the shared call-site inference
 /// ([`crate::types::mono::infer_call_subst`], or the caller's explicit
-/// `assert<int>(…)` type arguments when present) to bind each type parameter.
+/// `assert<int>(...)` type arguments when present) to bind each type parameter.
 ///
 /// Returns `None` when the word is not the callee of a generic call — so the
 /// declaration site and every non-generic call still fall through to
@@ -1538,7 +1847,7 @@ fn hover_generic_call(
     let resolve = |te: &TypeExpr| crate::types::resolve::resolve_type(te, &rcx, &mut Vec::new());
     let param_types: Vec<Type> = decl.inputs.iter().map(|p| resolve(&p.typ)).collect();
 
-    // Bind each type parameter. Explicit `assert<int>(…)` type arguments pin
+    // Bind each type parameter. Explicit `assert<int>(...)` type arguments pin
     // them directly; otherwise infer from the argument types the same way the
     // compiler does at the call site.
     let subst = if !type_args.is_empty() {
@@ -2062,7 +2371,7 @@ fn present_field_names(lines: &[&str], brace_line: usize) -> Vec<String> {
 
 /// Compute a "fill record fields" edit for a cursor inside a record literal whose
 /// expected type is a record. Scans upward for `let name: Type = {` (an inline
-/// `{ … }` record type or a named alias resolved via `symbols`), then returns the
+/// `{ ... }` record type or a named alias resolved via `symbols`), then returns the
 /// missing fields (present ones are skipped, so partial literals complete too),
 /// each with a type-appropriate default. `None` if the cursor isn't inside such a
 /// literal or every field is already present.
@@ -2140,6 +2449,138 @@ pub fn fill_record_at(
         .collect::<Vec<_>>()
         .join("\n");
     Some(RecordFill { line, col, text })
+}
+
+/// A "fill missing match arms" code-action result: the missing arm lines to
+/// insert (`text`, one `{pattern} => todo,` per witness) and the 0-based
+/// `line`/`col` to insert them at (just before the match's closing `}`).
+pub struct MatchArmsFill {
+    pub line: usize,
+    pub col: usize,
+    pub text: String,
+}
+
+/// True if 1-based `(line, col)` falls within `[r.start, r.end)` (half-open,
+/// matching the lexer's snapshot-before/snapshot-after token convention:
+/// `end` is one past the last consumed char). Cursor coordinates are 1-based
+/// here because `Pos::line`/`Pos::col` are; callers convert the LSP 0-based
+/// request first.
+fn range_contains_1based(r: &SourceRange, line: u32, col: u32) -> bool {
+    (r.start.line, r.start.col) <= (line, col) && (line, col) < (r.end.line, r.end.col)
+}
+
+/// The smallest `MatchExpr` in `ast` whose range contains the 1-based
+/// `(line, col)` cursor: the innermost enclosing one when matches nest (an
+/// arm's body can itself be a match). The closure's parameter type is
+/// annotated with the function's own `'a` (rather than left for inference)
+/// so the collected `&'a Expr`s can outlive [`super::visit::visit_program`]'s
+/// call. A plain inferred closure type ties `e` to a fresh, closure-local
+/// lifetime that cannot escape (E0521).
+fn enclosing_match_expr<'a>(ast: &'a Script, line: u32, col: u32) -> Option<&'a Expr> {
+    let mut candidates: Vec<&'a Expr> = Vec::new();
+    let mut on_handler = |_: &'a Handler| {};
+    let mut on_call = |e: &'a Expr| {
+        if matches!(e, Expr::MatchExpr { .. }) {
+            candidates.push(e);
+        }
+    };
+    super::visit::visit_program(ast, &mut on_handler, &mut on_call);
+    candidates
+        .into_iter()
+        .filter(|e| range_contains_1based(e.range(), line, col))
+        .min_by_key(|e| {
+            let r = e.range();
+            r.end.offset.saturating_sub(r.start.offset)
+        })
+}
+
+/// Compute a "fill missing match arms" edit for a cursor on/inside a `match`
+/// whose written arms don't cover its scrutinee enum. Locates the smallest
+/// enclosing `MatchExpr` in the pre-resolve `ast` containing `(line, col)`,
+/// resolves the scrutinee's type through `type_map` (it must be a registered
+/// `Type::Enum`), and asks the shared witness engine
+/// ([`crate::typecheck::patterns::analyze`], Task 11, the same one the
+/// compiler's WS054 exhaustiveness diagnostic uses) which arms the ones
+/// already written don't cover. Each witness renders through
+/// [`crate::typecheck::infer::render_pattern`] (the same renderer WS054
+/// uses) as one `  {pattern} => todo,` line, inserted right before the
+/// match's closing `}` with the indentation of its last arm (or, for an
+/// empty match, the match's own line plus two spaces).
+///
+/// `None` when the cursor isn't on a `match`, its scrutinee didn't resolve to
+/// a registered enum, or the arms already cover every variant.
+pub fn fill_match_arms_at(
+    source: &str,
+    _symbols: &[SymbolDef],
+    type_map: &TypeMap,
+    ast: &Script,
+    line: usize,
+    col: usize,
+) -> Option<MatchArmsFill> {
+    let cursor_line = (line + 1) as u32;
+    let cursor_col = (col + 1) as u32;
+
+    let best = enclosing_match_expr(ast, cursor_line, cursor_col)?;
+    let Expr::MatchExpr { scrutinee, arms, range } = best else {
+        return None;
+    };
+
+    let sr = scrutinee.range();
+    let scrut_ty = type_map.get(&(sr.file.clone(), sr.start.offset, sr.end.offset))?;
+    if !matches!(scrut_ty, Type::Enum { .. }) {
+        return None;
+    }
+
+    let enum_defs = crate::typecheck::enums::build_registry(&ast.decls);
+    let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
+    let usefulness = crate::typecheck::patterns::analyze(&enum_defs, scrut_ty, &arm_patterns);
+    if usefulness.missing.is_empty() {
+        return None;
+    }
+
+    let lines: Vec<&str> = source.lines().collect();
+    let line_indent = |idx: usize| -> String {
+        let l = lines.get(idx).copied().unwrap_or("");
+        l[..l.len() - l.trim_start().len()].to_string()
+    };
+    let indent = match arms.last() {
+        Some(last) => line_indent((last.range.start.line - 1) as usize),
+        None => format!("{}  ", line_indent((range.start.line - 1) as usize)),
+    };
+
+    // Each missing arm gets a bare `todo` placeholder body. `todo` is a plain
+    // identifier, so the inserted text PARSES: it lands as an undefined
+    // identifier (WS002), which is exactly the "fill me in" state the author
+    // then replaces. LSP snippet syntax (`${1:todo}` tab-stops) is deliberately
+    // NOT used here: this server advertises no snippet capability and the
+    // lsp-types version in use has no SnippetTextEdit, so a snippet placeholder
+    // would land in the buffer as literal `${1:todo}` characters, and a bare
+    // `$` is a hard parse error (WSP001). Real tab-stops can be restored if the
+    // LSP library gains SnippetTextEdit and the client advertises the capability.
+    let mut text = usefulness
+        .missing
+        .iter()
+        .map(|w| {
+            let pat = crate::typecheck::infer::render_pattern(&w.0);
+            format!("{indent}{pat} => todo,\n")
+        })
+        .collect::<String>();
+
+    // The match's own `range.end` is one past its closing `}` (the parser
+    // sets it from the `}` token's own `end`), so the `}` itself sits at
+    // `range.end.col - 2` (0-based) on `range.end.line - 1` (0-based): the
+    // insertion point that keeps the new arms inside the braces.
+    let close_line = (range.end.line - 1) as usize;
+    let close_col = (range.end.col as usize).saturating_sub(2);
+    // A `}` sharing its line with the last arm (`match s { Circle(r) => 1.0 }`)
+    // needs its own line break before the inserted arms; a `}` already alone
+    // on its line (the common, formatted case) does not.
+    let close_line_str = lines.get(close_line).copied().unwrap_or("");
+    let before_close = &close_line_str[..close_col.min(close_line_str.len())];
+    if !before_close.trim().is_empty() {
+        text.insert(0, '\n');
+    }
+    Some(MatchArmsFill { line: close_line, col: close_col, text })
 }
 
 pub(super) fn resolve_record_param_field_type(script: &crate::ast::Script, param_type: &crate::ast::TypeExpr, field: &str) -> Option<String> {

@@ -397,6 +397,166 @@ pub fn enum_has_value(enum_type: &str, value: i64) -> bool {
     })
 }
 
+/// Every schema enum type reachable from a gate or event's config surface
+/// (call-spec non-wire params, every gate's `scalar_config_fields`, and event
+/// `config_positional`/`config_named` fields), resolved through
+/// [`config_field_enum_type`] the same way [`config_enum_for_named_arg`]
+/// resolves a single named arg. This is the single source of truth for which
+/// schema enums become Wirescript built-in enums: nothing is hand-listed,
+/// every entry is derived from the catalog + schema. Sorted and
+/// de-duplicated.
+pub fn config_referenced_enum_types() -> Vec<&'static str> {
+    use std::collections::BTreeSet;
+
+    let mut types: BTreeSet<&'static str> = BTreeSet::new();
+
+    // Call specs: non-wire (config) params, same resolution rule as
+    // `config_enum_for_named_arg`'s call path.
+    for spec in calls::calls().values() {
+        for p in &spec.params {
+            if is_wire_input(spec.gate_class, p.port.as_str()) {
+                continue;
+            }
+            if let Some(ty) = config_field_enum_type(spec.gate_class, p.port.as_str()) {
+                types.insert(ty);
+            }
+        }
+    }
+
+    // Every gate's full data-driven config surface (`<Field> = value`
+    // settings), not just the fields a call spec happens to expose.
+    for gate in default_catalog().entries() {
+        for prop in scalar_config_fields(&gate.component.class) {
+            if let Some(ty) = config_field_enum_type(&gate.component.class, &prop.name) {
+                types.insert(ty);
+            }
+        }
+    }
+
+    // Event config args (positional + named), same resolution rule as
+    // `config_enum_for_named_arg`'s event path.
+    for evt in events::events().values() {
+        for field in &evt.config_positional {
+            if let Some(ty) = config_field_enum_type(evt.gate_class, field) {
+                types.insert(ty);
+            }
+        }
+        for (_, field) in &evt.config_named {
+            if let Some(ty) = config_field_enum_type(evt.gate_class, field) {
+                types.insert(ty);
+            }
+        }
+    }
+
+    types.into_iter().collect()
+}
+
+/// A built-in game enum, derived from a schema enum reachable from the
+/// catalog's config surface (see [`config_referenced_enum_types`]). The
+/// Wirescript-facing name is [`GameEnum::clean_name`]; [`GameEnum::schema_type`]
+/// is the underlying brdb schema enum name used to resolve members/values.
+#[derive(Clone, Debug)]
+pub struct GameEnum {
+    pub clean_name: String,
+    pub schema_type: &'static str,
+    pub variants: Vec<GameEnumVariant>,
+}
+
+/// One member of a [`GameEnum`]. `raw_member` is the schema's bare member
+/// name (as accepted by [`enum_member_value`]); `disc` is its real integer
+/// discriminant, read straight from the schema (never renumbered).
+#[derive(Clone, Debug)]
+pub struct GameEnumVariant {
+    pub clean_name: String,
+    pub raw_member: String,
+    pub disc: i64,
+}
+
+/// Clean a raw schema enum type name (e.g. `EBREasingFunction`) into the
+/// Wirescript-facing type name (`EasingFunction`).
+///
+/// Rule: strip a leading `E`, then strip a leading `BR` or `Brick` from what
+/// remains, keeping the rest verbatim. Deliberately does NOT also strip
+/// `DisplayText` / `Text` / `Easing`. Those verbose segments are what keep
+/// the cleaned set collision-free (e.g. `EasingDirection` must not collapse
+/// onto `Direction`).
+pub fn clean_game_enum_type(raw: &str) -> String {
+    let s = raw.strip_prefix('E').unwrap_or(raw);
+    let s = s.strip_prefix("BR").or_else(|| s.strip_prefix("Brick")).unwrap_or(s);
+    s.to_string()
+}
+
+/// Clean a bare schema enum member name (e.g. `X_Positive`) into the
+/// Wirescript-facing variant name (`XPositive`).
+///
+/// Rule: split on `_`, capitalize each segment's first character, join with
+/// no separator. No reordering, so `X_Positive` stays `XPositive`, not
+/// `PositiveX`.
+pub fn clean_game_enum_variant(bare: &str) -> String {
+    bare.split('_')
+        .map(|seg| {
+            let mut chars = seg.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Every built-in game enum, derived from [`config_referenced_enum_types`]:
+/// each schema enum type is cleaned into a [`GameEnum`] whose variants come
+/// from [`enum_member_names`] (already sentinel-filtered), cleaned via
+/// [`clean_game_enum_variant`] and paired with their real schema
+/// discriminant via [`enum_member_value`]. Sorted by `clean_name`. A schema
+/// enum with zero non-sentinel members is skipped rather than panicking.
+/// Memoized in the same table [`game_enum_schema_type`] reads.
+pub fn builtin_game_enums() -> Vec<GameEnum> {
+    game_enum_table().clone()
+}
+
+/// The schema enum type backing built-in game enum `clean_name`, if any.
+pub fn game_enum_schema_type(clean_name: &str) -> Option<&'static str> {
+    game_enum_table()
+        .iter()
+        .find(|e| e.clean_name == clean_name)
+        .map(|e| e.schema_type)
+}
+
+fn game_enum_table() -> &'static Vec<GameEnum> {
+    use std::sync::OnceLock;
+    static INSTANCE: OnceLock<Vec<GameEnum>> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut enums: Vec<GameEnum> = config_referenced_enum_types()
+            .into_iter()
+            .filter_map(|schema_type| {
+                let variants: Vec<GameEnumVariant> = enum_member_names(schema_type)
+                    .into_iter()
+                    .map(|raw_member| {
+                        let disc = enum_member_value(schema_type, &raw_member)
+                            .expect("known member");
+                        GameEnumVariant {
+                            clean_name: clean_game_enum_variant(&raw_member),
+                            raw_member,
+                            disc,
+                        }
+                    })
+                    .collect();
+                if variants.is_empty() {
+                    return None;
+                }
+                Some(GameEnum {
+                    clean_name: clean_game_enum_type(schema_type),
+                    schema_type,
+                    variants,
+                })
+            })
+            .collect();
+        enums.sort_by(|a, b| a.clean_name.cmp(&b.clean_name));
+        enums
+    })
+}
+
 /// The default catalog, parsed from the bundled inventory JSON on first
 /// call and reused on subsequent calls.
 pub fn default_catalog() -> &'static Catalog {

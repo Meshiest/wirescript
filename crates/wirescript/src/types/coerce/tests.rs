@@ -206,6 +206,21 @@
     }
 
     #[test]
+    fn enum_type_is_nominal_and_joins_with_itself_only() {
+        use crate::ir::Type;
+        let opt_int = Type::Enum { name: "Option".into(), args: vec![Type::Int] };
+        let opt_int2 = Type::Enum { name: "Option".into(), args: vec![Type::Int] };
+        let opt_flt = Type::Enum { name: "Option".into(), args: vec![Type::Float] };
+        let res_int = Type::Enum { name: "Result".into(), args: vec![Type::Int] };
+        assert!(type_eq(&opt_int, &opt_int2));
+        assert!(!type_eq(&opt_int, &opt_flt));
+        assert!(!type_eq(&opt_int, &res_int));
+        assert_eq!(widening_join(&opt_int, &opt_int2), Some(opt_int.clone()));
+        assert_eq!(widening_join(&opt_int, &opt_flt), None);
+        assert_eq!(format!("{opt_int}"), "Option<int>");
+    }
+
+    #[test]
     fn any_container_param_accepts_concrete_but_not_reverse() {
         use Type::*;
         let ai = || Array(Box::new(Int));

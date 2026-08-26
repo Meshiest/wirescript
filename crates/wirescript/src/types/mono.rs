@@ -73,6 +73,19 @@ pub fn collect(p: &Type, a: &Type, out: &mut Vec<Constraint>) {
                 }
             }
         }
+        // `Option<T>` against `Option<int>` binds `T=int`, one constraint per
+        // arg position. A mismatched name or arity contributes nothing: that
+        // mismatch is a type error surfaced elsewhere (WS033/WS003).
+        Type::Enum { name: pn, args: pa } => {
+            if let Type::Enum { name: an, args: aa } = a
+                && pn == an
+                && pa.len() == aa.len()
+            {
+                for (pi, ai) in pa.iter().zip(aa.iter()) {
+                    collect(pi, ai, out);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -94,6 +107,10 @@ pub fn substitute(t: &Type, s: &Subst) -> Type {
                 .map(|(n, ft)| (n.clone(), substitute(ft, s)))
                 .collect(),
         ),
+        Type::Enum { name, args } => Type::Enum {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute(a, s)).collect(),
+        },
         other => other.clone(),
     }
 }

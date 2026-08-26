@@ -473,6 +473,97 @@ fn scan_record_types(src: &str) -> StdMap<String, Vec<String>> {
     out
 }
 
+/// Split `s` on commas that sit at bracket depth 0 - one level of `(...)` /
+/// `{...}` nesting is enough for an `enum` body, whose own variant-level
+/// commas (between variants) must NOT be confused with a payload's internal
+/// field-list commas (`B(int, float)`, `C { f: int, g: float }`). Also reused
+/// to split one payload's own field list, at depth 0 relative to ITS content.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' | '{' => depth += 1,
+            ')' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(s[start..i].trim());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        out.push(last);
+    }
+    out
+}
+
+/// Column-0 `enum Name { A, B(int), C { f: int } }` declarations of one file,
+/// by enum name -> ordered (variant name, payload slot keys) pairs. A slot
+/// key is the positional index ("0", "1", ..) for a `(...)` payload or the
+/// field name for a `{ .. }` payload - exactly what `build_enum_fields`
+/// (lower/predeclare.rs) uses to name each `__{Variant}_{key}` backing gate,
+/// so this table lets `scan_state_decls` below derive the SAME superset
+/// storage layout an enum var lowers to (`__disc` + every variant's payload
+/// slots - see the enum var storage layout note in the fuzzer's module doc).
+/// Enum types are file-private exactly like `type` aliases
+/// (`scan_record_types` above), so this is scoped per-file the same way; the
+/// fuzzer only ever declares enums (and enum-typed vars) in an entry file, so
+/// in practice this is only ever consulted against that same file's own
+/// `var` lines.
+fn scan_enum_types(src: &str) -> StdMap<String, Vec<(String, Vec<String>)>> {
+    let mut out = StdMap::new();
+    for line in src.lines() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("enum ") else { continue };
+        let name = ident_at(rest.trim_start());
+        if name.is_empty() {
+            continue;
+        }
+        let Some(open) = rest.find('{') else { continue };
+        let Some(close) = rest.rfind('}') else { continue };
+        if close <= open {
+            continue;
+        }
+        let variants: Vec<(String, Vec<String>)> = split_top_level(&rest[open + 1..close])
+            .into_iter()
+            .filter_map(|chunk| {
+                let vname = ident_at(chunk);
+                if vname.is_empty() {
+                    return None;
+                }
+                let payload = chunk[vname.len()..].trim_start();
+                let slots: Vec<String> = if let Some(p) = payload.strip_prefix('(') {
+                    let inner = p.rsplit_once(')').map_or(p, |(a, _)| a);
+                    split_top_level(inner)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, _)| i.to_string())
+                        .collect()
+                } else if let Some(p) = payload.strip_prefix('{') {
+                    let inner = p.rsplit_once('}').map_or(p, |(a, _)| a);
+                    split_top_level(inner)
+                        .into_iter()
+                        .filter_map(|f| {
+                            let fname = ident_at(f.trim());
+                            (!fname.is_empty()).then(|| fname.to_string())
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Some((vname.to_string(), slots))
+            })
+            .collect();
+        out.insert(name.to_string(), variants);
+    }
+    out
+}
+
 /// Classify a `var name<ANN>` annotation (`ANN` is everything after the name,
 /// up to a `=` initializer) as a record CONTAINER shape - `: Rec`, `: Rec[]`,
 /// `: Map<K, Rec>` - returning the storage kind the container's OWN form
@@ -508,8 +599,16 @@ fn record_container_kind(ann: &str) -> Option<(StoreKind, String)> {
 /// `record_field_storage`/`declare_record_container` bakes onto each
 /// per-field backing gate, so the derivation and the compiler agree on
 /// identity without either side telling the other.
+///
+/// An enum-typed `var` decomposes the same way, but into the SUPERSET layout
+/// `build_enum_fields` (lower/predeclare.rs) bakes: one `"{name}.__disc"`
+/// entry plus one `"{name}.__{Variant}_{slot}"` entry per payload slot of
+/// EVERY variant (not just the one the initializer picks - the storage is
+/// always the full superset, only the live variant's slots get non-default
+/// values).
 fn scan_state_decls(src: &str) -> Vec<(StoreKind, String)> {
     let records = scan_record_types(src);
+    let enums = scan_enum_types(src);
     let mut out = Vec::new();
     for line in src.lines() {
         if line.starts_with(char::is_whitespace) {
@@ -525,13 +624,22 @@ fn scan_state_decls(src: &str) -> Vec<(StoreKind, String)> {
             // the annotation decides the storage class: `var x: Map<..>` is a
             // MapVar, `var x: T[]` an ArrayVar, anything else a plain Var
             let ann = rest[name.len()..].split('=').next().unwrap_or("");
-            if let Some((kind, type_name)) = record_container_kind(ann)
-                && let Some(fields) = records.get(&type_name)
-            {
-                for f in fields {
-                    out.push((kind, format!("{name}.{f}")));
+            if let Some((kind, type_name)) = record_container_kind(ann) {
+                if let Some(fields) = records.get(&type_name) {
+                    for f in fields {
+                        out.push((kind, format!("{name}.{f}")));
+                    }
+                    continue;
                 }
-                continue;
+                if let Some(variants) = enums.get(&type_name) {
+                    out.push((kind, format!("{name}.__disc")));
+                    for (vname, slots) in variants {
+                        for slot in slots {
+                            out.push((kind, format!("{name}.__{vname}_{slot}")));
+                        }
+                    }
+                    continue;
+                }
             }
             let kind = if ann.contains("Map<") {
                 StoreKind::Map
@@ -605,6 +713,58 @@ fn scan_imports(entry: &str) -> Vec<(String, Option<Vec<String>>)> {
     out
 }
 
+/// (enum var name) -> (variant name -> payload slot keys), for every
+/// top-level enum-typed `var` in `src`. Lets `scan_writes` figure out exactly
+/// which storage slots a whole-var enum RECONSTRUCTION touches: only
+/// `__disc` plus the CONSTRUCTED variant's own slots.
+/// `assign_record_fields` (lower/stmt.rs) only writes a target field the
+/// source record actually provides, and an enum construction's
+/// `Binding::Record` (`lower_enum_ctor`, lower/expr.rs) carries `__disc` plus
+/// ONLY the constructed variant's own slots - never another variant's - so
+/// those are deliberately left untouched by the write. Unlike a plain record
+/// var (whose literal always specifies every field, so `add()`'s generic
+/// "mark every `name.`-prefixed key" fallback is exactly right there), that
+/// same fallback would over-claim writes to every OTHER variant's slots for
+/// an enum var.
+fn scan_enum_var_variants(src: &str) -> StdMap<String, StdMap<String, Vec<String>>> {
+    let enums = scan_enum_types(src);
+    let mut out: StdMap<String, StdMap<String, Vec<String>>> = StdMap::new();
+    for line in src.lines() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let l = line.strip_prefix("static ").unwrap_or(line);
+        let Some(rest) = l.strip_prefix("var ") else { continue };
+        let rest = rest.trim_start();
+        let name = ident_at(rest);
+        if name.is_empty() {
+            continue;
+        }
+        let ann = rest[name.len()..].split('=').next().unwrap_or("");
+        if let Some((_, type_name)) = record_container_kind(ann)
+            && let Some(variants) = enums.get(&type_name)
+        {
+            out.insert(name.to_string(), variants.iter().cloned().collect());
+        }
+    }
+    out
+}
+
+/// The variant name off an RHS of the shape `EnumName.Variant`, optionally
+/// followed by `(...)` / `{ .. }` / nothing (a unit variant) - i.e. an enum
+/// construction expression (see docs/wirescript/enums.md#construction).
+/// `None` for anything else (a plain value, a record literal, ..).
+fn enum_ctor_variant_name(rhs: &str) -> Option<&str> {
+    let rhs = rhs.trim_start();
+    let tname = ident_at(rhs);
+    if tname.is_empty() {
+        return None;
+    }
+    let rest = rhs[tname.len()..].strip_prefix('.')?;
+    let vname = ident_at(rest);
+    (!vname.is_empty()).then_some(vname)
+}
+
 /// Write statements: indented lines of the strict shapes the generators emit
 /// (`P = e` / `P += e` / `P[i] = e` / `P.push(..)` and friends / `P.set(..)`
 /// / `refw(P, ..)`), where `P` is `name` or `Ns.name`. Only names that the
@@ -615,6 +775,7 @@ fn scan_writes(
     counts: &BTreeMap<(StoreKind, String), usize>,
     writes: &mut BTreeSet<(StoreKind, String)>,
 ) {
+    let enum_vars = scan_enum_var_variants(src);
     const ARRAY_METHODS: [&str; 8] = [
         "push", "clear", "insert", "sort", "reverse", "shuffle", "fill", "resize",
     ];
@@ -740,9 +901,30 @@ fn scan_writes(
             let field_key = (segs.len() >= 2)
                 .then(|| format!("{}.{}", segs[segs.len() - 2], segs[segs.len() - 1]))
                 .filter(|k| counts.contains_key(&(StoreKind::Var, k.clone())));
-            match field_key {
-                Some(k) => add(StoreKind::Var, &k),
-                None => add(StoreKind::Var, last),
+            // Whole-var enum RECONSTRUCTION (`ev = EnumName.Variant(..)`):
+            // only `__disc` + the constructed variant's own slots are
+            // written (see `scan_enum_var_variants` above) - resolved before
+            // the generic whole-container fallback, which would wrongly
+            // claim every OTHER variant's slots too.
+            let enum_hit = if field_key.is_some() {
+                None
+            } else {
+                (|| {
+                    let rhs = after.strip_prefix('=')?;
+                    let vmap = enum_vars.get(last)?;
+                    let vname = enum_ctor_variant_name(rhs)?;
+                    vmap.get(vname).map(|slots| (vname, slots))
+                })()
+            };
+            match (field_key, enum_hit) {
+                (Some(k), _) => add(StoreKind::Var, &k),
+                (None, Some((vname, slots))) => {
+                    add(StoreKind::Var, &format!("{last}.__disc"));
+                    for slot in slots {
+                        add(StoreKind::Var, &format!("{last}.__{vname}_{slot}"));
+                    }
+                }
+                (None, None) => add(StoreKind::Var, last),
             }
         }
     }
@@ -1237,6 +1419,29 @@ struct RecordDef {
     fields: Vec<(String, Ty)>,
 }
 
+/// One `enum` variant's payload shape - mirrors `typecheck::enums::Payload`
+/// closely enough for generation purposes (scalar-only fields, per the "keep
+/// generated enums simple" guidance: unit/positional/named payloads of
+/// int/float/bool fields, no nested records/enums/arrays/maps/generics).
+#[derive(Clone)]
+enum EnumPayload {
+    Unit,
+    Positional(Vec<Ty>),
+    Named(Vec<(String, Ty)>),
+}
+
+#[derive(Clone)]
+struct EnumVariantDef {
+    name: String,
+    payload: EnumPayload,
+}
+
+#[derive(Clone)]
+struct EnumDef {
+    name: String,
+    variants: Vec<EnumVariantDef>,
+}
+
 #[derive(Clone)]
 enum PTy {
     Val(Ty),
@@ -1283,6 +1488,13 @@ struct Scope {
     objs: Vec<(String, Obj)>,
     exec: bool,
     mod_ret: Option<Ty>,
+    // (name, index into `Gen::enums`) of top-level enum-typed `var`s reachable
+    // here - match/if-let scrutinees are picked from this list, never from an
+    // `in` port (an enum port doesn't decompose - see docs/wirescript/enums.md
+    // "Scrutinee must be a value, not a port"). Like `rec_binds`, mod/chip
+    // bodies start with this empty (their own `Scope::default()`) - they never
+    // see outer top-level state, only their own params.
+    enum_binds: Vec<(String, usize)>,
 }
 
 struct Gen {
@@ -1295,6 +1507,11 @@ struct Gen {
     arrays: Vec<(String, Ty, bool)>,
     records: Vec<RecordDef>,
     rec_binds: Vec<(String, usize)>,
+    // declared `enum` types, and (name, index into `enums`) of the top-level
+    // enum-typed `var`s declared from them - the tables `gen_match_stmt` /
+    // `gen_match_expr_let` / `gen_if_let_stmt` / enum-construction draw from.
+    enums: Vec<EnumDef>,
+    enum_vars: Vec<(String, usize)>,
     objs: Vec<(String, Obj)>,
     chips: Vec<ChipSig>,
     mods: Vec<ModSig>,
@@ -1322,6 +1539,8 @@ impl Gen {
             arrays: Vec::new(),
             records: Vec::new(),
             rec_binds: Vec::new(),
+            enums: Vec::new(),
+            enum_vars: Vec::new(),
             objs: Vec::new(),
             chips: Vec::new(),
             mods: Vec::new(),
@@ -1354,6 +1573,7 @@ impl Gen {
             objs: self.objs.clone(),
             exec,
             mod_ret: None,
+            enum_binds: self.enum_vars.clone(),
         }
     }
 
@@ -1778,7 +1998,7 @@ impl Gen {
     }
 
     fn exec_stmt(&mut self, sc: &mut Scope, d: u32, cur: Option<&str>, indent: usize) -> String {
-        match self.rng.below(21) {
+        match self.rng.below(24) {
             // shadow an existing in-scope name with a same-typed `let`
             // (including a `let` shadowing a `var` - the shadowed var's
             // storage keeps existing but later reads in this scope bind to
@@ -2136,6 +2356,41 @@ impl Gen {
                 let pad = "  ".repeat(indent);
                 format!("chip {{\n{}\n{pad}}}", inner.join("\n"))
             }
+            // enum var whole-container reassignment - LOOKS like the same
+            // "whole write" shape as `rv = { .. }` on a record var, but is
+            // NOT: only `__disc` + the constructed variant's own slots get
+            // written (see `scan_enum_var_variants`/`enum_ctor_variant_name`
+            // above, which `scan_writes` uses to get this right).
+            20 => {
+                if sc.enum_binds.is_empty() {
+                    return String::new();
+                }
+                let (name, eidx) = self.rng.pick(&sc.enum_binds).clone();
+                let (_, ctor) = self.enum_ctor_random(eidx);
+                format!("{name} = {ctor}")
+            }
+            // match on a declared enum var: statement form (block arms) or
+            // expression form (comma value arms, bound by a `let`) - both
+            // exhaustive over every variant (never a `_` wildcard) so neither
+            // ever emits WS054.
+            21 => {
+                if sc.enum_binds.is_empty() || indent > 2 {
+                    return String::new();
+                }
+                if self.rng.chance(1, 2) {
+                    self.gen_match_stmt(sc, indent)
+                } else {
+                    self.gen_match_expr_let(sc, indent)
+                }
+            }
+            // `if let PATTERN = enumVar { .. } else { .. }` - the single-
+            // variant refutable counterpart to `match`.
+            22 => {
+                if sc.enum_binds.is_empty() || indent > 2 {
+                    return String::new();
+                }
+                self.gen_if_let_stmt(sc, indent)
+            }
             _ => {
                 // fallback: assignment-flavored again
                 let vars: Vec<Sca> = sc
@@ -2152,6 +2407,97 @@ impl Gen {
                 format!("{} = {e}", v.name)
             }
         }
+    }
+
+    /// One pattern for variant `v`, binding its payload (if any) under fresh
+    /// names built from `prefix` - `p0`/`p1`/.. for a positional payload, or
+    /// the declared field names themselves for a named payload (the doc's
+    /// `{ x, y }` shorthand - a field pattern binds a local of the same
+    /// name). Also returns the "read the first bound payload back" fragment
+    /// an arm body can drop in directly (`"0"` for a unit variant, since
+    /// there's nothing to read).
+    fn enum_pattern(&self, v: &EnumVariantDef, prefix: &str) -> (String, String) {
+        match &v.payload {
+            EnumPayload::Unit => (v.name.clone(), "0".to_string()),
+            EnumPayload::Positional(tys) => {
+                let binds: Vec<String> = (0..tys.len()).map(|i| format!("{prefix}{i}")).collect();
+                (format!("{}({})", v.name, binds.join(", ")), binds[0].clone())
+            }
+            EnumPayload::Named(fields) => {
+                let binds: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
+                (format!("{} {{ {} }}", v.name, binds.join(", ")), binds[0].clone())
+            }
+        }
+    }
+
+    /// Exhaustive `match` STATEMENT (block arms, compiles to a
+    /// `Branch`/`Union` tree) over a declared enum var. Covers every variant
+    /// in declaration order - never a `_` wildcard, so exhaustiveness never
+    /// depends on the compiler's own variant ordering - and each arm body
+    /// reads its bound payload (or, for a unit variant, a literal) back out
+    /// through a plain `let`, so the payload-extraction wiring is actually
+    /// exercised rather than optimized away as dead code. Caller must ensure
+    /// `sc.enum_binds` is non-empty.
+    fn gen_match_stmt(&mut self, sc: &Scope, indent: usize) -> String {
+        let (ev_name, eidx) = self.rng.pick(&sc.enum_binds).clone();
+        let def = self.enums[eidx].clone();
+        let pad = "  ".repeat(indent);
+        let inner_pad = "  ".repeat(indent + 1);
+        let body_pad = "  ".repeat(indent + 2);
+        let mut arms = Vec::new();
+        for v in &def.variants {
+            let (pattern, read) = self.enum_pattern(v, "p");
+            let h = self.fresh("mh");
+            let body = format!("{body_pad}let {h} = {read}");
+            arms.push(format!("{inner_pad}{pattern} => {{\n{body}\n{inner_pad}}}"));
+        }
+        format!("match {ev_name} {{\n{}\n{pad}}}", arms.join("\n"))
+    }
+
+    /// Exhaustive `match` EXPRESSION (comma-separated value arms, compiles to
+    /// a `Select` tree) bound by a top-level `let`. Always produces `int` -
+    /// every arm needs a value of the SAME type regardless of its variant's
+    /// payload shape, so an arm whose first payload field isn't itself `int`
+    /// just falls back to a literal (the statement-form match above already
+    /// covers reading a non-int payload back out). Caller must ensure
+    /// `sc.enum_binds` is non-empty.
+    fn gen_match_expr_let(&mut self, sc: &mut Scope, indent: usize) -> String {
+        let (ev_name, eidx) = self.rng.pick(&sc.enum_binds).clone();
+        let def = self.enums[eidx].clone();
+        let pad = "  ".repeat(indent);
+        let inner_pad = "  ".repeat(indent + 1);
+        let mut arms = Vec::new();
+        for v in &def.variants {
+            let (pattern, read) = self.enum_pattern(v, "r");
+            let first_ty = match &v.payload {
+                EnumPayload::Unit => None,
+                EnumPayload::Positional(tys) => Some(tys[0]),
+                EnumPayload::Named(fields) => Some(fields[0].1),
+            };
+            let value = if first_ty == Some(Ty::Int) { read } else { "0".to_string() };
+            arms.push(format!("{inner_pad}{pattern} => {value}"));
+        }
+        let h = self.fresh("mh");
+        sc.scalars.push(Sca { name: h.clone(), ty: Ty::Int, acc: Acc::Direct });
+        format!("let {h} = match {ev_name} {{\n{}\n{pad}}}", arms.join(",\n"))
+    }
+
+    /// `if let PATTERN = enumVar { .. } else { .. }` - a single-variant
+    /// refutable bind (shorthand for a `match` with one real arm). Both
+    /// branches read/produce through a plain `let` the same way the match
+    /// arms above do. Caller must ensure `sc.enum_binds` is non-empty.
+    fn gen_if_let_stmt(&mut self, sc: &Scope, indent: usize) -> String {
+        let (ev_name, eidx) = self.rng.pick(&sc.enum_binds).clone();
+        let def = self.enums[eidx].clone();
+        let vidx = self.rng.below(def.variants.len());
+        let (pattern, read) = self.enum_pattern(&def.variants[vidx], "q");
+        let pad = "  ".repeat(indent);
+        let inner_pad = "  ".repeat(indent + 1);
+        let h_then = self.fresh("mh");
+        let h_else = self.fresh("mh");
+        format!(
+            "if let {pattern} = {ev_name} {{\n{inner_pad}let {h_then} = {read}\n{pad}}} else {{\n{inner_pad}let {h_else} = 0\n{pad}}}"
+        )
     }
 
     // ── top-level declarations ──
@@ -2172,6 +2518,112 @@ impl Gen {
             .join(", ");
         self.blocks.push(format!("type {name} = {{ {body} }}"));
         self.records.push(RecordDef { name, fields });
+    }
+
+    /// A small non-generic `enum`: 2-4 variants, each unit, positional
+    /// (1-2 scalar fields), or named (1-2 scalar fields) - kept simple (no
+    /// nested records/enums/arrays/maps, no generics, no explicit `= N`
+    /// discriminants) so generated programs actually compile clean instead of
+    /// tripping an unrelated generator/typecheck limitation. Emitted as a
+    /// SINGLE line (like `gen_type_alias` above) so `scan_enum_types`
+    /// (fuzzer-side storage derivation) can find it with the same
+    /// column-0-line convention `scan_record_types` uses.
+    fn gen_enum_type(&mut self) {
+        let name = self.fresh("En");
+        let idx = self.enums.len();
+        let nv = self.rng.range(2, 4);
+        let mut variants = Vec::new();
+        let mut parts = Vec::new();
+        for i in 0..nv {
+            let vname = format!("Vt{idx}_{i}");
+            let payload = match self.rng.below(3) {
+                0 => EnumPayload::Unit,
+                1 => {
+                    let n = self.rng.range(1, 2);
+                    let tys: Vec<Ty> =
+                        (0..n).map(|_| *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool])).collect();
+                    EnumPayload::Positional(tys)
+                }
+                _ => {
+                    let n = self.rng.range(1, 2);
+                    let fields: Vec<(String, Ty)> = (0..n)
+                        .map(|j| {
+                            let fty = *self.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
+                            (format!("f{i}_{j}"), fty)
+                        })
+                        .collect();
+                    EnumPayload::Named(fields)
+                }
+            };
+            parts.push(match &payload {
+                EnumPayload::Unit => vname.clone(),
+                EnumPayload::Positional(tys) => {
+                    let tys_s = tys.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ");
+                    format!("{vname}({tys_s})")
+                }
+                EnumPayload::Named(fields) => {
+                    let fs = fields
+                        .iter()
+                        .map(|(n, t)| format!("{n}: {}", t.name()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{vname} {{ {fs} }}")
+                }
+            });
+            variants.push(EnumVariantDef { name: vname, payload });
+        }
+        self.blocks.push(format!("enum {name} {{ {} }}", parts.join(", ")));
+        self.enums.push(EnumDef { name, variants });
+    }
+
+    /// Build a construction expression for one variant, using the correct
+    /// bracket form for its declared shape (bare path / `(...)` / `{ ... }` -
+    /// see docs/wirescript/enums.md#construction) so it never trips WS065.
+    fn enum_ctor_variant(&mut self, eidx: usize, vidx: usize) -> String {
+        let ename = self.enums[eidx].name.clone();
+        let variant = self.enums[eidx].variants[vidx].clone();
+        match &variant.payload {
+            EnumPayload::Unit => format!("{ename}.{}", variant.name),
+            EnumPayload::Positional(tys) => {
+                let tys = tys.clone();
+                let args: Vec<String> = tys.iter().map(|t| self.lit(*t)).collect();
+                format!("{ename}.{}({})", variant.name, args.join(", "))
+            }
+            EnumPayload::Named(fields) => {
+                let fields = fields.clone();
+                let args: Vec<String> =
+                    fields.iter().map(|(n, t)| format!("{n}: {}", self.lit(*t))).collect();
+                format!("{ename}.{} {{ {} }}", variant.name, args.join(", "))
+            }
+        }
+    }
+
+    /// Construct a random variant of enum `eidx`, returning its index too (so
+    /// a caller that needs to know which variant it baked - e.g. to log or to
+    /// bias toward payload variants - can without re-parsing the text).
+    fn enum_ctor_random(&mut self, eidx: usize) -> (usize, String) {
+        let vidx = self.rng.below(self.enums[eidx].variants.len());
+        let s = self.enum_ctor_variant(eidx, vidx);
+        (vidx, s)
+    }
+
+    /// One top-level enum-typed `var` per declared enum (most of the time) -
+    /// the only shape a match/if-let scrutinee is allowed to be (never an
+    /// `in` port; see docs/wirescript/enums.md's port caveat). Skipping some
+    /// enums some of the time keeps "declared but never turned into state" a
+    /// live case too (exercises the type alone, e.g. via `.Discriminant` on a
+    /// variant path elsewhere, without every enum growing a var).
+    fn gen_enum_vars(&mut self) {
+        for eidx in 0..self.enums.len() {
+            if !self.rng.chance(3, 4) {
+                continue;
+            }
+            let name = self.fresh("ev");
+            let (_, ctor) = self.enum_ctor_random(eidx);
+            let ename = self.enums[eidx].name.clone();
+            self.blocks.push(format!("var {name}: {ename} = {ctor}"));
+            self.enum_vars.push((name, eidx));
+        }
     }
 
     fn gen_inputs(&mut self) {
@@ -2951,8 +3403,12 @@ impl Gen {
         for _ in 0..self.rng.range(0, 2) {
             self.gen_type_alias();
         }
+        for _ in 0..self.rng.range(0, 2) {
+            self.gen_enum_type();
+        }
         self.gen_inputs();
         self.gen_vars();
+        self.gen_enum_vars();
         if self.rng.chance(1, 3) {
             self.gen_anon_chip_top();
         }

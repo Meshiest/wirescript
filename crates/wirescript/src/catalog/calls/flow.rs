@@ -428,10 +428,29 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     );
 
     // ---- Pure expression gates --------------------------------------------
+    // `EnumToInt`/`IntToEnum` are the gate-backed twins of the record
+    // enum surface `value.ToInt()` (= `.Discriminant`) and `Enum.FromInt(n)`.
+    // The CallSpec below describes the raw game gate (both wire ports are
+    // untyped `any` in-game; the numeric side is an int), but the surface
+    // typing and lowering are special-cased so the enum contract holds:
+    //   - `EnumToInt(value)` REQUIRES an enum argument (typecheck, not the
+    //     bare `Type::Any` port), yields `int`, folds a compile-time-known enum
+    //     to its discriminant literal, and otherwise emits this gate fed by the
+    //     value's `__disc` port. See `lower::expr::try_lower_enum_to_integer`
+    //     and the `EnumToInt` arm in `typecheck::infer`.
+    //   - `IntToEnum(value, wrap?)` takes an `int` (+ optional `bool` wrap)
+    //     and produces an enum whose concrete type is pinned by the use site's
+    //     expected type (like `Enum.FromInt`), not the bare `Int` port below.
+    //     See `lower::expr::try_lower_integer_to_enum` and the `IntToEnum`
+    //     arm in `typecheck::infer`.
+    // For Wirescript's record enums the runtime `EnumToInt` gate is
+    // effectively reading the tag, but it is emitted per the design so that
+    // game/native enums route through the real gate; the fold path keeps
+    // compile-time-known enums gate-free.
     m.insert(
-        "EnumToInteger",
+        "EnumToInt",
         CallSpec {
-            name: "EnumToInteger",
+            name: "EnumToInt",
             gate_class: gc::EXPR_ENUM_TO_INTEGER,
             params: vec![CallParam::req("value", WirePort::Input, Type::Any)],
             exec: false,
@@ -440,15 +459,17 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
     m.insert(
-        "IntegerToEnum",
+        "IntToEnum",
         CallSpec {
-            name: "IntegerToEnum",
+            name: "IntToEnum",
             gate_class: gc::EXPR_INTEGER_TO_ENUM,
             params: vec![
                 CallParam::req("value", WirePort::Input, Type::Int),
                 CallParam::opt("wrap", WirePort::BWrap, Type::Bool),
             ],
             exec: false,
+            // The raw gate output is the numeric discriminant; the surface
+            // result is the context-typed enum (see the note above).
             outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Int }],
             receiver: None,
         },

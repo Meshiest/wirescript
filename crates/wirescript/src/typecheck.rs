@@ -34,6 +34,8 @@ pub use sig::{CallSignature, Param, ParamKind, check_args};
 
 mod ctx;
 pub use ctx::*;
+pub mod enums;
+pub mod patterns;
 mod resolve;
 pub(crate) use resolve::*;
 mod labels;
@@ -66,11 +68,21 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // arm in `stmt.rs`.
     ctx.nofold_depth = script.no_fold as u32;
     register_builtin_events(&mut ctx);
+    // Seed the `Option<T>`/`Result<T, E>` prelude BEFORE the pre-passes below,
+    // same placement as `register_builtin_events` - so a user enum that
+    // redeclares either name still resolves (see `register_builtin_enums`'s
+    // own doc comment for the overwrite-then-flag ordering).
+    register_builtin_enums(&mut ctx);
 
     // Pre-pass: collect every generic type alias (`type Pair<T> = …`) before
     // any decl registration/resolution runs, so a use resolves regardless of
     // whether its alias is declared earlier or later in the file.
     collect_generic_aliases(&mut ctx, &script.decls);
+    // Pre-pass: assign every enum's discriminants (auto-numbering + WS064 for
+    // collisions) and register its `EnumDef` before any decl is checked, so
+    // a use resolves regardless of declaration order (mirrors the generic
+    // alias pre-pass just above).
+    enums::collect_enum_defs(&mut ctx, &script.decls);
 
     // Two-pass: register all top-level decls first so forward refs resolve.
     for d in &script.decls {
@@ -79,7 +91,7 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // Constant `let`s, resolved before any decl is checked so a `var` / `array`
     // initializer may name one. Built from the same function lowering uses, so
     // the two can't disagree about what counts as a compile-time constant.
-    ctx.const_env = crate::lower::build_const_env(&script.decls);
+    ctx.const_env = crate::lower::build_const_env(&script.decls, &ctx.enum_defs);
     ctx.const_declared = crate::lower::build_const_declared_names(&script.decls);
     // `@label(expr)` on a port/chip/nested-var must fold to a compile-time
     // constant (the folded text is baked as the label) — a runtime value there

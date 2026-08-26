@@ -193,10 +193,13 @@ impl<'a> Parser<'a> {
                 "fn" => return Some(self.parse_fn_decl()),
                 "import" => return Some(self.parse_import_decl()),
                 "type" => return Some(self.parse_type_alias_decl()),
+                "enum" => return Some(self.parse_enum_decl()),
                 "if" => {
                     let s = self.parse_if_stmt();
-                    if let Stmt::If(i) = s {
-                        return Some(TopDecl::If(i));
+                    match s {
+                        Stmt::If(i) => return Some(TopDecl::If(i)),
+                        Stmt::IfLet(i) => return Some(TopDecl::IfLet(i)),
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -531,6 +534,39 @@ impl<'a> Parser<'a> {
             });
         }
 
+        // `let Some(x) = expr else { ... }` / `let Box { w } = expr else { ... }`:
+        // a refutable variant-pattern head, detected by shape - an identifier
+        // directly followed by `(` or `{`, which never occurs in the plain
+        // single-binding form below (that form's name is always followed by
+        // `:` or `=`). `parse_pattern` always returns `Pattern::Variant` for
+        // this shape. Phase 4: single-variant refutable binds only - a bare
+        // capitalized unit-variant name (`let None = ... else`) parses as
+        // `Pattern::Binding`, not `Pattern::Variant`, so it still falls
+        // through to the plain binding path below and is out of scope here.
+        if self.peek().kind == TokenKind::Ident
+            && matches!(self.peek_at(1).kind, TokenKind::LParen | TokenKind::LBrace)
+        {
+            let pattern = self.parse_pattern();
+            self.expect(TokenKind::Op, Some("="));
+            // Header position like `if`/`match`'s scrutinee: the mandatory
+            // `else` keyword already disambiguates a trailing `{` from
+            // braced variant construction, but suppress it too for
+            // consistency with `if let`'s scrutinee.
+            let scrutinee = self.parse_expr_no_brace_construct();
+            self.eat_newlines();
+            self.expect(TokenKind::Kw, Some("else"));
+            self.eat_newlines();
+            let else_block = self.parse_block();
+            let end = else_block.range.end;
+            return TopDecl::LetElse(LetElse {
+                pattern,
+                scrutinee,
+                else_block,
+                is_const,
+                range: self.make_range(start, end),
+            });
+        }
+
         let name_tok = self.expect(TokenKind::Ident, None);
         let name = name_tok.text.clone();
         let binding = LetBinding::Ident {
@@ -652,6 +688,94 @@ impl<'a> Parser<'a> {
             typ,
             range: self.make_range(start, end),
         })
+    }
+
+    // `enum Name { Variant, Variant(T, ...), Variant { field: T, ... } = N, ... }`
+    fn parse_enum_decl(&mut self) -> TopDecl {
+        let start = self.expect(TokenKind::Kw, Some("enum")).start;
+        let name = self.expect(TokenKind::Ident, None).text;
+        let type_params = self.parse_type_params();
+        self.expect(TokenKind::LBrace, None);
+        self.eat_newlines();
+        let mut variants = Vec::new();
+        while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+            variants.push(self.parse_enum_variant_decl());
+            if self.match_tok(TokenKind::Comma, None).is_none() {
+                self.eat_newlines();
+                break;
+            }
+            self.eat_newlines();
+        }
+        let end = self.expect(TokenKind::RBrace, None).end;
+        self.eat_stmt_end();
+        TopDecl::Enum(EnumDecl {
+            name,
+            type_params,
+            variants,
+            range: self.make_range(start, end),
+        })
+    }
+
+    // A single `enum` variant: an optional payload (`(T, ...)` positional or
+    // `{ field: T, ... }` named), followed by an optional `= N` explicit
+    // discriminant. No auto-numbering or duplicate detection happens here;
+    // that is the registry's job once every variant has been parsed.
+    fn parse_enum_variant_decl(&mut self) -> EnumVariantDecl {
+        let name_tok = self.expect(TokenKind::Ident, None);
+        let start = name_tok.start;
+        let mut end = name_tok.end;
+        let payload = if self.check(TokenKind::LParen, None) {
+            self.advance();
+            self.eat_newlines();
+            let mut types = Vec::new();
+            while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
+                types.push(self.parse_type());
+                if self.match_tok(TokenKind::Comma, None).is_none() {
+                    self.eat_newlines();
+                    break;
+                }
+                self.eat_newlines();
+            }
+            end = self.expect(TokenKind::RParen, None).end;
+            EnumPayloadDecl::Positional(types)
+        } else if self.check(TokenKind::LBrace, None) {
+            self.advance();
+            self.eat_newlines();
+            let mut fields = Vec::new();
+            while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+                let fstart = self.peek().start;
+                let fname = self.expect(TokenKind::Ident, None).text;
+                self.expect(TokenKind::Colon, None);
+                let ftyp = self.parse_type();
+                let fend = self.peek().start;
+                fields.push((fname, ftyp, self.make_range(fstart, fend)));
+                if self.match_tok(TokenKind::Comma, None).is_none() {
+                    self.eat_newlines();
+                    break;
+                }
+                self.eat_newlines();
+            }
+            end = self.expect(TokenKind::RBrace, None).end;
+            EnumPayloadDecl::Named(fields)
+        } else {
+            EnumPayloadDecl::Unit
+        };
+        let explicit_disc = if self.match_tok(TokenKind::Op, Some("=")).is_some() {
+            let neg = self.match_tok(TokenKind::Op, Some("-")).is_some();
+            let int_tok = self.expect(TokenKind::Int, None);
+            let cleaned: String = int_tok.text.chars().filter(|c| *c != '_').collect();
+            let value: i64 = cleaned.parse().unwrap_or(0);
+            end = int_tok.end;
+            Some(if neg { -value } else { value })
+        } else {
+            None
+        };
+        EnumVariantDecl {
+            name: name_tok.text,
+            explicit_disc,
+            payload,
+            range: self.make_range(start, end),
+        }
     }
 
     // `var name: ElementType[]`

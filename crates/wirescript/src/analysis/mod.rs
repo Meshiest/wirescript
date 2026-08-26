@@ -26,6 +26,7 @@ pub use types::{type_str, type_expr_str, infer_expr_type, type_from_name, receiv
 pub use text::{word_at, find_enclosing_call, named_arg_value, find_asset_refs, asset_ref_at, member_receiver_at, record_field_names, param_names, swizzle_fields, AssetRef};
 pub use hover::hover_at;
 pub use hover::{fill_record_at, RecordFill};
+pub use hover::{fill_match_arms_at, MatchArmsFill};
 pub use definition::{definition_at, Location};
 pub use references::{find_name_range, rename_edit_text, TextRange};
 pub use symbols::{collect_symbols, collect_symbols_for_file, resolve_symbol};

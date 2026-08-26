@@ -323,11 +323,25 @@ fn scope_lets(decls: &[TopDecl]) -> Vec<&LetDecl> {
 /// `mod` declared in an anonymous chip's body is registered into the parent
 /// scope (`predeclare`'s own `AnonChip` arm calls `pre_declare_chip_name` for
 /// it), so a `const` initializer anywhere in the module can call it.
-fn scope_const_mods(decls: &[TopDecl]) -> HashMap<String, Arc<ChipDecl>> {
+/// Every `mod`/`chip` declaration reachable at module scope (top-level plus
+/// anon-chip bodies), keyed by name - const AND non-const. `build_const_env`
+/// feeds this to `const_eval` as `lookup_mod`, which serves two purposes, both
+/// safe with non-const mods present:
+/// - const-mod CALL evaluation: every eval site (`eval_expr`'s `Expr::Call`
+///   arm, `interp::exec_call_stmt`) gates on `decl.is_const`, so a non-const
+///   mod resolves here but is never evaluated - it just declines to fold, same
+///   as if it were absent.
+/// - bare-variant SHADOWING: `const_eval::resolve_bare_variant_enum` consults
+///   `lookup_mod` so a user `mod Some` shadows the bare prelude `Some`, matching
+///   typecheck (whose `resolve_mod` also returns any chip/mod, const or not).
+///   Collecting only `is_const` mods here would leave a plain `mod Some`
+///   invisible to that shadow check - the exact typecheck-vs-const-eval
+///   divergence this returns all mods to close.
+fn scope_mods(decls: &[TopDecl]) -> HashMap<String, Arc<ChipDecl>> {
     fn walk_block(block: &Block, out: &mut HashMap<String, Arc<ChipDecl>>) {
         for s in &block.stmts {
             match s {
-                Stmt::ChipDecl(c) if c.is_const => {
+                Stmt::ChipDecl(c) => {
                     out.insert(c.name.clone(), Arc::new(c.clone()));
                 }
                 Stmt::AnonChip(ac) => walk_block(&ac.body, out),
@@ -338,7 +352,7 @@ fn scope_const_mods(decls: &[TopDecl]) -> HashMap<String, Arc<ChipDecl>> {
     let mut out = HashMap::default();
     for d in decls {
         match d {
-            TopDecl::Chip(c) if c.is_const => {
+            TopDecl::Chip(c) => {
                 out.insert(c.name.clone(), Arc::new(c.clone()));
             }
             TopDecl::AnonChip(ac) => walk_block(&ac.body, &mut out),
@@ -367,8 +381,17 @@ fn scope_const_mods(decls: &[TopDecl]) -> HashMap<String, Arc<ChipDecl>> {
 /// converged result of this very function — with a fresh, bounded `Budget`
 /// per attempt (mirroring that same call site), so environment construction
 /// can never recurse or loop unboundedly even across many fixpoint passes.
-pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
-    let mods = scope_const_mods(decls);
+///
+/// `enum_defs` is the whole-program enum registry (`typecheck::enums::build_registry`
+/// / `TypeCheckCtx::enum_defs`). Both callers (`typecheck.rs`, `lower/mod.rs`)
+/// already have one built before they reach this function, so it is threaded
+/// in rather than rebuilt here, keeping this the ONE place lowering and
+/// typecheck both read a `const` enum value's tag from.
+pub fn build_const_env(
+    decls: &[TopDecl],
+    enum_defs: &crate::collections::HashMap<String, crate::typecheck::enums::EnumDef>,
+) -> ConstEnv {
+    let mods = scope_mods(decls);
     let lookup_mod = move |name: &str| mods.get(name).cloned();
 
     // Flattened via `scope_lets`, so an anonymous chip's body constants join
@@ -383,7 +406,7 @@ pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
     // root const that reads a namespaced member settles.
     for d in decls {
         if let TopDecl::Namespace(ns) = d {
-            for (name, value) in build_const_env(&ns.decls) {
+            for (name, value) in build_const_env(&ns.decls, enum_defs) {
                 env.entry(format!("{}.{}", ns.name, name)).or_insert(value);
             }
         }
@@ -411,9 +434,16 @@ pub fn build_const_env(decls: &[TopDecl]) -> ConstEnv {
                 settled[i] = true;
                 continue;
             }
+            // `enum_defs` here is a borrowed `&HashMap` (this function's own
+            // parameter; its signature stays a borrow so both callers can pass
+            // either a bare registry or an `Arc`-backed one via deref
+            // coercion), not the `Arc` the ctx structs carry, so this one site
+            // still pays a deep clone per fixpoint iteration rather than a
+            // refcount bump.
             let cx = crate::const_eval::ConstCtx {
                 consts: env.clone(),
                 module_consts: env.clone(),
+                enum_defs: Arc::new(enum_defs.clone()),
                 lookup_mod: Some(&lookup_mod),
             };
             let mut budget = crate::const_eval::Budget::default();
@@ -1091,6 +1121,12 @@ fn var_init_unbaked<'a>(v: &'a VarDecl, ctx: &LowerCtx) -> Option<&'a Expr> {
         // `null` bakes to the var's type default (the `or_else` fallback below),
         // which IS its value — never unbaked.
         Expr::NullLit { .. } => false,
+        // An enum-typed initializer bakes into `__disc` + any foldable payload
+        // slots (see `declare_enum_container`), the same "no single gate to
+        // bake it into" reasoning as a record literal just above - the generic
+        // scalar warning below would be a false positive even when a payload
+        // arg doesn't itself fold (the discriminant still bakes).
+        e if matches!(ctx.type_of(e), Type::Enum { .. }) => false,
         e => expr_to_literal_in(e, &ctx.const_env).is_none(),
     };
     unbaked.then_some(init)
@@ -1577,6 +1613,397 @@ fn declare_record_container(
     ctx.scope.insert(name, Binding::Record(record_fields));
 }
 
+/// A construction expression (`Dir.E`, `Shape.Circle(5.0)`,
+/// `Box.Dims { w: 1.0, h: 2.0 }`) whose variant - and any LITERAL-foldable
+/// payload arg - is known at pre-declare time, i.e. before any exec chain
+/// exists to wire a live construction through. Used only to bake a stored
+/// enum var's initializer (`declare_enum_container`); the general/live
+/// construction path (an assignment inside an `on` handler, a `let`, ...) goes
+/// through `lower_enum_ctor` in `lower/expr.rs` instead.
+pub(super) struct StaticEnumCtor {
+    variant: String,
+    disc: i64,
+    /// `(slot key, literal value)` for every payload arg that folded - a
+    /// positional arg's key is its index ("0", "1", ...), a named field's key is
+    /// its own name. An arg that didn't fold is simply absent, not an error:
+    /// the discriminant alone is still statically known from the variant
+    /// name, so the tag bakes even when a payload value doesn't.
+    slots: Vec<(String, Literal)>,
+}
+
+/// Recognize `e` as a construction of `enum_name` with a statically-known
+/// variant, per [`StaticEnumCtor`]. `None` for anything else (a non-constant
+/// enum-typed expression, a different enum, a plain identifier, ...) - general
+/// enum const-eval is a later task; this is deliberately narrow.
+fn static_enum_ctor(ctx: &LowerCtx, enum_name: &str, e: &Expr) -> Option<StaticEnumCtor> {
+    let def = ctx.enum_defs.get(enum_name)?;
+    // `Enum.Variant` matches `enum_name` - every construction form starts
+    // with this same `obj.field` shape (bare for unit, as a call callee for
+    // positional, as a VariantCtor path for named).
+    let is_enum_obj =
+        |obj: &Expr| matches!(obj, Expr::Ident { name, .. } if name == enum_name);
+    match e {
+        Expr::FieldAccess { obj, field: variant, .. } if is_enum_obj(obj) => {
+            let vdef = def.variants.iter().find(|v| &v.name == variant)?;
+            Some(StaticEnumCtor {
+                variant: variant.clone(),
+                disc: vdef.discriminant,
+                slots: Vec::new(),
+            })
+        }
+        // Bare unit-variant reference (`None` for `Option.None`): valid
+        // whenever `variant` names one of `enum_name`'s OWN variants and
+        // isn't shadowed by a scope symbol of the same name. Typecheck
+        // already refused an ambiguous/shadowed bare name outright by the
+        // time lowering runs (`typecheck::infer::resolve_bare_variant_enum`),
+        // so this only needs to confirm membership in the ALREADY-KNOWN
+        // target enum (from the var's own declared type) - not re-derive
+        // global uniqueness across every registered enum the way the general
+        // live-construction path (`lower::expr::resolve_bare_variant_enum`)
+        // must.
+        Expr::Ident { name: variant, .. } if ctx.scope.get(variant).is_none() => {
+            let vdef = def.variants.iter().find(|v| &v.name == variant)?;
+            Some(StaticEnumCtor {
+                variant: variant.clone(),
+                disc: vdef.discriminant,
+                slots: Vec::new(),
+            })
+        }
+        Expr::Call { callee, args, .. } => {
+            let variant = match callee.as_ref() {
+                Expr::FieldAccess { obj, field: variant, .. } if is_enum_obj(obj) => variant,
+                // Bare positional construction (`Some(42)` for
+                // `Option.Some(42)`) - same shadow/membership check as the
+                // bare unit-reference arm above.
+                Expr::Ident { name: variant, .. } if ctx.scope.get(variant).is_none() => variant,
+                _ => return None,
+            };
+            let vdef = def.variants.iter().find(|v| &v.name == variant)?;
+            let mut slots = Vec::new();
+            let mut i = 0usize;
+            for a in args {
+                if let CallArg::Positional(v) = a {
+                    if let Some(lit) = fold_const(ctx, v) {
+                        slots.push((i.to_string(), lit));
+                    }
+                    i += 1;
+                }
+            }
+            Some(StaticEnumCtor {
+                variant: variant.clone(),
+                disc: vdef.discriminant,
+                slots,
+            })
+        }
+        Expr::VariantCtor { path, fields, .. } => {
+            let Expr::FieldAccess { obj, field: variant, .. } = path.as_ref() else {
+                return None;
+            };
+            if !is_enum_obj(obj) {
+                return None;
+            }
+            let vdef = def.variants.iter().find(|v| &v.name == variant)?;
+            let mut slots = Vec::new();
+            for f in fields {
+                match f {
+                    RecordLitField::Named { name, value, .. } => {
+                        if let Some(lit) = fold_const(ctx, value) {
+                            slots.push((name.clone(), lit));
+                        }
+                    }
+                    RecordLitField::Shorthand { name, range } => {
+                        let ident = Expr::Ident {
+                            name: name.clone(),
+                            range: range.clone(),
+                        };
+                        if let Some(lit) = fold_const(ctx, &ident) {
+                            slots.push((name.clone(), lit));
+                        }
+                    }
+                    RecordLitField::Spread { .. } => {}
+                }
+            }
+            Some(StaticEnumCtor {
+                variant: variant.clone(),
+                disc: vdef.discriminant,
+                slots,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Reconstruct a [`StaticEnumCtor`] for a NESTED enum value from its already-
+/// folded `Literal::Record`. A nested initializer reaches [`enum_payload_slot`]
+/// as the folded literal for its slot (`Outer.W(Color.Green)` bakes `Color.Green`
+/// to `{__disc: Int(1)}`), not as a surface `Expr`, so this reads the tag back
+/// out of `__disc`, recovers the variant name from `def`, and strips the
+/// `__<variant>_` prefix off every payload field to recover its slot key - the
+/// inverse of what [`build_enum_fields`]/const-eval's construction fold write.
+/// `None` when the record has no readable `Int` `__disc` or the tag matches no
+/// variant, so the caller keeps the default first-variant behavior.
+fn static_enum_ctor_from_literal(
+    def: &crate::typecheck::enums::EnumDef,
+    fields: &[(String, Literal)],
+) -> Option<StaticEnumCtor> {
+    let disc = fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
+        ("__disc", Literal::Int(d)) => Some(*d),
+        _ => None,
+    })?;
+    let vdef = def.variants.iter().find(|v| v.discriminant == disc)?;
+    let prefix = format!("__{}_", vdef.name);
+    let slots = fields
+        .iter()
+        .filter_map(|(n, v)| n.strip_prefix(&prefix).map(|key| (key.to_string(), v.clone())))
+        .collect();
+    Some(StaticEnumCtor { variant: vdef.name.clone(), disc, slots })
+}
+
+/// Decompose an enum-typed variable (`var d: Dir`) into the SUPERSET
+/// `Binding::Record`: a scalar int `__disc` `Pseudo_Var` plus one payload slot
+/// gate per (variant, field) across EVERY variant of `enum_name` - see the
+/// "Enum value layout" doc on `LowerCtx::enum_defs`. `init`, when it's a
+/// statically-known constructor ([`static_enum_ctor`]), bakes `__disc` and any
+/// literal payload args into `InitialValue`; anything else leaves the
+/// defaults (first-variant discriminant, zeroed slots) for a later exec-context
+/// assignment to overwrite.
+fn declare_enum_container(
+    ctx: &mut LowerCtx,
+    name: &str,
+    enum_name: &str,
+    args: &[Type],
+    label_base: &str,
+    init: Option<&Expr>,
+    range: &SourceRange,
+) {
+    let Some(def) = ctx.enum_defs.get(enum_name).cloned() else {
+        // Unknown enum shouldn't happen post-typecheck (or in the isolated
+        // resource-estimation `LowerCtx`, which seeds `enum_defs` empty) -
+        // fall back to a bare scalar so lowering doesn't panic.
+        let node_id = make_scalar_var_gate(ctx, &Type::Int, HashMap::default(), range);
+        ctx.scope.insert(
+            name,
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: Type::Int,
+                get_node_for_handler: None,
+                storage: VarStorage::Var,
+            }),
+        );
+        return;
+    };
+    let known = init.and_then(|e| static_enum_ctor(ctx, enum_name, e));
+    let fields = build_enum_fields(ctx, &def, args, label_base, known.as_ref(), None, range);
+    ctx.scope.insert(name, Binding::Record(fields));
+}
+
+/// Build the `__disc` + per-(variant, field) payload-slot bindings for one
+/// enum value - the shared body of [`declare_enum_container`] (a top-level
+/// enum `var`) and [`enum_payload_slot`]'s nested-enum recursion. `known`, when
+/// present, bakes its discriminant into `__disc` and its foldable payload args
+/// into their matching slots; absent it, `__disc` defaults to the enum's FIRST
+/// variant (matching how a plain scalar var's `InitialValue` defaults to the
+/// type's zero value) and every slot is zeroed.
+///
+/// `disc_override`, when present, binds `__disc` DIRECTLY to that value port (a
+/// `Binding::Local`) instead of a defaulted `Pseudo_Var` - the runtime-disc
+/// path `Enum.FromInt(n)` uses to wire the lowered `n` in while leaving every
+/// payload slot at its zero default (see `lower::expr::try_lower_enum_from_int`).
+/// It is mutually exclusive with `known` (a `FromInt` value has no static
+/// constructor), so a caller passes at most one.
+pub(super) fn build_enum_fields(
+    ctx: &mut LowerCtx,
+    def: &crate::typecheck::enums::EnumDef,
+    args: &[Type],
+    label_base: &str,
+    known: Option<&StaticEnumCtor>,
+    disc_override: Option<PortRef>,
+    range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
+    use crate::typecheck::enums::Payload;
+    let mut fields = HashMap::default();
+
+    let disc_binding = if let Some(port) = disc_override {
+        Binding::Local(LocalRecord { port })
+    } else {
+        let mut disc_props = HashMap::default();
+        disc_props.insert(
+            *sym::NAME_LABEL,
+            Literal::String(format!("{label_base}.__disc")),
+        );
+        let disc_init = known
+            .map(|k| k.disc)
+            .or_else(|| def.variants.first().map(|v| v.discriminant))
+            .unwrap_or(0);
+        disc_props.insert(*sym::INITIAL_VALUE, Literal::Int(disc_init));
+        let disc_node = make_scalar_var_gate(ctx, &Type::Int, disc_props, range);
+        Binding::Var(VarRecord {
+            node_id: disc_node,
+            inner_type: Type::Int,
+            get_node_for_handler: None,
+            storage: VarStorage::Var,
+        })
+    };
+    fields.insert(crate::intern::intern("__disc"), disc_binding);
+
+    for v in &def.variants {
+        let slot_init = |slot_key: &str| -> Option<Literal> {
+            known
+                .filter(|k| k.variant == v.name)
+                .and_then(|k| k.slots.iter().find(|(s, _)| s == slot_key))
+                .map(|(_, lit)| lit.clone())
+        };
+        match &v.payload {
+            Payload::Unit => {}
+            Payload::Positional(types) => {
+                for (i, te) in types.iter().enumerate() {
+                    let slot_key = i.to_string();
+                    let slot_name = format!("__{}_{}", v.name, slot_key);
+                    let init_lit = slot_init(&slot_key);
+                    let label = format!("{label_base}.{slot_name}");
+                    fields.insert(
+                        crate::intern::intern(&slot_name),
+                        enum_payload_slot(ctx, te, &def.type_params, args, &label, init_lit, range),
+                    );
+                }
+            }
+            Payload::Named(nfields) => {
+                for (fname, te) in nfields {
+                    let slot_name = format!("__{}_{}", v.name, fname);
+                    let init_lit = slot_init(fname);
+                    let label = format!("{label_base}.{slot_name}");
+                    fields.insert(
+                        crate::intern::intern(&slot_name),
+                        enum_payload_slot(ctx, te, &def.type_params, args, &label, init_lit, range),
+                    );
+                }
+            }
+        }
+    }
+    fields
+}
+
+/// Resolve one enum payload field's declared type THROUGH the enclosing enum's
+/// generic instantiation: a bare type parameter (`Wrap<Color>`'s `W(T)`) becomes
+/// the corresponding instantiation argument (`Color`), so its slot lays out as
+/// that argument's storage - a nested enum record, not a scalar. Any other type
+/// resolves normally and then has the enum's parameters substituted through it
+/// (a nested generic-enum payload keeps its own arguments). Non-generic enums
+/// pass `type_params`/`args` empty and this is exactly `resolve_local_type`.
+fn resolve_payload_slot_type(
+    ctx: &LowerCtx,
+    field_typ: &TypeExpr,
+    type_params: &[TypeParam],
+    args: &[Type],
+) -> Type {
+    if let TypeExpr::Name { name, .. } = field_typ
+        && let Some(idx) = type_params.iter().position(|p| &p.name == name)
+    {
+        return args.get(idx).cloned().unwrap_or(Type::Any);
+    }
+    let resolved = ctx.resolve_local_type(field_typ);
+    if type_params.is_empty() || args.is_empty() {
+        return resolved;
+    }
+    let subst: crate::types::infer::Subst = type_params
+        .iter()
+        .zip(args)
+        .map(|(p, a)| (p.name.clone(), a.clone()))
+        .collect();
+    crate::types::mono::substitute(&resolved, &subst)
+}
+
+/// The storage backing for ONE enum payload slot: a nested enum recurses into
+/// its own `__disc` + slots superset ([`build_enum_fields`]); a nested plain
+/// record decomposes per-field (mirrors [`record_field_storage`]'s
+/// `VarStorage::Var` arm); an array/map field gets its own container gate;
+/// anything else is a scalar `Pseudo_Var`, baked from `init_lit` when given.
+/// Always `VarStorage::Var`-shaped - an enum payload slot is never itself a
+/// parallel-array/map column the way a record ARRAY/MAP field is. `type_params`
+/// / `args` are the enclosing enum's instantiation, so a payload whose type is
+/// one of those parameters resolves to the concrete argument (an enum-typed
+/// `Wrap<Color>` payload lays out as a nested Color record, not a scalar).
+fn enum_payload_slot(
+    ctx: &mut LowerCtx,
+    field_typ: &TypeExpr,
+    type_params: &[TypeParam],
+    args: &[Type],
+    label: &str,
+    init_lit: Option<Literal>,
+    range: &SourceRange,
+) -> Binding {
+    let field_type = resolve_payload_slot_type(ctx, field_typ, type_params, args);
+    if let Type::Enum { name: nested_name, args: nested_args } = &field_type
+        && let Some(nested_def) = ctx.enum_defs.get(nested_name).cloned()
+    {
+        // A nested enum initializer folds to a `Literal::Record` for THIS slot
+        // (`Outer.W(Color.Green)` -> `{__disc: Int(1)}`); recover its variant so
+        // the inner `__disc`/slots bake from the constructed variant rather than
+        // defaulting to the nested enum's first variant.
+        let nested_known = match &init_lit {
+            Some(Literal::Record(rf)) => static_enum_ctor_from_literal(&nested_def, rf),
+            _ => None,
+        };
+        let fields = build_enum_fields(
+            ctx,
+            &nested_def,
+            nested_args,
+            label,
+            nested_known.as_ref(),
+            None,
+            range,
+        );
+        return Binding::Record(fields);
+    }
+    if let Some(sub_fields) = ctx.record_fields_of(field_typ) {
+        let mut fmap = HashMap::default();
+        for f in &sub_fields {
+            fmap.insert(
+                crate::intern::intern(&f.name),
+                record_field_storage(ctx, VarStorage::Var, label, &f.name, &f.typ, None, None, range),
+            );
+        }
+        return Binding::Record(fmap);
+    }
+    let mut props = HashMap::default();
+    props.insert(*sym::NAME_LABEL, Literal::String(label.to_string()));
+    match &field_type {
+        Type::Array(elem) => {
+            let node_id = make_array_var_gate(ctx, elem, props, range);
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: (**elem).clone(),
+                get_node_for_handler: None,
+                storage: VarStorage::Array,
+            })
+        }
+        Type::Map(k, v) => {
+            let map_type = Type::Map(k.clone(), v.clone());
+            let node_id = make_map_var_gate(ctx, &map_type, props, range);
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: map_type,
+                get_node_for_handler: None,
+                storage: VarStorage::Map,
+            })
+        }
+        scalar => {
+            if let Some(lit) = init_lit {
+                props.insert(*sym::INITIAL_VALUE, bake_string_bool(lit, scalar));
+            } else if let Some(lit) = default_literal_for_var_type(scalar) {
+                props.insert(*sym::INITIAL_VALUE, lit);
+            }
+            let node_id = make_scalar_var_gate(ctx, scalar, props, range);
+            Binding::Var(VarRecord {
+                node_id,
+                inner_type: scalar.clone(),
+                get_node_for_handler: None,
+                storage: VarStorage::Var,
+            })
+        }
+    }
+}
+
 /// Give a `const` array/map its RUNTIME form: the same container gate a `var`
 /// would get, with the constant contents baked into `InitialValue`, bound in
 /// scope so every ordinary container path (index read, method call, a
@@ -1784,6 +2211,22 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         properties.insert(*sym::NAME_LABEL, Literal::String(label));
         bake_map_init(ctx, &mut properties, &d.name, &d.init, &key_ty, &value_ty);
         declare_map_var(ctx, &d.name, inner_type, properties, &d.range);
+        return;
+    }
+
+    // `var d: Dir` - an enum-typed variable decomposes into the SUPERSET
+    // `__disc` + every variant's payload slots (see `declare_enum_container`
+    // and `LowerCtx::enum_defs`'s "Enum value layout" doc), bound as a
+    // `Binding::Record` so `d.Discriminant` reads the right backing gate and a
+    // constructed variant assigned into `d` writes its slots field-wise. A
+    // statically-known constructor initializer (`= Dir.E`) bakes `__disc` (and
+    // any literal payload args) into `InitialValue` directly - general enum
+    // const-eval is a later task (see `static_enum_ctor`).
+    if let Type::Enum { name: enum_name, args } = &inner_type {
+        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+            .unwrap_or_else(|| d.name.clone());
+        let args = args.clone();
+        declare_enum_container(ctx, &d.name, enum_name, &args, &label, d.init.as_ref(), &d.range);
         return;
     }
 

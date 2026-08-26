@@ -96,7 +96,30 @@ pub(super) fn validate_enum_config_arg(ctx: &mut TypeCheckCtx, enum_type: &str, 
                 );
             }
         }
+        // A qualified built-in enum value (`function = EasingFunction.Bounce`)
+        // or any value whose inferred type is a built-in game enum. Accept it
+        // when its enum backs THIS field's schema type; reject a value of a
+        // DIFFERENT game enum as an argument-type mismatch (WS003). A non-enum
+        // value falls through to the constant-only WS028 below. The bare
+        // member-name, int, and quoted-name forms are handled above and never
+        // reach here, so inferring `other` here can never run against a bare
+        // member name (which is not a value and would misreport WS002).
         other => {
+            let ty = crate::typecheck::infer::infer(ctx, other);
+            if let crate::ir::Type::Enum { name, .. } = &ty {
+                if crate::catalog::game_enum_schema_type(name) == Some(enum_type) {
+                    return;
+                }
+                ctx.emit(
+                    "WS003",
+                    format!(
+                        "expected {}, got {name}",
+                        crate::catalog::clean_game_enum_type(enum_type)
+                    ),
+                    other.range().clone(),
+                );
+                return;
+            }
             ctx.emit(
                 "WS028",
                 format!("{enum_type} config must be a constant enum member name or int"),

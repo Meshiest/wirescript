@@ -495,15 +495,28 @@ impl<'a> Walker<'a> {
                 self.register_let(l, None, true);
                 self.walk_expr(&l.value);
             }
+            // Task 18: parser-only stub, same minimal treatment as
+            // `Expr::MatchExpr`'s arms - walk the scrutinee, register the
+            // pattern's captures, walk the else block. File-scope (`None`),
+            // matching `TopDecl::Let` above.
+            TopDecl::LetElse(l) => {
+                self.walk_expr(&l.scrutinee);
+                self.walk_pattern_bindings(&l.pattern, None);
+                self.walk_block(&l.else_block);
+            }
             TopDecl::Await(a) => self.register_await(a, None),
             TopDecl::Assign(a) => {
                 self.walk_expr(&a.target);
                 self.walk_expr(&a.value);
             }
             TopDecl::If(i) => self.walk_if(&i.cond, &i.then_block, &i.else_block),
+            TopDecl::IfLet(i) => {
+                self.walk_if_let(&i.pattern, &i.scrutinee, &i.then_block, &i.else_block)
+            }
             TopDecl::ExprStmt(es) => self.walk_expr(&es.expr),
             TopDecl::TypeAlias(t) => self.register_type_alias(t),
             TopDecl::Import(imp) => self.register_import(imp),
+            TopDecl::Enum(_) => {}
         }
     }
 
@@ -831,6 +844,12 @@ impl<'a> Walker<'a> {
                 self.register_let(l, Some(scope.clone()), false);
                 self.walk_expr(&l.value);
             }
+            // Task 18: parser-only stub, block-scoped like `Stmt::Let` above.
+            Stmt::LetElse(l) => {
+                self.walk_expr(&l.scrutinee);
+                self.walk_pattern_bindings(&l.pattern, Some(scope.clone()));
+                self.walk_block(&l.else_block);
+            }
             Stmt::In(d) => {
                 self.push(d.name.clone(), RefNs::Value, d.range.clone(), Some(scope.clone()), "in", false, true);
                 self.walk_type_expr(&d.typ);
@@ -859,6 +878,9 @@ impl<'a> Walker<'a> {
             }
             Stmt::ChipDecl(c) => self.register_chip(c, Some(scope.clone()), false),
             Stmt::If(i) => self.walk_if(&i.cond, &i.then_block, &i.else_block),
+            Stmt::IfLet(i) => {
+                self.walk_if_let(&i.pattern, &i.scrutinee, &i.then_block, &i.else_block)
+            }
             Stmt::Assign(a) => {
                 self.walk_expr(&a.target);
                 self.walk_expr(&a.value);
@@ -893,6 +915,24 @@ impl<'a> Walker<'a> {
 
     fn walk_if(&mut self, cond: &Expr, then_block: &Block, else_block: &Option<Block>) {
         self.walk_expr(cond);
+        self.walk_block(then_block);
+        if let Some(eb) = else_block {
+            self.walk_block(eb);
+        }
+    }
+
+    /// `if let <pattern> = <scrutinee> { .. } else { .. }` - the pattern's
+    /// captures are scoped to the then-block, same as a `match` arm's
+    /// captures are scoped to its body.
+    fn walk_if_let(
+        &mut self,
+        pattern: &Pattern,
+        scrutinee: &Expr,
+        then_block: &Block,
+        else_block: &Option<Block>,
+    ) {
+        self.walk_expr(scrutinee);
+        self.walk_pattern_bindings(pattern, Some(then_block.range.clone()));
         self.walk_block(then_block);
         if let Some(eb) = else_block {
             self.walk_block(eb);
@@ -981,17 +1021,15 @@ impl<'a> Walker<'a> {
             } => {
                 self.walk_expr(scrutinee);
                 for arm in arms {
-                    // `MatchArm.binding` is a captured payload name scoped to
-                    // this arm's body. There's no name-token span on the arm,
-                    // so use the arm body's range as the extent and the coarse
-                    // arm `range` as `name_range` (narrowed later by wiring).
+                    // Every `Pattern::Binding` in the arm's pattern is a
+                    // captured payload name scoped to this arm's body. There's
+                    // no name-token span on the arm itself, so use the arm
+                    // body's range as the extent.
                     let arm_scope = match &arm.body {
                         MatchBody::Expr(x) => x.range().clone(),
                         MatchBody::Block(b) => b.range.clone(),
                     };
-                    if let Some(name) = &arm.binding {
-                        self.push(name.clone(), RefNs::Value, arm.range.clone(), Some(arm_scope), "capture", false, true);
-                    }
+                    self.walk_pattern_bindings(&arm.pattern, Some(arm_scope));
                     match &arm.body {
                         MatchBody::Expr(x) => self.walk_expr(x),
                         MatchBody::Block(b) => self.walk_block(b),
@@ -1009,6 +1047,25 @@ impl<'a> Walker<'a> {
                     self.walk_expr(&en.value);
                 }
             }
+            // `path` is the `Enum.Variant` `FieldAccess`, walked generically
+            // (its own arm above pushes the field-name span); the field list
+            // mirrors `RecordLit`'s handling - the key is never a rename
+            // target, only the value side is a use.
+            Expr::VariantCtor { path, fields, .. } => {
+                self.walk_expr(path);
+                for f in fields {
+                    match f {
+                        RecordLitField::Named { name, value, range } => {
+                            self.model.field_name_spans.push(name_prefix_span(name, range));
+                            self.walk_expr(value);
+                        }
+                        RecordLitField::Spread { value, .. } => self.walk_expr(value),
+                        RecordLitField::Shorthand { name, range } => {
+                            self.push_use(name.clone(), range.clone(), true, false);
+                        }
+                    }
+                }
+            }
             // The callee of a call is walked generically above (`Call`'s
             // arm calls `self.walk_expr(callee)`), so a call like `helper(1)`
             // already reaches this arm for `helper` — no separate handling
@@ -1023,6 +1080,35 @@ impl<'a> Walker<'a> {
             | Expr::AssetRef { .. }
             | Expr::PrefabRef { .. }
             | Expr::NestedPrefab { .. } => {}
+        }
+    }
+
+    /// Registers every `Pattern::Binding` reachable from a match arm's /
+    /// if-let's / let-else's pattern as a captured value binding under
+    /// `scope` (`None` for file-scope, matching `TopDecl::Let`; `Some(range)`
+    /// for a block-local capture, matching `Stmt::Let`). Minimal walk for
+    /// Task 9 (match, parser-only) / Task 18 (if-let/let-else, parser-only);
+    /// Task 11/19 give them real typecheck/lowering behavior, including
+    /// reclassifying a unit-variant-named binding.
+    fn walk_pattern_bindings(&mut self, pattern: &Pattern, scope: Option<SourceRange>) {
+        match pattern {
+            Pattern::Wildcard(_) => {}
+            Pattern::Binding { name, range } => {
+                self.push(name.clone(), RefNs::Value, range.clone(), scope, "capture", false, false);
+            }
+            Pattern::Variant { sub, .. } => match sub {
+                VariantPattern::Unit => {}
+                VariantPattern::Positional(elems) => {
+                    for p in elems {
+                        self.walk_pattern_bindings(p, scope.clone());
+                    }
+                }
+                VariantPattern::Named { fields, .. } => {
+                    for (_, p) in fields {
+                        self.walk_pattern_bindings(p, scope.clone());
+                    }
+                }
+            },
         }
     }
 }

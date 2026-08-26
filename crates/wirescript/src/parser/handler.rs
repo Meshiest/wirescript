@@ -203,7 +203,10 @@ impl<'a> Parser<'a> {
             // `on <expr> { body }` — desugar into:
             //   let _on_expr_N = <expr>
             //   on _on_expr_N { body }
-            let expr = self.parse_expr();
+            // Header position: the trailing `{` is the handler BODY block, so
+            // suppress braced variant construction (`on Branch(c, a).A { ... }`
+            // is a FieldAccess trigger plus a body, not construction on `.A`).
+            let expr = self.parse_expr_no_brace_construct();
             expr_trigger_has_exec_arg = expr_call_has_exec_arg(&expr);
             let expr_range = expr.range().clone();
             let n = self.expr_trigger_counter;

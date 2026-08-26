@@ -498,9 +498,9 @@ are constant-only data fields (not wire inputs).
 | `transition` | `float` | No | Seconds to interpolate to the new state when re-emitted with the same `textId` |
 | `textId` | `int` | No | Unique ID for updating text in-place |
 | `fontSize` | `int` | No | Font size (constant only) |
-| `justify` | `int` | No | Justification — `"Left"` / `"Center"` / `"Right"` (constant only) |
-| `easing` | `int` | No | Transition curve — `"Linear"` / `"EaseIn"` / `"EaseOut"` / `"EaseInOut"` (constant only) |
-| `typeface` | `int` | No | Typeface — `Regular` / `Bold` / `Italic` / `BoldItalic` (constant only) |
+| `justify` | `int` | No | Justification: `DisplayTextJustification.Left` / `.Center` / `.Right`, or bare `Left` / `Center` / `Right` (constant only) |
+| `easing` | `int` | No | Transition curve: `DisplayTextEasing.Linear` / `.EaseIn` / `.EaseOut` / `.EaseInOut`, or bare `Linear` / `EaseIn` / `EaseOut` / `EaseInOut` (constant only) |
+| `typeface` | `int` | No | Typeface: `TextTypeface.Regular` / `.Bold` / `.Italic` / `.BoldItalic`, or bare `Regular` / `Bold` / `Italic` / `BoldItalic` (constant only) |
 | `font` | asset ref | No | Font asset reference (constant only) |
 
 ```wirescript
@@ -966,10 +966,13 @@ components can also filter on tags. Receiver on `entity`.
 `Blend`/`lerp`/`Easing`/`Tween` interpolate any one math variant `T`: float|int|vector|rotator|quat|color.
 The result is whatever `T` the inputs carry.
 
-`Easing`/`Tween` take an easing `fn` and `dir`: either an int or an enum-name
-literal. Functions: `Linear`, `Sine`, `Quad`, `Cubic`, `Quart`, `Quint`,
-`Expo`, `Circ`, `Back`, `Elastic`, `Bounce`. Directions: `In`, `Out`, `InOut`.
-Omitted, they default to `Linear`/`In`.
+`Easing`/`Tween` take an easing `fn` and `dir`: an int, a bare enum-name
+literal, or an `EasingFunction` / `EasingDirection` value (see
+[Built-in game enums](enums.md#built-in-game-enums)). `function =
+EasingFunction.Bounce` and `function = Bounce` set the same field. Functions:
+`Linear`, `Sine`, `Quad`, `Cubic`, `Quart`, `Quint`, `Expo`, `Circ`, `Back`,
+`Elastic`, `Bounce`. Directions: `In`, `Out`, `InOut`. Omitted, they default to
+`Linear`/`In`.
 
 `Timer` is a function-call instance. The `restart`/`pause`/`resume` exec
 controls are optional; its outputs are a value (`Time`) and an exec (`Expired`):
@@ -1008,6 +1011,16 @@ let c = ColorBlend(a, b, t, blendSpace = Oklab, clampAlpha = true)
 p.DisplayText("hi", typeface = Bold, justify = Center, easing = EaseInOut)
 ```
 
+Each enum used this way is also a [built-in game enum](enums.md#built-in-game-enums)
+type of its own, so its qualified value form works too, side by side with the
+bare name, and the two set the same field:
+
+```wirescript
+let e = Easing(0.0, 1.0, t, function = EasingFunction.Bounce, direction = EasingDirection.InOut)
+let c = ColorBlend(a, b, t, blendSpace = ColorSpace.Oklab, clampAlpha = true)
+p.DisplayText("hi", typeface = TextTypeface.Bold, justify = DisplayTextJustification.Center, easing = DisplayTextEasing.EaseInOut)
+```
+
 **Every** config field is settable — not just the aliases below. In addition to
 the friendly names, each gate exposes each `bool`/`int`/`float`/`string`/`enum`
 settings-menu field under its **raw game name**, so any of the ~60 config gates
@@ -1031,9 +1044,9 @@ Config attributes by gate:
 | `Blend` | `clampAlpha` |
 | `ColorBlend` | `blendSpace` (EBRColorSpace), `clampAlpha` |
 | `Slerp` | `shortestPath`, `clampAlpha` |
-| `Easing` | `function` (EBREasingFunction), `direction` (EBREasingDirection) |
+| `Easing` | `function` (`EasingFunction`, schema `EBREasingFunction`), `direction` (`EasingDirection`, schema `EBREasingDirection`) |
 | `ConvertColor` | `fromSpace`, `toSpace` (EBRColorSpace) |
-| `DisplayText` | `fontSize`, `justify` (EBRDisplayTextJustification), `easing` (EBRDisplayTextEasing), `typeface` (EBRTextTypeface), `font` (a `$Font/…` asset ref) |
+| `DisplayText` | `fontSize`, `justify` (`DisplayTextJustification`, schema `EBRDisplayTextJustification`), `easing` (`DisplayTextEasing`, schema `EBRDisplayTextEasing`), `typeface` (`TextTypeface`, schema `EBRTextTypeface`), `font` (a `$Font/...` asset ref) |
 | `GetAim` | `localAim` |
 | `AddInventoryItemAdv` / `SetInventoryItemAdv` | `overrideColors`, `meshColors` (a color array), `ammoOverride` |
 
@@ -1043,6 +1056,14 @@ Enum member names: **EBRColorSpace** `Linear Srgb Oklab Hsv`; **EBREasingFunctio
 **EBRDisplayTextJustification** `Left Center Right`; **EBRDisplayTextEasing**
 `Linear EaseIn EaseOut EaseInOut`; **EBrickDirection** `X_Positive X_Negative
 Y_Positive Y_Negative Z_Positive Z_Negative`.
+
+Each of these schema enum types is also usable directly, under its clean
+Wirescript name, as a [built-in game enum](enums.md#built-in-game-enums) --
+`EBREasingFunction` as `EasingFunction`, `EBREasingDirection` as
+`EasingDirection`, `EBRColorSpace` as `ColorSpace`, `EBRTextTypeface` as
+`TextTypeface`, `EBRDisplayTextJustification` as `DisplayTextJustification`,
+`EBRDisplayTextEasing` as `DisplayTextEasing`, and `EBrickDirection` as
+`Direction`.
 
 ## Clock (Event)
 
@@ -1426,13 +1447,22 @@ FormatDate(unixTime: int, format: string, useUTC?: bool) -> { Output: string, Su
 ```
 Remap(value, inMin, inMax, outMin, outMax) -> float   // rescale a value between ranges
 LogicalShiftRight(a: int, b: int) -> int              // logical (unsigned) >>
-EnumToInteger(value) -> int
-IntegerToEnum(value: int, wrap?: bool)
+EnumToInt(value: enum) -> int                     // enum tag; folds a known variant, else uses the gate
+IntToEnum(value: int, wrap?: bool) -> enum        // enum type from context; const folds, runtime uses the gate
 ItemToPickup(item: entity) -> entity                  // pickup asset for an item
 color.ConvertColor(fromSpace?: int, toSpace?: int) -> color
 "A".ToCharCode() -> { Codepoint: int, Success: bool }
 FromCharCode(codepoint: int) -> { Character: string, Success: bool }
 ```
+
+`EnumToInt` / `IntToEnum` are the gate-backed twins of `.ToInt()` (=
+`.Discriminant`) and `Enum.FromInt(n)`. `EnumToInt` requires an enum
+argument (a non-enum is a type error); a compile-time-known enum folds to its
+discriminant literal, a runtime enum routes through the gate. `IntToEnum`'s
+result is an enum whose concrete type comes from the annotated target (like
+`FromInt`); a constant tag folds to the enum record, a runtime tag routes
+through the gate, and `wrap` clamps an out-of-range tag. See
+[enums.md](enums.md#enum-and-int-conversion).
 
 `ParseInt` / `ParseNumber` likewise now expose a `Success` flag: they auto-unwrap to
 their parsed `Value` in arithmetic/comparisons (`ParseInt(s) == 5`), and `.Success` is

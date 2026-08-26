@@ -16,6 +16,30 @@ fn first_expr(src: &str) -> crate::ast::Expr {
     }
 }
 
+/// Runs the full two-pass typecheck over `src` and returns the display
+/// string of the type recorded in `type_of_expr` for the expression whose
+/// exact source text is `needle` (its byte range in `src`, via `str::find`).
+/// Reusable across tests that need the type of an arbitrary sub-expression
+/// rather than just a top-level `let`'s initializer (`first_expr` above).
+/// Panics with the diagnostics if `needle` isn't found or has no recorded
+/// type, so a broken test fails loudly instead of comparing against `None`.
+fn type_of(src: &str, needle: &str) -> String {
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let start = src
+        .find(needle)
+        .unwrap_or_else(|| panic!("needle {needle:?} not found in src {src:?}"));
+    let end = start + needle.len();
+    let file: std::sync::Arc<str> = std::sync::Arc::from("test");
+    match r.type_of_expr.get(&(file, start, end)) {
+        Some(t) => t.to_string(),
+        None => panic!(
+            "no recorded type for {needle:?} (offsets {start}..{end}); diagnostics: {:?}",
+            r.diagnostics
+        ),
+    }
+}
+
 #[test]
 fn infer_records_int_literal() {
     let mut c = ctx();
@@ -557,5 +581,375 @@ fn await_custom_event_captures_data() {
         !ok.diagnostics.iter().any(|d| d.severity == Severity::Error),
         "handler receiver must be accepted: {:?}",
         ok.diagnostics
+    );
+}
+
+#[test]
+fn variant_path_discriminant_is_int() {
+    let src = "enum Shape { Empty, Circle(float) }\nout d = Shape.Circle.Discriminant\n";
+    assert_eq!(type_of(src, "Shape.Circle.Discriminant"), "int");
+}
+
+#[test]
+fn value_to_int_types_as_int_like_discriminant() {
+    // `value.ToInt()` is an exact alias for `.Discriminant`: it projects an
+    // enum value to its integer tag and types as int, on both a stored value
+    // and a variant path.
+    let src = "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Circle(1.0)\n\
+               out a = s.ToInt()\nout b = Shape.Circle.ToInt()\n";
+    assert_eq!(type_of(src, "s.ToInt()"), "int");
+    assert_eq!(type_of(src, "Shape.Circle.ToInt()"), "int");
+}
+
+#[test]
+fn enum_from_int_types_as_the_enum() {
+    // `Enum.FromInt(n)` constructs a value of that enum from an int tag; it
+    // types as the enum, and its argument type-checks as an int.
+    let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+               in n: int\nout e = Shape.FromInt(n)\n";
+    assert_eq!(type_of(src, "Shape.FromInt(n)"), "Shape");
+}
+
+#[test]
+fn enum_from_int_rejects_non_int_argument() {
+    // The single argument is an int; a string argument is WS003.
+    let src = "enum Shape { Empty, Circle(float) }\nout e = Shape.FromInt(\"x\")\n";
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS003"),
+        "a non-int FromInt argument must be WS003: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn variant_named_from_int_still_constructs() {
+    // A real variant literally named `FromInt` wins over the tag-only
+    // constructor: `E.FromInt(3)` builds that unit... payload variant, typing
+    // as the enum, with no WS060.
+    let src = "enum E { A, FromInt(int) }\nout e = E.FromInt(3)\n";
+    assert_eq!(type_of(src, "E.FromInt(3)"), "E");
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.severity == crate::diagnostic::Severity::Error),
+        "a real FromInt variant must construct without error: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn enum_to_integer_types_as_int_and_requires_an_enum() {
+    // `EnumToInt(value)` projects an enum value to its integer tag and types
+    // as int - the gate-backed twin of `.ToInt()`.
+    let src = "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Circle(1.0)\n\
+               out a = EnumToInt(s)\n";
+    assert_eq!(type_of(src, "EnumToInt(s)"), "int");
+}
+
+#[test]
+fn enum_to_integer_rejects_a_non_enum_argument() {
+    // The argument MUST be an enum: an int or a string is a WS003 argument-type
+    // error, not an accepted `any`.
+    for bad in ["EnumToInt(5)", "EnumToInt(\"x\")"] {
+        let src = format!("enum Shape {{ Empty, Circle(float) }}\nout a = {bad}\n");
+        let p = parse(&src, "test");
+        let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "`{bad}` must be a WS003 non-enum argument error: {:?}",
+            r.diagnostics
+        );
+    }
+}
+
+#[test]
+fn integer_to_enum_result_is_the_context_enum() {
+    // `IntToEnum(value)` produces an enum whose concrete type is pinned by
+    // the annotated target (like `Enum.FromInt`/`null`), and its int argument
+    // type-checks.
+    let src = "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+               in n: int\nlet e: Shape = IntToEnum(n)\n";
+    assert_eq!(type_of(src, "IntToEnum(n)"), "Shape");
+}
+
+#[test]
+fn integer_to_enum_without_an_enum_context_is_ws063() {
+    // With no enum-typed expectation there is no way to know which enum the
+    // integer names - WS063, mirroring `FromInt`'s type-inference failure.
+    let src = "enum Shape { Empty, Circle(float) }\nin n: int\nlet e = IntToEnum(n)\n";
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS063"),
+        "an un-pinned IntToEnum must be WS063: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn value_shadowing_an_enum_name_is_ordinary_field_access() {
+    // A param named the same as a top-level enum shadows the type (nearest-first
+    // scope), so `Shape.x` is a record field access, not a variant path: it must
+    // type as the field and NOT emit WS060.
+    let src = "enum Shape { Empty, Circle }\ntype Rec = { x: int }\n\
+               mod f(Shape: Rec) -> int {\n    return Shape.x\n}\n";
+    assert_eq!(type_of(src, "Shape.x"), "int");
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS060"),
+        "shadowed enum name must not emit WS060: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn positional_and_named_construction_type_as_the_enum() {
+    let src = "enum Shape { Empty, Circle(float), Box { w: float, h: float } }\n\
+               out a = Shape.Circle(5.0)\nout b = Shape.Box { w: 1.0, h: 2.0 }\nout c = Shape.Empty\n";
+    assert_eq!(type_of(src, "Shape.Circle(5.0)"), "Shape");
+    assert_eq!(type_of(src, "Shape.Box { w: 1.0, h: 2.0 }"), "Shape");
+    assert_eq!(type_of(src, "Shape.Empty"), "Shape");
+}
+
+#[test]
+fn match_binds_payload_and_joins_arm_types() {
+    let src = "enum Shape { Circle(float), Rect(float, float) }\nin s: Shape\n\
+               out area = match s { Circle(r) => r, Rect(w, h) => w }\n";
+    assert_eq!(type_of(src, "match s { Circle(r) => r, Rect(w, h) => w }"), "float");
+}
+
+// Captures must bind their CONCRETE field types, not `any`: two arms returning
+// captures of incompatible types (int vs string) have no common widening, so
+// the arm-result join is WS003. If either capture bound `any` this would join
+// cleanly and no diagnostic would fire, so this locks in the field typing.
+#[test]
+fn match_arm_capture_type_mismatch_is_ws003() {
+    let src = "enum P { I(int), S(string) }\nin p: P\n\
+               out r = match p { I(n) => n, S(s) => s }\n";
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS003"),
+        "expected WS003 from incompatible arm captures: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn generic_variant_infers_and_annotates() {
+    let src = "enum Option<T> { Some(T), None }\nout a = Option.Some(42)\n";
+    assert_eq!(type_of(src, "Option.Some(42)"), "Option<int>");
+    let src2 = "enum Option<T> { Some(T), None }\nout n: Option<int> = Option.None\n";
+    assert_eq!(type_of(src2, "Option.None"), "Option<int>");
+}
+
+// `Option<T>`/`Result<T, E>` are built in - no `enum` declaration
+// needed - and their variants are usable bare (`Some`/`None`/`Ok`/`Err`
+// instead of `Option.Some`/`Option.None`/`Result.Ok`/`Result.Err`).
+#[test]
+fn prelude_option_result_are_builtin() {
+    let src = "out a = Some(42)\nout b: Option<int> = None\nout c = Ok(1)\nout d: Result<int, int> = Err(2)\n";
+    assert_eq!(type_of(src, "Some(42)"), "Option<int>");
+    assert_eq!(type_of(src, "Ok(1)"), "Result<int, int>");
+    assert_eq!(type_of(src, "None"), "Option<int>");
+    assert_eq!(type_of(src, "Err(2)"), "Result<int, int>");
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.is_empty(),
+        "the prelude round-trip must be clean: {:?}",
+        r.diagnostics
+    );
+}
+
+// A user symbol of the SAME name wins over the prelude's bare variant -
+// resolution falls back to a prelude variant ONLY when the name is otherwise
+// undefined.
+#[test]
+fn a_user_symbol_named_some_shadows_the_prelude_variant() {
+    // A `let` named `Some` claims the scope symbol, so the bare `Some` used
+    // in `out a`'s initializer reads the LOCAL value (int), not the prelude
+    // variant. `type_of` matches its needle's FIRST occurrence, which here is
+    // the `let`'s own name (not an expression) - so this looks up the
+    // initializer's recorded range directly via `rfind` instead.
+    let src = "let Some = 5\nout a = Some\n";
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let needle = "Some";
+    let start = src.rfind(needle).expect("needle not found");
+    let end = start + needle.len();
+    let file: std::sync::Arc<str> = std::sync::Arc::from("test");
+    let ty = r
+        .type_of_expr
+        .get(&(file, start, end))
+        .unwrap_or_else(|| panic!("no recorded type for the referencing `Some`; diagnostics: {:?}", r.diagnostics));
+    assert_eq!(ty.to_string(), "int", "the local `Some` must win over the prelude variant");
+
+    // A user's OWN enum with a variant also named `Some` makes the bare name
+    // AMBIGUOUS between it and the prelude's `Option.Some` - bare resolution
+    // backs off rather than guessing, so `Some(1)` is an unresolved call
+    // (WS002), not a silent (and possibly wrong) pick of either enum.
+    let src2 = "enum Custom<T> { Some(T), Other }\nout a = Some(1)\n";
+    let p2 = parse(src2, "test");
+    let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r2.diagnostics.iter().any(|d| d.code == "WS002"),
+        "an ambiguous bare variant name must not silently resolve to either enum: {:?}",
+        r2.diagnostics
+    );
+}
+
+// `Result<T, E>`'s unconstrained-sibling default (an unannotated `Ok(1)`
+// reads `E` from `T`, since `Ok`'s payload never mentions `E` at all) must be
+// ORDER-INDEPENDENT: `Err(2)` alone must read `T` from `E` exactly the same
+// way, even though `T` is `Result`'s FIRST declared type param and so is
+// solved BEFORE `E` in declaration order. A single left-to-right fallback
+// pass would default `T` before `E` has a value to borrow, mis-diagnosing
+// `Err(2)` alone as WS063 while `Ok(1)` alone works cleanly.
+#[test]
+fn unconstrained_sibling_default_is_order_independent() {
+    assert_eq!(type_of("out c = Ok(1)\n", "Ok(1)"), "Result<int, int>");
+    let src = "out d = Err(2)\n";
+    assert_eq!(type_of(src, "Err(2)"), "Result<int, int>");
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.is_empty(),
+        "an unannotated `Err(2)` must resolve cleanly, matching `Ok(1)`'s treatment: {:?}",
+        r.diagnostics
+    );
+}
+
+// `EasingFunction` is a registry enum seeded by
+// `register_builtin_enums` with NO `enum` declaration anywhere in
+// source. `.Discriminant` on a bare variant path must type exactly like the
+// hand-written case `variant_path_discriminant_is_int` above tests.
+#[test]
+fn builtin_game_enum_variant_path_discriminant_is_int() {
+    let src = "out d = EasingFunction.Bounce.Discriminant\n";
+    assert_eq!(type_of(src, "EasingFunction.Bounce.Discriminant"), "int");
+}
+
+// A `static var` typed and
+// initialized with a built-in enum, compared against a bare variant path's
+// `.Discriminant`. Must type-check with zero diagnostics, same as an
+// equivalent hand-written enum would.
+#[test]
+fn builtin_game_enum_stored_var_and_comparison_typecheck_clean() {
+    let src = "static var e: EasingFunction = EasingFunction.Linear\n\
+               out m = e.Discriminant == EasingFunction.Bounce.Discriminant\n";
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.is_empty(),
+        "a built-in game enum var + discriminant comparison must type-check clean: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(
+        type_of(src, "e.Discriminant == EasingFunction.Bounce.Discriminant"),
+        "bool"
+    );
+}
+
+// A `match` is exhaustive only when it covers every variant the SCHEMA
+// declares - built dynamically from `catalog::builtin_game_enums()` rather
+// than a hardcoded variant list, so this stays correct if the schema's
+// variant set ever changes. Covering all of them must stay WS054-free;
+// dropping the last one must surface WS054 naming exactly that variant -
+// proving exhaustiveness is checked against the real registry entry the
+// built-in seeds, not an empty/stub one.
+#[test]
+fn builtin_game_enum_match_exhaustive_only_over_schema_variants() {
+    let variants: Vec<String> = crate::catalog::builtin_game_enums()
+        .into_iter()
+        .find(|e| e.clean_name == "EasingFunction")
+        .expect("EasingFunction is a built-in game enum")
+        .variants
+        .into_iter()
+        .map(|v| v.clean_name)
+        .collect();
+    assert!(
+        variants.len() > 1,
+        "EasingFunction must have at least two schema variants for this test to be meaningful"
+    );
+
+    let arms = |names: &[String]| -> String {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("{name} => {i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let full_src = format!(
+        "static var e: EasingFunction = EasingFunction.{}\nout r = match e {{ {} }}\n",
+        variants[0],
+        arms(&variants)
+    );
+    let p = parse(&full_src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS054"),
+        "a match covering every schema variant must not be flagged non-exhaustive: {:?}",
+        r.diagnostics
+    );
+
+    let missing = variants.last().unwrap();
+    let short_src = format!(
+        "static var e: EasingFunction = EasingFunction.{}\nout r = match e {{ {} }}\n",
+        variants[0],
+        arms(&variants[..variants.len() - 1])
+    );
+    let p2 = parse(&short_src, "test");
+    let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r2.diagnostics
+            .iter()
+            .any(|d| d.code == "WS054" && d.message.contains(missing.as_str())),
+        "dropping `{missing}` must surface WS054 naming it: {:?}",
+        r2.diagnostics
+    );
+}
+
+// A qualified built-in enum value passed as a matching gate config
+// argument type-checks clean, exactly like the legacy bare member name.
+#[test]
+fn qualified_builtin_enum_config_arg_typechecks() {
+    let qualified =
+        "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = EasingFunction.Bounce) }";
+    let p = parse(qualified, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.is_empty(),
+        "a qualified built-in enum config value must type-check clean: {:?}",
+        r.diagnostics
+    );
+
+    // The legacy bare member-name form is unchanged.
+    let bare = "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = Bounce) }";
+    let p2 = parse(bare, "test");
+    let r2 = crate::typecheck::typecheck(&p2.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r2.diagnostics.is_empty(),
+        "the legacy bare enum member name must still type-check clean: {:?}",
+        r2.diagnostics
+    );
+}
+
+// A built-in enum value of the WRONG enum at that config arg is an argument
+// type mismatch (WS003), not a silent accept.
+#[test]
+fn wrong_builtin_enum_config_arg_is_ws003() {
+    let src =
+        "mod f(a: float, b: float, t: float) { Easing(a, b, t, function = ColorSpace.Srgb) }";
+    let p = parse(src, "test");
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS003"),
+        "a wrong-enum config value must be WS003: {:?}",
+        r.diagnostics
     );
 }

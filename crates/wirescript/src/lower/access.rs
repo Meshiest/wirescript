@@ -204,6 +204,21 @@ pub(super) fn lower_field_access(
         };
         return lower_expr(ctx, &distributed);
     }
+    // `<value>.Discriminant` (an enum value, or a bare variant path like
+    // `Shape.Circle`) always projects to its integer discriminant - see the
+    // "Enum value layout" doc on `LowerCtx::enum_defs`. Checked directly on
+    // `field` (ahead of the general record-field resolution below, which only
+    // knows the LITERAL `__disc` sub-binding name, not the surface
+    // `Discriminant` spelling) so both forms resolve: a variant PATH bakes the
+    // registry discriminant as a literal (no gate for `obj` itself - a bare
+    // `Enum.Variant` has no storage of its own); a stored/merged enum VALUE
+    // reads through its `Binding::Record`'s `__disc` sub-binding (a `Var_Get`
+    // for a stored var, matching any other field read).
+    if field == "Discriminant"
+        && let Some(port) = lower_discriminant(ctx, obj, range)
+    {
+        return port;
+    }
     // Try resolving through record bindings first.
     // The full expression `e` is `obj.field`, so resolve_field_chain on `e`
     // walks the entire chain (potentially nested: `a.b.c`).
@@ -412,6 +427,42 @@ pub(super) fn lower_field_access(
             synthesise_unsupported(ctx, e)
         }
     }
+}
+
+/// `.Discriminant`'s two forms - see the call site in `lower_field_access`.
+/// Returns `None` for anything that is neither a known variant path nor a
+/// value resolving to an enum's `Binding::Record` (the caller falls through
+/// to the ordinary field-access handling, e.g. for a typecheck-error program).
+pub(super) fn lower_discriminant(
+    ctx: &mut LowerCtx,
+    obj: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    // A variant PATH (`Shape.Circle`) is statically known: bake the registry
+    // discriminant directly as a literal, no gate for `obj` itself. Guarded
+    // (mirrors `resolve_variant_for_construction`'s shadow guard in
+    // typecheck) so a value symbol shadowing the enum's name falls through to
+    // the value branch below instead of misreading it as a type name.
+    if let Expr::FieldAccess {
+        obj: enum_obj,
+        field: variant,
+        ..
+    } = obj
+        && let Expr::Ident { name: enum_name, .. } = enum_obj.as_ref()
+        && ctx.scope.get(enum_name).is_none()
+        && let Some(def) = ctx.enum_defs.get(enum_name)
+        && let Some(vdef) = def.variants.iter().find(|v| &v.name == variant)
+    {
+        return Some(literal_node_range(ctx, range, Type::Int, Literal::Int(vdef.discriminant)));
+    }
+    // A stored/merged enum VALUE: resolve to its `Binding::Record`, index
+    // `__disc`, and read it like any other field.
+    if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, obj).cloned()
+        && let Some(disc_binding) = fields.get(&crate::intern::intern("__disc")).cloned()
+    {
+        return binding_to_port(ctx, &disc_binding, range);
+    }
+    None
 }
 
 /// `t[i]` / `m[k]` whose RUNTIME lowering is unavailable but whose value is a

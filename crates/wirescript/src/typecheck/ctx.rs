@@ -179,6 +179,12 @@ pub struct TypeCheckCtx<'a> {
     /// crate's Fx `HashMap` (like every other compiler table here), matching
     /// `ResolveCtx::generic_aliases` and `Scope::type_aliases()`.
     pub generic_type_aliases: HashMap<String, crate::types::resolve::GenericAlias>,
+    /// Every `enum` declaration in the script, keyed by name, discriminants
+    /// already assigned. Populated by `enums::collect_enum_defs`'s pre-pass
+    /// (same placement as `generic_type_aliases`, run before decl
+    /// registration) so a use of the enum name resolves regardless of where
+    /// in the file the `enum` itself is declared.
+    pub enum_defs: Arc<crate::collections::HashMap<String, crate::typecheck::enums::EnumDef>>,
     /// Top-level `let` constants, so a `var` initializer may name one
     /// (`1 << C_FLAG`) rather than restating its value. Populated before decl
     /// checking; must stay in step with lowering's own environment so both
@@ -299,6 +305,13 @@ pub struct TypeCheckCtx<'a> {
     /// `typecheck::tests`) — a disagreement means code gets type-checked but
     /// not lowered, or lowered without ever being checked.
     pub dropped_ranges: Vec<(SourceRange, String)>,
+    /// The expected type `check(ctx, e, expected)` pushes down for the single
+    /// node it is checking, consumed once at the top of `infer_node`. Only a
+    /// generic enum construction reads it: `let n: Option<int> = None` takes
+    /// its `T` from this annotation when the variant's payload can't determine
+    /// it (see `infer_enum_args`). `None` outside a `check`; `infer_node`
+    /// `take()`s it so a nested inference never sees a stale hint.
+    pub(super) expected_ty: Option<Type>,
 }
 
 impl<'a> TypeCheckCtx<'a> {
@@ -315,6 +328,7 @@ impl<'a> TypeCheckCtx<'a> {
             op_resolutions: HashMap::default(),
             signal_payload_types: HashMap::default(),
             generic_type_aliases: HashMap::default(),
+            enum_defs: Arc::new(crate::collections::HashMap::default()),
             const_env: crate::lower::ConstEnv::default(),
             const_declared: crate::collections::HashSet::default(),
             active_combos: 1,
@@ -330,6 +344,7 @@ impl<'a> TypeCheckCtx<'a> {
             // `mod_decls`'s own doc comment).
             mod_decls: vec![HashMap::default()],
             dropped_ranges: Vec::new(),
+            expected_ty: None,
         }
     }
     /// Push a new `scope` frame together with a matching empty `scoped_consts`
@@ -453,6 +468,7 @@ impl<'a> TypeCheckCtx<'a> {
         crate::const_eval::ConstCtx {
             consts: self.const_lookup(),
             module_consts: self.const_env.clone(),
+            enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
     }
@@ -505,6 +521,7 @@ impl<'a> TypeCheckCtx<'a> {
         crate::const_eval::ConstCtx {
             consts,
             module_consts: self.const_env.clone(),
+            enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
     }
@@ -530,6 +547,7 @@ impl<'a> TypeCheckCtx<'a> {
         crate::const_eval::ConstCtx {
             consts,
             module_consts: self.const_env.clone(),
+            enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
     }

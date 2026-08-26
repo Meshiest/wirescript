@@ -6,7 +6,9 @@
 //! are exhaustive over `Expr` — the compiler enforces full coverage of every
 //! variant, no fallback.
 
-use crate::ast::{ArrayElem, CallArg, Expr, InterpPart, MatchBody, RecordLitField};
+use crate::ast::{
+    ArrayElem, CallArg, Expr, InterpPart, MatchBody, Pattern, RecordLitField, VariantPattern,
+};
 use crate::catalog::calls::find_call;
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
 use crate::ir::Type;
@@ -16,7 +18,8 @@ use crate::types::mono::unwrap_ref;
 use super::{
     call_param_config_enum, check_args, check_stmt, is_reference_type, op_operand_type,
     output_record_type, resolve_op, resolve_type_expr, sig_of_callspec, target_name,
-    type_user_symbol_call, CallSignature, ExecMode, Param, ParamKind, SymbolKind, TypeCheckCtx,
+    type_param_mask, type_user_symbol_call, CallSignature, ExecMode, Param, ParamKind, SymbolInfo,
+    SymbolKind, TypeCheckCtx,
 };
 
 /// Bound on how deep `$./….ws` source-prefab references are followed while
@@ -248,8 +251,666 @@ fn container_call_exec_exempt(
     const_read || has_exec_arg
 }
 
+/// Infer every field VALUE of a `VariantCtor`'s braced body with no target
+/// type to check against - used on the recovery paths (unknown variant,
+/// wrong bracket form, or `path` not actually a construction) so each field
+/// expression still gets typed (and any error inside it still surfaces)
+/// even though there's no payload shape to validate it against. Mirrors the
+/// `Expr::RecordLit` infer arm's per-field walk, minus the shorthand lookup
+/// (irrelevant with no expected type to coerce against).
+fn infer_record_field_values(ctx: &mut TypeCheckCtx, fields: &[RecordLitField]) {
+    for f in fields {
+        match f {
+            RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
+                infer(ctx, value);
+            }
+            RecordLitField::Shorthand { .. } => {}
+        }
+    }
+}
+
+/// Outcome of resolving `Enum.Variant` at a CONSTRUCTION site (a unit
+/// reference, a positional `Enum.Variant(..)` call, or a braced
+/// `Enum.Variant { .. }`). Single-sources the shadow-guard + registry lookup +
+/// generic guard + variant lookup + `WS060` emission that all three sites
+/// otherwise duplicate; each caller dispatches on the payload shape itself.
+enum VariantResolution {
+    /// `enum_name` is not a known, non-generic, unshadowed enum type here, so
+    /// this is not a construction site at all - the caller should fall through
+    /// to its other handling (an ordinary field access / namespace call / the
+    /// braced-form fallback).
+    NotConstruction,
+    /// `enum_name` IS such an enum, but has no variant named `variant`. `WS060`
+    /// has already been emitted; the payload carries the enum's own type so the
+    /// caller can recover as it (rather than `Any`).
+    UnknownVariant(Type),
+    /// Resolved: a recovery enum type (its generic `args` filled with `Any`), the
+    /// matched variant definition, and the enum's declared type parameters
+    /// (empty for a non-generic enum). Each construction site uses the last to
+    /// decide whether it must infer concrete `args` (see `infer_enum_args`)
+    /// before returning, or can hand back the recovery type as-is.
+    Resolved(Type, crate::typecheck::enums::VariantDef, Vec<crate::ast::TypeParam>),
+}
+
+/// Resolve `enum_name . variant` for a construction site. See
+/// [`VariantResolution`]. `range` is where `WS060` points if the variant is
+/// unknown.
+///
+/// The shadow guard mirrors every enum use site: a value symbol (`var`/`let`/
+/// param, or a namespace) whose name equals the enum's shadows the type
+/// (nearest-first `scope.lookup`), so such a name is NOT a construction site,
+/// falling out as `NotConstruction`. A GENERIC enum resolves here too; its
+/// concrete `args` are inferred per site (payload-driven, or from an
+/// annotation), so the returned recovery type carries `Any` args as a
+/// placeholder.
+fn resolve_variant_for_construction(
+    ctx: &mut TypeCheckCtx,
+    enum_name: &str,
+    variant: &str,
+    range: &SourceRange,
+) -> VariantResolution {
+    if matches!(
+        ctx.scope.lookup(enum_name).map(|s| s.kind),
+        Some(k) if k != SymbolKind::Type
+    ) {
+        return VariantResolution::NotConstruction;
+    }
+    // Resolve registry membership + the (owned) matched variant and type params
+    // in one borrow so the immutable `ctx.enum_defs` borrow ends before any
+    // `ctx.emit`.
+    let (is_enum, type_params, variant_def) = match ctx.enum_defs.get(enum_name) {
+        Some(def) => (
+            true,
+            def.type_params.clone(),
+            def.variants.iter().find(|v| v.name == variant).cloned(),
+        ),
+        None => (false, Vec::new(), None),
+    };
+    if !is_enum {
+        return VariantResolution::NotConstruction;
+    }
+    // Recovery / placeholder type: a non-generic enum has no args; a generic one
+    // gets `Any` per parameter until a site infers the real arguments.
+    let enum_ty = Type::Enum {
+        name: enum_name.to_string(),
+        args: vec![Type::Any; type_params.len()],
+    };
+    match variant_def {
+        Some(vdef) => VariantResolution::Resolved(enum_ty, vdef, type_params),
+        None => {
+            ctx.emit(
+                "WS060",
+                format!("enum `{enum_name}` has no variant `{variant}`"),
+                range.clone(),
+            );
+            VariantResolution::UnknownVariant(enum_ty)
+        }
+    }
+}
+
+/// Bare-name variant resolution: `Some(42)`/`None`/`Ok(1)`/`Err(2)` instead of
+/// `Option.Some(42)`/`Option.None`/`Result.Ok(1)`/`Result.Err(2)`. Delegates
+/// the lookup + uniqueness rule to the single-sourced
+/// `enums::resolve_bare_variant_enum`, supplying typecheck's OWN shadow
+/// predicate.
+///
+/// Typecheck uses the WIDEST shadow set of the three stages: ANY scope symbol
+/// of ANY kind - a `var`/`let`/param, a mod/chip, a type alias/namespace, OR a
+/// user enum's own type name - wins over a prelude variant, so such a name is
+/// NOT a construction here and the caller falls through to its ordinary
+/// resolution. Lowering/const-eval each shadow a SUBSET of this (their scopes
+/// can't see type-only symbols); every enum name they DO see via `enum_defs`
+/// is also a scope symbol here, so they never resolve a bare name this stage
+/// shadowed.
+///
+/// The uniqueness half (no match, or more than one enum sharing a variant
+/// name, yields `None`) lives in the shared helper - see its doc comment.
+fn resolve_bare_variant_enum(ctx: &TypeCheckCtx, name: &str) -> Option<String> {
+    crate::typecheck::enums::resolve_bare_variant_enum(&ctx.enum_defs, name, |n| {
+        ctx.scope.lookup(n).is_some()
+    })
+    .map(str::to_string)
+}
+
+/// The type of a BARE reference to `variant` (no call syntax) once it has
+/// resolved to `enum_name` - shared by the qualified `Enum.Variant`
+/// `FieldAccess` site and the bare `Some`/`None`-style `Ident` site, so the
+/// two check identically. Only a UNIT variant constructs a value from a bare
+/// reference (`Option.None`/bare `None`); its args come from the annotation
+/// or WS063 (no payload to infer from). A bare non-unit variant reference
+/// (`Option.Some` used for `.Discriminant`, or bare `Some` with no call) has
+/// no payload here, so it types as the enum with the `Any`-args recovery
+/// rather than forcing WS063.
+fn variant_reference_type(
+    ctx: &mut TypeCheckCtx,
+    enum_name: &str,
+    vdef: &crate::typecheck::enums::VariantDef,
+    enum_ty: Type,
+    type_params: &[crate::ast::TypeParam],
+    expected: Option<&Type>,
+    range: &SourceRange,
+) -> Type {
+    if type_params.is_empty() {
+        return enum_ty;
+    }
+    if matches!(vdef.payload, crate::typecheck::enums::Payload::Unit) {
+        let args = infer_enum_args(ctx, enum_name, type_params, &[], &[], expected, range);
+        return Type::Enum {
+            name: enum_name.to_string(),
+            args,
+        };
+    }
+    enum_ty
+}
+
+/// Positional enum-variant CALL construction (`Enum.Variant(args)` /
+/// `Variant(args)`) once `enum_name`/`variant` have resolved - shared by the
+/// qualified `Enum.Variant(args)` `Call` site and the bare `Some(42)`-style
+/// `Call` site, so `Some(42)` checks (and later lowers) identically to
+/// `Option.Some(42)`. `variant_range` is where `WS060`/`WS065` point (the
+/// `Enum.Variant` field-access span for the qualified form, the bare name's
+/// own span for the bare form); `call_range` is where `WS022`/`check_args`
+/// point (the whole call, including its parens).
+///
+/// Returns `None` only when `resolve_variant_for_construction` reports
+/// `NotConstruction` (a non-enum / shadowed `enum_name`) - the caller falls
+/// through to its own ordinary call handling. Every other outcome (a
+/// resolved construction, or an unknown-variant recovery) returns `Some`.
+#[allow(clippy::too_many_arguments)]
+fn try_construct_variant_positional(
+    ctx: &mut TypeCheckCtx,
+    enum_name: &str,
+    variant: &str,
+    args: &[CallArg],
+    positional_arg_types: &[Type],
+    expected: Option<&Type>,
+    variant_range: &SourceRange,
+    call_range: &SourceRange,
+) -> Option<Type> {
+    match resolve_variant_for_construction(ctx, enum_name, variant, variant_range) {
+        VariantResolution::NotConstruction => None,
+        VariantResolution::UnknownVariant(enum_ty) => Some(enum_ty),
+        VariantResolution::Resolved(enum_ty, vdef, type_params) => {
+            let crate::typecheck::enums::Payload::Positional(payload_types) = &vdef.payload
+            else {
+                ctx.emit(
+                    "WS065",
+                    ws065_positional_form_wrong(enum_name, variant, &vdef.payload),
+                    variant_range.clone(),
+                );
+                return Some(enum_ty);
+            };
+            // Arity (WS022, matching the user mod/chip call convention - see
+            // `type_user_symbol_call`/the namespace-call arm, both of which
+            // report their own arity this way rather than `check_args`'s
+            // WS011) and per-arg types (via the shared `check_args`, so an
+            // arg the caller's preamble already inferred is read back from
+            // `ctx.type_of_expr` instead of re-inferring it - avoids
+            // double-reporting an error already inside one of these args,
+            // exactly like `check_wire_arg`'s own cache read). A generic
+            // enum's payload keeps its type parameters as `Type::Param`, so
+            // `check_args`'s own `type_has_param` guard skips coercing those
+            // args (their types drive the parameter solve below instead).
+            let params: Vec<Param> = payload_types
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| Param {
+                    name: i.to_string(),
+                    ty: resolve_payload_param_type(ctx, ty, &type_params),
+                    optional: false,
+                    kind: ParamKind::Wire,
+                })
+                .collect();
+            let positional_count =
+                args.iter().filter(|a| matches!(a, CallArg::Positional(_))).count();
+            let has_spread = args.iter().any(|a| matches!(a, CallArg::Spread(_)));
+            if !has_spread && positional_count != params.len() {
+                ctx.emit(
+                    "WS022",
+                    format!(
+                        "`{variant}` expects {} argument{} but {} {} given",
+                        params.len(),
+                        if params.len() == 1 { "" } else { "s" },
+                        positional_count,
+                        if positional_count == 1 { "was" } else { "were" },
+                    ),
+                    call_range.clone(),
+                );
+            }
+            let param_types: Vec<Type> = params.iter().map(|p| p.ty.clone()).collect();
+            let sig = CallSignature {
+                name: variant.to_string(),
+                params,
+                config_gate: None,
+            };
+            check_args(ctx, &sig, args, 0, false, true, call_range);
+            if type_params.is_empty() {
+                return Some(enum_ty);
+            }
+            // The caller's preamble inferred every positional arg into
+            // `positional_arg_types`; solve the enum's type params against
+            // the payload's declared param types.
+            let solved_args = infer_enum_args(
+                ctx,
+                enum_name,
+                &type_params,
+                &param_types,
+                positional_arg_types,
+                expected,
+                call_range,
+            );
+            Some(Type::Enum {
+                name: enum_name.to_string(),
+                args: solved_args,
+            })
+        }
+    }
+}
+
+/// Resolve a variant payload field's declared type at a CONSTRUCTION site, with
+/// the enum's own type parameters in scope: a bare parameter name (`T`) becomes
+/// `Type::Param("T")` so the arg-vs-payload constraint solve can bind it, and
+/// any other type resolves normally (a nested enum name, a primitive). This is
+/// the construction-side analog of the match-site `resolve_payload_field_type`
+/// (which substitutes CONCRETE args because the scrutinee is already typed);
+/// here the args are what we are inferring, so a parameter stays a `Param`.
+fn resolve_payload_param_type(
+    ctx: &mut TypeCheckCtx,
+    te: &crate::ast::TypeExpr,
+    type_params: &[crate::ast::TypeParam],
+) -> Type {
+    if let crate::ast::TypeExpr::Name { name, .. } = te
+        && type_params.iter().any(|p| &p.name == name)
+    {
+        return Type::Param(name.clone());
+    }
+    resolve_type_expr(ctx, te)
+}
+
+/// Check a variant payload field's value against its expected type, returning
+/// the value's inferred type. When the expected type still carries a
+/// `Type::Param` (a generic enum whose args aren't inferred yet), the value is
+/// only inferred - coercing against a bare `Param` would spuriously WS003, the
+/// same reason `check_args` skips a param-typed parameter.
+fn check_or_infer_payload_field(ctx: &mut TypeCheckCtx, value: &Expr, expected: &Type) -> Type {
+    if super::type_has_param(expected) {
+        infer(ctx, value)
+    } else {
+        check(ctx, value, expected)
+    }
+}
+
+/// Infer a generic enum's concrete type `args` at a construction site. Each
+/// parameter is solved from the payload arguments (the same arg-driven
+/// `call_constraints` + `solve` a generic `mod`/`chip` call uses); a parameter
+/// the payload does not pin (`None`, or a variant that doesn't mention it) is
+/// taken from `expected` when an annotation supplied `Enum<..>` of this enum,
+/// and otherwise is a `WS063`. Returns one type per parameter (recovering with
+/// `Any` for any that stays unresolved).
+fn infer_enum_args(
+    ctx: &mut TypeCheckCtx,
+    enum_name: &str,
+    type_params: &[crate::ast::TypeParam],
+    param_types: &[Type],
+    arg_types: &[Type],
+    expected: Option<&Type>,
+    range: &SourceRange,
+) -> Vec<Type> {
+    let constraints = crate::types::mono::call_constraints(param_types, arg_types);
+    let expected_args = match expected {
+        Some(Type::Enum { name, args })
+            if name == enum_name && args.len() == type_params.len() =>
+        {
+            Some(args)
+        }
+        _ => None,
+    };
+    // Pass 1: solve every type param independently from `constraints` (a
+    // param's own payload occurrences) or the annotation. A param with
+    // NEITHER - no constraint anywhere in the constructed variant's payload
+    // (e.g. `Result<T, E>`'s `E` when only `Ok(T)` is constructed - `Ok`'s
+    // payload never mentions `E` at all) - stays `None` here rather than
+    // immediately defaulting, so pass 2 below can draw on EVERY sibling this
+    // loop solves, not just the ones that happen to precede it in
+    // `type_params` order (`Result<T, E>`'s `T` is declared first, so without
+    // this split an unannotated `Err(2)` - which solves `E` but not `T` -
+    // would see no earlier sibling to default `T` from, while the identical
+    // `Ok(1)` - which solves `T` before `E` - would).
+    let mut solved_out: Vec<Option<Type>> = Vec::with_capacity(type_params.len());
+    for (i, tp) in type_params.iter().enumerate() {
+        let mask = [(tp.name.clone(), type_param_mask(ctx, tp))];
+        // An UNBOUNDED type parameter accepts any type the payload pins it to,
+        // including a user enum (`Option<Inner>`) - which sits outside the
+        // wire-variant mask `solve` gates against, so its `OutOfMask` result
+        // still carries the pinned type. A BOUNDED parameter keeps the mask
+        // check (an out-of-bound arg stays unresolved -> hint/WS063).
+        let solved = match crate::types::infer::solve(&constraints, &mask) {
+            Ok(s) => s.get(&tp.name).cloned(),
+            Err(crate::types::infer::InferError::OutOfMask { ty, .. }) if tp.bound.is_none() => {
+                Some(ty)
+            }
+            Err(_) => None,
+        };
+        match solved {
+            Some(t) if !super::type_has_param(&t) => solved_out.push(Some(t)),
+            _ => match expected_args {
+                Some(args) => solved_out.push(Some(args[i].clone())),
+                None => solved_out.push(None),
+            },
+        }
+    }
+    // Pass 2: any param still unsolved defaults to the first param ANY
+    // sibling solved, order-independent - an unconstrained param takes the
+    // type its siblings already settled on rather than forcing an annotation
+    // on every single-branch construction (`Ok(1)` and `Err(2)` alike read as
+    // `Result<int, int>`). Only when NO sibling solved either (every param
+    // genuinely unpinnable, e.g. bare `Option<T>`'s `None`) does a param stay
+    // unresolved -> WS063.
+    let sibling_default = solved_out.iter().flatten().next().cloned();
+    let mut out = Vec::with_capacity(type_params.len());
+    let mut unresolved: Vec<String> = Vec::new();
+    for (tp, slot) in type_params.iter().zip(solved_out) {
+        match slot.or_else(|| sibling_default.clone()) {
+            Some(t) => out.push(t),
+            None => {
+                unresolved.push(tp.name.clone());
+                out.push(Type::Any);
+            }
+        }
+    }
+    if !unresolved.is_empty() {
+        ctx.emit(
+            "WS063",
+            format!(
+                "cannot infer type parameter `{}` for `{enum_name}` - annotate the target \
+                 (`: {enum_name}<...>`) or use a variant whose payload determines it",
+                unresolved.join("`, `")
+            ),
+            range.clone(),
+        );
+    }
+    out
+}
+
+/// The `WS065` message for a braced `Enum.Variant { .. }` whose variant does
+/// NOT take named fields: the correct suggested spelling depends on the actual
+/// payload - a positional variant wants `(..)`, a unit variant takes no payload
+/// at all (bare `Enum.Variant`).
+fn ws065_named_form_wrong(
+    enum_name: &str,
+    variant: &str,
+    payload: &crate::typecheck::enums::Payload,
+) -> String {
+    use crate::typecheck::enums::Payload;
+    match payload {
+        Payload::Unit => format!(
+            "variant `{variant}` takes no payload - write it as `{enum_name}.{variant}`"
+        ),
+        // Named is handled by the caller (it's the valid case); only
+        // Positional reaches here besides Unit.
+        _ => format!(
+            "variant `{variant}` does not take named fields - call it as \
+             `{enum_name}.{variant}(..)`"
+        ),
+    }
+}
+
+/// The `WS065` message for a positional `Enum.Variant(..)` whose variant does
+/// NOT take positional arguments: a named variant wants `{ .. }`, a unit
+/// variant takes no payload at all (bare `Enum.Variant`).
+fn ws065_positional_form_wrong(
+    enum_name: &str,
+    variant: &str,
+    payload: &crate::typecheck::enums::Payload,
+) -> String {
+    use crate::typecheck::enums::Payload;
+    match payload {
+        Payload::Unit => format!(
+            "variant `{variant}` takes no payload - write it as `{enum_name}.{variant}`"
+        ),
+        // Named reaches here (Positional is the valid case).
+        _ => format!(
+            "variant `{variant}` does not take positional arguments - call it as \
+             `{enum_name}.{variant} {{ .. }}`"
+        ),
+    }
+}
+
+/// The source range of a pattern node, for a diagnostic that must underline
+/// the pattern itself (e.g. WS010 on an unknown named field's capture).
+fn pattern_range(p: &Pattern) -> &SourceRange {
+    match p {
+        Pattern::Wildcard(r) => r,
+        Pattern::Binding { range, .. } => range,
+        Pattern::Variant { range, .. } => range,
+    }
+}
+
+/// Render a `Pattern` back to compact source-like text for a diagnostic (the
+/// WS054 witness message). Mirrors the surface syntax the parser reads.
+/// `pub(crate)` so `analysis::hover`'s "fill missing match arms" code action
+/// can render a [`crate::typecheck::patterns::Witness`] the same
+/// way the compiler's own diagnostic does: one renderer, so the arm text a
+/// quickfix inserts can never read differently from what WS054 already told
+/// the user is missing.
+pub(crate) fn render_pattern(p: &Pattern) -> String {
+    match p {
+        Pattern::Wildcard(_) => "_".to_string(),
+        Pattern::Binding { name, .. } => name.clone(),
+        Pattern::Variant { variant, sub, .. } => match sub {
+            VariantPattern::Unit => variant.clone(),
+            VariantPattern::Positional(pats) => {
+                let inner = pats.iter().map(render_pattern).collect::<Vec<_>>().join(", ");
+                format!("{variant}({inner})")
+            }
+            VariantPattern::Named { fields, ignore_rest } => {
+                let mut parts: Vec<String> = fields
+                    .iter()
+                    .map(|(n, p)| format!("{n}: {}", render_pattern(p)))
+                    .collect();
+                if *ignore_rest {
+                    parts.push("..".to_string());
+                }
+                format!("{variant} {{ {} }}", parts.join(", "))
+            }
+        },
+    }
+}
+
+/// The `WS065` message for a match pattern whose payload bracket form does not
+/// match the variant it names (the pattern-side analog of
+/// [`ws065_positional_form_wrong`]/[`ws065_named_form_wrong`]).
+fn ws065_pattern_form_wrong(variant: &str, payload: &crate::typecheck::enums::Payload) -> String {
+    use crate::typecheck::enums::Payload;
+    match payload {
+        Payload::Unit => {
+            format!("variant `{variant}` takes no payload - match it as `{variant}`")
+        }
+        Payload::Positional(_) => {
+            format!("variant `{variant}` has a positional payload - match it as `{variant}(..)`")
+        }
+        Payload::Named(_) => {
+            format!("variant `{variant}` has named fields - match it as `{variant} {{ .. }}`")
+        }
+    }
+}
+
+/// Resolve a variant payload field's declared type at a match site, applying
+/// the scrutinee enum's generic arguments. A bare type-parameter name maps
+/// directly to the matching scrutinee arg (so `Some(x)` on an `Option<int>`
+/// binds `x: int` without resolving a bare `T` out of scope, which would
+/// spuriously WS002); any other type resolves normally and then has the
+/// enum's parameters substituted through it.
+fn resolve_payload_field_type(
+    ctx: &mut TypeCheckCtx,
+    te: &crate::ast::TypeExpr,
+    edef: &crate::typecheck::enums::EnumDef,
+    args: &[Type],
+) -> Type {
+    if let crate::ast::TypeExpr::Name { name, .. } = te
+        && let Some(idx) = edef.type_params.iter().position(|p| &p.name == name)
+    {
+        return args.get(idx).cloned().unwrap_or(Type::Any);
+    }
+    let base = resolve_type_expr(ctx, te);
+    if edef.type_params.is_empty() {
+        return base;
+    }
+    let subst: crate::types::infer::Subst = edef
+        .type_params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.name.clone(), args.get(i).cloned().unwrap_or(Type::Any)))
+        .collect();
+    crate::types::mono::substitute(&base, &subst)
+}
+
+/// Bind every capture inside a variant sub-pattern as `any` - the recovery
+/// path taken when the variant itself can't be resolved (unknown variant, a
+/// bracket-form mismatch, or a nested field that isn't an enum), so the arm
+/// body can still reference the captured names without cascading WS002.
+fn bind_sub_as_any(ctx: &mut TypeCheckCtx, sub: &VariantPattern) {
+    match sub {
+        VariantPattern::Unit => {}
+        VariantPattern::Positional(pats) => {
+            for p in pats {
+                check_match_pattern(ctx, p, &Type::Any);
+            }
+        }
+        VariantPattern::Named { fields, .. } => {
+            for (_, p) in fields {
+                check_match_pattern(ctx, p, &Type::Any);
+            }
+        }
+    }
+}
+
+/// Validate an arm pattern against the type it matches and bind its captures
+/// into the current scope. Keeps the SAME unit-variant reinterpretation the
+/// usefulness engine (`patterns::head_variant_name`) uses: a bare identifier
+/// naming a unit variant is a variant test that binds nothing, while any
+/// other bare identifier captures the whole matched value. Emits WS060 for an
+/// unknown variant and WS065 for a payload whose bracket form or arity does
+/// not match the variant.
+pub(super) fn check_match_pattern(ctx: &mut TypeCheckCtx, pat: &Pattern, matched: &Type) {
+    use crate::typecheck::enums::Payload;
+    match pat {
+        Pattern::Wildcard(_) => {}
+        Pattern::Binding { name, range } => {
+            if let Type::Enum { name: en, .. } = matched
+                && ctx.enum_defs.get(en).is_some_and(|edef| {
+                    edef.variants
+                        .iter()
+                        .any(|v| &v.name == name && matches!(v.payload, Payload::Unit))
+                })
+            {
+                return;
+            }
+            ctx.scope.declare(
+                name,
+                SymbolInfo {
+                    kind: SymbolKind::LetBinding,
+                    name: name.clone(),
+                    ty: matched.clone(),
+                    decl_range: range.clone(),
+                    signature: None,
+                    event_data: None,
+                },
+            );
+        }
+        Pattern::Variant { variant, sub, range } => {
+            let Type::Enum { name: en, args } = matched else {
+                bind_sub_as_any(ctx, sub);
+                return;
+            };
+            let edef = match ctx.enum_defs.get(en) {
+                Some(d) => d.clone(),
+                None => {
+                    bind_sub_as_any(ctx, sub);
+                    return;
+                }
+            };
+            let Some(vdef) = edef.variants.iter().find(|v| &v.name == variant).cloned() else {
+                ctx.emit(
+                    "WS060",
+                    format!("enum `{en}` has no variant `{variant}`"),
+                    range.clone(),
+                );
+                bind_sub_as_any(ctx, sub);
+                return;
+            };
+            match (&vdef.payload, sub) {
+                (Payload::Unit, VariantPattern::Unit) => {}
+                (Payload::Positional(types), VariantPattern::Positional(pats)) => {
+                    if pats.len() != types.len() {
+                        ctx.emit(
+                            "WS065",
+                            format!(
+                                "variant `{variant}` binds {} value(s), but the pattern has {}",
+                                types.len(),
+                                pats.len()
+                            ),
+                            range.clone(),
+                        );
+                    }
+                    for (i, p) in pats.iter().enumerate() {
+                        let fty = match types.get(i) {
+                            Some(te) => resolve_payload_field_type(ctx, te, &edef, args),
+                            None => Type::Any,
+                        };
+                        check_match_pattern(ctx, p, &fty);
+                    }
+                }
+                (Payload::Named(decl_fields), VariantPattern::Named { fields, .. }) => {
+                    for (fname, fpat) in fields {
+                        let fty = match decl_fields.iter().find(|(n, _)| n == fname) {
+                            Some((_, te)) => resolve_payload_field_type(ctx, te, &edef, args),
+                            None => {
+                                // Same typo the construction side flags (WS010) -
+                                // a named-field capture whose name is not a field
+                                // of the variant. Loud, then bind as `any` so the
+                                // body does not cascade WS002 on the capture.
+                                ctx.emit(
+                                    "WS010",
+                                    format!("variant `{variant}` has no field `{fname}`"),
+                                    pattern_range(fpat).clone(),
+                                );
+                                Type::Any
+                            }
+                        };
+                        check_match_pattern(ctx, fpat, &fty);
+                    }
+                }
+                _ => {
+                    ctx.emit("WS065", ws065_pattern_form_wrong(variant, &vdef.payload), range.clone());
+                    bind_sub_as_any(ctx, sub);
+                }
+            }
+        }
+    }
+}
+
+/// Type an arm body, returning its value type for the arm-result join. An
+/// expression arm contributes its inferred type; a block arm runs for its
+/// side effects (statement errors surface) but contributes no value type.
+fn infer_match_body(ctx: &mut TypeCheckCtx, body: &MatchBody) -> Option<Type> {
+    match body {
+        MatchBody::Expr(expr) => Some(infer(ctx, expr)),
+        MatchBody::Block(block) => {
+            for s in &block.stmts {
+                check_stmt(ctx, s);
+            }
+            None
+        }
+    }
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
+    // The `check`-supplied expected type applies to THIS node only; take it
+    // once here so a nested inference (an operand, an arg) never reads a stale
+    // hint. Only generic enum construction consumes it (`expected`, below).
+    let expected = ctx.expected_ty.take();
     match e {
         Expr::IntLit { .. } => Type::Int,
         Expr::AtomLit { .. } => Type::Int,
@@ -369,6 +1030,26 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         }
         Expr::Ident { name, range } => {
             let Some(sym) = ctx.scope.lookup(name).cloned() else {
+                // Bare unit-variant reference (`None` for `Option.None`, ...):
+                // `name` is not a scope symbol, so try resolving it as a
+                // unique variant of a registered enum before falling to the
+                // unknown-identifier diagnostic below. Keyed off the SAME
+                // resolution the qualified `Enum.Variant` `FieldAccess` site
+                // below uses, so `None` and `Option.None` check identically.
+                if let Some(enum_name) = resolve_bare_variant_enum(ctx, name)
+                    && let VariantResolution::Resolved(enum_ty, vdef, type_params) =
+                        resolve_variant_for_construction(ctx, &enum_name, name, range)
+                {
+                    return variant_reference_type(
+                        ctx,
+                        &enum_name,
+                        &vdef,
+                        enum_ty,
+                        &type_params,
+                        expected.as_ref(),
+                        range,
+                    );
+                }
                 ctx.emit(
                     "WS002",
                     format!("unknown identifier '{name}'"),
@@ -563,7 +1244,67 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit("WS002", msg, range.clone());
                 return Type::Any;
             }
+            // `Enum.Variant` (unit-variant construction, e.g. `Shape.Empty`)
+            // and an unknown variant on a known enum (`Shape.Nope`, WS060).
+            // Checked directly against `ctx.enum_defs` rather than falling
+            // into the generic `infer(ctx, obj)` below: `obj` here is a bare
+            // enum TYPE name, not a value, and `ctx.enum_defs` is populated
+            // by the `collect_enum_defs` pre-pass before any decl is
+            // registered, so this resolves even when the `enum` itself is
+            // declared later in the file: inferring `obj` as an ordinary
+            // identifier would either piggyback on the scope-registered
+            // symbol's type (order-dependent) or, before that registration
+            // runs, misreport WS002 "unknown identifier". Positional/named
+            // variant construction (`Shape.Circle(5.0)`) is a Call on this
+            // same FieldAccess node used as a callee, handled by the Call
+            // arm instead; this only covers a bare unit reference.
+            //
+            // Resolution (shadow-guard + registry + generic guard + WS060) is
+            // shared with the two payload-construction sites via
+            // `resolve_variant_for_construction`. A bare variant reference
+            // (unit `Shape.Empty`, or a payload variant named without
+            // constructing, e.g. `Shape.Circle` used for `.Discriminant`)
+            // types as the enum regardless of payload shape; an unknown
+            // variant is WS060 (recover as the enum type); a non-enum /
+            // shadowed / generic name falls through to `infer(ctx, obj)`.
+            if let Expr::Ident { name: enum_name, .. } = obj.as_ref() {
+                match resolve_variant_for_construction(ctx, enum_name, field, range) {
+                    VariantResolution::NotConstruction => {}
+                    VariantResolution::UnknownVariant(_) => return Type::Any,
+                    VariantResolution::Resolved(enum_ty, vdef, type_params) => {
+                        return variant_reference_type(
+                            ctx,
+                            enum_name,
+                            &vdef,
+                            enum_ty,
+                            &type_params,
+                            expected.as_ref(),
+                            range,
+                        );
+                    }
+                }
+            }
             let ot = infer(ctx, obj);
+            // `<enum value>.Discriminant` (an enum-typed value, or a variant
+            // path such as `Shape.Circle`, itself typed `Type::Enum` by the
+            // block just above) always projects to its integer
+            // discriminant. A non-enum target is WS066; recovers to
+            // `Type::Int` so a chained use doesn't cascade a second mismatch
+            // off an `Any`.
+            if field == "Discriminant" {
+                if matches!(ot, Type::Enum { .. }) {
+                    return Type::Int;
+                }
+                ctx.emit(
+                    "WS066",
+                    format!(
+                        "`.Discriminant` needs an enum value or variant, found `{}`",
+                        crate::analysis::types::type_str(&ot)
+                    ),
+                    range.clone(),
+                );
+                return Type::Int;
+            }
             if let Type::Ref(inner) = &ot {
                 if field == "Value" || field == "prev" {
                     return inner.as_ref().clone();
@@ -813,26 +1554,92 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             ctx.pop_scope();
             t
         }
-        Expr::MatchExpr {
-            scrutinee, arms, ..
-        } => {
-            infer(ctx, scrutinee);
+        Expr::MatchExpr { scrutinee, arms, range } => {
+            let scrut_ty = unwrap_ref(&infer(ctx, scrutinee));
+            if !matches!(scrut_ty, Type::Enum { .. }) {
+                ctx.emit(
+                    "WS066",
+                    format!(
+                        "`match` requires an enum scrutinee, but this is {}",
+                        crate::analysis::types::type_str(&scrut_ty)
+                    ),
+                    range.clone(),
+                );
+                // Still walk each arm body so its own errors surface; there is
+                // no enum to type captures against, so they bind as `any`.
+                for arm in arms {
+                    ctx.push_scope();
+                    check_match_pattern(ctx, &arm.pattern, &scrut_ty);
+                    infer_match_body(ctx, &arm.body);
+                    ctx.pop_scope();
+                }
+                return Type::Any;
+            }
+
             let mut tys: Vec<Type> = Vec::new();
             for arm in arms {
-                if let MatchBody::Expr(expr) = &arm.body {
-                    tys.push(infer(ctx, expr));
+                ctx.push_scope();
+                check_match_pattern(ctx, &arm.pattern, &scrut_ty);
+                if let Some(t) = infer_match_body(ctx, &arm.body) {
+                    tys.push(t);
                 }
+                ctx.pop_scope();
             }
-            if tys.is_empty() {
+
+            let result = if tys.is_empty() {
                 Type::Any
-            } else if tys
-                .iter()
-                .all(|t| std::mem::discriminant(t) == std::mem::discriminant(&tys[0]))
-            {
-                tys[0].clone()
             } else {
-                Type::Union(tys)
+                let mut acc = tys[0].clone();
+                let mut joined = true;
+                for t in &tys[1..] {
+                    match widening_join(&acc, t) {
+                        Some(j) => acc = j,
+                        None => {
+                            joined = false;
+                            break;
+                        }
+                    }
+                }
+                if joined {
+                    acc
+                } else {
+                    ctx.emit(
+                        "WS003",
+                        format!(
+                            "match arm type mismatch: arms produce {} (no common widening)",
+                            tys.iter()
+                                .map(|t| crate::analysis::types::type_str(t))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        range.clone(),
+                    );
+                    tys[0].clone()
+                }
+            };
+
+            let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
+            let usefulness =
+                crate::typecheck::patterns::analyze(&ctx.enum_defs, &scrut_ty, &arm_patterns);
+            for witness in &usefulness.missing {
+                ctx.emit(
+                    "WS054",
+                    format!(
+                        "non-exhaustive match: `{}` is not covered",
+                        render_pattern(&witness.0)
+                    ),
+                    range.clone(),
+                );
             }
+            for &idx in &usefulness.unreachable_arms {
+                ctx.warn(
+                    "WS061",
+                    "unreachable match arm - an earlier arm already covers every value it matches"
+                        .to_string(),
+                    arms[idx].range.clone(),
+                );
+            }
+            result
         }
         Expr::RecordLit { fields, .. } => {
             let mut rec_fields: Vec<(String, Type)> = Vec::new();
@@ -952,6 +1759,179 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             );
             Type::Map(Box::new(kt), Box::new(vt))
         }
+        // Enum payload construction, braced-named form: `Enum.Variant { f: v, ... }`.
+        // The parser only ever produces this node when `path` is a
+        // `FieldAccess` with a REAL record body (see `parser/expr.rs`'s
+        // `looks_like_variant_ctor_body`), but that alone doesn't guarantee
+        // `path` denotes a known, unshadowed enum variant - a shadowed enum
+        // name, or a longer `a.b.c { .. }` chain, still reaches here. Resolution
+        // is shared with the positional `Call` arm via
+        // `resolve_variant_for_construction`; when `path` is NOT a
+        // named-payload variant construction the fallback emits `WS065` rather
+        // than silently typing as `Any` (a braced construction is only valid
+        // for an enum variant with named fields).
+        Expr::VariantCtor { path, fields, range } => {
+            if let Expr::FieldAccess {
+                obj,
+                field: variant,
+                range: fa_range,
+            } = path.as_ref()
+                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+            {
+                match resolve_variant_for_construction(ctx, enum_name, variant, fa_range) {
+                    VariantResolution::NotConstruction => {}
+                    VariantResolution::UnknownVariant(enum_ty) => {
+                        infer_record_field_values(ctx, fields);
+                        return enum_ty;
+                    }
+                    VariantResolution::Resolved(enum_ty, vdef, type_params) => {
+                        let annotation = expected;
+                        let crate::typecheck::enums::Payload::Named(named_types) = &vdef.payload
+                        else {
+                            ctx.emit(
+                                "WS065",
+                                ws065_named_form_wrong(enum_name, variant, &vdef.payload),
+                                fa_range.clone(),
+                            );
+                            infer_record_field_values(ctx, fields);
+                            return enum_ty;
+                        };
+                        // Each declared field's expected type, with the enum's
+                        // type parameters kept as `Type::Param` so a generic
+                        // payload (`W { inner: T }`) resolves without WS002 and
+                        // its arg feeds the type-parameter solve below.
+                        let named_ptypes: Vec<(String, Type)> = named_types
+                            .iter()
+                            .map(|(n, ty)| (n.clone(), resolve_payload_param_type(ctx, ty, &type_params)))
+                            .collect();
+                        let mut seen: Vec<&str> = Vec::new();
+                        // Inferred value type per provided field, keyed by name -
+                        // fed to `infer_enum_args` for a generic enum.
+                        let mut field_arg_types: Vec<(String, Type)> = Vec::new();
+                        for f in fields {
+                            match f {
+                                RecordLitField::Named { name, value, range: f_range } => {
+                                    seen.push(name.as_str());
+                                    match named_ptypes.iter().find(|(n, _)| n == name) {
+                                        Some((_, fty)) => {
+                                            let at = check_or_infer_payload_field(ctx, value, fty);
+                                            field_arg_types.push((name.clone(), at));
+                                        }
+                                        None => {
+                                            infer(ctx, value);
+                                            ctx.emit(
+                                                "WS010",
+                                                format!("variant `{variant}` has no field `{name}`"),
+                                                f_range.clone(),
+                                            );
+                                        }
+                                    }
+                                }
+                                RecordLitField::Shorthand { name, range: f_range } => {
+                                    seen.push(name.as_str());
+                                    // `{ h }` is shorthand for `{ h: h }`: check
+                                    // the value the same way a named field's is,
+                                    // by synthesizing the identifier the
+                                    // shorthand stands for. Routing through
+                                    // `check`/`infer` gives it the ordinary
+                                    // `Expr::Ident` treatment - a scalar var's
+                                    // `*T` auto-derefs to `T` (so `{ w, h }` from
+                                    // `var h: float` type-checks, not `*float` vs
+                                    // `float`), and an undefined name reports
+                                    // WS002 - instead of the raw symbol type a
+                                    // direct scope read would give.
+                                    let ident = Expr::Ident {
+                                        name: name.clone(),
+                                        range: f_range.clone(),
+                                    };
+                                    match named_ptypes.iter().find(|(n, _)| n == name) {
+                                        Some((_, fty)) => {
+                                            let at = check_or_infer_payload_field(ctx, &ident, fty);
+                                            field_arg_types.push((name.clone(), at));
+                                        }
+                                        None => {
+                                            infer(ctx, &ident);
+                                            ctx.emit(
+                                                "WS010",
+                                                format!("variant `{variant}` has no field `{name}`"),
+                                                f_range.clone(),
+                                            );
+                                        }
+                                    }
+                                }
+                                // A variant's payload is always a short, fully-named
+                                // field list at the call site in practice - spreading
+                                // another record into it has no defined semantics
+                                // here (unlike a plain `RecordLit`, there is no
+                                // "extra structural fields" concept for a payload).
+                                RecordLitField::Spread { value, range: f_range } => {
+                                    infer(ctx, value);
+                                    ctx.emit(
+                                        "WS010",
+                                        format!(
+                                            "variant `{variant}` construction does not support \
+                                             `...` spread"
+                                        ),
+                                        f_range.clone(),
+                                    );
+                                }
+                            }
+                        }
+                        for (name, _) in &named_ptypes {
+                            if !seen.contains(&name.as_str()) {
+                                ctx.emit(
+                                    "WS010",
+                                    format!("variant `{variant}` is missing field `{name}`"),
+                                    range.clone(),
+                                );
+                            }
+                        }
+                        if type_params.is_empty() {
+                            return enum_ty;
+                        }
+                        let param_types: Vec<Type> =
+                            named_ptypes.iter().map(|(_, ty)| ty.clone()).collect();
+                        let arg_types: Vec<Type> = named_ptypes
+                            .iter()
+                            .map(|(n, _)| {
+                                field_arg_types
+                                    .iter()
+                                    .find(|(fname, _)| fname == n)
+                                    .map(|(_, t)| unwrap_ref(t))
+                                    .unwrap_or(Type::Any)
+                            })
+                            .collect();
+                        let args = infer_enum_args(
+                            ctx,
+                            enum_name,
+                            &type_params,
+                            &param_types,
+                            &arg_types,
+                            annotation.as_ref(),
+                            range,
+                        );
+                        return Type::Enum { name: enum_name.clone(), args };
+                    }
+                }
+            }
+            // Fallback: `path` is not a named-payload enum-variant construction
+            // (a non-`FieldAccess`/`Ident` path, a shadowed enum name, an
+            // unknown/generic enum, or an `a.b.c { .. }` chain). A braced
+            // `{ .. }` construction is only valid for such a variant, so this is
+            // an error - emit WS065 rather than returning bare `Any` with no
+            // diagnostic. `path` + every field value are still inferred so
+            // nothing goes untyped (and any nested error surfaces).
+            infer(ctx, path);
+            infer_record_field_values(ctx, fields);
+            ctx.emit(
+                "WS065",
+                "braced `{ .. }` construction is only valid for an enum variant with \
+                 named fields"
+                    .to_string(),
+                range.clone(),
+            );
+            Type::Any
+        }
         Expr::Call {
             callee,
             args,
@@ -1016,6 +1996,20 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         infer(ctx, v);
                     }
                 }
+            }
+            // `<enum value>.ToInt()` is an exact alias for `.Discriminant`: it
+            // projects an enum value (or a variant path such as `Shape.Circle`)
+            // to its integer discriminant. It takes no arguments. Resolved here,
+            // ahead of the receiver-method and enum-construction arms below, so
+            // it types identically to `.Discriminant` (see the `FieldAccess` /
+            // `Discriminant` arm). A non-enum receiver falls through to the
+            // ordinary call handling.
+            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
+                && field == "ToInt"
+                && args.is_empty()
+                && matches!(unwrap_ref(&infer(ctx, obj)), Type::Enum { .. })
+            {
+                return Type::Int;
             }
             // Resolve callee if it's a plain identifier.
             if let Expr::Ident { name, range } = callee.as_ref() {
@@ -1088,6 +2082,63 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                             return t;
                         }
                     }
+                    // `EnumToInt(value)` REQUIRES an enum argument (there is
+                    // no "any enum" `Type`, so the bare `Type::Any` gate port
+                    // can't express this - enforce it here, keyed on the gate).
+                    // A non-enum (`EnumToInt(5)`, `EnumToInt("x")`) is a
+                    // WS003 argument-type error, matching `check_args`'s own
+                    // per-arg diagnostic. An already-`any` argument (an upstream
+                    // error) is left alone to avoid cascading. The result is
+                    // always `int`.
+                    if name == "EnumToInt" {
+                        match positional_arg_types.first() {
+                            Some(t) => {
+                                let ut = unwrap_ref(t);
+                                if !matches!(ut, Type::Enum { .. } | Type::Any) {
+                                    ctx.emit(
+                                        "WS003",
+                                        format!(
+                                            "argument 'value': expected an enum, got {}",
+                                            crate::analysis::types::type_str(&ut)
+                                        ),
+                                        range.clone(),
+                                    );
+                                }
+                            }
+                            None => ctx.emit(
+                                "WS011",
+                                "'EnumToInt' requires 1 arg, got 0".to_string(),
+                                range.clone(),
+                            ),
+                        }
+                        return Type::Int;
+                    }
+                    // `IntToEnum(value, wrap?)` takes an `int` (+ optional
+                    // `bool`) - validated by the ordinary `check_args` against
+                    // the CallSpec params - but its RESULT is an enum whose
+                    // concrete type is pinned by the use site's expected type,
+                    // exactly like `Enum.FromInt`/`null`. With no enum-typed
+                    // expectation there is no way to know which enum the integer
+                    // names, so that is a WS063 (mirrors `FromInt`'s
+                    // type-inference failure), recovering as `Any`.
+                    if name == "IntToEnum" {
+                        check_args(ctx, &sig_of_callspec(c), args, 0, true, true, range);
+                        match expected.as_ref().map(unwrap_ref) {
+                            Some(Type::Enum { name: en, args: en_args }) => {
+                                return Type::Enum { name: en, args: en_args };
+                            }
+                            _ => {
+                                ctx.emit(
+                                    "WS063",
+                                    "cannot infer which enum `IntToEnum` produces - annotate \
+                                     the target (`: SomeEnum`) so the integer's enum type is known"
+                                        .to_string(),
+                                    range.clone(),
+                                );
+                                return Type::Any;
+                            }
+                        }
+                    }
                     check_args(ctx, &sig_of_callspec(c), args, 0, true, true, range);
                     if !c.outputs.is_empty() {
                         return output_record_type(ctx, c, args, range);
@@ -1116,6 +2167,30 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     return Type::Record(fields);
                 }
                 let Some(sym) = ctx.scope.lookup(name).cloned() else {
+                    // Bare positional enum-variant construction (`Some(42)`
+                    // for `Option.Some(42)`, `Err(2)` for `Result.Err(2)`, ...):
+                    // `name` is not a scope symbol, so try resolving it as a
+                    // unique variant of a registered enum before falling to
+                    // the unknown-identifier diagnostics below. Reuses the
+                    // SAME construction the qualified `Enum.Variant(args)`
+                    // call site below uses, keyed off the RESOLVED enum name
+                    // rather than any surface qualification, so `Some(42)`
+                    // and `Option.Some(42)` check (and later lower)
+                    // identically.
+                    if let Some(enum_name) = resolve_bare_variant_enum(ctx, name)
+                        && let Some(ty) = try_construct_variant_positional(
+                            ctx,
+                            &enum_name,
+                            name,
+                            args,
+                            &positional_arg_types,
+                            expected.as_ref(),
+                            range,
+                            call_range,
+                        )
+                    {
+                        return ty;
+                    }
                     // A statement-form gate builtin (`SetArrayElement`,
                     // `SetVariable`, `IncrementVariable`) is real — completion
                     // offers it — but it desugars to an assignment only in
@@ -1157,6 +2232,81 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     call_range,
                     range,
                 );
+            }
+            // `Enum.FromInt(n)` builds a value of enum `Enum` whose
+            // discriminant is the int `n`, every payload slot defaulted to its
+            // zero value - a tag-only constructor (see
+            // `docs/wirescript/enums.md`). Recognized only when `Enum` is a
+            // known, unshadowed enum type AND has no variant literally named
+            // `FromInt` (a real variant of that name still wins, constructed by
+            // the block below). Placed BEFORE that block because
+            // `resolve_variant_for_construction` would otherwise emit WS060 for
+            // the non-variant name `FromInt`. Takes exactly one int argument;
+            // result types as the enum.
+            if let Expr::FieldAccess { obj, field, range: fa_range } = callee.as_ref()
+                && field == "FromInt"
+                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+                && !matches!(
+                    ctx.scope.lookup(enum_name).map(|s| s.kind),
+                    Some(k) if k != SymbolKind::Type
+                )
+                && let Some(type_params) = ctx
+                    .enum_defs
+                    .get(enum_name)
+                    .filter(|def| !def.variants.iter().any(|v| v.name == "FromInt"))
+                    .map(|def| def.type_params.clone())
+            {
+                let sig = CallSignature {
+                    name: "FromInt".to_string(),
+                    params: vec![Param {
+                        name: "value".to_string(),
+                        ty: Type::Int,
+                        optional: false,
+                        kind: ParamKind::Wire,
+                    }],
+                    config_gate: None,
+                };
+                check_args(ctx, &sig, args, 0, true, true, fa_range);
+                // A generic enum's `FromInt` can't infer its type arguments from
+                // a tag alone; take them from an enum-typed expectation when
+                // present, else leave the `Any` recovery placeholder
+                // (non-generic enums have none). The payloads default either way,
+                // so the arguments only matter to a later generic annotation's
+                // agreement.
+                let args_ty = match expected.as_ref() {
+                    Some(Type::Enum { name: en, args }) if en == enum_name => args.clone(),
+                    _ => vec![Type::Any; type_params.len()],
+                };
+                return Type::Enum { name: enum_name.clone(), args: args_ty };
+            }
+            // Enum payload construction, positional form: `Enum.Variant(args)`.
+            // Resolution + construction is shared with the other construction
+            // sites (the qualified bare-unit `FieldAccess` arm above, and the
+            // bare `Some(42)`-style `Call` site in the `Expr::Ident` callee
+            // branch above) via `try_construct_variant_positional`. `callee`
+            // here is `Enum.Variant` used as a call target, not read as a
+            // value, so a resolved construction is handled directly rather
+            // than falling into the ordinary callee-resolution arms below
+            // (which would misreport it as an unknown call); a non-enum /
+            // shadowed name falls through to those arms unchanged.
+            if let Expr::FieldAccess {
+                obj,
+                field: variant,
+                range: fa_range,
+            } = callee.as_ref()
+                && let Expr::Ident { name: enum_name, .. } = obj.as_ref()
+                && let Some(ty) = try_construct_variant_positional(
+                    ctx,
+                    enum_name,
+                    variant,
+                    args,
+                    &positional_arg_types,
+                    expected.as_ref(),
+                    fa_range,
+                    call_range,
+                )
+            {
+                return ty;
             }
             // Namespace call: ns.foo(args)
             if let Expr::FieldAccess {
@@ -1616,7 +2766,14 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
             .insert((r.file.clone(), r.start.offset, r.end.offset), rec.clone());
         return rec;
     }
+    // Push the expected type down for the single node `infer` is about to type,
+    // so a generic enum construction (`n: Option<int> = None`) can take its `T`
+    // from the annotation. `infer_node` `take()`s it immediately, so it never
+    // reaches a nested sub-expression; restore the prior hint for a `check`
+    // running inside another `check`.
+    let prev = ctx.expected_ty.replace(expected.clone());
     let t = infer(ctx, e);
+    ctx.expected_ty = prev;
     coerce_or_emit(ctx, &t, expected, e.range());
     t
 }

@@ -367,6 +367,26 @@ branch types -- it *widens* them to a single common type instead (see
 [if-expression note](expressions.md#conditional-expressions-if-then-else)).
 `if condition then 42 else 3.14` has type `float`, not `int | float`.
 
+### Enum Types
+
+An `enum` is a **nominal** type with a fixed set of named variants -- unlike
+`Type::Union` above (which is structural: any value of a matching type
+qualifies), two enums stay distinct types even if their variants look the
+same. A variant can be a bare unit or carry a payload, which makes `enum` how
+Wirescript expresses a tagged union:
+
+```wirescript
+enum Shape { Empty, Circle(float), Rect(float, float) }
+```
+
+An enum value is represented at compile time as a record: a hidden
+discriminant field plus one slot per payload field, so it follows the same
+[Records as storage](#records-as-storage) rules when it backs a `var`.
+`match`, `if let`, and `let ... else` are how you branch on a value's variant
+and pull its payload back out. See [Enums](enums.md) for the full reference:
+declaration, construction, `.Discriminant`, `match`, `if let` / `let else`,
+generic enums, and the built-in `Option`/`Result`.
+
 ## Generics
 
 `mod` and `chip` declarations can take type parameters -- one implementation

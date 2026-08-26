@@ -15,6 +15,7 @@ mod handler;
 use handler::*;
 mod stmt;
 mod decl;
+mod pattern;
 
 pub struct ParseResult {
     pub ast: Script,
@@ -37,6 +38,16 @@ pub fn parse(source: &str, file: &str) -> ParseResult {
     }
 }
 
+/// Test-only entry point for the pattern parser in isolation, without
+/// wrapping it in a full `match` (which is the only surface syntax that
+/// reaches `parse_pattern` normally).
+#[cfg(test)]
+pub fn parse_pattern_str(s: &str) -> Pattern {
+    let lexed = lex(s, "t.ws");
+    let mut p = Parser::new(lexed.tokens, "t.ws", lexed.diagnostics);
+    p.parse_pattern()
+}
+
 // ---------- parser state ----------
 
 struct Parser<'a> {
@@ -51,6 +62,16 @@ struct Parser<'a> {
     /// triggers.  The surrounding `parse_block` / `parse_script` loops drain
     /// this before inserting the handler itself.
     pending_stmts: Vec<Stmt>,
+    /// When true, a trailing `{ ... }` after a path expression is NOT parsed as
+    /// braced enum-variant construction (`Enum.Variant { f: v }`) - the `{` is
+    /// left for the surrounding block header instead. Set only while parsing a
+    /// header/condition expression (an `if` condition; extend to a `while`/`for`
+    /// header or `match` scrutinee if those are added), so `if f.bar { }` reads
+    /// as an `if` with a body, not a construction. Reset to false inside any
+    /// bracketed sub-expression (`( )`, `[ ]`, call args, a record/map/array
+    /// body), where a trailing `{` is unambiguous again. The Go-style
+    /// composite-literal disambiguation.
+    no_brace_construct: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -63,6 +84,7 @@ impl<'a> Parser<'a> {
             doc_comments: HashMap::default(),
             expr_trigger_counter: 0,
             pending_stmts: Vec::new(),
+            no_brace_construct: false,
         }
     }
 
@@ -173,6 +195,26 @@ impl<'a> Parser<'a> {
         while self.check(TokenKind::Newline, None) || self.check(TokenKind::Semi, None) {
             self.advance();
         }
+    }
+
+    /// Consume a balanced `{ ... }` block starting at the current `{`, returning
+    /// the closing `}`'s end position (or the last token's end if unterminated).
+    /// Used to recover a malformed braced-construction body so it is not left
+    /// for the top-level declaration fallback to silently re-parse as a separate
+    /// block. Assumes the current token is `{`.
+    fn consume_balanced_braces(&mut self) -> Pos {
+        let mut end = self.advance().end; // the opening `{`
+        let mut depth = 1i32;
+        while depth > 0 && self.peek().kind != TokenKind::Eof {
+            let tok = self.advance();
+            end = tok.end;
+            match tok.kind {
+                TokenKind::LBrace => depth += 1,
+                TokenKind::RBrace => depth -= 1,
+                _ => {}
+            }
+        }
+        end
     }
 
     fn make_range(&self, start: Pos, end: Pos) -> SourceRange {

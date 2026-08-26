@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// The integer discriminant of a built-in enum value passed as gate config
+/// (`function = EasingFunction.Bounce`, or a constant that folds to an enum
+/// value). Reuses the compiler's `.Discriminant` variant-path fold: const
+/// evaluation folds the value to its `{ __disc: N }` record and this reads
+/// `__disc` back, so the baked int is the same one the bare member name bakes.
+/// `None` when the argument does not fold to an enum value (an int or a
+/// member-name string falls through to the caller's other resolution paths),
+/// or its discriminant is not a member of `enum_type` (typecheck's WS003
+/// already rejects a mismatched enum, so a well-typed program never hits that).
+fn enum_config_discriminant(ctx: &LowerCtx, arg_expr: &Expr, enum_type: &str) -> Option<i64> {
+    let lookup = |n: &str| ctx.resolve_mod(n);
+    let mut budget = crate::const_eval::Budget::default();
+    let lit = crate::const_eval::eval_expr(arg_expr, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?;
+    let Literal::Record(fields) = lit else {
+        return None;
+    };
+    let (_, disc) = fields.into_iter().find(|(n, _)| n == "__disc")?;
+    let Literal::Int(v) = disc else { return None };
+    crate::catalog::enum_has_value(enum_type, v).then_some(v)
+}
+
 pub(in crate::lower) fn lower_builtin_call(
     ctx: &mut LowerCtx,
     spec: &crate::catalog::calls::CallSpec,
@@ -88,22 +109,33 @@ pub(in crate::lower) fn lower_builtin_call(
             }
             // Runtime: fall through to the wire path below.
         }
-        // Enum-typed config passed as a bare member name (`function = Bounce`):
-        // resolve to the enum's integer value and inline as gate data. Int and
+        // Enum-typed config: resolve to the enum's integer value and inline as
+        // gate data. A bare member name (`function = Bounce`) resolves against
+        // the schema; a qualified built-in enum value (`function =
+        // EasingFunction.Bounce`) or a constant that folds to an enum value
+        // reads its discriminant off the folded `{ __disc: N }` record, reusing
+        // the same `.Discriminant` variant-path fold const evaluation performs,
+        // so the baked int matches the bare member name exactly. Int and
         // quoted-name forms fall through to the literal path below (the emitter
-        // resolves those). Typecheck (WS028) already validated membership.
+        // resolves those). Typecheck (WS028/WS003) already validated membership
+        // and enum identity.
         //
-        // When the identifier is NOT a member name, mirror
+        // When a bare identifier is NOT a member name, mirror
         // `typecheck::config::validate_enum_config_arg`'s fallback: resolve it
         // through the constant environment (`function = EASE` for `const EASE =
         // "Bounce"`) instead. Member-name interpretation stays first, so no
         // program that relies on it changes meaning.
-        if let Expr::Ident { name, .. } = arg_expr
-            && !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
+        if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
             && let Some(enum_type) =
                 crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
         {
-            if let Some(v) = crate::catalog::enum_member_value(enum_type, name) {
+            if let Expr::Ident { name, .. } = arg_expr
+                && let Some(v) = crate::catalog::enum_member_value(enum_type, name)
+            {
+                properties.insert(intern(p.port.as_str()), Literal::Int(v));
+                continue;
+            }
+            if let Some(v) = enum_config_discriminant(ctx, arg_expr, enum_type) {
                 properties.insert(intern(p.port.as_str()), Literal::Int(v));
                 continue;
             }
@@ -126,13 +158,32 @@ pub(in crate::lower) fn lower_builtin_call(
         if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
             && matches!(p.port, WirePort::MeshColors | WirePort::WeaponAmmoOverride)
         {
-            let consts = ctx.const_lookup();
-            let folded = match p.port {
-                WirePort::MeshColors => fold_mesh_colors(arg_expr, &consts),
-                _ => fold_ammo_override(arg_expr, &consts),
+            let folded = {
+                let consts = ctx.const_lookup();
+                match p.port {
+                    WirePort::MeshColors => fold_mesh_colors(arg_expr, &consts),
+                    _ => fold_ammo_override(arg_expr, &consts),
+                }
             };
-            if let Some(lit) = folded {
-                properties.insert(intern(p.port.as_str()), lit);
+            match folded {
+                Some(lit) => {
+                    properties.insert(intern(p.port.as_str()), lit);
+                }
+                // Never silently drop: a composite config value that did not
+                // fold to a constant is the same WS028 violation the scalar
+                // paths report, surfaced here if typecheck and lowering diverge.
+                None => {
+                    ctx.error(
+                        "WS028",
+                        format!(
+                            "'{}' is a constant-only config field, and its value did not resolve \
+                             to a constant during lowering - the setting would be dropped and the \
+                             gate would use its default",
+                            p.port.as_str()
+                        ),
+                        arg_expr.range(),
+                    );
+                }
             }
             continue;
         }
@@ -239,7 +290,15 @@ pub(in crate::lower) fn lower_builtin_call(
                         | Expr::StringLit { value: member, .. } => et
                             .and_then(|e| crate::catalog::enum_member_value(e, member))
                             .map(Literal::Int),
-                        _ => literal_for_property_port(ctx, value, &Type::Int, false),
+                        // A qualified built-in enum value (`Function =
+                        // EasingFunction.Bounce`) reads its discriminant off the
+                        // folded `{ __disc: N }` record, the same integer the
+                        // bare member name bakes; the declared-param loop above
+                        // does the identical thing. Falls back to the narrow
+                        // property evaluator for an int literal.
+                        _ => et
+                            .and_then(|e| enum_config_discriminant(ctx, value, e).map(Literal::Int))
+                            .or_else(|| literal_for_property_port(ctx, value, &Type::Int, false)),
                     }
                 }
                 "bool" => literal_for_property_port(ctx, value, &Type::Bool, false),
@@ -248,8 +307,29 @@ pub(in crate::lower) fn lower_builtin_call(
                 "string" => literal_for_property_port(ctx, value, &Type::String, false),
                 _ => None,
             };
-            if let Some(lit) = lit {
-                properties.insert(intern(cfg.name.as_str()), lit);
+            match lit {
+                Some(lit) => {
+                    properties.insert(intern(cfg.name.as_str()), lit);
+                }
+                // Same rule the declared-param loop enforces above: a scalar
+                // config field we tried to bake but could not resolve to a
+                // constant is never silently dropped (the gate would ship its
+                // default), so report WS028 when typecheck's acceptance and
+                // lowering's fold diverge. A non-scalar cfg type is not bakeable
+                // on this path and is left alone.
+                None if matches!(cfg.ty.as_str(), "bool" | "int" | "float" | "string" | "enum") => {
+                    ctx.error(
+                        "WS028",
+                        format!(
+                            "'{}' is a constant-only config field, and its value did not resolve \
+                             to a constant during lowering - the setting would be dropped and the \
+                             gate would use its default",
+                            cfg.name
+                        ),
+                        value.range(),
+                    );
+                }
+                None => {}
             }
         }
     }

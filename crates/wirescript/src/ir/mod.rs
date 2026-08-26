@@ -144,6 +144,12 @@ pub enum Type {
     /// An unsubstituted generic type parameter (e.g. `T`). Substituted to a
     /// concrete type by monomorphization; must never reach emit.
     Param(String),
+    /// A user-declared tagged union (`enum Option<T> { Some(T), None }`),
+    /// identified nominally by declaration name: two enums are equal iff
+    /// their `name`s match and their `args` (generic type arguments, e.g.
+    /// `Option<int>`'s `[Int]`) are pairwise equal. Never coerces/widens to a
+    /// different enum, even a structurally identical one.
+    Enum { name: String, args: Vec<Type> },
 }
 
 impl Type {
@@ -188,6 +194,17 @@ impl std::fmt::Display for Type {
             Type::Array(inner) => write!(f, "{inner}[]"),
             Type::Map(k, v) => write!(f, "Map<{k}, {v}>"),
             Type::Param(n) => f.write_str(n),
+            Type::Enum { name, args } => {
+                write!(f, "{name}")?;
+                if !args.is_empty() {
+                    write!(
+                        f,
+                        "<{}>",
+                        args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+                    )?;
+                }
+                Ok(())
+            }
             Type::Union(opts) => {
                 for (i, o) in opts.iter().enumerate() {
                     if i > 0 {

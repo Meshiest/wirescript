@@ -47,8 +47,8 @@ pub fn definition_at(
         return Some(loc);
     }
 
-    // Cursor on a `SendCustomEvent("name", …)` channel-name string → jump to the
-    // matching `on CustomEvent("name") -> (…)` receiver in this file.
+    // Cursor on a `SendCustomEvent("name", ...)` channel-name string → jump to the
+    // matching `on CustomEvent("name") -> (...)` receiver in this file.
     if let Some(loc) = custom_event_send_definition(pre_resolve_ast, source, line, col) {
         return Some(loc);
     }
@@ -56,6 +56,15 @@ pub fn definition_at(
     let word = word_at(source, line, col)?;
 
     if is_field_access(source, line, col) {
+        // Variant use in a construction path (`Shape.Circle`): jump to that
+        // variant's own token inside the `enum Shape` declaration. Checked
+        // first - a user `enum` is never itself a registered value symbol, so
+        // there is nothing else in this block that could resolve it, but a
+        // dedicated resolver keeps it out of the namespace/record-field
+        // fallbacks below (which look for a VALUE symbol, not a type name).
+        if let Some(loc) = resolve_enum_variant_definition(pre_resolve_ast, source, &word, line, col) {
+            return Some(loc);
+        }
         // Namespace-qualified name (`card.drawCard` with `import * as card`):
         // resolve in the imported file. Checked before the symbol loop so a
         // same-named local decl can't shadow the qualified reference.
@@ -71,6 +80,20 @@ pub fn definition_at(
         }
     }
 
+    // Named payload FIELD key in an enum-variant construction
+    // (`Shape.Box { w: 1.0, h: 2.0 }` - the `w`/`h`): jump to that field's own
+    // declaration inside `enum Shape { Box { w: float, ... } }`. Not gated by
+    // `is_field_access` above - the field key isn't preceded by a `.`.
+    if let Some(loc) = resolve_enum_field_construction_definition(pre_resolve_ast, source, line, col) {
+        return Some(loc);
+    }
+
+    // Named payload FIELD key in a match PATTERN (`Box { w, h }` - the `w`/`h`
+    // shorthand capture): best-effort twin of the construction resolver above.
+    if let Some(loc) = resolve_enum_pattern_field_definition(pre_resolve_ast, source, line, col) {
+        return Some(loc);
+    }
+
     for sym in symbols {
         if sym.name == word {
             let file = cross_file_path(sym, current_file);
@@ -82,11 +105,232 @@ pub fn definition_at(
         }
     }
 
+    // Bare enum TYPE name (`Shape` in `var s: Shape`, or the `Shape` in a
+    // `Shape.Circle` path): jump to the `enum Shape` declaration. Checked
+    // AFTER the symbol loop so a value binding of the same name still wins
+    // (the compiler's own shadow rule). A built-in game/prelude enum
+    // (`EasingFunction`, `Option`, ...) has no source location - `find_enum_decl`
+    // only matches a real `TopDecl::Enum`, so it falls through to `None` below.
+    if let Some(loc) = resolve_enum_type_definition(pre_resolve_ast, source, &word) {
+        return Some(loc);
+    }
+
     if find_event(&word).is_some() || calls().get(word.as_str()).is_some() {
         return None;
     }
 
     None
+}
+
+/// Find a top-level `enum` decl named `name` in `decls`, recursing into
+/// namespaces (mirrors `hover::find_top_level_enum_decl`).
+fn find_enum_decl<'a>(decls: &'a [TopDecl], name: &str) -> Option<&'a EnumDecl> {
+    for d in decls {
+        match d {
+            TopDecl::Enum(e) if e.name == name => return Some(e),
+            TopDecl::Namespace(ns) => {
+                if let Some(e) = find_enum_decl(&ns.decls, name) {
+                    return Some(e);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Go-to-definition for a bare enum TYPE name: the `enum Shape` declaration in
+/// `ast` (same file only - `ast` is this file's own pre-resolve AST, and a
+/// user enum is never imported/re-exported through the namespace machinery
+/// the way a mod/chip is). `None` for a built-in game/prelude enum, which has
+/// no `TopDecl::Enum` anywhere to find.
+fn resolve_enum_type_definition(ast: &Script, source: &str, word: &str) -> Option<Location> {
+    let e = find_enum_decl(&ast.decls, word)?;
+    let r = find_name_range(source, &e.range, &e.name).unwrap_or_else(|| e.range.clone());
+    Some(source_range_to_location(&r, None))
+}
+
+/// Go-to-definition for a VARIANT use in a construction path (`Shape.Circle`):
+/// the variant's own token inside the `enum Shape` declaration.
+/// `EnumVariantDecl::range` gives each variant its own source span (unlike a
+/// record field, which has none), so this resolves to the exact variant, not
+/// just the enum. `field` is the word under the cursor (the variant name).
+fn resolve_enum_variant_definition(
+    ast: &Script,
+    source: &str,
+    field: &str,
+    line: usize,
+    col: usize,
+) -> Option<Location> {
+    let l = source.lines().nth(line)?;
+    let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
+    let field_start = l[..c]
+        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    if field_start == 0 || l.as_bytes().get(field_start - 1) != Some(&b'.') {
+        return None;
+    }
+    let dot = field_start - 1;
+    let obj_start = l[..dot]
+        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let enum_name = &l[obj_start..dot];
+    if enum_name.is_empty() {
+        return None;
+    }
+    let e = find_enum_decl(&ast.decls, enum_name)?;
+    let v = e.variants.iter().find(|v| v.name == field)?;
+    let r = find_name_range(source, &v.range, &v.name).unwrap_or_else(|| v.range.clone());
+    Some(source_range_to_location(&r, None))
+}
+
+/// `path` (a `VariantCtor`'s `path` sub-expression) as `(enum_name,
+/// variant_name)`, when it has the `Enum.Variant` `FieldAccess` shape the
+/// parser always builds it from (see `Expr::VariantCtor`'s doc comment).
+/// `None` for any other shape - defensive rather than assumed, in case a
+/// future parser change ever produces something else here.
+fn variant_ctor_path_names(path: &Expr) -> Option<(&str, &str)> {
+    let Expr::FieldAccess { obj, field, .. } = path else {
+        return None;
+    };
+    let Expr::Ident { name, .. } = obj.as_ref() else {
+        return None;
+    };
+    Some((name.as_str(), field.as_str()))
+}
+
+/// Byte offset of a `RecordLitField`'s KEY span (`[start, end)`), regardless
+/// of whether it's a `name: value` pair or a `name` shorthand. A `Named`
+/// field's own `range` covers the WHOLE `key: value` (see
+/// `parser::expr::parse_record_lit`), not just the key, so the key's end is
+/// derived from the field name's byte length rather than read off a
+/// dedicated sub-range. `None` for a `Spread` field (no single key).
+fn record_lit_field_key_span(f: &RecordLitField) -> Option<(&str, usize, usize)> {
+    match f {
+        RecordLitField::Named { name, range, .. } => {
+            Some((name.as_str(), range.start.offset, range.start.offset + name.len()))
+        }
+        RecordLitField::Shorthand { name, range } => Some((name.as_str(), range.start.offset, range.end.offset)),
+        RecordLitField::Spread { .. } => None,
+    }
+}
+
+/// Go-to-definition for a named payload FIELD's KEY in an enum-variant
+/// CONSTRUCTION (`Shape.Box { w: 1.0, h: 2.0 }` - the `w`/`h`): jumps to that
+/// field's own `SourceRange` inside `enum Shape { Box { w: float, ... } }`.
+///
+/// AST-based rather than the text-heuristic style the resolvers above use:
+/// the enum + variant names are only recoverable from the `VariantCtor`'s own
+/// `path` sub-expression, so this walks the AST (via `visit::visit_program`,
+/// which fires `on_call` on `Expr::VariantCtor` itself) looking for
+/// the field whose key span (see [`record_lit_field_key_span`]) contains the
+/// cursor.
+fn resolve_enum_field_construction_definition(ast: &Script, source: &str, line: usize, col: usize) -> Option<Location> {
+    let off = cursor_byte_offset(source, line, col);
+    let mut hit: Option<(&Expr, &str)> = None; // (Enum.Variant path, field name)
+    super::visit::visit_program(
+        ast,
+        &mut |_h| {},
+        &mut |e| {
+            if hit.is_some() {
+                return;
+            }
+            let Expr::VariantCtor { path, fields, .. } = e else {
+                return;
+            };
+            for f in fields {
+                let Some((name, key_start, key_end)) = record_lit_field_key_span(f) else {
+                    continue;
+                };
+                if key_start <= off && off <= key_end {
+                    hit = Some((path, name));
+                }
+            }
+        },
+    );
+    let (path, field_name) = hit?;
+    let (enum_name, variant_name) = variant_ctor_path_names(path)?;
+    let e = find_enum_decl(&ast.decls, enum_name)?;
+    let v = e.variants.iter().find(|v| v.name == variant_name)?;
+    let EnumPayloadDecl::Named(decl_fields) = &v.payload else {
+        return None;
+    };
+    let (_, _, range) = decl_fields.iter().find(|(n, _, _)| n == field_name)?;
+    let r = find_name_range(source, range, field_name).unwrap_or_else(|| range.clone());
+    Some(source_range_to_location(&r, None))
+}
+
+/// Go-to-definition for a named payload FIELD's KEY in a match PATTERN
+/// (`match s { Box { w, h } => ... }` - the `w`/`h`): jumps to that field's
+/// declaration inside the owning `enum`. Best-effort, for two reasons:
+///
+/// - **Enum resolution.** `definition_at` has no typechecked scrutinee type
+///   available here (only `symbols`/`pre_resolve_ast` - no `type_of_expr`
+///   map is threaded through), so the owning enum can't be read off the
+///   `match`'s scrutinee the way a real type-directed resolver would. Instead
+///   this resolves the variant name the same way lowering/const-eval resolve
+///   a BARE variant name: [`crate::typecheck::enums::resolve_bare_variant_enum`],
+///   which only succeeds when exactly one enum in the file declares a variant
+///   with this name. Two enums sharing a variant name makes this genuinely
+///   ambiguous without the scrutinee's real type, so it returns `None` rather
+///   than guessing.
+/// - **Field-key detection.** The parser only keeps a source range for a
+///   named pattern-field's bound `Pattern`, not for its key token (see
+///   `parser::pattern::parse_pattern`) - and in the SHORTHAND branch
+///   (`Box { w, h }`) the bound pattern's range IS the key's own token range
+///   (`Pattern::Binding { name: field_tok.text.clone(), range: <field_tok's
+///   range> }`). An explicit rebinding (`Box { w: renamed }`) has no AST
+///   range for the `w` key at all, so only the shorthand form resolves here.
+fn resolve_enum_pattern_field_definition(ast: &Script, source: &str, line: usize, col: usize) -> Option<Location> {
+    let off = cursor_byte_offset(source, line, col);
+    let mut hit: Option<(&str, &str)> = None; // (variant name, field name)
+    super::visit::visit_program(
+        ast,
+        &mut |_h| {},
+        &mut |e| {
+            if hit.is_some() {
+                return;
+            }
+            let Expr::MatchExpr { arms, .. } = e else {
+                return;
+            };
+            for arm in arms {
+                let Pattern::Variant {
+                    variant,
+                    sub: VariantPattern::Named { fields, .. },
+                    ..
+                } = &arm.pattern
+                else {
+                    continue;
+                };
+                for (key, sub) in fields {
+                    let Pattern::Binding { name, range } = sub else {
+                        continue;
+                    };
+                    if name != key {
+                        continue; // an explicit rebind (`w: renamed`) has no key range to click.
+                    }
+                    if range.start.offset <= off && off <= range.end.offset {
+                        hit = Some((variant.as_str(), key.as_str()));
+                    }
+                }
+            }
+        },
+    );
+    let (variant_name, field_name) = hit?;
+
+    let registry = crate::typecheck::enums::build_registry(&ast.decls);
+    let enum_name = crate::typecheck::enums::resolve_bare_variant_enum(&registry, variant_name, |_| false)?;
+    let e = find_enum_decl(&ast.decls, enum_name)?;
+    let v = e.variants.iter().find(|v| v.name == variant_name)?;
+    let EnumPayloadDecl::Named(decl_fields) = &v.payload else {
+        return None;
+    };
+    let (_, _, range) = decl_fields.iter().find(|(n, _, _)| n == field_name)?;
+    let r = find_name_range(source, range, field_name).unwrap_or_else(|| range.clone());
+    Some(source_range_to_location(&r, None))
 }
 
 fn find_import_definition(
@@ -334,8 +578,8 @@ fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<(&'a str, &'stat
     let Expr::Call { callee, args, .. } = call else {
         return None;
     };
-    // Both `SendCustomEvent("x", …)` and the receiver form
-    // `entity.SendCustomEvent("x", …)` carry the channel name in their args.
+    // Both `SendCustomEvent("x", ...)` and the receiver form
+    // `entity.SendCustomEvent("x", ...)` carry the channel name in their args.
     let send = match callee.as_ref() {
         Expr::Ident { name, .. } => name.as_str(),
         Expr::FieldAccess { field, .. } => field.as_str(),
@@ -346,7 +590,7 @@ fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<(&'a str, &'stat
         "SendGlobalCustomEvent" => "GlobalCustomEvent",
         _ => return None,
     };
-    // The channel name is a named `eventName = …`, else the first positional arg.
+    // The channel name is a named `eventName = ...`, else the first positional arg.
     let name_expr = args
         .iter()
         .find_map(|a| match a {

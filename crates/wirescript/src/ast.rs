@@ -167,11 +167,14 @@ pub enum TopDecl {
     Out(OutBinding),
     Handler(Handler),
     Let(LetDecl),
+    LetElse(LetElse),
     Await(AwaitStmt),
     Assign(Assign),
     If(If),
+    IfLet(IfLet),
     ExprStmt(ExprStmt),
     TypeAlias(TypeAliasDecl),
+    Enum(EnumDecl),
 }
 
 impl TopDecl {
@@ -191,11 +194,14 @@ impl TopDecl {
             TopDecl::Out(d) => &d.range,
             TopDecl::Handler(d) => &d.range,
             TopDecl::Let(d) => &d.range,
+            TopDecl::LetElse(d) => &d.range,
             TopDecl::Await(d) => &d.range,
             TopDecl::Assign(d) => &d.range,
             TopDecl::If(d) => &d.range,
+            TopDecl::IfLet(d) => &d.range,
             TopDecl::ExprStmt(d) => &d.range,
             TopDecl::TypeAlias(d) => &d.range,
+            TopDecl::Enum(d) => &d.range,
         }
     }
 }
@@ -208,6 +214,36 @@ pub struct TypeAliasDecl {
     pub type_params: Vec<TypeParam>,
     pub typ: TypeExpr,
     pub range: SourceRange,
+}
+
+/// `enum Name { Variant, Variant(T, ...), Variant { field: T, ... }, ... }`,
+/// a nominal tagged union. Discriminant assignment (auto-numbering, duplicate
+/// detection) is not done at parse time; the parser only records each
+/// variant's `explicit_disc` when `= N` was written.
+#[derive(Clone, Debug)]
+pub struct EnumDecl {
+    pub name: String,
+    /// Declaration-side generic type parameters: `enum Option<T> { ... }`.
+    /// Empty for non-generic enums.
+    pub type_params: Vec<TypeParam>,
+    pub variants: Vec<EnumVariantDecl>,
+    pub range: SourceRange,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumVariantDecl {
+    pub name: String,
+    /// `Some(N)` when `= N` was written on this variant; `None` otherwise.
+    pub explicit_disc: Option<i64>,
+    pub payload: EnumPayloadDecl,
+    pub range: SourceRange,
+}
+
+#[derive(Clone, Debug)]
+pub enum EnumPayloadDecl {
+    Unit,
+    Positional(Vec<TypeExpr>),
+    Named(Vec<(String, TypeExpr, SourceRange)>),
 }
 
 /// A generic type parameter on a `mod`/`chip`/`type` declaration, e.g. `T` or
@@ -450,6 +486,25 @@ pub struct LetDecl {
     pub range: SourceRange,
 }
 
+/// `let <pattern> = <scrutinee> else { <diverge> }` - a refutable single-
+/// binding pattern (shared with `match`/`if let`) that must destructure or
+/// the `else` block runs. Unlike `LetDecl`, whose `binding` shapes cover only
+/// irrefutable destructuring, `LetElse`'s `pattern` may fail to match, so the
+/// `else` block is mandatory rather than optional and must diverge (return/
+/// emit past this point) - enforced by Task 19 typecheck, not here.
+#[derive(Clone, Debug)]
+pub struct LetElse {
+    pub pattern: Pattern,
+    pub scrutinee: Expr,
+    pub else_block: Block,
+    /// `const <refutable-pattern> = e else { }`: the user wrote `const`, which a
+    /// refutable binding cannot honor (it may fail to match, so its value is not
+    /// a compile-time constant). Recorded here rather than dropped so typecheck
+    /// can reject it.
+    pub is_const: bool,
+    pub range: SourceRange,
+}
+
 #[derive(Clone, Debug)]
 pub enum LetBinding {
     Ident {
@@ -639,8 +694,10 @@ pub enum Stmt {
     Emit(Emit),
     Await(AwaitStmt),
     If(If),
+    IfLet(IfLet),
     In(InDecl),
     Let(LetDecl),
+    LetElse(LetElse),
     OutBinding(OutBinding),
     ExprStmt(ExprStmt),
     Var(VarDecl),
@@ -663,8 +720,10 @@ impl Stmt {
             Stmt::Emit(d) => &d.range,
             Stmt::Await(d) => &d.range,
             Stmt::If(d) => &d.range,
+            Stmt::IfLet(d) => &d.range,
             Stmt::In(d) => &d.range,
             Stmt::Let(d) => &d.range,
+            Stmt::LetElse(d) => &d.range,
             Stmt::OutBinding(d) => &d.range,
             Stmt::ExprStmt(d) => &d.range,
             Stmt::Var(d) => &d.range,
@@ -735,6 +794,19 @@ pub struct AwaitStmt {
 #[derive(Clone, Debug)]
 pub struct If {
     pub cond: Expr,
+    pub then_block: Block,
+    pub else_block: Option<Block>,
+    pub range: SourceRange,
+}
+
+/// `if let <pattern> = <scrutinee> { ... } else { ... }` - a refutable-pattern
+/// conditional, sharing `Pattern` with `match` arms. The `else` is optional
+/// like a plain `if`'s (unlike `let ... else`, which requires one to remain
+/// exhaustive without a bound value on the non-match path).
+#[derive(Clone, Debug)]
+pub struct IfLet {
+    pub pattern: Pattern,
+    pub scrutinee: Expr,
     pub then_block: Block,
     pub else_block: Option<Block>,
     pub range: SourceRange,
@@ -907,6 +979,17 @@ pub enum Expr {
         entries: Vec<MapLitEntry>,
         range: SourceRange,
     },
+    /// Braced-named enum payload construction, `Enum.Variant { f: v, ... }` -
+    /// the record-literal-shaped sibling of a positional variant construction
+    /// (`Enum.Variant(args)`, which reuses the ordinary `Call` node with
+    /// `callee: FieldAccess`). `path` is the `Enum.Variant` `FieldAccess`;
+    /// only the parser's `looks_like_record_lit` disambiguation against a
+    /// braced block ever produces this node (see `parser/expr.rs`).
+    VariantCtor {
+        path: Box<Expr>,
+        fields: Vec<RecordLitField>,
+        range: SourceRange,
+    },
 }
 
 /// An element of an array literal: a single value or a `...spread` of another
@@ -961,7 +1044,8 @@ impl Expr {
             | Expr::AssetRef { range, .. }
             | Expr::PrefabRef { range, .. }
             | Expr::NestedPrefab { range, .. }
-            | Expr::MapLit { range, .. } => range,
+            | Expr::MapLit { range, .. }
+            | Expr::VariantCtor { range, .. } => range,
         }
     }
 
@@ -991,7 +1075,8 @@ impl Expr {
             | Expr::AssetRef { range, .. }
             | Expr::PrefabRef { range, .. }
             | Expr::NestedPrefab { range, .. }
-            | Expr::MapLit { range, .. } => range,
+            | Expr::MapLit { range, .. }
+            | Expr::VariantCtor { range, .. } => range,
         }
     }
 }
@@ -1041,10 +1126,43 @@ pub enum CallArg {
     Spread(Expr),
 }
 
+/// A refutable pattern matched against an enum-typed scrutinee, shared by
+/// `match` arms (and later if-let/let-else). The parser is deliberately
+/// naive about a bare identifier: `Pattern::Binding` covers both an
+/// irrefutable capture (`v`) and a unit variant referenced by name
+/// (`Empty`) - the typechecker reclassifies the latter once the scrutinee's
+/// enum type is known.
+#[derive(Clone, Debug)]
+pub enum Pattern {
+    Wildcard(SourceRange),
+    Binding {
+        name: String,
+        range: SourceRange,
+    },
+    Variant {
+        variant: String,
+        sub: VariantPattern,
+        range: SourceRange,
+    },
+}
+
+/// The payload shape of a `Pattern::Variant`, mirroring `EnumPayloadDecl`'s
+/// three shapes on the pattern side.
+#[derive(Clone, Debug)]
+pub enum VariantPattern {
+    Unit,
+    Positional(Vec<Pattern>),
+    Named {
+        fields: Vec<(String, Pattern)>,
+        /// `Box { w, .. }` - a trailing `..` matches the variant without
+        /// requiring every named field to be listed.
+        ignore_rest: bool,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct MatchArm {
-    pub event_name: String,
-    pub binding: Option<String>,
+    pub pattern: Pattern,
     pub body: MatchBody,
     pub range: SourceRange,
 }

@@ -49,6 +49,7 @@ pub(super) fn build_chip_module(
         mod_return_var: None,
         type_aliases: ctx.type_aliases.clone(),
         generic_type_aliases: ctx.generic_type_aliases.clone(),
+        enum_defs: ctx.enum_defs.clone(),
         pending_emits: HashMap::default(),
         output_backing_vars: HashMap::default(),
         exec_signal_hubs: HashMap::default(),

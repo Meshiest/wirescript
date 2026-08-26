@@ -455,6 +455,65 @@ fn ws059_is_reachable() {
     assert!(diags(src).contains(&"WS059".to_string()));
 }
 
+// WS064 - duplicate discriminant value in an enum declaration [typecheck]
+#[test]
+fn ws064_is_reachable() {
+    let src = "enum E { A = 1, B = 1 }\n";
+    assert!(diags(src).contains(&"WS064".to_string()));
+}
+
+// WS060 - unknown variant on an enum path (`Enum.Variant`) [typecheck]
+#[test]
+fn ws060_is_reachable() {
+    let src = "enum Shape { Empty }\nout d = Shape.Nope\n";
+    assert!(diags(src).contains(&"WS060".to_string()));
+}
+
+// WS065 - wrong bracket form for an enum variant's payload [typecheck]
+#[test]
+fn ws065_is_reachable() {
+    let src = "enum S { Box { w: float } }\nout x = S.Box(1.0)\n";
+    assert!(diags(src).contains(&"WS065".to_string()));
+}
+
+// WS066 - `.Discriminant` / match on a non-enum type [typecheck]
+#[test]
+fn ws066_is_reachable() {
+    let src = "var x: int = 0\nout d = x.Discriminant\n";
+    assert!(diags(src).contains(&"WS066".to_string()));
+}
+
+// WS062 - a `let ... else` whose `else` block does not diverge on every path
+// (it can fall through instead of `return`/`emit`-ing out), which would leave
+// the pattern's binding unavailable past the statement [typecheck]
+#[test]
+fn ws062_is_reachable() {
+    let src = "enum Opt { Some(int), None }\nin o: Opt\nmod f() -> int {\n  let Some(x) = o else { let y = 1 }\n  return x\n}\n";
+    assert!(diags(src).contains(&"WS062".to_string()));
+}
+
+// WS063 - a generic enum's type parameter cannot be inferred (no payload to
+// infer it from, and no annotation supplying it) [typecheck]
+#[test]
+fn ws063_is_reachable() {
+    let src = "enum Option<T> { Some(T), None }\nout n = Option.None\n";
+    assert!(diags(src).contains(&"WS063".to_string()));
+}
+
+// WS054 - non-exhaustive match (a scrutinee variant left uncovered) [typecheck]
+#[test]
+fn ws054_is_reachable() {
+    let src = "enum S { A, B, C }\nin s: S\nout x = match s { A => 1, B => 2 }\n";
+    assert!(diags(src).contains(&"WS054".to_string()));
+}
+
+// WS061 - unreachable match arm (an earlier arm already covers it) [typecheck, warning]
+#[test]
+fn ws061_is_reachable() {
+    let src = "enum S { A, B }\nin s: S\nout x = match s { _ => 0, A => 1 }\n";
+    assert!(diags(src).contains(&"WS061".to_string()));
+}
+
 // WSP001 - lexer error: unexpected character [parse/lexer]
 #[test]
 fn wsp001_is_reachable() {

@@ -949,6 +949,82 @@ on trigger {
 }
 ```
 
+## `match` -- Branch on an Enum Variant
+
+`match` branches on an [enum](enums.md) value's variant, with each arm's
+pattern binding the variant's payload (if any). It works as an
+**expression** (comma-separated value arms, compiles to a `Select` tree) or
+as a **statement** (block arms, compiles to `Branch`/`Union`, exec context
+required):
+
+```wirescript
+enum Shape { Empty, Circle(float), Rect(float, float) }
+
+static var s: Shape = Shape.Circle(5.0)
+
+out area = match s {
+  Circle(r)  => 3.14159 * r * r,
+  Rect(w, h) => w * h,
+  Empty      => 0.0,
+}
+```
+
+```wirescript
+enum Shape { Empty, Circle(float) }
+
+static var s: Shape = Shape.Circle(5.0)
+var lastArea: float = 0.0
+
+on ReadBrickGrid() {
+  match s {
+    Circle(r) => { lastArea = r * r }
+    Empty     => { lastArea = 0.0 }
+  }
+}
+```
+
+A `match` must cover every variant, or end in a `_` wildcard arm -- an
+uncovered variant is a **WS054** error. See [Enums](enums.md#match) for
+exhaustiveness, nested patterns, and the scrutinee limitation (a `match`
+target must be a `var`/`let`/param/`const`, not an enum `in` port).
+
+## `if let` / `let else` -- Refutable Enum Binds
+
+Single-variant shorthand for a one-armed `match`. `if let PATTERN = scrutinee
+{ ... } else { ... }` runs the block only when the scrutinee is that variant,
+with the pattern's bindings in scope; the `else` is optional:
+
+```wirescript
+enum Opt { Some(int), None }
+
+static var o: Opt = Opt.Some(5)
+var result: int = 0
+
+on ReadBrickGrid() {
+  if let Some(x) = o {
+    result = x
+  } else {
+    result = -1
+  }
+}
+```
+
+`let PATTERN = scrutinee else { ... }` binds into the surrounding scope
+instead of a nested block, so its `else` must **diverge** (`return`/`emit`,
+or an `if`/`match` whose arms all diverge) -- a non-diverging `else` is a
+**WS062** error:
+
+```wirescript
+enum Opt { Some(int), None }
+
+mod unwrapOr(v: Opt, fallback: int) -> int {
+  let Some(x) = v else { return fallback }
+  return x
+}
+```
+
+See [Enums](enums.md#if-let--let-else) for the full reference.
+
 ## `on` -- Event Handler
 
 Handlers run code in response to events or triggers. The handler body executes in exec context.

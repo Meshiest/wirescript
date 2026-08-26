@@ -89,6 +89,31 @@
     }
 
     #[test]
+    fn config_referenced_enum_types_covers_the_known_config_enums() {
+        let types = super::config_referenced_enum_types();
+        assert!(!types.is_empty());
+        // The DisplayText enums are named `EBRDisplayTextJustification` /
+        // `EBRTextTypeface` in the bundled schema (verified against
+        // `brdb/crates/brdb/schemas/BRSavedComponentChunkSoA_max.schema`); there
+        // is no `EBRJustification` / `EBRTypeface`, so those exact names are
+        // what this test asserts against.
+        for want in [
+            "EBREasingFunction",
+            "EBrickDirection",
+            "EBRColorSpace",
+            "EBRDisplayTextJustification",
+            "EBRTextTypeface",
+        ] {
+            assert!(types.contains(&want), "missing {want} in {types:?}");
+        }
+        // Deduped and sorted.
+        let mut sorted = types.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, types);
+    }
+
+    #[test]
     fn every_gate_builtin_desugars_to_a_real_method_or_assignment() {
         use crate::catalog::{arrays, gate_builtins as gb, maps};
         // The set builtins carry no expression method (`method_for` returns
@@ -136,4 +161,53 @@
                 ),
             }
         }
+    }
+
+    #[test]
+    fn clean_names_follow_the_rules() {
+        assert_eq!(super::clean_game_enum_type("EBREasingFunction"), "EasingFunction");
+        assert_eq!(super::clean_game_enum_type("EBrickDirection"), "Direction");
+        assert_eq!(super::clean_game_enum_type("EBRColorSpace"), "ColorSpace");
+        assert_eq!(super::clean_game_enum_variant("X_Positive"), "XPositive");
+        assert_eq!(super::clean_game_enum_variant("Linear"), "Linear");
+    }
+
+    #[test]
+    fn builtin_game_enums_are_well_formed_and_unique() {
+        let enums = super::builtin_game_enums();
+        assert!(!enums.is_empty());
+
+        // Clean type names are unique (no silent collision).
+        let mut names: Vec<_> = enums.iter().map(|e| e.clean_name.clone()).collect();
+        let count = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), count, "two schema enums cleaned to the same name");
+
+        // A cleaned name must be a usable Wirescript identifier: non-empty and
+        // starting with a letter (never empty or digit-leading), so a future
+        // schema enum whose cleaning degenerates fails loud here.
+        fn is_identifier_start(name: &str) -> bool {
+            name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        }
+
+        for e in &enums {
+            assert!(is_identifier_start(&e.clean_name), "bad clean type name {:?}", e.clean_name);
+            // Each variant carries the schema's real integer as its discriminant.
+            for v in &e.variants {
+                assert!(is_identifier_start(&v.clean_name), "bad clean variant {:?}", v.clean_name);
+                assert_eq!(super::enum_member_value(e.schema_type, &v.raw_member), Some(v.disc));
+            }
+            // Variant clean names are unique within the enum.
+            let mut vs: Vec<_> = e.variants.iter().map(|v| v.clean_name.clone()).collect();
+            let vc = vs.len();
+            vs.sort();
+            vs.dedup();
+            assert_eq!(vs.len(), vc, "duplicate cleaned variant in {}", e.clean_name);
+            assert_eq!(super::game_enum_schema_type(&e.clean_name), Some(e.schema_type));
+        }
+
+        // A concrete anchor: EasingFunction exists with a Bounce variant.
+        let easing = enums.iter().find(|e| e.clean_name == "EasingFunction").expect("EasingFunction");
+        assert!(easing.variants.iter().any(|v| v.clean_name == "Bounce"));
     }

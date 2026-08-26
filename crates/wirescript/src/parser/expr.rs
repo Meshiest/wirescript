@@ -59,6 +59,92 @@ impl<'a> Parser<'a> {
         self.parse_binary(0)
     }
 
+    /// Parse an expression as a header/condition: a trailing `{ ... }` after a
+    /// path is treated as a block body, not braced variant construction. See
+    /// `Parser::no_brace_construct`.
+    pub(super) fn parse_expr_no_brace_construct(&mut self) -> Expr {
+        let saved = std::mem::replace(&mut self.no_brace_construct, true);
+        let e = self.parse_expr();
+        self.no_brace_construct = saved;
+        e
+    }
+
+    /// Parse an expression inside a bracketed delimiter (`( )`, `[ ]`, call
+    /// args, a record/map/array body), where a trailing `{` is unambiguous, so
+    /// braced construction is re-enabled regardless of any enclosing header.
+    fn parse_expr_delimited(&mut self) -> Expr {
+        let saved = std::mem::replace(&mut self.no_brace_construct, false);
+        let e = self.parse_expr();
+        self.no_brace_construct = saved;
+        e
+    }
+
+    /// [`parse_call_arg`] wrapped like [`parse_expr_delimited`] - a call's
+    /// argument list is a bracketed context.
+    fn parse_call_arg_delimited(&mut self) -> CallArg {
+        let saved = std::mem::replace(&mut self.no_brace_construct, false);
+        let a = self.parse_call_arg();
+        self.no_brace_construct = saved;
+        a
+    }
+
+    /// `match <scrutinee> { <pattern> => <body>, ... }`. Shared by the
+    /// primary-expression form (`parse_primary`) and the statement form
+    /// (`parse_stmt`), which both produce the same `Expr::MatchExpr`. The
+    /// scrutinee is a header position like `if`'s condition: it is parsed
+    /// with `parse_expr_no_brace_construct` so a trailing `{` always opens
+    /// the match body rather than being stolen as braced variant
+    /// construction (`match obj.field { ... }` must not misparse `obj.field
+    /// { ... }` as a `VariantCtor`).
+    pub(super) fn parse_match_expr(&mut self) -> Expr {
+        let start = self.expect(TokenKind::Kw, Some("match")).start;
+        let scrutinee = self.parse_expr_no_brace_construct();
+        self.eat_newlines();
+        self.expect(TokenKind::LBrace, None);
+        self.eat_newlines();
+        let mut arms: Vec<MatchArm> = Vec::new();
+        while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+            let arm_start = self.peek().start;
+            let pattern = self.parse_pattern();
+            self.eat_newlines();
+            self.expect(TokenKind::FatArrow, None);
+            self.eat_newlines();
+            let is_block = self.check(TokenKind::LBrace, None);
+            let body = if is_block {
+                MatchBody::Block(self.parse_block())
+            } else {
+                MatchBody::Expr(self.parse_expr_delimited())
+            };
+            let body_end = match &body {
+                MatchBody::Expr(e) => e.range().end,
+                MatchBody::Block(b) => b.range.end,
+            };
+            arms.push(MatchArm {
+                pattern,
+                body,
+                range: self.make_range(arm_start, body_end),
+            });
+            self.eat_newlines();
+            if is_block {
+                // Block-body arms may omit the separating comma, mirroring
+                // statement lists inside an `if` block.
+                self.match_tok(TokenKind::Comma, None);
+                self.eat_newlines();
+            } else if self.match_tok(TokenKind::Comma, None).is_none() {
+                self.eat_newlines();
+                break;
+            } else {
+                self.eat_newlines();
+            }
+        }
+        let end = self.expect(TokenKind::RBrace, None).end;
+        Expr::MatchExpr {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            range: self.make_range(start, end),
+        }
+    }
+
     fn parse_binary(&mut self, min_prec: u8) -> Expr {
         let mut lhs = self.parse_prefix();
         loop {
@@ -230,9 +316,60 @@ impl<'a> Parser<'a> {
                 }
                 continue;
             }
+            // Braced-named enum payload construction: `Enum.Variant { f: v, ... }`.
+            // COMMITS whenever the path so far is a `FieldAccess` (`A.B`), the
+            // next token is `{` on the same logical line, and we are NOT parsing
+            // a header/condition (`no_brace_construct`). `no_brace_construct`
+            // alone disambiguates `if a.b { ... }` (the body block) from
+            // construction; outside a header the trailing `{` after `A.B` has no
+            // other meaning, so we commit rather than leave it. Committing is the
+            // point: if we only took a well-formed record body and let anything
+            // else fall through, the generic top-level `ExprStmt` fallback would
+            // silently re-parse the leftover `{ ... }` as a separate declaration
+            // - a silent split that drops the whole body (`S.Circle { 5.0 }`,
+            // `E.V { let x = 1 }`, `A.B { call() }`). A bare `Ident { ... }` is
+            // still left alone (`matches!(e, FieldAccess)`), and a `{` on the
+            // NEXT line never reaches here (the postfix loop only skips a leading
+            // newline before a `.`), so a following block still starts its own
+            // statement.
+            if t.kind == TokenKind::LBrace
+                && !self.no_brace_construct
+                && matches!(e, Expr::FieldAccess { .. })
+            {
+                let start = e.range().start;
+                let (fields, end) = if self.looks_like_record_lit() {
+                    // A well-formed record body (`{ name: v }` / shorthand /
+                    // spread / empty `{}`): parse the fields as usual.
+                    match self.parse_record_lit() {
+                        Expr::RecordLit { fields, range } => (fields, range.end),
+                        _ => unreachable!("parse_record_lit always returns Expr::RecordLit"),
+                    }
+                } else {
+                    // A malformed body (`{ 5.0 }`, `{ let x = 1 }`, `{ call() }`):
+                    // still commit - emit a parse diagnostic and consume the
+                    // balanced braces so nothing is left for the decl fallback to
+                    // silently split off. Recovers to a zero-field VariantCtor
+                    // (typecheck then reports the payload-shape error too).
+                    let brace_start = self.peek().start;
+                    let end = self.consume_balanced_braces();
+                    self.error(
+                        "braced construction expects named fields `{ name: value }`; a \
+                         positional variant is called with parentheses, e.g. `S.Circle(5.0)`",
+                        brace_start,
+                        end,
+                    );
+                    (Vec::new(), end)
+                };
+                e = Expr::VariantCtor {
+                    path: Box::new(e),
+                    fields,
+                    range: self.make_range(start, end),
+                };
+                continue;
+            }
             if t.kind == TokenKind::LBracket {
                 self.advance();
-                let idx = self.parse_expr();
+                let idx = self.parse_expr_delimited();
                 let end = self.expect(TokenKind::RBracket, None).end;
                 let start = e.range().start;
                 e = Expr::IndexAccess {
@@ -247,7 +384,7 @@ impl<'a> Parser<'a> {
                 let mut args: Vec<CallArg> = Vec::new();
                 self.eat_newlines();
                 while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
-                    args.push(self.parse_call_arg());
+                    args.push(self.parse_call_arg_delimited());
                     self.eat_newlines();
                     if self.match_tok(TokenKind::Comma, None).is_none() {
                         self.eat_newlines();
@@ -276,7 +413,7 @@ impl<'a> Parser<'a> {
                     let mut args: Vec<CallArg> = Vec::new();
                     self.eat_newlines();
                     while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
-                        args.push(self.parse_call_arg());
+                        args.push(self.parse_call_arg_delimited());
                         self.eat_newlines();
                         if self.match_tok(TokenKind::Comma, None).is_none() {
                             self.eat_newlines();
@@ -455,9 +592,9 @@ impl<'a> Parser<'a> {
                     // `...expr` spreads another array's elements in place.
                     if self.check(TokenKind::Op, Some("...")) {
                         self.advance();
-                        elements.push(ArrayElem::Spread(self.parse_expr()));
+                        elements.push(ArrayElem::Spread(self.parse_expr_delimited()));
                     } else {
-                        elements.push(ArrayElem::Item(self.parse_expr()));
+                        elements.push(ArrayElem::Item(self.parse_expr_delimited()));
                     }
                     self.eat_newlines();
                     if self.match_tok(TokenKind::Comma, None).is_none() {
@@ -538,6 +675,7 @@ impl<'a> Parser<'a> {
                     range: self.make_range(t.start, end),
                 }
             }
+            TokenKind::Kw if t.text == "match" => self.parse_match_expr(),
             TokenKind::Atom => {
                 self.advance();
                 let name = match t.value {
@@ -560,7 +698,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LParen => {
                 self.advance();
-                let e = self.parse_expr();
+                let e = self.parse_expr_delimited();
                 if self.check(TokenKind::Comma, None) {
                     // Tuple literal: (expr, expr, ...)
                     let mut elements = vec![e];
@@ -568,7 +706,7 @@ impl<'a> Parser<'a> {
                         if self.check(TokenKind::RParen, None) {
                             break;
                         }
-                        elements.push(self.parse_expr());
+                        elements.push(self.parse_expr_delimited());
                     }
                     let end = self.expect(TokenKind::RParen, None);
                     // Desugar to a record literal with numeric field names —
@@ -740,17 +878,17 @@ impl<'a> Parser<'a> {
             // `[expr]` computed key, else a normal expression key.
             let key = if self.check(TokenKind::LBracket, None) {
                 self.advance();
-                let k = self.parse_expr();
+                let k = self.parse_expr_delimited();
                 self.expect(TokenKind::RBracket, None);
                 k
             } else {
-                self.parse_expr()
+                self.parse_expr_delimited()
             };
             // Separator: `=>` or `:`.
             if self.match_tok(TokenKind::FatArrow, None).is_none() {
                 self.expect(TokenKind::Colon, None);
             }
-            let value = self.parse_expr();
+            let value = self.parse_expr_delimited();
             let range = self.make_range(key.range().start, value.range().end);
             entries.push(MapLitEntry { key, value, range });
             self.eat_newlines();
@@ -821,7 +959,7 @@ impl<'a> Parser<'a> {
             // `...expr`
             if self.check(TokenKind::Op, Some("...")) {
                 let spread_start = self.advance().start;
-                let value = self.parse_expr();
+                let value = self.parse_expr_delimited();
                 let spread_end = value.range().end;
                 fields.push(RecordLitField::Spread {
                     value,
@@ -831,7 +969,7 @@ impl<'a> Parser<'a> {
                 let name_tok = self.expect(TokenKind::Ident, None);
                 if self.match_tok(TokenKind::Colon, None).is_some() {
                     // Named field: `name: expr`
-                    let value = self.parse_expr();
+                    let value = self.parse_expr_delimited();
                     let field_end = value.range().end;
                     fields.push(RecordLitField::Named {
                         name: name_tok.text,

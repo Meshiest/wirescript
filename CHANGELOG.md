@@ -1,5 +1,15 @@
 # Wirescript Changelog
 
+## 1.7.0
+
+- `enum` types (tagged unions): `enum Shape { Empty, Circle(float), Box { w: float, h: float } }` supports C-like members, positional and named payloads, explicit `= N` discriminants (later members auto-number from there; a collision is `WS064`), and generics (`enum Box<T> { Value(T), Empty }`). Enums are nominal, so two identically-shaped ones are different types. `.Discriminant` reads a value's tag as an `int`, and on a variant path (`Shape.Circle.Discriminant`) it folds to a compile-time constant.
+- `match` branches on a variant and binds its payload, both as an expression (comma-separated value arms, lowering to a `Select` tree) and as a statement (block arms, lowering to `Branch`/`Union`). Coverage is checked: an uncovered variant is `WS054` and names the missing patterns, an arm that can never run is `WS061`, and patterns nest into payloads including other enums. A wrong bracket form for a variant's shape is `WS065`, and `.Discriminant` or `match` on a non-enum is `WS066`.
+- `if let` and `let else` are single-variant refutable binds: `if let Some(x) = o { ... } else { ... }` runs the block only for that variant, and `let Some(x) = o else { return }` binds into the surrounding scope with a required diverging `else` (`WS062`).
+- Built-in `Option<T>` and `Result<T, E>` prelude enums, with their variants usable bare (`Some`/`None`/`Ok`/`Err`); a payload-less bare variant needs a type annotation to pin its parameters (`WS063`).
+- Built-in game enums for the game's own config enums (easing function and direction, brick direction, color space, text justification and typeface): they need no declaration, `.Discriminant` gives their real integer value, and a variant such as `EasingFunction.Bounce` passes directly as the matching gate config argument alongside the older bare-name form.
+- Enum and int conversion: `value.ToInt()` is an alias for `.Discriminant`, and `Enum.FromInt(n)` builds a value from a (possibly runtime) int tag with payloads defaulted to zero. The `EnumToInt` / `IntToEnum` builtins (renamed from `EnumToInteger` / `IntegerToEnum`) are the gate-backed twins: they now require an enum-typed value instead of accepting `any`, fold a compile-time-known value to its tag, and use the game gate at runtime. `IntToEnum`'s result enum type is pinned by the target (`WS063` when it can't be).
+- Editor support for enums: completion of variants, enum type names, and `.Discriminant`; a fill-missing-arms code action; and hover and go-to-definition on enum types, variants, and named payload fields.
+
 ## 1.6.2
 
 - Raise microchips so nested ones are not underground

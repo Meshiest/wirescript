@@ -1598,3 +1598,294 @@
             bad.diagnostics
         );
     }
+
+    #[test]
+    fn parses_enum_decl_with_mixed_variants() {
+        let src = "enum Shape {\n  Empty,\n  Circle(float),\n  Rect(float, float),\n  Box { w: float, h: float },\n}\n";
+        let r = crate::parse(src, "t.ws");
+        let (script, diags) = (&r.ast, &r.diagnostics);
+        assert!(diags.is_empty(), "{diags:?}");
+        let TopDecl::Enum(e) = script.decls.iter().find(|d| matches!(d, TopDecl::Enum(_))).expect("enum decl") else { unreachable!() };
+        assert_eq!(e.name, "Shape");
+        assert_eq!(e.variants.len(), 4);
+        assert!(matches!(e.variants[0].payload, EnumPayloadDecl::Unit));
+        assert!(matches!(&e.variants[1].payload, EnumPayloadDecl::Positional(t) if t.len() == 1));
+        assert!(matches!(&e.variants[2].payload, EnumPayloadDecl::Positional(t) if t.len() == 2));
+        assert!(matches!(&e.variants[3].payload, EnumPayloadDecl::Named(f) if f.len() == 2));
+    }
+
+    #[test]
+    fn parses_enum_explicit_discriminant() {
+        let src = "enum Status { Idle = 0, Running = 5, Done }\n";
+        let r = crate::parse(src, "t.ws");
+        let (script, diags) = (&r.ast, &r.diagnostics);
+        assert!(diags.is_empty(), "{diags:?}");
+        let TopDecl::Enum(e) = &script.decls[0] else { panic!() };
+        assert_eq!(e.variants[0].explicit_disc, Some(0));
+        assert_eq!(e.variants[1].explicit_disc, Some(5));
+        assert_eq!(e.variants[2].explicit_disc, None);
+    }
+
+    #[test]
+    fn parses_enum_multiline_positional_payload() {
+        let src = "enum Shape {\n  Circle(\n    float\n  ),\n  Rect(\n    float,\n    float,\n  ),\n}\n";
+        let r = crate::parse(src, "t.ws");
+        let (script, diags) = (&r.ast, &r.diagnostics);
+        assert!(diags.is_empty(), "{diags:?}");
+        let TopDecl::Enum(e) = &script.decls[0] else { panic!() };
+        assert_eq!(e.variants.len(), 2);
+        assert!(matches!(&e.variants[0].payload, EnumPayloadDecl::Positional(t) if t.len() == 1));
+        assert!(matches!(&e.variants[1].payload, EnumPayloadDecl::Positional(t) if t.len() == 2));
+    }
+
+    #[test]
+    fn if_condition_field_access_body_is_a_block_not_variant_ctor() {
+        // A trailing `{ ... }` after an `if` condition that ends in a field
+        // access is the `if` body, NOT braced variant construction. All three
+        // shapes an empty/short block can take must parse with zero diagnostics.
+        for src in [
+            "in go: exec\nvar flag: bool = false\non go {\n  if flag { }\n}\n",
+            "in go: exec\ntype R = { bar: bool }\nvar flag: bool = false\non go {\n  let r: R = { bar: true }\n  if r.bar { }\n}\n",
+            "in go: exec\ntype R = { bar: bool }\nvar n: int = 0\non go {\n  let r: R = { bar: true }\n  if r.bar { n = 1 }\n}\n",
+        ] {
+            let r = crate::parser::parse(src, "t.ws");
+            assert!(
+                r.diagnostics.is_empty(),
+                "if-condition body must parse as a block: src={src:?} diags={:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn braced_construction_still_parses_in_value_position() {
+        // `Enum.Variant { f: v, ... }` in a value/assignment position parses as
+        // an `Expr::VariantCtor` with the given fields (the header suppression
+        // only applies to condition/header positions, not `out x = ...`).
+        let src = "enum Shape { Box { w: float, h: float } }\nout b = Shape.Box { w: 1.0, h: 2.0 }\n";
+        let r = crate::parser::parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let TopDecl::Out(o) = &r.ast.decls[1] else {
+            panic!("decl 1: {:?}", r.ast.decls[1])
+        };
+        let Some(Expr::VariantCtor { path, fields, .. }) = &o.value else {
+            panic!("out value should be a VariantCtor, got {:?}", o.value)
+        };
+        assert!(
+            matches!(path.as_ref(), Expr::FieldAccess { field, .. } if field == "Box"),
+            "path should be Shape.Box: {path:?}"
+        );
+        assert_eq!(fields.len(), 2, "two named fields: {fields:?}");
+    }
+
+    #[test]
+    fn shorthand_braced_construction_is_a_single_variant_ctor_not_a_split() {
+        // Regression: a shorthand-first braced body (`{ w, h }`) after `A.B` in
+        // a value position must parse as ONE `Expr::VariantCtor`, NOT silently
+        // split into a bare `A.B` plus a separate `{ w, h }` block decl (which
+        // dropped the field values with zero diagnostics).
+        for (src, nfields) in [
+            ("enum Shape { Box { w: float, h: float } }\nout b = Shape.Box { w, h }\n", 2),
+            ("enum Shape { Box { w: float, h: float } }\nout b = Shape.Box { w, h: 2.0 }\n", 2),
+        ] {
+            let r = crate::parser::parse(src, "t.ws");
+            assert!(r.diagnostics.is_empty(), "src={src:?} diags={:?}", r.diagnostics);
+            assert_eq!(
+                r.ast.decls.len(),
+                2,
+                "must not split into extra top-level decls: src={src:?} decls={:?}",
+                r.ast.decls
+            );
+            let TopDecl::Out(o) = &r.ast.decls[1] else {
+                panic!("decl 1: {:?}", r.ast.decls[1])
+            };
+            let Some(Expr::VariantCtor { fields, .. }) = &o.value else {
+                panic!("out value should be a VariantCtor, got {:?}", o.value)
+            };
+            assert_eq!(fields.len(), nfields, "field count: src={src:?} fields={fields:?}");
+        }
+    }
+
+    #[test]
+    fn empty_braced_construction_in_value_position_does_not_split() {
+        // Even an empty `{}` after `A.B` in a value position must be a
+        // VariantCtor (which typecheck then errors on), never a silent split.
+        let src = "enum Shape { Box { w: float } }\nout b = Shape.Box {}\n";
+        let r = crate::parser::parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        assert_eq!(r.ast.decls.len(), 2, "empty-body construction must not split");
+        let TopDecl::Out(o) = &r.ast.decls[1] else {
+            panic!("decl 1: {:?}", r.ast.decls[1])
+        };
+        assert!(
+            matches!(&o.value, Some(Expr::VariantCtor { .. })),
+            "value should be a VariantCtor: {:?}",
+            o.value
+        );
+    }
+
+    #[test]
+    fn malformed_braced_body_commits_with_a_diagnostic_not_a_silent_split() {
+        // A non-record brace body after `A.B` in a value position (the most
+        // plausible real typo: braces instead of parens for a positional
+        // variant, or a stray block) must COMMIT to a single VariantCtor with a
+        // parse diagnostic - NEVER silently split into two decls with the body
+        // dropped.
+        for src in [
+            "enum S { Circle(float) }\nout c = S.Circle { 5.0 }\n",
+            "out b = E.V { let x = 1 }\n",
+            "out b = Shape.Box { computeW() }\n",
+        ] {
+            let r = crate::parser::parse(src, "t.ws");
+            assert!(
+                !r.diagnostics.is_empty(),
+                "malformed braced construction must emit a diagnostic: src={src:?}"
+            );
+            // The `out` decl's value is a single VariantCtor whose malformed body
+            // was consumed (zero recovered fields) - the decl list is NOT the
+            // extra-decl "split" shape.
+            let out = r
+                .ast
+                .decls
+                .iter()
+                .find_map(|d| if let TopDecl::Out(o) = d { Some(o) } else { None })
+                .unwrap_or_else(|| panic!("expected an out decl: src={src:?} decls={:?}", r.ast.decls));
+            assert!(
+                matches!(&out.value, Some(Expr::VariantCtor { fields, .. }) if fields.is_empty()),
+                "value should be a committed VariantCtor with a consumed body: src={src:?} value={:?}",
+                out.value
+            );
+            // No trailing block/exprstmt decl split off after the `out`.
+            assert!(
+                !r.ast.decls.iter().any(|d| matches!(d, TopDecl::ExprStmt(_))),
+                "malformed body must not split into a separate ExprStmt decl: src={src:?} decls={:?}",
+                r.ast.decls
+            );
+        }
+    }
+
+    #[test]
+    fn parses_nested_and_named_patterns() {
+        let p = crate::parser::parse_pattern_str("Node(Some(x))");
+        let Pattern::Variant { variant, sub: VariantPattern::Positional(inner), .. } = p else { panic!() };
+        assert_eq!(variant, "Node");
+        assert!(matches!(&inner[0], Pattern::Variant { variant, .. } if variant == "Some"));
+
+        let q = crate::parser::parse_pattern_str("Box { w, h }");
+        assert!(
+            matches!(q, Pattern::Variant { sub: VariantPattern::Named { ref fields, ignore_rest: false }, .. } if fields.len() == 2)
+        );
+
+        let r = crate::parser::parse_pattern_str("Box { w, .. }");
+        assert!(matches!(r, Pattern::Variant { sub: VariantPattern::Named { ignore_rest: true, .. }, .. }));
+
+        assert!(matches!(crate::parser::parse_pattern_str("_"), Pattern::Wildcard(_)));
+        assert!(matches!(crate::parser::parse_pattern_str("v"), Pattern::Binding { .. }));
+    }
+
+    #[test]
+    fn parses_match_expression_and_statement() {
+        let e = "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+                 out area = match sh {\n  Circle(r) => 3.14 * r * r,\n  Rect(w, h) => w * h,\n  Empty => 0.0,\n}\n";
+        let r = crate::parse(e, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let TopDecl::Out(o) = &r.ast.decls[1] else {
+            panic!("decl 1: {:?}", r.ast.decls[1])
+        };
+        let Some(Expr::MatchExpr { arms, .. }) = &o.value else {
+            panic!("out value should be a MatchExpr, got {:?}", o.value)
+        };
+        assert_eq!(arms.len(), 3, "{arms:?}");
+        assert!(matches!(&arms[0].body, MatchBody::Expr(_)));
+
+        let st = "enum Shape { Empty, Circle(float) }\non go {\n  match sh {\n    Circle(r) => { emit out2 = r }\n    _ => { emit out2 = 0.0 }\n  }\n}\n";
+        let r2 = crate::parse(st, "t.ws");
+        assert!(r2.diagnostics.is_empty(), "{:?}", r2.diagnostics);
+    }
+
+    #[test]
+    fn match_scrutinee_field_access_is_a_match_not_variant_ctor() {
+        // The match scrutinee is a header context, same as `if`'s condition
+        // (`parse_expr_no_brace_construct`): a trailing `{` after a
+        // field-access scrutinee must open the match body, not be stolen as
+        // braced variant construction (`obj.field { ... }` -> VariantCtor).
+        let src = "enum Shape { Empty, Circle(float) }\n\
+                   out area = match obj.field {\n  Circle(r) => r,\n  Empty => 0.0,\n}\n";
+        let r = crate::parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let TopDecl::Out(o) = &r.ast.decls[1] else {
+            panic!("decl 1: {:?}", r.ast.decls[1])
+        };
+        let Some(Expr::MatchExpr { scrutinee, arms, .. }) = &o.value else {
+            panic!("out value should be a MatchExpr, got {:?}", o.value)
+        };
+        assert!(
+            matches!(scrutinee.as_ref(), Expr::FieldAccess { field, .. } if field == "field"),
+            "scrutinee should be obj.field: {scrutinee:?}"
+        );
+        assert_eq!(arms.len(), 2, "{arms:?}");
+    }
+
+    #[test]
+    fn parses_if_let_and_let_else() {
+        let a = "enum Option { Some(int), None }\nin o: Option\non go {\n  if let Some(x) = o { emit r = x } else { emit r = 0 }\n}\nout r: int\n";
+        let ra = crate::parse(a, "t.ws");
+        assert!(ra.diagnostics.is_empty(), "{:?}", ra.diagnostics);
+        let b = "enum Option { Some(int), None }\nin o: Option\nmod f() -> int {\n  let Some(x) = o else { return 0 }\n  return x\n}\n";
+        let rb = crate::parse(b, "t.ws");
+        assert!(rb.diagnostics.is_empty(), "{:?}", rb.diagnostics);
+    }
+
+    #[test]
+    fn if_let_scrutinee_field_access_is_not_a_variant_ctor() {
+        // Same header-context rule as `match`'s scrutinee: a trailing `{`
+        // after a field-access scrutinee opens the then-block, not braced
+        // variant construction (`obj.field { ... }` -> VariantCtor).
+        let src = "enum Option { Some(int), None }\nin o: Option\non go {\n  if let Some(x) = o.field { emit r = x } else { emit r = 0 }\n}\nout r: int\n";
+        let r = crate::parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let handler = r.ast.decls.iter().find_map(|d| match d {
+            TopDecl::Handler(h) => Some(h),
+            _ => None,
+        });
+        let handler = handler.expect("expected a handler decl");
+        let Stmt::IfLet(if_let) = &handler.body.stmts[0] else {
+            panic!("expected an IfLet statement, got {:?}", handler.body.stmts[0])
+        };
+        assert!(
+            matches!(&if_let.scrutinee, Expr::FieldAccess { field, .. } if field == "field"),
+            "scrutinee should be o.field: {:?}",
+            if_let.scrutinee
+        );
+        assert_eq!(if_let.then_block.stmts.len(), 1);
+        assert!(if_let.else_block.is_some());
+    }
+
+    #[test]
+    fn else_if_let_chains() {
+        // `parse_if_else_tail`'s recursive `else if` handling must accept a
+        // chained `if let` (not just a plain `if`) as the nested branch.
+        let src = "enum Option { Some(int), None }\nin o: Option\nin p: Option\non go {\n  if let Some(x) = o { emit r = x } else if let Some(y) = p { emit r = y } else { emit r = 0 }\n}\nout r: int\n";
+        let r = crate::parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let handler = r.ast.decls.iter().find_map(|d| match d {
+            TopDecl::Handler(h) => Some(h),
+            _ => None,
+        });
+        let handler = handler.expect("expected a handler decl");
+        let Stmt::IfLet(outer) = &handler.body.stmts[0] else {
+            panic!("expected an IfLet statement, got {:?}", handler.body.stmts[0])
+        };
+        let inner_block = outer.else_block.as_ref().expect("outer else block");
+        assert_eq!(inner_block.stmts.len(), 1);
+        assert!(matches!(&inner_block.stmts[0], Stmt::IfLet(_)));
+    }
+
+    #[test]
+    fn let_else_without_else_recovers_with_a_diagnostic() {
+        // A refutable pattern head commits to the LetElse path; a missing
+        // `else` is a parse error (via `expect`), not a panic.
+        let src = "enum Option { Some(int), None }\nin o: Option\nmod f() -> int {\n  let Some(x) = o\n  return x\n}\n";
+        let r = crate::parse(src, "t.ws");
+        assert!(!r.diagnostics.is_empty(), "expected a diagnostic for the missing 'else'");
+    }

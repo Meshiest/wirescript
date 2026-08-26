@@ -37,6 +37,13 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS014` | *(warning)* Unused import. | `import { clamp } from "u"`, `clamp` never used |
 | `WS021` | Use before declaration — a chip/mod is called above the point where it's declared (declarations register in source order). | `helper()` above `mod helper() { }` |
 | `WS043` | An `on <call> -> <pattern>` general (non-event) trigger's call has no exec-typed output for `on` to auto-extract — it needs an event, or a call whose result includes an exec field (e.g. via `exec = ...`). | `on pair(5) -> (p, q) { }` where `pair` has two plain (non-exec) outputs and no `exec =` arg |
+| `WS060` | Unknown variant on an enum path (`Enum.Variant`) - the enum has no variant with that name. | `enum Shape { Empty }` then `Shape.Nope` |
+| `WS064` | Duplicate discriminant value in an enum declaration - each variant's tag must be unique. | `enum E { A = 1, B = 1 }` |
+| `WS065` | Wrong bracket form for an enum variant's payload - a named-payload variant called with `(...)`, or a positional-payload variant called with `{ ... }`. | `enum S { Box { w: float } }` then `S.Box(1.0)` |
+| `WS054` | Non-exhaustive `match` - the arms don't cover every value of the scrutinee enum; each uncovered pattern is named in the message. Add the missing arm(s) or a `_` catch-all. | `enum S { A, B, C }` then `match s { A => 1, B => 2 }` |
+| `WS061` | *(warning)* Unreachable `match` arm - an earlier arm already matches every value this one could, so it never runs. | `match s { _ => 0, A => 1 }` |
+| `WS062` | A `let <pattern> = ... else { }` whose `else` block can fall through - it must diverge on every path (`return`/`emit`, or an `if`/`match` whose arms all diverge), since the binding is unavailable when the pattern doesn't match. | `let Some(x) = o else { let y = 1 }` |
+| `WS063` | A generic enum's type parameter can't be inferred - a variant with no payload to pin it (`Option.None`) constructed with no annotation supplying it. Annotate the target (`out n: Option<int> = Option.None`) or use a variant whose payload determines it. | `enum Option<T> { Some(T), None }` then `out n = Option.None` |
 
 ## Types & operators
 
@@ -51,6 +58,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS016` | *(warning)* `let` / `out` annotation doesn't match the inferred type (a checked assertion; string-format coercion is exempt). | `let n: int = s` where `s: string` |
 | `WS025` | A non-storable type used as storage — `any`, `zone`, `teleport`, or `prefab` in a `var` / `buffer` / array / map. | `var x: any = 0` |
 | `WS031` | A reference (`zone` / `teleport` / var ref) used in an `if`-then-else — a Select routes a value, not a reference. | `if c then zoneA else zoneB` |
+| `WS066` | `.Discriminant` (or a `match`) targets a value that isn't an enum. | `var x: int = 0` then `x.Discriminant` |
 
 ## Calls & arguments
 
