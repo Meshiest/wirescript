@@ -1590,6 +1590,23 @@ fn declare_record_container(
     map_key: Option<&Type>,
     range: &SourceRange,
 ) {
+    let record_fields = build_record_fields(ctx, kind, fields, label_base, init, map_key, range);
+    ctx.scope.insert(name, Binding::Record(record_fields));
+}
+
+/// The per-field storage `Binding::Record` of a record var/param - the shared
+/// body of [`declare_record_container`] (which then inserts it into scope) and
+/// the multi-return-mod record storage (`lower::call::inline`, which holds it as
+/// the return value rather than a scope binding).
+pub(super) fn build_record_fields(
+    ctx: &mut LowerCtx,
+    kind: VarStorage,
+    fields: &[crate::ast::RecordTypeField],
+    label_base: &str,
+    init: Option<&Expr>,
+    map_key: Option<&Type>,
+    range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
     let sub_inits = init_record_fields(init);
     let mut record_fields = HashMap::default();
     for f in fields {
@@ -1607,7 +1624,7 @@ fn declare_record_container(
             ),
         );
     }
-    ctx.scope.insert(name, Binding::Record(record_fields));
+    record_fields
 }
 
 /// A construction expression (`Dir.E`, `Shape.Circle(5.0)`,

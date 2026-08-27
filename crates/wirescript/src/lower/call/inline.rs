@@ -455,11 +455,12 @@ pub(in crate::lower) fn lower_chip_call_inline(
     let num_return_values = count_return_values(&chip_decl.body);
     if num_return_values > 1 && chip_decl.outputs.len() == 1 {
         let out_type = ctx.resolve_local_type(&chip_decl.outputs[0].typ);
-        // An ENUM (record-shaped) output allocates the full payload superset as
-        // its return storage, so each `return` stores every slot and a match on
-        // the result reads the runtime-selected branch's payload. A scalar Var
-        // holds only one value and would lose the payload (and a Call-form return
-        // would leak its own construction record to the caller - the C4 bug).
+        // An ENUM or RECORD output allocates a per-field/per-slot storage record
+        // as its return value, so each `return` stores every field and the caller
+        // reads the runtime-selected branch. A scalar Var holds only one value and
+        // would lose the payload (and a record-literal / construction return would
+        // leak its OWN fixed value to the caller regardless of branch - the C4 bug
+        // and its record analog).
         if let Type::Enum { name, .. } = &out_type
             && let Some(def) = ctx.enum_defs.get(name).cloned()
         {
@@ -471,6 +472,21 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 ctx,
                 &def,
                 &args,
+                "__ret",
+                None,
+                None,
+                &chip_decl.body.range,
+            );
+            ctx.mod_return_record = Some(fields);
+        } else if let Some(rfields) = ctx.record_fields_of(&chip_decl.outputs[0].typ) {
+            // A record output (inline `{ x, y }` OR a `type P = { .. }` alias -
+            // `record_fields_of` follows the alias where the resolved `Type` would
+            // not, and returns `Some` only for record types, so this never catches
+            // a scalar).
+            let fields = crate::lower::predeclare::build_record_fields(
+                ctx,
+                VarStorage::Var,
+                &rfields,
                 "__ret",
                 None,
                 None,

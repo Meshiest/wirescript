@@ -282,6 +282,29 @@ fn wrong_payload_arity_is_ws022_or_ws065() {
     let d = diags(src);
     assert!(d.iter().any(|c| c == "WS022" || c == "WS065"), "{d:?}");
 }
+
+// --- A bare variant name for a variant that HAS a payload (`Circle` instead of
+//     `Circle(_)`) parses as a catch-all binding, silently swallowing every value;
+//     WS067 warns and suggests the paren form.
+#[test]
+fn bare_payload_variant_in_match_is_ws067() {
+    let src = "enum S { Empty, Circle(float) }\n\
+               static var s: S = S.Circle(1.0)\n\
+               out a = match s { Circle => 2.0, Empty => 1.0 }\n";
+    assert!(has(src, "WS067"), "{:?}", diags(src));
+}
+#[test]
+fn paren_payload_and_bare_unit_variant_are_not_ws067() {
+    // A payload variant with `(_)` and a bare UNIT variant are both correct.
+    let paren = "enum S { Empty, Circle(float) }\n\
+                 static var s: S = S.Circle(1.0)\n\
+                 out a = match s { Circle(r) => r, Empty => 1.0 }\n";
+    assert!(!has(paren, "WS067"), "{:?}", diags(paren));
+    let all_unit = "enum Dir { N, E, S, W }\n\
+                    static var d: Dir = Dir.E\n\
+                    out b = match d { N => 10, E => 20, S => 30, W => 40 }\n";
+    assert!(!has(all_unit, "WS067"), "{:?}", diags(all_unit));
+}
 // --- A braced `{ .. }` construction on a path that is NOT an enum named-payload
 //     variant must error (WS065), not silently type as `any`.
 #[test]

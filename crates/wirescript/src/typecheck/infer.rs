@@ -2162,6 +2162,41 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     arms[idx].range.clone(),
                 );
             }
+            // Lint (WS067): a bare variant name for a variant that HAS a payload
+            // (`Circle` instead of `Circle(_)`) parses as a catch-all capture, so
+            // it silently swallows every value and can make later arms dead. A
+            // unit variant is correctly written bare, so only a payload variant of
+            // the scrutinee's own enum is flagged. Suspects are collected under the
+            // `enum_defs` borrow, then warned after it drops.
+            let mut bare_payload_variants: Vec<(String, SourceRange)> = Vec::new();
+            if let Type::Enum { name: enum_name, .. } = &scrut_ty
+                && let Some(edef) = ctx.enum_defs.get(enum_name)
+            {
+                for arm in arms {
+                    if let Pattern::Binding {
+                        name: bname,
+                        range: brange,
+                    } = &arm.pattern
+                        && edef.variants.iter().any(|v| {
+                            &v.name == bname
+                                && !matches!(v.payload, crate::typecheck::enums::Payload::Unit)
+                        })
+                    {
+                        bare_payload_variants.push((bname.clone(), brange.clone()));
+                    }
+                }
+            }
+            for (bname, brange) in bare_payload_variants {
+                ctx.warn(
+                    "WS067",
+                    format!(
+                        "`{bname}` names a variant that has a payload, but written bare it binds \
+                         the whole value like a catch-all (which can leave later arms \
+                         unreachable). Did you mean `{bname}(_)`?"
+                    ),
+                    brange,
+                );
+            }
             result
         }
         Expr::RecordLit { fields, .. } => {

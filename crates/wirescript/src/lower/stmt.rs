@@ -195,6 +195,21 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                         }
                     }
                 }
+            } else if ctx.mod_return_record.is_some() {
+                // Multi-return mod with a single ENUM or RECORD output: store the
+                // returned value's fields into the shared return record (per-field
+                // Var_Set), so the caller reads the runtime-selected branch rather
+                // than a leaked construction / record literal from one arm.
+                // `value_record_fields` resolves a record literal, a record var /
+                // field chain, OR an enum/record construction (through its own
+                // may-produce-record lowering) to a field map uniformly, so every
+                // return form routes through the same storage.
+                if let Some(expr) = value {
+                    let ret_rec = ctx.mod_return_record.clone().unwrap();
+                    if let Some(src) = value_record_fields(ctx, expr) {
+                        assign_record_fields(ctx, &ret_rec, &src, &SourceRange::default());
+                    }
+                }
             } else if let Some(Expr::RecordLit { fields, .. }) = value {
                 // A record-literal return: `-> { a, b }` is a single record-typed
                 // output, and a bare record literal is not a standalone
@@ -214,19 +229,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                 // expression's call can set it.
                 ctx.pending_inline_record = None;
                 let val_port = lower_expr(ctx, expr);
-                if let Some(ret_rec) = ctx.mod_return_record.clone() {
-                    // Multi-return mod with an ENUM output: store the returned
-                    // value's slots into the shared return record (per-slot
-                    // Var_Set), so the caller reads the runtime-selected branch.
-                    // The value's field map is either the construction record the
-                    // lowering above stashed, or (a var / field chain) resolved by
-                    // `value_record_fields` without re-lowering.
-                    if let Some(src) = ctx.pending_inline_record.take() {
-                        assign_record_fields(ctx, &ret_rec, &src, &SourceRange::default());
-                    } else if let Some(src) = value_record_fields(ctx, expr) {
-                        assign_record_fields(ctx, &ret_rec, &src, &SourceRange::default());
-                    }
-                } else if matches!(expr, Expr::Call { .. })
+                if matches!(expr, Expr::Call { .. })
                     && let Some(record) = ctx.pending_inline_record.take()
                 {
                     // `return make(x)` where `make` returns a record: the call

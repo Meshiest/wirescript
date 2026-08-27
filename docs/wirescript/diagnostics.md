@@ -58,7 +58,8 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS016` | *(warning)* `let` / `out` annotation doesn't match the inferred type (a checked assertion; string-format coercion is exempt). | `let n: int = s` where `s: string` |
 | `WS025` | A non-storable type used as storage — `any`, `zone`, `teleport`, or `prefab` in a `var` / `buffer` / array / map. | `var x: any = 0` |
 | `WS031` | A reference (`zone` / `teleport` / var ref) used in an `if`-then-else — a Select routes a value, not a reference. | `if c then zoneA else zoneB` |
-| `WS066` | `.Discriminant` (or a `match`) targets a value that isn't an enum. | `var x: int = 0` then `x.Discriminant` |
+| `WS066` | `.Discriminant`, `.ToInt()`, or a `match` targets a value that isn't an enum. | `var x: int = 0` then `x.Discriminant` |
+| `WS067` | A bare variant name for a variant that has a payload (`Circle` instead of `Circle(_)`) in a `match` arm binds the whole value like a catch-all, which can leave later arms unreachable. | `match s { Circle => .., Empty => .. }` |
 
 ## Calls & arguments
 

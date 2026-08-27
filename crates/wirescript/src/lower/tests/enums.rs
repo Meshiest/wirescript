@@ -172,6 +172,34 @@ fn multi_return_enum_mod_forwards_record() {
 }
 
 #[test]
+fn multi_return_record_mod_forwards_runtime_branch() {
+    // The record analog of `multi_return_enum_mod_forwards_record`: a multi-return
+    // mod with a single RECORD output stores each return into per-field return
+    // storage (`__ret.*`, read at runtime), instead of leaking one return's
+    // literal to the caller. Before the fix the caller bound the last return's
+    // `{ x: 3, y: 4 }` and `p.x` folded to the constant 3 regardless of `k`; the
+    // presence of the `__ret.x` return-storage var proves the runtime path.
+    let r = compile(
+        "type Point = { x: int, y: int }\n\
+         mod choose(k: int) -> (p: Point) {\n\
+           if k > 0 { return { x: 1, y: 2 } }\n\
+           return { x: 3, y: 4 }\n\
+         }\n\
+         out a: int\n\
+         on ReadBrickGrid() {\n\
+           let p = choose(1)\n\
+           emit a = p.x\n\
+         }\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert!(
+        gate_count_labelled(&r, "BrickComponentType_WireGraphPseudo_Var", "__ret.x") >= 1,
+        "a multi-return record mod must allocate per-field return storage, not leak a literal"
+    );
+}
+
+#[test]
 fn if_let_lowers_to_branch_and_binds() {
     // Uses `static var o` rather than an input port, same reason as the
     // `match` tests above: an enum INPUT port lowers to a scalar
