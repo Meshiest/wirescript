@@ -140,11 +140,16 @@ pub(in crate::lower) fn lower_chip_call_inline(
                         continue;
                     }
                 }
-                // Whether this param wants a RECORD (an annotated record type,
-                // or a destructuring pattern). Computed before lowering, since
-                // `record_fields_of` borrows `ctx`.
-                let wants_record =
-                    param.pattern.is_some() || ctx.record_fields_of(&param.typ).is_some();
+                // Whether this param wants a RECORD (an annotated record type, a
+                // destructuring pattern, or an ENUM value - which lowers to a
+                // `__disc` + payload-slots record too). Computed before lowering,
+                // since `record_fields_of` borrows `ctx`.
+                let wants_record = param.pattern.is_some()
+                    || ctx.record_fields_of(&param.typ).is_some()
+                    || matches!(ctx.type_of(arg_expr), Type::Enum { .. });
+                // Clear any leftover inline record so only THIS arg's lowering can
+                // set it (an enum construction / record-returning call stashes it).
+                ctx.pending_inline_record = None;
                 let val_port = lower_expr(ctx, arg_expr);
                 // A record-returning CALL as an argument (`Take(Make())`). The
                 // call just stashed its field→source-port record, exactly as it
@@ -161,10 +166,13 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 //
                 // Gated on `wants_record` so a multi-output call passed to a
                 // SCALAR param keeps auto-unwrapping to its first output via
-                // `val_port`, and on `Expr::Call` so a stale record from some
-                // earlier lowering can never be picked up here.
+                // `val_port`, and on the value being a record-producing form (a
+                // call, an enum construction `Shape.Empty` / `Box.Dims { .. }`, or
+                // any enum-typed value) so a stale record from some earlier
+                // lowering can never be picked up here.
                 if wants_record
-                    && matches!(arg_expr, Expr::Call { .. })
+                    && (matches!(arg_expr, Expr::Call { .. } | Expr::VariantCtor { .. })
+                        || matches!(ctx.type_of(arg_expr), Type::Enum { .. }))
                     && let Some(record) = ctx.pending_inline_record.take()
                 {
                     // The stashed map is keyed by the callee's OUTPUT names. A
@@ -439,38 +447,63 @@ pub(in crate::lower) fn lower_chip_call_inline(
     let body_has_return = block_contains_return(&chip_decl.body);
     let saved_return_exec = ctx.mod_return_exec.take();
     let saved_return_var = ctx.mod_return_var.take();
+    let saved_return_record = ctx.mod_return_record.take();
 
-    // For multi-return mods with an output, create a PseudoVar to hold
-    // the return value. Each `return expr` does a Var_Set; after the
-    // return union we Var_Get the result.
+    // For multi-return mods with an output, create storage to hold the return
+    // value. Each `return expr` writes to it; after the return union the caller
+    // reads it (a scalar Var_Get, or - for an enum - the storage record directly).
     let num_return_values = count_return_values(&chip_decl.body);
     if num_return_values > 1 && chip_decl.outputs.len() == 1 {
         let out_type = ctx.resolve_local_type(&chip_decl.outputs[0].typ);
-        let var_id = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::PSEUDO_VAR,
-            source_range: chip_decl.body.range.clone(),
-            ports: GateIO {
-                inputs: vec![],
-                outputs: vec![
-                    PortSpec {
-                        name: *sym::VALUE,
-                        ty: out_type.clone(),
-                    },
-                    PortSpec {
-                        name: *sym::VAR_REF,
-                        ty: Type::Ref(Box::new(out_type.clone())),
-                    },
-                ],
-            },
-            note: Some("ret_val"),
-            ..Default::default()
-        });
-        ctx.mod_return_var = Some(VarRecord {
-            node_id: var_id,
-            inner_type: out_type,
-            get_node_for_handler: None,
-            storage: VarStorage::Var,
-        });
+        // An ENUM (record-shaped) output allocates the full payload superset as
+        // its return storage, so each `return` stores every slot and a match on
+        // the result reads the runtime-selected branch's payload. A scalar Var
+        // holds only one value and would lose the payload (and a Call-form return
+        // would leak its own construction record to the caller - the C4 bug).
+        if let Type::Enum { name, .. } = &out_type
+            && let Some(def) = ctx.enum_defs.get(name).cloned()
+        {
+            let Type::Enum { args, .. } = &out_type else {
+                unreachable!()
+            };
+            let args = args.clone();
+            let fields = crate::lower::predeclare::build_enum_fields(
+                ctx,
+                &def,
+                &args,
+                "__ret",
+                None,
+                None,
+                &chip_decl.body.range,
+            );
+            ctx.mod_return_record = Some(fields);
+        } else {
+            let var_id = ctx.add_gate(AddNodeOpts {
+                gate_class: gc::PSEUDO_VAR,
+                source_range: chip_decl.body.range.clone(),
+                ports: GateIO {
+                    inputs: vec![],
+                    outputs: vec![
+                        PortSpec {
+                            name: *sym::VALUE,
+                            ty: out_type.clone(),
+                        },
+                        PortSpec {
+                            name: *sym::VAR_REF,
+                            ty: Type::Ref(Box::new(out_type.clone())),
+                        },
+                    ],
+                },
+                note: Some("ret_val"),
+                ..Default::default()
+            });
+            ctx.mod_return_var = Some(VarRecord {
+                node_id: var_id,
+                inner_type: out_type,
+                get_node_for_handler: None,
+                storage: VarStorage::Var,
+            });
+        }
     }
 
     lower_block(ctx, &chip_decl.body);
@@ -567,8 +600,12 @@ pub(in crate::lower) fn lower_chip_call_inline(
         None
     };
 
+    // Capture the enum-return storage record (if any) before restoring the
+    // caller's, so it can be handed back as the call's value below.
+    let ret_record_clone = ctx.mod_return_record.clone();
     ctx.mod_return_exec = saved_return_exec;
     ctx.mod_return_var = saved_return_var;
+    ctx.mod_return_record = saved_return_record;
 
     // An explicit trigger's chain must not leak into the caller's context.
     if exec_arg.is_some() {
@@ -613,7 +650,14 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // Records bound by `out <name> = <record>` in THIS body, swapping the
     // caller's own map back in (see `saved_out_records` above).
     let out_records = std::mem::replace(&mut ctx.pending_out_records, saved_out_records);
-    ctx.pending_inline_record = if let Some(rec) = return_record {
+    ctx.pending_inline_record = if let Some(rec) = ret_record_clone {
+        // A multi-return ENUM output: each `return` stored its slots into this
+        // per-slot storage record, so binding it hands the caller the
+        // runtime-selected branch's value (a match reads the storage via
+        // Var_Get). Without this the caller bound a Call-form return's leaked
+        // construction record, ignoring the branch actually taken (the C4 bug).
+        Some(rec)
+    } else if let Some(rec) = return_record {
         // A `return { ... }` record literal: `-> { a, b }` is one record-typed
         // output, so the fields were destructured into a field->binding map
         // rather than wired to the (single) output node. Bind the caller's

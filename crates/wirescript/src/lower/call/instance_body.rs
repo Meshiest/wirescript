@@ -47,6 +47,7 @@ pub(super) fn build_chip_module(
         current_anon_chip: None,
         mod_return_exec: None,
         mod_return_var: None,
+        mod_return_record: None,
         type_aliases: ctx.type_aliases.clone(),
         generic_type_aliases: ctx.generic_type_aliases.clone(),
         enum_defs: ctx.enum_defs.clone(),

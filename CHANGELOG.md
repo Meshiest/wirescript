@@ -12,7 +12,7 @@
 
 ### Fixes
 
-- Calling a `mod` that reads or writes a container in its body (`m.get(k)`, `arr[i]`, `m.set(...)`) from a pure position now reports `WS007`, instead of silently wiring the container reference into the caller.
+- Calling a `mod` that reads or writes a container in its body (`m.get(k)`, `arr[i]`, `m.set(...)`) from a pure position now reports `WS007`, instead of silently wiring the container reference into the caller. This now also covers a container reached through the `mod`'s own parameter (`mod f(m: Map<int, int>) { m.get(0) }`) or a body-local, not just a top-level one.
 - A reference inside an `emit`, `await`, or `buffer` statement now counts as a use, so a genuinely-used import is no longer falsely reported unused (`WS014`) or dropped by Organize Imports.
 
 ## 1.6.2

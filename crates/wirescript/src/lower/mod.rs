@@ -283,6 +283,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         current_anon_chip: None,
         mod_return_exec: None,
         mod_return_var: None,
+        mod_return_record: None,
         type_aliases: {
             let mut m = HashMap::default();
             for d in &input.ast.decls {
@@ -1686,6 +1687,7 @@ pub fn compile_chip_template(
         current_anon_chip: None,
         mod_return_exec: None,
         mod_return_var: None,
+        mod_return_record: None,
         type_aliases: HashMap::default(),
         // Standalone template path (resource estimation / cache) resolves
         // record aliases from inline literals only, matching the empty

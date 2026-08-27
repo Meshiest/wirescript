@@ -389,7 +389,7 @@ fn scope_mods(decls: &[TopDecl]) -> HashMap<String, Arc<ChipDecl>> {
 /// typecheck both read a `const` enum value's tag from.
 pub fn build_const_env(
     decls: &[TopDecl],
-    enum_defs: &crate::collections::HashMap<String, crate::typecheck::enums::EnumDef>,
+    enum_defs: &Arc<crate::collections::HashMap<String, crate::typecheck::enums::EnumDef>>,
 ) -> ConstEnv {
     let mods = scope_mods(decls);
     let lookup_mod = move |name: &str| mods.get(name).cloned();
@@ -434,16 +434,13 @@ pub fn build_const_env(
                 settled[i] = true;
                 continue;
             }
-            // `enum_defs` here is a borrowed `&HashMap` (this function's own
-            // parameter; its signature stays a borrow so both callers can pass
-            // either a bare registry or an `Arc`-backed one via deref
-            // coercion), not the `Arc` the ctx structs carry, so this one site
-            // still pays a deep clone per fixpoint iteration rather than a
-            // refcount bump.
+            // `enum_defs` is the `Arc`-backed registry both callers already hold,
+            // so this per-fixpoint-iteration hand-off is a refcount bump, not a
+            // deep clone of the whole (game-derived, growing) registry.
             let cx = crate::const_eval::ConstCtx {
                 consts: env.clone(),
                 module_consts: env.clone(),
-                enum_defs: Arc::new(enum_defs.clone()),
+                enum_defs: enum_defs.clone(),
                 lookup_mod: Some(&lookup_mod),
             };
             let mut budget = crate::const_eval::Budget::default();

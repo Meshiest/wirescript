@@ -144,7 +144,7 @@ fn literal_display_inner(lit: &Literal) -> String {
 fn const_hover_value(source: &str, file: &str, target_off: usize) -> Option<Literal> {
     let parsed = crate::parser::parse(source, file);
     let script = &parsed.ast;
-    let enum_defs = crate::typecheck::enums::build_registry(&script.decls);
+    let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
     let module_env = crate::lower::build_const_env(&script.decls, &enum_defs);
     let mods = const_mod_table(&script.decls);
     let lookup_mod = |name: &str| mods.get(name).cloned();

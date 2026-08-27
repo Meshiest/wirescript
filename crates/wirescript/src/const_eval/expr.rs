@@ -386,8 +386,11 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // this optimization, never a wrong value.
         Expr::MatchExpr { scrutinee, arms, range } => {
             let scrut_lit = eval_expr(scrutinee, cx, budget)?;
+            // Prefer the enum the SCRUTINEE names directly (`Dir.E`) so an all-unit
+            // match folds; fall back to the arms' own variant citations otherwise.
             if let Literal::Record(_) = &scrut_lit
-                && let Some(edef) = scrutinee_enum(&cx.enum_defs, arms)
+                && let Some(edef) = scrutinee_enum_expr(cx, scrutinee)
+                    .or_else(|| scrutinee_enum(&cx.enum_defs, arms))
             {
                 let scrut_ty = Type::Enum { name: edef.name.clone(), args: vec![] };
                 let arm_patterns: Vec<crate::ast::Pattern> =
@@ -627,6 +630,34 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
 /// match more than one declared enum (ambiguous -- refuse rather than pick
 /// one, the same "refuse rather than guess" discipline `bind_constructor_args`
 /// documents for its own hole-handling).
+/// The governing enum derived from the match SCRUTINEE's own expression when it
+/// names the enum directly: `Dir.E` (a qualified variant reference) or a bare
+/// unit-variant `E`. Const-eval has no type inference, so an all-unit match
+/// (`match Dir.E { N => .., E => .. }`) whose arm names parse as `Pattern::Binding`
+/// rather than `Pattern::Variant` would otherwise not fold via [`scrutinee_enum`]
+/// (which reads only variant citations) - yet the scrutinee already names the
+/// enum unambiguously. Shadow-guarded (a `const` of the enum's name is not a type
+/// reference). `None` for any other scrutinee shape; the caller then falls back to
+/// [`scrutinee_enum`]'s arm-citation search.
+fn scrutinee_enum_expr<'c>(cx: &'c ConstCtx, scrutinee: &Expr) -> Option<&'c EnumDef> {
+    match scrutinee {
+        Expr::FieldAccess { obj, .. } => {
+            let Expr::Ident { name, .. } = obj.as_ref() else {
+                return None;
+            };
+            if cx.consts.contains_key(name.as_str()) {
+                return None;
+            }
+            cx.enum_defs.get(name)
+        }
+        Expr::Ident { name, .. } => {
+            let enum_name = resolve_bare_variant_enum(cx, name)?;
+            cx.enum_defs.get(enum_name)
+        }
+        _ => None,
+    }
+}
+
 fn scrutinee_enum<'e>(
     enum_defs: &'e HashMap<String, EnumDef>,
     arms: &[MatchArm],

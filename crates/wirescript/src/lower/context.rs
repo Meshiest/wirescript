@@ -150,6 +150,13 @@ pub(super) struct LowerCtx<'a> {
     /// For mods with a single output: the PseudoVar node that holds the
     /// return value. Each `return expr` writes to this var via Var_Set.
     pub(super) mod_return_var: Option<VarRecord>,
+    /// For a multi-return mod whose single output is an ENUM (record-shaped):
+    /// the superset per-slot storage record the return value lives in. Each
+    /// `return <enum>` stores its slots here (so the caller reads the
+    /// runtime-selected branch's value, not a leaked construction record), and
+    /// the caller binds this record. The record analog of `mod_return_var`; the
+    /// two are mutually exclusive (a given output is scalar OR enum-shaped).
+    pub(super) mod_return_record: Option<HashMap<crate::intern::Sym, Binding>>,
     /// Type alias map: `Name → TypeExpr::Record { ... }` for dissolving
     /// record params at chip boundaries.
     pub(super) type_aliases: HashMap<String, crate::ast::TypeExpr>,

@@ -261,6 +261,135 @@ fn call_has_exec_arg(args: &[CallArg]) -> bool {
         .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"))
 }
 
+/// The container-typed names visible INSIDE a mod body during the exec-requiring
+/// scan: its parameters and its declared container body-locals.
+/// `container_receiver_type` resolves receivers through the CALLER's scope, where
+/// a mod's own parameters and locals do not exist, so without this a container
+/// reached through a parameter (`mod f(m: Map<..>) { m.get(k) }`) or a body-local
+/// went undetected and a pure call to `f` silently miscompiled. Keyed name -> the
+/// name's resolved type: EVERY parameter is recorded, container or not, so a
+/// non-container parameter correctly SHADOWS a same-named global container rather
+/// than the scan falsely flagging the global.
+type ScanLocals = crate::collections::HashMap<String, Type>;
+
+fn is_scan_container(t: &Type) -> bool {
+    matches!(unwrap_ref(t), Type::Array(_) | Type::Map(_, _))
+}
+
+/// Build the [`ScanLocals`] for one mod body: all parameters, plus every declared
+/// container body-local (`var m: Map<..>`, `array a: T[]`, `map m: ..`) reached
+/// through the body's own control-flow blocks. Type resolution shares the
+/// canonical resolver (aliases + generics), so a `type IntMap = Map<..>` parameter
+/// resolves too.
+///
+/// Residual (documented, narrow): a container reached only through a field chain
+/// rooted at a parameter record (`paramRec.arr.sum()`), or through an untracked
+/// `let` alias of another container, is still not detected - the same class of gap
+/// the whole scan documents, traded against re-inferring `let` RHS types here.
+fn build_scan_locals(ctx: &TypeCheckCtx, decl: &crate::ast::ChipDecl) -> ScanLocals {
+    // The in-scope alias snapshot is an O(scope-size) frame scan, so build it
+    // LAZILY - only when a non-primitive annotation is actually resolved. A
+    // param-less mod (or one with only primitive params, the common case)
+    // resolves nothing and never pays for it, which is what keeps the whole scan
+    // from going O(N^2) again on a deep chain of primitive-typed mods.
+    let alias_map: std::cell::RefCell<Option<crate::collections::HashMap<String, Type>>> =
+        std::cell::RefCell::new(None);
+    let resolve = |te: &crate::ast::TypeExpr| -> Type {
+        if let crate::ast::TypeExpr::Name { name, .. } = te
+            && let Some(prim) = crate::types::resolve::primitive(name)
+        {
+            return prim;
+        }
+        let mut slot = alias_map.borrow_mut();
+        let aliases = slot.get_or_insert_with(|| ctx.scope.type_aliases());
+        let cx = crate::types::resolve::ResolveCtx {
+            params: &[],
+            type_aliases: aliases,
+            generic_aliases: &ctx.generic_type_aliases,
+        };
+        crate::types::resolve::resolve_type(te, &cx, &mut Vec::new())
+    };
+    let mut env: ScanLocals = crate::collections::HashMap::default();
+    for p in &decl.inputs {
+        env.insert(p.name.clone(), resolve(&p.typ));
+    }
+    collect_container_locals(&decl.body, &resolve, &mut env);
+    env
+}
+
+fn collect_container_locals(
+    block: &Block,
+    resolve: &impl Fn(&crate::ast::TypeExpr) -> Type,
+    env: &mut ScanLocals,
+) {
+    for s in &block.stmts {
+        match s {
+            Stmt::Var(v) => {
+                if let Some(te) = &v.typ {
+                    let t = resolve(te);
+                    if is_scan_container(&t) {
+                        env.insert(v.name.clone(), t);
+                    }
+                }
+            }
+            Stmt::Array(a) => {
+                env.insert(
+                    a.name.clone(),
+                    Type::Array(Box::new(resolve(&a.element_type))),
+                );
+            }
+            Stmt::Map(m) => {
+                env.insert(
+                    m.name.clone(),
+                    Type::Map(
+                        Box::new(resolve(&m.key_type)),
+                        Box::new(resolve(&m.value_type)),
+                    ),
+                );
+            }
+            // Descend the mod's own inline control flow. Nested handlers / chips
+            // are separate exec roots (see `stmt_requires_exec`), so their locals
+            // are not part of this mod's pure inline flow and are not collected.
+            Stmt::If(i) => {
+                collect_container_locals(&i.then_block, resolve, env);
+                if let Some(b) = &i.else_block {
+                    collect_container_locals(b, resolve, env);
+                }
+            }
+            Stmt::IfLet(i) => {
+                collect_container_locals(&i.then_block, resolve, env);
+                if let Some(b) = &i.else_block {
+                    collect_container_locals(b, resolve, env);
+                }
+            }
+            Stmt::LetElse(l) => collect_container_locals(&l.else_block, resolve, env),
+            Stmt::ExprStmt(es) => {
+                if let Expr::MatchExpr { arms, .. } = &es.expr {
+                    for arm in arms {
+                        if let MatchBody::Block(b) = &arm.body {
+                            collect_container_locals(b, resolve, env);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Receiver type for the exec-requiring scan: a mod parameter or declared local
+/// (from [`ScanLocals`]) shadows any same-named caller-scope binding, and only
+/// when the name is unknown here does it fall back to `container_receiver_type`
+/// (globals / namespace members visible at the call site).
+fn scan_receiver_type(ctx: &TypeCheckCtx, locals: &ScanLocals, e: &Expr) -> Option<Type> {
+    if let Expr::Ident { name, .. } = e
+        && let Some(t) = locals.get(name)
+    {
+        return Some(unwrap_ref(t));
+    }
+    container_receiver_type(ctx, e)
+}
+
 /// Whether the `mod`/`chip` named `name` is EXEC-REQUIRING: its inlined direct
 /// flow performs an operation that would itself demand an exec context in pure
 /// position (a container read/write, an exec builtin, or a transitive call to
@@ -272,12 +401,23 @@ fn call_has_exec_arg(args: &[CallArg]) -> bool {
 /// instead of a value and silently miscompiles. The call-site check in
 /// `type_user_symbol_call` uses this to turn that miscompile into a loud WS007.
 ///
-/// Memoized in `ctx.exec_requiring_memo` keyed on `name`, so a mod called from
-/// many pure sites is scanned once. The scan is TRANSITIVE across mod calls,
-/// with a visited set breaking recursion cycles; only the top-level query is
-/// memoized (an intermediate answer computed while an ancestor is mid-scan
-/// could be a cycle-cut false negative, so it is left uncached and recomputed
-/// on its own query).
+/// Resolved by scanning each reachable mod ONCE for its DIRECT exec ops plus its
+/// user-mod call edges, then propagating to a least fixpoint over that call graph
+/// (a mod is exec-requiring if it is directly so or any mod it transitively calls
+/// is). Every mod in the reachable set is memoized in `ctx.exec_requiring_memo`,
+/// so the first query resolves the whole subgraph and later queries are O(1) - a
+/// chain of N pure-called mods costs one graph walk, not the O(N^2) of a per-site
+/// re-walk. The fixpoint is cycle-safe: a cycle of non-direct mods stays false
+/// (unlike memoizing a single recursive query, whose cycle-cut could cache a false
+/// negative, which is why the earlier form memoized only the top-level answer).
+///
+/// INVARIANT: the memo (and the edge set) key on the bare mod NAME, so it assumes
+/// a name resolves to one mod program-wide - which `resolve_mod` and the WS013
+/// no-shadowing rule currently guarantee (top-level/chip duplicates are rejected;
+/// imported bodies are not independently exec-checked). If a future change ever
+/// legalizes mod-name shadowing or exec-checks imported bodies, this key must
+/// become scope-qualified or a stale hit could miss a WS007 (a silent miscompile)
+/// or fire a spurious one.
 ///
 /// Precision notes (this must never over-fire on valid code):
 /// - A container method is recognized only when the receiver actually resolves
@@ -290,119 +430,183 @@ fn call_has_exec_arg(args: &[CallArg]) -> bool {
 /// - Independently exec-rooted or separately-compiled body regions - a nested
 ///   `on` handler, a nested `chip`/anon-chip - are NOT scanned: their ops keep
 ///   their own exec context regardless of how this mod is called.
-/// - A receiver that resolves only inside the mod's own scope (a mod parameter
-///   or a body-local container, not visible at the call site) is not detected;
-///   that residual case keeps the pre-existing behavior rather than risking a
-///   false positive.
+/// - A receiver that resolves inside the mod's own scope (a mod parameter or a
+///   declared body-local container) IS detected: `build_scan_locals` seeds the
+///   scan with those names so `mod f(m: Map<..>) { m.get(k) }` called from a pure
+///   site is flagged. The residual is a container reached only through a field
+///   chain rooted at a parameter record, or an untracked `let` alias (see
+///   `build_scan_locals`).
 pub(super) fn mod_is_exec_requiring(ctx: &mut TypeCheckCtx, name: &str) -> bool {
     if let Some(&cached) = ctx.exec_requiring_memo.get(name) {
         return cached;
     }
-    let mut visited = crate::collections::HashSet::default();
-    let result = mod_body_requires_exec(ctx, name, &mut visited);
-    ctx.exec_requiring_memo.insert(name.to_string(), result);
-    result
-}
-
-fn mod_body_requires_exec(
-    ctx: &TypeCheckCtx,
-    name: &str,
-    visited: &mut crate::collections::HashSet<String>,
-) -> bool {
-    // A back-edge to a mod already on the current scan stack contributes no new
-    // op (a mod is never exec-requiring purely through recursion), so cut it.
-    if !visited.insert(name.to_string()) {
-        return false;
+    // Gather the reachable user-mod subgraph from `name`, scanning each mod ONCE
+    // for its direct exec flag and its call edges; then propagate to a least
+    // fixpoint. Nodes already in the memo are final and act as constant inputs, so
+    // their subtrees are not re-expanded.
+    let mut direct: crate::collections::HashMap<String, bool> =
+        crate::collections::HashMap::default();
+    let mut edges: crate::collections::HashMap<String, Vec<String>> =
+        crate::collections::HashMap::default();
+    let mut stack = vec![name.to_string()];
+    while let Some(m) = stack.pop() {
+        if direct.contains_key(&m) || ctx.exec_requiring_memo.contains_key(&m) {
+            continue;
+        }
+        let (d, es) = match ctx.resolve_mod(&m) {
+            Some(decl) => scan_mod_direct(ctx, &decl),
+            None => (false, Vec::new()),
+        };
+        for e in &es {
+            if !direct.contains_key(e) && !ctx.exec_requiring_memo.contains_key(e) {
+                stack.push(e.clone());
+            }
+        }
+        direct.insert(m.clone(), d);
+        edges.insert(m, es);
     }
-    let requires = match ctx.resolve_mod(name) {
-        Some(decl) => block_requires_exec(ctx, &decl.body, visited),
-        None => false,
-    };
-    visited.remove(name);
-    requires
+    // Monotone least fixpoint: a mod is exec-requiring if it is directly so, or any
+    // mod it calls (in this subgraph or already memoized) is. A cycle of non-direct
+    // mods never flips to true, so there is no cycle-cut hazard to guard against.
+    let mut requires = direct;
+    loop {
+        let mut changed = false;
+        let names: Vec<String> = edges.keys().cloned().collect();
+        for m in names {
+            if requires[&m] {
+                continue;
+            }
+            let hit = edges[&m].iter().any(|e| {
+                requires.get(e).copied().unwrap_or(false)
+                    || ctx.exec_requiring_memo.get(e).copied().unwrap_or(false)
+            });
+            if hit {
+                requires.insert(m, true);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (m, r) in &requires {
+        ctx.exec_requiring_memo.insert(m.clone(), *r);
+    }
+    requires.get(name).copied().unwrap_or(false)
 }
 
-fn block_requires_exec(
+/// Scan one mod body for its DIRECT exec-requiring flag (a container op / exec
+/// builtin in its own inlined flow) and the user-mod names it calls (the graph
+/// edges the fixpoint propagates over). Does not recurse into other mods.
+fn scan_mod_direct(ctx: &TypeCheckCtx, decl: &crate::ast::ChipDecl) -> (bool, Vec<String>) {
+    // Resolve receivers against THIS mod's own parameters and container locals
+    // (invisible in the caller scope `container_receiver_type` uses), so a
+    // container reached through a parameter/local is detected.
+    let locals = build_scan_locals(ctx, decl);
+    let mut edges = Vec::new();
+    let direct = block_has_direct_exec(ctx, &decl.body, &locals, &mut edges);
+    (direct, edges)
+}
+
+fn block_has_direct_exec(
     ctx: &TypeCheckCtx,
     block: &Block,
-    visited: &mut crate::collections::HashSet<String>,
+    locals: &ScanLocals,
+    edges: &mut Vec<String>,
 ) -> bool {
-    block
-        .stmts
-        .iter()
-        .any(|s| stmt_requires_exec(ctx, s, visited))
+    // Collect edges from EVERY statement (do not short-circuit on the first direct
+    // hit), so the call graph is complete for the fixpoint.
+    let mut direct = false;
+    for s in &block.stmts {
+        if stmt_has_direct_exec(ctx, s, locals, edges) {
+            direct = true;
+        }
+    }
+    direct
 }
 
-fn stmt_requires_exec(
+fn stmt_has_direct_exec(
     ctx: &TypeCheckCtx,
     stmt: &Stmt,
-    visited: &mut crate::collections::HashSet<String>,
+    locals: &ScanLocals,
+    edges: &mut Vec<String>,
 ) -> bool {
+    // Every arm evaluates ALL of its sub-expressions (non-short-circuiting `|`),
+    // never `||`, so the fixpoint sees the mod's complete call-edge set.
     match stmt {
         // Independently exec-rooted / separately compiled: not part of this
         // mod's inlined pure flow, so their ops keep their own exec context.
         Stmt::Handler(_) | Stmt::AnonChip(_) | Stmt::ChipDecl(_) | Stmt::In(_) => false,
         Stmt::Assign(a) => {
-            expr_requires_exec(ctx, &a.target, visited)
-                || expr_requires_exec(ctx, &a.value, visited)
+            expr_has_direct_exec(ctx, &a.target, locals, edges)
+                | expr_has_direct_exec(ctx, &a.value, locals, edges)
         }
         Stmt::Emit(e) => e
             .value
             .as_ref()
-            .is_some_and(|v| expr_requires_exec(ctx, v, visited)),
+            .is_some_and(|v| expr_has_direct_exec(ctx, v, locals, edges)),
         Stmt::Await(a) => {
-            a.value_expr
+            let v = a
+                .value_expr
                 .as_ref()
-                .is_some_and(|v| expr_requires_exec(ctx, v, visited))
-                || expr_requires_exec(ctx, &a.exec_expr, visited)
+                .is_some_and(|v| expr_has_direct_exec(ctx, v, locals, edges));
+            v | expr_has_direct_exec(ctx, &a.exec_expr, locals, edges)
         }
         Stmt::If(i) => {
-            expr_requires_exec(ctx, &i.cond, visited)
-                || block_requires_exec(ctx, &i.then_block, visited)
-                || i.else_block
-                    .as_ref()
-                    .is_some_and(|b| block_requires_exec(ctx, b, visited))
+            let c = expr_has_direct_exec(ctx, &i.cond, locals, edges);
+            let t = block_has_direct_exec(ctx, &i.then_block, locals, edges);
+            let e = i
+                .else_block
+                .as_ref()
+                .is_some_and(|b| block_has_direct_exec(ctx, b, locals, edges));
+            c | t | e
         }
         Stmt::IfLet(i) => {
-            expr_requires_exec(ctx, &i.scrutinee, visited)
-                || block_requires_exec(ctx, &i.then_block, visited)
-                || i.else_block
-                    .as_ref()
-                    .is_some_and(|b| block_requires_exec(ctx, b, visited))
+            let s = expr_has_direct_exec(ctx, &i.scrutinee, locals, edges);
+            let t = block_has_direct_exec(ctx, &i.then_block, locals, edges);
+            let e = i
+                .else_block
+                .as_ref()
+                .is_some_and(|b| block_has_direct_exec(ctx, b, locals, edges));
+            s | t | e
         }
-        Stmt::Let(l) => expr_requires_exec(ctx, &l.value, visited),
+        Stmt::Let(l) => expr_has_direct_exec(ctx, &l.value, locals, edges),
         Stmt::LetElse(l) => {
-            expr_requires_exec(ctx, &l.scrutinee, visited)
-                || block_requires_exec(ctx, &l.else_block, visited)
+            expr_has_direct_exec(ctx, &l.scrutinee, locals, edges)
+                | block_has_direct_exec(ctx, &l.else_block, locals, edges)
         }
         Stmt::OutBinding(ob) => ob
             .value
             .as_ref()
-            .is_some_and(|v| expr_requires_exec(ctx, v, visited)),
-        Stmt::ExprStmt(es) => expr_requires_exec(ctx, &es.expr, visited),
+            .is_some_and(|v| expr_has_direct_exec(ctx, v, locals, edges)),
+        Stmt::ExprStmt(es) => expr_has_direct_exec(ctx, &es.expr, locals, edges),
         Stmt::Var(v) => v
             .init
             .as_ref()
-            .is_some_and(|e| expr_requires_exec(ctx, e, visited)),
-        Stmt::Buffer(b) => expr_requires_exec(ctx, &b.init, visited),
-        Stmt::Array(ad) => ad
-            .init
-            .iter()
-            .any(|el| expr_requires_exec(ctx, el.expr(), visited)),
+            .is_some_and(|e| expr_has_direct_exec(ctx, e, locals, edges)),
+        Stmt::Buffer(b) => expr_has_direct_exec(ctx, &b.init, locals, edges),
+        Stmt::Array(ad) => {
+            let mut d = false;
+            for el in &ad.init {
+                d |= expr_has_direct_exec(ctx, el.expr(), locals, edges);
+            }
+            d
+        }
         Stmt::Map(md) => md
             .init
             .as_ref()
-            .is_some_and(|e| expr_requires_exec(ctx, e, visited)),
+            .is_some_and(|e| expr_has_direct_exec(ctx, e, locals, edges)),
         Stmt::Return { value, .. } => value
             .as_ref()
-            .is_some_and(|e| expr_requires_exec(ctx, e, visited)),
+            .is_some_and(|e| expr_has_direct_exec(ctx, e, locals, edges)),
     }
 }
 
-fn expr_requires_exec(
+fn expr_has_direct_exec(
     ctx: &TypeCheckCtx,
     e: &Expr,
-    visited: &mut crate::collections::HashSet<String>,
+    locals: &ScanLocals,
+    edges: &mut Vec<String>,
 ) -> bool {
     match e {
         Expr::Call { callee, args, .. } => {
@@ -410,10 +614,13 @@ fn expr_requires_exec(
             // method lowers to an `Exec_*` gate, so it is exec-requiring unless
             // exempt (const-receiver read / `exec =` arg). Recognized only when
             // the receiver actually resolves to a container here, so a same-named
-            // user self-mod is not misread.
+            // user self-mod is not misread. `direct` never short-circuits the rest
+            // of the traversal - callee and args are always walked so their edges
+            // (and any nested op) are recorded even when this call is itself direct.
+            let mut direct = false;
             let mut handled = false;
             if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
-                let mutates = match container_receiver_type(ctx, obj) {
+                let mutates = match scan_receiver_type(ctx, locals, obj) {
                     Some(Type::Array(_)) => {
                         crate::catalog::arrays::array_method(field).map(|m| m.mutates)
                     }
@@ -425,7 +632,7 @@ fn expr_requires_exec(
                 if let Some(mutates) = mutates {
                     handled = true;
                     if !container_call_exec_exempt(ctx, mutates, obj, args) {
-                        return true;
+                        direct = true;
                     }
                 }
             }
@@ -436,54 +643,59 @@ fn expr_requires_exec(
                     Expr::Ident { name, .. } => {
                         if let Some(c) = find_call(name) {
                             if c.exec && !call_has_exec_arg(args) {
-                                return true;
+                                direct = true;
                             }
-                        } else if mod_body_requires_exec(ctx, name, visited) {
-                            // A transitive call to another user mod.
-                            return true;
+                        } else {
+                            // A call to another user mod: record the call-graph
+                            // edge; the fixpoint propagates its exec flag.
+                            edges.push(name.clone());
                         }
                     }
                     // The receiver spelling of the same two cases: an exec-form
                     // receiver builtin (`e.GetLocation()`), else a user
-                    // `self`-receiver mod (`v.helper(o)`) scanned transitively.
+                    // `self`-receiver mod (`v.helper(o)`) - an edge.
                     Expr::FieldAccess { field, .. } => {
                         if let Some(c) = find_call(field).filter(|c| c.receiver.is_some()) {
                             if c.exec && !call_has_exec_arg(args) {
-                                return true;
+                                direct = true;
                             }
-                        } else if mod_body_requires_exec(ctx, field, visited) {
-                            return true;
+                        } else {
+                            edges.push(field.clone());
                         }
                     }
                     _ => {}
                 }
             }
-            expr_requires_exec(ctx, callee, visited)
-                || args.iter().any(|a| match a {
+            direct |= expr_has_direct_exec(ctx, callee, locals, edges);
+            for a in args {
+                direct |= match a {
                     CallArg::Positional(x) | CallArg::Spread(x) => {
-                        expr_requires_exec(ctx, x, visited)
+                        expr_has_direct_exec(ctx, x, locals, edges)
                     }
-                    CallArg::Named { value, .. } => expr_requires_exec(ctx, value, visited),
-                })
+                    CallArg::Named { value, .. } => expr_has_direct_exec(ctx, value, locals, edges),
+                };
+            }
+            direct
         }
         Expr::IndexAccess { obj, index, .. } => {
             let is_container = matches!(
-                container_receiver_type(ctx, obj),
+                scan_receiver_type(ctx, locals, obj),
                 Some(Type::Array(_)) | Some(Type::Map(_, _))
             );
-            if is_container && !index_access_is_const(ctx, e) {
-                return true;
-            }
-            expr_requires_exec(ctx, obj, visited) || expr_requires_exec(ctx, index, visited)
+            let mut direct = is_container && !index_access_is_const(ctx, e);
+            direct |= expr_has_direct_exec(ctx, obj, locals, edges);
+            direct |= expr_has_direct_exec(ctx, index, locals, edges);
+            direct
         }
         Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => {
-            expr_requires_exec(ctx, obj, visited)
+            expr_has_direct_exec(ctx, obj, locals, edges)
         }
         Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
-            expr_requires_exec(ctx, operand, visited)
+            expr_has_direct_exec(ctx, operand, locals, edges)
         }
         Expr::BinOp { left, right, .. } => {
-            expr_requires_exec(ctx, left, visited) || expr_requires_exec(ctx, right, visited)
+            expr_has_direct_exec(ctx, left, locals, edges)
+                | expr_has_direct_exec(ctx, right, locals, edges)
         }
         Expr::IfExpr {
             cond,
@@ -491,42 +703,64 @@ fn expr_requires_exec(
             else_branch,
             ..
         } => {
-            expr_requires_exec(ctx, cond, visited)
-                || expr_requires_exec(ctx, then_branch, visited)
-                || expr_requires_exec(ctx, else_branch, visited)
+            expr_has_direct_exec(ctx, cond, locals, edges)
+                | expr_has_direct_exec(ctx, then_branch, locals, edges)
+                | expr_has_direct_exec(ctx, else_branch, locals, edges)
         }
         Expr::BlockExpr { stmts, value, .. } => {
-            stmts.iter().any(|s| stmt_requires_exec(ctx, s, visited))
-                || expr_requires_exec(ctx, value, visited)
+            let mut d = false;
+            for s in stmts {
+                d |= stmt_has_direct_exec(ctx, s, locals, edges);
+            }
+            d | expr_has_direct_exec(ctx, value, locals, edges)
         }
         Expr::MatchExpr {
             scrutinee, arms, ..
         } => {
-            expr_requires_exec(ctx, scrutinee, visited)
-                || arms.iter().any(|arm| match &arm.body {
-                    MatchBody::Expr(x) => expr_requires_exec(ctx, x, visited),
-                    MatchBody::Block(b) => block_requires_exec(ctx, b, visited),
-                })
+            let mut d = expr_has_direct_exec(ctx, scrutinee, locals, edges);
+            for arm in arms {
+                d |= match &arm.body {
+                    MatchBody::Expr(x) => expr_has_direct_exec(ctx, x, locals, edges),
+                    MatchBody::Block(b) => block_has_direct_exec(ctx, b, locals, edges),
+                };
+            }
+            d
         }
-        Expr::InterpLit { parts, .. } => parts.iter().any(|p| match p {
-            InterpPart::Expr(x) => expr_requires_exec(ctx, x, visited),
-            InterpPart::Lit(_) => false,
-        }),
-        Expr::RecordLit { fields, .. } | Expr::VariantCtor { fields, .. } => {
-            fields.iter().any(|f| match f {
-                RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
-                    expr_requires_exec(ctx, value, visited)
+        Expr::InterpLit { parts, .. } => {
+            let mut d = false;
+            for p in parts {
+                if let InterpPart::Expr(x) = p {
+                    d |= expr_has_direct_exec(ctx, x, locals, edges);
                 }
-                RecordLitField::Shorthand { .. } => false,
-            })
+            }
+            d
         }
-        Expr::Array { elements, .. } => elements
-            .iter()
-            .any(|el| expr_requires_exec(ctx, el.expr(), visited)),
-        Expr::MapLit { entries, .. } => entries.iter().any(|en| {
-            expr_requires_exec(ctx, &en.key, visited)
-                || expr_requires_exec(ctx, &en.value, visited)
-        }),
+        Expr::RecordLit { fields, .. } | Expr::VariantCtor { fields, .. } => {
+            let mut d = false;
+            for f in fields {
+                if let RecordLitField::Named { value, .. }
+                | RecordLitField::Spread { value, .. } = f
+                {
+                    d |= expr_has_direct_exec(ctx, value, locals, edges);
+                }
+            }
+            d
+        }
+        Expr::Array { elements, .. } => {
+            let mut d = false;
+            for el in elements {
+                d |= expr_has_direct_exec(ctx, el.expr(), locals, edges);
+            }
+            d
+        }
+        Expr::MapLit { entries, .. } => {
+            let mut d = false;
+            for en in entries {
+                d |= expr_has_direct_exec(ctx, &en.key, locals, edges);
+                d |= expr_has_direct_exec(ctx, &en.value, locals, edges);
+            }
+            d
+        }
         Expr::IntLit { .. }
         | Expr::AtomLit { .. }
         | Expr::FloatLit { .. }
@@ -2291,13 +2525,27 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // to its integer discriminant. It takes no arguments. Resolved here,
             // ahead of the receiver-method and enum-construction arms below, so
             // it types identically to `.Discriminant` (see the `FieldAccess` /
-            // `Discriminant` arm). A non-enum receiver falls through to the
-            // ordinary call handling.
-            if let Expr::FieldAccess { obj, field, .. } = callee.as_ref()
+            // `Discriminant` arm) - INCLUDING the WS066 on a non-enum receiver,
+            // rather than letting `.ToInt()` on a non-enum decay to a silent
+            // `any` through the permissive unknown-method fallback below.
+            if let Expr::FieldAccess {
+                obj, field, range, ..
+            } = callee.as_ref()
                 && field == "ToInt"
                 && args.is_empty()
-                && matches!(unwrap_ref(&infer(ctx, obj)), Type::Enum { .. })
             {
+                let recv = unwrap_ref(&infer(ctx, obj));
+                if matches!(recv, Type::Enum { .. }) {
+                    return Type::Int;
+                }
+                ctx.emit(
+                    "WS066",
+                    format!(
+                        "`.ToInt()` needs an enum value or variant, found `{}`",
+                        crate::analysis::types::type_str(&recv)
+                    ),
+                    range.clone(),
+                );
                 return Type::Int;
             }
             // Resolve callee if it's a plain identifier.

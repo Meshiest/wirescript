@@ -100,6 +100,78 @@ fn match_statement_lowers_to_branch_union() {
 }
 
 #[test]
+fn let_bound_construction_match_reads_full_superset() {
+    // A `let`-bound enum CONSTRUCTION never reaches a stored `var`, so it must
+    // carry the full payload superset itself - otherwise a match on it can only
+    // read the constructed variant's payload and every other arm falls to
+    // `_Unsupported`. Regression for the C2 silent miscompile: a unit/named
+    // construction bound only `__disc` (dropping the payload), and even the
+    // positional form carried only its own variant's slot. The fixtures use
+    // `var`/top-level-const scrutinees, which get the superset for free, so this
+    // exercises the `let` shape they sidestep.
+    let r = compile(
+        "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+         out v: float\n\
+         on ReadBrickGrid() {\n\
+           let s = Shape.Empty\n\
+           emit v = match s { Empty => 42.0, Circle(w) => w, Rect(w, h) => w + h }\n\
+         }\n",
+    );
+    assert_no_errors(&r);
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+    assert!(!has_gate(&r, "_Unsupported"));
+}
+
+#[test]
+fn enum_construction_as_mod_arg_passes_payload() {
+    // An enum construction passed as a mod ARGUMENT must hand the callee its
+    // payload record, not just `__disc`. Regression for the C3 silent miscompile
+    // where an enum-typed param did not `want_record`, so the body's match on
+    // the parameter fell to `_Unsupported`.
+    let r = compile(
+        "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+         mod area(s: Shape) -> (r: float) {\n\
+           return match s { Empty => 1.0, Circle(w) => w, Rect(w, h) => w + h }\n\
+         }\n\
+         out a: float\n\
+         on ReadBrickGrid() { emit a = area(Shape.Rect(3.0, 4.0)) }\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+}
+
+#[test]
+fn multi_return_enum_mod_forwards_record() {
+    // A multi-output mod whose single output is an enum must forward the payload
+    // RECORD, not a scalar `ret_val`. Regression for the C4 silent miscompile
+    // where matching the returned value lost the payload captures.
+    let r = compile(
+        "enum Shape { Empty, Circle(float), Rect(float, float) }\n\
+         mod choose(k: int) -> (s: Shape) {\n\
+           if k > 0 { return Shape.Circle(7.0) }\n\
+           return Shape.Empty\n\
+         }\n\
+         out a: float\n\
+         on ReadBrickGrid() {\n\
+           let sc = choose(1)\n\
+           emit a = match sc { Empty => 1.0, Circle(w) => w, Rect(w, h) => w + h }\n\
+         }\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    // Value-load-bearing: the match must select on the RUNTIME return value (a
+    // `Select` keyed on a `Var_Get` of the return record's `__disc`), not fold to
+    // a constant. Before the record-valued return storage, a Call-form return
+    // (`Shape.Circle(7.0)`) leaked its own construction record to the caller, so
+    // the scrutinee's tag was a fixed literal and the whole match folded to that
+    // one branch's value - a silent miscompile with NO `_Unsupported` to catch it.
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        "match on a multi-return enum must select at runtime, not fold to a fixed branch"
+    );
+}
+
+#[test]
 fn if_let_lowers_to_branch_and_binds() {
     // Uses `static var o` rather than an input port, same reason as the
     // `match` tests above: an enum INPUT port lowers to a scalar

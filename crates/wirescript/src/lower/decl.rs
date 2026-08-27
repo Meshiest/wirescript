@@ -1154,12 +1154,21 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         }
     }
 
+    // Clear any leftover inline record so only THIS value's lowering can set it
+    // (mirrors the return / out / `value_record_fields` consumers).
+    ctx.pending_inline_record = None;
     let rhs_port = lower_expr(ctx, &d.value);
     let rhs_type = ctx.type_of(&d.value);
 
-    // Multi-output inline mod: the call stashed a field→source-port record (its
-    // output nodes are internal and were removed). Bind the record directly.
-    if matches!(&d.value, Expr::Call { .. })
+    // Record-shaped RHS: a multi-output inline mod call OR an enum CONSTRUCTION
+    // (unit `Shape.Empty` / `None`, positional `Shape.Circle(x)`, or named-payload
+    // `Box.Dims { .. }`), each of which stashes its field→source-port map in
+    // `pending_inline_record` when lowered. Gated on the same
+    // Call/VariantCtor/enum-typed condition `value_record_fields` uses, so every
+    // construction spelling binds a `Binding::Record` rather than the bare
+    // `__disc` scalar (which dropped the payload for the non-Call forms).
+    if (matches!(&d.value, Expr::Call { .. } | Expr::VariantCtor { .. })
+        || matches!(&rhs_type, Type::Enum { .. }))
         && let Some(record) = ctx.pending_inline_record.take()
     {
         match &d.binding {

@@ -351,7 +351,15 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
         _ => Vec::new(),
     };
 
-    let Binding::Record(fields) = lower_enum_ctor(ctx, &enum_name, &variant, payload, e.range())
+    // The concrete type arguments (for a generic enum) come from the use-site
+    // type typecheck pinned, so `build_enum_fields` lays each payload slot out at
+    // its instantiated type.
+    let enum_args = match ctx.type_of(e) {
+        Type::Enum { args, .. } => args,
+        _ => Vec::new(),
+    };
+    let Binding::Record(fields) =
+        lower_enum_ctor(ctx, &enum_name, &enum_args, &variant, payload, e.range())
     else {
         unreachable!("lower_enum_ctor always returns Binding::Record")
     };
@@ -627,33 +635,57 @@ fn try_lower_integer_to_enum(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     Some(disc_port)
 }
 
-/// Build the `Binding::Record` for a KNOWN construction of `variant` on
-/// `enum_name`: `__disc` bound to a `Literal::Int` of the registry
-/// discriminant (a `gc::LITERAL` int gate - a freshly constructed value's tag
-/// is always statically known, even when a payload arg isn't), plus one
-/// `__{variant}_{slot}` binding per `(slot key, port)` in `payload` - the
-/// constructed variant's OWN slots only, per the "Enum value layout" doc on
-/// `LowerCtx::enum_defs` (a var storing this later allocates the superset;
-/// this is just the fresh value). An unknown `enum_name`/`variant` (shouldn't
-/// happen post-typecheck) defaults the discriminant to 0 rather than panicking.
+/// Build the `Binding::Record` for a construction of `variant` on `enum_name`
+/// (with concrete `enum_args` for a generic enum): `__disc` bound to a
+/// `Literal::Int` of the registry discriminant (a fresh value's tag is always
+/// statically known), and the FULL payload superset - every variant's slots,
+/// defaulted via [`build_enum_fields`] - with the constructed variant's own
+/// slots then overwritten by its runtime payload ports. Building the superset
+/// (rather than only the constructed variant's slots) is what lets a later
+/// `match`/`if let`/`let else` on this fresh value read ANY arm's payload; a
+/// value that never reaches a stored `var` (a `let`/`const` binding, a call
+/// argument, a mod return) would otherwise carry only its own variant's slots
+/// and lower every other arm's payload read to `_Unsupported`. An unknown
+/// `enum_name` (shouldn't happen post-typecheck) falls back to a minimal
+/// `__disc(0)` + provided-ports record rather than panicking.
 pub(super) fn lower_enum_ctor(
     ctx: &mut LowerCtx,
     enum_name: &str,
+    enum_args: &[Type],
     variant: &str,
     payload: Vec<(String, PortRef)>,
     range: &SourceRange,
 ) -> Binding {
-    let disc = ctx
-        .enum_defs
-        .get(enum_name)
-        .and_then(|d| d.variants.iter().find(|v| v.name == variant))
+    let Some(def) = ctx.enum_defs.get(enum_name).cloned() else {
+        let mut fields = HashMap::default();
+        let disc_port = literal_node_range(ctx, range, Type::Int, Literal::Int(0));
+        fields.insert(
+            crate::intern::intern("__disc"),
+            Binding::Local(LocalRecord { port: disc_port }),
+        );
+        for (slot_key, port) in payload {
+            fields.insert(
+                crate::intern::intern(&format!("__{variant}_{slot_key}")),
+                Binding::Local(LocalRecord { port }),
+            );
+        }
+        return Binding::Record(fields);
+    };
+    let disc = def
+        .variants
+        .iter()
+        .find(|v| v.name == variant)
         .map(|v| v.discriminant)
         .unwrap_or(0);
-    let mut fields = HashMap::default();
     let disc_port = literal_node_range(ctx, range, Type::Int, Literal::Int(disc));
-    fields.insert(
-        crate::intern::intern("__disc"),
-        Binding::Local(LocalRecord { port: disc_port }),
+    let mut fields = crate::lower::predeclare::build_enum_fields(
+        ctx,
+        &def,
+        enum_args,
+        enum_name,
+        None,
+        Some(disc_port),
+        range,
     );
     for (slot_key, port) in payload {
         fields.insert(

@@ -26,7 +26,7 @@ fn eval_str(src_expr: &str) -> Result<Literal, ConstError> {
 fn eval_ok(src: &str, name: &str) -> Literal {
     let p = crate::parse(src, "test");
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
-    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     env.get(name)
         .unwrap_or_else(|| panic!("'{name}' did not evaluate to a compile-time constant; env = {env:?}"))
@@ -86,13 +86,13 @@ fn eval_mod_call_with(
     // Mirrors `TypeCheckCtx::const_ctx`: `module_consts` is the top-level env
     // alone, `consts` is that env with the caller's open scope frames merged
     // on top.
-    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let mut consts = module_consts.clone();
     for (name, lit) in caller_locals {
         consts.insert(name, lit);
     }
-    let cx = ConstCtx { consts, module_consts, enum_defs: Arc::new(enum_defs), lookup_mod: None };
+    let cx = ConstCtx { consts, module_consts, enum_defs: enum_defs.clone(), lookup_mod: None };
     eval_call(decl, args, &cx, &mut budget)
 }
 
@@ -429,25 +429,40 @@ fn a_const_match_on_a_named_constant_scrutinee_still_folds() {
     assert_eq!(lit, Literal::Float(5.0));
 }
 
-/// A match with no unambiguous `Pattern::Variant` citation anywhere (every
-/// arm is a bare unit-variant name) has no way for this evaluator to
-/// identify the governing enum without type inference -- it refuses rather
-/// than guess, which is always safe (it only costs the fold, never a wrong
-/// value): the binding is left unresolved, exactly like any other
-/// `const` initializer this evaluator cannot fold.
+/// An all-unit match folds when the SCRUTINEE names the enum directly
+/// (`Dir.E`), even though every arm name parses as a `Pattern::Binding` rather
+/// than a `Pattern::Variant` -- the scrutinee reference disambiguates the
+/// governing enum where arm citations alone cannot. Folds to the ACTUAL taken
+/// arm (E -> 20), not the first, proving the disc drives the choice.
 #[test]
-fn a_const_match_with_no_variant_citation_does_not_fold() {
+fn a_const_all_unit_match_folds_via_scrutinee_enum_reference() {
+    let lit = eval_ok(
+        "enum Dir { N, E, S, W }\n\
+         const D = match Dir.E { N => 10, E => 20, S => 30, W => 40 }\n",
+        "D",
+    );
+    assert_eq!(lit, Literal::Int(20));
+}
+
+/// The genuine residual: a match whose scrutinee is a named CONSTANT (which
+/// does not name the enum) AND whose arms are all bare unit-variant names (no
+/// `Pattern::Variant` citation) has no way for this evaluator to identify the
+/// governing enum without type inference -- it refuses rather than guess, which
+/// is always safe (it only costs the fold, never a wrong value).
+#[test]
+fn a_const_match_with_no_enum_identification_does_not_fold() {
     let p = crate::parse(
         "enum Dir { N, E }\n\
-         const D = match Dir.N { N => 1, E => 2 }\n",
+         const s = Dir.N\n\
+         const D = match s { N => 1, E => 2 }\n",
         "test",
     );
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
-    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     assert!(
         env.get("D").is_none(),
-        "a match with no Pattern::Variant citation must not fold, got {:?}",
+        "a match that identifies no governing enum must not fold, got {:?}",
         env.get("D")
     );
 }
@@ -560,13 +575,13 @@ fn eval_mod_call_resolving(
         .iter()
         .find(|c| c.name == callee_name)
         .unwrap_or_else(|| panic!("no decl named '{callee_name}'"));
-    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
     let cx = ConstCtx {
         consts: module_consts.clone(),
         module_consts,
-        enum_defs: Arc::new(enum_defs),
+        enum_defs: enum_defs.clone(),
         lookup_mod: Some(&lookup),
     };
     eval_call(decl, args, &cx, &mut Budget::default())
@@ -619,7 +634,7 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
         })
         .collect();
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
-    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let crate::ast::TopDecl::Let(probe) = p.ast.decls.last().expect("expected at least one decl")
     else {
@@ -628,7 +643,7 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
     let cx = ConstCtx {
         consts: module_consts.clone(),
         module_consts,
-        enum_defs: Arc::new(enum_defs),
+        enum_defs: enum_defs.clone(),
         lookup_mod: Some(&lookup),
     };
     eval_expr(&probe.value, &cx, &mut Budget::default())
@@ -1918,7 +1933,7 @@ fn const_variant_construction_with_a_non_const_argument_does_not_fold() {
                const D = Shape.Circle(live).Discriminant\n";
     let p = crate::parse(src, "test");
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
-    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     assert!(
         env.get("D").is_none(),
@@ -1943,7 +1958,7 @@ fn a_user_mod_named_after_a_prelude_variant_shadows_it_in_const_eval() {
                let y = Some(5)\n";
     let p = crate::parse(src, "test");
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
-    let enum_defs = crate::typecheck::enums::build_registry(&p.ast.decls);
+    let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let env = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     match env.get("y") {
         None => {}

@@ -228,6 +228,84 @@ fn map_mutation_outside_exec_is_ws007() {
 }
 
 #[test]
+fn container_param_read_from_pure_mod_is_ws007() {
+    // A mod that reads a container reached through its own PARAMETER is
+    // exec-requiring; a pure call to it must be WS007, not a silent miscompile
+    // (the map ref used to wire straight into the consumer). The scan resolves
+    // the receiver against the mod's parameters, not the caller's scope.
+    let p = parse(
+        "var mm: Map<int,int> = { 0: 1 }\n\
+         mod rd(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
+         out r = rd(mm)",
+        "test",
+    );
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "pure call of a param-container-reading mod must be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn container_param_read_is_transitive_ws007() {
+    // A -> B where B reads a param container: a pure call of A must still be
+    // WS007 (the call-graph fixpoint propagates B's exec-requirement to A).
+    let p = parse(
+        "var mm: Map<int,int> = { 0: 1 }\n\
+         mod rb(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
+         mod ca(m: Map<int,int>) -> (r: int) { return rb(m) }\n\
+         out r = ca(mm)",
+        "test",
+    );
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "transitive param-container read must be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn non_container_param_shadowing_global_is_not_ws007() {
+    // A mod parameter named like a global container but typed as a scalar must
+    // SHADOW that global in the scan, so a plain read of the parameter is not
+    // mistaken for a container op (no false-positive WS007).
+    let p = parse(
+        "var mm: Map<int,int> = { 0: 1 }\n\
+         mod pass(mm: int) -> (r: int) { return mm + 1 }\n\
+         out r = pass(5)",
+        "test",
+    );
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "a scalar param shadowing a global container must not be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn container_param_read_from_exec_is_clean() {
+    // The same param-container-reading mod is legal when called from an exec
+    // handler - the scan only fires the call-site WS007 in pure position.
+    let p = parse(
+        "var mm: Map<int,int> = { 0: 1 }\n\
+         mod rd(m: Map<int,int>) -> (r: int) { let v = m.get(0)\n  return if v.Found then v.Value else -1 }\n\
+         in go: exec\n\
+         out r: int\n\
+         on go { emit r = rd(mm) }",
+        "test",
+    );
+    let r = crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS007"),
+        "an exec-context call of a container mod must not be WS007: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
 fn array_mutation_inside_exec_is_clean() {
     // The guard must NOT fire for a mutation inside an exec handler.
     let p = parse("var xs: int[]\nin go: exec\non go { xs.push(1) }", "test");
