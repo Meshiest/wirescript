@@ -60,6 +60,10 @@ pub(super) enum FieldKind {
     Str,
     /// Schema enum type (payload = the enum's type name in the schema)
     Enum(&'static str),
+    /// A native `Vector`/`Rotator`/`Quat` struct field (payload = the schema
+    /// struct name), which the inlined literal is reshaped to fit — see
+    /// [`super::variants::reshape_literal_for_struct`].
+    NativeStruct(&'static str),
     /// Anything else — serialized as a native literal
     Native,
 }
@@ -98,6 +102,9 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
                             Some("bundle_path_ref") => FieldKind::BundlePathRef,
                             Some("str") => FieldKind::Str,
                             Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
+                            Some(n @ ("Vector" | "Rotator" | "Quat")) => {
+                                FieldKind::NativeStruct(n)
+                            }
                             _ => FieldKind::Native,
                         },
                         // Array/FlatArray/Map fields have no special emit
@@ -157,13 +164,25 @@ fn schema_field_is_wire_variant(struct_name: &str, field: &str) -> bool {
 
 /// Can a folded constant (`Vec/Rotation/Color` on literal args, lowered to a
 /// `_Literal` node) be delivered to this (gate, port) sink as inlined
-/// component data? True for wire-variant fields and for native
-/// `Vector`/`Rotator`/`Quat` struct fields (the gate stores an unwired
-/// input's value in its data — entity `Set*` gates, Sweep, …). Everything
-/// else — `LinearColor` fields, `Split*` inputs, chip IO, unmapped gates —
-/// must keep a real `Make*` gate, which the lowering pass materializes on
-/// demand.
-pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> bool {
+/// component data? True for wire-variant fields and for a native
+/// `Vector`/`Rotator`/`Quat` struct field whose shape MATCHES `lit` (the
+/// gate stores an unwired input's value in its data — entity `Set*` gates,
+/// Sweep, …). Everything else — `LinearColor` fields, `Split*` inputs, chip
+/// IO, unmapped gates, and any shape mismatch — must keep a real `Make*`
+/// gate, which the lowering pass materializes on demand.
+///
+/// The shape matters because a native struct field is written field-by-field
+/// through the schema and so holds exactly ONE representation: a `Rotator`
+/// (Pitch/Yaw/Roll) has no `X` to hand a `Quat` field (X/Y/Z/W). The
+/// wire-level `Rotator` <-> `Quat` interchange `types::coerce` allows —
+/// `v.Rotate(Rotation(0, -90, 0))` type-checks because
+/// `RotateVector.Rotation` accepts either — therefore needs an explicit
+/// conversion once the value is baked rather than wired, which
+/// [`super::variants::reshape_literal_for_struct`] performs at emit. A shape
+/// this accepts is one that function can produce; anything else is rejected
+/// here and keeps its carrier gate, the same rejection principle as
+/// [`port_accepts_inline_scalar`] one level up in the types.
+pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort, lit: &Literal) -> bool {
     let Some((struct_name, fields, use_wire_variant)) = data_struct_for_gate(gate_class) else {
         return false;
     };
@@ -180,8 +199,10 @@ pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort) -> b
         return false;
     }
     matches!(
-        schema_field_type_str(struct_name, field).as_deref(),
-        Some("Vector" | "Rotator" | "Quat")
+        (schema_field_type_str(struct_name, field).as_deref(), lit),
+        (Some("Vector"), Literal::Vector { .. })
+            | (Some("Rotator"), Literal::Rotator { .. })
+            | (Some("Quat"), Literal::Quat { .. } | Literal::Rotator { .. })
     )
 }
 

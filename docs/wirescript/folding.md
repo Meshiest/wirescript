@@ -5,6 +5,20 @@ semantics table so nothing folds on a guess. Folding sees through chip boundarie
 iterates to a fixpoint -- a fold can unlock another fold, so a chain of constant math
 or nested conditionals collapses in a single compile.
 
+<!-- toc -->
+## Contents
+
+- [Enabling folding](#enabling-folding)
+- [What folds](#what-folds)
+- [Constant inlining into gate data (always on)](#constant-inlining-into-gate-data-always-on)
+- [Strings and composite values (wave 2)](#strings-and-composite-values-wave-2)
+- [What never folds (barriers)](#what-never-folds-barriers)
+- [The certification story](#the-certification-story)
+- [Disabling the pass](#disabling-the-pass)
+- [Guarantee](#guarantee)
+- [See also](#see-also)
+<!-- /toc -->
+
 ## Enabling folding
 
 Folding is **on by default** -- every compile folds unless you opt out. An unannotated

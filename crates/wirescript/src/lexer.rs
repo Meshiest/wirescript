@@ -80,10 +80,13 @@ pub enum InterpPart {
     },
 }
 
+// `enum` is deliberately absent: it is CONTEXTUAL, recognised by the parser
+// only when it opens a declaration (`enum Name {`), so existing code may go on
+// using `enum` as a variable, parameter, or field name.
 pub const KEYWORDS: &[&str] = &[
     "var", "array", "map", "buffer", "chip", "fn", "on", "in", "out", "emit", "let", "if", "else",
     "then", "match", "return", "true", "false", "null", "ref", "open", "mod", "import", "from",
-    "as", "static", "type", "await", "const", "enum",
+    "as", "static", "type", "await", "const",
 ];
 
 fn keyword_set() -> &'static HashSet<&'static str> {

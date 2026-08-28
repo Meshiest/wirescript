@@ -28,9 +28,14 @@ lsp:
 check-bin:
     cargo build --release -p wirescript --bin wirescript-check
 
+# Regenerate the Contents list at the top of each docs/wirescript page
+doc-toc:
+    node crates/wirescript/scripts/gen_doc_toc.mjs
+
 # Type-check every ```wirescript example in docs/wirescript (CI gate)
 doc-check: check-bin
     node crates/wirescript/scripts/check_docs.mjs
+    node crates/wirescript/scripts/gen_doc_toc.mjs --check
 
 # Build WASM module (for playground/SDK)
 wasm:

@@ -146,6 +146,20 @@ fn build_gate_data_map(
                             literal: (**lit).clone(),
                         }
                     })?),
+                    // A native struct field takes one representation, so a
+                    // rotation constant bound for a quaternion field converts
+                    // here rather than at runtime (see
+                    // `reshape_literal_for_struct`).
+                    FieldKind::NativeStruct(struct_ty) => {
+                        let reshaped = reshape_literal_for_struct(struct_ty, lit);
+                        let lit = reshaped.as_ref().unwrap_or(lit);
+                        literal_to_boxed_native(lit).ok_or_else(|| {
+                            EmitError::UnrepresentableLiteral {
+                                field: field.to_string(),
+                                literal: lit.clone(),
+                            }
+                        })?
+                    }
                     _ => literal_to_boxed_native(lit).ok_or_else(|| EmitError::UnrepresentableLiteral {
                         field: field.to_string(),
                         literal: (**lit).clone(),

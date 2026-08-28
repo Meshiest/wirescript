@@ -730,7 +730,9 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             // above), so a cross-module target needs the carrier even when
             // its port could hold an inline value.
             let target_ok = !cross_module
-                && crate::emit::port_accepts_inline_variant(target.gate_class, w.target.port);
+                && src.properties.get(&value_sym).is_some_and(|lit| {
+                    crate::emit::port_accepts_inline_variant(target.gate_class, w.target.port, lit)
+                });
             let target_placeholder =
                 target.gate_class == gc::LITERAL || target.gate_class == gc::UNSUPPORTED;
             if target_ok || target_placeholder {
@@ -858,10 +860,15 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             rewires.push((i, const_id, out_port));
             continue;
         };
-        let target_ok = module
-            .nodes
-            .get(&w.target.node_id)
-            .is_some_and(|t| crate::emit::port_accepts_inline_variant(t.gate_class, w.target.port));
+        let target_ok = match (
+            src.properties.get(&value_sym),
+            module.nodes.get(&w.target.node_id),
+        ) {
+            (Some(lit), Some(t)) => {
+                crate::emit::port_accepts_inline_variant(t.gate_class, w.target.port, lit)
+            }
+            _ => false,
+        };
         if target_ok {
             continue;
         }
@@ -1077,8 +1084,9 @@ fn inline_orphan_literals(module: &mut Module) {
                 }
                 text
             };
+            let text_lit = Literal::String(text.clone());
             let accepts = module.nodes.get(&target_id).is_some_and(|t| {
-                crate::emit::port_accepts_inline_variant(t.gate_class, target_port)
+                crate::emit::port_accepts_inline_variant(t.gate_class, target_port, &text_lit)
             });
             if !accepts {
                 continue;

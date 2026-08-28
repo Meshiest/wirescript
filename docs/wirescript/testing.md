@@ -8,6 +8,15 @@ not.
 Type checking cannot do this job. It proves a program is well formed, not that
 a gate computes what you expected, and the gates are the part with the surprises.
 
+<!-- toc -->
+## Contents
+
+- [The shape](#the-shape)
+- [Compare two paths, not one path against a constant](#compare-two-paths-not-one-path-against-a-constant)
+- [Include a control](#include-a-control)
+- [What an in-game test cannot prove](#what-an-in-game-test-cannot-prove)
+<!-- /toc -->
+
 ## The shape
 
 ```wirescript

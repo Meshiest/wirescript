@@ -1615,6 +1615,27 @@
     }
 
     #[test]
+    fn enum_is_contextual_and_still_usable_as_a_name() {
+        // `enum` opens a declaration only when an identifier follows it, so
+        // programs written before enums existed keep their `enum` variables,
+        // parameters and record fields.
+        let src = "enum Shape { Empty }\n\
+                   var enum: int = 0\n\
+                   type Rec = { enum: int }\n\
+                   mod f(enum: int) -> int { return enum + 1 }\n";
+        let r = crate::parse(src, "t.ws");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        assert!(
+            r.ast.decls.iter().any(|d| matches!(d, TopDecl::Enum(_))),
+            "the declaration form must still parse"
+        );
+        assert!(
+            r.ast.decls.iter().any(|d| matches!(d, TopDecl::Var(v) if v.name == "enum")),
+            "`enum` must still bind as a variable name"
+        );
+    }
+
+    #[test]
     fn parses_enum_explicit_discriminant() {
         let src = "enum Status { Idle = 0, Running = 5, Done }\n";
         let r = crate::parse(src, "t.ws");

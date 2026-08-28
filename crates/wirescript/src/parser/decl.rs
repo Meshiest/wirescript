@@ -136,6 +136,15 @@ impl<'a> Parser<'a> {
             }
             return self.parse_top_decl(); // annotations consumed → guaranteed progress
         }
+        // `enum` is a contextual keyword, so it still lexes as an identifier and
+        // stays usable as a name. Only `enum` followed by another identifier —
+        // the type's name, a shape no expression can take — opens a declaration.
+        if t.kind == TokenKind::Ident
+            && t.text == "enum"
+            && self.peek_at(1).kind == TokenKind::Ident
+        {
+            return Some(self.parse_enum_decl());
+        }
         if t.kind == TokenKind::Kw {
             match t.text.as_str() {
                 "var" => return Some(self.parse_var_decl(false, false, None, None)),
@@ -193,7 +202,6 @@ impl<'a> Parser<'a> {
                 "fn" => return Some(self.parse_fn_decl()),
                 "import" => return Some(self.parse_import_decl()),
                 "type" => return Some(self.parse_type_alias_decl()),
-                "enum" => return Some(self.parse_enum_decl()),
                 "if" => {
                     let s = self.parse_if_stmt();
                     match s {
@@ -692,7 +700,7 @@ impl<'a> Parser<'a> {
 
     // `enum Name { Variant, Variant(T, ...), Variant { field: T, ... } = N, ... }`
     fn parse_enum_decl(&mut self) -> TopDecl {
-        let start = self.expect(TokenKind::Kw, Some("enum")).start;
+        let start = self.expect(TokenKind::Ident, Some("enum")).start;
         let name = self.expect(TokenKind::Ident, None).text;
         let type_params = self.parse_type_params();
         self.expect(TokenKind::LBrace, None);

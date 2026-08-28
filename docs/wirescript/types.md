@@ -2,6 +2,16 @@
 
 Wirescript has a static type system that maps directly to Brickadia's wire graph port types. The type checker validates that wires connect compatible ports and inserts coercion gates where needed.
 
+<!-- toc -->
+## Contents
+
+- [Primitive Types](#primitive-types)
+- [Compound Types](#compound-types)
+- [Generics](#generics)
+- [Type Annotations](#type-annotations)
+- [Field Access on Types](#field-access-on-types)
+<!-- /toc -->
+
 ## Primitive Types
 
 | Type | Description | Default Value |
@@ -608,6 +618,10 @@ let weight = if heavy then 10 else 1  // need if/then for non-0/1 values
 ```
 
 ### Rotation Coercion (Bidirectional)
+
+Both carry their components as `float` fields — `.pitch` `.yaw` `.roll` on a
+`rotator`, `.x` `.y` `.z` `.w` on a `quat` — read through the split gates
+described in [Field Access](expressions.md#vector--color--rotation-components).
 
 A `rotator` (euler) and a `quat` (quaternion) are interchangeable rotation values
 at the wire level, so they coerce to each other freely. This is how a rotation

@@ -2,6 +2,51 @@
 
 Wirescript provides built-in functions that map directly to Brickadia wire graph gates. Each function is either **pure** (returns a value, no exec context needed) or **exec** (requires exec context and chains into the current execution flow).
 
+<!-- toc -->
+## Contents
+
+- [Notation](#notation)
+- [Math / Trigonometry (Pure)](#math--trigonometry-pure)
+- [Bitwise (Pure)](#bitwise-pure)
+- [Vector (Pure)](#vector-pure)
+- [Rotation / Quaternion (Pure)](#rotation--quaternion-pure)
+- [Color (Pure)](#color-pure)
+- [Stateful Exec Values](#stateful-exec-values)
+- [Select / Swap (Pure)](#select--swap-pure)
+- [Edge / Change Detectors](#edge--change-detectors)
+- [Logical XOR (`^^`)](#logical-xor-)
+- [String Operations (Pure)](#string-operations-pure)
+- [String Formatting (Pure)](#string-formatting-pure)
+- [Array Methods (Exec)](#array-methods-exec)
+- [Player Input (Exec)](#player-input-exec)
+- [Controller / Character Conversions (Exec)](#controller--character-conversions-exec)
+- [Camera / Aim (Exec)](#camera--aim-exec)
+- [Display (Exec)](#display-exec)
+- [Entity Getters (Exec)](#entity-getters-exec)
+- [Entity Manipulation (Exec)](#entity-manipulation-exec)
+- [Gamemode (Exec)](#gamemode-exec)
+- [Character (Exec)](#character-exec)
+- [Controller (Exec)](#controller-exec)
+- [Broadcast Messaging (Exec)](#broadcast-messaging-exec)
+- [Audio (Exec)](#audio-exec)
+- [Entity Tags (Exec)](#entity-tags-exec)
+- [Misc (Pure / Exec)](#misc-pure--exec)
+- [Gate config properties](#gate-config-properties)
+- [Clock (Event)](#clock-event)
+- [ChatCommand (Event)](#chatcommand-event)
+- [Custom Events](#custom-events)
+- [Prefab Spawning (Exec)](#prefab-spawning-exec)
+- [Raycasting (Exec)](#raycasting-exec)
+- [Random (Exec)](#random-exec)
+- [Sleep / Delay (Pure)](#sleep--delay-pure)
+- [Exec Override](#exec-override)
+- [Newer builtins](#newer-builtins)
+- [Generic type syntax](#generic-type-syntax)
+- [Maps (`var m: Map<K, V>`)](#maps-var-m-mapk-v)
+- [Exec-flow gates (Union / Branch)](#exec-flow-gates-union--branch)
+- [Callable gate builtins](#callable-gate-builtins)
+<!-- /toc -->
+
 ## Notation
 
 - **Pure** functions are expressions -- they produce a value and can be used anywhere.

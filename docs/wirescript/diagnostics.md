@@ -13,6 +13,21 @@ construct.
 > no emit site. `WS034` was once a generic-chip cross-wiring guard and has
 > since been removed.
 
+<!-- toc -->
+## Contents
+
+- [Execution context](#execution-context)
+- [Names, declarations & imports](#names-declarations--imports)
+- [Types & operators](#types--operators)
+- [Calls & arguments](#calls--arguments)
+- [Generics](#generics)
+- [Ports, outputs & labels](#ports-outputs--labels)
+- [Collections & shapes](#collections--shapes)
+- [Compile-time constants (`const`)](#compile-time-constants-const)
+- [Gate & event config](#gate--event-config)
+- [`any`](#any)
+<!-- /toc -->
+
 ## Execution context
 
 Wirescript has a *pure* context (continuous signal-flow) and an *exec* context

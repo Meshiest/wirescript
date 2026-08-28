@@ -4,6 +4,14 @@ Brickadia behaviour that the language does not define but that programs depend
 on. The language reference tells you what compiles; this page collects what the
 game does with the result, plus the practical tips that follow from it.
 
+<!-- toc -->
+## Contents
+
+- [Rich Text Markup](#rich-text-markup)
+- [Input Action Names](#input-action-names)
+- [DisplayText Screen Placement](#displaytext-screen-placement)
+<!-- /toc -->
+
 ## Rich Text Markup
 
 Any string the game renders as text accepts markup: `DisplayText`,

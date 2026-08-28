@@ -2,6 +2,19 @@
 
 Understanding exec vs pure context is fundamental to writing correct Wirescript. This distinction reflects how Brickadia's wire graph engine actually executes: some gates define continuous signal relationships (pure), while others execute imperatively in response to events (exec).
 
+<!-- toc -->
+## Contents
+
+- [Two Contexts](#two-contexts)
+- [What Requires Exec Context](#what-requires-exec-context)
+- [How to Enter Exec Context](#how-to-enter-exec-context)
+- [Reading Variables: Exec vs Pure](#reading-variables-exec-vs-pure)
+- [Handler Exec Chains](#handler-exec-chains)
+- [Exec Context in Conditional Expressions vs Statements](#exec-context-in-conditional-expressions-vs-statements)
+- [Summary of Context Rules](#summary-of-context-rules)
+- [Await](#await)
+<!-- /toc -->
+
 ## Two Contexts
 
 ### Pure Context

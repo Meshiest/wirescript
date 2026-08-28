@@ -10,6 +10,20 @@ Unlike [`type` aliases](types.md#record-types), which are structural, `enum`
 is **nominal**: two enums with identically-shaped variants are still different
 types.
 
+<!-- toc -->
+## Contents
+
+- [Declaration](#declaration)
+- [Construction](#construction)
+- [`.Discriminant`](#discriminant)
+- [Enum and int conversion](#enum-and-int-conversion)
+- [`match`](#match)
+- [`if let` / `let else`](#if-let--let-else)
+- [Generic enums](#generic-enums)
+- [Built-in `Option` and `Result`](#built-in-option-and-result)
+- [Built-in game enums](#built-in-game-enums)
+<!-- /toc -->
+
 ## Declaration
 
 Discriminants (the integer tag backing each variant) auto-number from `0`. An

@@ -184,6 +184,20 @@ export function initDocs(container, onInsertExample) {
       content.innerHTML = '<pre>' + escapeHtml(md) + '</pre>';
     }
 
+    // Heading anchors: marked (v14) emits no ids, so the "Contents" list each
+    // page opens with would link nowhere. Assign them here with the same slug
+    // rule the generator uses (`scripts/gen_doc_toc.mjs`), including GitHub's
+    // `-1`, `-2` suffixes for repeated headings, so one list works both here
+    // and on GitHub.
+    const seenSlugs = new Map();
+    content.querySelectorAll('h1, h2, h3, h4').forEach(h => {
+      if (h.id) return;
+      const base = slugifyHeading(h.textContent);
+      const n = seenSlugs.get(base) || 0;
+      seenSlugs.set(base, n + 1);
+      h.id = n ? base + '-' + n : base;
+    });
+
     // Syntax-highlight wirescript code blocks via Monaco
     const codeBlocks = content.querySelectorAll('pre code');
     codeBlocks.forEach(block => {
@@ -228,18 +242,45 @@ export function initDocs(container, onInsertExample) {
     content.querySelectorAll('a[href]').forEach(a => {
       const href = a.getAttribute('href');
       if (!href) return;
-      const basename = href.replace(/^.*\//, '');
+      const hash = href.indexOf('#');
+      const anchor = hash === -1 ? '' : href.slice(hash + 1);
+      const target = hash === -1 ? href : href.slice(0, hash);
+      // A bare "#section" is one of this page's own Contents links: scroll the
+      // panel rather than letting the browser rewrite the app's URL.
+      if (!target) {
+        a.addEventListener('click', (e) => { e.preventDefault(); scrollToAnchor(anchor); });
+        return;
+      }
+      const basename = target.replace(/^.*\//, '');
       for (const [page, path] of Object.entries(DOC_MANIFEST)) {
         if (path.endsWith(basename)) {
-          a.addEventListener('click', (e) => { e.preventDefault(); showPage(page); });
+          a.addEventListener('click', async (e) => {
+            e.preventDefault();
+            await showPage(page);
+            if (anchor) scrollToAnchor(anchor);
+          });
           a.removeAttribute('target');
           return;
         }
       }
     });
 
-    // Scroll to top
+    // Scroll to top — a caller that wants an anchor scrolls after this returns.
     content.scrollTop = 0;
+  }
+
+  /** GitHub's heading slug, mirrored by `scripts/gen_doc_toc.mjs`. */
+  function slugifyHeading(text) {
+    return text
+      .trim()
+      .toLowerCase()
+      .replace(/[^\w\- ]+/g, '')
+      .replace(/ /g, '-');
+  }
+
+  function scrollToAnchor(id) {
+    const el = content.querySelector('#' + CSS.escape(id));
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function escapeHtml(str) {

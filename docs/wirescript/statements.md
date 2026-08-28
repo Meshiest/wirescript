@@ -2,6 +2,31 @@
 
 Statements are the building blocks of Wirescript programs. They declare data, define behavior, and control execution flow.
 
+<!-- toc -->
+## Contents
+
+- [`var` -- Mutable Variable](#var----mutable-variable)
+- [`let` -- Immutable Binding](#let----immutable-binding)
+- [`const` -- Compile-Time Binding](#const----compile-time-binding)
+- [`buffer` -- Buffered Value](#buffer----buffered-value)
+- [Arrays -- `var name: elementType[]`](#arrays----var-name-elementtype)
+- [Maps -- `var name: Map<K, V>`](#maps----var-name-mapk-v)
+- [`in` -- Input Port](#in----input-port)
+- [`out` -- Output Port](#out----output-port)
+- [`@left` / `@right` / `@top` / `@bottom` -- Outer Rerouter Pins](#left--right--top--bottom----outer-rerouter-pins)
+- [`if` -- Conditional Statement](#if----conditional-statement)
+- [`match` -- Branch on an Enum Variant](#match----branch-on-an-enum-variant)
+- [`if let` / `let else` -- Refutable Enum Binds](#if-let--let-else----refutable-enum-binds)
+- [`on` -- Event Handler](#on----event-handler)
+- [`let on` -- Event Declaration](#let-on----event-declaration)
+- [`emit` -- Emit Signal](#emit----emit-signal)
+- [`await` -- Suspend Exec Chain](#await----suspend-exec-chain)
+- [Assignment](#assignment)
+- [Expression Statement](#expression-statement)
+- [Built-in Events](#built-in-events)
+- [`return`](#return)
+<!-- /toc -->
+
 ## `var` -- Mutable Variable
 
 Declares a mutable variable backed by a wire graph variable gate. In exec context (inside handlers or mods), the variable is **reset to its initial value** each time the code path executes.

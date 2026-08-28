@@ -155,7 +155,9 @@ pub(super) fn resolve_output_field_port(
 fn is_swizzle_field(field: &str) -> bool {
     matches!(
         field,
-        "x" | "X" | "y" | "Y" | "z" | "Z" | "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A"
+        "x" | "X" | "y" | "Y" | "z" | "Z" | "w" | "W"
+            | "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A"
+            | "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll"
     )
 }
 
@@ -169,6 +171,40 @@ fn is_known_scalar(ty: &Type) -> bool {
         ty,
         Type::Int | Type::Float | Type::Bool | Type::String | Type::Exec
     )
+}
+
+/// Read one component of a quaternion through a `SplitQuaternion` gate. The
+/// game has no way to address a quaternion's X/Y/Z/W other than splitting it,
+/// so `q.x` costs the same one gate a `v.x` does — and repeated components of
+/// the same quaternion share it, since the gates are identical and CSE folds
+/// them together.
+fn split_quat_component(
+    ctx: &mut LowerCtx,
+    obj: &Expr,
+    out_name: &str,
+    range: &SourceRange,
+) -> PortRef {
+    let obj_port = lower_expr(ctx, obj);
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::SPLIT_QUATERNION,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: vec![PortSpec {
+                name: *sym::INPUT,
+                ty: Type::Quat,
+            }],
+            outputs: ["X", "Y", "Z", "W"]
+                .into_iter()
+                .map(|n| PortSpec {
+                    name: intern_static(n),
+                    ty: Type::Float,
+                })
+                .collect(),
+        },
+        ..Default::default()
+    });
+    ctx.connect(obj_port, node_id.port(WirePort::Input));
+    port_ref(node_id, out_name)
 }
 
 pub(super) fn lower_field_access(
@@ -303,10 +339,46 @@ pub(super) fn lower_field_access(
             }
         }
     }
-    // Note: can't rely on ctx.type_of(obj) because nested exprs sharing
-    // the same start offset overwrite each other in the type_of_expr map.
-    // Instead, match on field name directly — these names are unambiguous.
+    // Match on the field NAME: every component name below belongs to exactly
+    // one type, so the name alone picks the Split gate. The one exception is
+    // `.x`/`.y`/`.z`, shared by vector and quaternion, whose first arm
+    // consults `ctx.type_of` — used only to choose between two gates, never to
+    // decide whether to split, since nested exprs can overwrite each other in
+    // the type_of_expr map and leave the object's type unrecorded.
     match field {
+        // A quaternion's X/Y/Z share the vector's names, so this one arm needs
+        // the object's type to pick its gate; `.w` below is quat-only and needs
+        // no such test. An unknown type keeps the vector reading, which is what
+        // every such access did before quaternions had components at all.
+        "x" | "X" | "y" | "Y" | "z" | "Z" if matches!(ctx.type_of(obj), Type::Quat) => {
+            split_quat_component(ctx, obj, &field[..1].to_uppercase(), range)
+        }
+        "w" | "W" => split_quat_component(ctx, obj, "W", range),
+        "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll" => {
+            let obj_port = lower_expr(ctx, obj);
+            let mut out_name = field.to_string();
+            out_name[..1].make_ascii_uppercase();
+            let node_id = ctx.add_gate(AddNodeOpts {
+                gate_class: gc::SPLIT_ROTATION,
+                source_range: range.clone(),
+                ports: GateIO {
+                    inputs: vec![PortSpec {
+                        name: *sym::INPUT,
+                        ty: Type::Rotator,
+                    }],
+                    outputs: ["Pitch", "Yaw", "Roll"]
+                        .into_iter()
+                        .map(|n| PortSpec {
+                            name: intern_static(n),
+                            ty: Type::Float,
+                        })
+                        .collect(),
+                },
+                ..Default::default()
+            });
+            ctx.connect(obj_port, node_id.port(WirePort::Input));
+            port_ref(node_id, &out_name)
+        }
         "x" | "X" | "y" | "Y" | "z" | "Z" => {
             let obj_port = lower_expr(ctx, obj);
             let out_name = field[..1].to_uppercase();

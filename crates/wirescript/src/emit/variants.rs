@@ -363,8 +363,57 @@ impl AsBrdbValue for VectorValue {
             "X" => Ok(&self.x),
             "Y" => Ok(&self.y),
             "Z" => Ok(&self.z),
-            n => unimplemented!("unimplemented Vector field {n}"),
+            n => Err(brdb::BrdbSchemaError::MissingStructField(
+                "Vector".into(),
+                n.into(),
+            )),
         }
+    }
+}
+
+/// Unreal's `FRotator::Quaternion()`: the euler (Pitch/Yaw/Roll, degrees) to
+/// quaternion conversion the engine applies itself when a rotation reaches a
+/// quaternion sink. Pitch turns about Y, Yaw about Z, Roll about X, and the
+/// sign pattern is UE's own, not the textbook one; angles are unwound to a
+/// single turn first, as `FRotator::Quaternion` does.
+///
+/// Cross-checked against the certified rotation cases in
+/// `data/gate_semantics.json`: a pure +45 degree yaw gives
+/// `Quat(0, 0, 0.38268, 0.92388)`, the exact quaternion `RotateVector`'s
+/// probe was run with (see `lower/fold/eval.rs::rotate_vector`).
+pub(super) fn rotator_to_quat(pitch: f64, yaw: f64, roll: f64) -> (f64, f64, f64, f64) {
+    let half = |deg: f64| (deg % 360.0).to_radians() / 2.0;
+    let (sp, cp) = half(pitch).sin_cos();
+    let (sy, cy) = half(yaw).sin_cos();
+    let (sr, cr) = half(roll).sin_cos();
+    (
+        cr * sp * sy - sr * cp * cy,
+        -cr * sp * cy - sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    )
+}
+
+/// Reshape a constant so it can be BAKED into a native `struct_ty`
+/// (`Vector`/`Rotator`/`Quat`) field, whose properties are written one by one
+/// and therefore admit exactly one representation. `None` when the literal
+/// already fits, or when no conversion applies — the caller keeps the literal
+/// as-is, and `port_accepts_inline_variant` has already refused to bake the
+/// shapes that would not serialize.
+///
+/// Only euler -> quaternion is converted, because only it is reachable: a
+/// `Rotation(p, y, r)` constant folds to a `Literal::Rotator` and flows into
+/// quaternion sinks such as `RotateVector.Rotation`. The reverse never occurs
+/// (no constructor folds to a `Literal::Quat` on its own), so a `Quat`
+/// constant bound for a `Rotator` field keeps its `MakeQuaternion` carrier
+/// and lets the game convert, rather than carrying unexercised code here.
+pub(super) fn reshape_literal_for_struct(struct_ty: &str, lit: &Literal) -> Option<Literal> {
+    match (struct_ty, lit) {
+        ("Quat", Literal::Rotator { pitch, yaw, roll }) => {
+            let (x, y, z, w) = rotator_to_quat(*pitch, *yaw, *roll);
+            Some(Literal::Quat { x, y, z, w })
+        }
+        _ => None,
     }
 }
 
@@ -385,7 +434,10 @@ impl AsBrdbValue for RotatorValue {
             "Pitch" => Ok(&self.pitch),
             "Yaw" => Ok(&self.yaw),
             "Roll" => Ok(&self.roll),
-            n => unimplemented!("unimplemented Rotator field {n}"),
+            n => Err(brdb::BrdbSchemaError::MissingStructField(
+                "Rotator".into(),
+                n.into(),
+            )),
         }
     }
 }
@@ -409,7 +461,10 @@ impl AsBrdbValue for QuatValue {
             "Y" => Ok(&self.y),
             "Z" => Ok(&self.z),
             "W" => Ok(&self.w),
-            n => unimplemented!("unimplemented Quat field {n}"),
+            n => Err(brdb::BrdbSchemaError::MissingStructField(
+                "Quat".into(),
+                n.into(),
+            )),
         }
     }
 }

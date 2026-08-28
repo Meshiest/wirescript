@@ -1,5 +1,21 @@
 # Syntax Reference
 
+<!-- toc -->
+## Contents
+
+- [Source Structure](#source-structure)
+- [Imports](#imports)
+- [Comments](#comments)
+- [Statement Terminators](#statement-terminators)
+- [Line Continuation](#line-continuation)
+- [Blocks](#blocks)
+- [Identifiers](#identifiers)
+- [Keywords](#keywords)
+- [Literals](#literals)
+- [Operators](#operators)
+- [Top-Level Declarations](#top-level-declarations)
+<!-- /toc -->
+
 ## Source Structure
 
 A Wirescript file (`.ws`) is a sequence of top-level declarations. There is no required entry point or wrapper -- declarations appear at the top level of the file.

@@ -211,7 +211,7 @@ pub(in crate::lower) fn lower_builtin_call(
                         | Literal::Rotator { .. }
                         | Literal::Quat { .. }
                         | Literal::LinearColor { .. }
-                ) || crate::emit::port_accepts_inline_variant(spec.gate_class, p.port));
+                ) || crate::emit::port_accepts_inline_variant(spec.gate_class, p.port, &lit));
             if inlinable {
                 properties.insert(intern(p.port.as_str()), lit);
                 continue;

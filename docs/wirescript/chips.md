@@ -2,6 +2,22 @@
 
 Chips are Wirescript's primary mechanism for organizing and reusing wire graph logic. They map to physical microchip bricks in Brickadia -- a separate grid of gates contained within a single brick. (A module-level [`@flat`](#compiling-without-microchips-flat) compiles the same program onto one grid instead, with no microchip bricks at all.)
 
+<!-- toc -->
+## Contents
+
+- [Anonymous Chips](#anonymous-chips)
+- [Named Chips](#named-chips)
+- [`const` Parameters and `const mod`](#const-parameters-and-const-mod)
+- [Open and Closed Chips](#open-and-closed-chips)
+- [Compiling Without Microchips (`@flat`)](#compiling-without-microchips-flat)
+- [Chip Labels and Headers](#chip-labels-and-headers)
+- [`mod` -- Inline Chips](#mod----inline-chips)
+- [Boundary Pins](#boundary-pins)
+- [Nested Chips](#nested-chips)
+- [Inline `mod` with Mixed Parameters](#inline-mod-with-mixed-parameters)
+- [Complete Example: Named Chip with Handlers](#complete-example-named-chip-with-handlers)
+<!-- /toc -->
+
 ## Anonymous Chips
 
 An anonymous chip creates a physical microchip for visual organization while sharing the parent scope. Variables, buffers, and arrays declared inside an anonymous chip are accessible from outside it (and vice versa).

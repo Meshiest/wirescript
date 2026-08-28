@@ -2,6 +2,31 @@
 
 Expressions compute values. In Wirescript, expressions map to wire graph gates -- each operator or function call becomes one or more gates with their ports wired together.
 
+<!-- toc -->
+## Contents
+
+- [Operator Precedence](#operator-precedence)
+- [Arithmetic Operators](#arithmetic-operators)
+- [Comparison Operators](#comparison-operators)
+- [Logical Operators](#logical-operators)
+- [Bitwise Operators](#bitwise-operators)
+- [String Concatenation](#string-concatenation)
+- [String Interpolation](#string-interpolation)
+- [Conditional Expressions (if-then-else)](#conditional-expressions-if-then-else)
+- [Atom Literals](#atom-literals)
+- [Record Literals](#record-literals)
+- [Tuple Literals](#tuple-literals)
+- [Field Access](#field-access)
+- [Index Access](#index-access)
+- [Tuple Pick](#tuple-pick)
+- [Function Calls](#function-calls)
+- [Ref and Deref](#ref-and-deref)
+- [Parenthesized Expressions](#parenthesized-expressions)
+- [Gotchas](#gotchas)
+- [Asset References](#asset-references)
+- [Prefab References](#prefab-references)
+<!-- /toc -->
+
 ## Operator Precedence
 
 Operators are listed from **lowest** (loosest binding) to **highest** (tightest binding):
@@ -352,21 +377,43 @@ let r = myColor.r         // color field
 let p = myRotator.pitch   // rotator field
 ```
 
-### Vector / color components
+### Vector / color / rotation components
 
-`.x` `.y` `.z` extract the components of any **vector** value, and `.r` `.g`
-`.b` `.a` extract the channels of any **color** value (both cases are also
-accepted upper-case). They work on any expression of that type — a `Vec(...)`
-literal, an input, a stored variable, or a `let` binding — and lower to a
-SplitVector / SplitColor gate that outputs the single `float` component:
+Every component-typed value can be read one component at a time:
+
+| Type | Components |
+|------|------------|
+| `vector` | `.x` `.y` `.z` |
+| `color` | `.r` `.g` `.b` `.a` |
+| `rotator` | `.pitch` `.yaw` `.roll` |
+| `quat` | `.x` `.y` `.z` `.w` |
+
+The names are also accepted upper-case. They work on any expression of that
+type — a `Vec(...)` literal, an input, a stored variable, or a `let` binding —
+and lower to the matching Split gate (SplitVector, SplitColor, SplitRotation,
+SplitQuaternion), which outputs the single `float` component:
 
 ```wirescript
+in a: vector
+in b: vector
 let sum = a + b          // vector
 let height = sum.z       // float — the z component
 
 in tint: color
 let red = tint.r         // float
+
+in facing: rotator
+let turn = facing.yaw    // float — degrees
+
+let spin = a.ToRotation() // quat
+let scalar = spin.w       // float
 ```
+
+Reading several components of the same value costs **one** gate, not one per
+component: the split gates are identical and merge.
+
+A component name belongs to exactly one type, so borrowing one (`v.w`,
+`facing.x`, `tint.z`) is a `WS010` error rather than a silent misread.
 
 ### Variable Fields
 

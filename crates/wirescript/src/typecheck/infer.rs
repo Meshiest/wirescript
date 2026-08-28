@@ -1911,7 +1911,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             match (&ot, field.as_str()) {
                 (Type::Vector, "x" | "X" | "y" | "Y" | "z" | "Z") => Type::Float,
                 (Type::Color, "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A") => Type::Float,
-                (Type::Rotator, "pitch" | "yaw" | "roll") => Type::Float,
+                (Type::Rotator, "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll") => {
+                    Type::Float
+                }
+                (Type::Quat, "x" | "X" | "y" | "Y" | "z" | "Z" | "w" | "W") => Type::Float,
                 // An array read yields the element plus a bounds flag, but it is
                 // typed as the bare element (see IndexAccess), so by the time the
                 // flag is projected - directly or through a `let` - the object is
@@ -1952,7 +1955,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 }
                 // A component-typed value has a CLOSED set of component fields
                 // (checked above: vector x/y/z, color r/g/b/a, rotator
-                // pitch/yaw/roll). A field outside its own set is a typo or a
+                // pitch/yaw/roll, quat x/y/z/w). A field outside its own set is a typo or a
                 // swizzle borrowed from another component type (`v.r`,
                 // `color.x`, `rot.x`, `v.w`), and must not fall through to a
                 // silent `any`. Lowering dispatches Split gates on the field

@@ -789,3 +789,71 @@
             Err(other) => panic!("expected DroppedWire, got {other:?}"),
         }
     }
+
+    #[test]
+    fn a_rotation_constant_converts_to_the_quaternion_a_quat_field_stores() {
+        // A rotation reaching a quaternion sink is converted by the engine on
+        // the wire; baked into a `Quat` data field it has to be converted here
+        // instead, by UE's own `FRotator::Quaternion()`.
+        use super::variants::{reshape_literal_for_struct, rotator_to_quat};
+        use crate::ir::Literal;
+
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+
+        // No rotation is the identity quaternion.
+        assert_eq!(rotator_to_quat(0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0));
+
+        // A +45 degree yaw must give the EXACT quaternion the game was probed
+        // with for `RotateVector` (see `lower/fold/eval.rs::rotate_vector`,
+        // whose certified case rotates Vec(1,0,0) by Quat(0, 0, 0.3826, 0.9238)
+        // to X=0.707 Y=0.707) - the one point where this conversion is pinned
+        // to measured game behaviour rather than to the formula alone.
+        let (x, y, z, w) = rotator_to_quat(0.0, 45.0, 0.0);
+        assert!(close(x, 0.0) && close(y, 0.0), "a yaw turns about Z alone");
+        assert!(close(z, 0.382_683_432_365_089_8), "z was {z}");
+        assert!(close(w, 0.923_879_532_511_286_7), "w was {w}");
+
+        // Rotating Vec(1,0,0) by a +90 degree yaw gives Vec(0,1,0): the
+        // conversion's sign convention has to match the standard quaternion
+        // rotation the game applies, not the mirrored one.
+        let (qx, qy, qz, qw) = rotator_to_quat(0.0, 90.0, 0.0);
+        let (vx, vy, vz) = (1.0f64, 0.0f64, 0.0f64);
+        let (cx, cy, cz) = (qy * vz - qz * vy, qz * vx - qx * vz, qx * vy - qy * vx);
+        let rotated = (
+            vx + 2.0 * (qw * cx + qy * cz - qz * cy),
+            vy + 2.0 * (qw * cy + qz * cx - qx * cz),
+            vz + 2.0 * (qw * cz + qx * cy - qy * cx),
+        );
+        assert!(
+            close(rotated.0, 0.0) && close(rotated.1, 1.0) && close(rotated.2, 0.0),
+            "+90 yaw should send +X to +Y, got {rotated:?}"
+        );
+
+        // Angles unwind to a single turn, and a compound rotation stays a unit
+        // quaternion.
+        assert_eq!(
+            rotator_to_quat(0.0, 405.0, 0.0),
+            rotator_to_quat(0.0, 45.0, 0.0)
+        );
+        let (x, y, z, w) = rotator_to_quat(20.0, -50.0, 110.0);
+        assert!(close((x * x + y * y + z * z + w * w).sqrt(), 1.0));
+
+        // The reshape fires only for the one mismatch that can reach a field:
+        // a rotation constant bound for a quaternion.
+        let rot = Literal::Rotator {
+            pitch: 0.0,
+            yaw: 45.0,
+            roll: 0.0,
+        };
+        assert!(matches!(
+            reshape_literal_for_struct("Quat", &rot),
+            Some(Literal::Quat { .. })
+        ));
+        assert!(reshape_literal_for_struct("Rotator", &rot).is_none());
+        let vec = Literal::Vector {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        };
+        assert!(reshape_literal_for_struct("Vector", &vec).is_none());
+    }

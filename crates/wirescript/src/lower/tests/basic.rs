@@ -2029,6 +2029,86 @@ fn rotation_quat_color_receivers_lower_to_their_gates() {
 }
 
 #[test]
+fn rotator_constant_bakes_into_a_quat_port() {
+    // `RotateVector.Rotation` is a `Quat` field (X/Y/Z/W) while `Rotation(p,y,r)`
+    // folds to a `Literal::Rotator` (Pitch/Yaw/Roll). The two are interchangeable
+    // on a WIRE (`types::coerce`, which is why the call type-checks), so the
+    // constant inlines into the gate's data like any other and emit converts it
+    // to the field's representation. It must NOT grow a carrier gate; a
+    // rotation known at compile time costs no gate at all.
+    let r = compile("in v: vector\nout o = v.Rotate(Rotation(0.0, -90.0, 0.0))");
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Expr_MakeRotation"),
+        0,
+        "a compile-time rotation into a quaternion port should bake, not wire"
+    );
+    let rotate = find_gate(&r, "BrickComponentType_WireGraph_Expr_RotateVector");
+    assert_eq!(
+        r.module.nodes[&rotate]
+            .properties
+            .get(&crate::intern::intern("Rotation")),
+        Some(&crate::ir::Literal::Rotator {
+            pitch: 0.0,
+            yaw: -90.0,
+            roll: 0.0
+        }),
+        "the rotation belongs in RotateVector's own data"
+    );
+    assert!(
+        !r.module.wires.iter().any(|w| {
+            w.target.node_id == rotate && w.target.port == crate::lower::WirePort::Rotation
+        }),
+        "a baked rotation leaves the Rotation pin unwired"
+    );
+}
+
+#[test]
+fn rotator_and_quat_components_split_like_a_vector_does() {
+    // A rotation's Pitch/Yaw/Roll and a quaternion's X/Y/Z/W are only readable
+    // through their Split gates, exactly as a vector's X/Y/Z are. `.pitch`
+    // used to type-check and then lower to a placeholder, and `.x` on a quat
+    // was rejected outright.
+    let r = compile(
+        "in v: vector\nin r: rotator\nin q: quat\n\
+         out a = v.x\nout b = r.pitch\nout c = r.roll\nout d = q.x\nout e = q.w",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.message.contains("not yet supported")),
+        "no component should fall to a placeholder: {:?}",
+        r.diagnostics
+    );
+    // One gate per split value, shared across that value's components.
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Expr_SplitVector"),
+        1
+    );
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Expr_SplitRotation"),
+        1,
+        "r.pitch and r.roll should share one SplitRotation"
+    );
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Expr_SplitQuaternion"),
+        1,
+        "q.x and q.w should share one SplitQuaternion"
+    );
+    // `.x` is the one component name a vector and a quaternion share, so the
+    // gate has to be chosen by the object's type, not by the field name.
+    let quat_split = find_gate(&r, "BrickComponentType_WireGraph_Expr_SplitQuaternion");
+    for port in ["X", "W"] {
+        assert!(
+            r.module.wires.iter().any(|w| {
+                w.source.node_id == quat_split
+                    && crate::intern::resolve(crate::intern::intern(w.source.port.as_str())) == port
+            }),
+            "the quaternion split should drive its {port} output"
+        );
+    }
+}
+
+#[test]
 fn field_access_vector_creates_split() {
     let r = compile("out x = vec(1.0, 2.0, 3.0).x");
     let has_split = r

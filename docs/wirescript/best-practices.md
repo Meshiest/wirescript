@@ -7,6 +7,28 @@ its shape.
 
 Everything here follows from one fact, so start there.
 
+<!-- toc -->
+## Contents
+
+- [The one thing to internalize: every call site is a copy](#the-one-thing-to-internalize-every-call-site-is-a-copy)
+- [The call-site multiplier](#the-call-site-multiplier)
+- [1. Funnel many producers through ONE dispatch site](#1-funnel-many-producers-through-one-dispatch-site)
+- [2. Merge per-variant mods into one parameterized mod](#2-merge-per-variant-mods-into-one-parameterized-mod)
+- [3. Defer hot shared work behind a flag](#3-defer-hot-shared-work-behind-a-flag)
+- [4. Bitmasks instead of per-slot arrays](#4-bitmasks-instead-of-per-slot-arrays)
+- [5. Resolve once, pass down](#5-resolve-once-pass-down)
+- [6. Prefer pure `let` chains over exec ladders](#6-prefer-pure-let-chains-over-exec-ladders)
+- [7. Reduce with a native array aggregate, not an unrolled fold](#7-reduce-with-a-native-array-aggregate-not-an-unrolled-fold)
+- [8. Keep a derived array to unlock an aggregate](#8-keep-a-derived-array-to-unlock-an-aggregate)
+- [9. Derive in pure output bindings, not on the exec chain](#9-derive-in-pure-output-bindings-not-on-the-exec-chain)
+- [10. Per-entity fan-out: one chip each, not one loop over all](#10-per-entity-fan-out-one-chip-each-not-one-loop-over-all)
+- [What actually costs anything: measured](#what-actually-costs-anything-measured)
+- [Profiling: find the hot spots](#profiling-find-the-hot-spots)
+- [Gotchas worth knowing](#gotchas-worth-knowing)
+- [Checklist](#checklist)
+- [See also](#see-also)
+<!-- /toc -->
+
 ## The one thing to internalize: every call site is a copy
 
 A **`mod` is inlined**. Its entire body is copy-pasted into the caller's grid at every
