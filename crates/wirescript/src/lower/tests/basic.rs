@@ -802,6 +802,109 @@ fn color_var_init_folds_to_constant() {
 }
 
 #[test]
+fn int_literal_init_on_float_var_bakes_a_float() {
+    // `var x: float = 0` must bake Float(0.0), not Int(0): the Var gate's
+    // wire variant is chosen by the InitialValue literal's OWN kind, so an
+    // un-widened Int literal ships an INTEGER variable for a `float`
+    // declaration (silent miscompile — later float writes truncate).
+    let r = compile("var hello_world: float = 0
+out o = hello_world
+");
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("float var should be a Var gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::Float(f)) => assert_eq!(*f, 0.0),
+        other => panic!("expected float InitialValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn int_literal_init_on_float_record_field_bakes_a_float() {
+    // Same widening on a record field's backing Var gate.
+    let r = compile(
+        "type P = { x: float }
+var p: P = { x: 3 }
+out o = p.x
+",
+    );
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("record field should be a Var gate");
+    match node.properties.get(&crate::intern::intern("InitialValue")) {
+        Some(crate::ir::Literal::Float(f)) => assert_eq!(*f, 3.0),
+        other => panic!("expected float InitialValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn scalar_var_init_bakes_in_the_declared_type() {
+    // bool/int/float coerce bidirectionally, so every pair can reach a Var
+    // gate's InitialValue. The declared type — not the literal's own kind —
+    // must pick the baked literal, matching the element-wise table already
+    // used for array initializers (float -> int truncates, bool -> number is
+    // 1/0, number -> bool is `!= 0`).
+    let cases: &[(&str, crate::ir::Literal)] = &[
+        ("var v: float = 0", crate::ir::Literal::Float(0.0)),
+        ("var v: float = true", crate::ir::Literal::Float(1.0)),
+        ("var v: int = 1.5", crate::ir::Literal::Int(1)),
+        ("var v: int = true", crate::ir::Literal::Int(1)),
+        ("var v: bool = 1", crate::ir::Literal::Bool(true)),
+        ("var v: bool = 0.0", crate::ir::Literal::Bool(false)),
+        ("var v: bool = \"x\"", crate::ir::Literal::Bool(true)),
+        ("var v: bool = \"\"", crate::ir::Literal::Bool(false)),
+    ];
+    for (src, want) in cases {
+        let r = compile(&format!("{src}
+out o = v
+"));
+        assert_no_errors(&r);
+        let node = r
+            .module
+            .nodes
+            .values()
+            .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+            .unwrap_or_else(|| panic!("`{src}` should be a Var gate"));
+        let got = node.properties.get(&crate::intern::intern("InitialValue"));
+        assert_eq!(got, Some(want), "`{src}` baked the wrong InitialValue");
+    }
+}
+
+#[test]
+fn var_backed_output_default_bakes_in_the_declared_type() {
+    // `out y: float = 0` seeds the BACKING var's InitialValue rather than
+    // wiring a driver (a direct wire would fan in with the var's own feed).
+    // That seed goes through the same variant-typed slot as a `var`, so it
+    // must widen to the output's declared type too.
+    let r = compile("in start: exec
+out y: float = 0
+on start {
+  emit y = 1.5
+}
+");
+    assert_no_errors(&r);
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .expect("var-backed output should have a Var gate");
+    assert_eq!(
+        node.properties.get(&crate::intern::intern("InitialValue")),
+        Some(&crate::ir::Literal::Float(0.0)),
+        "float output default baked the wrong InitialValue"
+    );
+}
+
+#[test]
 fn quat_var_defaults_to_identity() {
     let r = compile("var q: quat\nout o = q\n");
     assert_no_errors(&r);

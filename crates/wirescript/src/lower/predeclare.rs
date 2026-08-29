@@ -1388,7 +1388,7 @@ fn record_field_storage(
             scalar => {
                 let init_lit = init
                     .and_then(expr_to_literal)
-                    .map(|lit| bake_string_bool(lit, scalar))
+                    .map(|lit| bake_literal_for_type(lit, scalar))
                     .or_else(|| default_literal_for_var_type(scalar));
                 if let Some(lit) = init_lit {
                     properties.insert(*sym::INITIAL_VALUE, lit);
@@ -2003,7 +2003,7 @@ fn enum_payload_slot(
         }
         scalar => {
             if let Some(lit) = init_lit {
-                props.insert(*sym::INITIAL_VALUE, bake_string_bool(lit, scalar));
+                props.insert(*sym::INITIAL_VALUE, bake_literal_for_type(lit, scalar));
             } else if let Some(lit) = default_literal_for_var_type(scalar) {
                 props.insert(*sym::INITIAL_VALUE, lit);
             }
@@ -2271,13 +2271,13 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         .init
         .as_ref()
         .and_then(expr_to_literal)
-        // Compile-time string → bool: `var v: bool = "x"` bakes
-        // Bool(!s.is_empty()) — the same `!= ""` law as the runtime
-        // `CompareNotEqual` gate on the wire path (see `bake_string_bool`).
-        // A raw String InitialValue on a Bool var would start under the
-        // gate's NATIVE truthiness instead ("0"/"false" falsy) — a silent
-        // divergence from the documented law.
-        .map(|lit| bake_string_bool(lit, &inner_type))
+        // Bake the literal in the DECLARED type's shape: the Var gate's
+        // wire variant is picked from the InitialValue's own kind, so
+        // `var v: float = 0` must widen to Float(0.0) or it ships an integer
+        // variable, and `var v: bool = "x"` bakes Bool(!s.is_empty()) under
+        // the same `!= ""` law as the wire path's `CompareNotEqual` gate
+        // (see `bake_literal_for_type`).
+        .map(|lit| bake_literal_for_type(lit, &inner_type))
         .or_else(|| default_literal_for_var_type(&inner_type));
     let mut properties = HashMap::default();
     let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)

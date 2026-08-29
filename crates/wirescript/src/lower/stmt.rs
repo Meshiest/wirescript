@@ -2669,6 +2669,11 @@ pub(super) fn lower_out_binding(
     if let Some(backing) = ctx.output_backing_vars.get(name).cloned()
         && let Some(lit) = expr_to_literal_in(value, &ctx.const_env)
     {
+        // Bake in the output's DECLARED type, exactly as a `var`'s
+        // initializer does: the backing gate's wire variant is picked from
+        // this literal's kind, so `out y: float = 0` would otherwise ship an
+        // integer variable (see `bake_literal_for_type`).
+        let lit = bake_literal_for_type(lit, &backing.inner_type);
         if let Some(node) = ctx.builder.module.nodes.get_mut(&backing.node_id) {
             let props = std::sync::Arc::make_mut(&mut node.properties);
             props.insert(*sym::INITIAL_VALUE, lit);

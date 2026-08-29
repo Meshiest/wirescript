@@ -1343,6 +1343,33 @@ pub(super) fn bake_string_bool(lit: Literal, ty: &Type) -> Literal {
     }
 }
 
+/// Bake a scalar `InitialValue` literal in its DECLARED type's shape, for the
+/// storage slots whose wire-variant member is chosen by the literal's own kind
+/// (a `Pseudo_Var`'s `WireVariant` — see `emit::module`'s `Pseudo_Var` arm,
+/// which only falls back to the port type when there is NO literal). Without
+/// this, `var x: float = 0` bakes `Int(0)` and ships an INTEGER variable for a
+/// `float` declaration; the annotation is silently lost.
+///
+/// bool/int/float coerce bidirectionally in the type system
+/// (`types::coerce::is_prim_number`), so all six ordered pairs reach here.
+/// The conversions match the element-wise table `emit::variants`'s
+/// `wire_array_variant_from_literals` already applies to ARRAY initializers,
+/// so `var a: int[] = [1.5]` and `var s: int = 1.5` agree: float → int
+/// truncates, bool → number is 1/0, and number → bool is `!= 0`. String → bool
+/// keeps its `!= ""` law via [`bake_string_bool`]. Every other pair — and every
+/// non-scalar type — passes through untouched.
+pub(super) fn bake_literal_for_type(lit: Literal, ty: &Type) -> Literal {
+    match (&lit, ty) {
+        (Literal::Int(n), Type::Float) => Literal::Float(*n as f64),
+        (Literal::Bool(b), Type::Float) => Literal::Float(if *b { 1.0 } else { 0.0 }),
+        (Literal::Float(f), Type::Int) => Literal::Int(*f as i64),
+        (Literal::Bool(b), Type::Int) => Literal::Int(*b as i64),
+        (Literal::Int(n), Type::Bool) => Literal::Bool(*n != 0),
+        (Literal::Float(f), Type::Bool) => Literal::Bool(*f != 0.0),
+        _ => bake_string_bool(lit, ty),
+    }
+}
+
 /// `config_only` marks a port that has NO wire pin at all — a settings-menu
 /// data field (`crate::catalog::is_wire_input(...) == false`), such as
 /// `SendCustomEvent`'s `EventName`. It unlocks a final fallback through the

@@ -1,5 +1,9 @@
 # Wirescript Changelog
 
+## 1.7.2
+
+- Fix: A scalar initializer is baked in the declared type, so `var x: float = 0` builds a float Variable gate instead of an integer one. Applies to every bool/int/float pair, to record and enum-payload fields, and to a var-backed output's default (`out y: float = 0`).
+
 ## 1.7.1
 
 - `enum` is a contextual keyword: it opens a declaration only when a type name follows, so it stays usable as a variable, parameter, or field name.
