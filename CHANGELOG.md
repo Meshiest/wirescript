@@ -3,6 +3,7 @@
 ## 1.7.2
 
 - Fix: A scalar initializer is baked in the declared type, so `var x: float = 0` builds a float Variable gate instead of an integer one. Applies to every bool/int/float pair, to record and enum-payload fields, and to a var-backed output's default (`out y: float = 0`).
+- Fix: A component read straight off a call (`d.ToRotation().ToEuler().Yaw`, `v.SplitVec().y`) reads that call's own port; it used to emit a second Split gate fed by the first one's primary output, yielding the wrong component.
 - Fix: A local `exec` signal consumed inside a `chip` compiles. The union cleanup redirected and pruned using one chip's wires at a time, deleting a node the chip's own wire still named, which failed the compile with a dropped-wire error.
 
 ## 1.7.1

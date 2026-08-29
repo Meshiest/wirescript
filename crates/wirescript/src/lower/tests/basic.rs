@@ -2087,6 +2087,52 @@ fn has_role_lowers_with_config_role_name() {
 }
 
 #[test]
+fn inline_multi_output_call_reads_its_own_port() {
+    // A swizzle-named field on an INLINE call reads that call's own output
+    // port. Only a let-bound result used to get the port lookup; written
+    // inline, `.Yaw`/`.y` was claimed by the Split* synthesis, which split the
+    // call's PRIMARY output a SECOND time - an extra gate wired to the wrong
+    // component (SplitRotation's `Pitch` fed back into a SplitRotation, read
+    // as `Yaw`).
+    let src = "in d: vector\n\
+               out yaw = d.ToRotation().ToEuler().Yaw\n\
+               out y = d.SplitVec().y";
+    let r = compile(src);
+    assert_no_errors(&r);
+    use crate::ir::port_registry::WirePort;
+    for (class, port, expr) in [
+        (
+            "BrickComponentType_WireGraph_Expr_SplitRotation",
+            WirePort::Yaw,
+            "d.ToRotation().ToEuler().Yaw",
+        ),
+        (
+            "BrickComponentType_WireGraph_Expr_SplitVector",
+            WirePort::Y,
+            "d.SplitVec().y",
+        ),
+    ] {
+        assert_eq!(
+            gate_count(&r, class),
+            1,
+            "`{expr}` must read the split it already emitted, not emit a second one"
+        );
+        let id = find_gate(&r, class);
+        let out_ports: Vec<WirePort> = r
+            .module
+            .wires
+            .iter()
+            .filter(|w| w.source.node_id == id)
+            .map(|w| w.source.port)
+            .collect();
+        assert!(
+            out_ports.contains(&port),
+            "`{expr}` must read the {port:?} port; source ports: {out_ports:?}"
+        );
+    }
+}
+
+#[test]
 fn rotation_quat_color_receivers_lower_to_their_gates() {
     // The rotation/quaternion + sRGB/hex color receivers and
     // constructors lower to their gates. `quat` is a distinct type from the

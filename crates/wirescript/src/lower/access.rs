@@ -143,8 +143,15 @@ pub(super) fn resolve_output_field_port(
     let node = ctx.builder.module.nodes.get(&node_id)?;
     let pname = node.ports.outputs.iter().find_map(|p| {
         let pname = crate::intern::resolve(p.name);
-        (pname == aliased || crate::catalog::arrays::field_name_ref(pname) == field)
-            .then_some(pname)
+        // Swizzle fields match a sibling port case-insensitively, so `.x`/`.y`/
+        // `.z` (and `.r`/`.g`/`.b`/`.a`, `.Pitch`/`.Yaw`/`.Roll`) on a
+        // multi-output result like `v.SplitVec()` / `r.ToEuler()` read its
+        // existing `X`/`Y`/`Z` / `Pitch`/`Yaw`/`Roll` port instead of
+        // re-splitting the first field.
+        (pname == aliased
+            || crate::catalog::arrays::field_name_ref(pname) == field
+            || (is_swizzle_field(field) && pname.eq_ignore_ascii_case(field)))
+        .then_some(pname)
     })?;
     Some(port_ref(node_id, pname))
 }
@@ -180,11 +187,10 @@ fn is_known_scalar(ty: &Type) -> bool {
 /// them together.
 fn split_quat_component(
     ctx: &mut LowerCtx,
-    obj: &Expr,
+    obj_port: PortRef,
     out_name: &str,
     range: &SourceRange,
 ) -> PortRef {
-    let obj_port = lower_expr(ctx, obj);
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::SPLIT_QUATERNION,
         source_range: range.clone(),
@@ -304,29 +310,14 @@ pub(super) fn lower_field_access(
         // named port on the gate node referenced by the local.
         // Short field names map to full port names for known components.
         if let Some(local) = ctx.lookup_local(name).cloned() {
-            // InputReader exposes a few arbitrarily-named ports.
-            let aliased = alias_output_field(field);
             // Resolve the field to a real output port on the node: an exact /
-            // aliased match, or the port whose cleaned name matches (e.g. the
-            // `bFound` port for `.Found`, derived via the same rule the return
-            // type uses). Falls back to the port directly for a single-output
-            // auto-unwrapped result.
-            if let Some(node) = ctx.builder.module.nodes.get(&local.port.node_id) {
-                let resolved = node.ports.outputs.iter().find_map(|p| {
-                    let pname = crate::intern::resolve(p.name);
-                    // Swizzle fields match a sibling port case-insensitively, so
-                    // `.x`/`.y`/`.z` (and `.r`/`.g`/`.b`/`.a`) on a multi-output
-                    // result like `v.SplitVec()` / `c.SplitColor()` read its
-                    // existing `X`/`Y`/`Z` / `R`/`G`/`B`/`A` port instead of
-                    // re-splitting the first field.
-                    (pname == aliased
-                        || crate::catalog::arrays::field_name_ref(pname) == field
-                        || (is_swizzle_field(field) && pname.eq_ignore_ascii_case(field)))
-                    .then_some(pname)
-                });
-                if let Some(pname) = resolved {
-                    return port_ref(local.port.node_id, pname);
-                }
+            // aliased match (InputReader exposes a few arbitrarily-named
+            // ports), the port whose cleaned name matches (e.g. the `bFound`
+            // port for `.Found`, derived via the same rule the return type
+            // uses), or a case-insensitive swizzle. Falls back to the port
+            // directly for a single-output auto-unwrapped result.
+            if let Some(port) = resolve_output_field_port(ctx, local.port.node_id, field) {
+                return port;
             }
             // A vector/color component (`v.x`, `c.r`) on a local doesn't name a
             // gate output port — fall through to the SplitVector / SplitColor
@@ -339,6 +330,56 @@ pub(super) fn lower_field_access(
             }
         }
     }
+    // `.exec` names the exec output of an exec-producing expression: a bare
+    // exec value (identity), or an event/call that carries data alongside its
+    // exec (`GlobalCustomEvent(c) -> (n)`, typed as a record with the exec
+    // output FIRST). A data-carrying event lowers with its exec port as the
+    // primary output (see the event-call dispatch), so lowering the object
+    // yields that exec directly. Lets a data-carrying event compose into
+    // `Union(...)` explicitly.
+    if field == "exec" {
+        let ot = ctx.type_of(obj);
+        if matches!(ot, Type::Exec)
+            || matches!(&ot, Type::Record(fs) if matches!(fs.first(), Some((_, Type::Exec))))
+        {
+            return lower_expr(ctx, obj);
+        }
+    }
+
+    // Read the object's type BEFORE anything is lowered: lowering writes into
+    // the same range-keyed map, so a nested expression can overwrite the entry
+    // the quaternion arm below consults.
+    let obj_ty = ctx.type_of(obj);
+
+    // A CALL object's field may name an output its own gate already carries.
+    // The `Ident` arm above resolves that through the local a call's result was
+    // bound to, but a call written inline (`v.SplitVec().y`, `r.ToEuler().Yaw`)
+    // reached neither that arm nor the by-name resolution in the catch-all
+    // below, because a swizzle field name is claimed by one of the Split* arms
+    // first. It then split the call's PRIMARY output a second time: an extra
+    // Split gate reading the wrong component. Lowered once here; the arms below
+    // reuse the port rather than lowering the object again.
+    let mut call_port = None;
+    if let Expr::Call { .. } = obj {
+        let obj_port = lower_expr(ctx, obj);
+        // An inline mod stashes its multi-output record (field -> source
+        // binding) instead of exposing named ports, so prefer that stash and
+        // project the field out of it - exactly as `lower_let_decl` binds
+        // `let r = f()` then reads `r.field`. A chip / builtin / event call
+        // instead lowers to a real gate with sibling output ports (`.Found` /
+        // `.Index` on `arr.find(x)`); resolve those by name.
+        if let Some(record) = ctx.pending_inline_record.take()
+            && let Some(binding) = record.get(&crate::intern::intern(field))
+            && let Some(port) = binding_to_port(ctx, binding, range)
+        {
+            return port;
+        }
+        if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
+            return port;
+        }
+        call_port = Some(obj_port);
+    }
+
     // Match on the field NAME: every component name below belongs to exactly
     // one type, so the name alone picks the Split gate. The one exception is
     // `.x`/`.y`/`.z`, shared by vector and quaternion, whose first arm
@@ -350,12 +391,16 @@ pub(super) fn lower_field_access(
         // the object's type to pick its gate; `.w` below is quat-only and needs
         // no such test. An unknown type keeps the vector reading, which is what
         // every such access did before quaternions had components at all.
-        "x" | "X" | "y" | "Y" | "z" | "Z" if matches!(ctx.type_of(obj), Type::Quat) => {
-            split_quat_component(ctx, obj, &field[..1].to_uppercase(), range)
+        "x" | "X" | "y" | "Y" | "z" | "Z" if matches!(&obj_ty, Type::Quat) => {
+            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
+            split_quat_component(ctx, obj_port, &field[..1].to_uppercase(), range)
         }
-        "w" | "W" => split_quat_component(ctx, obj, "W", range),
+        "w" | "W" => {
+            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
+            split_quat_component(ctx, obj_port, "W", range)
+        }
         "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll" => {
-            let obj_port = lower_expr(ctx, obj);
+            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
             let mut out_name = field.to_string();
             out_name[..1].make_ascii_uppercase();
             let node_id = ctx.add_gate(AddNodeOpts {
@@ -380,7 +425,7 @@ pub(super) fn lower_field_access(
             port_ref(node_id, &out_name)
         }
         "x" | "X" | "y" | "Y" | "z" | "Z" => {
-            let obj_port = lower_expr(ctx, obj);
+            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
             let out_name = field[..1].to_uppercase();
             let node_id = ctx.add_gate(AddNodeOpts {
                 gate_class: gc::SPLIT_VECTOR,
@@ -413,7 +458,7 @@ pub(super) fn lower_field_access(
             port_ref(node_id, &out_name)
         }
         "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A" => {
-            let obj_port = lower_expr(ctx, obj);
+            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
             let out_name = field[..1].to_uppercase();
             let node_id = ctx.add_gate(AddNodeOpts {
                 gate_class: gc::SPLIT_COLOR,
@@ -451,7 +496,7 @@ pub(super) fn lower_field_access(
         }
         // Array index result fields: arr[i].value / arr[i].bOutOfBounds
         "value" | "bOutOfBounds" | "OutOfBounds" => {
-            let obj_port = lower_expr(ctx, obj);
+            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
             let port_id = if field == "value" {
                 WirePort::Value
             } else {
@@ -459,45 +504,10 @@ pub(super) fn lower_field_access(
             };
             obj_port.node_id.port(port_id)
         }
-        _ => {
-            // `.exec` names the exec output of an exec-producing expression: a
-            // bare exec value (identity), or an event/call that carries data
-            // alongside its exec (`GlobalCustomEvent(c) -> (n)`, typed as a
-            // record with the exec output FIRST). A data-carrying event lowers
-            // with its exec port as the primary output (see the event-call
-            // dispatch), so lowering the object yields that exec directly. Lets
-            // a data-carrying event compose into `Union(...)` explicitly.
-            if field == "exec" {
-                let ot = ctx.type_of(obj);
-                if matches!(ot, Type::Exec)
-                    || matches!(&ot, Type::Record(fs) if matches!(fs.first(), Some((_, Type::Exec))))
-                {
-                    return lower_expr(ctx, obj);
-                }
-            }
-            // `field` may name an output on the gate an inline call lowers to.
-            // An inline mod stashes its multi-output record (field -> source
-            // binding) instead of exposing named ports, so prefer that stash and
-            // project the field out of it — exactly as `lower_let_decl` binds
-            // `let r = f()` then reads `r.field`. A chip / builtin / event call
-            // instead lowers to a real gate with sibling output ports (`.Found`
-            // / `.Index` on `arr.find(x)`); resolve those by name. Without
-            // either, `obj` is never lowered and the field access degrades to an
-            // `_Unsupported` placeholder — silently dropping the call.
-            if let Expr::Call { .. } = obj {
-                let obj_port = lower_expr(ctx, obj);
-                if let Some(record) = ctx.pending_inline_record.take()
-                    && let Some(binding) = record.get(&crate::intern::intern(field))
-                    && let Some(port) = binding_to_port(ctx, binding, range)
-                {
-                    return port;
-                }
-                if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
-                    return port;
-                }
-            }
-            synthesise_unsupported(ctx, e)
-        }
+        // A field naming neither an inline-record entry nor a sibling output
+        // port (both resolved above, for a call object) has nothing to read:
+        // it degrades to an `_Unsupported` placeholder.
+        _ => synthesise_unsupported(ctx, e),
     }
 }
 
