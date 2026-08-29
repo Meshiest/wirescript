@@ -6,6 +6,7 @@
 - Fix: A component read straight off a call (`d.ToRotation().ToEuler().Yaw`, `v.SplitVec().y`) reads that call's own port; it used to emit a second Split gate fed by the first one's primary output, yielding the wrong component.
 - Fix: A local `exec` signal consumed inside a `chip` compiles. The union cleanup redirected and pruned using one chip's wires at a time, deleting a node the chip's own wire still named, which failed the compile with a dropped-wire error.
 - Fix: `.Value` / `.prev` opens a variable that spans several storage gates (a record, an enum); it used to emit a placeholder.
+- Fix: A `var` initializer naming a constant (`var x: float = K`) bakes that constant.
 
 ## 1.7.1
 

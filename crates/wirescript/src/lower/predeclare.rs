@@ -1360,6 +1360,8 @@ fn record_field_storage(
     }
     let field_type = ctx.resolve_local_type(field_typ);
     let field_type = &field_type;
+    // Taken before the gate-building borrows `ctx` mutably below.
+    let consts = ctx.const_lookup();
     let mut properties = HashMap::default();
     properties.insert(*sym::NAME_LABEL, Literal::String(label));
     match kind {
@@ -1387,7 +1389,11 @@ fn record_field_storage(
             }
             scalar => {
                 let init_lit = init
-                    .and_then(expr_to_literal)
+                    // `_in`, not the bare `expr_to_literal`: an initializer
+                    // naming a constant (`var h: float = K`) is an `Ident`, and
+                    // without the const env it resolved to nothing and the var
+                    // silently started at its type default.
+                    .and_then(|e| expr_to_literal_in(e, &consts))
                     .map(|lit| bake_literal_for_type(lit, scalar))
                     .or_else(|| default_literal_for_var_type(scalar));
                 if let Some(lit) = init_lit {
@@ -2270,7 +2276,11 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     let init_lit = d
         .init
         .as_ref()
-        .and_then(expr_to_literal)
+        // `_in`, not the bare `expr_to_literal`: an initializer naming a
+        // constant (`var h: float = K`) is an `Ident`, and without the const
+        // env it resolved to nothing and the var silently started at its type
+        // default.
+        .and_then(|e| expr_to_literal_in(e, &ctx.const_lookup()))
         // Bake the literal in the DECLARED type's shape: the Var gate's
         // wire variant is picked from the InitialValue's own kind, so
         // `var v: float = 0` must widen to Float(0.0) or it ships an integer

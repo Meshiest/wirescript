@@ -524,3 +524,111 @@ fn a_runtime_tuple_destructure_matches_the_record_spelling() {
     );
     assert_eq!(tuple.module.nodes.len(), record.module.nodes.len());
 }
+
+#[test]
+fn a_var_initializer_naming_a_constant_bakes_the_constant() {
+    // Regression: the scalar and record-field initializer paths resolved the
+    // initializer with the const-env-LESS `expr_to_literal`, which sees literals
+    // but not names. `var h: float = K` is an `Ident`, so it resolved to nothing
+    // and the var fell back to its type default -- silently, with no diagnostic,
+    // so the program shipped a 0 where the constant should be.
+    //
+    // Asserts the BAKED `InitialValue`, not a gate count: the wrong-value bug
+    // emits exactly the same gates as the right one.
+    let baked = |src: &str, label: &str| -> Option<crate::ir::Literal> {
+        let r = compile(src);
+        assert_no_errors(&r);
+        r.module
+            .nodes
+            .values()
+            .find(|n| {
+                matches!(
+                    n.properties.get(&crate::intern::sym::NAME_LABEL),
+                    Some(crate::ir::Literal::String(s)) if s == label
+                )
+            })
+            .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned())
+    };
+    use crate::ir::Literal as L;
+    let cases: Vec<(&str, &str, L)> = vec![
+        (
+            "const K: float = 123.45
+var h: float = K
+out v: float = h
+",
+            "h",
+            L::Float(123.45),
+        ),
+        ("const K: int = 7
+var h: int = K
+out v: int = h
+", "h", L::Int(7)),
+        (
+            "const K: bool = true
+var h: bool = K
+out v: bool = h
+",
+            "h",
+            L::Bool(true),
+        ),
+        (
+            "const K: string = \"hi\"
+var h: string = K
+out v: string = h
+",
+            "h",
+            L::String("hi".into()),
+        ),
+        // an inferred constant, and an expression OVER constants
+        ("const K = 2.0
+var h: float = K
+out v: float = h
+", "h", L::Float(2.0)),
+        (
+            "const K: float = 2.0
+var h: float = K * 3.0
+out v: float = h
+",
+            "h",
+            L::Float(6.0),
+        ),
+        // a record FIELD initializer, the second path with the same gap
+        (
+            "type P = { x: float }
+const K: float = 9.5
+var p: P = { x: K }
+out v: float = p.x
+",
+            "p.x",
+            L::Float(9.5),
+        ),
+    ];
+    for (src, label, want) in cases {
+        assert_eq!(baked(src, label), Some(want), "wrong baked initializer for:
+{src}");
+    }
+}
+
+#[test]
+fn a_constant_initializer_widens_to_the_declared_type() {
+    // The const-resolved literal goes through the same `bake_literal_for_type`
+    // as a spelled-out one, so `var h: float = K` with an INT constant still
+    // builds a float variable rather than an integer one.
+    let r = compile("const K: int = 3
+var h: float = K
+out v: float = h
+");
+    assert_no_errors(&r);
+    let init = r
+        .module
+        .nodes
+        .values()
+        .find(|n| {
+            matches!(
+                n.properties.get(&crate::intern::sym::NAME_LABEL),
+                Some(crate::ir::Literal::String(s)) if s == "h"
+            )
+        })
+        .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned());
+    assert_eq!(init, Some(crate::ir::Literal::Float(3.0)));
+}
