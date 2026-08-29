@@ -1478,7 +1478,58 @@ fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
 ///   whatever it fed keeps its other sources only.
 /// - **Exactly one incoming wire** (pass-through): splice it out, rewiring its
 ///   consumers straight to the single source.
+///
+/// Degrees are counted from ONE module's wire list, but a wire may legitimately
+/// name a node in another module of the tree before `boundary_pins` routes it
+/// through pins — a top-level `let sig: exec` consumed inside a `chip` is the
+/// common case. Such a union looks like a dead sink here (its only consumer is
+/// invisible), and both removing and splicing it would leave that other
+/// module's wire naming a node this deletes, which emit rejects as
+/// `EmitError::DroppedWire`. So a union referenced from outside its own module
+/// is left alone; at worst a degenerate Union gate survives, which is what the
+/// unfolded lowering would have emitted anyway.
 pub(super) fn prune_dead_exec_unions(module: &mut Module) {
+    let mut cross_module = HashSet::default();
+    collect_cross_module_refs(module, &mut cross_module);
+    prune_dead_exec_unions_in(module, &cross_module);
+}
+
+/// Node ids that some module's wire names while the node itself lives in a
+/// DIFFERENT module of the tree (either direction: a parent wiring into a
+/// chip's interior, or a chip capturing an outer node).
+fn collect_cross_module_refs(root: &Module, acc: &mut HashSet<NodeId>) {
+    fn index(m: &Module, tag: usize, next: &mut usize, owner: &mut HashMap<NodeId, usize>) {
+        for id in m.nodes.keys() {
+            owner.insert(*id, tag);
+        }
+        for child in m.chips.values() {
+            *next += 1;
+            let child_tag = *next;
+            index(child, child_tag, next, owner);
+        }
+    }
+    fn scan(m: &Module, tag: usize, next: &mut usize, owner: &HashMap<NodeId, usize>, acc: &mut HashSet<NodeId>) {
+        for w in &m.wires {
+            for id in [w.source.node_id, w.target.node_id] {
+                if owner.get(&id).is_some_and(|o| *o != tag) {
+                    acc.insert(id);
+                }
+            }
+        }
+        for child in m.chips.values() {
+            *next += 1;
+            let child_tag = *next;
+            scan(child, child_tag, next, owner, acc);
+        }
+    }
+    let mut owner = HashMap::default();
+    let mut next = 0usize;
+    index(root, 0, &mut next, &mut owner);
+    let mut next = 0usize;
+    scan(root, 0, &mut next, &owner, acc);
+}
+
+fn prune_dead_exec_unions_in(module: &mut Module, cross_module: &HashSet<NodeId>) {
     /// Chase a source through spliced unions to the node actually carrying
     /// its wires now. Returns `None` for a pure splice cycle (unions feeding
     /// only each other — dead code whose wires all drop).
@@ -1506,10 +1557,13 @@ pub(super) fn prune_dead_exec_unions(module: &mut Module) {
         .iter()
         .filter(|(_, n)| n.gate_class == gc::UNION)
         .map(|(id, _)| *id)
+        // Referenced from another module — its real degree is not visible in
+        // this wire list, so neither removal nor splicing is sound here.
+        .filter(|id| !cross_module.contains(id))
         .collect();
     if queue.is_empty() {
         for child_module in module.chips.values_mut() {
-            prune_dead_exec_unions(child_module);
+            prune_dead_exec_unions_in(child_module, cross_module);
         }
         return;
     }
@@ -1639,7 +1693,7 @@ pub(super) fn prune_dead_exec_unions(module: &mut Module) {
     }
 
     for child_module in module.chips.values_mut() {
-        prune_dead_exec_unions(child_module);
+        prune_dead_exec_unions_in(child_module, cross_module);
     }
 }
 

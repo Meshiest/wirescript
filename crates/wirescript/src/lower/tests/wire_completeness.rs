@@ -381,3 +381,76 @@ on z {\n\
         input_sources
     );
 }
+
+/// Every node id reachable anywhere in the chip tree.
+fn all_node_ids(module: &Module, acc: &mut std::collections::HashSet<NodeId>) {
+    acc.extend(module.nodes.keys().cloned());
+    for child in module.chips.values() {
+        all_node_ids(child, acc);
+    }
+}
+
+/// Wire endpoints naming a node that exists in NO module of the tree. This is
+/// exactly what emit rejects as `EmitError::DroppedWire`, and it is stricter
+/// than `dangling_wires`, which accepts anything listed in `scope_captures`
+/// even after the node itself has been deleted.
+fn wires_to_deleted_nodes(module: &Module, path: &str, live: &std::collections::HashSet<NodeId>, acc: &mut Vec<String>) {
+    for w in &module.wires {
+        if !live.contains(&w.source.node_id) {
+            acc.push(format!("{path}: wire SOURCE {} names a node deleted from the whole tree", w.source.node_id));
+        }
+        if !live.contains(&w.target.node_id) {
+            acc.push(format!("{path}: wire TARGET {} names a node deleted from the whole tree", w.target.node_id));
+        }
+    }
+    for (chip_key, child) in &module.chips {
+        let name = crate::intern::resolve(child.name);
+        wires_to_deleted_nodes(child, &format!("{path} > chip {name}#{chip_key}"), live, acc);
+    }
+}
+
+/// A top-level `let sig: exec` consumed INSIDE a chip. The hub union is a
+/// pass-through (one incoming wire) and gets spliced out, which redirects the
+/// hub's consumers to the emitter — but the splice only ever rewrote the
+/// ROOT module's wire list, so a consumer living in a chip sub-module kept a
+/// wire from the now-deleted hub and emit failed with `DroppedWire`.
+#[test]
+fn exec_signal_consumed_inside_a_chip_survives_the_hub_splice() {
+    let cases: &[&str] = &[
+        // Timer's `restart` port reads the signal.
+        "let init: exec\n\
+         on ReadBrickGrid() {\n  emit init\n}\n\
+         chip Break() {\n  Timer(1, restart = init)\n}\n\
+         Break()\n",
+        // An `on` handler inside the chip listens for it.
+        "let init: exec\n\
+         static var n: int = 0\n\
+         on ReadBrickGrid() {\n  emit init\n}\n\
+         chip Break() {\n  on init { n = n + 1 }\n}\n\
+         Break()\n",
+        // TWO emitters: the hub splice now leaves a real union behind, whose
+        // only consumer is inside the chip. `prune_dead_exec_unions` counts
+        // degrees from a single module's wire list, so that union read as a
+        // dead sink and was deleted out from under the chip's wire.
+        "in a: exec\n\
+         in b: exec\n\
+         let init: exec\n\
+         on a { emit init }\n\
+         on b { emit init }\n\
+         chip Break() {\n  Timer(1, restart = init)\n}\n\
+         Break()\n",
+    ];
+    for src in cases {
+        let r = compile(src);
+        assert!(
+            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "unexpected errors for:\n{src}\n{:?}",
+            r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+        );
+        let mut live = std::collections::HashSet::new();
+        all_node_ids(&r.module, &mut live);
+        let mut acc = Vec::new();
+        wires_to_deleted_nodes(&r.module, "root", &live, &mut acc);
+        assert!(acc.is_empty(), "for:\n{src}\n{}", acc.join("\n"));
+    }
+}

@@ -2579,26 +2579,51 @@ fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
 /// union: redirect everything hanging off its `ExecOut` to the single source
 /// and remove the hub (so e.g. one emitter drives an `await`/`on` directly,
 /// with no Union gate in between).
+///
+/// Spans the WHOLE chip tree, not just the module the hub lives in: a signal
+/// declared at top level can be emitted or consumed from inside a `chip`
+/// (`chip C() { Timer(1, restart = sig) }`), which lowers to a sub-module wire
+/// naming the hub as an external capture. Counting only the hub's own module
+/// would misjudge a pass-through, and redirecting only that module left the
+/// sub-module wire pointing at the hub node this then deletes — a dangling
+/// endpoint that emit rejects as `EmitError::DroppedWire`. `boundary_pins`
+/// routes the redirected source through pins afterwards, exactly as it does
+/// for any other captured node.
 fn splice_single_input_union(ctx: &mut LowerCtx, hub: NodeId) {
-    let module = &mut ctx.builder.module;
-    let incoming: Vec<usize> = module
-        .wires
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| w.target.node_id == hub)
-        .map(|(i, _)| i)
-        .collect();
-    if incoming.len() != 1 {
+    let mut sources = Vec::new();
+    collect_hub_sources(&ctx.builder.module, hub, &mut sources);
+    if sources.len() != 1 {
         return;
     }
-    let src = module.wires[incoming[0]].source.clone();
-    for w in module.wires.iter_mut() {
+    let src = sources.remove(0);
+    redirect_hub(&mut ctx.builder.module, hub, &src);
+}
+
+/// The source of every wire feeding `hub`, anywhere in the chip tree.
+fn collect_hub_sources(m: &Module, hub: NodeId, acc: &mut Vec<PortRef>) {
+    for w in &m.wires {
+        if w.target.node_id == hub {
+            acc.push(w.source.clone());
+        }
+    }
+    for child in m.chips.values() {
+        collect_hub_sources(child, hub, acc);
+    }
+}
+
+/// Drop `hub` and every wire into it, and repoint its readers at `src` —
+/// through the whole chip tree, since node ids are unique across it.
+fn redirect_hub(m: &mut Module, hub: NodeId, src: &PortRef) {
+    m.wires.retain(|w| w.target.node_id != hub);
+    for w in m.wires.iter_mut() {
         if w.source.node_id == hub {
             w.source = src.clone();
         }
     }
-    module.wires.remove(incoming[0]);
-    module.nodes.remove(&hub);
+    m.nodes.remove(&hub);
+    for child in m.chips.values_mut() {
+        redirect_hub(child, hub, src);
+    }
 }
 
 pub(super) fn lower_out_binding(
