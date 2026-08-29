@@ -10,7 +10,17 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
         Expr::FieldAccess { obj, field, .. } => {
             let parent = resolve_field_chain(ctx, obj)?;
             match parent {
-                Binding::Record(fields) => fields.get(&crate::intern::intern(field)),
+                Binding::Record(fields) => fields
+                    .get(&crate::intern::intern(field))
+                    // `.Value`/`.prev` opens the variable: a var needing more
+                    // than one storage gate binds here, never as a single-port
+                    // `Binding::Var`. After the field lookup, so a real `Value`
+                    // field (`a.pop()`) still wins.
+                    .or_else(|| {
+                        (matches!(field.as_str(), "Value" | "prev")
+                            && record_is_variable_backed(fields))
+                        .then_some(parent)
+                    }),
                 // `ns.member` where `ns` came from `import * as ns`. The
                 // Namespace binding carries this module's own members, keyed by
                 // name — resolve through it rather than the shared bare-name
@@ -34,6 +44,17 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
         }
         _ => None,
     }
+}
+
+/// Whether this record IS variable storage (every leaf a var/buffer gate)
+/// rather than a compile-time record VALUE whose fields resolve to locals.
+fn record_is_variable_backed(fields: &HashMap<crate::intern::Sym, Binding>) -> bool {
+    !fields.is_empty()
+        && fields.values().all(|b| match b {
+            Binding::Var(_) | Binding::Buffer(_) => true,
+            Binding::Record(inner) => record_is_variable_backed(inner),
+            _ => false,
+        })
 }
 
 /// Convert a resolved `Binding` into a `PortRef` for use in expressions.

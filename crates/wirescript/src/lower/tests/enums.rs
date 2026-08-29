@@ -1248,3 +1248,105 @@ fn let_else_mod_routes_returns_through_ret_set_storage() {
         .count();
     assert!(ret_sets >= 2, "both returns must write ret_set storage, got {ret_sets}");
 }
+
+#[test]
+fn dot_value_on_an_enum_var_is_the_identity_not_a_placeholder() {
+    // Regression: `.Value` on an enum resolved to nothing and lowered to an
+    // `_Unsupported` placeholder, while typecheck typed it as the identity and
+    // reported no error. A silent miscompile. Each source below is a distinct
+    // position routing through `resolve_field_chain`.
+    for src in [
+        "enum D { A = 0, B = 1 }
+         var d: D = A
+         out v = match d.Value { A => 11.0, B => 22.0 }
+",
+        "enum D { A = 0, B = 1 }
+         var d: D = A
+         let e: D = d.Value
+         out v = match e { A => 11.0, B => 22.0 }
+",
+        "enum D { A = 0, B = 1 }
+         var d: D = A
+         out v = d.Value.Discriminant
+",
+    ] {
+        let r = compile(src);
+        assert_no_errors(&r);
+        assert!(!has_wsp001(&r), "no WSP001 placeholder for:
+{src}
+got {:?}", r.diagnostics);
+        assert!(!has_gate(&r, "_Unsupported"), "no placeholder gate for:
+{src}");
+    }
+}
+
+#[test]
+fn dot_value_on_an_enum_var_matches_the_bare_name_lowering() {
+    // The contract: a program is the same program with or without the
+    // `.Value`. Same lowered shape, not merely something that avoids the
+    // placeholder.
+    let bare = compile(
+        "enum D { A = 0, B = 1 }
+         var d: D = A
+         out v = match d { A => 11.0, B => 22.0 }
+",
+    );
+    let dotted = compile(
+        "enum D { A = 0, B = 1 }
+         var d: D = A
+         out v = match d.Value { A => 11.0, B => 22.0 }
+",
+    );
+    assert_no_errors(&dotted);
+    let classes = |r: &LowerResult| {
+        let mut v: Vec<String> =
+            r.module.nodes.values().map(|n| n.gate_class.to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        classes(&bare),
+        classes(&dotted),
+        "`match d.Value` must lower identically to `match d`"
+    );
+}
+
+#[test]
+fn dot_value_on_an_enum_with_payloads_keeps_every_slot() {
+    // The identity is the WHOLE enum, not just its tag: a payload capture must
+    // still resolve through a `.Value`, or `.Value` would silently narrow the
+    // value to its discriminant and the arm would read a dead slot.
+    let bare = compile(
+        "enum Shape { Empty, Circle(float), Box { w: float, h: float } }
+         var s: Shape = Circle(3.0)
+         out area = match s { Circle(r) => r, Box { w, h } => w, Empty => 0.0 }
+",
+    );
+    let dotted = compile(
+        "enum Shape { Empty, Circle(float), Box { w: float, h: float } }
+         var s: Shape = Circle(3.0)
+         out area = match s.Value { Circle(r) => r, Box { w, h } => w, Empty => 0.0 }
+",
+    );
+    assert_no_errors(&dotted);
+    assert!(!has_wsp001(&dotted), "diagnostics: {:?}", dotted.diagnostics);
+    assert!(!has_gate(&dotted, "_Unsupported"));
+    assert_eq!(dotted.module.nodes.len(), bare.module.nodes.len());
+}
+
+#[test]
+fn dot_value_still_projects_a_real_value_field_of_a_record() {
+    // The identity must not swallow a record that genuinely HAS a `Value`
+    // field (`a.pop()` -> `{ Value, IsEmpty }`); that field read wins.
+    let r = compile(
+        "var a: int[]
+         var got: int
+         on RoundStart() {
+           a.push(7)
+           got = a.pop().Value
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+}

@@ -1556,3 +1556,73 @@ fn chip_tuple_param_pattern_binds() {
         .expect("chip body must contain a + b");
     assert_eq!(add.ports.inputs.len(), 2, "both tuple elements must feed the add");
 }
+
+#[test]
+fn dot_value_opens_a_record_variable() {
+    // `.Value` opens a VARIABLE, whatever it holds. A var needing more than one
+    // storage gate (a record here, an enum elsewhere) binds as a
+    // `Binding::Record`, so it never reaches the single-port `Binding::Var` arm
+    // that answers `.Value` for a scalar.
+    //
+    // Asserts WHICH storage gate the read lands on, not just how many gates
+    // exist: a record var has one `Pseudo_Var` per field (labelled `p.x`,
+    // `p.y`), so resolving `.Value` to the wrong field still emits exactly one
+    // `Var_Get` and would sail past a node count while reading `y` for `x`.
+    let read_field_label = |src: &str| -> String {
+        let r = compile(src);
+        assert_no_errors(&r);
+        assert!(!has_gate(&r, "_Unsupported"), "{:?}", r.diagnostics);
+        let get = r
+            .module
+            .nodes
+            .values()
+            .find(|n| n.gate_class == crate::ir::gate_class::VAR_GET)
+            .expect("a Var_Get reading the record field");
+        // The `VarRef` input names the storage gate this read is bound to.
+        let src_node = r
+            .module
+            .wires
+            .iter()
+            .find(|w| w.target.node_id == get.id && w.target.port == WirePort::VarRef)
+            .map(|w| w.source.node_id)
+            .expect("the Var_Get must have its VarRef wired");
+        match r.module.nodes[&src_node]
+            .properties
+            .get(&crate::intern::sym::NAME_LABEL)
+        {
+            Some(crate::ir::Literal::String(s)) => s.clone(),
+            other => panic!("storage gate carries no name label: {other:?}"),
+        }
+    };
+    let decl = "type P = { x: int, y: int }
+                var p: P = { x: 1, y: 2 }
+                var got: int
+";
+    let bare = read_field_label(&format!("{decl}on RoundStart() {{ got = p.x }}
+"));
+    let dotted = read_field_label(&format!("{decl}on RoundStart() {{ got = p.Value.x }}
+"));
+    assert_eq!(bare, "p.x", "`p.x` must read the x field's storage");
+    assert_eq!(dotted, bare, "`p.Value.x` must read the same storage as `p.x`");
+}
+
+#[test]
+fn dot_value_on_a_record_value_is_not_silently_an_identity() {
+    // The opening is gated on the record being STORAGE. A record VALUE (a `let`,
+    // a chip's multi-output result) has no variable to open, and typecheck
+    // already calls `.Value` an unknown field on it (WS010) -- lowering must not
+    // quietly answer it as an identity and contradict that.
+    let r = compile(
+        "var got: int
+         on RoundStart() {
+           let rec = { x: 9, y: 8 }
+           got = rec.Value.x
+         }
+",
+    );
+    assert!(
+        r.diagnostics.iter().any(|d| d.code == "WS010" || d.code == "WSP001"),
+        "`.Value` on a record value must stay loud, got {:?}",
+        r.diagnostics
+    );
+}
