@@ -1111,12 +1111,13 @@ pub(super) fn match_scrutinee_record(
     if let Some(Binding::Record(root)) = resolve_field_chain(ctx, scrutinee).cloned() {
         return Some(root);
     }
-    // Not a name resolving to a record: lower the expression itself. An enum
-    // construction sets `pending_inline_record`; anything else leaves it unset
-    // (cleared first so a stale record from an earlier lowering can't leak in).
-    ctx.pending_inline_record = None;
-    lower_expr(ctx, scrutinee);
-    ctx.pending_inline_record.take()
+    // Not a name resolving to a record. The shared record resolver covers every
+    // other shape that carries one: an enum construction (through
+    // `pending_inline_record`), a container element (`match m[k]`,
+    // `match arr[i]`), a field path, a record-valued conditional. Binding the
+    // same read to a name first always worked, so an inline scrutinee reaching
+    // the placeholder was a gap in the resolution, not a limit of the layout.
+    crate::lower::stmt::value_record_fields(ctx, scrutinee)
 }
 
 /// Try to resolve `decision` to its taken terminal (`Leaf`/`Fail`) node using

@@ -1600,3 +1600,123 @@ fn reading_an_enum_array_element_projects_its_tag() {
     assert_eq!(written_var_labels(&r), vec!["d".to_string()]);
 }
 
+
+#[test]
+fn enum_field_of_a_record_array_gets_parallel_columns() {
+    // A record array is one parallel array per leaf, and an enum leaf is
+    // several columns, so it needs one array per tag and payload slot. The enum
+    // storage arm was gated to a plain record VAR, so inside an array the field
+    // fell through to the scalar arm and collapsed.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         type H = { s: S, k: int }
+         var arr: H[]
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraphPseudo_ArrayVar"),
+        4,
+        "s.__disc + s.__A_0 + s.__B_0 + k"
+    );
+}
+
+#[test]
+fn pushing_a_record_with_an_enum_field_writes_every_column() {
+    let r = compile(
+        "enum S { A(int), B(int) }
+         type H = { s: S, k: int }
+         in go: exec
+         in u: int
+         var arr: H[]
+         on go { arr.push({ s: S.A(u), k: u }) }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        4,
+        "one push per parallel column"
+    );
+}
+
+#[test]
+fn enum_field_of_a_record_map_gets_parallel_columns() {
+    let r = compile(
+        "enum S { A(int), B(int) }
+         type H = { s: S, k: int }
+         var m: Map<int, H>
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        4,
+        "s.__disc + s.__A_0 + s.__B_0 + k"
+    );
+}
+
+#[test]
+fn match_on_an_inline_map_subscript_decomposes() {
+    // A named binding of the same read (`let e = m[k]; match e`) resolves
+    // through the scope, but the inline form had no name to resolve, and the
+    // fallback only recognised an enum CONSTRUCTION, so a container element
+    // scrutinee fell to the loud placeholder.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         in go: exec
+         var m: Map<int, S>
+         var got: int = 0
+         on go {
+           m.set(1, S.A(7))
+           match m[1] {
+             A(n) => { got = n }
+             B(n) => { got = n }
+           }
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+}
+
+#[test]
+fn match_on_an_inline_array_index_decomposes() {
+    let r = compile(
+        "enum S { A(int), B(int) }
+         in go: exec
+         var arr: S[]
+         var got: int = 0
+         on go {
+           arr.push(S.A(7))
+           match arr[0] {
+             A(n) => { got = n }
+             B(n) => { got = n }
+           }
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+}
+
+#[test]
+fn if_let_on_a_map_get_value_decomposes() {
+    // `m.get(k)` yields a `{Value, Found}` record, so the enum is one `.Value`
+    // projection down. That projection produced no enum record and the bind
+    // lowered to a placeholder.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         in go: exec
+         var m: Map<int, S>
+         var got: int = 0
+         on go {
+           m.set(1, S.A(7))
+           let e = m.get(1).Value
+           if let A(n) = e { got = n }
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+}

@@ -105,6 +105,48 @@ fn s1_var_to_ref_param_is_clean() {
     assert!(!has(src, "WS008"), "{:?}", diags(src));
 }
 
+#[test]
+fn record_field_to_ref_param_is_clean() {
+    // Each record field is its own storage gate, so `&p.a` names real storage
+    // and lowers to a correctly wired write. The `&` check accepted only a bare
+    // name, an index, and a namespaced member, so it rejected this valid form.
+    let src = "type P = { a: int, b: int }
+mod inc(v: *int) { v = v + 1 }
+in go: exec
+var p: P = { a: 0, b: 0 }
+on go { inc(&p.a) }
+";
+    assert!(!has(src, "WS008"), "{:?}", diags(src));
+}
+
+#[test]
+fn nested_record_field_to_ref_param_is_clean() {
+    let src = "type I = { m: int }
+type O = { i: I, k: int }
+mod inc(v: *int) { v = v + 1 }
+in go: exec
+var o: O = { i: { m: 0 }, k: 0 }
+on go { inc(&o.i.m) }
+";
+    assert!(!has(src, "WS008"), "{:?}", diags(src));
+}
+
+#[test]
+fn computed_record_let_field_to_ref_param_is_ws008() {
+    // The control: a scalar `let` is a computed wire with no storage behind it,
+    // so a field of one must stay rejected rather than silently no-op.
+    let src = "type P = { a: int, b: int }
+mod inc(v: *int) { v = v + 1 }
+in go: exec
+in u: int
+on go {
+  let p: P = { a: u, b: u }
+  inc(&p.a)
+}
+";
+    assert!(has(src, "WS008"), "{:?}", diags(src));
+}
+
 // --- S3/S4: an `emit` to a non-emittable target is WS057, not a silent no-op.
 #[test]
 fn s4_emit_to_input_port_is_ws057() {

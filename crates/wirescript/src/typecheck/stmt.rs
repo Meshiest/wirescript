@@ -820,7 +820,12 @@ pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
                     })
                     .unwrap_or(false);
             }
-            false
+            // An ordinary record field (`p.a`, `o.i.m`): each field is its own
+            // storage gate, so it is writable and ref-able exactly when the
+            // record it hangs off is. Recursing keeps the conservatism, since a
+            // field of a computed scalar `let` fails the `Ident` arm's guard and
+            // stays rejected.
+            is_ref_able(ctx, obj)
         }
         _ => false,
     }

@@ -9,6 +9,8 @@
   - Storing one: an enum-element array or map decomposes into parallel columns, one per tag and payload slot, so pushes and element reads carry the value; an enum-typed record field gets its own tag and payload storage rather than collapsing to one gate.
   - Crossing a boundary: a nested record `in`/`out` port creates a pin per leaf instead of stopping one level down; a record-typed chip signature output gets one pin per field, so the body emits and the caller's pins are wired; `&p` on a record variable passed to a `*P` parameter binds the caller's record instead of dropping the whole body.
   - Copying one: a whole-record copy carries array and map fields instead of skipping them.
+  - Matching on one: a `match` or `if let` accepts a container element (`match m[k]`, `match arr[i]`) or a `.Value` projection off a map `get` as its scrutinee. Only a named binding of the same read resolved before, so the inline form hit a placeholder.
+  - Referencing one: `&p.a` on a record field is accepted, since each field is its own storage gate. It lowered correctly and was rejected by `WS008` anyway.
   - A record or enum as a custom-event data param is now `WS068`, since a data slot is one wire and cannot carry one.
 - A scalar initializer is baked in the declared type, so `var x: float = 0` builds a float Variable gate instead of an integer one. Applies to every bool/int/float pair, to record and enum-payload fields, and to a var-backed output's default (`out y: float = 0`).
 - A component read straight off a call (`d.ToRotation().ToEuler().Yaw`, `v.SplitVec().y`) reads that call's own port; it used to emit a second Split gate fed by the first one's primary output, yielding the wrong component.

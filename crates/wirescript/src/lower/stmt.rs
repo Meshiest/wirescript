@@ -545,6 +545,28 @@ pub(super) fn value_record_fields(
     {
         return Some(rec);
     }
+    // `.Value` / `.prev` on a record VALUE opens the variable, the same way
+    // `resolve_field_chain` opens a NAMED one. A map `get` is a call, so it has
+    // no scope binding for that path to walk, which left `m.get(k).Value`
+    // without a record even though `m[k]` had one. That combination was the
+    // worst kind: `WS066` on `m.get(k)` names `.Value` as the fix, and `.Value`
+    // then failed too.
+    if let Expr::FieldAccess { obj, field, .. } = value
+        && matches!(field.as_str(), "Value" | "prev")
+        && matches!(
+            obj.as_ref(),
+            Expr::Call { .. } | Expr::IndexAccess { .. }
+        )
+        && let Some(inner) = value_record_fields(ctx, obj)
+    {
+        // A real `Value` field (`a.pop().Value`) wins over the identity, exactly
+        // as it does in `resolve_field_chain`.
+        return match inner.get(&crate::intern::intern(field)) {
+            Some(Binding::Record(f)) => Some(f.clone()),
+            Some(_) => None,
+            None => Some(inner),
+        };
+    }
     // `pts[i].inner` reads a NESTED record field of a record ARRAY element as a
     // record value (per-field ArrayGet), so it flows like any other record
     // source. A `pts[i].scalar` field goes through the scalar path instead

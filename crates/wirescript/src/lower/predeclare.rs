@@ -1358,22 +1358,38 @@ fn record_field_storage(
         }
         return Binding::Record(fmap);
     }
-    let field_type = ctx.resolve_local_type(field_typ);
     // An ENUM field is multi-gate exactly as a nested record is: its own
-    // `__disc` plus the superset of every variant's payload slots. Without this
-    // arm it fell through to the scalar arm below and collapsed to ONE gate, so
+    // `__disc` plus the superset of every variant's payload slots. Falling
+    // through to the scalar arm below collapsed all of that into ONE gate, so
     // the tag and payload shared a slot, a write to the field found a scalar
     // `Binding::Var` against a `Binding::Record` source and vanished, and a read
-    // had no slots to project. Only meaningful for a record VARIABLE - a record
-    // array/map column is a parallel array per leaf, which an enum's superset
-    // layout does not fit, so those keep the existing behavior.
-    if kind == VarStorage::Var
-        && let Type::Enum { name: enum_name, args } = &field_type
-        && let Some(def) = ctx.enum_defs.get(enum_name).cloned()
-    {
-        let fields = build_enum_fields(ctx, &def, args, &label, None, None, range);
-        return Binding::Record(fields);
+    // had no slots to project.
+    //
+    // Inside a record ARRAY or MAP the same columns become parallel
+    // arrays/maps, one per tag and payload slot, which is what the nested-record
+    // recursion above already does a level deeper. Routing through
+    // `enum_container_columns` reuses that recursion rather than duplicating it,
+    // so the two layouts stay described in one place.
+    if let Some(cols) = enum_container_columns(ctx, field_typ, range) {
+        if kind == VarStorage::Var {
+            let field_type = ctx.resolve_local_type(field_typ);
+            if let Type::Enum { name: enum_name, args } = &field_type
+                && let Some(def) = ctx.enum_defs.get(enum_name).cloned()
+            {
+                let fields = build_enum_fields(ctx, &def, args, &label, None, None, range);
+                return Binding::Record(fields);
+            }
+        }
+        let mut fmap = HashMap::default();
+        for c in &cols {
+            fmap.insert(
+                crate::intern::intern(&c.name),
+                record_field_storage(ctx, kind, &label, &c.name, &c.typ, None, map_key, range),
+            );
+        }
+        return Binding::Record(fmap);
     }
+    let field_type = ctx.resolve_local_type(field_typ);
     let field_type = &field_type;
     // Taken before the gate-building borrows `ctx` mutably below.
     let consts = ctx.const_lookup();
