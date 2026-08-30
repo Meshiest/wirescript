@@ -1350,3 +1350,253 @@ fn dot_value_still_projects_a_real_value_field_of_a_record() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
 }
+
+#[test]
+fn record_typed_payload_field_writes_every_subfield() {
+    // A record-typed payload slot is laid out per-field by `enum_payload_slot`
+    // and read per-field by a pattern bind, so a construction has to WRITE it
+    // per-field too. Lowering the field with `lower_expr` cannot: one
+    // expression yields one port, so the record collapsed to an `_Unsupported`
+    // placeholder and `assign_record_fields` silently skipped the slot, so the
+    // string field assigned and the record field did not.
+    let r = compile(
+        "type Track = { origin: vector, direction: vector }
+         enum St { A, B { next_track: Track, my_str: string } }
+         var s: St = St.A
+         on RoundStart() {
+           s = St.B { next_track: { origin: Vec(4.0, 4.0, 4.0), direction: Vec(1.0, 0.0, 0.0) }, my_str: \"hi\" }
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+    assert_eq!(
+        written_var_labels(&r),
+        vec![
+            "s.__B_my_str".to_string(),
+            "s.__B_next_track.direction".to_string(),
+            "s.__B_next_track.origin".to_string(),
+            "s.__disc".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn record_typed_payload_field_writes_every_subfield_from_a_var() {
+    // The same slot fed by an existing record VAR rather than a literal: the
+    // source is already a `Binding::Record`, so this fails for the same
+    // one-port reason and must be fixed by the same per-field path.
+    let r = compile(
+        "type Track = { origin: vector, direction: vector }
+         enum St { A, B { next_track: Track } }
+         var s: St = St.A
+         var t: Track = { origin: Vec(0.0, 0.0, 0.0), direction: Vec(0.0, 0.0, 0.0) }
+         on RoundStart() {
+           s = St.B { next_track: t }
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+    assert_eq!(
+        written_var_labels(&r),
+        vec![
+            "s.__B_next_track.direction".to_string(),
+            "s.__B_next_track.origin".to_string(),
+            "s.__disc".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn record_typed_positional_payload_writes_every_subfield() {
+    // Positional payloads build the same `Vec<(String, PortRef)>`, so the
+    // record collapse is not specific to the named-field syntax.
+    let r = compile(
+        "type Track = { origin: vector, direction: vector }
+         enum St { A, B(Track) }
+         var s: St = St.A
+         var t: Track = { origin: Vec(0.0, 0.0, 0.0), direction: Vec(0.0, 0.0, 0.0) }
+         on RoundStart() {
+           s = St.B(t)
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+    assert_eq!(
+        written_var_labels(&r),
+        vec![
+            "s.__B_0.direction".to_string(),
+            "s.__B_0.origin".to_string(),
+            "s.__disc".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn nested_enum_payload_field_writes_every_slot() {
+    // The SILENT twin: a nested-enum payload lowers through
+    // `try_lower_enum_ctor`, which succeeds and returns only the inner
+    // `__disc` port while dropping its `pending_inline_record`. No
+    // `_Unsupported`, so no WSP001 either: the construction wrote 2 of the 4
+    // slots and typechecked clean.
+    let r = compile(
+        "enum Inner { X, Y(int) }
+         enum Outer { A, B { i: Inner, s: string } }
+         var o: Outer = Outer.A
+         on RoundStart() {
+           o = Outer.B { i: Inner.Y(42), s: \"hi\" }
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+    assert_eq!(
+        written_var_labels(&r),
+        vec![
+            "o.__B_i.__Y_0".to_string(),
+            "o.__B_i.__disc".to_string(),
+            "o.__B_s".to_string(),
+            "o.__disc".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn record_typed_payload_bakes_its_subfields_in_a_declaration_initializer() {
+    // The declaration-initializer path is separate from assignment:
+    // `enum_payload_slot`'s record arm builds its sub-field storage with
+    // `init: None`, discarding the folded `Literal::Record`, so the payload
+    // zeroed instead of baking. Nothing runs at load to repair it.
+    let r = compile(
+        "type P = { a: int, b: int }
+         enum St { A, B { p: P } }
+         var s: St = St.B { p: { a: 7, b: 9 } }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(baked_init(&r, "s.__disc"), Some(crate::ir::Literal::Int(1)));
+    assert_eq!(baked_init(&r, "s.__B_p.a"), Some(crate::ir::Literal::Int(7)));
+    assert_eq!(baked_init(&r, "s.__B_p.b"), Some(crate::ir::Literal::Int(9)));
+}
+
+#[test]
+fn record_payload_subfields_keep_their_own_values() {
+    // Per-field copying has to preserve field IDENTITY, not merely emit one
+    // write per slot: keying the copy wrong would still produce a write for
+    // every sub-field and satisfy a label-only check while swapping the values.
+    let r = compile(
+        "type P = { a: int, b: int }
+         enum St { A, B { p: P, n: int } }
+         var s: St = St.A
+         on RoundStart() {
+           s = St.B { p: { a: 7, b: 9 }, n: 5 }
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(written_value(&r, "s.__B_p.a"), Some(crate::ir::Literal::Int(7)));
+    assert_eq!(written_value(&r, "s.__B_p.b"), Some(crate::ir::Literal::Int(9)));
+    assert_eq!(written_value(&r, "s.__B_n"), Some(crate::ir::Literal::Int(5)));
+    assert_eq!(written_value(&r, "s.__disc"), Some(crate::ir::Literal::Int(1)));
+}
+
+// an enum-element array / map
+
+#[test]
+fn enum_element_array_decomposes_into_parallel_columns() {
+    // An enum value spans several wires exactly as a record does, so an
+    // enum-element array needs one parallel array per column: the `__disc` plus
+    // every variant's payload slot. A single ArrayVar collapsed the tag and the
+    // payload into one column.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         var arr: S[]
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraphPseudo_ArrayVar"),
+        3,
+        "__disc + __A_0 + __B_0"
+    );
+}
+
+#[test]
+fn pushing_an_enum_onto_an_array_carries_its_value() {
+    // The push emitted no `Value` wire at all, so both the tag and the payload
+    // were discarded, and two orphan `Pseudo_Var` gates were left behind.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         in go: exec
+         in u: int
+         var arr: S[]
+         on go { arr.push(S.A(u)) }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        3,
+        "one push per parallel column"
+    );
+    for (id, n) in &r.module.nodes {
+        if n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push" {
+            let wired = r
+                .module
+                .wires
+                .iter()
+                .any(|w| w.target.node_id == *id && w.target.port == WirePort::Value);
+            // A constant column (the statically known `__disc`) inlines its
+            // literal as gate data instead of spawning a source gate to wire,
+            // the same way a constant assigned to a var does.
+            let baked = n.properties.contains_key(&crate::intern::sym::VALUE);
+            assert!(wired || baked, "push {id:?} carries no value at all");
+        }
+    }
+}
+
+#[test]
+fn enum_element_map_decomposes_into_parallel_columns() {
+    let r = compile(
+        "enum S { A(int), B(int) }
+         var m: Map<int, S>
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        3,
+        "__disc + __A_0 + __B_0"
+    );
+}
+
+#[test]
+fn reading_an_enum_array_element_projects_its_tag() {
+    // The read side was silent too: a bare `ArrayVar_Get` off the single
+    // collapsed column fed the consumer, so `.Discriminant` took whatever that
+    // column happened to hold. Reading an element now pulls every column, which
+    // is what lets a later `match` on the value reach any arm's payload.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         in go: exec
+         var arr: S[]
+         var d: int = 0
+         on go {
+           arr.push(S.A(1))
+           let e = arr[0]
+           d = e.Discriminant
+         }
+",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+        3,
+        "one read per parallel column"
+    );
+    assert_eq!(written_var_labels(&r), vec!["d".to_string()]);
+}
+

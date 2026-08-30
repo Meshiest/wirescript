@@ -229,9 +229,26 @@ pub(super) fn check_custom_event_types(
     let mut global_recv: HashMap<String, Vec<Option<Type>>> = HashMap::default();
     let mut personal_send: Vec<&Expr> = Vec::new();
     let mut global_send: Vec<&Expr> = Vec::new();
+    // A data slot is ONE wire. A record (or an enum, which lowers as a record of
+    // `__disc` + slots) spans several, so it cannot travel through one. Lowering
+    // binds such a param to a single `Binding::EventParam` and every use of it
+    // produces no gates, dropping the statement without a word, so name it here
+    // instead.
+    let mut bad_params: Vec<(String, String, crate::diagnostic::SourceRange)> = Vec::new();
     crate::analysis::visit_program(
         script,
         &mut |h| {
+            if matches!(&h.trigger, Trigger::Ident { name, .. }
+                if name == "CustomEvent" || name == "GlobalCustomEvent")
+            {
+                for p in &h.params {
+                    let Some(te) = &p.ty else { continue };
+                    let t = crate::typecheck::resolve::resolve_type_expr(ctx, te);
+                    if matches!(unwrap_ref(&t), Type::Record(_) | Type::Enum { .. }) {
+                        bad_params.push((p.name.clone(), t.to_string(), p.range.clone()));
+                    }
+                }
+            }
             if let Some((name, params)) = ce_receiver_of(h, "CustomEvent", ce_slots) {
                 ce_merge_receiver(&mut personal_recv, name, params);
             } else if let Some((name, params)) = ce_receiver_of(h, "GlobalCustomEvent", ce_slots) {
@@ -257,6 +274,16 @@ pub(super) fn check_custom_event_types(
             }
         },
     );
+    for (pname, tname, range) in bad_params {
+        ctx.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            code: "WS068".into(),
+            message: format!(
+                "custom event data param '{pname}' is {tname}, which spans several wires and                  cannot travel through a single event data slot - pass the fields as separate                  params (`-> (a: int, b: int)`), or send a key and read the value from shared                  storage on the other side"
+            ),
+            range,
+        });
+    }
     check_ce_namespace(ctx, &personal_send, &personal_recv, tmap, "SendCustomEvent", "CustomEvent");
     check_ce_namespace(
         ctx,

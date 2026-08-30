@@ -122,6 +122,19 @@ pub(super) fn wire_chip_args_and_outputs(
     // inline-mod path does after its body.
     reset_var_get_caches(ctx);
 
+    // A record-typed signature output has one child pin per LEAF, so the call
+    // does not produce a single value port. Stash the per-leaf record the way
+    // every other record-producing call does (`pending_inline_record`) so an
+    // assignment / `out` / argument consumer picks it up through
+    // `value_record_fields`. Without it the call returned pin 0 alone and every
+    // other leaf was silently unwired.
+    if chip_decl.outputs.len() == 1
+        && ctx.record_fields_of(&chip_decl.outputs[0].typ).is_some()
+    {
+        let mut idx = 0usize;
+        let rec = child_output_record(ctx, &chip_decl.outputs[0].typ, child_outputs, &mut idx);
+        ctx.pending_inline_record = Some(rec);
+    }
     if !child_outputs.is_empty() {
         child_outputs[0].port(WirePort::RerOutput)
     } else {
@@ -129,6 +142,39 @@ pub(super) fn wire_chip_args_and_outputs(
         // allocated so any wire referencing it will be caught as invalid.
         NodeId(0).port(WirePort::Output)
     }
+}
+
+
+/// The caller-side `Binding::Record` for a record-typed chip signature output:
+/// one leaf per child output pin, consumed in the SAME declaration order the
+/// body-side explode (`predeclare::record_output_pins`) created them in, so the
+/// two sides cannot drift.
+fn child_output_record(
+    ctx: &mut LowerCtx,
+    te: &TypeExpr,
+    child_outputs: &[NodeId],
+    idx: &mut usize,
+) -> HashMap<crate::intern::Sym, Binding> {
+    let fields = ctx.record_fields_of(te).unwrap_or_default();
+    let mut out = HashMap::default();
+    for field in &fields {
+        if ctx.record_fields_of(&field.typ).is_some() {
+            let inner = child_output_record(ctx, &field.typ, child_outputs, idx);
+            out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
+            continue;
+        }
+        let Some(pin) = child_outputs.get(*idx) else {
+            break;
+        };
+        *idx += 1;
+        out.insert(
+            crate::intern::intern(&field.name),
+            Binding::Local(LocalRecord {
+                port: pin.port(WirePort::RerOutput),
+            }),
+        );
+    }
+    out
 }
 
 /// Wire a record argument's LEAF sources into the child's per-leaf input pins.

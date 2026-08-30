@@ -1130,7 +1130,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     if matches!(
         &d.value,
         Expr::IndexAccess { .. } | Expr::FieldAccess { .. } | Expr::TuplePick { .. }
-    ) && matches!(ctx.type_of(&d.value), Type::Record(_))
+    ) && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Enum { .. })
         && let Some(src) = crate::lower::stmt::value_record_fields(ctx, &d.value)
     {
         match &d.binding {
@@ -1328,6 +1328,17 @@ pub(super) fn lower_record_lit(
                 } else if let Some(binding) = resolve_field_chain(ctx, value).cloned() {
                     // Value references something in scope (possibly through a record chain).
                     map.insert(crate::intern::intern(name), binding);
+                } else if let Some(inner) = crate::lower::stmt::value_record_fields(ctx, value) {
+                    // A record-shaped field value with no binding of its own:
+                    // a record-returning call, an enum construction, a record
+                    // array/map element. The `lower_expr` fallback below keeps
+                    // one port and discards the rest, so such a field arrives as
+                    // a `Binding::Local`, which every consumer that walks a
+                    // `Binding::Record` target skips without a diagnostic. For
+                    // the parallel-array consumers that desyncs the columns'
+                    // LENGTHS, misaligning every later row. Uses the same
+                    // resolver as the spread arm below.
+                    map.insert(crate::intern::intern(name), Binding::Record(inner));
                 } else {
                     let port = lower_expr(ctx, value);
                     map.insert(

@@ -771,7 +771,7 @@ fn lower_index_access_runtime(
 /// Build an ArrayVar exec gate with the standard `Exec` + `ArrayVarRef` inputs
 /// and `ExecOut` output, plus the supplied extra (already-lowered) inputs and
 /// extra outputs. Advances the exec chain and returns the `ret` port.
-fn array_exec_op(
+pub(super) fn array_exec_op(
     ctx: &mut LowerCtx,
     range: &SourceRange,
     array_ref: PortRef,

@@ -507,6 +507,42 @@
     }
 
     #[test]
+    fn record_typed_custom_event_param_is_rejected() {
+        // An event data slot is ONE wire, so a record (or an enum, which lowers
+        // as a record of `__disc` + slots) cannot travel through it. Lowering
+        // bound the param to a single `Binding::EventParam` and every use of it
+        // produced no gates, so the statement simply vanished. A named error
+        // beats a disappearing statement.
+        let src = "type P = { a: int, b: int }
+                   var q: P = { a: 0, b: 0 }
+                   on CustomEvent(\"ch\") -> (p: P) { q = p }
+";
+        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        let d = r
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS068")
+            .expect("WS068 for a record-typed event param");
+        assert_eq!(d.severity, Severity::Error);
+        assert!(d.message.contains("p"), "names the param: {}", d.message);
+    }
+
+    #[test]
+    fn scalar_custom_event_param_is_still_accepted() {
+        // The control: the same handler with a wire-typed param must stay clean,
+        // so the new check cannot be a blanket rejection.
+        let src = "var n: int = 0
+                   on CustomEvent(\"ch\") -> (v: int) { n = v }
+";
+        let r = typecheck(&parse(src, "test").ast, "test", &crate::typecheck::CeSlotMap::default());
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS068"),
+            "diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
     fn nested_prefab_custom_event_slot_defaults_to_float_and_warns() {
         // A self-contained prefab block runs the same two-phase inference the
         // compile path uses: an unannotated custom-event slot with no in-block

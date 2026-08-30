@@ -206,6 +206,61 @@ pub(super) fn wired_reachable(
     false
 }
 
+/// The `NAME_LABEL`s of the `Pseudo_Var` gates that some `Exec_Var_Set` writes
+/// through its `VarRef` port. Proves a payload slot is actually WRITTEN, which
+/// neither a gate count nor a label lookup can: a slot that is allocated by
+/// `build_enum_fields` but never assigned still has its `Pseudo_Var` and its
+/// label, so a count-only check passes on a construction that dropped the
+/// value entirely.
+pub(super) fn written_var_labels(r: &LowerResult) -> Vec<String> {
+    let mut out: Vec<String> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.target.port == WirePort::VarRef)
+        .filter(|w| {
+            r.module
+                .nodes
+                .get(&w.target.node_id)
+                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+        })
+        .filter_map(|w| r.module.nodes.get(&w.source.node_id))
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter_map(|n| match n.properties.get(&crate::intern::sym::NAME_LABEL) {
+            Some(crate::ir::Literal::String(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The `Value` baked into the `Exec_Var_Set` that writes the `Pseudo_Var`
+/// labelled `label`. A constant assigned to a var inlines onto the Var_Set as
+/// component data (see `constant_vec_inlines_into_var_set`), so this reads back
+/// the VALUE a slot actually receives, which `written_var_labels` cannot see.
+pub(super) fn written_value(r: &LowerResult, label: &str) -> Option<crate::ir::Literal> {
+    let var = r.module.nodes.iter().find(|(_, n)| {
+        n.gate_class == "BrickComponentType_WireGraphPseudo_Var"
+            && matches!(
+                n.properties.get(&crate::intern::sym::NAME_LABEL),
+                Some(crate::ir::Literal::String(s)) if s == label
+            )
+    })?;
+    let set = r.module.wires.iter().find(|w| {
+        w.source.node_id == *var.0
+            && w.target.port == WirePort::VarRef
+            && r.module
+                .nodes
+                .get(&w.target.node_id)
+                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+    })?;
+    r.module.nodes[&set.target.node_id]
+        .properties
+        .get(&crate::intern::sym::VALUE)
+        .cloned()
+}
+
 /// The single node with the given gate class (panics if absent/ambiguous).
 pub(super) fn find_gate(r: &LowerResult, class: &str) -> crate::ir::NodeId {
     let matches: Vec<_> = r

@@ -1626,3 +1626,421 @@ fn dot_value_on_a_record_value_is_not_silently_an_identity() {
         r.diagnostics
     );
 }
+
+// `&recordVar` passed to a `*P` ref param
+
+#[test]
+fn ref_param_given_an_address_of_a_record_var_runs_the_body() {
+    // `bump(&p, u)` must bind `q` to the caller's record exactly as the bare
+    // `bump(p, u)` form does. The record fast path resolved the UN-unwrapped
+    // `Expr::RefOf`, which never names a binding, so control fell to the
+    // container arm, which resolves through `lookup_var` and holds nothing for
+    // a record, so the param bound to nothing. Every statement in the body then
+    // referenced a free name and the whole body vanished without a word.
+    let r = compile(
+        "type P = { a: int, b: int }
+         in go: exec
+         in u: int
+         var p: P = { a: 0, b: 0 }
+         mod bump(q: *P, d: int) { q.a = q.a + d }
+         on go { bump(&p, u) }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["p.a".to_string()],
+        "the body must write the caller's `p.a` through the ref param"
+    );
+}
+
+#[test]
+fn ref_param_address_of_form_matches_the_bare_form() {
+    // The two spellings are the same binding, so they must lower to the same
+    // gates. This structural equality catches a fix that wires `&p` somewhere
+    // plausible but different.
+    let src = "type P = { a: int, b: int }
+         in go: exec
+         in u: int
+         var p: P = { a: 0, b: 0 }
+         mod bump(q: *P, d: int) { q.a = q.a + d }
+         on go { bump(ARG, u) }
+";
+    let amp = compile(&src.replace("ARG", "&p"));
+    let bare = compile(&src.replace("ARG", "p"));
+    assert_no_errors(&amp);
+    assert_no_errors(&bare);
+    assert_eq!(amp.module.nodes.len(), bare.module.nodes.len());
+    assert_eq!(written_var_labels(&amp), written_var_labels(&bare));
+}
+
+// a record-returning call as a NESTED record-literal field
+
+#[test]
+fn record_returning_call_in_a_nested_literal_field_writes_every_leaf() {
+    // `o = { i: mkInner(u), k: v }` has to write all three leaves. The nested
+    // field lowered through `lower_expr`, which keeps one port and discards the
+    // call's `pending_inline_record`, so the `i` sub-record arrived as a
+    // `Binding::Local` and `assign_record_fields` skipped it in silence.
+    let r = compile(
+        "type Inner = { m: int, n: int }
+         type Outer = { i: Inner, k: int }
+         in go: exec
+         in u: int
+         in v: int
+         var o: Outer = { i: { m: 0, n: 0 }, k: 0 }
+         mod mkInner(x: int) -> (res: Inner) { return { m: x, n: x } }
+         on go { o = { i: mkInner(u), k: v } }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["o.i.m".to_string(), "o.i.n".to_string(), "o.k".to_string()],
+    );
+}
+
+#[test]
+fn record_returning_call_in_a_nested_literal_field_pushes_every_column() {
+    // The array form is worse than a wrong value: pushing only the `k` column
+    // leaves the parallel arrays at different LENGTHS, so every later row is
+    // misaligned. One push per leaf column is the invariant.
+    let r = compile(
+        "type Inner = { m: int, n: int }
+         type Outer = { i: Inner, k: int }
+         in go: exec
+         in u: int
+         in v: int
+         var arr: Outer[]
+         mod mkInner(x: int) -> (res: Inner) { return { m: x, n: x } }
+         on go { arr.push({ i: mkInner(u), k: v }) }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        3,
+        "one push per parallel column, or the columns desync"
+    );
+}
+
+// a record-valued `if/then/else`
+
+#[test]
+fn record_valued_ternary_selects_each_leaf() {
+    // `z = if c then x else y` on records used to emit NOTHING: no Select, no
+    // Var_Set, and no diagnostic. A record has no single-wire form, so the
+    // choice has to be made per leaf, one Select per field, all sharing the one
+    // lowered condition.
+    let r = compile(
+        "type P = { a: int, b: int }
+         in go: exec
+         in c: bool
+         var x: P = { a: 1, b: 2 }
+         var y: P = { a: 3, b: 4 }
+         var z: P = { a: 0, b: 0 }
+         on go { z = if c then x else y }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["z.a".to_string(), "z.b".to_string()],
+    );
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        2,
+        "one Select per leaf field"
+    );
+}
+
+#[test]
+fn record_valued_ternary_shares_one_condition_gate() {
+    // The per-leaf fan-out must reuse the condition, not re-lower it per field:
+    // a `Var_Get` per leaf would multiply with the record's width.
+    let r = compile(
+        "type P = { a: int, b: int, c: int }
+         in go: exec
+         var cond: bool = false
+         var x: P = { a: 1, b: 2, c: 3 }
+         var y: P = { a: 4, b: 5, c: 6 }
+         var z: P = { a: 0, b: 0, c: 0 }
+         on go { z = if cond then x else y }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_Select"), 3);
+    let selects: Vec<_> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .map(|(id, _)| *id)
+        .collect();
+    let cond_sources: crate::collections::HashSet<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.target.port == WirePort::BSelectB && selects.contains(&w.target.node_id))
+        .map(|w| w.source.node_id)
+        .collect();
+    assert_eq!(cond_sources.len(), 1, "every Select reads the same condition");
+}
+
+#[test]
+fn nested_record_valued_ternary_selects_every_leaf() {
+    // The per-leaf walk has to recurse: a nested record field is two leaves,
+    // not one.
+    let r = compile(
+        "type Inner = { m: int, n: int }
+         type Outer = { i: Inner, k: int }
+         in go: exec
+         in c: bool
+         var x: Outer = { i: { m: 1, n: 2 }, k: 3 }
+         var y: Outer = { i: { m: 4, n: 5 }, k: 6 }
+         var z: Outer = { i: { m: 0, n: 0 }, k: 0 }
+         on go { z = if c then x else y }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["z.i.m".to_string(), "z.i.n".to_string(), "z.k".to_string()],
+    );
+    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_Select"), 3);
+}
+
+#[test]
+fn record_valued_ternary_into_a_subfield_selects_each_leaf() {
+    let r = compile(
+        "type Inner = { m: int, n: int }
+         type Outer = { i: Inner, k: int }
+         in go: exec
+         in c: bool
+         var a: Inner = { m: 1, n: 2 }
+         var b: Inner = { m: 3, n: 4 }
+         var o: Outer = { i: { m: 0, n: 0 }, k: 0 }
+         on go { o.i = if c then a else b }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["o.i.m".to_string(), "o.i.n".to_string()],
+    );
+}
+
+#[test]
+fn record_valued_ternary_wires_every_output_pin() {
+    // The `out` position bailed the same way, leaving BOTH boundary pins
+    // dangling, which reads in game as an unconnected chip output.
+    let r = compile(
+        "type P = { a: int, b: int }
+         in c: bool
+         var x: P = { a: 1, b: 2 }
+         var y: P = { a: 3, b: 4 }
+         out res: P = if c then x else y
+",
+    );
+    assert_no_errors(&r);
+    let out_pins: Vec<_> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(out_pins.len(), 2, "one pin per leaf field");
+    for pin in out_pins {
+        assert!(
+            r.module.wires.iter().any(|w| w.target.node_id == pin),
+            "output pin {pin:?} is dangling"
+        );
+    }
+}
+
+// a NESTED record `in` / `out` boundary port
+
+#[test]
+fn nested_record_input_port_explodes_every_leaf() {
+    // Port expansion iterated the top-level fields once with no recursion, so a
+    // nested record field got ONE pin for its two leaves and `o = p` copied
+    // only the flat field.
+    let r = compile(
+        "type Inner = { m: int, n: int }
+         type Outer = { i: Inner, k: int }
+         in go: exec
+         in p: Outer
+         var o: Outer = { i: { m: 0, n: 0 }, k: 0 }
+         on go { o = p }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_Internal_MicrochipInput"),
+        4,
+        "one pin per leaf (m, n, k) plus the exec input"
+    );
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["o.i.m".to_string(), "o.i.n".to_string(), "o.k".to_string()],
+    );
+}
+
+#[test]
+fn nested_record_output_port_wires_every_leaf() {
+    let r = compile(
+        "type Inner = { m: int, n: int }
+         type Outer = { i: Inner, k: int }
+         var o: Outer = { i: { m: 1, n: 2 }, k: 3 }
+         out res: Outer = o
+",
+    );
+    assert_no_errors(&r);
+    let out_pins: Vec<_> = r
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_Internal_MicrochipOutput")
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(out_pins.len(), 3, "one pin per leaf field");
+    for pin in out_pins {
+        assert!(
+            r.module.wires.iter().any(|w| w.target.node_id == pin),
+            "output pin {pin:?} is dangling"
+        );
+    }
+}
+
+// an enum-typed FIELD of a record
+
+#[test]
+fn enum_typed_record_field_gets_its_own_disc_and_slots() {
+    // `record_field_storage` recursed for a nested record and special-cased
+    // array/map, but had no enum arm, so an enum field fell through to the
+    // scalar arm and collapsed the whole `__disc` + slots layout into one gate.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         type H = { s: S, k: int }
+         var h: H = { s: S.A(0), k: 0 }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraphPseudo_Var"),
+        4,
+        "h.s.__disc + h.s.__A_0 + h.s.__B_0 + h.k"
+    );
+}
+
+#[test]
+fn assigning_an_enum_typed_record_field_writes_its_slots() {
+    // The write side: the target field was a scalar `Binding::Var` against a
+    // `Binding::Record` source, so `binding_to_port` yielded nothing and the
+    // enum field's write vanished while the sibling scalar's landed.
+    let r = compile(
+        "enum S { A(int), B(int) }
+         type H = { s: S, k: int }
+         in go: exec
+         in u: int
+         var h: H = { s: S.A(0), k: 0 }
+         var sv: S = S.B(5)
+         on go { h = { s: sv, k: u } }
+",
+    );
+    assert_no_errors(&r);
+    let written = written_var_labels(&r);
+    assert!(
+        written.contains(&"h.s.__disc".to_string()),
+        "the enum field's tag must be written, got {written:?}"
+    );
+    assert!(
+        written.contains(&"h.k".to_string()),
+        "the sibling scalar must still be written, got {written:?}"
+    );
+}
+
+// a whole-record copy must carry array/map fields
+
+#[test]
+fn whole_record_copy_carries_an_array_field() {
+    // `q = p` copied the scalar fields and left `q.xs` at its old contents,
+    // making it a clean-compiling wrong copy. A container field needs its own
+    // rebuild, not a skip.
+    let r = compile(
+        "type P = { a: int, xs: int[] }
+         in go: exec
+         var p: P = { a: 0, xs: [1, 2] }
+         var q: P = { a: 0, xs: [9] }
+         on go { q = p }
+",
+    );
+    assert_no_errors(&r);
+    assert!(
+        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_CopyFrom")
+            || has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"),
+        "the array field must be rebuilt, not skipped; gates: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| n.gate_class.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+// a record-typed chip SIGNATURE output
+
+#[test]
+fn record_typed_chip_signature_output_emits_its_body() {
+    // `chip Mk(x: int) -> (p: P)` gave the record output ONE pin, so the body's
+    // `out p = { … }` had nowhere to land and emitted nothing at all, leaving
+    // the instance an empty shell whose caller-side pins were never wired.
+    let r = compile(
+        "type P = { a: int, b: int }
+         in u: int
+         chip Mk(x: int) -> (p: P) { out p = { a: x, b: x } }
+         out res: P = Mk(u)
+",
+    );
+    assert_no_errors(&r);
+    let mk = r
+        .module
+        .chips
+        .values()
+        .find(|c| crate::intern::resolve(c.name).starts_with("Mk"))
+        .expect("the Mk chip instance");
+    assert!(
+        !mk.wires.is_empty(),
+        "the chip body must emit wiring, got {} nodes / 0 wires",
+        mk.nodes.len()
+    );
+    for (id, n) in &r.module.nodes {
+        if n.gate_class == "BrickComponentType_Internal_MicrochipOutput" {
+            assert!(
+                r.module.wires.iter().any(|w| w.target.node_id == *id),
+                "caller output pin {id:?} is dangling"
+            );
+        }
+    }
+}
+
+#[test]
+fn record_typed_chip_signature_output_writes_a_var() {
+    // The exec form: `q = Mk(u)` used to emit ZERO Var_Set, so `q` was never
+    // written.
+    let r = compile(
+        "type P = { a: int, b: int }
+         in go: exec
+         in u: int
+         var q: P = { a: 0, b: 0 }
+         chip Mk(x: int) -> (p: P) { out p = { a: x, b: x } }
+         on go { q = Mk(u) }
+",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["q.a".to_string(), "q.b".to_string()],
+    );
+}

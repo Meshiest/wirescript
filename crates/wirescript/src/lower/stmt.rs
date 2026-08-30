@@ -515,6 +515,29 @@ pub(super) fn value_record_fields(
     if let Expr::RecordLit { fields, .. } = value {
         return Some(lower_record_lit(ctx, fields));
     }
+    // `if c then x else y` yielding a RECORD. A record has no single-wire form,
+    // so the choice is made per leaf: one Select each, all sharing the one
+    // lowered condition. Every caller bails silently on a `None` from here, so
+    // without this arm assignment, the `out` position and a chip argument all
+    // produce nothing at all.
+    if let Expr::IfExpr {
+        cond,
+        then_branch,
+        else_branch,
+        range,
+    } = value
+    {
+        let then_fields = value_record_fields(ctx, then_branch)?;
+        let else_fields = value_record_fields(ctx, else_branch)?;
+        let cond_port = lower_expr(ctx, cond);
+        return Some(select_record_fields(
+            ctx,
+            cond_port,
+            &then_fields,
+            &else_fields,
+            range,
+        ));
+    }
     // `pts[i]` reads a record ARRAY element as a record value (per-field
     // ArrayGet), so it can be assigned/pushed like any other record.
     if let Expr::IndexAccess { obj, index, range } = value
@@ -570,6 +593,87 @@ pub(super) fn value_record_fields(
     None
 }
 
+/// Choose between two record values per LEAF FIELD: one `Select` gate for each
+/// scalar leaf the two sides share, recursing into nested record fields, with
+/// every gate reading the SAME already-lowered `cond_port` (re-lowering the
+/// condition per field would multiply it by the record's width).
+///
+/// Fields present on only one side are dropped: typecheck has already required
+/// both branches to be the same record type, so a one-sided field cannot appear
+/// in a well-formed program, and taking the intersection keeps a mis-typed one
+/// from wiring a Select with a missing input.
+fn select_record_fields(
+    ctx: &mut LowerCtx,
+    cond_port: PortRef,
+    then_fields: &HashMap<crate::intern::Sym, Binding>,
+    else_fields: &HashMap<crate::intern::Sym, Binding>,
+    range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
+    let mut out = HashMap::default();
+    for (fname, then_b) in then_fields {
+        let Some(else_b) = else_fields.get(fname) else {
+            continue;
+        };
+        match (then_b, else_b) {
+            (Binding::Record(tf), Binding::Record(ef)) => {
+                out.insert(
+                    *fname,
+                    Binding::Record(select_record_fields(ctx, cond_port, tf, ef, range)),
+                );
+            }
+            _ => {
+                let (Some(then_port), Some(else_port)) = (
+                    crate::lower::access::binding_to_port(ctx, then_b, range),
+                    crate::lower::access::binding_to_port(ctx, else_b, range),
+                ) else {
+                    continue;
+                };
+                let ty = crate::lower::call::arg_port_type(ctx, then_port)
+                    .or_else(|| crate::lower::call::arg_port_type(ctx, else_port))
+                    .unwrap_or(Type::Any);
+                let node_id = ctx.add_gate(AddNodeOpts {
+                    gate_class: gc::SELECT,
+                    source_range: range.clone(),
+                    ports: GateIO {
+                        inputs: vec![
+                            PortSpec {
+                                name: *sym::INPUT_A,
+                                ty: ty.clone(),
+                            },
+                            PortSpec {
+                                name: *sym::INPUT_B,
+                                ty: ty.clone(),
+                            },
+                            PortSpec {
+                                name: *sym::B_SELECT_B,
+                                ty: Type::Bool,
+                            },
+                        ],
+                        outputs: vec![PortSpec {
+                            name: *sym::OUTPUT,
+                            ty: ty.clone(),
+                        }],
+                    },
+                    note: Some("record if-expr select".into()),
+                    ..Default::default()
+                });
+                // Same polarity as the scalar `lower_if_expr`: the THEN value is
+                // InputB (picked when bSelectB is true), the ELSE value InputA.
+                ctx.connect(cond_port, node_id.port(WirePort::BSelectB));
+                ctx.connect(then_port, node_id.port(WirePort::InputB));
+                ctx.connect(else_port, node_id.port(WirePort::InputA));
+                out.insert(
+                    *fname,
+                    Binding::Local(LocalRecord {
+                        port: node_id.port(WirePort::Output),
+                    }),
+                );
+            }
+        }
+    }
+    out
+}
+
 /// Write a record value into a `Binding::Record` target, field by field: each
 /// leaf `Var` field is read from the matching source field (`binding_to_port`,
 /// which emits a `Var_Get` for a stored source) and written with `set_scalar_var`;
@@ -603,12 +707,48 @@ fn assign_record_fields(
                     assign_record_fields(ctx, &tf, &sf, range);
                 }
             }
-            // Only a plain scalar var field is written here; array/map fields
-            // (a record holding a container) need their own rebuild and are a
-            // follow-up.
             Binding::Var(tvar) if tvar.storage == VarStorage::Var => {
                 if let Some(port) = binding_to_port(ctx, &sbind, range) {
                     set_scalar_var(ctx, &tvar, port, range);
+                }
+            }
+            // A container field copies its CONTENTS. Skipping it (the old
+            // behavior) made `q = p` a clean-compiling partial copy: the scalar
+            // fields moved and `q.xs` silently kept whatever it held before.
+            // `copyFrom` replaces the destination's contents wholesale, which is
+            // exactly whole-record-copy semantics.
+            Binding::Var(tvar) if tvar.storage == VarStorage::Array => {
+                if let Some(src_ref) = binding_to_port(ctx, &sbind, range) {
+                    crate::lower::access::array_exec_op(
+                        ctx,
+                        range,
+                        tvar.node_id.port(WirePort::ArrayVarRef),
+                        gc::ARRAY_COPY_FROM,
+                        vec![(
+                            WirePort::SourceRef,
+                            Type::Array(Box::new(Type::Any)),
+                            src_ref,
+                        )],
+                        vec![],
+                        WirePort::ExecOut,
+                    );
+                }
+            }
+            Binding::Var(tvar) if tvar.storage == VarStorage::Map => {
+                if let Some(src_ref) = binding_to_port(ctx, &sbind, range) {
+                    crate::lower::access::map_exec_op(
+                        ctx,
+                        range,
+                        tvar.node_id.port(WirePort::MapVarRef),
+                        gc::MAP_COPY_FROM,
+                        vec![(
+                            WirePort::SourceRef,
+                            Type::Ref(Box::new(Type::Any)),
+                            src_ref,
+                        )],
+                        vec![],
+                        WirePort::ExecOut,
+                    );
                 }
             }
             _ => {}
@@ -2729,27 +2869,43 @@ fn wire_record_output(
     value: &Expr,
     range: &SourceRange,
 ) {
-    let src: Option<crate::collections::HashMap<crate::intern::Sym, Binding>> =
-        if let Expr::RecordLit { fields, .. } = value {
-            Some(lower_record_lit(ctx, fields))
-        } else if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, value).cloned() {
-            Some(fields)
-        } else if matches!(value, Expr::Call { .. }) {
-            ctx.pending_inline_record = None;
-            let _ = lower_expr(ctx, value);
-            ctx.pending_inline_record.take()
-        } else {
-            None
-        };
-    let Some(src) = src else { return };
+    // The shared resolver, not a private copy of it. Re-implementing
+    // record-literal, field-chain and call resolution inline here leaves every
+    // other source shape (a record-valued ternary, an enum construction, a
+    // record array/map element) producing nothing in the `out` position while
+    // working in assignment position.
+    let Some(src) = value_record_fields(ctx, value) else {
+        return;
+    };
+    wire_record_output_fields(ctx, out_fields, &src, range);
+}
+
+/// Wire one record source's fields onto the matching output pins, recursing
+/// into nested record fields. The flat loop skipped a `Binding::Record` output
+/// (a nested record field, which is a pin per leaf), leaving those pins
+/// dangling.
+fn wire_record_output_fields(
+    ctx: &mut LowerCtx,
+    out_fields: &crate::collections::HashMap<crate::intern::Sym, Binding>,
+    src: &crate::collections::HashMap<crate::intern::Sym, Binding>,
+    range: &SourceRange,
+) {
     for (fname, out_binding) in out_fields {
-        let Binding::Output(out_rec) = out_binding else {
+        let Some(src_binding) = src.get(fname) else {
             continue;
         };
-        if let Some(src_binding) = src.get(fname)
-            && let Some(port) = crate::lower::access::binding_to_port(ctx, src_binding, range)
-        {
-            ctx.connect(port, out_rec.node_id.port(WirePort::RerInput));
+        match out_binding {
+            Binding::Record(inner_out) => {
+                if let Binding::Record(inner_src) = src_binding {
+                    wire_record_output_fields(ctx, inner_out, inner_src, range);
+                }
+            }
+            Binding::Output(out_rec) => {
+                if let Some(port) = crate::lower::access::binding_to_port(ctx, src_binding, range) {
+                    ctx.connect(port, out_rec.node_id.port(WirePort::RerInput));
+                }
+            }
+            _ => {}
         }
     }
 }

@@ -60,7 +60,17 @@ pub(in crate::lower) fn lower_chip_call_inline(
             record_bindings.push((param.name.clone(), record));
             continue;
         }
-        if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, arg_expr).cloned() {
+        // `&p` binds the same record as bare `p`: a record param receives the
+        // caller's own per-field `Binding::Var`s, so a write through it reaches
+        // the caller either way. The unwrap must happen before the lookup,
+        // since `resolve_field_chain` on an `Expr::RefOf` names no binding. The
+        // container arm below is no fallback for a record either, because it
+        // resolves through `lookup_var`, which holds nothing for one.
+        let record_arg = match arg_expr {
+            Expr::RefOf { operand, .. } => operand.as_ref(),
+            other => other,
+        };
+        if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, record_arg).cloned() {
             record_bindings.push((param.name.clone(), fields));
             continue;
         }

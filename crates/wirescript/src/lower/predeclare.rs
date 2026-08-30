@@ -1359,6 +1359,21 @@ fn record_field_storage(
         return Binding::Record(fmap);
     }
     let field_type = ctx.resolve_local_type(field_typ);
+    // An ENUM field is multi-gate exactly as a nested record is: its own
+    // `__disc` plus the superset of every variant's payload slots. Without this
+    // arm it fell through to the scalar arm below and collapsed to ONE gate, so
+    // the tag and payload shared a slot, a write to the field found a scalar
+    // `Binding::Var` against a `Binding::Record` source and vanished, and a read
+    // had no slots to project. Only meaningful for a record VARIABLE - a record
+    // array/map column is a parallel array per leaf, which an enum's superset
+    // layout does not fit, so those keep the existing behavior.
+    if kind == VarStorage::Var
+        && let Type::Enum { name: enum_name, args } = &field_type
+        && let Some(def) = ctx.enum_defs.get(enum_name).cloned()
+    {
+        let fields = build_enum_fields(ctx, &def, args, &label, None, None, range);
+        return Binding::Record(fields);
+    }
     let field_type = &field_type;
     // Taken before the gate-building borrows `ctx` mutably below.
     let consts = ctx.const_lookup();
@@ -1586,6 +1601,69 @@ fn bake_record_map_init(ctx: &mut LowerCtx, name: &str, entries: &[crate::ast::M
 /// `var m: Map<K, Rec>`) into one `Binding::Record` of per-field backing gates,
 /// and bind it in scope under `name`. `kind` selects the per-field backing kind;
 /// `map_key` carries the map's key type for the `Map` case.
+/// The parallel-column list for an enum stored in a CONTAINER (an enum-element
+/// array or an enum-valued map), expressed as synthetic record fields so the
+/// whole record-container machinery (per-column storage, the push/get/set
+/// fan-out in `lower_record_array_method` / `lower_record_map_method`, and the
+/// per-column element read) applies unchanged.
+///
+/// The columns are exactly the enum value layout: `__disc` plus every variant's
+/// payload slots, keyed `__{Variant}_{index}` for a positional payload and
+/// `__{Variant}_{field}` for a named one. That is the same key scheme
+/// `build_enum_fields` and `lower_enum_ctor` use, so a constructed value's
+/// record lines up with the columns key for key.
+///
+/// `None` for an unknown enum, which leaves the caller on its existing
+/// single-column path.
+fn enum_container_columns(
+    ctx: &LowerCtx,
+    elem_te: &TypeExpr,
+    range: &SourceRange,
+) -> Option<Vec<crate::ast::RecordTypeField>> {
+    use crate::typecheck::enums::Payload;
+    // Keyed off the ANNOTATION, not the resolved `Type`: the enum fast path in
+    // `resolve_local_type` only fires for a bare `TypeExpr::Name`, so the
+    // element of an `S[]` resolves to `Type::Any` and never names its enum.
+    let name = match elem_te {
+        TypeExpr::Name { name, .. } => name,
+        TypeExpr::Generic { name, .. } => name,
+        _ => return None,
+    };
+    let def = ctx.enum_defs.get(name)?;
+    let mut cols = vec![crate::ast::RecordTypeField {
+        name: "__disc".to_string(),
+        typ: TypeExpr::Name {
+            name: "int".to_string(),
+            range: range.clone(),
+        },
+        range: range.clone(),
+    }];
+    for v in &def.variants {
+        match &v.payload {
+            Payload::Unit => {}
+            Payload::Positional(types) => {
+                for (i, te) in types.iter().enumerate() {
+                    cols.push(crate::ast::RecordTypeField {
+                        name: format!("__{}_{}", v.name, i),
+                        typ: te.clone(),
+                        range: range.clone(),
+                    });
+                }
+            }
+            Payload::Named(nfields) => {
+                for (fname, te) in nfields {
+                    cols.push(crate::ast::RecordTypeField {
+                        name: format!("__{}_{}", v.name, fname),
+                        typ: te.clone(),
+                        range: range.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Some(cols)
+}
+
 fn declare_record_container(
     ctx: &mut LowerCtx,
     name: &str,
@@ -1976,11 +2054,30 @@ fn enum_payload_slot(
         return Binding::Record(fields);
     }
     if let Some(sub_fields) = ctx.record_fields_of(field_typ) {
+        // `init_lit` for a record slot arrives as a `Literal::Record` (the
+        // folded `{ a: 7, b: 9 }`), so its per-field values are threaded down
+        // by KEY. Passing `None` here instead left every sub-field at its type
+        // default, silently zeroing the payload of a declaration initializer
+        // like `var s: St = St.B { p: { a: 7, b: 9 } }` - and nothing runs at
+        // load to repair it, unlike an assignment.
+        let sub_lits: HashMap<&str, &Literal> = match &init_lit {
+            Some(Literal::Record(rf)) => rf.iter().map(|(k, v)| (k.as_str(), v)).collect(),
+            _ => HashMap::default(),
+        };
         let mut fmap = HashMap::default();
         for f in &sub_fields {
+            let sub_label = format!("{label}.{}", f.name);
             fmap.insert(
                 crate::intern::intern(&f.name),
-                record_field_storage(ctx, VarStorage::Var, label, &f.name, &f.typ, None, None, range),
+                enum_payload_slot(
+                    ctx,
+                    &f.typ,
+                    type_params,
+                    args,
+                    &sub_label,
+                    sub_lits.get(f.name.as_str()).map(|l| (*l).clone()),
+                    range,
+                ),
             );
         }
         return Binding::Record(fmap);
@@ -2173,6 +2270,29 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             }
             return;
         }
+        // `var arr: S[]` for an enum `S`: an enum value spans several wires
+        // just as a record does, so the array needs the same parallel columns,
+        // one per `__disc`/payload slot. A single ArrayVar collapsed the tag
+        // and the payload together, and a push of a constructed value found no
+        // column to carry it and emitted no `Value` wire at all.
+        if let Some(TypeExpr::Array { inner: elem_te, .. }) = d.typ.as_ref()
+            && let Some(cols) = enum_container_columns(ctx, elem_te, &d.range)
+        {
+            let label =
+                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+                    .unwrap_or_else(|| d.name.clone());
+            declare_record_container(
+                ctx,
+                &d.name,
+                VarStorage::Array,
+                &cols,
+                &label,
+                None,
+                None,
+                &d.range,
+            );
+            return;
+        }
         let elem_type = elem.as_ref().clone();
         let mut properties = HashMap::default();
         let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
@@ -2222,6 +2342,26 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
             if let Some(Expr::MapLit { entries, .. }) = &d.init {
                 bake_record_map_init(ctx, &d.name, entries);
             }
+            return;
+        }
+        // The map twin of the enum-element array above: one parallel map per
+        // column, keyed identically.
+        if let Some(val_te) = map_value_typeexpr(d.typ.as_ref())
+            && let Some(cols) = enum_container_columns(ctx, val_te, &d.range)
+        {
+            let label =
+                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+                    .unwrap_or_else(|| d.name.clone());
+            declare_record_container(
+                ctx,
+                &d.name,
+                VarStorage::Map,
+                &cols,
+                &label,
+                None,
+                Some(key_ty),
+                &d.range,
+            );
             return;
         }
         let (key_ty, value_ty) = (key_ty.as_ref().clone(), value_ty.as_ref().clone());
@@ -2491,6 +2631,76 @@ fn apply_port_side(
     }
 }
 
+/// One boundary pin per LEAF field of a record-typed `in` port, recursing into
+/// nested record fields. Flat records were expanded field-by-field here, but a
+/// NESTED record field got a single pin for its whole sub-record, so a copy out
+/// of the port wrote only the flat fields and the nested ones silently vanished.
+/// Pin names join with `_` at every level (`p_i_m`), matching the flat scheme.
+fn record_input_pins(
+    ctx: &mut LowerCtx,
+    te: &TypeExpr,
+    prefix: &str,
+    range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
+    let fields = ctx.record_fields_of(te).unwrap_or_default();
+    let mut out = HashMap::default();
+    for field in &fields {
+        let port_name = format!("{prefix}_{}", field.name);
+        if ctx.record_fields_of(&field.typ).is_some() {
+            let inner = record_input_pins(ctx, &field.typ, &port_name, range);
+            out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
+            continue;
+        }
+        let ft = type_of_type_expr(&field.typ);
+        let node_id = ctx.add_input(&port_name, ft.clone(), range.clone());
+        // Array / Map / ref fields of a record-typed input port bind a
+        // container ref-port (see `container_binding`); a scalar field is a
+        // plain by-value input.
+        let binding = match super::context::container_binding(&field.typ, &ft) {
+            Some((storage, inner)) => Binding::Var(VarRecord {
+                node_id,
+                inner_type: inner,
+                get_node_for_handler: None,
+                storage,
+            }),
+            None => Binding::Input(NodeRecord {
+                node_id,
+                ty: ft.clone(),
+            }),
+        };
+        out.insert(crate::intern::intern(&field.name), binding);
+    }
+    out
+}
+
+/// The `out` twin of [`record_input_pins`] - one output pin per leaf field,
+/// recursing into nested records so a nested field's pins are wired rather than
+/// left dangling.
+pub(super) fn record_output_pins(
+    ctx: &mut LowerCtx,
+    te: &TypeExpr,
+    prefix: &str,
+    range: &SourceRange,
+) -> HashMap<crate::intern::Sym, Binding> {
+    let fields = ctx.record_fields_of(te).unwrap_or_default();
+    let mut out = HashMap::default();
+    for field in &fields {
+        let port_name = format!("{prefix}_{}", field.name);
+        if ctx.record_fields_of(&field.typ).is_some() {
+            let inner = record_output_pins(ctx, &field.typ, &port_name, range);
+            out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
+            continue;
+        }
+        let ft = type_of_type_expr(&field.typ);
+        let node_id = ctx.add_output(&port_name, ft.clone(), range.clone());
+        out.insert(
+            crate::intern::intern(&field.name),
+            Binding::Output(NodeRecord { node_id, ty: ft }),
+        );
+    }
+    out
+}
+
 pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
     // A record-typed input port (inline `{ … }`, a non-generic `type P = { … }`,
     // or a generic `type Pair<T> = { … }` instantiated as `Pair<int>`) dissolves
@@ -2498,29 +2708,8 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
     // right sub-port. Without this a record port collapsed to a single `any`
     // port and its field accesses lowered to `_Unsupported`/swizzle gates —
     // mirrors the standalone-chip input expansion in `lower::mod`.
-    if let Some(fields) = ctx.record_fields_of(&d.typ) {
-        let mut record_fields = HashMap::default();
-        for field in &fields {
-            let port_name = format!("{}_{}", d.name, field.name);
-            let ft = type_of_type_expr(&field.typ);
-            let node_id = ctx.add_input(&port_name, ft.clone(), d.range.clone());
-            // Array / Map / ref fields of a record-typed input port bind a
-            // container ref-port (see `container_binding`); a scalar field is a
-            // plain by-value input.
-            let binding = match super::context::container_binding(&field.typ, &ft) {
-                Some((storage, inner)) => Binding::Var(VarRecord {
-                    node_id,
-                    inner_type: inner,
-                    get_node_for_handler: None,
-                    storage,
-                }),
-                None => Binding::Input(NodeRecord {
-                    node_id,
-                    ty: ft.clone(),
-                }),
-            };
-            record_fields.insert(crate::intern::intern(&field.name), binding);
-        }
+    if ctx.record_fields_of(&d.typ).is_some() {
+        let record_fields = record_input_pins(ctx, &d.typ, &d.name, &d.range);
         ctx.scope.insert(&d.name, Binding::Record(record_fields));
         return;
     }
@@ -2565,16 +2754,8 @@ pub(super) fn pre_declare_output(
         && let Some(te) = typ
         && let Some(fields) = ctx.record_fields_of(te)
     {
-        let mut record_fields = HashMap::default();
-        for field in &fields {
-            let port_name = format!("{name}_{}", field.name);
-            let ft = type_of_type_expr(&field.typ);
-            let node_id = ctx.add_output(&port_name, ft.clone(), range.clone());
-            record_fields.insert(
-                crate::intern::intern(&field.name),
-                Binding::Output(NodeRecord { node_id, ty: ft }),
-            );
-        }
+        let _ = &fields;
+        let record_fields = record_output_pins(ctx, te, name, range);
         ctx.scope.insert(
             &crate::lower::context::output_scope_key(name),
             Binding::Record(record_fields),

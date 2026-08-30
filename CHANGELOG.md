@@ -2,11 +2,19 @@
 
 ## 1.7.2
 
-- Fix: A scalar initializer is baked in the declared type, so `var x: float = 0` builds a float Variable gate instead of an integer one. Applies to every bool/int/float pair, to record and enum-payload fields, and to a var-backed output's default (`out y: float = 0`).
-- Fix: A component read straight off a call (`d.ToRotation().ToEuler().Yaw`, `v.SplitVec().y`) reads that call's own port; it used to emit a second Split gate fed by the first one's primary output, yielding the wrong component.
-- Fix: A local `exec` signal consumed inside a `chip` compiles. The union cleanup redirected and pruned using one chip's wires at a time, deleting a node the chip's own wire still named, which failed the compile with a dropped-wire error.
-- Fix: `.Value` / `.prev` opens a variable that spans several storage gates (a record, an enum); it used to emit a placeholder.
-- Fix: A `var` initializer naming a constant (`var x: float = K`) bakes that constant.
+### Fixes
+
+- A record or enum value spans several wires, and every position that collapsed one to a single wire is fixed. Most of these compiled clean and emitted nothing at all.
+  - Producing one: a record-valued `if/then/else` selects per leaf, in assignment, `out` and chip-argument position alike; a record-returning call used as a nested record-literal field writes every leaf, where the array and map forms had left the columns at different lengths; an enum payload that is itself a record or another enum is constructed field by field; a declaration initializer bakes a record payload instead of zeroing it.
+  - Storing one: an enum-element array or map decomposes into parallel columns, one per tag and payload slot, so pushes and element reads carry the value; an enum-typed record field gets its own tag and payload storage rather than collapsing to one gate.
+  - Crossing a boundary: a nested record `in`/`out` port creates a pin per leaf instead of stopping one level down; a record-typed chip signature output gets one pin per field, so the body emits and the caller's pins are wired; `&p` on a record variable passed to a `*P` parameter binds the caller's record instead of dropping the whole body.
+  - Copying one: a whole-record copy carries array and map fields instead of skipping them.
+  - A record or enum as a custom-event data param is now `WS068`, since a data slot is one wire and cannot carry one.
+- A scalar initializer is baked in the declared type, so `var x: float = 0` builds a float Variable gate instead of an integer one. Applies to every bool/int/float pair, to record and enum-payload fields, and to a var-backed output's default (`out y: float = 0`).
+- A component read straight off a call (`d.ToRotation().ToEuler().Yaw`, `v.SplitVec().y`) reads that call's own port; it used to emit a second Split gate fed by the first one's primary output, yielding the wrong component.
+- A local `exec` signal consumed inside a `chip` compiles. The union cleanup redirected and pruned using one chip's wires at a time, deleting a node the chip's own wire still named, which failed the compile with a dropped-wire error.
+- `.Value` / `.prev` opens a variable that spans several storage gates (a record, an enum); it used to emit a placeholder.
+- A `var` initializer naming a constant (`var x: float = K`) bakes that constant.
 
 ## 1.7.1
 

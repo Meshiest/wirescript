@@ -75,6 +75,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS031` | A reference (`zone` / `teleport` / var ref) used in an `if`-then-else — a Select routes a value, not a reference. | `if c then zoneA else zoneB` |
 | `WS066` | `.Discriminant`, `.ToInt()`, or a `match` targets a value that isn't an enum. | `var x: int = 0` then `x.Discriminant` |
 | `WS067` | A bare variant name for a variant that has a payload (`Circle` instead of `Circle(_)`) in a `match` arm binds the whole value like a catch-all, which can leave later arms unreachable. | `match s { Circle => .., Empty => .. }` |
+| `WS068` | A custom-event data param is a record or an enum. A data slot is one wire and those span several, so the value cannot travel through it. Pass the fields as separate params, or send a key and read the value from shared storage on the other side. | `on CustomEvent("c") -> (p: Point) { }` |
 
 ## Calls & arguments
 

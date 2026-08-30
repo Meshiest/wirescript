@@ -313,7 +313,7 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
         return None;
     }
 
-    let payload: Vec<(String, PortRef)> = match e {
+    let payload: Vec<(String, Binding)> = match e {
         // Key each positional arg by its index AMONG POSITIONAL ARGS (not its
         // index among all args), matching `static_enum_ctor` in predeclare.rs
         // exactly so the two producers of the `__{V}_{i}` slot key can never
@@ -325,8 +325,8 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
             let mut i = 0usize;
             for a in args {
                 if let CallArg::Positional(v) = a {
-                    let port = lower_expr(ctx, v);
-                    out.push((i.to_string(), port));
+                    let binding = lower_payload_value(ctx, v);
+                    out.push((i.to_string(), binding));
                     i += 1;
                 }
             }
@@ -336,14 +336,14 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
             .iter()
             .filter_map(|f| match f {
                 RecordLitField::Named { name, value, .. } => {
-                    Some((name.clone(), lower_expr(ctx, value)))
+                    Some((name.clone(), lower_payload_value(ctx, value)))
                 }
                 RecordLitField::Shorthand { name, range } => {
                     let ident = Expr::Ident {
                         name: name.clone(),
                         range: range.clone(),
                     };
-                    Some((name.clone(), lower_expr(ctx, &ident)))
+                    Some((name.clone(), lower_payload_value(ctx, &ident)))
                 }
                 RecordLitField::Spread { .. } => None,
             })
@@ -369,6 +369,33 @@ fn try_lower_enum_ctor(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     };
     ctx.pending_inline_record = Some(fields);
     disc_port
+}
+
+/// Lower ONE enum payload value to the binding its slot needs.
+///
+/// A payload slot is NOT always a single wire: `enum_payload_slot` lays a
+/// record-typed field out per-leaf-field and a nested-enum field out as its own
+/// `__disc` + slots superset, so both need a `Binding::Record` here. Lowering
+/// every field with `lower_expr` (which returns exactly one `PortRef`) dropped
+/// all but one of those ports - a record literal fell through to the
+/// `_Unsupported`/WSP001 placeholder, and a nested enum construction quietly
+/// yielded only its `__disc` while its `pending_inline_record` was discarded.
+/// Either way `assign_record_fields` then found a `Binding::Local` against a
+/// `Binding::Record` target, matched no arm, and silently wrote nothing.
+///
+/// `value_record_fields` is the single source of truth for "what are this
+/// value's fields": it resolves record literals, record vars/lets/inputs, field
+/// chains, record array/map elements AND enum constructions (through
+/// `pending_inline_record`), so a record and a nested enum both land here by the
+/// same path the ordinary record-assignment lowering uses. Scalars have no field
+/// map, so they fall back to the one-port form unchanged.
+fn lower_payload_value(ctx: &mut LowerCtx, value: &Expr) -> Binding {
+    if let Some(fields) = crate::lower::stmt::value_record_fields(ctx, value) {
+        return Binding::Record(fields);
+    }
+    Binding::Local(LocalRecord {
+        port: lower_expr(ctx, value),
+    })
 }
 
 /// `Enum.FromInt(n)`: a tag-only enum construction whose `__disc` is the RUNTIME
@@ -653,7 +680,7 @@ pub(super) fn lower_enum_ctor(
     enum_name: &str,
     enum_args: &[Type],
     variant: &str,
-    payload: Vec<(String, PortRef)>,
+    payload: Vec<(String, Binding)>,
     range: &SourceRange,
 ) -> Binding {
     let Some(def) = ctx.enum_defs.get(enum_name).cloned() else {
@@ -663,10 +690,10 @@ pub(super) fn lower_enum_ctor(
             crate::intern::intern("__disc"),
             Binding::Local(LocalRecord { port: disc_port }),
         );
-        for (slot_key, port) in payload {
+        for (slot_key, binding) in payload {
             fields.insert(
                 crate::intern::intern(&format!("__{variant}_{slot_key}")),
-                Binding::Local(LocalRecord { port }),
+                binding,
             );
         }
         return Binding::Record(fields);
@@ -687,10 +714,10 @@ pub(super) fn lower_enum_ctor(
         Some(disc_port),
         range,
     );
-    for (slot_key, port) in payload {
+    for (slot_key, binding) in payload {
         fields.insert(
             crate::intern::intern(&format!("__{variant}_{slot_key}")),
-            Binding::Local(LocalRecord { port }),
+            binding,
         );
     }
     Binding::Record(fields)

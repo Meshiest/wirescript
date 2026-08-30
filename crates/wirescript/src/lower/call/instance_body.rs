@@ -314,6 +314,23 @@ pub(super) fn build_chip_module(
         }
     }
     for out in &chip_decl.outputs {
+        // A record-typed signature output needs one pin per leaf, bound as the
+        // same `Binding::Record` shape `pre_declare_output` gives a top-level
+        // record `out`. Given a single pin the body's `out p = { … }` has
+        // nowhere to land and emits nothing at all.
+        if child_ctx.record_fields_of(&out.typ).is_some() {
+            let fields = crate::lower::predeclare::record_output_pins(
+                &mut child_ctx,
+                &out.typ,
+                &out.name,
+                &chip_decl.range,
+            );
+            child_ctx.scope.insert(
+                &crate::lower::context::output_scope_key(&out.name),
+                Binding::Record(fields),
+            );
+            continue;
+        }
         let t = if is_generic {
             child_ctx.resolve_local_type(&out.typ)
         } else {
