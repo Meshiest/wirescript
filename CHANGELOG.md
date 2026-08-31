@@ -5,6 +5,10 @@
 
 - `unsafe <value>.<Variant>.<field>` reads or writes one enum payload slot directly, without testing the tag. Reading a variant the value is not returns stale contents, and writing leaves the tag alone. Contextual keyword, so the name stays usable.
 
+### Fixes
+
+- A declaration inside a `chip { }` nested in a handler initializes on that handler's chain when its initializer calls something. It was held off the chain like a top-level chip's, which dropped the call and then reported a missing exec context.
+
 ## 1.7.3
 
 ### Fixes

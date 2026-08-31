@@ -167,6 +167,13 @@ fn visit_if_let<'a>(
     }
 }
 
+/// Whether `e` contains a call anywhere.
+pub(crate) fn contains_call(e: &Expr) -> bool {
+    let mut found = false;
+    visit_expr(e, &mut |_| found = true);
+    found
+}
+
 fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
     match e {
         Expr::Call { callee, args, .. } => {

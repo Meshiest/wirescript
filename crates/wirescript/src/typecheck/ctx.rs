@@ -628,6 +628,10 @@ impl<'a> TypeCheckCtx<'a> {
         self.exec_stack.pop();
         r
     }
+    /// `in_pure` when `force`, otherwise run `f` in the ambient mode.
+    pub fn maybe_pure<R>(&mut self, force: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        if force { self.in_pure(f) } else { f(self) }
+    }
     pub fn in_pure<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         self.exec_stack.push(ExecMode::Pure);
         let r = f(self);

@@ -1948,3 +1948,50 @@ on a { emit result = 42 }";
         "a single-emit output must not get a backing PseudoVar"
     );
 }
+
+#[test]
+fn exec_call_initializer_in_a_handler_nested_chip_runs_on_the_chain() {
+    // A `chip { }` in a handler body is a step on that handler's chain, so a
+    // declaration there initializes as it does one level up. The purity rule is
+    // for a top-level chip inheriting a leaked exec; here it dropped the
+    // initializer entirely, no chip instance and no Var_Set.
+    let r = compile(
+        "chip MyExecChip() { let t = ReadBrickGrid().GetLocationRotation() }\n\
+         on ServerUptime() {\n\
+           chip { var helo = MyExecChip() }\n\
+         }\n",
+    );
+    assert_no_errors(&r);
+    fn count(m: &crate::ir::Module, class: &str) -> usize {
+        m.nodes.values().filter(|n| n.gate_class == class).count()
+            + m.chips.values().map(|c| count(c, class)).sum::<usize>()
+    }
+    assert_eq!(
+        count(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        1,
+        "the initializer must write the var"
+    );
+    assert!(
+        count(&r.module, "BrickComponentType_Internal_ReadBrickGrid") > 0,
+        "the called chip must be instantiated"
+    );
+}
+
+#[test]
+fn a_top_level_chip_after_a_handler_keeps_pure_declarations() {
+    // What the purity rule is for: a top-level `chip { }` after a handler
+    // inherits its `current_exec`, but its declarations are reactive signal
+    // flow, not one-shot reads on that chain.
+    let r = compile(
+        "var src: int = 0\n\
+         in go: exec\n\
+         on go { src = 1 }\n\
+         chip { let doubled = src * 2\nout d = doubled }\n",
+    );
+    assert_no_errors(&r);
+    // A pure read, not an `Exec_Var_Get` latched onto the handler's chain.
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+        "chip-level `let` must read the var continuously, not once on the chain"
+    );
+}

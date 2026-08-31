@@ -233,6 +233,11 @@ pub(super) struct LowerCtx<'a> {
     /// A scalar payload uses one entry with field `""`; a record payload gets
     /// one entry per field.
     pub(super) exec_signal_payloads: HashMap<String, Vec<(String, NodeId, Type)>>,
+    /// Whether lowering is inside an imperative body (a handler, or a block
+    /// nested in one) rather than the top-level decl list. `current_exec` is
+    /// `Some` both there and in a top-level chip that inherits a preceding
+    /// handler's leak, so it cannot tell the two apart on its own.
+    pub(super) in_handler_body: bool,
     /// Pre-compiled template cache for standalone chip instances.
     pub(super) template_cache: Arc<crate::template_cache::TemplateCache>,
     /// Field→source-port record produced by the most recent multi-output inline

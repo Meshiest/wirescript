@@ -409,7 +409,10 @@ fn check_decl_inner(
                         check_map_literal(ctx, entries, k, v_ty);
                     });
                 } else {
-                    ctx.in_pure(|ctx| {
+                    // A top-level `var`'s initializer is baked, so it is checked
+                    // pure; inside an exec body it runs on the chain instead.
+                    let force_pure = ctx.exec_mode() != ExecMode::Exec;
+                    ctx.maybe_pure(force_pure, |ctx| {
                         let t = infer::check(ctx, init, &inner);
                         // An unannotated `var x = a.push(5)` adopts the init's
                         // type; reject a void-mutation `Never` here (an annotated

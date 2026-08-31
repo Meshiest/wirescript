@@ -774,6 +774,15 @@ fn event_config_props(
 }
 
 pub(super) fn lower_block(ctx: &mut LowerCtx, block: &Block) {
+    // Every caller is an imperative body; a top-level chip comes from the decl
+    // loop instead and so never sets this.
+    let saved_in_body = ctx.in_handler_body;
+    ctx.in_handler_body = true;
+    lower_block_inner(ctx, block);
+    ctx.in_handler_body = saved_in_body;
+}
+
+fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
     // Pre-declare vars inside stmt-level anon chips.
     for s in &block.stmts {
         if let Stmt::AnonChip(ac) = s {

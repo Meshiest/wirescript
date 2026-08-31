@@ -71,19 +71,39 @@ pub(super) fn check_anon_chip_stmts(
         // mirrors the lowering's per-statement purity in `lower_chip_body`). This
         // holds even when the chip as a whole is exec-wrapped (a top-level chip
         // after a handler), which keeps its EXEC statements (`if`, …) valid.
-        if matches!(
-            s,
-            Stmt::Let(_)
-                | Stmt::Var(_)
-                | Stmt::Buffer(_)
-                | Stmt::OutBinding(_)
-                | Stmt::Array(_)
-                | Stmt::In(_)
-        ) {
+        // Except a declaration whose initializer CALLS something while the chip
+        // is in an exec body: a call has no continuous reading, so it runs on
+        // the chain. Arithmetic, container reads and literals stay pure, which
+        // a top-level chip after a handler and a chip in a mod body rely on.
+        let joins_chain = ctx.exec_mode() == ExecMode::Exec && chip_stmt_init_calls(s);
+        if !joins_chain
+            && matches!(
+                s,
+                Stmt::Let(_)
+                    | Stmt::Var(_)
+                    | Stmt::Buffer(_)
+                    | Stmt::OutBinding(_)
+                    | Stmt::Array(_)
+                    | Stmt::In(_)
+            )
+        {
             ctx.in_pure(|ctx| check_one_chip_stmt(ctx, s));
         } else {
             check_one_chip_stmt(ctx, s);
         }
+    }
+}
+
+/// Whether a chip-body declaration's initializer contains a call. Must agree
+/// with lowering's `chip_stmt_init_calls`, or one phase emits a gate the other
+/// refuses to check.
+fn chip_stmt_init_calls(s: &Stmt) -> bool {
+    let has_call = crate::analysis::visit::contains_call;
+    match s {
+        Stmt::Let(l) => has_call(&l.value),
+        Stmt::Var(v) => v.init.as_ref().is_some_and(has_call),
+        Stmt::OutBinding(o) => o.value.as_ref().is_some_and(has_call),
+        _ => false,
     }
 }
 

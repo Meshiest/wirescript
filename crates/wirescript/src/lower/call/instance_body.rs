@@ -40,6 +40,7 @@ pub(super) fn build_chip_module(
         file: ctx.file.clone(),
         scope: crate::scope::Scope::new(),
         handler_end_execs: Vec::new(),
+        in_handler_body: false,
         current_exec: None,
         handler_entry_exec: None,
         captured_events: HashMap::default(),

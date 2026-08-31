@@ -594,6 +594,19 @@ pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
     ctx.current_anon_chip = saved_chip;
 }
 
+/// Whether a chip-body declaration's initializer contains a call. Must agree
+/// with `typecheck::stmt::chip_stmt_init_calls`, or one phase emits a gate the
+/// other refuses to check.
+fn chip_stmt_init_calls(s: &Stmt) -> bool {
+    let has_call = crate::analysis::visit::contains_call;
+    match s {
+        Stmt::Let(l) => has_call(&l.value),
+        Stmt::Var(v) => v.init.as_ref().is_some_and(has_call),
+        Stmt::OutBinding(o) => o.value.as_ref().is_some_and(has_call),
+        _ => false,
+    }
+}
+
 /// True for a chip-body statement that is a pure, reactive DECLARATION — the
 /// same set `is_pure_top_decl` uses at the top level.
 fn is_pure_chip_stmt(s: &Stmt) -> bool {
@@ -628,7 +641,12 @@ fn lower_chip_body(ctx: &mut LowerCtx, block: &Block) {
         if !ctx.handler_end_execs.is_empty() && !is_handler_stmt && ctx.current_exec.is_none() {
             flush_handler_end_execs(ctx);
         }
-        if is_pure_chip_stmt(s) {
+        // A call has no continuous reading (an exec-requiring mod or chip only
+        // runs on a chain), so inside a handler body it keeps the ambient exec.
+        // Everything else stays pure, including every declaration in a
+        // top-level chip, whose `current_exec` is a leak, not its own trigger.
+        let joins_chain = ctx.in_handler_body && chip_stmt_init_calls(s);
+        if is_pure_chip_stmt(s) && !joins_chain {
             let saved_exec = ctx.current_exec.take();
             lower_stmt(ctx, s);
             ctx.current_exec = saved_exec;
