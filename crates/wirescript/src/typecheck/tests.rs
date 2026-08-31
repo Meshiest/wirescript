@@ -4356,3 +4356,207 @@
              out ok = tag(1)",
         ));
     }
+
+    #[test]
+    fn enum_payload_captures_are_writable_from_a_var_scrutinee() {
+        // Mutating a payload goes THROUGH the destructure: `if let`/`match`/
+        // `let else` bind each capture to the scrutinee's `__{Variant}_{field}`
+        // storage slot, so writing the capture writes that slot. Lowering has
+        // always emitted the `Var_Set` for this; the captures were registered
+        // as `LetBinding`, so the write was rejected before it got there.
+        let pre = "enum E { A, B { s: string, b: bool } }\n\
+                   var e: E = E.B { s: \"hi\", b: false }\n\
+                   in go: exec\n";
+        assert_no_diags(&tc(&format!(
+            "{pre}on go {{ if let B {{ s, b }} = e {{ b = true\ns = \"x\" }} }}"
+        )));
+        assert_no_diags(&tc(&format!(
+            "{pre}on go {{ match e {{ B {{ s, b }} => {{ b = true }}, A => {{}} }} }}"
+        )));
+        assert_no_diags(&tc(&format!(
+            "{pre}on go {{ let B {{ s, b }} = e else {{ return }}\nb = true }}"
+        )));
+        // Positional payloads bind the same way.
+        assert_no_diags(&tc(
+            "enum Opt { Some(int), None }\n\
+             var o: Opt = Opt.Some(5)\n\
+             in go: exec\n\
+             on go { if let Some(x) = o { x = 9 } }",
+        ));
+    }
+
+    #[test]
+    fn enum_payload_captures_stay_read_only_from_an_immutable_scrutinee() {
+        // A `let`-bound scrutinee has no storage behind its slots, so a capture
+        // write would emit no gate. It must stay an error rather than become a
+        // silent no-op now that the var-backed form is writable.
+        let r = tc(
+            "enum E { A, B { s: string, b: bool } }\n\
+             let e: E = E.B { s: \"hi\", b: false }\n\
+             in go: exec\n\
+             on go { if let B { s, b } = e { b = true } }",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
+            "expected WS007 on an immutable scrutinee's capture: {:?}",
+            r.diagnostics
+        );
+    }
+
+
+    #[test]
+    fn enum_payload_captures_stay_read_only_from_a_container_element() {
+        // A container ELEMENT scrutinee (`arr[i]`, `m[k]`) reads the element
+        // into a value, and lowering emits no write-back for a capture off it, so
+        // the capture must not register as writable. `is_ref_able` says yes
+        // here (it recurses to the container, which is right for `&arr[i]`),
+        // which would turn every such write into a silent no-op.
+        let arr = tc(
+            "enum E { A, B { n: int } }\n\
+             var es: E[]\n\
+             in go: exec\n\
+             on go { if let B { n } = es[0] { n = 42 } }",
+        );
+        let d = arr
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS007" && d.severity == Severity::Error)
+            .unwrap_or_else(|| panic!("array element capture must not be writable: {:?}", arr.diagnostics));
+        // Reported as a capture, not as a `let` the user could redeclare `var`.
+        assert!(
+            d.message.contains("read-only capture") && d.message.contains("arr[i]"),
+            "message must explain the capture, not advise `var`: {}",
+            d.message
+        );
+        let map = tc(
+            "enum E { A, B { n: int } }\n\
+             var m: Map<string, E>\n\
+             in go: exec\n\
+             on go { if let B { n } = m[\"k\"] { n = 42 } }",
+        );
+        assert!(
+            map.diagnostics
+                .iter()
+                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
+            "map element capture must not be writable: {:?}",
+            map.diagnostics
+        );
+        // A field reached THROUGH an element is the same read (`hs[0].e`).
+        let via_field = tc(
+            "enum E { A, B { n: int } }\n\
+             type H = { e: E }\n\
+             var hs: H[]\n\
+             in go: exec\n\
+             on go { if let B { n } = hs[0].e { n = 42 } }",
+        );
+        assert!(
+            via_field
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
+            "field-of-element capture must not be writable: {:?}",
+            via_field.diagnostics
+        );
+    }
+
+    #[test]
+    fn enum_payload_captures_are_writable_through_a_var_record_field() {
+        // The field chain that DOES write back: a `var` record's enum-typed
+        // field is its own storage, so its payload slots are real gates.
+        assert_no_diags(&tc(
+            "enum E { A, B { n: int } }\n\
+             type H = { e: E, tag: int }\n\
+             var h: H = { e: E.B { n: 1 }, tag: 0 }\n\
+             in go: exec\n\
+             on go { if let B { n } = h.e { n = 42 } }",
+        ));
+        // And a `*T` parameter, whose slots are the caller's gates.
+        assert_no_diags(&tc(
+            "enum E { A, B { n: int } }\n\
+             var e: E = E.B { n: 1 }\n\
+             in go: exec\n\
+             mod bump(v: *E) { if let B { n } = v { n = 42 } }\n\
+             on go { bump(&e) }",
+        ));
+    }
+
+    #[test]
+    fn an_enum_payload_field_may_not_be_an_array_or_map() {
+        // A payload slot is one storage gate written by the variant's
+        // construction, and there is no construction path that fills a
+        // container: a declaration initializer bakes nothing, and a runtime
+        // `E.B { xs: [1,2,3] }` copies from an empty temporary. The slot
+        // allocates an ArrayVar/MapVar all the same, so `push`/`set` on a
+        // capture appear to work against storage nothing ever fills. Reject the
+        // declaration instead of letting the value silently come out empty.
+        let has = |src: &str| {
+            let r = tc(src);
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS069" && d.severity == Severity::Error)
+        };
+        assert!(has("enum E { A, B { xs: int[] } }\nout n = 1"), "named array field");
+        assert!(has("enum E { A, B(int[]) }\nout n = 1"), "positional array field");
+        assert!(
+            has("enum E { A, B { m: Map<string, int> } }\nout n = 1"),
+            "map field"
+        );
+        // Through a record, directly and behind an alias.
+        assert!(
+            has("enum E { A, B { r: { xs: int[] } } }\nout n = 1"),
+            "array inside an inline record field"
+        );
+        assert!(
+            has("type R = { xs: int[], n: int }\nenum E { A, B { r: R } }\nout n = 1"),
+            "array inside a record reached through an alias"
+        );
+    }
+
+    #[test]
+    fn an_enum_payload_field_of_scalars_and_records_still_checks() {
+        // The shapes that DO have a working slot per leaf must stay clean.
+        assert_no_diags(&tc(
+            "type P = { x: int, y: int }\n\
+             enum E { A, B { p: P, s: string, v: vector }, C(int, float) }\n\
+             var e: E = E.B { p: { x: 1, y: 2 }, s: \"hi\", v: Vec(0.0, 0.0, 0.0) }\n\
+             out n = 1",
+        ));
+        // A nested enum payload is fine too - it is tag plus slots, all scalars.
+        assert_no_diags(&tc(
+            "enum Inner { P { n: int }, Q }\n\
+             enum Outer { W { i: Inner }, Z }\n\
+             var o: Outer = Outer.W { i: Inner.P { n: 1 } }\n\
+             out n = 1",
+        ));
+    }
+
+    #[test]
+    fn a_generic_enum_may_not_be_instantiated_with_a_container() {
+        // The declaration check cannot see this: `Some(T)`'s field is the bare
+        // parameter. The instantiation is where the container type is picked,
+        // so that is where it is rejected.
+        let r = tc("var o: Option<int[]> = Option.None\nout n = 1");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS069" && d.severity == Severity::Error),
+            "expected WS069 for Option<int[]>: {:?}",
+            r.diagnostics
+        );
+        assert_eq!(
+            r.diagnostics.iter().filter(|d| d.code == "WS069").count(),
+            1,
+            "one report per annotation, not one per resolution: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            tc("enum Tag<T> { A, B }\nvar t: Tag<int[]> = Tag.A\nout n = 1")
+                .diagnostics
+                .iter()
+                .all(|d| d.code != "WS069"),
+            "a parameter no variant stores is not a payload slot"
+        );
+        assert_no_diags(&tc("var o: Option<int> = Option.Some(5)\nout n = 1"));
+    }

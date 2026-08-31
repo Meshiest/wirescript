@@ -943,6 +943,59 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
+    // Everything below writes a bare `Ident`, so a FieldAccess/TuplePick target
+    // reaching here was claimed by no branch above and cannot produce a gate.
+    // Nothing upstream catches it either: an assignment target that is a field
+    // access is deliberately typed `any` (see
+    // `typecheck::stmt::infer_assign_target`) precisely because lowering is what
+    // resolves it. Without a diagnostic here the statement type-checks clean and
+    // emits nothing.
+    //
+    // The common shape is an ENUM payload field (`e.s = v`). An enum value is a
+    // `Binding::Record` of `__disc` plus one `__{Variant}_{field}` slot per
+    // payload field, so the SURFACE name never resolves; naming the variants
+    // whose payload carries the field points at the destructure that does reach
+    // the slot.
+    if let Expr::FieldAccess { obj, field, .. } = &s.target {
+        let owner = resolve_field_chain(ctx, obj).cloned();
+        let variants: Vec<&'static str> = match &owner {
+            Some(Binding::Record(fields))
+                if fields.contains_key(&crate::intern::intern("__disc")) =>
+            {
+                let suffix = format!("_{field}");
+                let mut vs: Vec<&'static str> = fields
+                    .keys()
+                    .map(|k| crate::intern::resolve(*k))
+                    .filter(|k| k.starts_with("__") && k.ends_with(&suffix))
+                    .map(|k| &k[2..k.len() - suffix.len()])
+                    .collect();
+                vs.sort_unstable();
+                vs
+            }
+            _ => Vec::new(),
+        };
+        if let Some(v) = variants.first() {
+            ctx.error(
+                "WS007",
+                format!(
+                    "cannot assign to `{field}` directly: it is payload of variant `{v}`, and an enum's payload has no field write. Destructure and assign the capture, which writes the slot in place: `if let {v} {{ {field} }} = <value> {{ {field} = ... }}` (or the same capture in a `match` arm)"
+                ),
+                &s.range,
+            );
+            return;
+        }
+        // Not an enum: an unknown field, or a field of something with no
+        // storage (a scalar, a call result). Either way the write is a no-op.
+        ctx.error(
+            "WS007",
+            format!(
+                "cannot assign to `{field}`: nothing writable is behind it, so the write would emit no gate. Only a variable, an array/map element, or a `var`-backed record field can be assigned"
+            ),
+            &s.range,
+        );
+        return;
+    }
+
     let var_name = match &s.target {
         Expr::Ident { name, .. } => name.clone(),
         _ => return,

@@ -1292,17 +1292,17 @@ fn resolve_payload_field_type(
 /// path taken when the variant itself can't be resolved (unknown variant, a
 /// bracket-form mismatch, or a nested field that isn't an enum), so the arm
 /// body can still reference the captured names without cascading WS002.
-fn bind_sub_as_any(ctx: &mut TypeCheckCtx, sub: &VariantPattern) {
+fn bind_sub_as_any(ctx: &mut TypeCheckCtx, sub: &VariantPattern, mutable: bool) {
     match sub {
         VariantPattern::Unit => {}
         VariantPattern::Positional(pats) => {
             for p in pats {
-                check_match_pattern(ctx, p, &Type::Any);
+                check_match_pattern(ctx, p, &Type::Any, mutable);
             }
         }
         VariantPattern::Named { fields, .. } => {
             for (_, p) in fields {
-                check_match_pattern(ctx, p, &Type::Any);
+                check_match_pattern(ctx, p, &Type::Any, mutable);
             }
         }
     }
@@ -1315,7 +1315,21 @@ fn bind_sub_as_any(ctx: &mut TypeCheckCtx, sub: &VariantPattern) {
 /// other bare identifier captures the whole matched value. Emits WS060 for an
 /// unknown variant and WS065 for a payload whose bracket form or arity does
 /// not match the variant.
-pub(super) fn check_match_pattern(ctx: &mut TypeCheckCtx, pat: &Pattern, matched: &Type) {
+///
+/// `mutable` says whether the SCRUTINEE is writable storage
+/// (`scrutinee_is_mutable`). Lowering binds each capture as a compile-time move
+/// of the scrutinee's `__{Variant}_{field}` slot, so writing a capture off a
+/// storage-backed scrutinee writes the payload in place. That is the only way
+/// to mutate a payload, since the surface `e.field` spelling has no lowering at
+/// all, and it needs the captures registered as `Var` or `infer_assign_target`
+/// rejects the write as a `let`. Captures off anything else stay `LetBinding`,
+/// where a write has no slot to land on.
+pub(super) fn check_match_pattern(
+    ctx: &mut TypeCheckCtx,
+    pat: &Pattern,
+    matched: &Type,
+    mutable: bool,
+) {
     use crate::typecheck::enums::Payload;
     match pat {
         Pattern::Wildcard(_) => {}
@@ -1329,10 +1343,20 @@ pub(super) fn check_match_pattern(ctx: &mut TypeCheckCtx, pat: &Pattern, matched
             {
                 return;
             }
+            if !mutable {
+                // Remember this as a capture, so a later write to it is
+                // rejected in capture terms rather than as a plain `let`.
+                ctx.readonly_captures
+                    .insert((range.file.clone(), range.start.offset));
+            }
             ctx.scope.declare(
                 name,
                 SymbolInfo {
-                    kind: SymbolKind::LetBinding,
+                    kind: if mutable {
+                        SymbolKind::Var
+                    } else {
+                        SymbolKind::LetBinding
+                    },
                     name: name.clone(),
                     ty: matched.clone(),
                     decl_range: range.clone(),
@@ -1343,13 +1367,13 @@ pub(super) fn check_match_pattern(ctx: &mut TypeCheckCtx, pat: &Pattern, matched
         }
         Pattern::Variant { variant, sub, range } => {
             let Type::Enum { name: en, args } = matched else {
-                bind_sub_as_any(ctx, sub);
+                bind_sub_as_any(ctx, sub, mutable);
                 return;
             };
             let edef = match ctx.enum_defs.get(en) {
                 Some(d) => d.clone(),
                 None => {
-                    bind_sub_as_any(ctx, sub);
+                    bind_sub_as_any(ctx, sub, mutable);
                     return;
                 }
             };
@@ -1359,7 +1383,7 @@ pub(super) fn check_match_pattern(ctx: &mut TypeCheckCtx, pat: &Pattern, matched
                     format!("enum `{en}` has no variant `{variant}`"),
                     range.clone(),
                 );
-                bind_sub_as_any(ctx, sub);
+                bind_sub_as_any(ctx, sub, mutable);
                 return;
             };
             match (&vdef.payload, sub) {
@@ -1381,7 +1405,7 @@ pub(super) fn check_match_pattern(ctx: &mut TypeCheckCtx, pat: &Pattern, matched
                             Some(te) => resolve_payload_field_type(ctx, te, &edef, args),
                             None => Type::Any,
                         };
-                        check_match_pattern(ctx, p, &fty);
+                        check_match_pattern(ctx, p, &fty, mutable);
                     }
                 }
                 (Payload::Named(decl_fields), VariantPattern::Named { fields, .. }) => {
@@ -1401,12 +1425,12 @@ pub(super) fn check_match_pattern(ctx: &mut TypeCheckCtx, pat: &Pattern, matched
                                 Type::Any
                             }
                         };
-                        check_match_pattern(ctx, fpat, &fty);
+                        check_match_pattern(ctx, fpat, &fty, mutable);
                     }
                 }
                 _ => {
                     ctx.emit("WS065", ws065_pattern_form_wrong(variant, &vdef.payload), range.clone());
-                    bind_sub_as_any(ctx, sub);
+                    bind_sub_as_any(ctx, sub, mutable);
                 }
             }
         }
@@ -2095,17 +2119,18 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 // no enum to type captures against, so they bind as `any`.
                 for arm in arms {
                     ctx.push_scope();
-                    check_match_pattern(ctx, &arm.pattern, &scrut_ty);
+                    check_match_pattern(ctx, &arm.pattern, &scrut_ty, false);
                     infer_match_body(ctx, &arm.body);
                     ctx.pop_scope();
                 }
                 return Type::Any;
             }
 
+            let mutable = crate::typecheck::stmt::scrutinee_is_mutable(ctx, scrutinee);
             let mut tys: Vec<Type> = Vec::new();
             for arm in arms {
                 ctx.push_scope();
-                check_match_pattern(ctx, &arm.pattern, &scrut_ty);
+                check_match_pattern(ctx, &arm.pattern, &scrut_ty, mutable);
                 if let Some(t) = infer_match_body(ctx, &arm.body) {
                     tys.push(t);
                 }

@@ -97,6 +97,122 @@ pub fn assign_discriminants(decl: &EnumDecl, ctx: &mut TypeCheckCtx) -> Vec<Vari
     out
 }
 
+/// Whether a payload field of this type would need container storage anywhere
+/// inside it. An `ArrayVar`/`MapVar` is the whole trigger; a record is checked
+/// per leaf, and a generic argument is checked so `W(Box<int[]>)` is caught at
+/// the field that hosts it. A nested ENUM is not descended into: its own
+/// declaration is checked by the same pass, so it reports its own field.
+fn needs_container_storage(t: &Type) -> bool {
+    match t {
+        Type::Array(_) | Type::Map(_, _) => true,
+        Type::Ref(inner) => needs_container_storage(inner),
+        Type::Record(fields) => fields.iter().any(|(_, ft)| needs_container_storage(ft)),
+        Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(needs_container_storage),
+        Type::Enum { args, .. } => args.iter().any(needs_container_storage),
+        _ => false,
+    }
+}
+
+/// Whether `te` names `param` anywhere, so a generic argument substituted for
+/// it would land in this payload field. Lets the instantiation check reject
+/// `Option<int[]>` (whose `T` IS stored, by `Some(T)`) while leaving a phantom
+/// parameter that no variant stores alone.
+fn type_expr_mentions(te: &TypeExpr, param: &str) -> bool {
+    match te {
+        TypeExpr::Name { name, .. } => name == param,
+        TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => {
+            type_expr_mentions(inner, param)
+        }
+        TypeExpr::Tuple { fields, .. } => fields.iter().any(|f| type_expr_mentions(f, param)),
+        TypeExpr::Union { options, .. } => options.iter().any(|o| type_expr_mentions(o, param)),
+        TypeExpr::Record { fields, .. } => {
+            fields.iter().any(|f| type_expr_mentions(&f.typ, param))
+        }
+        TypeExpr::Generic { args, .. } => args.iter().any(|a| type_expr_mentions(a, param)),
+    }
+}
+
+/// Whether instantiating `def` with `args` would put a container in a payload
+/// slot: some argument needs container storage AND the parameter it replaces is
+/// actually named by a payload field. Drives the `WS069` at an instantiation
+/// (`Option<int[]>`), which the declaration check cannot see because the field
+/// there is the bare parameter.
+pub(super) fn instantiation_stores_container(def: &EnumDef, args: &[Type]) -> Option<String> {
+    for (i, p) in def.type_params.iter().enumerate() {
+        let Some(arg) = args.get(i) else { continue };
+        if !needs_container_storage(arg) {
+            continue;
+        }
+        let stored = def.variants.iter().any(|v| match &v.payload {
+            Payload::Unit => false,
+            Payload::Positional(types) => types.iter().any(|te| type_expr_mentions(te, &p.name)),
+            Payload::Named(fields) => {
+                fields.iter().any(|(_, te)| type_expr_mentions(te, &p.name))
+            }
+        });
+        if stored {
+            return Some(p.name.clone());
+        }
+    }
+    None
+}
+
+/// Reject an enum payload field that would need container storage (`WS069`).
+///
+/// A payload slot is one storage gate, filled by the variant's CONSTRUCTION,
+/// and no construction path can fill a container: a declaration initializer
+/// bakes an `InitialValue` (there is none for an array), and a runtime
+/// `E.B { xs: [1, 2, 3] }` lowers the literal to a placeholder and copies from
+/// an empty temporary. The slot still allocates an `ArrayVar`/`MapVar`, so a
+/// captured `xs.push(..)` emits a real gate against storage that construction
+/// never fills - the value silently reads back empty. Rejecting the
+/// declaration kills every downstream use at once, instead of leaving each
+/// construction site to warn (or not).
+///
+/// Runs AFTER top-level registration so a field naming a record alias
+/// (`type R = { xs: int[] }`) resolves. Resolution diagnostics are discarded:
+/// a payload's declared type is not otherwise a checked position (an unknown
+/// type there is silent today), and this pass must test storage shape without
+/// becoming a new emit site for everything else.
+pub fn check_payload_storage(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+    for d in decls {
+        let TopDecl::Enum(e) = d else { continue };
+        for v in &e.variants {
+            let fields: Vec<(Option<&str>, &TypeExpr, &SourceRange)> = match &v.payload {
+                EnumPayloadDecl::Unit => continue,
+                EnumPayloadDecl::Positional(types) => {
+                    types.iter().map(|te| (None, te, &v.range)).collect()
+                }
+                EnumPayloadDecl::Named(fs) => fs
+                    .iter()
+                    .map(|(n, te, r)| (Some(n.as_str()), te, r))
+                    .collect(),
+            };
+            for (name, te, range) in fields {
+                let before = ctx.diagnostics.len();
+                let ty = resolve_type_expr(ctx, te);
+                ctx.diagnostics.truncate(before);
+                if !needs_container_storage(&ty) {
+                    continue;
+                }
+                let what = match name {
+                    Some(n) => format!("field `{n}` of variant `{}`", v.name),
+                    None => format!("a payload value of variant `{}`", v.name),
+                };
+                ctx.emit(
+                    "WS069",
+                    format!(
+                        "{what} in enum `{}` is `{}`, and an enum payload cannot hold an array or a map. A payload slot is filled by constructing the variant, and there is no way to construct a container into one, so the value would read back empty. Store the container in a `var` beside the enum and keep an index, a key, or a length in the payload instead",
+                        e.name,
+                        crate::analysis::types::type_str(&ty)
+                    ),
+                    range.clone(),
+                );
+            }
+        }
+    }
+}
+
 /// The built-in `Option<T>`/`Result<T, E>` prelude, in the exact `EnumDef`
 /// shape `variant_defs`/`collect_enum_defs` produce for a user-declared enum -
 /// same discriminant convention (declaration order, auto-numbered from 0), so

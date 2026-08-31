@@ -19,6 +19,8 @@ types.
 - [Enum and int conversion](#enum-and-int-conversion)
 - [`match`](#match)
 - [`if let` / `let else`](#if-let--let-else)
+- [Changing a payload](#changing-a-payload)
+- [Payloads cannot hold containers](#payloads-cannot-hold-containers)
 - [Generic enums](#generic-enums)
 - [Built-in `Option` and `Result`](#built-in-option-and-result)
 - [Built-in game enums](#built-in-game-enums)
@@ -340,6 +342,141 @@ var result: int = 0
 
 on ReadBrickGrid() {
   result = unwrapOr(o, -1)
+}
+```
+
+## Changing a payload
+
+A payload field has **no direct write**. `s.field = v` on an enum value is a
+[`WS007`](diagnostics.md) error, because an enum value is stored as its tag
+plus one slot per variant field, and the surface field name names no slot.
+
+There are two ways to change one, and which you want depends on whether the
+value is already the variant you are writing.
+
+**Destructure and assign the capture.** A `match` arm, an `if let`, or a
+`let ... else` binds each capture directly to the matched value's payload
+slot, so writing the capture writes the payload **in place**. The other
+fields, and the tag, are left alone:
+
+```wirescript
+type Track = { origin: vector, direction: vector }
+
+enum Nav {
+  Idle,
+  Moving { track: Track, label: string, active: bool },
+}
+
+var nav: Nav = Nav.Moving {
+  track: { origin: Vec(4.0, 4.0, 4.0), direction: Vec(0.707, 0.707, 0.0) },
+  label: "start",
+  active: false,
+}
+
+in go: exec
+
+on go {
+  if let Moving { track, label, active } = nav {
+    track = { origin: Vec(69.0, 69.0, 69.0), direction: Vec(1.0, 0.0, 0.0) }
+    label = "moved"
+    active = true
+  }
+}
+```
+
+The write costs one `Var_Set` per scalar field, and one per leaf for a
+record-typed field, so `track` above costs two, one for `origin` and one for
+`direction`. That is the same price as writing a record var. Because the
+assignment sits inside the arm, it only runs when the value really is that
+variant, which is what makes an in-place payload write safe.
+
+The scrutinee has to be **writable storage** for this: a `var`, a `static var`,
+a `*T` parameter, or a `var`-backed record field. Captures off a `let`, a
+`const`, or a by-value parameter stay read-only, since there is no storage gate
+behind their slots for a write to land on.
+
+A **container element is not storage**. `arr[i]`, `m[k]`, and any field reached
+through one (`hs[0].e`) read the element out by value, so a capture off them is
+read-only too and writing it is a [`WS007`](diagnostics.md) error. To change an
+element's payload, copy it into a `var`, mutate that, and store it back:
+
+```wirescript
+enum Slot { Empty, Full { label: string, ready: bool } }
+
+var slots: Slot[]
+var cur: Slot = Slot.Empty
+in go3: exec
+
+on go3 {
+  slots.push(Slot.Full { label: "start", ready: false })
+  cur = slots[0]
+  if let Full { label, ready } = cur {
+    label = "moved"
+    ready = true
+  }
+  slots[0] = cur
+}
+```
+
+**Rebuild the whole variant.** Assigning the enum itself sets the tag and every
+slot of the new variant at once, and is the only option when the value is
+changing variant:
+
+```wirescript
+enum Nav2 { Idle, Moving { label: string, active: bool } }
+
+var nav2: Nav2 = Nav2.Idle
+in go2: exec
+
+on go2 {
+  nav2 = Nav2.Moving { label: "moved", active: true }
+}
+```
+
+Reading works the same way round: pull a payload field out through a `match`
+or `if let` capture, not through `value.field`.
+
+## Payloads cannot hold containers
+
+A payload field cannot be an array or a map, and neither can a record used as
+one. The declaration is a [`WS069`](diagnostics.md) error:
+
+```wirescript ignore
+enum Loadout {
+  Empty,
+  Carrying { items: int[] },   // WS069
+}
+```
+
+A payload slot is a single storage gate, and it is filled by **constructing**
+the variant. There is no way to construct a container into one: a declaration
+initializer bakes an initial value, and an array has none, while a runtime
+`Loadout.Carrying { items: [1, 2, 3] }` has no gate that assigns a whole array.
+The slot would still be allocated, so a captured `items.push(...)` compiled to a
+real gate writing storage that nothing ever filled, and the value read back
+empty. Rejecting the declaration stops that at the source.
+
+The same applies to a generic enum instantiated with a container, when the
+parameter is one a variant actually stores, so `Option<int[]>` is a `WS069` at
+the annotation. A parameter no variant stores is unaffected.
+
+Keep the container in its own `var` and put something scalar in the payload
+that refers to it, such as an index, a key, or a length:
+
+```wirescript
+var items: int[]
+
+enum Loadout {
+  Empty,
+  Carrying { first: int, count: int },
+}
+
+var loadout: Loadout = Loadout.Empty
+in pickUp: exec
+
+on pickUp {
+  items.push(7)
+  loadout = Loadout.Carrying { first: 0, count: items.length() }
 }
 ```
 

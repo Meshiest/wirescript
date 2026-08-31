@@ -1,5 +1,13 @@
 # Wirescript Changelog
 
+## 1.7.3
+
+### Fixes
+
+- Assigning a `match` / `if let` / `let else` capture writes the matched enum's payload slot in place, when the scrutinee is storage. A container element is read by value, so its captures stay read-only.
+- Assigning a field with no storage behind it (an enum payload field, a misspelled record field, a field of a scalar) is a `WS007` error instead of compiling to nothing.
+- An enum payload field that needs container storage is a `WS069` error, at the declaration or at a generic instantiation that picks one (`Option<int[]>`). The slot could never be filled, so the value read back empty.
+
 ## 1.7.2
 
 ### Fixes

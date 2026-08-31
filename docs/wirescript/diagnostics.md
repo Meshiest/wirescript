@@ -39,7 +39,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 |------|---------|---------|
 | `WS005` | Wire-graph cycle with no barrier — a feedback loop must cross a Buffer/Queue/EdgeDetector; break it with `buffer emit`. | a gate loop with no buffer on any edge |
 | `WS006` | `*x` deref used in pure context — use `x.Value` for a pure read. | `out v = *count` |
-| `WS007` | Exec-only construct outside an exec context — assignment, `emit`, `await`, an array index read, or an exec-returning call with no enclosing exec chain. | `count = 1` at the top level |
+| `WS007` | Exec-only construct outside an exec context — assignment, `emit`, `await`, an array index read, or an exec-returning call with no enclosing exec chain. Also a write to something that is not writable storage: a `let`, an enum payload field named directly (destructure it instead), a misspelled record field, or a field of a scalar. | `count = 1` at the top level / `state.field = v` on an enum |
 
 ## Names, declarations & imports
 
@@ -76,6 +76,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS066` | `.Discriminant`, `.ToInt()`, or a `match` targets a value that isn't an enum. | `var x: int = 0` then `x.Discriminant` |
 | `WS067` | A bare variant name for a variant that has a payload (`Circle` instead of `Circle(_)`) in a `match` arm binds the whole value like a catch-all, which can leave later arms unreachable. | `match s { Circle => .., Empty => .. }` |
 | `WS068` | A custom-event data param is a record or an enum. A data slot is one wire and those span several, so the value cannot travel through it. Pass the fields as separate params, or send a key and read the value from shared storage on the other side. | `on CustomEvent("c") -> (p: Point) { }` |
+| `WS069` | An enum payload field would need container storage. A payload slot is filled by constructing the variant, and a container cannot be constructed into one, so the value would read back empty. Fires on the declaration, or on a generic instantiation that binds a stored parameter to one (`Option<int[]>`). | `enum E { B { xs: int[] } }` |
 
 ## Calls & arguments
 

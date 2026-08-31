@@ -389,7 +389,8 @@ fn check_stmt_inner(
             }
             // Bind the pattern's captures into the CURRENT scope (the
             // continuation), so the rest of the enclosing block can read them.
-            infer::check_match_pattern(ctx, &l.pattern, &scrut_ty);
+            let mutable = scrutinee_is_mutable(ctx, &l.scrutinee);
+            infer::check_match_pattern(ctx, &l.pattern, &scrut_ty, mutable);
         }
         Stmt::Assign(a) => {
             if ctx.exec_mode() != ExecMode::Exec {
@@ -698,8 +699,9 @@ fn check_stmt_inner(
             // The captures are scoped to the THEN block only. Bind them in a
             // fresh scope, then check the then-block's statements in it (mirrors
             // how `Expr::MatchExpr` scopes an arm's captures to its body).
+            let mutable = scrutinee_is_mutable(ctx, &i.scrutinee);
             ctx.push_scope();
-            infer::check_match_pattern(ctx, &i.pattern, &scrut_ty);
+            infer::check_match_pattern(ctx, &i.pattern, &scrut_ty, mutable);
             for s in &i.then_block.stmts {
                 check_stmt(ctx, s);
             }
@@ -780,6 +782,39 @@ pub(super) fn target_name(e: &Expr) -> Option<String> {
     match e {
         Expr::Ident { name, .. } => Some(name.clone()),
         _ => None,
+    }
+}
+
+/// Whether a `match` / `if let` / `let else` scrutinee is backed by writable
+/// storage, and so whether its payload captures can be written.
+///
+/// Lowering binds each capture to the scrutinee's `__{Variant}_{field}` slot.
+/// That slot is a real `Pseudo_Var` gate, so a write to the capture lands on
+/// the payload, only when the scrutinee resolves to storage the compiler can
+/// name: a `var`, a `*T` parameter, or a chain of record fields over one.
+///
+/// Deliberately NOT `is_ref_able`, which recurses through an index access. That
+/// is right for `&arr[i]` but wrong here: a container ELEMENT scrutinee
+/// (`arr[i]`, `m[k]`, or a field reached through one) lowers to a read of the
+/// element's VALUE with no write-back, so treating its captures as writable
+/// would make every such assignment a silent no-op.
+///
+/// A namespaced member (`S.e`) is left out too: an imported enum var does not
+/// yet type as an enum in scrutinee position, and `false` fails toward a
+/// diagnostic rather than a dropped write.
+pub(crate) fn scrutinee_is_mutable(ctx: &TypeCheckCtx, scrutinee: &Expr) -> bool {
+    match scrutinee {
+        Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
+            Some(s) => {
+                s.kind == SymbolKind::Var
+                    || (s.kind == SymbolKind::Param && matches!(&s.ty, Type::Ref(_)))
+            }
+            None => false,
+        },
+        // Each record field is its own storage gate, so an enum-typed field is
+        // writable exactly when the record it hangs off is.
+        Expr::FieldAccess { obj, .. } => scrutinee_is_mutable(ctx, obj),
+        _ => false,
     }
 }
 
@@ -882,6 +917,24 @@ fn infer_assign_target(
                     && matches!(unwrap_ref(&s.ty), Type::Array(_) | Type::Map(_, _)) =>
             {
                 unwrap_ref(&s.ty)
+            }
+            // A capture is not a `let` the user can redeclare: it names a slot
+            // of the matched value, writable only when the scrutinee is storage.
+            Some(s)
+                if s.kind == SymbolKind::LetBinding
+                    && ctx.readonly_captures.contains(&(
+                        s.decl_range.file.clone(),
+                        s.decl_range.start.offset,
+                    )) =>
+            {
+                ctx.emit(
+                    "WS007",
+                    format!(
+                        "'{name}' is a read-only capture and can't be assigned. Writing a capture writes the matched value's payload in place, so it needs a scrutinee that is storage: a `var`, a `*T` parameter, or a field of one. A container element (`arr[i]`, `m[k]`) is read by value, so copy it into a `var`, match on that, then store it back"
+                    ),
+                    range.clone(),
+                );
+                Type::Any
             }
             Some(s) if s.kind == SymbolKind::LetBinding => {
                 ctx.emit(

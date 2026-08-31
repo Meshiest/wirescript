@@ -162,6 +162,13 @@ pub struct TypeCheckCtx<'a> {
     pub namespaces: HashMap<String, HashMap<String, NsDeclInfo>>,
     pub if_contexts: HashMap<(Arc<str>, usize), bool>,
     pub var_read_contexts: HashMap<(Arc<str>, usize), bool>,
+    /// Declaration sites, `(file, decl_range.start.offset)`, of `match` /
+    /// `if let` / `let else` captures bound off a scrutinee that is NOT
+    /// writable storage. Keyed by decl site rather than by name so shadowing
+    /// cannot leak between scopes. Read by `infer_assign_target`, to reject a
+    /// write in the capture's own terms rather than the plain `let`'s "declare
+    /// it `var`", which a capture cannot do.
+    pub(super) readonly_captures: crate::collections::HashSet<(Arc<str>, usize)>,
     /// Typed every visited expression; key is (file, start_offset, end_offset).
     pub type_of_expr: HashMap<(Arc<str>, usize, usize), Type>,
     /// Operator rule chosen for every BinOp/UnOp; same key scheme.
@@ -332,6 +339,7 @@ impl<'a> TypeCheckCtx<'a> {
             namespaces: HashMap::default(),
             if_contexts: HashMap::default(),
             var_read_contexts: HashMap::default(),
+            readonly_captures: crate::collections::HashSet::default(),
             type_of_expr: HashMap::default(),
             op_resolutions: HashMap::default(),
             signal_payload_types: HashMap::default(),

@@ -566,3 +566,11 @@ mod resolve_phase {
     }
 }
 
+
+// WS069 - an enum payload field that would need container storage (an array or
+// a map), which no variant construction can fill [typecheck]
+#[test]
+fn ws069_is_reachable() {
+    let src = "enum E { A, B { xs: int[] } }\nout n = 1\n";
+    assert!(diags(src).contains(&"WS069".to_string()));
+}

@@ -72,6 +72,24 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
             );
             return Type::Enum { name: name.clone(), args: vec![Type::Any; arity] };
         }
+        // An argument that needs container storage would land in a payload
+        // slot, which cannot hold one (see `enums::check_payload_storage`).
+        // The declaration check can't catch this: there the field is the bare
+        // parameter. Reported here, at the instantiation that picks the type.
+        if let Some(def) = ctx.enum_defs.get(name).cloned()
+            && let Some(param) = crate::typecheck::enums::instantiation_stores_container(
+                &def,
+                &resolved_args,
+            )
+        {
+            ctx.emit(
+                "WS069",
+                format!(
+                    "`{name}<...>` binds `{param}` to a type holding an array or a map, and an enum payload cannot hold one. A payload slot is filled by constructing the variant, and there is no way to construct a container into one, so the value would read back empty. Keep the container in its own `var` and put an index, a key, or a length in the payload instead"
+                ),
+                range.clone(),
+            );
+        }
         return Type::Enum { name: name.clone(), args: resolved_args };
     }
     let aliases = ctx.scope.type_aliases();

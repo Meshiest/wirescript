@@ -1720,3 +1720,115 @@ fn if_let_on_a_map_get_value_decomposes() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
 }
+
+#[test]
+fn if_let_capture_write_sets_the_scrutinees_payload_slot() {
+    // Payload mutation goes through the destructure: the capture IS the
+    // scrutinee's `__B_b` slot, so `b = true` inside the arm is a `Var_Set`
+    // wired to that gate. `written_var_labels` reads the label off the
+    // Pseudo_Var actually feeding each Var_Set's VarRef, so a regression that
+    // bound the capture to a fresh local would still emit a Var_Set and still
+    // fail here.
+    let r = compile(
+        "enum E { A, B { s: string, b: bool } }\n\
+         var e: E = E.B { s: \"hi\", b: false }\n\
+         in go: exec\n\
+         on go { if let B { s, b } = e { b = true } }\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    // Only the written slot is written; `e.__B_s` and `e.__disc` are untouched.
+    assert_eq!(written_var_labels(&r), vec!["e.__B_b".to_string()]);
+}
+
+#[test]
+fn match_and_let_else_captures_write_the_same_slot() {
+    // The other two destructure forms share the pattern-binding path, so they
+    // must reach the same slot.
+    let pre = "enum E { A, B { s: string, b: bool } }\n\
+               var e: E = E.B { s: \"hi\", b: false }\n\
+               in go: exec\n";
+    let m = compile(&format!(
+        "{pre}on go {{ match e {{ B {{ s, b }} => {{ b = true }}, A => {{}} }} }}\n"
+    ));
+    assert_no_errors(&m);
+    assert_eq!(written_var_labels(&m), vec!["e.__B_b".to_string()]);
+
+    let le = compile(&format!(
+        "{pre}on go {{ let B {{ s, b }} = e else {{ return }}\nb = true }}\n"
+    ));
+    assert_no_errors(&le);
+    assert_eq!(written_var_labels(&le), vec!["e.__B_b".to_string()]);
+}
+
+#[test]
+fn record_payload_capture_write_fans_across_the_fields() {
+    // A record-typed payload slot is itself a `Binding::Record` of per-field
+    // gates, so assigning the capture a record literal decomposes into one
+    // `Var_Set` per leaf, the same fan-out a plain record var assignment gets.
+    let r = compile(
+        "type P = { x: int, y: int }\n\
+         enum E { A, B { p: P } }\n\
+         var e: E = E.B { p: { x: 0, y: 0 } }\n\
+         in go: exec\n\
+         on go { if let B { p } = e { p = { x: 7, y: 9 } } }\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["e.__B_p.x".to_string(), "e.__B_p.y".to_string()],
+    );
+}
+
+#[test]
+fn assigning_an_enum_payload_field_directly_is_diagnosed() {
+    // `e.s = v` has no lowering: an enum value is a record of `__disc` plus
+    // `__{Variant}_{field}` slots, so the surface name `s` resolves to nothing
+    // and every branch of `lower_assign` falls through to a bare `return`, so
+    // without this diagnostic the write vanishes with no gate.
+    let r = compile(
+        "enum E { A, B { s: string, b: bool } }\n\
+         var e: E = E.B { s: \"hi\", b: false }\n\
+         in go: exec\n\
+         on go { e.s = \"nope\" }\n",
+    );
+    let d = r
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "WS007" && d.severity == crate::diagnostic::Severity::Error)
+        .unwrap_or_else(|| panic!("expected WS007: {:?}", r.diagnostics));
+    assert!(
+        d.message.contains("if let") || d.message.contains("match"),
+        "the message must name the destructure that DOES work: {}",
+        d.message
+    );
+    assert!(written_var_labels(&r).is_empty());
+}
+
+#[test]
+fn assigning_an_unknown_field_is_diagnosed() {
+    // The same silent fall-through swallowed ordinary typos: a field name not
+    // on the record, and a field on a scalar, both compiled to nothing.
+    let typo = compile(
+        "type T = { origin: int }\n\
+         var t: T = { origin: 0 }\n\
+         in go: exec\n\
+         on go { t.orgin = 1 }\n",
+    );
+    assert!(
+        typo.diagnostics.iter().any(|d| d.code == "WS007"),
+        "expected WS007 for a misspelled field target: {:?}",
+        typo.diagnostics
+    );
+    let scalar = compile(
+        "var n: int = 0\n\
+         in go: exec\n\
+         on go { n.whatever = 5 }\n",
+    );
+    assert!(
+        scalar.diagnostics.iter().any(|d| d.code == "WS007"),
+        "expected WS007 for a field target on a scalar: {:?}",
+        scalar.diagnostics
+    );
+}

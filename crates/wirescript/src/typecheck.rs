@@ -88,6 +88,9 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     for d in &script.decls {
         register_decl(&mut ctx, d);
     }
+    // After registration, so a payload field naming a record alias resolves:
+    // reject any payload field that would need container storage (WS069).
+    enums::check_payload_storage(&mut ctx, &script.decls);
     // Constant `let`s, resolved before any decl is checked so a `var` / `array`
     // initializer may name one. Built from the same function lowering uses, so
     // the two can't disagree about what counts as a compile-time constant.
