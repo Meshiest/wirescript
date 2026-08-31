@@ -574,3 +574,11 @@ fn ws069_is_reachable() {
     let src = "enum E { A, B { xs: int[] } }\nout n = 1\n";
     assert!(diags(src).contains(&"WS069".to_string()));
 }
+
+// WS070 - an `unsafe` payload access missing its variant or field segment
+// [typecheck]
+#[test]
+fn ws070_is_reachable() {
+    let src = "enum E { A, B { s: string } }\nvar e: E = E.B { s: \"h\" }\nin go: exec\non go { unsafe e.B = \"x\" }\n";
+    assert!(diags(src).contains(&"WS070".to_string()));
+}

@@ -1832,3 +1832,35 @@ fn assigning_an_unknown_field_is_diagnosed() {
         scalar.diagnostics
     );
 }
+
+#[test]
+fn unsafe_payload_write_sets_only_the_named_slot() {
+    // The unchecked write touches the slot and nothing else: no Branch (the tag
+    // is asserted, not tested) and no write to `__disc`.
+    let r = compile(
+        "enum E { A, B { s: string, n: int } }\n\
+         var e: E = E.B { s: \"hi\", n: 1 }\n\
+         in go: exec\n\
+         on go { unsafe e.B.s = \"written\" }\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(written_var_labels(&r), vec!["e.__B_s".to_string()]);
+    assert!(!has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"));
+}
+
+#[test]
+fn unsafe_payload_read_gets_the_named_slot() {
+    let r = compile(
+        "enum E { A, B { s: string } }\n\
+         var e: E = E.B { s: \"hi\" }\n\
+         var got: string = \"\"\n\
+         in go: exec\n\
+         on go { got = unsafe e.B.s }\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert_eq!(written_var_labels(&r), vec!["got".to_string()]);
+    // The value read comes from the payload slot's own gate.
+    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"));
+}

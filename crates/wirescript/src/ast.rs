@@ -990,6 +990,21 @@ pub enum Expr {
         fields: Vec<RecordLitField>,
         range: SourceRange,
     },
+    /// `unsafe <value>.<Variant>.<field>`, an UNCHECKED read or write of one
+    /// enum payload slot, naming the variant whose slot it is. An enum value
+    /// stores its tag plus one slot per variant field, and the safe spellings
+    /// reach a payload only through a destructure, which proves the tag first.
+    /// This one asserts the tag instead of testing it: it touches the named
+    /// slot and leaves the tag alone, so reading a variant the value is not
+    /// yields that slot's stale contents rather than an error.
+    ///
+    /// `inner` is the whole `value.Variant.field…` `FieldAccess` chain; the
+    /// first two segments select the slot and any further ones index into a
+    /// record-typed payload.
+    Unsafe {
+        inner: Box<Expr>,
+        range: SourceRange,
+    },
 }
 
 /// An element of an array literal: a single value or a `...spread` of another
@@ -1045,7 +1060,8 @@ impl Expr {
             | Expr::PrefabRef { range, .. }
             | Expr::NestedPrefab { range, .. }
             | Expr::MapLit { range, .. }
-            | Expr::VariantCtor { range, .. } => range,
+            | Expr::VariantCtor { range, .. }
+            | Expr::Unsafe { range, .. } => range,
         }
     }
 
@@ -1076,7 +1092,8 @@ impl Expr {
             | Expr::PrefabRef { range, .. }
             | Expr::NestedPrefab { range, .. }
             | Expr::MapLit { range, .. }
-            | Expr::VariantCtor { range, .. } => range,
+            | Expr::VariantCtor { range, .. }
+            | Expr::Unsafe { range, .. } => range,
         }
     }
 }

@@ -151,6 +151,16 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             synthesise_unsupported(ctx, e)
         }
+        Expr::Unsafe { inner, range } => {
+            // The slot binding IS the value; no tag test, no gate of its own.
+            match crate::lower::access::resolve_unsafe_slot(ctx, inner)
+                .cloned()
+                .and_then(|b| crate::lower::access::binding_to_port(ctx, &b, range))
+            {
+                Some(port) => port,
+                None => synthesise_unsupported_range(ctx, range),
+            }
+        }
         Expr::FieldAccess { obj, field, range } => lower_field_access(ctx, obj, field, range, e),
         Expr::IndexAccess { obj, index, range } => lower_index_access(ctx, obj, index, range, e),
         Expr::IfExpr {

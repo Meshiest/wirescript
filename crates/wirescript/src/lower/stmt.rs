@@ -793,6 +793,30 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             &s.range,
         );
     }
+    // `unsafe v.Variant.field = x` writes the payload slot the assertion names.
+    // The slot is ordinary storage, so a scalar goes through `set_scalar_var`
+    // and a record payload through `assign_record`, exactly as a capture write
+    // does. `__disc` is not touched: the spelling asserts the tag rather than
+    // setting it.
+    if let Expr::Unsafe { inner, range } = &s.target {
+        if ctx.current_exec.is_none() {
+            return;
+        }
+        match crate::lower::access::resolve_unsafe_slot(ctx, inner).cloned() {
+            Some(Binding::Var(var_rec)) => {
+                let value_port = lower_expr(ctx, &s.value);
+                set_scalar_var(ctx, &var_rec, value_port, &s.range);
+            }
+            Some(Binding::Record(fields)) => assign_record(ctx, &fields, &s.value, &s.range),
+            _ => ctx.error(
+                "WS007",
+                "this `unsafe` payload access resolves to no storage slot, so the write would emit nothing",
+                range,
+            ),
+        }
+        return;
+    }
+
     if let Expr::IndexAccess { obj, index, .. } = &s.target {
         // Map subscript `m[k] = v` desugars to a MapVar_Set (the same gate
         // `m.set(k, v)` lowers to) — mirrors the read desugar in
@@ -978,7 +1002,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             ctx.error(
                 "WS007",
                 format!(
-                    "cannot assign to `{field}` directly: it is payload of variant `{v}`, and an enum's payload has no field write. Destructure and assign the capture, which writes the slot in place: `if let {v} {{ {field} }} = <value> {{ {field} = ... }}` (or the same capture in a `match` arm)"
+                    "cannot assign to `{field}` directly: it is payload of variant `{v}`, and an enum's payload has no field write. Destructure and assign the capture, which writes the slot in place: `if let {v} {{ {field} }} = <value> {{ {field} = ... }}` (or the same capture in a `match` arm). To write the slot without testing the tag, `unsafe <value>.{v}.{field} = ...`"
                 ),
                 &s.range,
             );

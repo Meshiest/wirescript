@@ -1,5 +1,10 @@
 # Wirescript Changelog
 
+## 1.7.4
+
+
+- `unsafe <value>.<Variant>.<field>` reads or writes one enum payload slot directly, without testing the tag. Reading a variant the value is not returns stale contents, and writing leaves the tag alone. Contextual keyword, so the name stays usable.
+
 ## 1.7.3
 
 ### Fixes

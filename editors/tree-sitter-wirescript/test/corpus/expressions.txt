@@ -537,3 +537,61 @@ let total = a +
         (identifier)
         (identifier))
       (identifier))))
+
+================================================================================
+unsafe enum payload access takes the whole chain
+================================================================================
+
+let s = unsafe e.B.label
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (unsafe_expression
+      (field_expression
+        (field_expression
+          (identifier)
+          (identifier))
+        (identifier)))))
+
+================================================================================
+unsafe payload access as an assignment target
+================================================================================
+
+on go { unsafe e.B.label = "x" }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler
+    (identifier)
+    (block
+      (assignment_statement
+        (unsafe_expression
+          (field_expression
+            (field_expression
+              (identifier)
+              (identifier))
+            (identifier)))
+        (string
+          (string_fragment))))))
+
+================================================================================
+unsafe on a positional payload
+================================================================================
+
+let v = unsafe e.B.0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (unsafe_expression
+      (tuple_index_expression
+        (field_expression
+          (identifier)
+          (identifier))
+        (integer)))))

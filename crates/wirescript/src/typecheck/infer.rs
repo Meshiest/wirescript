@@ -690,6 +690,7 @@ fn expr_has_direct_exec(
         Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => {
             expr_has_direct_exec(ctx, obj, locals, edges)
         }
+        Expr::Unsafe { inner, .. } => expr_has_direct_exec(ctx, inner, locals, edges),
         Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
             expr_has_direct_exec(ctx, operand, locals, edges)
         }
@@ -1452,6 +1453,138 @@ fn infer_match_body(ctx: &mut TypeCheckCtx, body: &MatchBody) -> Option<Type> {
     }
 }
 
+
+/// Split an `unsafe` access's inner chain into its base value and the named
+/// segments applied to it. A positional payload is reached with `.0`, which
+/// parses as a `TuplePick`, so both projection forms are flattened here.
+fn flatten_access(e: &Expr) -> (&Expr, Vec<String>) {
+    match e {
+        Expr::FieldAccess { obj, field, .. } => {
+            let (base, mut segs) = flatten_access(obj);
+            segs.push(field.clone());
+            (base, segs)
+        }
+        Expr::TuplePick { obj, index, .. } => {
+            let (base, mut segs) = flatten_access(obj);
+            segs.push(index.to_string());
+            (base, segs)
+        }
+        _ => (e, Vec::new()),
+    }
+}
+
+/// Type of `unsafe <value>.<Variant>.<field>…`, shared by the read and the
+/// assignment-target paths so both agree on the slot and on what they reject.
+///
+/// The first two segments select the payload slot: the variant asserts which
+/// one the value is (never checked, that is the point of the spelling) and the
+/// field names its slot. Any further segments project into a record-typed
+/// payload exactly as they would on a plain record.
+pub(super) fn infer_unsafe_access(ctx: &mut TypeCheckCtx, inner: &Expr, range: &SourceRange) -> Type {
+    let (base, segs) = flatten_access(inner);
+    let base_ty = unwrap_ref(&infer(ctx, base));
+    let Type::Enum { name: en, args } = &base_ty else {
+        ctx.emit(
+            "WS066",
+            format!(
+                "`unsafe` payload access needs an enum value, found `{}`",
+                crate::analysis::types::type_str(&base_ty)
+            ),
+            range.clone(),
+        );
+        return Type::Any;
+    };
+    let (Some(variant), Some(field)) = (segs.first(), segs.get(1)) else {
+        ctx.emit(
+            "WS070",
+            format!(
+                "`unsafe` needs a variant and a payload field (`unsafe <value>.<Variant>.<field>`), found `{}`",
+                segs.join(".")
+            ),
+            range.clone(),
+        );
+        return Type::Any;
+    };
+    let Some(edef) = ctx.enum_defs.get(en).cloned() else {
+        return Type::Any;
+    };
+    let Some(vdef) = edef.variants.iter().find(|v| &v.name == variant).cloned() else {
+        ctx.emit(
+            "WS060",
+            format!("enum `{en}` has no variant `{variant}`"),
+            range.clone(),
+        );
+        return Type::Any;
+    };
+    let args = args.clone();
+    let slot_ty = match &vdef.payload {
+        crate::typecheck::enums::Payload::Unit => {
+            ctx.emit(
+                "WS010",
+                format!("variant `{variant}` of enum `{en}` carries no payload"),
+                range.clone(),
+            );
+            return Type::Any;
+        }
+        crate::typecheck::enums::Payload::Named(fields) => {
+            match fields.iter().find(|(n, _)| n == field) {
+                Some((_, te)) => resolve_payload_field_type(ctx, te, &edef, &args),
+                None => {
+                    ctx.emit(
+                        "WS010",
+                        format!("variant `{variant}` has no field `{field}`"),
+                        range.clone(),
+                    );
+                    return Type::Any;
+                }
+            }
+        }
+        crate::typecheck::enums::Payload::Positional(types) => {
+            match field.parse::<usize>().ok().and_then(|i| types.get(i)) {
+                Some(te) => resolve_payload_field_type(ctx, te, &edef, &args),
+                None => {
+                    ctx.emit(
+                        "WS010",
+                        format!(
+                            "variant `{variant}` has {} payload value(s), so `.{field}` names none of them",
+                            types.len()
+                        ),
+                        range.clone(),
+                    );
+                    return Type::Any;
+                }
+            }
+        }
+    };
+    // Remaining segments project into a record-typed payload.
+    let mut ty = slot_ty;
+    for seg in &segs[2..] {
+        let Type::Record(fields) = &unwrap_ref(&ty) else {
+            ctx.emit(
+                "WS010",
+                format!(
+                    "no field `{seg}` on `{}`",
+                    crate::analysis::types::type_str(&ty)
+                ),
+                range.clone(),
+            );
+            return Type::Any;
+        };
+        match fields.iter().find(|(n, _)| n == seg) {
+            Some((_, t)) => ty = t.clone(),
+            None => {
+                ctx.emit(
+                    "WS010",
+                    format!("no field `{seg}` on record"),
+                    range.clone(),
+                );
+                return Type::Any;
+            }
+        }
+    }
+    ty
+}
+
 /// Node dispatch, exhaustive over every `Expr` variant.
 fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     // The `check`-supplied expected type applies to THIS node only; take it
@@ -1459,6 +1592,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     // hint. Only generic enum construction consumes it (`expected`, below).
     let expected = ctx.expected_ty.take();
     match e {
+        Expr::Unsafe { inner, range } => infer_unsafe_access(ctx, inner, range),
         Expr::IntLit { .. } => Type::Int,
         Expr::AtomLit { .. } => Type::Int,
         Expr::FloatLit { .. } => Type::Float,
@@ -1928,6 +2062,31 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 ctx.emit(
                     "WS010",
                     format!("no field `{field}` on record (has: {names})"),
+                    range.clone(),
+                );
+                return Type::Any;
+            }
+            // A payload field named directly on an enum value. The slots are
+            // keyed by variant, so the surface name reaches nothing; without
+            // this the read fell to `any` and lowered to a placeholder.
+            if let Type::Enum { name: en, .. } = &ot
+                && let Some(edef) = ctx.enum_defs.get(en)
+                && let Some(v) = edef
+                    .variants
+                    .iter()
+                    .find(|v| match &v.payload {
+                        crate::typecheck::enums::Payload::Named(fs) => {
+                            fs.iter().any(|(n, _)| n == field)
+                        }
+                        _ => false,
+                    })
+                    .map(|v| v.name.clone())
+            {
+                ctx.emit(
+                    "WS010",
+                    format!(
+                        "`{field}` is payload of variant `{v}`, not a field of enum `{en}`. Read it through a destructure (`if let {v} {{ {field} }} = <value> {{ ... }}`, or a `match` arm), or `unsafe <value>.{v}.{field}` to read the slot without testing the tag"
+                    ),
                     range.clone(),
                 );
                 return Type::Any;

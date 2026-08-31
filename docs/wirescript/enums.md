@@ -21,6 +21,7 @@ types.
 - [`if let` / `let else`](#if-let--let-else)
 - [Changing a payload](#changing-a-payload)
 - [Payloads cannot hold containers](#payloads-cannot-hold-containers)
+- [`unsafe`: unchecked payload access](#unsafe-unchecked-payload-access)
 - [Generic enums](#generic-enums)
 - [Built-in `Option` and `Result`](#built-in-option-and-result)
 - [Built-in game enums](#built-in-game-enums)
@@ -479,6 +480,46 @@ on pickUp {
   loadout = Loadout.Carrying { first: 0, count: items.length() }
 }
 ```
+
+## `unsafe`: unchecked payload access
+
+`unsafe <value>.<Variant>.<field>` reads or writes one payload slot without
+proving the value is that variant. It costs no gate: the access resolves
+straight to the slot.
+
+```wirescript
+enum Job { Idle, Running { label: string, ticks: int } }
+
+var job: Job = Job.Running { label: "start", ticks: 0 }
+var seen: string = ""
+in tick: exec
+
+on tick {
+  unsafe job.Running.ticks = unsafe job.Running.ticks + 1
+  seen = unsafe job.Running.label
+}
+```
+
+The variant is required and is what selects the slot, so a field two variants
+share is never ambiguous. A record-typed payload keeps projecting
+(`unsafe job.Running.spec.width`). An unknown variant is a
+[`WS060`](diagnostics.md), an unknown field a `WS010`, a missing segment a
+`WS070`.
+
+The tag is asserted, never tested and never written:
+
+- Reading a variant the value is **not** returns that slot's stale contents,
+  with no error and no default.
+- Writing sets the slot only. If `job` is `Idle`, `unsafe job.Running.ticks = 5`
+  fills `Running`'s slot while `job` stays `Idle`, and a later `match` still
+  takes the `Idle` arm.
+
+Prefer a destructure, which tests the tag first; reach for `unsafe` when you
+have already established the variant.
+
+`unsafe` is contextual, so a variable, parameter, or mod named `unsafe` keeps
+working. (The tree-sitter grammar cannot express that and treats the word as a
+keyword, so an editor using it flags such a name even though it compiles.)
 
 ## Generic enums
 

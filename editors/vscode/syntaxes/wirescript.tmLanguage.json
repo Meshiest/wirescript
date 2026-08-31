@@ -146,6 +146,11 @@
           "match": "\\b(if|else|then|match|on|return|emit|await|from|as)\\b"
         },
         {
+          "comment": "`unsafe` is contextual: match only the marker position, so a name spelled `unsafe` stays unhighlighted",
+          "name": "keyword.other.unsafe.wirescript",
+          "match": "\\bunsafe(?=\\s+[A-Za-z_])"
+        },
+        {
           "name": "keyword.declaration.wirescript",
           "match": "\\b(var|static|buffer|let|const|fn|chip|mod|in|out|open|ref|import|type)\\b"
         },

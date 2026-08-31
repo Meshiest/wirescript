@@ -973,6 +973,7 @@ impl<'a> Walker<'a> {
                 self.walk_expr(obj);
             }
             Expr::TuplePick { obj, .. } => self.walk_expr(obj),
+            Expr::Unsafe { inner, .. } => self.walk_expr(inner),
             Expr::IndexAccess { obj, index, .. } => {
                 self.walk_expr(obj);
                 self.walk_expr(index);

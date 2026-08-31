@@ -4560,3 +4560,89 @@
         );
         assert_no_diags(&tc("var o: Option<int> = Option.Some(5)\nout n = 1"));
     }
+
+    #[test]
+    fn unsafe_payload_access_types_the_named_variants_field() {
+        // `unsafe v.Variant.field` asserts the tag instead of testing it, so it
+        // types as that variant's payload field in both read and write
+        // position.
+        let pre = "enum E { A, B { s: string, n: int } }\n\
+                   var e: E = E.B { s: \"hi\", n: 1 }\n\
+                   var got: string = \"\"\n\
+                   in go: exec\n";
+        assert_no_diags(&tc(&format!("{pre}on go {{ got = unsafe e.B.s }}")));
+        assert_no_diags(&tc(&format!("{pre}on go {{ unsafe e.B.s = \"x\" }}")));
+        // The field's type is the payload's, so a wrong-typed write is caught.
+        let bad = tc(&format!("{pre}on go {{ unsafe e.B.n = \"x\" }}"));
+        assert!(
+            bad.diagnostics.iter().any(|d| d.code == "WS003"),
+            "expected a type mismatch on the slot: {:?}",
+            bad.diagnostics
+        );
+        // A record-typed payload keeps projecting past the slot.
+        assert_no_diags(&tc(
+            "type P = { x: int }\n\
+             enum E2 { A, B { p: P } }\n\
+             var e: E2 = E2.B { p: { x: 1 } }\n\
+             var got: int = 0\n\
+             in go: exec\n\
+             on go { unsafe e.B.p.x = 5\ngot = unsafe e.B.p.x }",
+        ));
+    }
+
+    #[test]
+    fn unsafe_payload_access_rejects_a_bad_variant_or_field() {
+        let pre = "enum E { A, B { s: string } }\n\
+                   var e: E = E.B { s: \"hi\" }\n\
+                   in go: exec\n";
+        let bad_variant = tc(&format!("{pre}on go {{ unsafe e.Nope.s = \"x\" }}"));
+        assert!(
+            bad_variant.diagnostics.iter().any(|d| d.code == "WS060"),
+            "expected WS060 for an unknown variant: {:?}",
+            bad_variant.diagnostics
+        );
+        let bad_field = tc(&format!("{pre}on go {{ unsafe e.B.nope = \"x\" }}"));
+        assert!(
+            bad_field.diagnostics.iter().any(|d| d.code == "WS010"),
+            "expected WS010 for an unknown payload field: {:?}",
+            bad_field.diagnostics
+        );
+        let not_enum = tc("var n: int = 0\nin go: exec\non go { n = unsafe n.B.s }");
+        assert!(
+            not_enum.diagnostics.iter().any(|d| d.code == "WS066"),
+            "expected WS066 for a non-enum base: {:?}",
+            not_enum.diagnostics
+        );
+    }
+
+    #[test]
+    fn unsafe_is_still_usable_as_an_identifier() {
+        // A contextual keyword, like `enum`: only `unsafe <ident>` opens the
+        // access, so the bare name stays available.
+        assert_no_diags(&tc(
+            "var unsafe: int = 1\nout n = unsafe + 1",
+        ));
+    }
+
+    #[test]
+    fn reading_an_enum_payload_field_directly_points_at_the_alternatives() {
+        // `e.s` reaches no slot (they are keyed by variant), so it used to type
+        // as `any` and lower to a placeholder. Name both spellings that work.
+        let r = tc(
+            "enum E { A, B { s: string } }\n\
+             var e: E = E.B { s: \"hi\" }\n\
+             var got: string = \"\"\n\
+             in go: exec\n\
+             on go { got = e.s }",
+        );
+        let d = r
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WS010")
+            .unwrap_or_else(|| panic!("expected WS010: {:?}", r.diagnostics));
+        assert!(
+            d.message.contains("if let") && d.message.contains("unsafe"),
+            "message must name the destructure and the unchecked form: {}",
+            d.message
+        );
+    }

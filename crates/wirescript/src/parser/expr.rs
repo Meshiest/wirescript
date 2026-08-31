@@ -193,6 +193,22 @@ impl<'a> Parser<'a> {
 
     fn parse_prefix(&mut self) -> Expr {
         let t = self.peek().clone();
+        // `unsafe <value>.<Variant>.<field>`, an unchecked payload access.
+        // Contextual, like `enum`: it opens the form only when an identifier
+        // follows, so `unsafe` stays usable as an ordinary name (`unsafe + 1`,
+        // `unsafe(x)`, a bare read) rather than becoming a reserved word.
+        if t.kind == TokenKind::Ident
+            && t.text == "unsafe"
+            && self.peek_at(1).kind == TokenKind::Ident
+        {
+            self.advance();
+            let inner = self.parse_postfix();
+            let end = inner.range().end;
+            return Expr::Unsafe {
+                inner: Box::new(inner),
+                range: self.make_range(t.start, end),
+            };
+        }
         if t.kind == TokenKind::Op && is_prefix_op(&t.text) {
             // Fold `-<number>` into a negative literal at parse time.
             if t.text == "-" {

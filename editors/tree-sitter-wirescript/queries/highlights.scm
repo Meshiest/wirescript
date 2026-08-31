@@ -80,6 +80,8 @@
 
 "ref" @keyword.modifier
 
+"unsafe" @keyword.modifier
+
 ; ------------------------------------------------------------------- literals
 
 (integer) @number

@@ -421,6 +421,7 @@ fn collect_calls_in_expr(expr: &Expr, known: &HashSet<String>, out: &mut HashSet
         Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => {
             collect_calls_in_expr(obj, known, out)
         }
+        Expr::Unsafe { inner, .. } => collect_calls_in_expr(inner, known, out),
         Expr::IndexAccess { obj, index, .. } => {
             collect_calls_in_expr(obj, known, out);
             collect_calls_in_expr(index, known, out);

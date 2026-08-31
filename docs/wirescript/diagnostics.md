@@ -77,6 +77,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS067` | A bare variant name for a variant that has a payload (`Circle` instead of `Circle(_)`) in a `match` arm binds the whole value like a catch-all, which can leave later arms unreachable. | `match s { Circle => .., Empty => .. }` |
 | `WS068` | A custom-event data param is a record or an enum. A data slot is one wire and those span several, so the value cannot travel through it. Pass the fields as separate params, or send a key and read the value from shared storage on the other side. | `on CustomEvent("c") -> (p: Point) { }` |
 | `WS069` | An enum payload field would need container storage. A payload slot is filled by constructing the variant, and a container cannot be constructed into one, so the value would read back empty. Fires on the declaration, or on a generic instantiation that binds a stored parameter to one (`Option<int[]>`). | `enum E { B { xs: int[] } }` |
+| `WS070` | An `unsafe` payload access does not name both a variant and a field. The form is `unsafe <value>.<Variant>.<field>`; the variant is what selects the slot. | `unsafe e.B = x` |
 
 ## Calls & arguments
 

@@ -486,6 +486,7 @@ module.exports = grammar({
         $.unary_expression,
         $.reference_expression,
         $.dereference_expression,
+        $.unsafe_expression,
         $.binary_expression,
         $.call_expression,
         $.field_expression,
@@ -521,6 +522,24 @@ module.exports = grammar({
 
     dereference_expression: ($) =>
       prec.right(PREC.unary, seq('*', field('argument', $._expression))),
+
+    // `unsafe <value>.<Variant>.<field>`, an unchecked enum payload access.
+    // An ordinary prefix operator over a whole postfix chain, like `-` and
+    // `&`: unary binds looser than postfix, so the projection is complete
+    // before the marker wraps it and the access never splits across two nodes.
+    //
+    // KNOWN DIVERGENCE from the compiler, which treats `unsafe` as a
+    // CONTEXTUAL keyword (it opens this form only when an identifier follows,
+    // so `var unsafe: int` still compiles). Tree-sitter decides keyword versus
+    // identifier in the lexer, which has no lookahead, so here the word is
+    // always the marker and a variable named `unsafe` parses as an error.
+    // Matching the compiler would need an external scanner; the name is not
+    // worth one. The compiler remains the authority on what compiles.
+    unsafe_expression: ($) =>
+      prec.right(
+        PREC.unary,
+        seq('unsafe', field('argument', $._expression)),
+      ),
 
     binary_expression: ($) => {
       const table = [

@@ -975,6 +975,10 @@ fn infer_assign_target(
             Type::Map(_, v) => *v,
             _ => Type::Any,
         }
+    } else if let Expr::Unsafe { inner, range } = e {
+        // The slot's own type, so a wrong-typed write is caught here rather
+        // than silently coercing into the payload gate.
+        infer::infer_unsafe_access(ctx, inner, range)
     } else if let Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } = e {
         // A record/tuple field target (`p.x = 5`, `pts[i].inner.a = v`) is an
         // lvalue that lowering resolves; the target itself stays permissive

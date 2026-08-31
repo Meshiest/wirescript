@@ -4,8 +4,50 @@ use super::*;
 /// `Binding::Record` maps (and one `Binding::Namespace` hop). Returns the final
 /// `Binding` if every step resolved, or `None` when the chain isn't entirely
 /// record-based (e.g. the root ident isn't a record, or a field is missing).
+/// Flatten a projection chain into its base and the named segments applied to
+/// it, so an `unsafe` access can pick out its variant and field. `.0` on a
+/// positional payload parses as a `TuplePick`, hence both forms.
+fn flatten_segments(e: &Expr) -> (&Expr, Vec<String>) {
+    match e {
+        Expr::FieldAccess { obj, field, .. } => {
+            let (base, mut segs) = flatten_segments(obj);
+            segs.push(field.clone());
+            (base, segs)
+        }
+        Expr::TuplePick { obj, index, .. } => {
+            let (base, mut segs) = flatten_segments(obj);
+            segs.push(index.to_string());
+            (base, segs)
+        }
+        _ => (e, Vec::new()),
+    }
+}
+
+/// The binding behind `unsafe <value>.<Variant>.<field>…`: the enum's own
+/// `__{Variant}_{field}` slot, with any further segments walked into a
+/// record-typed payload. Returning the slot binding is all the unchecked form
+/// needs - every read and write path already handles a `Binding::Var` (a
+/// scalar slot) and a `Binding::Record` (a record payload), so the assertion
+/// costs no gate and touches nothing but the slot.
+pub(super) fn resolve_unsafe_slot<'a>(ctx: &'a LowerCtx, inner: &Expr) -> Option<&'a Binding> {
+    let (base, segs) = flatten_segments(inner);
+    let (variant, field) = (segs.first()?, segs.get(1)?);
+    let Binding::Record(fields) = resolve_field_chain(ctx, base)? else {
+        return None;
+    };
+    let mut binding = fields.get(&crate::intern::intern(&format!("__{variant}_{field}")))?;
+    for seg in &segs[2..] {
+        let Binding::Record(inner_fields) = binding else {
+            return None;
+        };
+        binding = inner_fields.get(&crate::intern::intern(seg))?;
+    }
+    Some(binding)
+}
+
 pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<&'a Binding> {
     match expr {
+        Expr::Unsafe { inner, .. } => resolve_unsafe_slot(ctx, inner),
         Expr::Ident { name, .. } => ctx.scope.get(name),
         Expr::FieldAccess { obj, field, .. } => {
             let parent = resolve_field_chain(ctx, obj)?;
