@@ -78,6 +78,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS068` | A custom-event data param is a record or an enum. A data slot is one wire and those span several, so the value cannot travel through it. Pass the fields as separate params, or send a key and read the value from shared storage on the other side. | `on CustomEvent("c") -> (p: Point) { }` |
 | `WS069` | An enum payload field would need container storage. A payload slot is filled by constructing the variant, and a container cannot be constructed into one, so the value would read back empty. Fires on the declaration, or on a generic instantiation that binds a stored parameter to one (`Option<int[]>`). | `enum E { B { xs: int[] } }` |
 | `WS070` | An `unsafe` payload access does not name both a variant and a field. The form is `unsafe <value>.<Variant>.<field>`; the variant is what selects the slot. | `unsafe e.B = x` |
+| `WS071` | A record value used where a single value is expected. A record is several wires, so it cannot drive one port, including a string concatenation, which has no way to render the whole bundle. Read a field, or concatenate the fields individually. | `let p = { x: 1, y: 2 }` then `"p=" .. p` |
 
 ## Calls & arguments
 

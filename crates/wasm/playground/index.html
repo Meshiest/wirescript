@@ -760,6 +760,23 @@
       color: #d4d4d4;
       box-shadow: 0 2px 8px rgba(0,0,0,0.4);
       animation: toast-in 0.2s ease;
+      /* A compile error is a LIST of diagnostics, so bound the box rather than
+         letting it stretch to the width of the longest one. */
+      max-width: min(560px, calc(100vw - 32px));
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+
+    /* One diagnostic per row, ruled off from the next. A single-line toast has
+       exactly one row and no rule. */
+    .toast-line {
+      overflow-wrap: anywhere;
+    }
+
+    .toast-line + .toast-line {
+      margin-top: 5px;
+      padding-top: 5px;
+      border-top: 1px solid rgba(255, 255, 255, 0.09);
     }
 
     .toast.success {
@@ -888,13 +905,25 @@
       const container = document.getElementById('toast-container');
       const toast = document.createElement('div');
       toast.className = 'toast ' + type;
-      toast.textContent = message;
+      // The compiler hands back one diagnostic per line. A single `textContent`
+      // would let CSS reflow them into one paragraph with no boundary between
+      // them, so give each line its own element.
+      const lines = String(message).split('\n').filter((l) => l.trim() !== '');
+      for (const line of lines) {
+        const row = document.createElement('div');
+        row.className = 'toast-line';
+        row.textContent = line;
+        toast.appendChild(row);
+      }
       container.appendChild(toast);
+      // A list of errors is something to read, not a status blip, so hold it in
+      // proportion to how much there is to get through.
+      const dwell = Math.min(3000 + Math.max(0, lines.length - 1) * 1600, 15000);
       setTimeout(() => {
         toast.style.opacity = '0';
         toast.style.transition = 'opacity 0.3s';
         setTimeout(() => toast.remove(), 300);
-      }, 3000);
+      }, dwell);
     }
 
     // ── File Management UI ──
@@ -1257,7 +1286,7 @@
         URL.revokeObjectURL(url);
         showToast('Compiled ' + moduleName + '.brz', 'success');
       } catch (e) {
-        showToast('Compile error: ' + e, 'error');
+        showToast('Compile error:\n' + e, 'error');
       }
     }
 

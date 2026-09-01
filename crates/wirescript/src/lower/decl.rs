@@ -1213,25 +1213,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // that owns these outputs and build field→port bindings.
     if let Type::Record(ref fields) = rhs_type {
         if let Expr::Call { .. } = &d.value {
-            let chip_entry = ctx
-                .builder
-                .module
-                .chips
-                .iter()
-                .find(|(_, child)| child.outputs.contains(&rhs_port.node_id));
-            if let Some((_, child)) = chip_entry {
-                let outputs = child.outputs.clone();
-                let mut record: HashMap<crate::intern::Sym, Binding> = HashMap::default();
-                for (i, (field_name, _ty)) in fields.iter().enumerate() {
-                    if let Some(&out_id) = outputs.get(i) {
-                        record.insert(
-                            crate::intern::intern(field_name),
-                            Binding::Local(LocalRecord {
-                                port: out_id.port(WirePort::RerOutput),
-                            }),
-                        );
-                    }
-                }
+            if let Some(record) = multi_output_chip_record(ctx, rhs_port, fields) {
                 match &d.binding {
                     LetBinding::Ident { name, .. } => {
                         ctx.scope.insert(&name, Binding::Record(record));

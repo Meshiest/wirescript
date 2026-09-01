@@ -1995,3 +1995,69 @@ fn a_top_level_chip_after_a_handler_keeps_pure_declarations() {
         "chip-level `let` must read the var continuously, not once on the chain"
     );
 }
+
+/// `Pair(n).hi`, a field read INLINE on a multi-output chip call with no
+/// intermediate `let`, projects the named output. Such a call stashes no inline
+/// record and its outputs are rerouter nodes rather than ports on one gate, so
+/// only the positional pin mapping can resolve the field.
+#[test]
+fn inline_multi_output_chip_field_access_projects_the_named_output() {
+    let src = "in n: int\n\
+               chip Pair(v: int) -> (lo: int, hi: int) {\n\
+                 out lo = v - 1\n\
+                 out hi = v + 1\n\
+               }\n\
+               out total = Pair(n).hi\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "inline Chip().field must project the field, not placeholder: {:?}",
+        r.diagnostics
+    );
+
+    // Not merely "no placeholder": it must pick the SECOND output pin. Falling
+    // back to the call's primary value port would also drop the placeholder
+    // while silently reading `lo`.
+    let chip = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("the Pair chip instance");
+    let hi_pin = chip.outputs[1];
+    let lo_pin = chip.outputs[0];
+    let total = *r.module.outputs.first().expect("the `total` output pin");
+    assert!(
+        wired_reachable(&r, hi_pin, total),
+        "`total` must be driven by the `hi` pin"
+    );
+    assert!(
+        !wired_reachable(&r, lo_pin, total),
+        "`total` must NOT be driven by the `lo` pin"
+    );
+}
+
+/// The same projection through an intermediate `let`, kept beside the inline
+/// case so the two spellings cannot drift apart.
+#[test]
+fn let_bound_multi_output_chip_field_access_matches_the_inline_form() {
+    let src = "in n: int\n\
+               chip Pair(v: int) -> (lo: int, hi: int) {\n\
+                 out lo = v - 1\n\
+                 out hi = v + 1\n\
+               }\n\
+               let p = Pair(n)\n\
+               out total = p.hi\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "let-bound Chip().field must project the field: {:?}",
+        r.diagnostics
+    );
+    let chip = r.module.chips.values().next().expect("the Pair instance");
+    let total = *r.module.outputs.first().expect("the `total` output pin");
+    assert!(wired_reachable(&r, chip.outputs[1], total));
+    assert!(!wired_reachable(&r, chip.outputs[0], total));
+}

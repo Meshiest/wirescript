@@ -1,5 +1,12 @@
 # Wirescript Changelog
 
+## 1.7.5
+
+### Fixes
+
+- A field read directly on a multi-output chip call (`Chip(x).field`) wires the named output. Only the two-step `let r = Chip(x)` / `r.field` spelling resolved it; the inline form compiled to a placeholder wired to nothing.
+- A record used where one value is expected is a `WS071` error instead of a silent placeholder. A record is several wires, so `"x=" .. rec` had no value to concatenate and dropped the operand.
+
 ## 1.7.4
 
 

@@ -178,6 +178,46 @@ pub(super) fn binding_to_port(
     }
 }
 
+/// The caller-side field->port record for a call that lowered to a MULTI-output
+/// chip instance. Pins are matched positionally against the signature's declared
+/// field order, the order `predeclare` created them in, so the two sides cannot
+/// drift.
+///
+/// Multi-output chips are the one call shape neither general result path
+/// resolves: `lower_chip_call` stashes a `pending_inline_record` only for a
+/// SINGLE record-typed output, and a chip's outputs are separate rerouter nodes
+/// rather than sibling ports on one gate, so `resolve_output_field_port` finds
+/// nothing either. Shared by `lower_field_access` and `lower_let_decl` so the
+/// inline and let-bound spellings resolve identically.
+pub(super) fn multi_output_chip_record(
+    ctx: &LowerCtx,
+    call_port: PortRef,
+    fields: &[(String, Type)],
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    let child = ctx
+        .builder
+        .module
+        .chips
+        .values()
+        .find(|child| child.outputs.contains(&call_port.node_id))?;
+    let outputs = child.outputs.clone();
+    Some(
+        fields
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (name, _ty))| {
+                let &out_id = outputs.get(i)?;
+                Some((
+                    crate::intern::intern(name),
+                    Binding::Local(LocalRecord {
+                        port: out_id.port(WirePort::RerOutput),
+                    }),
+                ))
+            })
+            .collect(),
+    )
+}
+
 /// Map a short field name (`.Forward`, `.Jump`) to the full gate port name it
 /// stands for. InputSplitter exposes a few arbitrarily-named ports whose
 /// surface field names differ from the underlying port.
@@ -438,6 +478,16 @@ pub(super) fn lower_field_access(
             return port;
         }
         if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
+            return port;
+        }
+        // A MULTI-output chip (`-> (a: …, b: …)`) stashes no inline record and
+        // its outputs are separate rerouter nodes, so neither path above sees
+        // them.
+        if let Type::Record(rec_fields) = &obj_ty
+            && let Some(record) = multi_output_chip_record(ctx, obj_port, rec_fields)
+            && let Some(binding) = record.get(&crate::intern::intern(field)).cloned()
+            && let Some(port) = binding_to_port(ctx, &binding, range)
+        {
             return port;
         }
         call_port = Some(obj_port);

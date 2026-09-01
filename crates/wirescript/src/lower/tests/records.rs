@@ -2044,3 +2044,72 @@ fn record_typed_chip_signature_output_writes_a_var() {
         vec!["q.a".to_string(), "q.b".to_string()],
     );
 }
+
+/// A record BINDING is a compile-time bundle of per-field ports, not one wire,
+/// so using one where a single value is expected (a string concatenation, or any
+/// operator) cannot lower. Typecheck's operand projection collapses a record to
+/// its first field, the legitimate multi-output gate auto-unwrap, so it raises
+/// nothing and the check has to live in lowering.
+#[test]
+fn a_record_value_in_a_scalar_position_is_an_error() {
+    let concat = compile(
+        "type Pt = { x: int, y: int }\n\
+         let p: Pt = { x: 1, y: 2 }\n\
+         out s = \"p=\" .. p\n",
+    );
+    assert!(
+        concat
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "WS071" && d.severity == crate::diagnostic::Severity::Error),
+        "a record concatenated into a string must be an error: {:?}",
+        concat.diagnostics
+    );
+
+    // A multi-output chip result bound to a name is a `Binding::Record` too, and
+    // equally wireless as an arithmetic operand.
+    let arith = compile(
+        "in n: int\n\
+         chip Pair(v: int) -> (lo: int, hi: int) { out lo = v\nout hi = v }\n\
+         let p = Pair(n)\n\
+         out total = p + 1\n",
+    );
+    assert!(
+        arith
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "WS071" && d.severity == crate::diagnostic::Severity::Error),
+        "a multi-output chip result used as a scalar must be an error: {:?}",
+        arith.diagnostics
+    );
+}
+
+/// The error must not fire on the shapes that DO auto-unwrap at lowering. A
+/// multi-output BUILTIN gate result binds a `Binding::Local` on the gate's
+/// primary port, and a call written inline lowers to its first output pin. Both
+/// produce a real wire, so both stay legal.
+#[test]
+fn auto_unwrapping_multi_output_results_stay_legal() {
+    let builtin_let = compile(
+        "in go: exec\nvar out1: int = 0\n\
+         on go { let pi = ParseInt(\"42\")\nout1 = pi + 1 }\n",
+    );
+    assert_no_errors(&builtin_let);
+    assert!(
+        !builtin_let.diagnostics.iter().any(|d| d.code == "WS071"),
+        "a builtin multi-output result reads its primary port: {:?}",
+        builtin_let.diagnostics
+    );
+
+    let inline_chip = compile(
+        "in n: int\n\
+         chip Pair(v: int) -> (lo: int, hi: int) { out lo = v\nout hi = v }\n\
+         out total = Pair(n) + 1\n",
+    );
+    assert_no_errors(&inline_chip);
+    assert!(
+        !inline_chip.diagnostics.iter().any(|d| d.code == "WS071"),
+        "an inline chip call unwraps to its first output pin: {:?}",
+        inline_chip.diagnostics
+    );
+}

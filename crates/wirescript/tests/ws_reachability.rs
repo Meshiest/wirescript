@@ -582,3 +582,14 @@ fn ws070_is_reachable() {
     let src = "enum E { A, B { s: string } }\nvar e: E = E.B { s: \"h\" }\nin go: exec\non go { unsafe e.B = \"x\" }\n";
     assert!(diags(src).contains(&"WS070".to_string()));
 }
+
+// WS071 - a record value used where a single value is expected (it is several
+// wires, so it cannot drive one port) [lowering]
+#[test]
+fn ws071_is_reachable() {
+    let src = "type Pt = { x: int, y: int }
+let p: Pt = { x: 1, y: 2 }
+out s = \"p=\" .. p
+";
+    assert!(diags(src).contains(&"WS071".to_string()));
+}

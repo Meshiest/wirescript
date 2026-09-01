@@ -940,10 +940,37 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
         Some(Binding::Input(inp)) => inp.node_id.port(WirePort::RerOutput),
         Some(Binding::EventParam(p)) => p,
         Some(Binding::Local(local)) => local.port,
-        Some(Binding::Record(_)) => {
-            // Records are compile-time bundles; they don't produce a single port.
-            // Field access on records is handled in lower_field_access.
-            synthesise_unsupported_range(ctx, range)
+        Some(Binding::Record(rec)) => {
+            // Records are compile-time bundles of per-field ports; they don't
+            // produce a single port. Field access reaches its fields through
+            // `lower_field_access`, and a whole-record consumer (an argument,
+            // an `out`, an assignment) goes through `value_record_fields`, so
+            // arriving HERE means the record was asked for as ONE value, which
+            // it has no wire to give.
+            //
+            // Typecheck cannot catch this: `op_operand_type` collapses a record
+            // operand to its first field, which is the legitimate auto-unwrap
+            // for a multi-output GATE result (`ParseInt(s) == 42`) and for a
+            // call written inline, both of which DO lower to a real port and so
+            // never reach this arm. Only the binding tells the two apart, so the
+            // diagnostic belongs here rather than in typecheck.
+            let mut names: Vec<&str> = rec.keys().map(|k| crate::intern::resolve(*k)).collect();
+            names.sort_unstable();
+            let hint = match names.first() {
+                Some(f) => format!("read a field (`{name}.{f}`)"),
+                None => "read a field".to_string(),
+            };
+            ctx.error(
+                "WS071",
+                format!(
+                    "`{name}` is a record - several wires, not one value - so \
+                     it can't be used where a single value is expected. To \
+                     {hint}; to build a string, concatenate the fields \
+                     individually."
+                ),
+                range,
+            );
+            synthesise_unsupported_no_warn(ctx, range)
         }
         Some(Binding::Output(_) | Binding::Chip(_) | Binding::Namespace(_)) => {
             synthesise_unsupported_range(ctx, range)
@@ -1497,6 +1524,21 @@ pub(super) fn synthesise_unsupported(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
 }
 
 pub(super) fn synthesise_unsupported_range(ctx: &mut LowerCtx, range: &SourceRange) -> PortRef {
+    let port = synthesise_unsupported_no_warn(ctx, range);
+    ctx.warn(
+        "IR lowering not yet supported for this expression — emitted placeholder",
+        range,
+    );
+    port
+}
+
+/// The `_Unsupported` placeholder gate WITHOUT the generic WSP001 warning, for
+/// callers that report a specific diagnostic of their own. The node still has to
+/// exist: its consumer already holds a `PortRef` to wire.
+pub(super) fn synthesise_unsupported_no_warn(
+    ctx: &mut LowerCtx,
+    range: &SourceRange,
+) -> PortRef {
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::UNSUPPORTED,
         source_range: range.clone(),
@@ -1510,9 +1552,5 @@ pub(super) fn synthesise_unsupported_range(ctx: &mut LowerCtx, range: &SourceRan
         note: Some("unsupported expression".into()),
         ..Default::default()
     });
-    ctx.warn(
-        "IR lowering not yet supported for this expression — emitted placeholder",
-        range,
-    );
     node_id.port(WirePort::Output)
 }
