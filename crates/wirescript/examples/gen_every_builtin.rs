@@ -79,7 +79,7 @@ fn value_decl(ty: &Type) -> Option<&'static str> {
 fn asset_ref_for(name: &str) -> String {
     let n = name.to_ascii_lowercase();
     if n.contains("audio") {
-        "$BrickOneShotAudioDescriptor/BOSA_Bow_Fire".into()
+        "$BrickOneShotAudioDescriptor/OSA_Bow_Fire".into()
     } else if n.contains("font") {
         "$BrickFontDescriptor/Roboto".into()
     } else {

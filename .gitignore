@@ -17,3 +17,4 @@ fuzz_findings/
 # Raw in-game console dumps (input for scripts/gen_semantics.mjs; the
 # generated data/gate_semantics.json is the committed artifact).
 dumps/
+crates/wirescript/data/asset_dump.json

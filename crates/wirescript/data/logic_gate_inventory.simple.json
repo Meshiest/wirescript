@@ -6570,7 +6570,7 @@
     {
       "brickAsset": "B_1x1_Gate_Exec_GetInputs",
       "brickDisplayName": "Get Inputs",
-      "brickSummary": "Samples the current vehicle controls of a persistent player when executed.",
+      "brickSummary": "Samples the current vehicle controls of a character or persistent player when executed.",
       "halfSize": {
         "X": 5,
         "Y": 5,
@@ -13880,7 +13880,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_CharacterToCodepoint",
-      "brickDisplayName": "Character to Codepoint",
+      "brickDisplayName": "String to Codepoint",
       "brickSummary": "Returns the Unicode number for the first character and whether conversion succeeded, useful for character-based rules.",
       "halfSize": {
         "X": 5,
@@ -13889,7 +13889,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_CharacterToCodepoint",
-        "displayName": "Character to Codepoint",
+        "displayName": "String to Codepoint",
         "description": "Returns the Unicode number for the first character and whether conversion succeeded, useful for character-based rules.",
         "searchTags": "",
         "kind": "expr",
@@ -13924,7 +13924,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_CodepointToCharacter",
-      "brickDisplayName": "Codepoint to Character",
+      "brickDisplayName": "Codepoint to String",
       "brickSummary": "Creates a character from a valid Unicode number and reports success, useful for generated symbols or custom alphabets.",
       "halfSize": {
         "X": 5,
@@ -13933,7 +13933,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_CodepointToCharacter",
-        "displayName": "Codepoint to Character",
+        "displayName": "Codepoint to String",
         "description": "Creates a character from a valid Unicode number and reports success, useful for generated symbols or custom alphabets.",
         "searchTags": "",
         "kind": "expr",
@@ -13968,7 +13968,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Concatenate",
-      "brickDisplayName": "Append",
+      "brickDisplayName": "Append String",
       "brickSummary": "Joins Input A and Input B with an optional separator between them, useful for names, paths, and readable labels.",
       "halfSize": {
         "X": 5,
@@ -13977,7 +13977,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Concatenate",
-        "displayName": "Append",
+        "displayName": "Append String",
         "description": "Joins Input A and Input B with an optional separator between them, useful for names, paths, and readable labels.",
         "searchTags": "",
         "kind": "expr",
@@ -14019,7 +14019,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Contains",
-      "brickDisplayName": "Contains",
+      "brickDisplayName": "String Contains",
       "brickSummary": "Reports whether the input contains nonempty search text, with optional case sensitivity, useful for filters and chat commands.",
       "halfSize": {
         "X": 5,
@@ -14028,7 +14028,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Contains",
-        "displayName": "Contains",
+        "displayName": "String Contains",
         "description": "Reports whether the input contains nonempty search text, with optional case sensitivity, useful for filters and chat commands.",
         "searchTags": "",
         "kind": "expr",
@@ -14070,7 +14070,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_EndsWith",
-      "brickDisplayName": "Ends With",
+      "brickDisplayName": "String Ends With",
       "brickSummary": "Reports whether the input ends with a suffix, with optional case sensitivity, useful for checking file types or name endings.",
       "halfSize": {
         "X": 5,
@@ -14079,7 +14079,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_EndsWith",
-        "displayName": "Ends With",
+        "displayName": "String Ends With",
         "description": "Reports whether the input ends with a suffix, with optional case sensitivity, useful for checking file types or name endings.",
         "searchTags": "",
         "kind": "expr",
@@ -14121,7 +14121,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Find",
-      "brickDisplayName": "Find",
+      "brickDisplayName": "Find in String",
       "brickSummary": "Finds the first matching text at or after Start and returns its Unicode index, or -1 when missing, useful for parsing input.",
       "halfSize": {
         "X": 5,
@@ -14130,7 +14130,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Find",
-        "displayName": "Find",
+        "displayName": "Find in String",
         "description": "Finds the first matching text at or after Start and returns its Unicode index, or -1 when missing, useful for parsing input.",
         "searchTags": "",
         "kind": "expr",
@@ -14179,7 +14179,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_FormatText",
-      "brickDisplayName": "Format Text",
+      "brickDisplayName": "Format String",
       "brickSummary": "Inserts Inputs A through G into a format string, useful for building status labels, scores, and messages from live values.",
       "halfSize": {
         "X": 9,
@@ -14188,7 +14188,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_FormatText",
-        "displayName": "Format Text",
+        "displayName": "Format String",
         "description": "Inserts Inputs A through G into a format string, useful for building status labels, scores, and messages from live values.",
         "searchTags": "",
         "kind": "expr",
@@ -14265,7 +14265,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Length",
-      "brickDisplayName": "Length",
+      "brickDisplayName": "Get String Length",
       "brickSummary": "Counts the Unicode characters in the input, useful for checking empty text or enforcing a name length.",
       "halfSize": {
         "X": 5,
@@ -14274,7 +14274,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Length",
-        "displayName": "Length",
+        "displayName": "Get String Length",
         "description": "Counts the Unicode characters in the input, useful for checking empty text or enforcing a name length.",
         "searchTags": "",
         "kind": "expr",
@@ -14390,7 +14390,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Replace",
-      "brickDisplayName": "Replace",
+      "brickDisplayName": "Replace in String",
       "brickSummary": "Replaces matching text from a chosen start index with optional case and count limits, useful for templates and text cleanup.",
       "halfSize": {
         "X": 5,
@@ -14399,7 +14399,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Replace",
-        "displayName": "Replace",
+        "displayName": "Replace in String",
         "description": "Replaces matching text from a chosen start index with optional case and count limits, useful for templates and text cleanup.",
         "searchTags": "",
         "kind": "expr",
@@ -14462,7 +14462,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Split",
-      "brickDisplayName": "Split",
+      "brickDisplayName": "Split String",
       "brickSummary": "Splits text around a selected occurrence of a delimiter and reports whether it was found, useful for parsing names or commands.",
       "halfSize": {
         "X": 5,
@@ -14471,7 +14471,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Split",
-        "displayName": "Split",
+        "displayName": "Split String",
         "description": "Splits text around a selected occurrence of a delimiter and reports whether it was found, useful for parsing names or commands.",
         "searchTags": "",
         "kind": "expr",
@@ -14534,7 +14534,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_StartsWith",
-      "brickDisplayName": "Starts With",
+      "brickDisplayName": "String Starts With",
       "brickSummary": "Reports whether the input begins with a prefix, with optional case sensitivity, useful for recognizing commands or categories.",
       "halfSize": {
         "X": 5,
@@ -14543,7 +14543,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_StartsWith",
-        "displayName": "Starts With",
+        "displayName": "String Starts With",
         "description": "Reports whether the input begins with a prefix, with optional case sensitivity, useful for recognizing commands or categories.",
         "searchTags": "",
         "kind": "expr",
@@ -14585,7 +14585,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Substring",
-      "brickDisplayName": "Substring",
+      "brickDisplayName": "Get Substring",
       "brickSummary": "Extracts a number of Unicode characters starting at an index; negative starts count from the end, useful for prefixes and file extensions.",
       "halfSize": {
         "X": 5,
@@ -14594,7 +14594,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Substring",
-        "displayName": "Substring",
+        "displayName": "Get Substring",
         "description": "Extracts a number of Unicode characters starting at an index; negative starts count from the end, useful for prefixes and file extensions.",
         "searchTags": "",
         "kind": "expr",
@@ -14636,7 +14636,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_ToLower",
-      "brickDisplayName": "To Lower",
+      "brickDisplayName": "String to Lower",
       "brickSummary": "Converts letters to lowercase, useful for consistent names or case-insensitive comparisons.",
       "halfSize": {
         "X": 5,
@@ -14645,7 +14645,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_ToLower",
-        "displayName": "To Lower",
+        "displayName": "String to Lower",
         "description": "Converts letters to lowercase, useful for consistent names or case-insensitive comparisons.",
         "searchTags": "",
         "kind": "expr",
@@ -14673,7 +14673,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_ToUpper",
-      "brickDisplayName": "To Upper",
+      "brickDisplayName": "String to Upper",
       "brickSummary": "Converts letters to uppercase, useful for consistent labels or case-insensitive comparisons.",
       "halfSize": {
         "X": 5,
@@ -14682,7 +14682,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_ToUpper",
-        "displayName": "To Upper",
+        "displayName": "String to Upper",
         "description": "Converts letters to uppercase, useful for consistent labels or case-insensitive comparisons.",
         "searchTags": "",
         "kind": "expr",
@@ -14710,7 +14710,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_Expr_String_Trim",
-      "brickDisplayName": "Trim",
+      "brickDisplayName": "Trim String",
       "brickSummary": "Removes whitespace from both ends of the input, useful for cleaning player-entered names, numbers, or commands.",
       "halfSize": {
         "X": 5,
@@ -14719,7 +14719,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_Expr_String_Trim",
-        "displayName": "Trim",
+        "displayName": "Trim String",
         "description": "Removes whitespace from both ends of the input, useful for cleaning player-entered names, numbers, or commands.",
         "searchTags": "",
         "kind": "expr",
@@ -15879,7 +15879,7 @@
     },
     {
       "brickAsset": "B_1x1_Gate_FormatDate",
-      "brickDisplayName": "Format Date",
+      "brickDisplayName": "Format Date as String",
       "brickSummary": "Formats a Unix timestamp with date placeholders in UTC or server local time, useful for clocks, logs, and event labels.",
       "halfSize": {
         "X": 5,
@@ -15888,7 +15888,7 @@
       },
       "component": {
         "class": "BrickComponentType_WireGraph_FormatDate",
-        "displayName": "Format Date",
+        "displayName": "Format Date as String",
         "description": "Formats a Unix timestamp with date placeholders in UTC or server local time, useful for clocks, logs, and event labels.",
         "searchTags": "",
         "kind": "?",

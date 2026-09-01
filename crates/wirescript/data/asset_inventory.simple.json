@@ -1,0 +1,4273 @@
+{
+  "refSyntax": "$<type>/<name>",
+  "assetTypes": [
+    {
+      "type": "BRItemBase",
+      "key": "Item",
+      "count": 87,
+      "assets": [
+        {
+          "name": "BP_ItemBase"
+        },
+        {
+          "name": "Weapon_APCarbine"
+        },
+        {
+          "name": "Weapon_AntiMaterielRifle"
+        },
+        {
+          "name": "Weapon_ArmingSword"
+        },
+        {
+          "name": "Weapon_AssaultRifle"
+        },
+        {
+          "name": "Weapon_AutoShotgun"
+        },
+        {
+          "name": "Weapon_Bandage"
+        },
+        {
+          "name": "Weapon_Battleaxe"
+        },
+        {
+          "name": "Weapon_Bazooka"
+        },
+        {
+          "name": "Weapon_BoltActionRifle"
+        },
+        {
+          "name": "Weapon_Bow"
+        },
+        {
+          "name": "Weapon_BoxPistol"
+        },
+        {
+          "name": "Weapon_BullpupRifle"
+        },
+        {
+          "name": "Weapon_BullpupSMG"
+        },
+        {
+          "name": "Weapon_ChargedLongsword"
+        },
+        {
+          "name": "Weapon_Claws"
+        },
+        {
+          "name": "Weapon_CoachGun"
+        },
+        {
+          "name": "Weapon_CrystalKalis"
+        },
+        {
+          "name": "Weapon_Derringer"
+        },
+        {
+          "name": "Weapon_Dynamite"
+        },
+        {
+          "name": "Weapon_FlintlockPistol"
+        },
+        {
+          "name": "Weapon_GrenadeLauncher"
+        },
+        {
+          "name": "Weapon_GuardPistol"
+        },
+        {
+          "name": "Weapon_Handaxe"
+        },
+        {
+          "name": "Weapon_HealthPotion"
+        },
+        {
+          "name": "Weapon_HeavyAssaultRifle"
+        },
+        {
+          "name": "Weapon_HeavySMG"
+        },
+        {
+          "name": "Weapon_HeroSword"
+        },
+        {
+          "name": "Weapon_HighPowerPistol"
+        },
+        {
+          "name": "Weapon_HoloBlade"
+        },
+        {
+          "name": "Weapon_HuntingShotgun"
+        },
+        {
+          "name": "Weapon_ImpactGrenade"
+        },
+        {
+          "name": "Weapon_ImpulseGrenade"
+        },
+        {
+          "name": "Weapon_Knife"
+        },
+        {
+          "name": "Weapon_LaserAxe"
+        },
+        {
+          "name": "Weapon_LaserCleaver"
+        },
+        {
+          "name": "Weapon_LeverActionRifle"
+        },
+        {
+          "name": "Weapon_LightMachineGun"
+        },
+        {
+          "name": "Weapon_Longsword"
+        },
+        {
+          "name": "Weapon_MagnumPistol"
+        },
+        {
+          "name": "Weapon_MediSyringe"
+        },
+        {
+          "name": "Weapon_MicroSMG"
+        },
+        {
+          "name": "Weapon_Minigun"
+        },
+        {
+          "name": "Weapon_MissileLauncher"
+        },
+        {
+          "name": "Weapon_PDW"
+        },
+        {
+          "name": "Weapon_Pickaxe"
+        },
+        {
+          "name": "Weapon_PipeBomb"
+        },
+        {
+          "name": "Weapon_Pistol"
+        },
+        {
+          "name": "Weapon_PlasmaPistol"
+        },
+        {
+          "name": "Weapon_PlasmaSMG"
+        },
+        {
+          "name": "Weapon_PulseCarbine"
+        },
+        {
+          "name": "Weapon_PulseRifle"
+        },
+        {
+          "name": "Weapon_QuadLauncher"
+        },
+        {
+          "name": "Weapon_Revolver"
+        },
+        {
+          "name": "Weapon_RoadFlare"
+        },
+        {
+          "name": "Weapon_RocketJumper"
+        },
+        {
+          "name": "Weapon_RocketLauncher"
+        },
+        {
+          "name": "Weapon_Sabre"
+        },
+        {
+          "name": "Weapon_SemiAutoRifle"
+        },
+        {
+          "name": "Weapon_ServiceRifle"
+        },
+        {
+          "name": "Weapon_ShadowClaws"
+        },
+        {
+          "name": "Weapon_SharpClaws"
+        },
+        {
+          "name": "Weapon_Shotgun"
+        },
+        {
+          "name": "Weapon_SlugShotgun"
+        },
+        {
+          "name": "Weapon_Sniper"
+        },
+        {
+          "name": "Weapon_SodaCan"
+        },
+        {
+          "name": "Weapon_Spatha"
+        },
+        {
+          "name": "Weapon_Spear"
+        },
+        {
+          "name": "Weapon_SportingShotgun"
+        },
+        {
+          "name": "Weapon_StampedSMG"
+        },
+        {
+          "name": "Weapon_StandardSubmachineGun"
+        },
+        {
+          "name": "Weapon_StickGrenade"
+        },
+        {
+          "name": "Weapon_SubmachineGun"
+        },
+        {
+          "name": "Weapon_SuperShotgun"
+        },
+        {
+          "name": "Weapon_SuppressedAssaultRifle"
+        },
+        {
+          "name": "Weapon_SuppressedBullpupSMG"
+        },
+        {
+          "name": "Weapon_SuppressedGuardPistol"
+        },
+        {
+          "name": "Weapon_SuppressedHeavySMG"
+        },
+        {
+          "name": "Weapon_SuppressedMicroSMG"
+        },
+        {
+          "name": "Weapon_SuppressedPistol"
+        },
+        {
+          "name": "Weapon_SuppressedServiceRifle"
+        },
+        {
+          "name": "Weapon_TacticalSMG"
+        },
+        {
+          "name": "Weapon_TacticalShotgun"
+        },
+        {
+          "name": "Weapon_Tomahawk"
+        },
+        {
+          "name": "Weapon_TwinCannon"
+        },
+        {
+          "name": "Weapon_TypewriterSMG"
+        },
+        {
+          "name": "Weapon_Zweihander"
+        }
+      ]
+    },
+    {
+      "type": "BRPickupBase",
+      "key": "Pickup",
+      "count": 98,
+      "assets": [
+        {
+          "name": "BP_ItemPickup_APCarbine"
+        },
+        {
+          "name": "BP_ItemPickup_AntiMaterielRifle"
+        },
+        {
+          "name": "BP_ItemPickup_ArmingSword"
+        },
+        {
+          "name": "BP_ItemPickup_AssaultRifle"
+        },
+        {
+          "name": "BP_ItemPickup_AutoShotgun"
+        },
+        {
+          "name": "BP_ItemPickup_Bandage"
+        },
+        {
+          "name": "BP_ItemPickup_BasicClaws"
+        },
+        {
+          "name": "BP_ItemPickup_Battleaxe"
+        },
+        {
+          "name": "BP_ItemPickup_Bazooka"
+        },
+        {
+          "name": "BP_ItemPickup_BoltActionRifle"
+        },
+        {
+          "name": "BP_ItemPickup_Bow"
+        },
+        {
+          "name": "BP_ItemPickup_BoxPistol"
+        },
+        {
+          "name": "BP_ItemPickup_BullpupRifle"
+        },
+        {
+          "name": "BP_ItemPickup_BullpupSMG"
+        },
+        {
+          "name": "BP_ItemPickup_ChargedLongsword"
+        },
+        {
+          "name": "BP_ItemPickup_Claws"
+        },
+        {
+          "name": "BP_ItemPickup_CrystalKalis"
+        },
+        {
+          "name": "BP_ItemPickup_Derringer"
+        },
+        {
+          "name": "BP_ItemPickup_Dynamite"
+        },
+        {
+          "name": "BP_ItemPickup_Flintlock_Pistol"
+        },
+        {
+          "name": "BP_ItemPickup_GrenadeLauncher"
+        },
+        {
+          "name": "BP_ItemPickup_GuardPistol"
+        },
+        {
+          "name": "BP_ItemPickup_Handaxe"
+        },
+        {
+          "name": "BP_ItemPickup_HealthPotion"
+        },
+        {
+          "name": "BP_ItemPickup_HeavyAssaultRifle"
+        },
+        {
+          "name": "BP_ItemPickup_HeavySMG"
+        },
+        {
+          "name": "BP_ItemPickup_HeroSword"
+        },
+        {
+          "name": "BP_ItemPickup_HighPowerPistol"
+        },
+        {
+          "name": "BP_ItemPickup_HoloBlade"
+        },
+        {
+          "name": "BP_ItemPickup_HuntingShotgun"
+        },
+        {
+          "name": "BP_ItemPickup_ImpactGrenade"
+        },
+        {
+          "name": "BP_ItemPickup_ImpulseGrenade"
+        },
+        {
+          "name": "BP_ItemPickup_Knife"
+        },
+        {
+          "name": "BP_ItemPickup_LaserAxe"
+        },
+        {
+          "name": "BP_ItemPickup_LaserCleaver"
+        },
+        {
+          "name": "BP_ItemPickup_LeverActionRifle"
+        },
+        {
+          "name": "BP_ItemPickup_LightMachineGun"
+        },
+        {
+          "name": "BP_ItemPickup_Longsword"
+        },
+        {
+          "name": "BP_ItemPickup_MagnumPistol"
+        },
+        {
+          "name": "BP_ItemPickup_MediSyringe"
+        },
+        {
+          "name": "BP_ItemPickup_MicroSMG"
+        },
+        {
+          "name": "BP_ItemPickup_Minigun"
+        },
+        {
+          "name": "BP_ItemPickup_MissileLauncher"
+        },
+        {
+          "name": "BP_ItemPickup_PDW"
+        },
+        {
+          "name": "BP_ItemPickup_Pickaxe"
+        },
+        {
+          "name": "BP_ItemPickup_PipeBomb"
+        },
+        {
+          "name": "BP_ItemPickup_Pistol"
+        },
+        {
+          "name": "BP_ItemPickup_PlasmaPistol"
+        },
+        {
+          "name": "BP_ItemPickup_PlasmaSMG"
+        },
+        {
+          "name": "BP_ItemPickup_PulseCarbine"
+        },
+        {
+          "name": "BP_ItemPickup_PulseRifle"
+        },
+        {
+          "name": "BP_ItemPickup_QuadLauncher"
+        },
+        {
+          "name": "BP_ItemPickup_Revolver"
+        },
+        {
+          "name": "BP_ItemPickup_RoadFlare"
+        },
+        {
+          "name": "BP_ItemPickup_RocketJumper"
+        },
+        {
+          "name": "BP_ItemPickup_RocketLauncher"
+        },
+        {
+          "name": "BP_ItemPickup_Sabre"
+        },
+        {
+          "name": "BP_ItemPickup_SemiAutoRifle"
+        },
+        {
+          "name": "BP_ItemPickup_ServiceRifle"
+        },
+        {
+          "name": "BP_ItemPickup_ShadowClaws"
+        },
+        {
+          "name": "BP_ItemPickup_Shotgun"
+        },
+        {
+          "name": "BP_ItemPickup_SlugShotgun"
+        },
+        {
+          "name": "BP_ItemPickup_SniperRifle"
+        },
+        {
+          "name": "BP_ItemPickup_Soda"
+        },
+        {
+          "name": "BP_ItemPickup_Spatha"
+        },
+        {
+          "name": "BP_ItemPickup_Spear"
+        },
+        {
+          "name": "BP_ItemPickup_SportingShotgun"
+        },
+        {
+          "name": "BP_ItemPickup_StampedSMG"
+        },
+        {
+          "name": "BP_ItemPickup_StickGrenade"
+        },
+        {
+          "name": "BP_ItemPickup_SubmachineGun"
+        },
+        {
+          "name": "BP_ItemPickup_SubmachineGun_Unsuppressed"
+        },
+        {
+          "name": "BP_ItemPickup_SuperShotgun"
+        },
+        {
+          "name": "BP_ItemPickup_SuppressedAssaultRifle"
+        },
+        {
+          "name": "BP_ItemPickup_SuppressedBullpupSMG"
+        },
+        {
+          "name": "BP_ItemPickup_SuppressedGuardPistol"
+        },
+        {
+          "name": "BP_ItemPickup_SuppressedHeavySMG"
+        },
+        {
+          "name": "BP_ItemPickup_SuppressedMicroSMG"
+        },
+        {
+          "name": "BP_ItemPickup_SuppressedPistol"
+        },
+        {
+          "name": "BP_ItemPickup_SuppressedServiceRIfle"
+        },
+        {
+          "name": "BP_ItemPickup_TacticalSMG"
+        },
+        {
+          "name": "BP_ItemPickup_TacticalShotgun"
+        },
+        {
+          "name": "BP_ItemPickup_Tomahawk"
+        },
+        {
+          "name": "BP_ItemPickup_TwinCannon"
+        },
+        {
+          "name": "BP_ItemPickup_TypewriterSMG"
+        },
+        {
+          "name": "BP_ItemPickup_Zweihander"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Arrows"
+        },
+        {
+          "name": "BP_Pickup_Ammo_BlackPowder"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Explosive"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Heavy"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Light"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Magnum"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Medium"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Plasma"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Pulse"
+        },
+        {
+          "name": "BP_Pickup_Ammo_Shotgun"
+        },
+        {
+          "name": "BP_Pickup_Health_Large"
+        },
+        {
+          "name": "BP_Pickup_Health_Medium"
+        },
+        {
+          "name": "BP_Pickup_Health_Small"
+        }
+      ]
+    },
+    {
+      "type": "BRWeaponProjectile",
+      "key": "Projectile",
+      "count": 68,
+      "assets": [
+        {
+          "name": "BP_Bullet_Projectile"
+        },
+        {
+          "name": "Projectile_AMR"
+        },
+        {
+          "name": "Projectile_APCarbine"
+        },
+        {
+          "name": "Projectile_AssaultRifle"
+        },
+        {
+          "name": "Projectile_AutoShotgun"
+        },
+        {
+          "name": "Projectile_Bazooka"
+        },
+        {
+          "name": "Projectile_BoltActionRifle"
+        },
+        {
+          "name": "Projectile_Bow_Charged"
+        },
+        {
+          "name": "Projectile_Bow_HalfCharged"
+        },
+        {
+          "name": "Projectile_Bow_Uncharged"
+        },
+        {
+          "name": "Projectile_BoxPistol"
+        },
+        {
+          "name": "Projectile_BullpupRifle"
+        },
+        {
+          "name": "Projectile_BullpupSMG"
+        },
+        {
+          "name": "Projectile_Derringer"
+        },
+        {
+          "name": "Projectile_Dynamite"
+        },
+        {
+          "name": "Projectile_Flintlock_Pistol"
+        },
+        {
+          "name": "Projectile_GrenadeLauncher"
+        },
+        {
+          "name": "Projectile_GuardPistol"
+        },
+        {
+          "name": "Projectile_Handaxe"
+        },
+        {
+          "name": "Projectile_HeavyAssaultRifle"
+        },
+        {
+          "name": "Projectile_HeavySMG"
+        },
+        {
+          "name": "Projectile_HighPowerPistol"
+        },
+        {
+          "name": "Projectile_HuntingShotgun"
+        },
+        {
+          "name": "Projectile_ImpactGrenade"
+        },
+        {
+          "name": "Projectile_ImpulseGrenade"
+        },
+        {
+          "name": "Projectile_LeverActionRifle"
+        },
+        {
+          "name": "Projectile_LightMachineGun"
+        },
+        {
+          "name": "Projectile_MagnumPistol"
+        },
+        {
+          "name": "Projectile_MicroSMG"
+        },
+        {
+          "name": "Projectile_Minigun"
+        },
+        {
+          "name": "Projectile_PDW"
+        },
+        {
+          "name": "Projectile_PipeBomb"
+        },
+        {
+          "name": "Projectile_Pistol"
+        },
+        {
+          "name": "Projectile_PlasmaPistol"
+        },
+        {
+          "name": "Projectile_PlasmaSMG"
+        },
+        {
+          "name": "Projectile_PulseCarbine"
+        },
+        {
+          "name": "Projectile_PulseRifle"
+        },
+        {
+          "name": "Projectile_PulseRifle_Rocket"
+        },
+        {
+          "name": "Projectile_QuadLauncher"
+        },
+        {
+          "name": "Projectile_Revolver_New"
+        },
+        {
+          "name": "Projectile_Revolver_NoHeadshot"
+        },
+        {
+          "name": "Projectile_RoadFlare"
+        },
+        {
+          "name": "Projectile_RocketJumper"
+        },
+        {
+          "name": "Projectile_RocketLauncher"
+        },
+        {
+          "name": "Projectile_SeekerMissile"
+        },
+        {
+          "name": "Projectile_SemiAutoRifle"
+        },
+        {
+          "name": "Projectile_ServiceRifle"
+        },
+        {
+          "name": "Projectile_Shotgun"
+        },
+        {
+          "name": "Projectile_SlugShotgun"
+        },
+        {
+          "name": "Projectile_Sniper"
+        },
+        {
+          "name": "Projectile_SportingShotgun"
+        },
+        {
+          "name": "Projectile_StampedSMG"
+        },
+        {
+          "name": "Projectile_StickGrenade"
+        },
+        {
+          "name": "Projectile_SubmachineGun"
+        },
+        {
+          "name": "Projectile_SubmachineGun_Unsuppressed"
+        },
+        {
+          "name": "Projectile_SuperShotgun"
+        },
+        {
+          "name": "Projectile_SuppressedAssaultRifle"
+        },
+        {
+          "name": "Projectile_SuppressedBullpupSMG"
+        },
+        {
+          "name": "Projectile_SuppressedGuardPistol"
+        },
+        {
+          "name": "Projectile_SuppressedHeavySMG"
+        },
+        {
+          "name": "Projectile_SuppressedMicroSMG"
+        },
+        {
+          "name": "Projectile_SuppressedPistol"
+        },
+        {
+          "name": "Projectile_SuppressedServiceRifle"
+        },
+        {
+          "name": "Projectile_TacticalSMG"
+        },
+        {
+          "name": "Projectile_TacticalShotgun"
+        },
+        {
+          "name": "Projectile_Tomahawk"
+        },
+        {
+          "name": "Projectile_TwinCannon"
+        },
+        {
+          "name": "Projectile_TypewriterSMG"
+        }
+      ]
+    },
+    {
+      "type": "BrickAudioDescriptor",
+      "key": "Audio",
+      "count": 199,
+      "assets": [
+        {
+          "name": "BA_AMB_Abstract_Subtle_Interference",
+          "displayName": "Subtle Interference",
+          "tab": "Ambience",
+          "category": "Abstract"
+        },
+        {
+          "name": "BA_AMB_Component_Air_Conditioning_Buzzy_1",
+          "displayName": "Buzzy 1",
+          "tab": "Fans",
+          "category": "Air Conditioning"
+        },
+        {
+          "name": "BA_AMB_Component_Air_Conditioning_Buzzy_2",
+          "displayName": "Buzzy 2",
+          "tab": "Fans",
+          "category": "Air Conditioning"
+        },
+        {
+          "name": "BA_AMB_Component_Air_Conditioning_Grungy",
+          "displayName": "Grungy",
+          "tab": "Fans",
+          "category": "Air Conditioning"
+        },
+        {
+          "name": "BA_AMB_Component_Air_Conditioning_Wobbly",
+          "displayName": "Wobbly",
+          "tab": "Fans",
+          "category": "Air Conditioning"
+        },
+        {
+          "name": "BA_AMB_Component_Alarm_Scifi_Creepy",
+          "displayName": "Creepy",
+          "tab": "Alarms",
+          "category": "Scifi"
+        },
+        {
+          "name": "BA_AMB_Component_Alarm_Scifi_Warning_1",
+          "displayName": "Warning 1",
+          "tab": "Alarms",
+          "category": "Scifi"
+        },
+        {
+          "name": "BA_AMB_Component_Alarm_Scifi_Warning_2",
+          "displayName": "Warning 2",
+          "tab": "Alarms",
+          "category": "Scifi"
+        },
+        {
+          "name": "BA_AMB_Component_Alarm_Scifi_Warning_3",
+          "displayName": "Warning 3",
+          "tab": "Alarms",
+          "category": "Scifi"
+        },
+        {
+          "name": "BA_AMB_Component_Automated_Vending",
+          "displayName": "Vending",
+          "tab": "Machines",
+          "category": "Automated"
+        },
+        {
+          "name": "BA_AMB_Component_Fires_Fireplace_1",
+          "displayName": "Fireplace 1",
+          "tab": "Fires",
+          "category": "Calm"
+        },
+        {
+          "name": "BA_AMB_Component_Horn_Car_Generic",
+          "displayName": "Generic",
+          "tab": "Horn",
+          "category": "Car"
+        },
+        {
+          "name": "BA_AMB_Component_Horn_Car_Small",
+          "displayName": "Small",
+          "tab": "Horn",
+          "category": "Car"
+        },
+        {
+          "name": "BA_AMB_Component_Horn_Car_Truck",
+          "displayName": "Truck",
+          "tab": "Horn",
+          "category": "Car"
+        },
+        {
+          "name": "BA_AMB_Component_Hospital_Misc_Respirator",
+          "displayName": "Respirator",
+          "tab": "Hospital",
+          "category": "Misc"
+        },
+        {
+          "name": "BA_AMB_Component_Hospital_Monitors_Heart_1",
+          "displayName": "Heart 1",
+          "tab": "Hospital",
+          "category": "Monitors"
+        },
+        {
+          "name": "BA_AMB_Component_Hospital_Monitors_Heart_2",
+          "displayName": "Heart 2",
+          "tab": "Hospital",
+          "category": "Monitors"
+        },
+        {
+          "name": "BA_AMB_Component_Hospital_Monitors_Heart_3",
+          "displayName": "Heart 3",
+          "tab": "Hospital",
+          "category": "Monitors"
+        },
+        {
+          "name": "BA_AMB_Exterior_City",
+          "displayName": "City",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_Construction_Heavy",
+          "displayName": "Construction (Heavy)",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_Construction_Light",
+          "displayName": "Construction (Light)",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_Courtyard",
+          "displayName": "Courtyard",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_GentleForest",
+          "displayName": "Forest (Gentle)",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_NightCrickets",
+          "displayName": "Night Crickets",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_NoisyForest",
+          "displayName": "Forest (Noisy)",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_WindyForest",
+          "displayName": "Forest (Windy)",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Exterior_WindyMountain",
+          "displayName": "Windy Mountain",
+          "tab": "Ambience",
+          "category": "Exterior"
+        },
+        {
+          "name": "BA_AMB_Interior_Aircraft_Cabin_Gentle",
+          "displayName": "Aircraft Cabin (Gentle)",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_Aircraft_Cabin_Intense",
+          "displayName": "Aircraft Cabin (Intense)",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_DrippyTunnel",
+          "displayName": "Drippy Tunnel",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_Electric",
+          "displayName": "Electric",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_Elevator_Shaft",
+          "displayName": "Elevator Shaft",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_Low_Frequency",
+          "displayName": "Low Frequency",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_Quiet_Airconditioning",
+          "displayName": "Quiet Airconditioning",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_ServerRoom",
+          "displayName": "Server Room",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_SpaceTunnel",
+          "displayName": "Space Tunnel",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AMB_Interior_Underwater",
+          "displayName": "Underwater",
+          "tab": "Ambience",
+          "category": "Interior"
+        },
+        {
+          "name": "BA_AirRaidSiren1",
+          "displayName": "Air Raid 1",
+          "tab": "Alarms",
+          "category": "Industrial"
+        },
+        {
+          "name": "BA_Alarms_Household_Alarm_Clock",
+          "displayName": "Digital Alarm Clock",
+          "tab": "Alarms",
+          "category": "Household"
+        },
+        {
+          "name": "BA_Alarms_Household_Bells",
+          "displayName": "Bells",
+          "tab": "Alarms",
+          "category": "Household"
+        },
+        {
+          "name": "BA_Alarms_Household_Burglar",
+          "displayName": "Burglar",
+          "tab": "Alarms",
+          "category": "Household"
+        },
+        {
+          "name": "BA_Alarms_Household_Car",
+          "displayName": "Car",
+          "tab": "Alarms",
+          "category": "Household"
+        },
+        {
+          "name": "BA_Alarms_Household_Smoke",
+          "displayName": "Smoke Detector",
+          "tab": "Alarms",
+          "category": "Household"
+        },
+        {
+          "name": "BA_Alarms_Household_Watch_Fast",
+          "displayName": "Watch Reminder",
+          "tab": "Alarms",
+          "category": "Household"
+        },
+        {
+          "name": "BA_Alarms_Household_Watch_Slow",
+          "displayName": "Watch Alarm",
+          "tab": "Alarms",
+          "category": "Household"
+        },
+        {
+          "name": "BA_Alarms_Industrial_Bell",
+          "displayName": "Bell",
+          "tab": "Alarms",
+          "category": "Industrial"
+        },
+        {
+          "name": "BA_Alarms_Industrial_Security",
+          "displayName": "Security",
+          "tab": "Alarms",
+          "category": "Industrial"
+        },
+        {
+          "name": "BA_Alarms_Industrial_Truck",
+          "displayName": "Truck",
+          "tab": "Alarms",
+          "category": "Industrial"
+        },
+        {
+          "name": "BA_Creaking_Metal_Squeaky",
+          "displayName": "Squeaky",
+          "tab": "Creaking",
+          "category": "Metal"
+        },
+        {
+          "name": "BA_Creaking_Metal_Straining",
+          "displayName": "Straining",
+          "tab": "Creaking",
+          "category": "Metal"
+        },
+        {
+          "name": "BA_Creaking_Metal_Stress",
+          "displayName": "Stress",
+          "tab": "Creaking",
+          "category": "Metal"
+        },
+        {
+          "name": "BA_Creaking_Wood_Constant_Rattling",
+          "displayName": "Constant Rattling",
+          "tab": "Creaking",
+          "category": "Wood"
+        },
+        {
+          "name": "BA_Creaking_Wood_Interior",
+          "displayName": "Interior Stress",
+          "tab": "Creaking",
+          "category": "Wood"
+        },
+        {
+          "name": "BA_Creaking_Wood_Massive",
+          "displayName": "Massive",
+          "tab": "Creaking",
+          "category": "Wood"
+        },
+        {
+          "name": "BA_Creaking_Wood_Waving",
+          "displayName": "Waving",
+          "tab": "Creaking",
+          "category": "Wood"
+        },
+        {
+          "name": "BA_Deep_Machine",
+          "displayName": "Deep Machine",
+          "tab": "Machines",
+          "category": "Motors"
+        },
+        {
+          "name": "BA_Electric_Motor_1",
+          "displayName": "Electric Motor",
+          "tab": "Machines",
+          "category": "Motors"
+        },
+        {
+          "name": "BA_Fauna_Birds_AlderFlycatcher",
+          "displayName": "Alder Flycatcher",
+          "tab": "Birds",
+          "category": "Fauna"
+        },
+        {
+          "name": "BA_Fauna_Birds_Mixed",
+          "displayName": "Random",
+          "tab": "Birds",
+          "category": "Fauna"
+        },
+        {
+          "name": "BA_Fauna_Birds_Nightingale",
+          "displayName": "Nightingale",
+          "tab": "Birds",
+          "category": "Fauna"
+        },
+        {
+          "name": "BA_Jacobs_Ladder",
+          "displayName": "Jacob's Ladder",
+          "tab": "Electricity",
+          "category": "Electric"
+        },
+        {
+          "name": "BA_Jacuzzi",
+          "displayName": "Jacuzzi",
+          "tab": "Water",
+          "category": "Resting"
+        },
+        {
+          "name": "BA_Kitchen_Dishes",
+          "displayName": "Dishes",
+          "tab": "Kitchen",
+          "category": "Kitchen"
+        },
+        {
+          "name": "BA_Kitchen_Dishwasher_Collecting_Water",
+          "displayName": "Dishwasher (collecting water)",
+          "tab": "Kitchen",
+          "category": "Kitchen"
+        },
+        {
+          "name": "BA_Kitchen_Dishwasher_Running",
+          "displayName": "Dishwasher (running)",
+          "tab": "Kitchen",
+          "category": "Kitchen"
+        },
+        {
+          "name": "BA_Kitchen_Frying_Food_Large",
+          "displayName": "Frying Food (large)",
+          "tab": "Kitchen",
+          "category": "Kitchen"
+        },
+        {
+          "name": "BA_Kitchen_Frying_Food_Small",
+          "displayName": "Frying Food (small)",
+          "tab": "Kitchen",
+          "category": "Kitchen"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Allegro",
+          "displayName": "Allegro con Eleganza",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Apogee",
+          "displayName": "Apogee",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Arcadia",
+          "displayName": "Arcadia",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Arena",
+          "displayName": "Arena",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Canopy_of_Light",
+          "displayName": "Canopy of Light",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Carrier",
+          "displayName": "Carrier",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Clockwork",
+          "displayName": "Clockwork",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Crypt",
+          "displayName": "Crypt",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Elegant",
+          "displayName": "Elegant",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Enchantment",
+          "displayName": "Enchantment",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Explorers",
+          "displayName": "Explorers",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Frog",
+          "displayName": "Frog",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Fusion",
+          "displayName": "Fusion",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_LaRosa",
+          "displayName": "La Rosa Brillante",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Lux",
+          "displayName": "Lux",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Mainframe",
+          "displayName": "Mainframe",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Majestic",
+          "displayName": "Majestic",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Mellow",
+          "displayName": "Mellow",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Micro",
+          "displayName": "Micro",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Mission",
+          "displayName": "Mission",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Moment",
+          "displayName": "Moment",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Mood",
+          "displayName": "Mood",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Musicbox",
+          "displayName": "Musicbox",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Noir",
+          "displayName": "Noir",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Oasis",
+          "displayName": "Oasis",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_OpenRange",
+          "displayName": "Open Range",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Pulse",
+          "displayName": "Pulse",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Refraction",
+          "displayName": "Refraction",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Sanctuary",
+          "displayName": "Sanctuary",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Serenity",
+          "displayName": "Serenity",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_SetSail",
+          "displayName": "Set Sail",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Shadow",
+          "displayName": "Shadow",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Spies",
+          "displayName": "Spies",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Stanced",
+          "displayName": "Stanced",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Stroll",
+          "displayName": "Stroll",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Testarossa",
+          "displayName": "Testarossa",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Tetsuzanko",
+          "displayName": "Tetsuzanko",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_TheEntertainer",
+          "displayName": "The Entertainer",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_ToTheEnd",
+          "displayName": "To The End",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Tranquil",
+          "displayName": "Tranquil",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Wings",
+          "displayName": "Wings",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_APX_Wonder",
+          "displayName": "Wonder",
+          "tab": "Music",
+          "category": "Contributor - APX"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_BrainChatter",
+          "displayName": "Brain Chatter",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_CoffeeShop",
+          "displayName": "Fell Asleep In A Coffee Shop",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_DriveAtDusk",
+          "displayName": "Drive At Dusk",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_HerWay",
+          "displayName": "Her Way",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_JourneyThroughTime",
+          "displayName": "Journey Through Time",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_MarchingThroughTheClouds",
+          "displayName": "Marching Through The Clouds",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_MrAlbertson",
+          "displayName": "Mr. Albertson",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_Nights",
+          "displayName": "Nights",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_OceanSide",
+          "displayName": "Ocean Side",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_Puzzled",
+          "displayName": "Puzzled",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_Quantum",
+          "displayName": "Quantum",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_Spaced",
+          "displayName": "Spaced",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Basil_SunsetCoffee",
+          "displayName": "Sunset Coffee",
+          "tab": "Music",
+          "category": "Contributor - Lilyvert"
+        },
+        {
+          "name": "BA_MUS_Component_Custard",
+          "displayName": "Custard",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_El_Duo",
+          "displayName": "El Duo",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_Fountaintail",
+          "displayName": "Fountaintail",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_JohnnyLedger_CrystalTower",
+          "displayName": "Crystal Tower",
+          "tab": "Music",
+          "category": "Contributor - Johnny Ledger"
+        },
+        {
+          "name": "BA_MUS_Component_JohnnyLedger_LandingPage",
+          "displayName": "Landing Page",
+          "tab": "Music",
+          "category": "Contributor - Johnny Ledger"
+        },
+        {
+          "name": "BA_MUS_Component_JohnnyLedger_UncouthMeeting",
+          "displayName": "Uncouth Meeting",
+          "tab": "Music",
+          "category": "Contributor - Johnny Ledger"
+        },
+        {
+          "name": "BA_MUS_Component_Morning_Dream",
+          "displayName": "Solution Not Forthcoming",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_OST_90s",
+          "displayName": "90s",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Aesthetics",
+          "displayName": "Aesthetics",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Drifting_in_Space",
+          "displayName": "Drifting in Space",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Familiar",
+          "displayName": "Familiar",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Frozen_Moo",
+          "displayName": "Frozen Moo",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Hard_Bass",
+          "displayName": "Hard Bass",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Imposter",
+          "displayName": "Impostor",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Pensive",
+          "displayName": "Pensive",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_SoundsGood",
+          "displayName": "Sound's Good",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Spunky",
+          "displayName": "Spunky",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Strategize",
+          "displayName": "Strategize",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_OST_Vibe",
+          "displayName": "Vibe",
+          "tab": "Music",
+          "category": "OST - Components"
+        },
+        {
+          "name": "BA_MUS_Component_Retro_Boss",
+          "displayName": "Boss",
+          "tab": "Music",
+          "category": "Retro"
+        },
+        {
+          "name": "BA_MUS_Component_Retro_Menu",
+          "displayName": "Menu",
+          "tab": "Music",
+          "category": "Retro"
+        },
+        {
+          "name": "BA_MUS_Component_Retro_Stage_1",
+          "displayName": "Stage 1",
+          "tab": "Music",
+          "category": "Retro"
+        },
+        {
+          "name": "BA_MUS_Component_Retro_Stage_2",
+          "displayName": "Stage 2",
+          "tab": "Music",
+          "category": "Retro"
+        },
+        {
+          "name": "BA_MUS_Component_Retro_Stage_3",
+          "displayName": "Stage 3",
+          "tab": "Music",
+          "category": "Retro"
+        },
+        {
+          "name": "BA_MUS_Component_Retro_Stage_4",
+          "displayName": "Stage 4",
+          "tab": "Music",
+          "category": "Retro"
+        },
+        {
+          "name": "BA_MUS_Component_Retro_Stage_5",
+          "displayName": "Stage 5",
+          "tab": "Music",
+          "category": "Retro"
+        },
+        {
+          "name": "BA_MUS_Component_Solution_Not_Forthcoming",
+          "displayName": "Morning Dream",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_Thunderpunch_A",
+          "displayName": "Thunderpunch A",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_Thunderpunch_B",
+          "displayName": "Thunderpunch B",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_Thunderpunch_Drone",
+          "displayName": "Thunderpunch Drone",
+          "tab": "Music",
+          "category": "Fishy"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_AtTheFair",
+          "displayName": "At The Fair",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_Coral",
+          "displayName": "Coral",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_Crypt",
+          "displayName": "Crypt",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_DeepSeaCreature",
+          "displayName": "Deep Sea Creature",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_IcyHalls",
+          "displayName": "Icy Halls",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_SecretChamber",
+          "displayName": "Secret Chamber",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_Serene",
+          "displayName": "Serene",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_TheAcademy",
+          "displayName": "The Academy",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_TheLab",
+          "displayName": "The Lab",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_spzi_VineAlley",
+          "displayName": "Vine Alley",
+          "tab": "Music",
+          "category": "Contributor - spzi"
+        },
+        {
+          "name": "BA_MUS_Component_viwrap_Shop",
+          "displayName": "Shop",
+          "tab": "Music",
+          "category": "Contributor - viwrap"
+        },
+        {
+          "name": "BA_MUS_Component_viwrap_Swamp",
+          "displayName": "Swamp",
+          "tab": "Music",
+          "category": "Contributor - viwrap"
+        },
+        {
+          "name": "BA_MUS_Component_viwrap_Tension",
+          "displayName": "Tension",
+          "tab": "Music",
+          "category": "Contributor - viwrap"
+        },
+        {
+          "name": "BA_MUS_New_Beginning_Winter_Holiday",
+          "displayName": "Winter Holiday",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Home",
+          "displayName": "Home",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Incandescent",
+          "displayName": "Incandescent",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Last_Hurrah",
+          "displayName": "Last Hurrah",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Mist",
+          "displayName": "Mist",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_New_Beginning",
+          "displayName": "New Beginning",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Parallels",
+          "displayName": "Parallels",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Perpetual_Thought",
+          "displayName": "Perpetual Thought",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Phosphorescence",
+          "displayName": "Phosphorescence",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Radiance",
+          "displayName": "Radiance",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Reflections",
+          "displayName": "Reflections",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Salutations",
+          "displayName": "Salutations",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_MUS_OST_Shimmer",
+          "displayName": "Shimmer",
+          "tab": "Music",
+          "category": "OST"
+        },
+        {
+          "name": "BA_NeonLight1",
+          "displayName": "Neon Light 1",
+          "tab": "Electricity",
+          "category": "Lights"
+        },
+        {
+          "name": "BA_Old_Computer",
+          "displayName": "Old Computer",
+          "tab": "Machines",
+          "category": "Computing"
+        },
+        {
+          "name": "BA_Printer",
+          "displayName": "Printer",
+          "tab": "Machines",
+          "category": "Computing"
+        },
+        {
+          "name": "BA_Printer_2",
+          "displayName": "Printer 2",
+          "tab": "Machines",
+          "category": "Computing"
+        },
+        {
+          "name": "BA_RadioStatic1",
+          "displayName": "Radio Static 1",
+          "tab": "Machines",
+          "category": "Communication"
+        },
+        {
+          "name": "BA_Synth_Basic_Sawtooth",
+          "displayName": "Sawtooth Wave",
+          "tab": "Synth",
+          "category": "Basic (440hz)"
+        },
+        {
+          "name": "BA_Synth_Basic_Sine",
+          "displayName": "Sine Wave",
+          "tab": "Synth",
+          "category": "Basic (440hz)"
+        },
+        {
+          "name": "BA_Synth_Basic_Square",
+          "displayName": "Square Wave",
+          "tab": "Synth",
+          "category": "Basic (440hz)"
+        },
+        {
+          "name": "BA_Synth_Basic_Triangle",
+          "displayName": "Triangle Wave",
+          "tab": "Synth",
+          "category": "Basic (440hz)"
+        },
+        {
+          "name": "BA_Synth_Noise_Pink",
+          "displayName": "Pink",
+          "tab": "Synth",
+          "category": "Noise"
+        },
+        {
+          "name": "BA_Synth_Noise_White",
+          "displayName": "White",
+          "tab": "Synth",
+          "category": "Noise"
+        },
+        {
+          "name": "BA_Thumpy_Machine",
+          "displayName": "Thumpy Machine",
+          "tab": "Machines",
+          "category": "Motors"
+        },
+        {
+          "name": "BA_Water_Flowing_Calm",
+          "displayName": "Calm",
+          "tab": "Water",
+          "category": "Flowing"
+        },
+        {
+          "name": "BA_Water_Flowing_Fountain",
+          "displayName": "Fountain",
+          "tab": "Water",
+          "category": "Flowing"
+        },
+        {
+          "name": "BA_Water_Flowing_Waterfall",
+          "displayName": "Waterfall",
+          "tab": "Water",
+          "category": "Flowing"
+        },
+        {
+          "name": "BA_Water_Flowing_Waves",
+          "displayName": "Waves",
+          "tab": "Water",
+          "category": "Flowing"
+        },
+        {
+          "name": "BA_Water_Resting_LakeShore_Noisy",
+          "displayName": "Lake Shore (Noisy)",
+          "tab": "Water",
+          "category": "Resting"
+        },
+        {
+          "name": "BA_Water_Resting_LakeShore_Still",
+          "displayName": "Lake Shore (Still)",
+          "tab": "Water",
+          "category": "Resting"
+        },
+        {
+          "name": "MUS_APX_Apogee",
+          "displayName": "Apogee",
+          "tab": "Contributors",
+          "category": "APX"
+        },
+        {
+          "name": "MUS_APX_Canopy_of_Light",
+          "displayName": "Canopy of Light",
+          "tab": "Contributors",
+          "category": "APX"
+        },
+        {
+          "name": "MUS_APX_Micro",
+          "displayName": "Micro",
+          "tab": "Contributors",
+          "category": "APX"
+        }
+      ]
+    },
+    {
+      "type": "BrickFontDescriptor",
+      "key": "Font",
+      "count": 25,
+      "assets": [
+        {
+          "name": "Aaaiight",
+          "displayName": "Aaaight",
+          "category": "Fonts"
+        },
+        {
+          "name": "BadComic",
+          "displayName": "Bad Comic",
+          "category": "Fonts"
+        },
+        {
+          "name": "BlackOpsOne",
+          "displayName": "Black Ops One",
+          "category": "Fonts"
+        },
+        {
+          "name": "Bungee",
+          "displayName": "Bungee",
+          "category": "Fonts"
+        },
+        {
+          "name": "CherryBombOne",
+          "displayName": "Cherry Bomb One",
+          "category": "Fonts"
+        },
+        {
+          "name": "Cinzel",
+          "displayName": "Cinzel",
+          "category": "Fonts"
+        },
+        {
+          "name": "EagleLake",
+          "displayName": "Eagle Lake",
+          "category": "Fonts"
+        },
+        {
+          "name": "GlacialIndifference",
+          "displayName": "Glacial Indifference",
+          "category": "Fonts"
+        },
+        {
+          "name": "GlacialIndifferencePlus",
+          "displayName": "Glacial Indifference Plus",
+          "category": "Fonts"
+        },
+        {
+          "name": "Gotfridus",
+          "displayName": "Gotfridus",
+          "category": "Fonts"
+        },
+        {
+          "name": "IosevkaTerm",
+          "displayName": "Iosevka Term",
+          "category": "Fonts"
+        },
+        {
+          "name": "IosevkaTermSlab",
+          "displayName": "Iosevka Term Slab",
+          "category": "Fonts"
+        },
+        {
+          "name": "Kurland",
+          "displayName": "Kurland",
+          "category": "Fonts"
+        },
+        {
+          "name": "MonaspaceArgon",
+          "displayName": "Monaspace Argon",
+          "category": "Fonts"
+        },
+        {
+          "name": "MonaspaceKrypton",
+          "displayName": "Monaspace Krypton",
+          "category": "Fonts"
+        },
+        {
+          "name": "MonaspaceNeon",
+          "displayName": "Monaspace Neon",
+          "category": "Fonts"
+        },
+        {
+          "name": "MonaspaceRadon",
+          "displayName": "Monaspace Radon",
+          "category": "Fonts"
+        },
+        {
+          "name": "MonaspaceXenon",
+          "displayName": "Monaspace Xenon",
+          "category": "Fonts"
+        },
+        {
+          "name": "MostWasted",
+          "displayName": "Most Wasted",
+          "category": "Fonts"
+        },
+        {
+          "name": "NotoSans",
+          "displayName": "Noto Sans",
+          "category": "Fonts"
+        },
+        {
+          "name": "NotoSerif",
+          "displayName": "Noto Serif",
+          "category": "Fonts"
+        },
+        {
+          "name": "Orbitron",
+          "displayName": "Orbitron",
+          "category": "Fonts"
+        },
+        {
+          "name": "PirataOne",
+          "displayName": "Pirata One",
+          "category": "Fonts"
+        },
+        {
+          "name": "Roboto",
+          "displayName": "Roboto",
+          "category": "Fonts"
+        },
+        {
+          "name": "RobotoMono",
+          "displayName": "Roboto Mono",
+          "category": "Fonts"
+        }
+      ]
+    },
+    {
+      "type": "BrickOneShotAudioDescriptor",
+      "key": "OneShotAudio",
+      "count": 347,
+      "assets": [
+        {
+          "name": "BOSA_Buttons_Button_1_Press",
+          "displayName": "Button 1 (Press)",
+          "tab": "Buttons",
+          "category": "Button 1"
+        },
+        {
+          "name": "BOSA_Buttons_Button_1_Release",
+          "displayName": "Button 1 (Release)",
+          "tab": "Buttons",
+          "category": "Button 1"
+        },
+        {
+          "name": "BOSA_Buttons_Button_2_Press",
+          "displayName": "Button 2 (Press)",
+          "tab": "Buttons",
+          "category": "Button 2"
+        },
+        {
+          "name": "BOSA_Buttons_Button_2_Release",
+          "displayName": "Button 2 (Release)",
+          "tab": "Buttons",
+          "category": "Button 2"
+        },
+        {
+          "name": "BOSA_Buttons_Button_3_Press",
+          "displayName": "Button 3 (Press)",
+          "tab": "Buttons",
+          "category": "Button 3"
+        },
+        {
+          "name": "BOSA_Buttons_Button_3_Release",
+          "displayName": "Button 3 (Release)",
+          "tab": "Buttons",
+          "category": "Button 3"
+        },
+        {
+          "name": "OBA_Air_Brake",
+          "displayName": "Air Brake",
+          "tab": "Machines",
+          "category": "Brakes"
+        },
+        {
+          "name": "OBA_BR_Checkpoint_Acquire_Click_Cue",
+          "displayName": "Checkpoint Acquire",
+          "tab": "Brickadia",
+          "category": "Bricks"
+        },
+        {
+          "name": "OBA_Beep_1",
+          "displayName": "Beep 1",
+          "tab": "Interfaces",
+          "category": "Beeps"
+        },
+        {
+          "name": "OBA_Beep_2",
+          "displayName": "Beep 2",
+          "tab": "Interfaces",
+          "category": "Beeps"
+        },
+        {
+          "name": "OBA_Beep_3",
+          "displayName": "Beep 3",
+          "tab": "Interfaces",
+          "category": "Beeps"
+        },
+        {
+          "name": "OBA_Beep_4",
+          "displayName": "Beep 4",
+          "tab": "Interfaces",
+          "category": "Beeps"
+        },
+        {
+          "name": "OBA_Beep_5",
+          "displayName": "Beep 5",
+          "tab": "Interfaces",
+          "category": "Beeps"
+        },
+        {
+          "name": "OBA_Beep_6",
+          "displayName": "Beep 6",
+          "tab": "Interfaces",
+          "category": "Beeps"
+        },
+        {
+          "name": "OBA_Bricktionary_Guess",
+          "displayName": "Bricktionary Guess",
+          "tab": "Gamemodes",
+          "category": "Bricktionary"
+        },
+        {
+          "name": "OBA_Bricktionary_Match_Complete",
+          "displayName": "Bricktionary Match Complete",
+          "tab": "Gamemodes",
+          "category": "Bricktionary"
+        },
+        {
+          "name": "OBA_Bricktionary_Round_Lost",
+          "displayName": "Bricktionary Round Lost",
+          "tab": "Gamemodes",
+          "category": "Bricktionary"
+        },
+        {
+          "name": "OBA_Bricktionary_Round_Start",
+          "displayName": "Bricktionary Round Start",
+          "tab": "Gamemodes",
+          "category": "Bricktionary"
+        },
+        {
+          "name": "OBA_Bricktionary_Round_Win",
+          "displayName": "Bricktionary Round Win",
+          "tab": "Gamemodes",
+          "category": "Bricktionary"
+        },
+        {
+          "name": "OBA_Camera_Flash_1",
+          "displayName": "Camera Flash 1",
+          "tab": "Machines",
+          "category": "Cameras"
+        },
+        {
+          "name": "OBA_Camera_Flash_2",
+          "displayName": "Camera Flash 2",
+          "tab": "Machines",
+          "category": "Cameras"
+        },
+        {
+          "name": "OBA_Camera_Flash_3",
+          "displayName": "Camera Flash 3",
+          "tab": "Machines",
+          "category": "Cameras"
+        },
+        {
+          "name": "OBA_CashRegister_Ding",
+          "displayName": "CashRegister Ding",
+          "tab": "Interfaces",
+          "category": "Cash Registers"
+        },
+        {
+          "name": "OBA_CashRegister_Ding_2",
+          "displayName": "CashRegister Ding 2",
+          "tab": "Interfaces",
+          "category": "Cash Registers"
+        },
+        {
+          "name": "OBA_CashRegister_Keypad",
+          "displayName": "CashRegister Keypad",
+          "tab": "Interfaces",
+          "category": "Cash Registers"
+        },
+        {
+          "name": "OBA_Deathmatch_Round_End",
+          "displayName": "Deathmatch Round End",
+          "tab": "Gamemodes",
+          "category": "Deathmatch"
+        },
+        {
+          "name": "OBA_Deathmatch_Round_Start",
+          "displayName": "Deathmatch Round Start",
+          "tab": "Gamemodes",
+          "category": "Deathmatch"
+        },
+        {
+          "name": "OBA_DoorBell_1",
+          "displayName": "DoorBell 1",
+          "tab": "Interfaces",
+          "category": "Door Bells"
+        },
+        {
+          "name": "OBA_DoorBell_2",
+          "displayName": "DoorBell 2",
+          "tab": "Interfaces",
+          "category": "Door Bells"
+        },
+        {
+          "name": "OBA_DoorBell_3",
+          "displayName": "DoorBell 3",
+          "tab": "Interfaces",
+          "category": "Door Bells"
+        },
+        {
+          "name": "OBA_DoorBell_SciFi",
+          "displayName": "DoorBell SciFi",
+          "tab": "Interfaces",
+          "category": "Door Bells"
+        },
+        {
+          "name": "OBA_Door_Knock_Hard",
+          "displayName": "Door Knock Hard",
+          "tab": "Doors",
+          "category": "Knocks"
+        },
+        {
+          "name": "OBA_Door_Knock_Soft",
+          "displayName": "Door Knock Soft",
+          "tab": "Doors",
+          "category": "Knocks"
+        },
+        {
+          "name": "OBA_Door_Wood2_Close",
+          "displayName": "Door Wood2 Close",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_Door_Wood2_Open",
+          "displayName": "Door Wood2 Open",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_Door_Wood3_Close",
+          "displayName": "Door Wood3 Close",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_Door_Wood3_Open",
+          "displayName": "Door Wood3 Open",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_Door_WoodGate_Close",
+          "displayName": "Door WoodGate Close",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_Door_WoodGate_Open",
+          "displayName": "Door WoodGate Open",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_Door_Wood_Close",
+          "displayName": "Door Wood Close",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_Door_Wood_Open",
+          "displayName": "Door Wood Open",
+          "tab": "Doors",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_GlasShatter_1",
+          "displayName": "GlasShatter 1",
+          "tab": "Materials",
+          "category": "Glass"
+        },
+        {
+          "name": "OBA_GlasShatter_2",
+          "displayName": "GlasShatter 2",
+          "tab": "Materials",
+          "category": "Glass"
+        },
+        {
+          "name": "OBA_GlasShatter_3",
+          "displayName": "GlasShatter 3",
+          "tab": "Materials",
+          "category": "Glass"
+        },
+        {
+          "name": "OBA_GlasShatter_4",
+          "displayName": "GlasShatter 4",
+          "tab": "Materials",
+          "category": "Glass"
+        },
+        {
+          "name": "OBA_HandBrake",
+          "displayName": "HandBrake",
+          "tab": "Interfaces",
+          "category": "Vehicles"
+        },
+        {
+          "name": "OBA_Keyboard",
+          "displayName": "Keyboard",
+          "tab": "Interfaces",
+          "category": "Computers"
+        },
+        {
+          "name": "OBA_Keypad",
+          "displayName": "Keypad",
+          "tab": "Interfaces",
+          "category": "Computers"
+        },
+        {
+          "name": "OBA_Lever1_1",
+          "displayName": "Lever1 1",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lever1_2",
+          "displayName": "Lever1 2",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lever1_3",
+          "displayName": "Lever1 3",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lever1_4",
+          "displayName": "Lever1 4",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lever2_1",
+          "displayName": "Lever2 1",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lever2_2",
+          "displayName": "Lever2 2",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lever2_3",
+          "displayName": "Lever2 3",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lever2_4",
+          "displayName": "Lever2 4",
+          "tab": "Interfaces",
+          "category": "Levers"
+        },
+        {
+          "name": "OBA_Lightswitch",
+          "displayName": "Lightswitch",
+          "tab": "Interfaces",
+          "category": "Switches"
+        },
+        {
+          "name": "OBA_MetalStres1",
+          "displayName": "MetalStres1",
+          "tab": "Materials",
+          "category": "Metal"
+        },
+        {
+          "name": "OBA_MetalStres2",
+          "displayName": "MetalStres2",
+          "tab": "Materials",
+          "category": "Metal"
+        },
+        {
+          "name": "OBA_MetalStres3",
+          "displayName": "MetalStres3",
+          "tab": "Materials",
+          "category": "Metal"
+        },
+        {
+          "name": "OBA_MetalStres4",
+          "displayName": "MetalStres4",
+          "tab": "Materials",
+          "category": "Metal"
+        },
+        {
+          "name": "OBA_MetalStresDistant_1",
+          "displayName": "MetalStresDistant 1",
+          "tab": "Materials",
+          "category": "Metal"
+        },
+        {
+          "name": "OBA_MetalStresDistant_2",
+          "displayName": "MetalStresDistant 2",
+          "tab": "Materials",
+          "category": "Metal"
+        },
+        {
+          "name": "OBA_NightVision",
+          "displayName": "NightVision",
+          "tab": "Machines",
+          "category": "Night Vision"
+        },
+        {
+          "name": "OBA_ToolAir_Drill",
+          "displayName": "ToolAir Drill",
+          "tab": "Machines",
+          "category": "Drills"
+        },
+        {
+          "name": "OBA_ToolPnuematic_Drill",
+          "displayName": "ToolPnuematic Drill",
+          "tab": "Machines",
+          "category": "Drills"
+        },
+        {
+          "name": "OBA_UI_Checkpoint_Acquire_Tune_Cue",
+          "displayName": "UI Checkpoint Acquire Tune Cue",
+          "tab": "Brickadia",
+          "category": "Tunes"
+        },
+        {
+          "name": "OBA_UI_Goal_Tune_Cue",
+          "displayName": "UI Goal Tune Cue",
+          "tab": "Brickadia",
+          "category": "Tunes"
+        },
+        {
+          "name": "OBA_Vending_Machine_Dispense",
+          "displayName": "Vending Machine Dispense",
+          "tab": "Machines",
+          "category": "Vending Machines"
+        },
+        {
+          "name": "OBA_Vending_Machine_Enter_Coin_1",
+          "displayName": "Vending Machine Enter Coin 1",
+          "tab": "Machines",
+          "category": "Vending Machines"
+        },
+        {
+          "name": "OBA_Vending_Machine_Enter_Coin_2",
+          "displayName": "Vending Machine Enter Coin 2",
+          "tab": "Machines",
+          "category": "Vending Machines"
+        },
+        {
+          "name": "OBA_Water_Droplet_1",
+          "displayName": "Water Droplet 1",
+          "tab": "Water",
+          "category": "Droplets"
+        },
+        {
+          "name": "OBA_Water_Droplet_2",
+          "displayName": "Water Droplet 2",
+          "tab": "Water",
+          "category": "Droplets"
+        },
+        {
+          "name": "OBA_Water_Droplet_3",
+          "displayName": "Water Droplet 3",
+          "tab": "Water",
+          "category": "Droplets"
+        },
+        {
+          "name": "OBA_Water_Droplet_4",
+          "displayName": "Water Droplet 4",
+          "tab": "Water",
+          "category": "Droplets"
+        },
+        {
+          "name": "OBA_Water_Droplet_Randomized",
+          "displayName": "Water Droplet (Random)",
+          "tab": "Water",
+          "category": "Droplets"
+        },
+        {
+          "name": "OBA_Water_Splash_Drop",
+          "displayName": "Water Splash Drop",
+          "tab": "Water",
+          "category": "Splashes"
+        },
+        {
+          "name": "OBA_Water_Splash_Massive",
+          "displayName": "Water Splash Massive",
+          "tab": "Water",
+          "category": "Splashes"
+        },
+        {
+          "name": "OBA_Water_Splash_Medium",
+          "displayName": "Water Splash Medium",
+          "tab": "Water",
+          "category": "Splashes"
+        },
+        {
+          "name": "OBA_Water_Splash_Small",
+          "displayName": "Water Splash Small",
+          "tab": "Water",
+          "category": "Splashes"
+        },
+        {
+          "name": "OBA_WoodCreak1_1",
+          "displayName": "WoodCreak1 1",
+          "tab": "Materials",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_WoodCreak1_2",
+          "displayName": "WoodCreak1 2",
+          "tab": "Materials",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_WoodCreak1_3",
+          "displayName": "WoodCreak1 3",
+          "tab": "Materials",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_WoodCreak1_4",
+          "displayName": "WoodCreak1 4",
+          "tab": "Materials",
+          "category": "Wood"
+        },
+        {
+          "name": "OBA_tim_sweeney",
+          "displayName": "Tim Sweeney",
+          "tab": "Interfaces",
+          "category": "Tim Sweeney"
+        },
+        {
+          "name": "OSA_AMR_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "AMR"
+        },
+        {
+          "name": "OSA_AMR_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "AMR"
+        },
+        {
+          "name": "OSA_AMR_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "AMR"
+        },
+        {
+          "name": "OSA_AMR_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "AMR"
+        },
+        {
+          "name": "OSA_AMR_Reload_Bolt_Forward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "AMR"
+        },
+        {
+          "name": "OSA_AMR_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "AMR"
+        },
+        {
+          "name": "OSA_AMR_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "AMR"
+        },
+        {
+          "name": "OSA_APCarbine_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "AP Carbine"
+        },
+        {
+          "name": "OSA_ArmingSword_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Arming Sword"
+        },
+        {
+          "name": "OSA_ArmingSword_Swing",
+          "displayName": "Swing",
+          "tab": "Weapons",
+          "category": "Arming Sword"
+        },
+        {
+          "name": "OSA_AssaultRifle_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Assault Rifle"
+        },
+        {
+          "name": "OSA_AssaultRifle_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Assault Rifle"
+        },
+        {
+          "name": "OSA_AssaultRifle_Reload_Chamber",
+          "displayName": "Reload Chamber",
+          "tab": "Weapons",
+          "category": "Assault Rifle"
+        },
+        {
+          "name": "OSA_AssaultRifle_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Assault Rifle"
+        },
+        {
+          "name": "OSA_AssaultRifle_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Assault Rifle"
+        },
+        {
+          "name": "OSA_AutoShotgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Auto Shotgun"
+        },
+        {
+          "name": "OSA_AutoShotgun_Last_Fire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "Auto Shotgun"
+        },
+        {
+          "name": "OSA_AutoShotgun_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Auto Shotgun"
+        },
+        {
+          "name": "OSA_AutoShotgun_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Auto Shotgun"
+        },
+        {
+          "name": "OSA_AutoShotgun_Reload_Bolt_Forward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "Auto Shotgun"
+        },
+        {
+          "name": "OSA_AutoShotgun_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Auto Shotgun"
+        },
+        {
+          "name": "OSA_AutoShotgun_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Auto Shotgun"
+        },
+        {
+          "name": "OSA_BarrageLauncher_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Barrage Launcher"
+        },
+        {
+          "name": "OSA_BattleAxe_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Battle Axe"
+        },
+        {
+          "name": "OSA_BattleAxe_Swing",
+          "displayName": "Swing",
+          "tab": "Weapons",
+          "category": "Battle Axe"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_Bolt_Forward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_Bullet",
+          "displayName": "Reload Bullet",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_End",
+          "displayName": "Reload End",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_Insert_Bullet",
+          "displayName": "Reload Insert Bullet",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_Place_Clip",
+          "displayName": "Reload Place Clip",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_BoltActionRifle_Reload_Push_Clip",
+          "displayName": "Reload Push Clip",
+          "tab": "Weapons",
+          "category": "Bolt Action Rifle"
+        },
+        {
+          "name": "OSA_Bow_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Bow"
+        },
+        {
+          "name": "OSA_Bow_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Bow"
+        },
+        {
+          "name": "OSA_Bow_Nock",
+          "displayName": "Nock",
+          "tab": "Weapons",
+          "category": "Bow"
+        },
+        {
+          "name": "OSA_Bow_Reload",
+          "displayName": "Reload",
+          "tab": "Weapons",
+          "category": "Bow"
+        },
+        {
+          "name": "OSA_BoxPistol_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Box Pistol"
+        },
+        {
+          "name": "OSA_BoxPistol_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Box Pistol"
+        },
+        {
+          "name": "OSA_BoxPistol_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Box Pistol"
+        },
+        {
+          "name": "OSA_BoxPistol_Reload_Slide",
+          "displayName": "Reload Slide",
+          "tab": "Weapons",
+          "category": "Box Pistol"
+        },
+        {
+          "name": "OSA_BullpupRifle_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Bullpup Rifle"
+        },
+        {
+          "name": "OSA_BullpupRifle_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Bullpup Rifle"
+        },
+        {
+          "name": "OSA_BullpupRifle_Reload_Bolt_Forward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "Bullpup Rifle"
+        },
+        {
+          "name": "OSA_BullpupRifle_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Bullpup Rifle"
+        },
+        {
+          "name": "OSA_BullpupRifle_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Bullpup Rifle"
+        },
+        {
+          "name": "OSA_BullpupRifle_Reload_Magazine_Tap",
+          "displayName": "Reload Magazine Tap",
+          "tab": "Weapons",
+          "category": "Bullpup Rifle"
+        },
+        {
+          "name": "OSA_BullpupSMG_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Bullpup SMG"
+        },
+        {
+          "name": "OSA_BullpupSMG_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Bullpup SMG"
+        },
+        {
+          "name": "OSA_BullpupSMG_Reload_Bolt_Release",
+          "displayName": "Reload Bolt Release",
+          "tab": "Weapons",
+          "category": "Bullpup SMG"
+        },
+        {
+          "name": "OSA_BullpupSMG_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Bullpup SMG"
+        },
+        {
+          "name": "OSA_BullpupSMG_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Bullpup SMG"
+        },
+        {
+          "name": "OSA_CombatShotgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Combat Shotgun"
+        },
+        {
+          "name": "OSA_CombatShotgun_Last_Fire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "Combat Shotgun"
+        },
+        {
+          "name": "OSA_Derringer_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Derringer"
+        },
+        {
+          "name": "OSA_Derringer_Reload_Close",
+          "displayName": "Reload Close",
+          "tab": "Weapons",
+          "category": "Derringer"
+        },
+        {
+          "name": "OSA_Derringer_Reload_Cock",
+          "displayName": "Reload Cock",
+          "tab": "Weapons",
+          "category": "Derringer"
+        },
+        {
+          "name": "OSA_Derringer_Reload_Insert",
+          "displayName": "Reload Insert",
+          "tab": "Weapons",
+          "category": "Derringer"
+        },
+        {
+          "name": "OSA_Derringer_Reload_Open",
+          "displayName": "Reload Open",
+          "tab": "Weapons",
+          "category": "Derringer"
+        },
+        {
+          "name": "OSA_Flintlock_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Flintlock"
+        },
+        {
+          "name": "OSA_Flintlock_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Flintlock"
+        },
+        {
+          "name": "OSA_Flintlock_Reload_Cock",
+          "displayName": "Reload Cock",
+          "tab": "Weapons",
+          "category": "Flintlock"
+        },
+        {
+          "name": "OSA_Flintlock_Reload_Insert_Ball",
+          "displayName": "Reload Insert Ball",
+          "tab": "Weapons",
+          "category": "Flintlock"
+        },
+        {
+          "name": "OSA_Flintlock_Reload_Prep",
+          "displayName": "Reload Prep",
+          "tab": "Weapons",
+          "category": "Flintlock"
+        },
+        {
+          "name": "OSA_Flintlock_Reload_Rod_In",
+          "displayName": "Reload Rod In",
+          "tab": "Weapons",
+          "category": "Flintlock"
+        },
+        {
+          "name": "OSA_Flintlock_Reload_Rod_Out",
+          "displayName": "Reload Rod Out",
+          "tab": "Weapons",
+          "category": "Flintlock"
+        },
+        {
+          "name": "OSA_FragGrenade_Bounce",
+          "displayName": "Bounce",
+          "tab": "Weapons",
+          "category": "Frag Grenade"
+        },
+        {
+          "name": "OSA_FragGrenade_Explosion",
+          "displayName": "Explosion",
+          "tab": "Weapons",
+          "category": "Frag Grenade"
+        },
+        {
+          "name": "OSA_FragGrenade_Raise",
+          "displayName": "Raise",
+          "tab": "Weapons",
+          "category": "Frag Grenade"
+        },
+        {
+          "name": "OSA_FragGrenade_Throw",
+          "displayName": "Throw",
+          "tab": "Weapons",
+          "category": "Frag Grenade"
+        },
+        {
+          "name": "OSA_GrenadeLauncher_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Grenade Launcher"
+        },
+        {
+          "name": "OSA_GrenadeLauncher_Reload_Close_Cylinder",
+          "displayName": "Reload Close Cylinder",
+          "tab": "Weapons",
+          "category": "Grenade Launcher"
+        },
+        {
+          "name": "OSA_GrenadeLauncher_Reload_Insert_Grenade",
+          "displayName": "Reload Insert Grenade",
+          "tab": "Weapons",
+          "category": "Grenade Launcher"
+        },
+        {
+          "name": "OSA_GrenadeLauncher_Reload_Open_Cylinder",
+          "displayName": "Reload Open Cylinder",
+          "tab": "Weapons",
+          "category": "Grenade Launcher"
+        },
+        {
+          "name": "OSA_GuardPistol_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Guard Pistol"
+        },
+        {
+          "name": "OSA_GuardPistol_Fire_LastShot",
+          "displayName": "Fire Last Shot",
+          "tab": "Weapons",
+          "category": "Guard Pistol"
+        },
+        {
+          "name": "OSA_GuardPistol_Reload_Bolt_Release",
+          "displayName": "Reload Bolt Release",
+          "tab": "Weapons",
+          "category": "Guard Pistol"
+        },
+        {
+          "name": "OSA_GuardPistol_Reload_Magazine_Insert",
+          "displayName": "Reload Magazine Insert",
+          "tab": "Weapons",
+          "category": "Guard Pistol"
+        },
+        {
+          "name": "OSA_GuardPistol_Reload_Magazine_Remove",
+          "displayName": "Reload Magazine Remove",
+          "tab": "Weapons",
+          "category": "Guard Pistol"
+        },
+        {
+          "name": "OSA_GuardPistol_Suppressed_Fire",
+          "displayName": "Suppressed Fire",
+          "tab": "Weapons",
+          "category": "Guard Pistol"
+        },
+        {
+          "name": "OSA_GuardPistol_Suppressed_Fire_LastFire",
+          "displayName": "Suppressed Fire Last Fire",
+          "tab": "Weapons",
+          "category": "Guard Pistol"
+        },
+        {
+          "name": "OSA_HealthPotion_Consume",
+          "displayName": "Consume",
+          "tab": "Weapons",
+          "category": "Health Potion"
+        },
+        {
+          "name": "OSA_HealthPotion_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Health Potion"
+        },
+        {
+          "name": "OSA_HealthPotion_Uncork",
+          "displayName": "Uncork",
+          "tab": "Weapons",
+          "category": "Health Potion"
+        },
+        {
+          "name": "OSA_HeavyAssaultRifle_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Heavy Assault Rifle"
+        },
+        {
+          "name": "OSA_HeavyAssaultRifle_Reload_BoltBack",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Heavy Assault Rifle"
+        },
+        {
+          "name": "OSA_HeavyAssaultRifle_Reload_BoltRelease",
+          "displayName": "Reload Bolt Release",
+          "tab": "Weapons",
+          "category": "Heavy Assault Rifle"
+        },
+        {
+          "name": "OSA_HeavyAssaultRifle_Reload_MagIn",
+          "displayName": "Reload Mag In",
+          "tab": "Weapons",
+          "category": "Heavy Assault Rifle"
+        },
+        {
+          "name": "OSA_HeavyAssaultRifle_Reload_MagOut",
+          "displayName": "Reload Mag Out",
+          "tab": "Weapons",
+          "category": "Heavy Assault Rifle"
+        },
+        {
+          "name": "OSA_HeavySMG_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Heavy SMG"
+        },
+        {
+          "name": "OSA_HeavySMG_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Heavy SMG"
+        },
+        {
+          "name": "OSA_HeavySMG_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Heavy SMG"
+        },
+        {
+          "name": "OSA_HeavySMG_Reload_Slide_Back",
+          "displayName": "Reload Slide Back",
+          "tab": "Weapons",
+          "category": "Heavy SMG"
+        },
+        {
+          "name": "OSA_HeavySMG_Reload_Slide_Forward",
+          "displayName": "Reload Slide Forward",
+          "tab": "Weapons",
+          "category": "Heavy SMG"
+        },
+        {
+          "name": "OSA_HighPowerPistol_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "High Power Pistol"
+        },
+        {
+          "name": "OSA_HighPowerPistol_LastFire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "High Power Pistol"
+        },
+        {
+          "name": "OSA_HighPowerPistol_Reload_MagIn",
+          "displayName": "Reload Mag In",
+          "tab": "Weapons",
+          "category": "High Power Pistol"
+        },
+        {
+          "name": "OSA_HighPowerPistol_Reload_MagOut",
+          "displayName": "Reload Mag Out",
+          "tab": "Weapons",
+          "category": "High Power Pistol"
+        },
+        {
+          "name": "OSA_HighPowerPistol_Reload_SlideRack",
+          "displayName": "Reload Slide Rack",
+          "tab": "Weapons",
+          "category": "High Power Pistol"
+        },
+        {
+          "name": "OSA_HuntingShotgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Hunting Shotgun"
+        },
+        {
+          "name": "OSA_HuntingShotgun_Last_Fire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "Hunting Shotgun"
+        },
+        {
+          "name": "OSA_Knife_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Knife"
+        },
+        {
+          "name": "OSA_Knife_Heavy_Prepare",
+          "displayName": "Heavy Prepare",
+          "tab": "Weapons",
+          "category": "Knife"
+        },
+        {
+          "name": "OSA_Knife_Heavy_Recover",
+          "displayName": "Heavy Recover",
+          "tab": "Weapons",
+          "category": "Knife"
+        },
+        {
+          "name": "OSA_Knife_Swing_Heavy",
+          "displayName": "Swing Heavy",
+          "tab": "Weapons",
+          "category": "Knife"
+        },
+        {
+          "name": "OSA_Knife_Swing_Light",
+          "displayName": "Swing Light",
+          "tab": "Weapons",
+          "category": "Knife"
+        },
+        {
+          "name": "OSA_LaserAxe_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Laser Axe"
+        },
+        {
+          "name": "OSA_LaserAxe_Swing",
+          "displayName": "Swing",
+          "tab": "Weapons",
+          "category": "Laser Axe"
+        },
+        {
+          "name": "OSA_LaserCleaver_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Laser Cleaver"
+        },
+        {
+          "name": "OSA_LaserCleaver_Swing",
+          "displayName": "Swing",
+          "tab": "Weapons",
+          "category": "Laser Cleaver"
+        },
+        {
+          "name": "OSA_LeverAction_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Lever Action"
+        },
+        {
+          "name": "OSA_LeverAction_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Lever Action"
+        },
+        {
+          "name": "OSA_LeverAction_Reload_Cycle_In",
+          "displayName": "Reload Cycle In",
+          "tab": "Weapons",
+          "category": "Lever Action"
+        },
+        {
+          "name": "OSA_LeverAction_Reload_Cycle_Out",
+          "displayName": "Reload Cycle Out",
+          "tab": "Weapons",
+          "category": "Lever Action"
+        },
+        {
+          "name": "OSA_LeverAction_Reload_Cycle_Out_Ping",
+          "displayName": "Reload Cycle Out Ping",
+          "tab": "Weapons",
+          "category": "Lever Action"
+        },
+        {
+          "name": "OSA_LeverAction_Reload_End_Foley",
+          "displayName": "Reload End Foley",
+          "tab": "Weapons",
+          "category": "Lever Action"
+        },
+        {
+          "name": "OSA_LeverAction_Reload_Insert_Bullet",
+          "displayName": "Reload Insert Bullet",
+          "tab": "Weapons",
+          "category": "Lever Action"
+        },
+        {
+          "name": "OSA_LightMachineGun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_LightMachineGun_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_LightMachineGun_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_LightMachineGun_Reload_Bolt_Release",
+          "displayName": "Reload Bolt Release",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_LightMachineGun_Reload_Magazine_Lineup",
+          "displayName": "Reload Magazine Lineup",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_LightMachineGun_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_LightMachineGun_Reload_Magazine_Pull",
+          "displayName": "Reload Magazine Pull",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_LightMachineGun_Reload_Magazine_Slap",
+          "displayName": "Reload Magazine Slap",
+          "tab": "Weapons",
+          "category": "Light Machine Gun"
+        },
+        {
+          "name": "OSA_MachineGun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Machine Gun"
+        },
+        {
+          "name": "OSA_Magnum_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Magnum"
+        },
+        {
+          "name": "OSA_Magnum_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Magnum"
+        },
+        {
+          "name": "OSA_Magnum_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Magnum"
+        },
+        {
+          "name": "OSA_Magnum_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Magnum"
+        },
+        {
+          "name": "OSA_Magnum_Reload_Slide",
+          "displayName": "Reload Slide",
+          "tab": "Weapons",
+          "category": "Magnum"
+        },
+        {
+          "name": "OSA_Melee_Shared_Sharp_Heavy_Hit",
+          "displayName": "Sharp Heavy Hit",
+          "tab": "Weapons",
+          "category": "Melee Shared"
+        },
+        {
+          "name": "OSA_Melee_Shared_Sharp_Light_Hit",
+          "displayName": "Sharp Light Hit",
+          "tab": "Weapons",
+          "category": "Melee Shared"
+        },
+        {
+          "name": "OSA_MicroSMG_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Micro SMG"
+        },
+        {
+          "name": "OSA_MicroSMG_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Micro SMG"
+        },
+        {
+          "name": "OSA_MicroSMG_Reload_Bolt_Forward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "Micro SMG"
+        },
+        {
+          "name": "OSA_MicroSMG_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Micro SMG"
+        },
+        {
+          "name": "OSA_MicroSMG_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Micro SMG"
+        },
+        {
+          "name": "OSA_Minigun_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Minigun"
+        },
+        {
+          "name": "OSA_Minigun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Minigun"
+        },
+        {
+          "name": "OSA_PDW_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "PDW"
+        },
+        {
+          "name": "OSA_PDW_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "PDW"
+        },
+        {
+          "name": "OSA_PDW_Reload_End",
+          "displayName": "Reload End",
+          "tab": "Weapons",
+          "category": "PDW"
+        },
+        {
+          "name": "OSA_PDW_Reload_Magazine_Insert",
+          "displayName": "Reload Magazine Insert",
+          "tab": "Weapons",
+          "category": "PDW"
+        },
+        {
+          "name": "OSA_PDW_Reload_Magazine_Remove",
+          "displayName": "Reload Magazine Remove",
+          "tab": "Weapons",
+          "category": "PDW"
+        },
+        {
+          "name": "OSA_PDW_Reload_Slap",
+          "displayName": "Reload Slap",
+          "tab": "Weapons",
+          "category": "PDW"
+        },
+        {
+          "name": "OSA_Pistol_Dryfire",
+          "displayName": "Dryfire",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Emptied",
+          "displayName": "Emptied",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Holster",
+          "displayName": "Holster",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Reload_Mag_In",
+          "displayName": "Reload Mag In",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Reload_Mag_Out",
+          "displayName": "Reload Mag Out",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Reload_Slide_Back",
+          "displayName": "Reload Slide Back",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_Pistol_Reload_Slide_Release",
+          "displayName": "Reload Slide Release",
+          "tab": "Weapons",
+          "category": "Pistol"
+        },
+        {
+          "name": "OSA_PlasmaPistol_Reload_Hiss",
+          "displayName": "Reload Hiss",
+          "tab": "Weapons",
+          "category": "Plasma Pistol"
+        },
+        {
+          "name": "OSA_PulseCarbine_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Pulse Carbine"
+        },
+        {
+          "name": "OSA_PulseCarbine_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Pulse Carbine"
+        },
+        {
+          "name": "OSA_PulseCarbine_Reload_Magazine_Lock",
+          "displayName": "Reload Magazine Lock",
+          "tab": "Weapons",
+          "category": "Pulse Carbine"
+        },
+        {
+          "name": "OSA_PulseCarbine_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Pulse Carbine"
+        },
+        {
+          "name": "OSA_Railgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Railgun"
+        },
+        {
+          "name": "OSA_Revolver_Fan",
+          "displayName": "Fan",
+          "tab": "Weapons",
+          "category": "Revolver"
+        },
+        {
+          "name": "OSA_Revolver_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Revolver"
+        },
+        {
+          "name": "OSA_Revolver_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Revolver"
+        },
+        {
+          "name": "OSA_Revolver_Reload_Cylinder_Close",
+          "displayName": "Reload Cylinder Close",
+          "tab": "Weapons",
+          "category": "Revolver"
+        },
+        {
+          "name": "OSA_Revolver_Reload_Rest",
+          "displayName": "Reload Rest",
+          "tab": "Weapons",
+          "category": "Revolver"
+        },
+        {
+          "name": "OSA_Revolver_Reload_Speedloader",
+          "displayName": "Reload Speedloader",
+          "tab": "Weapons",
+          "category": "Revolver"
+        },
+        {
+          "name": "OSA_RocketJumper_Explosion",
+          "displayName": "Explosion",
+          "tab": "Weapons",
+          "category": "Rocket Jumper"
+        },
+        {
+          "name": "OSA_RocketJumper_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Rocket Jumper"
+        },
+        {
+          "name": "OSA_RocketLauncher_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Rocket Launcher"
+        },
+        {
+          "name": "OSA_RocketLauncher_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Rocket Launcher"
+        },
+        {
+          "name": "OSA_RocketLauncher_Reload_Click",
+          "displayName": "Reload Click",
+          "tab": "Weapons",
+          "category": "Rocket Launcher"
+        },
+        {
+          "name": "OSA_RocketLauncher_Reload_Slide",
+          "displayName": "Reload Slide",
+          "tab": "Weapons",
+          "category": "Rocket Launcher"
+        },
+        {
+          "name": "OSA_RocketLauncher_Reload_Start",
+          "displayName": "Reload Start",
+          "tab": "Weapons",
+          "category": "Rocket Launcher"
+        },
+        {
+          "name": "OSA_RocketLauncher_Reload_Tilt",
+          "displayName": "Reload Tilt",
+          "tab": "Weapons",
+          "category": "Rocket Launcher"
+        },
+        {
+          "name": "OSA_SemiAutoRifle_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Semi Auto Rifle"
+        },
+        {
+          "name": "OSA_SemiAutoRifle_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Semi Auto Rifle"
+        },
+        {
+          "name": "OSA_SemiAutoRifle_Reload_Bolt_Forward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "Semi Auto Rifle"
+        },
+        {
+          "name": "OSA_SemiAutoRifle_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Semi Auto Rifle"
+        },
+        {
+          "name": "OSA_SemiAutoRifle_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Semi Auto Rifle"
+        },
+        {
+          "name": "OSA_ServiceRifle_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Service Rifle"
+        },
+        {
+          "name": "OSA_ServiceRifle_Reload_Bolt_Pull",
+          "displayName": "Reload Bolt Pull",
+          "tab": "Weapons",
+          "category": "Service Rifle"
+        },
+        {
+          "name": "OSA_ServiceRifle_Reload_Bolt_Release",
+          "displayName": "Reload Bolt Release",
+          "tab": "Weapons",
+          "category": "Service Rifle"
+        },
+        {
+          "name": "OSA_ServiceRifle_Reload_Insert",
+          "displayName": "Reload Insert",
+          "tab": "Weapons",
+          "category": "Service Rifle"
+        },
+        {
+          "name": "OSA_ServiceRifle_Reload_MagDrop",
+          "displayName": "Reload Mag Drop",
+          "tab": "Weapons",
+          "category": "Service Rifle"
+        },
+        {
+          "name": "OSA_ServiceRifle_Reload_Slap",
+          "displayName": "Reload Slap",
+          "tab": "Weapons",
+          "category": "Service Rifle"
+        },
+        {
+          "name": "OSA_ServiceRifle_Reload_Start_Foley",
+          "displayName": "Reload Start Foley",
+          "tab": "Weapons",
+          "category": "Service Rifle"
+        },
+        {
+          "name": "OSA_Shotgun_Dryfire",
+          "displayName": "Dryfire",
+          "tab": "Weapons",
+          "category": "Shotgun"
+        },
+        {
+          "name": "OSA_Shotgun_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Shotgun"
+        },
+        {
+          "name": "OSA_Shotgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Shotgun"
+        },
+        {
+          "name": "OSA_Shotgun_Last_Fire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "Shotgun"
+        },
+        {
+          "name": "OSA_Shotgun_Reload_Pump_Back",
+          "displayName": "Reload Pump Back",
+          "tab": "Weapons",
+          "category": "Shotgun"
+        },
+        {
+          "name": "OSA_Shotgun_Reload_Pump_Forward",
+          "displayName": "Reload Pump Forward",
+          "tab": "Weapons",
+          "category": "Shotgun"
+        },
+        {
+          "name": "OSA_Shotgun_Reload_Shell",
+          "displayName": "Reload Shell",
+          "tab": "Weapons",
+          "category": "Shotgun"
+        },
+        {
+          "name": "OSA_SlugShotgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Slug Shotgun"
+        },
+        {
+          "name": "OSA_SlugShotgun_Last_Fire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "Slug Shotgun"
+        },
+        {
+          "name": "OSA_SlugShotgun_Reload_Insert_Shell",
+          "displayName": "Reload Insert Shell",
+          "tab": "Weapons",
+          "category": "Slug Shotgun"
+        },
+        {
+          "name": "OSA_SlugShotgun_Reload_Pump_Back",
+          "displayName": "Reload Pump Back",
+          "tab": "Weapons",
+          "category": "Slug Shotgun"
+        },
+        {
+          "name": "OSA_SlugShotgun_Reload_Pump_Forward",
+          "displayName": "Reload Pump Forward",
+          "tab": "Weapons",
+          "category": "Slug Shotgun"
+        },
+        {
+          "name": "OSA_Sniper_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Sniper"
+        },
+        {
+          "name": "OSA_Sniper_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Sniper"
+        },
+        {
+          "name": "OSA_Sniper_Reload_BoltBack",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Sniper"
+        },
+        {
+          "name": "OSA_Sniper_Reload_BoltForward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "Sniper"
+        },
+        {
+          "name": "OSA_Sniper_Reload_MagFutz",
+          "displayName": "Reload Mag Futz",
+          "tab": "Weapons",
+          "category": "Sniper"
+        },
+        {
+          "name": "OSA_Sniper_Reload_MagOut",
+          "displayName": "Reload Mag Out",
+          "tab": "Weapons",
+          "category": "Sniper"
+        },
+        {
+          "name": "OSA_Sniper_Reload_MagSlap",
+          "displayName": "Reload Mag Slap",
+          "tab": "Weapons",
+          "category": "Sniper"
+        },
+        {
+          "name": "OSA_StampedSMG_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Stamped SMG"
+        },
+        {
+          "name": "OSA_StampedSMG_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Stamped SMG"
+        },
+        {
+          "name": "OSA_StampedSMG_Reload_Bolt_Release",
+          "displayName": "Reload Bolt Release",
+          "tab": "Weapons",
+          "category": "Stamped SMG"
+        },
+        {
+          "name": "OSA_StampedSMG_Reload_Magazine_Align",
+          "displayName": "Reload Magazine Align",
+          "tab": "Weapons",
+          "category": "Stamped SMG"
+        },
+        {
+          "name": "OSA_StampedSMG_Reload_Magazine_Insert",
+          "displayName": "Reload Magazine Insert",
+          "tab": "Weapons",
+          "category": "Stamped SMG"
+        },
+        {
+          "name": "OSA_StampedSMG_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Stamped SMG"
+        },
+        {
+          "name": "OSA_StickGrenade_Charged",
+          "displayName": "Charged",
+          "tab": "Weapons",
+          "category": "Stick Grenade"
+        },
+        {
+          "name": "OSA_StickGrenade_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Stick Grenade"
+        },
+        {
+          "name": "OSA_StickGrenade_Raise",
+          "displayName": "Raise",
+          "tab": "Weapons",
+          "category": "Stick Grenade"
+        },
+        {
+          "name": "OSA_StickGrenade_Throw",
+          "displayName": "Throw",
+          "tab": "Weapons",
+          "category": "Stick Grenade"
+        },
+        {
+          "name": "OSA_SubmachineGun_Dryfire",
+          "displayName": "Dryfire",
+          "tab": "Weapons",
+          "category": "Submachine Gun"
+        },
+        {
+          "name": "OSA_SubmachineGun_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Submachine Gun"
+        },
+        {
+          "name": "OSA_SubmachineGun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Submachine Gun"
+        },
+        {
+          "name": "OSA_SubmachineGun_Reload_BoltSlap",
+          "displayName": "Reload Bolt Slap",
+          "tab": "Weapons",
+          "category": "Submachine Gun"
+        },
+        {
+          "name": "OSA_SubmachineGun_Reload_BoltUp",
+          "displayName": "Reload Bolt Up",
+          "tab": "Weapons",
+          "category": "Submachine Gun"
+        },
+        {
+          "name": "OSA_SubmachineGun_Reload_MagazineIn",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Submachine Gun"
+        },
+        {
+          "name": "OSA_SubmachineGun_Reload_MagazineOut",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Submachine Gun"
+        },
+        {
+          "name": "OSA_SuperShotgun_AltFire",
+          "displayName": "Alt Fire",
+          "tab": "Weapons",
+          "category": "Super Shotgun"
+        },
+        {
+          "name": "OSA_SuperShotgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Super Shotgun"
+        },
+        {
+          "name": "OSA_SuperShotgun_Reload_Close",
+          "displayName": "Reload Close",
+          "tab": "Weapons",
+          "category": "Super Shotgun"
+        },
+        {
+          "name": "OSA_SuperShotgun_Reload_Open",
+          "displayName": "Reload Open",
+          "tab": "Weapons",
+          "category": "Super Shotgun"
+        },
+        {
+          "name": "OSA_SuperShotgun_Reload_Shell_Insert",
+          "displayName": "Reload Shell Insert",
+          "tab": "Weapons",
+          "category": "Super Shotgun"
+        },
+        {
+          "name": "OSA_SuperShotgun_Reload_Shell_Pop",
+          "displayName": "Reload Shell Pop",
+          "tab": "Weapons",
+          "category": "Super Shotgun"
+        },
+        {
+          "name": "OSA_SuppressedAssaultRifle_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Suppressed Assault Rifle"
+        },
+        {
+          "name": "OSA_SuppressedPistol_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Suppressed Pistol"
+        },
+        {
+          "name": "OSA_TacticalSMG_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Tactical SMG"
+        },
+        {
+          "name": "OSA_TacticalSMG_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Tactical SMG"
+        },
+        {
+          "name": "OSA_TacticalSMG_Reload_Bolt_Forward",
+          "displayName": "Reload Bolt Forward",
+          "tab": "Weapons",
+          "category": "Tactical SMG"
+        },
+        {
+          "name": "OSA_TacticalSMG_Reload_Magazine_In",
+          "displayName": "Reload Magazine In",
+          "tab": "Weapons",
+          "category": "Tactical SMG"
+        },
+        {
+          "name": "OSA_TacticalSMG_Reload_Magazine_Out",
+          "displayName": "Reload Magazine Out",
+          "tab": "Weapons",
+          "category": "Tactical SMG"
+        },
+        {
+          "name": "OSA_TacticalShotgun_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Tactical Shotgun"
+        },
+        {
+          "name": "OSA_TacticalShotgun_Last_Fire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "Tactical Shotgun"
+        },
+        {
+          "name": "OSA_TacticalShotgun_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Tactical Shotgun"
+        },
+        {
+          "name": "OSA_TacticalShotgun_Reload_Bolt_Back",
+          "displayName": "Reload Bolt Back",
+          "tab": "Weapons",
+          "category": "Tactical Shotgun"
+        },
+        {
+          "name": "OSA_TacticalShotgun_Reload_Bolt_Release",
+          "displayName": "Reload Bolt Release",
+          "tab": "Weapons",
+          "category": "Tactical Shotgun"
+        },
+        {
+          "name": "OSA_TacticalShotgun_Reload_End",
+          "displayName": "Reload End",
+          "tab": "Weapons",
+          "category": "Tactical Shotgun"
+        },
+        {
+          "name": "OSA_TacticalShotgun_Reload_Insert_Shell",
+          "displayName": "Reload Insert Shell",
+          "tab": "Weapons",
+          "category": "Tactical Shotgun"
+        },
+        {
+          "name": "OSA_TwinCannon_Fire_Left",
+          "displayName": "Fire Left",
+          "tab": "Weapons",
+          "category": "Twin Cannon"
+        },
+        {
+          "name": "OSA_TwinCannon_Fire_Right",
+          "displayName": "Fire Right",
+          "tab": "Weapons",
+          "category": "Twin Cannon"
+        },
+        {
+          "name": "OSA_TwinCannon_Projectile_Impact",
+          "displayName": "Projectile Impact",
+          "tab": "Weapons",
+          "category": "Twin Cannon"
+        },
+        {
+          "name": "OSA_Typewriter_Dryfire",
+          "displayName": "Dryfire",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_LastFire",
+          "displayName": "Last Fire",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Reload_Begin",
+          "displayName": "Reload Begin",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Reload_Bolt",
+          "displayName": "Reload Bolt",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Reload_MagIn_Connect",
+          "displayName": "Reload Mag In Connect",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Reload_MagIn_Finish",
+          "displayName": "Reload Mag In Finish",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Reload_MagOut_Finish",
+          "displayName": "Reload Mag Out Finish",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Reload_MagOut_Start",
+          "displayName": "Reload Mag Out Start",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_Typewriter_Reload_RaiseMag",
+          "displayName": "Reload Raise Mag",
+          "tab": "Weapons",
+          "category": "Typewriter"
+        },
+        {
+          "name": "OSA_UnsuppressedSMG_Fire",
+          "displayName": "Fire",
+          "tab": "Weapons",
+          "category": "Unsuppressed SMG"
+        },
+        {
+          "name": "OSA_Zweihander_Equip",
+          "displayName": "Equip",
+          "tab": "Weapons",
+          "category": "Zweihander"
+        },
+        {
+          "name": "OSA_Zweihander_Swing",
+          "displayName": "Swing",
+          "tab": "Weapons",
+          "category": "Zweihander"
+        }
+      ]
+    },
+    {
+      "type": "BrickParticleSystemDescriptor",
+      "key": "Particle",
+      "count": 1,
+      "assets": [
+        {
+          "name": "BPSD_Electrical_Arcs"
+        }
+      ]
+    },
+    {
+      "type": "BrickWheelEngineAudioDescriptor",
+      "key": "WheelEngineAudio",
+      "count": 7,
+      "assets": [
+        {
+          "name": "WheelEngineAudio_Bomber",
+          "displayName": "Bomber",
+          "tab": "Air",
+          "category": "Big Planes",
+          "summary": "Big n' loud!"
+        },
+        {
+          "name": "WheelEngineAudio_Cessna",
+          "displayName": "Bushplane",
+          "tab": "Air",
+          "category": "Small Planes",
+          "summary": "Based off of a Cessna 172."
+        },
+        {
+          "name": "WheelEngineAudio_Drone",
+          "displayName": "Drone",
+          "tab": "Air",
+          "category": "Small Planes",
+          "summary": "WHIRRRRRRRRRRRRRRR"
+        },
+        {
+          "name": "WheelEngineAudio_Family01",
+          "displayName": "Family Sedan",
+          "tab": "Ground",
+          "category": "4-Cylinder",
+          "summary": "Based off of a casual 2 liter inline 4-cylinder family sedan."
+        },
+        {
+          "name": "WheelEngineAudio_Muscle_01",
+          "displayName": "Classic Muscle",
+          "tab": "Ground",
+          "category": "V8",
+          "summary": "Based off of a slick 5.0L V8 from the 80s."
+        },
+        {
+          "name": "WheelEngineAudio_RallyCar01",
+          "displayName": "Rally Car",
+          "tab": "Ground",
+          "category": "5-Cylinder",
+          "summary": "Based off of a speedy inline 5-cylinder 10-valve 2.1L turbo powered engine."
+        },
+        {
+          "name": "WheelEngineAudio_Semi_01",
+          "displayName": "Semi Truck",
+          "tab": "Ground",
+          "category": "Diesel",
+          "summary": "Based off of a generic semi-truck diesel engine."
+        }
+      ]
+    }
+  ]
+}
