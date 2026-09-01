@@ -2270,3 +2270,42 @@ fn an_enum_ref_chip_param_writes_every_slot_of_the_caller() {
         .collect();
     assert_eq!(refs.len(), 2, "both enum slots must cross as refs, got {refs:?}");
 }
+
+/// `rec.field.Value` is the explicit read of a ref-typed record field. Only
+/// `x.Value` on a plain identifier was handled, so the field spelling degraded
+/// to an `_Unsupported` placeholder and its consumer got no wire.
+#[test]
+fn dot_value_on_a_ref_record_field_reads_the_backing_var() {
+    let r = compile(
+        "type S = { a: float, b: bool }\n\
+         chip M(s: *S, f: float) -> (r: float) { out r = if s.b.Value then s.a.Value else f }\n\
+         var g: S = { a: 1.0, b: false }\n\
+         var res: float = 0.0\n\
+         var src: float = 0.0\n\
+         in go: exec\n\
+         on go { res = M(g, src) }\n",
+    );
+    assert_no_errors(&r);
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WSP001"),
+        "`.Value` on a record field must resolve: {:?}",
+        r.diagnostics
+    );
+    fn select_inputs(m: &crate::ir::Module) -> usize {
+        let sel: Vec<_> = m
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+            .map(|n| n.id)
+            .collect();
+        m.wires
+            .iter()
+            .filter(|w| sel.contains(&w.target.node_id))
+            .count()
+            + m.chips.values().map(select_inputs).sum::<usize>()
+    }
+    assert!(
+        select_inputs(&r.module) >= 2,
+        "the Select must be driven, not left dangling"
+    );
+}

@@ -2046,7 +2046,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             }
             if let Type::Record(fields) = &ot {
                 if let Some((_, t)) = fields.iter().find(|(k, _)| k == field) {
-                    return t.clone();
+                    // Reading a ref-typed field yields the VALUE, exactly as
+                    // reading a `var` does (`SymbolKind::Var` above). A `*T`
+                    // field is storage, so leaving the `Ref` on it made every
+                    // consumer that wants a value reject it.
+                    return unwrap_ref(t);
                 }
                 // One concise line naming the valid fields. The full,
                 // syntax-COLOURED record type is rendered on hover

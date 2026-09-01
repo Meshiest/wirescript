@@ -403,6 +403,18 @@ pub(super) fn lower_field_access(
         return port;
     }
 
+    // `rec.field.Value` / `.prev` — the explicit read of a ref-typed record
+    // field. The `Ident` arm below covers `x.Value` on a plain var; a field is
+    // equally var-backed, so resolve the OBJECT through the chain and read it
+    // the same way.
+    if (field == "Value" || field == "prev")
+        && matches!(obj, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
+        && let Some(binding) = resolve_field_chain(ctx, obj).cloned()
+        && let Some(port) = binding_to_port(ctx, &binding, range)
+    {
+        return port;
+    }
+
     if let Expr::Ident { name, .. } = obj {
         if (field == "Value" || field == "prev")
             && let Some(var_rec) = ctx.lookup_var(name).cloned()

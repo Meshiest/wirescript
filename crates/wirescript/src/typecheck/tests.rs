@@ -4684,3 +4684,59 @@
             r.diagnostics
         );
     }
+
+    /// Reading a ref-typed record field yields the VALUE, like reading a `var`.
+    /// A `*T` param distributes to ref fields, so leaving the `Ref` on a read
+    /// made annotations and if-then-else reject it as `*float` vs `float`.
+    #[test]
+    fn a_ref_record_field_reads_as_its_value() {
+        let r = tc(
+            "type S = { a: float, b: bool }\n\
+             chip M(s: *S, f: float) -> (r: float) {\n\
+               var out1: float = s.a\n\
+               out r = if s.b then s.a else f\n\
+             }\n\
+             var g: S = { a: 1.0, b: false }\n\
+             var res: float = 0.0\n\
+             in go: exec\n\
+             on go { res = M(g, 2.0) }\n",
+        );
+        assert!(
+            !r.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::diagnostic::Severity::Error),
+            "a ref field must read as its value: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// A ref field needs storage behind it. A record LITERAL built from `in`
+    /// ports has none, so it cannot satisfy a `*T` parameter - the same rule a
+    /// scalar `*T` argument already followed.
+    #[test]
+    fn a_record_literal_cannot_satisfy_a_ref_param_without_storage() {
+        let bad = tc(
+            "type S = { a: float }\n\
+             chip M(s: *S) { s.a = 1.0 }\n\
+             in a: float\nin go: exec\n\
+             on go { M({ a: a }) }\n",
+        );
+        assert!(
+            bad.diagnostics.iter().any(|d| d.code == "WS008"),
+            "an `in`-port field must be WS008: {:?}",
+            bad.diagnostics
+        );
+
+        // A real var behind the field is fine.
+        let good = tc(
+            "type S = { a: float }\n\
+             chip M(s: *S) { s.a = 1.0 }\n\
+             var v: float = 0.0\nin go: exec\n\
+             on go { M({ a: v }) }\n",
+        );
+        assert!(
+            !good.diagnostics.iter().any(|d| d.code == "WS008"),
+            "a var-backed field must be accepted: {:?}",
+            good.diagnostics
+        );
+    }

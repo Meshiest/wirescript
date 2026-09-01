@@ -344,6 +344,56 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
 /// The ordinary wire-argument check shared by `ParamKind::Wire` and
 /// `ParamKind::Const`: infer `arg_expr`'s type and `coerce` it against
 /// `param.ty` (WS003 on mismatch).
+
+/// A record LITERAL passed where the parameter has reference fields (the shape
+/// `*T` on a record distributes to): every ref field needs real storage behind
+/// it, so its value faces the same lvalue test a scalar `*T` argument does.
+/// Only literals are checked - a record bound to a name got its fields from
+/// wherever they came from, and re-testing the name says nothing about them.
+fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: &Expr) {
+    let (Type::Record(pfields), Expr::RecordLit { fields, .. }) = (&param.ty, arg_expr) else {
+        return;
+    };
+    for f in fields {
+        let (name, value, frange) = match f {
+            crate::ast::RecordLitField::Named { name, value, range } => (name.as_str(), Some(value), range),
+            crate::ast::RecordLitField::Shorthand { name, range } => (name.as_str(), None, range),
+            crate::ast::RecordLitField::Spread { .. } => continue,
+        };
+        if !pfields
+            .iter()
+            .any(|(pn, pt)| pn == name && matches!(pt, Type::Ref(_)))
+        {
+            continue;
+        }
+        // Shorthand `{ counter }` names the ident directly.
+        let ident = match value {
+            None => Some(name),
+            Some(Expr::Ident { name, .. }) => Some(name.as_str()),
+            _ => None,
+        };
+        let writable = match ident {
+            Some(n) => ctx.scope.lookup(n).is_none_or(|sym| {
+                matches!(
+                    sym.kind,
+                    SymbolKind::Var | SymbolKind::Array | SymbolKind::Map
+                ) || (sym.kind == SymbolKind::Param && matches!(&sym.ty, Type::Ref(_)))
+            }),
+            None => matches!(value, Some(Expr::FieldAccess { .. })),
+        };
+        if !writable {
+            ctx.emit(
+                "WS008",
+                format!(
+                    "field `{name}` of ref parameter '{}' needs a variable behind it:                      a literal, an `in` port, or an expression has no storage to write back to",
+                    param.name
+                ),
+                frange.clone(),
+            );
+        }
+    }
+}
+
 fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // A param whose type still carries a `Type::Param` is an
     // uninferable generic — left to the caller's own WS033
@@ -361,6 +411,7 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // `arr[i]` is excluded even though it is otherwise ref-able: a scalar
     // ref cannot capture one array element (the game has only a whole-array ref
     // pin).
+    check_record_lit_ref_fields(ctx, param, arg_expr);
     if matches!(&param.ty, Type::Ref(_)) && !matches!(arg_expr, Expr::RefOf { .. }) {
         let ok = match arg_expr {
             Expr::Ident { name, .. } => match ctx.scope.lookup(name) {
