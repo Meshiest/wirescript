@@ -881,9 +881,10 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
-    // Handle field-access targets that resolve through records to vars.
-    // e.g. `cpu.x = 5` where `cpu` is a record and `cpu.x` is a Var binding.
-    if let Expr::FieldAccess { .. } = &s.target
+    // Field targets that resolve through a record to a var: `cpu.x = 5`, and
+    // the tuple spelling `pair.0 = 5` (a `TuplePick` over an index-keyed
+    // record).
+    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
         && let Some(binding) = resolve_field_chain(ctx, &s.target).cloned()
         && let Binding::Var(var_rec) = binding
     {

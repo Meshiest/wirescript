@@ -22,7 +22,11 @@ pub(super) fn resolve_caller_captures(
             continue;
         };
 
-        let resolved_record = ctx.record_fields_of(&param.typ);
+        // Must be the same lookup `wire_chip_args_and_outputs` and
+        // `explode_record_param_pins` use: if this loop disagrees about which
+        // params are record-shaped, the caller wires values where the body
+        // expects refs.
+        let resolved_record = ctx.record_or_tuple_fields(&param.typ);
 
         if let Some(fields) = &resolved_record {
             if let Some(Binding::Record(rec_fields)) = resolve_field_chain(ctx, arg_expr).cloned() {

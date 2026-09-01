@@ -4646,3 +4646,41 @@
             d.message
         );
     }
+
+    /// Distributing `*T` over a record's fields must not open the door the
+    /// storage rule closes: a record whose fields are references still cannot
+    /// back an array or a map, since a stored record needs a real value per
+    /// field.
+    #[test]
+    fn a_record_with_ref_fields_still_cannot_be_stored_in_a_container() {
+        for decl in ["var xs: T[]", "var m: Map<int, T>"] {
+            let r = tc(&format!("type T = {{ a: *float, b: float }}\n{decl}\n"));
+            assert!(
+                r.diagnostics.iter().any(|d| d.code == "WS049"),
+                "{decl} must still be WS049: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    /// A record parameter behind a `*` is accepted and its fields are writable:
+    /// the ref distributes over the fields rather than naming the record, which
+    /// has no single wire of its own.
+    #[test]
+    fn a_record_ref_param_makes_its_fields_assignable() {
+        let r = tc(
+            "type T = { a: float, b: float }\n\
+             chip M(s: *T, x: float) { s.a = x }\n\
+             var g: T = { a: 1.0, b: 2.0 }\n\
+             var src: float = 0.0\n\
+             in go: exec\n\
+             on go { M(g, src) }\n",
+        );
+        assert!(
+            !r.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::diagnostic::Severity::Error),
+            "a `*Record` param must accept field writes: {:?}",
+            r.diagnostics
+        );
+    }

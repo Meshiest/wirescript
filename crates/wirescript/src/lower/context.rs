@@ -45,6 +45,27 @@ pub(super) fn container_storage(typ: &crate::ast::TypeExpr) -> Option<VarStorage
     })
 }
 
+/// Wrap each field's type in a `ref`, the field-wise form of `*T` on a record or
+/// tuple. A field that is already a ref is left alone rather than becoming a
+/// double reference.
+fn distribute_ref_fields(
+    fields: Vec<crate::ast::RecordTypeField>,
+    range: &crate::diagnostic::SourceRange,
+) -> Vec<crate::ast::RecordTypeField> {
+    fields
+        .into_iter()
+        .map(|mut f| {
+            if !matches!(f.typ, crate::ast::TypeExpr::Ref { .. }) {
+                f.typ = crate::ast::TypeExpr::Ref {
+                    inner: Box::new(f.typ),
+                    range: range.clone(),
+                };
+            }
+            f
+        })
+        .collect()
+}
+
 pub(super) fn container_binding(
     typ: &crate::ast::TypeExpr,
     resolved: &Type,
@@ -815,6 +836,14 @@ impl<'a> LowerCtx<'a> {
                     _ => None,
                 }
             }
+            // `*T` on a record distributes over its fields, mirroring
+            // `types::resolve::distribute_ref` on the type side. Reporting the
+            // per-field shape here routes such a param through the record path
+            // in `resolve_caller_captures` / `explode_record_param_pins` /
+            // `wire_chip_args_and_outputs`, which carry ref fields writably.
+            crate::ast::TypeExpr::Ref { inner, range } => {
+                Some(distribute_ref_fields(self.record_fields_of(inner)?, range))
+            }
             _ => None,
         }
     }
@@ -828,9 +857,36 @@ impl<'a> LowerCtx<'a> {
         &self,
         te: &crate::ast::TypeExpr,
     ) -> Option<Vec<crate::ast::RecordTypeField>> {
+        // `*(A, B)` distributes just as `*{ a: A, b: B }` does. Handled here
+        // rather than in `record_fields_of` because only this function expands
+        // a tuple into index-named fields.
+        if let crate::ast::TypeExpr::Ref { inner, range } = te {
+            if let Some(fields) = self.record_or_tuple_fields(inner) {
+                return Some(distribute_ref_fields(fields, range));
+            }
+            // `*Enum` distributes over the enum's slot columns (`__disc` plus
+            // every variant's payload), the same layout `build_enum_fields`
+            // gives an enum var. Only under a ref: a by-value enum param keeps
+            // its existing single-pin path.
+            let cols = crate::lower::predeclare::enum_container_columns(self, inner, range)?;
+            return Some(distribute_ref_fields(cols, range));
+        }
         if let Some(fields) = self.record_fields_of(te) {
             return Some(fields);
         }
+        // A `type P = (A, B)` alias, resolved the way `record_fields_of`
+        // resolves a record alias.
+        let resolved;
+        let te = match te {
+            crate::ast::TypeExpr::Name { name, .. } => match self.type_aliases.get(name.as_str()) {
+                Some(t) => {
+                    resolved = t.clone();
+                    &resolved
+                }
+                None => te,
+            },
+            other => other,
+        };
         if let crate::ast::TypeExpr::Tuple { fields, .. } = te {
             return Some(
                 fields

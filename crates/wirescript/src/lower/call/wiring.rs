@@ -33,7 +33,12 @@ pub(super) fn wire_chip_args_and_outputs(
             continue;
         };
 
-        if matches!(&param.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
+        // A `*Record` is NOT a scalar ref: `record_or_tuple_fields` reports its
+        // per-field shape, so let it fall through to the record branch below,
+        // which allocates one pin per leaf.
+        if matches!(&param.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. })
+            && ctx.record_or_tuple_fields(&param.typ).is_none()
+        {
             if caller_captures.contains_key(&param.name) {
                 continue;
             }

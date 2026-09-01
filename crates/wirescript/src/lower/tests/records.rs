@@ -2113,3 +2113,160 @@ fn auto_unwrapping_multi_output_results_stay_legal() {
         inline_chip.diagnostics
     );
 }
+
+/// `*T` on a record parameter distributes over the record's fields, so a chip
+/// can write through to the caller's storage. A record is one gate PER FIELD, so
+/// a single scalar ref pin has nothing to point at.
+#[test]
+fn a_record_ref_chip_param_writes_through_to_the_callers_fields() {
+    let r = compile(
+        "type T = { a: float, b: float }\n\
+         chip M(s: *T, x: float) { s.a = x\ns.b = x }\n\
+         var g: T = { a: 1.0, b: 2.0 }\n\
+         var src: float = 0.0\n\
+         in go: exec\n\
+         on go { M(g, src) }\n",
+    );
+    assert_no_errors(&r);
+
+    // One ref pin per field, each sourced from a DIFFERENT backing var: a single
+    // shared pin would write both fields to the same storage.
+    let ref_sources: Vec<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.port == WirePort::VarRef)
+        .filter(|w| {
+            r.module
+                .nodes
+                .get(&w.source.node_id)
+                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        })
+        // Only the refs that cross INTO the chip; a plain var also drives its
+        // own `Var_Get` through a VarRef wire inside the caller.
+        .filter(|w| w.target.port == WirePort::RerInput)
+        .map(|w| w.source.node_id)
+        .collect();
+    let distinct: std::collections::HashSet<_> = ref_sources.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        2,
+        "each field must pass its own var ref, got {ref_sources:?}"
+    );
+
+    fn set_count(m: &crate::ir::Module) -> usize {
+        m.nodes
+            .values()
+            .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+            .count()
+            + m.chips.values().map(set_count).sum::<usize>()
+    }
+    assert_eq!(set_count(&r.module), 2, "both field writes must emit a Var_Set");
+
+    fn undriven_pins(m: &crate::ir::Module, all: &crate::ir::Module) -> usize {
+        let mine = m
+            .inputs
+            .iter()
+            .filter(|id| !all.wires.iter().any(|w| w.target.node_id == **id))
+            .count();
+        mine + m.chips.values().map(|c| undriven_pins(c, all)).sum::<usize>()
+    }
+    let module = r.module.clone();
+    assert_eq!(
+        r.module.chips.values().map(|c| undriven_pins(c, &module)).sum::<usize>(),
+        0,
+        "no chip input pin may be left unwired"
+    );
+}
+
+/// The distribution is a type-level rewrite, so a `mod` (inline expansion) and a
+/// `chip` (a real microchip boundary) accept the same signature.
+#[test]
+fn a_record_ref_param_works_for_mods_and_chips_alike() {
+    for kw in ["mod", "chip"] {
+        let r = compile(&format!(
+            "type T = {{ a: float, b: float }}\n\
+             {kw} M(s: *T, x: float) {{ s.a = x }}\n\
+             var g: T = {{ a: 1.0, b: 2.0 }}\n\
+             var src: float = 0.0\n\
+             in go: exec\n\
+             on go {{ M(g, src) }}\n"
+        ));
+        assert_no_errors(&r);
+    }
+}
+
+/// A tuple `var` decomposes into one backing gate per element, and `g.0 = v`
+/// writes the matching gate.
+#[test]
+fn a_tuple_var_gets_per_element_storage_and_writable_elements() {
+    let r = compile(
+        "var g: (float, float) = (1.0, 2.0)\n\
+         var src: float = 0.0\n\
+         in go: exec\n\
+         on go { g.0 = src\ng.1 = src }\n",
+    );
+    assert_no_errors(&r);
+    assert_eq!(
+        written_var_labels(&r),
+        vec!["g.0".to_string(), "g.1".to_string()],
+        "each element must be written through its own backing gate"
+    );
+}
+
+/// `*T` distributes over a TUPLE the way it does over a record, through a type
+/// alias as well as the inline spelling.
+#[test]
+fn a_tuple_ref_chip_param_writes_through_to_the_caller() {
+    for ty in ["P", "(float, float)"] {
+        let r = compile(&format!(
+            "type P = (float, float)\n\
+             chip M(s: *{ty}, x: float) {{ s.0 = x }}\n\
+             var g: P = (1.0, 2.0)\n\
+             var src: float = 0.0\n\
+             in go: exec\n\
+             on go {{ M(g, src) }}\n"
+        ));
+        assert_no_errors(&r);
+        let crossing = r.module.wires.iter().any(|w| {
+            w.source.port == WirePort::VarRef
+                && w.target.port == WirePort::RerInput
+                && r.module
+                    .nodes
+                    .get(&w.source.node_id)
+                    .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        });
+        assert!(crossing, "`*{ty}` must pass an element ref into the chip");
+    }
+}
+
+/// `*Enum` distributes over the enum's slot columns (`__disc` plus the payload
+/// slots), so a chip can reassign the caller's enum variable.
+#[test]
+fn an_enum_ref_chip_param_writes_every_slot_of_the_caller() {
+    let r = compile(
+        "enum Shape { Empty, Circle { r: float } }\n\
+         chip M(s: *Shape) { s = Shape.Empty }\n\
+         var g: Shape = Shape.Circle { r: 1.0 }\n\
+         in go: exec\n\
+         on go { M(g) }\n",
+    );
+    assert_no_errors(&r);
+    // Both of the enum's backing gates (`__disc` and the `r` payload slot) must
+    // reach the chip as refs; one alone means a variant switch that leaves stale
+    // payload behind.
+    let refs: std::collections::HashSet<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.port == WirePort::VarRef && w.target.port == WirePort::RerInput)
+        .filter(|w| {
+            r.module
+                .nodes
+                .get(&w.source.node_id)
+                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        })
+        .map(|w| w.source.node_id)
+        .collect();
+    assert_eq!(refs.len(), 2, "both enum slots must cross as refs, got {refs:?}");
+}

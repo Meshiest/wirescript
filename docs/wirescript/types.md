@@ -168,6 +168,35 @@ mod slide(a: *int, b: *int) { ... }
 
 `Ref<V>` is an alias spelling of `*V` / `ref V` (`Ref<int>` == `*int` == `ref int`).
 
+#### A ref to a record, tuple, or enum refs its parts
+
+A record has no single wire to point at: stored, it becomes one backing gate per
+field. So `*T` on a record **distributes over the fields** -- `*{ a: float, b:
+float }` means `{ a: *float, b: *float }`. This is what lets a chip or mod write
+through to the caller's record:
+
+```wirescript
+type Player = { score: int, lives: int }
+
+chip AwardPoint(p: *Player) {
+  on trigger {
+    p.score = p.score + 1
+  }
+}
+```
+
+The caller passes the record variable itself, and each field is wired as its own
+reference, so the write lands on the caller's storage.
+
+Tuples and enums work the same way, because they are stored the same way: `*(A,
+B)` refs each element, and `*SomeEnum` refs the enum's discriminant and payload
+slots, so a chip can reassign the caller's enum outright.
+
+A field that is *already* a reference stays as it is rather than becoming a
+double reference. Note that a record whose fields are references still cannot be
+stored in a variable, array, or map (`WS049`): storage needs a real value per
+field.
+
 ### Array Types (`T[]`)
 
 Arrays hold multiple values of the same element type. Declare them with a `var` whose type ends in `[]`:

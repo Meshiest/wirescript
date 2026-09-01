@@ -1338,7 +1338,7 @@ fn record_field_storage(
     // the record's own storage kind — a record ARRAY of a record field is
     // parallel arrays one level deeper. `record_fields_of` follows aliases at
     // every level, which `resolve_local_type` (empty alias table) would not.
-    if let Some(sub_fields) = ctx.record_fields_of(field_typ) {
+    if let Some(sub_fields) = ctx.record_or_tuple_fields(field_typ) {
         let sub_inits = init_record_fields(init);
         let mut fmap = HashMap::default();
         for f in &sub_fields {
@@ -1631,7 +1631,7 @@ fn bake_record_map_init(ctx: &mut LowerCtx, name: &str, entries: &[crate::ast::M
 ///
 /// `None` for an unknown enum, which leaves the caller on its existing
 /// single-column path.
-fn enum_container_columns(
+pub(super) fn enum_container_columns(
     ctx: &LowerCtx,
     elem_te: &TypeExpr,
     range: &SourceRange,
@@ -2069,7 +2069,7 @@ fn enum_payload_slot(
         );
         return Binding::Record(fields);
     }
-    if let Some(sub_fields) = ctx.record_fields_of(field_typ) {
+    if let Some(sub_fields) = ctx.record_or_tuple_fields(field_typ) {
         // `init_lit` for a record slot arrives as a `Literal::Record` (the
         // folded `{ a: 7, b: 9 }`), so its per-field values are threaded down
         // by KEY. Passing `None` here instead left every sub-field at its type
@@ -2265,7 +2265,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         // `lower_record_array_method`). `record_fields_of` follows a `type P = {…}`
         // alias on the element the resolved `Type` would not preserve.
         if let Some(TypeExpr::Array { inner: elem_te, .. }) = d.typ.as_ref()
-            && let Some(fields) = ctx.record_fields_of(elem_te)
+            && let Some(fields) = ctx.record_or_tuple_fields(elem_te)
         {
             let label =
                 resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
@@ -2339,7 +2339,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         // maps `Map<K, fieldType>`, keyed the same, bound as a `Binding::Record`.
         // Every map op fans out across them (see `lower_record_map_method`).
         if let Some(val_te) = map_value_typeexpr(d.typ.as_ref())
-            && let Some(fields) = ctx.record_fields_of(val_te)
+            && let Some(fields) = ctx.record_or_tuple_fields(val_te)
         {
             let label =
                 resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
@@ -2413,7 +2413,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // swizzle — a silent miscompile. Mirrors the record INPUT-PORT expansion in
     // `pre_declare_input`; `record_fields_of` follows a `type P = { … }` alias
     // that `resolve_local_type`'s empty alias table cannot.
-    if let Some(fields) = d.typ.as_ref().and_then(|te| ctx.record_fields_of(te)) {
+    if let Some(fields) = d.typ.as_ref().and_then(|te| ctx.record_or_tuple_fields(te)) {
         let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
             .unwrap_or_else(|| d.name.clone());
         declare_record_container(
@@ -2526,7 +2526,7 @@ pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
 pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
     // A record element decomposes into parallel per-field arrays — same as the
     // `var pts: Rec[]` form (see `pre_declare_var`'s array branch).
-    if let Some(fields) = ctx.record_fields_of(&d.element_type) {
+    if let Some(fields) = ctx.record_or_tuple_fields(&d.element_type) {
         declare_record_container(
             ctx,
             &d.name,
@@ -2573,7 +2573,7 @@ pub(super) fn pre_declare_array(ctx: &mut LowerCtx, d: &ArrayDecl) {
 pub(super) fn pre_declare_map(ctx: &mut LowerCtx, d: &crate::ast::MapDecl) {
     // A record VALUE decomposes into parallel per-field maps — same as the
     // `var m: Map<K, Rec>` form (see `pre_declare_var`'s map branch).
-    if let Some(fields) = ctx.record_fields_of(&d.value_type) {
+    if let Some(fields) = ctx.record_or_tuple_fields(&d.value_type) {
         let key_type = ctx.resolve_local_type(&d.key_type);
         declare_record_container(
             ctx,
@@ -2658,11 +2658,11 @@ fn record_input_pins(
     prefix: &str,
     range: &SourceRange,
 ) -> HashMap<crate::intern::Sym, Binding> {
-    let fields = ctx.record_fields_of(te).unwrap_or_default();
+    let fields = ctx.record_or_tuple_fields(te).unwrap_or_default();
     let mut out = HashMap::default();
     for field in &fields {
         let port_name = format!("{prefix}_{}", field.name);
-        if ctx.record_fields_of(&field.typ).is_some() {
+        if ctx.record_or_tuple_fields(&field.typ).is_some() {
             let inner = record_input_pins(ctx, &field.typ, &port_name, range);
             out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
             continue;
@@ -2698,11 +2698,11 @@ pub(super) fn record_output_pins(
     prefix: &str,
     range: &SourceRange,
 ) -> HashMap<crate::intern::Sym, Binding> {
-    let fields = ctx.record_fields_of(te).unwrap_or_default();
+    let fields = ctx.record_or_tuple_fields(te).unwrap_or_default();
     let mut out = HashMap::default();
     for field in &fields {
         let port_name = format!("{prefix}_{}", field.name);
-        if ctx.record_fields_of(&field.typ).is_some() {
+        if ctx.record_or_tuple_fields(&field.typ).is_some() {
             let inner = record_output_pins(ctx, &field.typ, &port_name, range);
             out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
             continue;
@@ -2724,7 +2724,7 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
     // right sub-port. Without this a record port collapsed to a single `any`
     // port and its field accesses lowered to `_Unsupported`/swizzle gates —
     // mirrors the standalone-chip input expansion in `lower::mod`.
-    if ctx.record_fields_of(&d.typ).is_some() {
+    if ctx.record_or_tuple_fields(&d.typ).is_some() {
         let record_fields = record_input_pins(ctx, &d.typ, &d.name, &d.range);
         ctx.scope.insert(&d.name, Binding::Record(record_fields));
         return;
@@ -2768,7 +2768,7 @@ pub(super) fn pre_declare_output(
     // dangling. Only the top-level boundary needs this (see `boundary`).
     if boundary
         && let Some(te) = typ
-        && let Some(fields) = ctx.record_fields_of(te)
+        && let Some(fields) = ctx.record_or_tuple_fields(te)
     {
         let _ = &fields;
         let record_fields = record_output_pins(ctx, te, name, range);

@@ -1,6 +1,9 @@
 # Wirescript Changelog
 
-## 1.7.5
+## 1.8.0
+
+- `*T` on a record, tuple, or enum parameter distributes over its fields, so a chip or mod can write through to the caller's storage (`chip M(s: *T) { s.a = x }`). None of these has a single wire to reference, so the ref now names each backing gate: a record's fields, a tuple's elements, or an enum's discriminant and payload slots.
+- Tuple variables get one backing gate per element, so `g.0 = v` writes. A tuple `var` collapsed to a single gate and element writes emitted nothing.
 
 ### Fixes
 

@@ -168,6 +168,28 @@ pub fn resolve_type(te: &TypeExpr, cx: &ResolveCtx, diags: &mut Vec<Diagnostic>)
     resolve_type_at_depth(te, cx, diags, 0, &mut in_progress)
 }
 
+/// `*T` on a RECORD or TUPLE distributes over its fields: `*{ a: A, b: B }`
+/// resolves to `{ a: *A, b: *B }`, and `*(A, B)` to `(*A, *B)`.
+///
+/// A record has no single wire to point at - storage is one gate per field
+/// (`declare_record_container`) - so a ref wrapping the whole record names
+/// nothing, while the per-field form is exactly what a chip/mod boundary
+/// already carries writably. Nested records recurse; a field that is already a
+/// ref stays as it is rather than becoming `**T`.
+fn distribute_ref(t: Type) -> Type {
+    match t {
+        Type::Record(fields) => Type::Record(
+            fields
+                .into_iter()
+                .map(|(n, ft)| (n, distribute_ref(ft)))
+                .collect(),
+        ),
+        Type::Tuple(fields) => Type::Tuple(fields.into_iter().map(distribute_ref).collect()),
+        already @ Type::Ref(_) => already,
+        other => Type::Ref(Box::new(other)),
+    }
+}
+
 fn resolve_type_at_depth(
     te: &TypeExpr,
     cx: &ResolveCtx,
@@ -208,7 +230,7 @@ fn resolve_type_at_depth(
             Type::Any
         }
         TypeExpr::Ref { inner, .. } => {
-            Type::Ref(Box::new(resolve_type_at_depth(inner, cx, diags, depth, in_progress)))
+            distribute_ref(resolve_type_at_depth(inner, cx, diags, depth, in_progress))
         }
         TypeExpr::Array { inner, .. } => {
             Type::Array(Box::new(resolve_type_at_depth(inner, cx, diags, depth, in_progress)))
