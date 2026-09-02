@@ -115,9 +115,15 @@ pub(in crate::lower) fn lower_chip_call_instance(
     let mut child_module = if let Some(template) = ctx.template_cache.get(&key) {
         // Build remap: for each param name in the template's capture_names,
         // look up the caller's VarRecord and map old_id -> new_id.
+        // Both keys are required: `stamp_module` resolves this module's own
+        // externals by param name (`external_refs`, rebuilt that way below) and
+        // a nested chip body's by `NodeId::to_string()` (`scope_captures`). A
+        // capture missing from either domain is left unremapped, so that body
+        // still points at the first call site's nodes.
         let mut captures = std::collections::HashMap::default();
         for (name, old_id) in &template.external_refs {
             if let Some(var_rec) = caller_captures.get(name) {
+                captures.insert(name.clone(), var_rec.node_id);
                 captures.insert(old_id.to_string(), var_rec.node_id);
             }
         }

@@ -93,3 +93,77 @@ fn let_alias_of_input_array_resolves_index() {
         "x[0] must lower to an ArrayVar_Get on the aliased input"
     );
 }
+
+/// Every node id used as a wire SOURCE anywhere in the module tree.
+fn wire_sources(m: &crate::ir::Module) -> crate::collections::HashSet<crate::ir::NodeId> {
+    let mut out: crate::collections::HashSet<crate::ir::NodeId> =
+        m.wires.iter().map(|w| w.source.node_id).collect();
+    for c in m.chips.values() {
+        out.extend(wire_sources(c));
+    }
+    out
+}
+
+/// Root-module var gates carrying `name`, by `NAME_LABEL`.
+fn var_ids_named(m: &crate::ir::Module, name: &str) -> Vec<crate::ir::NodeId> {
+    let mut ids: Vec<crate::ir::NodeId> = m
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|(_, n)| {
+            matches!(
+                n.properties.get(&*sym::NAME_LABEL),
+                Some(crate::ir::Literal::String(s)) if s == name || s.starts_with(&format!("{name}."))
+            )
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// A `chip` with a `*T` param, called twice with different vars: the second
+/// instance is stamped from the template cache and must remap its captured
+/// externals to its own argument, or every call site writes through to the
+/// first argument and the later vars go unwired.
+#[test]
+fn chip_ref_param_rebinds_per_call_site() {
+    let r = compile(
+        "chip M(self: *float, x: float) -> float {\n  self = x + 2\n  return self * 3.0\n}\n\
+         var ta: float = 1.0\nvar tb: float = 2.0\nin foo: float\n\
+         var output: float = 0.0\nout result: float = output\n\
+         in go: exec\non go {\n  output += M(ta, foo)\n  output += M(tb, foo)\n}",
+    );
+    let sources = wire_sources(&r.module);
+    for name in ["ta", "tb"] {
+        let ids = var_ids_named(&r.module, name);
+        assert!(!ids.is_empty(), "no var gate named {name}");
+        assert!(
+            ids.iter().any(|id| sources.contains(id)),
+            "`{name}` was passed by ref to a chip but its var gate is wired to \
+             nothing, so the instance rebound to the other call site's var"
+        );
+    }
+}
+
+/// Same for a record `*T` param, where the capture is one entry per field.
+#[test]
+fn chip_record_ref_param_rebinds_per_call_site() {
+    let r = compile(
+        "type P = { a: float, b: float }\n\
+         chip M(self: *P, x: float) -> float {\n  self.a = x + 2\n  return self.a * self.b\n}\n\
+         var ta: P = { a: 1.0, b: 1.5 }\nvar tb: P = { a: 2.0, b: 2.5 }\nin foo: float\n\
+         var output: float = 0.0\nout result: float = output\n\
+         in go: exec\non go {\n  output += M(ta, foo)\n  output += M(tb, foo)\n}",
+    );
+    let sources = wire_sources(&r.module);
+    for name in ["ta", "tb"] {
+        let ids = var_ids_named(&r.module, name);
+        assert!(!ids.is_empty(), "no var gates for record {name}");
+        assert!(
+            ids.iter().all(|id| sources.contains(id)),
+            "record `{name}` was passed by ref to a chip but some of its field vars \
+             are wired to nothing, so the instance rebound to the other call site's record"
+        );
+    }
+}

@@ -10,6 +10,7 @@
 - Reading a reference-typed record field yields its value, like reading a `var`. `var f: float = state.a` on a `*T` parameter reported `expected float, got *float`, and an if-then-else over two such fields reported a branch mismatch.
 - `rec.field.Value` reads the field's backing variable. Only `x.Value` on a plain identifier resolved, so the field spelling lowered to a placeholder and left its consumer unwired.
 - A record literal passed to a `*T` parameter is a `WS008` error when a reference field has no variable behind it. An `in` port or expression has no storage to write back to, and the call previously compiled with the caller wiring a value where the body read a reference.
+- A `chip` with a `*T` parameter binds each call site to its own argument. Every call after the first reused the first instance's captured variables, so writes through the reference landed on the first argument and the later arguments' variables were left unwired.
 
 ## 1.8.0
 
