@@ -385,7 +385,9 @@ fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: 
             ctx.emit(
                 "WS008",
                 format!(
-                    "field `{name}` of ref parameter '{}' needs a variable behind it:                      a literal, an `in` port, or an expression has no storage to write back to",
+                    "field `{name}` of ref parameter '{}' needs a variable behind \
+                     it: a literal, an `in` port, or an expression has no storage \
+                     to write back to",
                     param.name
                 ),
                 frange.clone(),
