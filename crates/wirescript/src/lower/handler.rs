@@ -786,7 +786,7 @@ fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
     // Pre-declare vars inside stmt-level anon chips.
     for s in &block.stmts {
         if let Stmt::AnonChip(ac) = s {
-            pre_declare_decl(ctx, &TopDecl::AnonChip(ac.clone()));
+            pre_declare_anon_chip(ctx, ac);
         }
     }
     for s in &block.stmts {

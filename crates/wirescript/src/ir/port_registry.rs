@@ -33,6 +33,21 @@ macro_rules! wire_ports {
                 static NAMES: &[&str] = &[ $( $str_name, )* ];
                 NAMES
             }
+
+            /// Interned symbol for this port's name, cached per variant so
+            /// hot paths skip a global-interner lookup per call.
+            pub fn sym(self) -> crate::intern::Sym {
+                static SYMS: std::sync::LazyLock<Vec<crate::intern::Sym>> =
+                    std::sync::LazyLock::new(|| {
+                        WirePort::all_names()
+                            .iter()
+                            .copied()
+                            .map(crate::intern::intern_static)
+                            .chain(std::iter::once(crate::intern::intern_static("_Layout")))
+                            .collect()
+                    });
+                SYMS[self as usize]
+            }
         }
 
         impl std::fmt::Display for WirePort {

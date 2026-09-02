@@ -23,12 +23,12 @@ pub(super) fn data_struct_for_gate(gate_class: &str) -> Option<(&'static str, &'
 /// Hand-written arms in [`data_struct_for_gate`] take precedence — they
 /// encode the deliberate exceptions (wire-only gates, struct overrides,
 /// classes absent from the pair table).
-pub(super) fn derived_gate_data() -> &'static StdMap<&'static str, (&'static str, Vec<&'static str>)> {
-    static MAP: std::sync::OnceLock<StdMap<&'static str, (&'static str, Vec<&'static str>)>> =
+pub(super) fn derived_gate_data() -> &'static HashMap<&'static str, (&'static str, Vec<&'static str>)> {
+    static MAP: std::sync::OnceLock<HashMap<&'static str, (&'static str, Vec<&'static str>)>> =
         std::sync::OnceLock::new();
     MAP.get_or_init(|| {
         let schema = brdb::schemas::bricks_components_schema_max();
-        let mut m = StdMap::new();
+        let mut m = HashMap::default();
         for (comp, strct) in brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS {
             let Some(s) = schema.get_struct(strct) else {
                 continue;
@@ -81,11 +81,11 @@ pub(super) struct FieldMeta {
 /// emit classification and interned name computed once.
 pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> {
     use brdb::schema::BrdbSchemaStructProperty;
-    static MAP: std::sync::OnceLock<StdMap<&'static str, Vec<FieldMeta>>> =
+    static MAP: std::sync::OnceLock<HashMap<&'static str, Vec<FieldMeta>>> =
         std::sync::OnceLock::new();
     MAP.get_or_init(|| {
         let schema = brdb::schemas::bricks_components_schema_max();
-        let mut m = StdMap::new();
+        let mut m = HashMap::default();
         for (comp, strct) in brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS {
             let Some(s) = schema.get_struct(strct) else {
                 continue;

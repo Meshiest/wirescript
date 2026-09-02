@@ -51,25 +51,99 @@ pub fn analyze(enum_defs: &HashMap<String, EnumDef>, scrutinee: &Type, arms: &[P
     // non-enum scrutinee would otherwise collapse to a single opaque column
     // and mark every arm after the first unreachable, which is actively
     // misleading. Report nothing rather than a wrong diagnostic.
-    if col.is_none() {
+    let Some(col) = col else {
         return Usefulness::default();
-    }
-    let types = [col];
+    };
+    let edef = col.edef;
 
+    // Specialized top-level driver: the matrix has exactly one column (the
+    // scrutinee), so instead of rebuilding an i-row matrix per arm and letting
+    // `is_useful` re-scan it (quadratic in arms, with a linear variant-name
+    // scan inside), group arms by head constructor once and keep one
+    // pre-specialized sub-matrix per constructor. Semantics are identical to
+    // running `is_useful`/`useful_witnesses` over the full matrix.
+    let vmap: HashMap<&str, &VariantDef> =
+        edef.variants.iter().map(|v| (v.name.as_str(), v)).collect();
+    // Same reading as `head_variant_name`: a `Variant` names any member, a
+    // bare `Binding` only a UNIT member; anything else is wildcard-like.
+    let head_of = |p: &Pattern| -> Option<&VariantDef> {
+        match p {
+            Pattern::Variant { variant, .. } => vmap.get(variant.as_str()).copied(),
+            Pattern::Binding { name, .. } => vmap
+                .get(name.as_str())
+                .copied()
+                .filter(|v| matches!(v.payload, Payload::Unit)),
+            Pattern::Wildcard(_) => None,
+        }
+    };
+
+    struct Spec<'a> {
+        types: Vec<Option<ColEnum<'a>>>,
+        rows: Vec<Vec<Pattern>>,
+    }
+    let mut spec: HashMap<&str, Spec> = HashMap::default();
+    // A wildcard-like arm is a full catch-all in a single-column matrix: every
+    // arm after it is unreachable, and nothing can be missing past it.
+    let mut seen_catchall = false;
     let mut unreachable_arms = Vec::new();
-    for i in 0..arms.len() {
-        let matrix: Vec<Vec<Pattern>> = arms[..i].iter().map(|p| vec![p.clone()]).collect();
-        let row = [arms[i].clone()];
-        if !is_useful(&matrix, &row, &types, enum_defs) {
-            unreachable_arms.push(i);
+
+    for (i, arm) in arms.iter().enumerate() {
+        match head_of(arm) {
+            Some(v) => {
+                let entry = spec.entry(v.name.as_str()).or_insert_with(|| Spec {
+                    types: payload_col_types(&v.payload, &col, enum_defs),
+                    rows: Vec::new(),
+                });
+                let row = expand_matching(arm, v);
+                if seen_catchall || !is_useful(&entry.rows, &row, &entry.types, enum_defs) {
+                    unreachable_arms.push(i);
+                }
+                entry.rows.push(row);
+            }
+            None => {
+                // Useful iff the arms so far leave some value uncovered: a
+                // constructor never tested, or a tested one whose payload
+                // sub-matrix is not exhaustive. Runs at most once - the next
+                // wildcard-like arm short-circuits on `seen_catchall`.
+                let useful = !seen_catchall
+                    && edef.variants.iter().any(|v| match spec.get(v.name.as_str()) {
+                        None => true,
+                        Some(s) => !useful_witnesses(&s.rows, &s.types, enum_defs).is_empty(),
+                    });
+                if !useful {
+                    unreachable_arms.push(i);
+                }
+                seen_catchall = true;
+            }
         }
     }
 
-    let full_matrix: Vec<Vec<Pattern>> = arms.iter().map(|p| vec![p.clone()]).collect();
-    let missing = useful_witnesses(&full_matrix, &types, enum_defs)
-        .into_iter()
-        .map(|mut row| Witness(row.remove(0)))
-        .collect();
+    // Witnesses, mirroring `useful_witnesses`' top-level split exactly: a
+    // catch-all row covers everything; an INCOMPLETE signature reports only
+    // the untested constructors (payload holes of tested ones are not
+    // descended into); a complete one recurses into each constructor.
+    let mut missing = Vec::new();
+    if !seen_catchall {
+        let all_used = edef.variants.iter().all(|v| spec.contains_key(v.name.as_str()));
+        if all_used {
+            for v in &edef.variants {
+                let s = &spec[v.name.as_str()];
+                for w in useful_witnesses(&s.rows, &s.types, enum_defs) {
+                    missing.push(Witness(build_variant_pattern(v, w)));
+                }
+            }
+        } else {
+            for v in &edef.variants {
+                if !spec.contains_key(v.name.as_str()) {
+                    let arity = payload_arity(&v.payload);
+                    missing.push(Witness(build_variant_pattern(
+                        v,
+                        vec![Pattern::Wildcard(SourceRange::default()); arity],
+                    )));
+                }
+            }
+        }
+    }
 
     Usefulness { missing, unreachable_arms }
 }

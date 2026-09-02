@@ -65,6 +65,15 @@ pub struct SymbolInfo {
 /// typecheck-specific API (`declare`, `lookup`, `set_type`).
 pub struct Scope {
     inner: ScopeStack<SymbolInfo>,
+    /// Live map of every `SymbolKind::Type` alias currently visible
+    /// (innermost wins), maintained by `declare`/`push`/`pop` so
+    /// `type_aliases()` is a refcount bump instead of a full-scope rescan
+    /// that deep-clones every alias body per annotation.
+    alias_view: std::sync::Arc<HashMap<String, Type>>,
+    /// One undo log per frame above the base: each entry is (alias name,
+    /// value it shadowed in `alias_view`, or `None` if newly introduced),
+    /// applied in reverse on `pop`.
+    alias_undo: Vec<Vec<(String, Option<Type>)>>,
 }
 
 impl Default for Scope {
@@ -77,13 +86,25 @@ impl Scope {
     pub fn new() -> Self {
         Self {
             inner: ScopeStack::new(),
+            alias_view: std::sync::Arc::new(HashMap::default()),
+            alias_undo: Vec::new(),
         }
     }
     pub fn push(&mut self) {
         self.inner.push(crate::scope::ScopeTag::BLOCK);
+        self.alias_undo.push(Vec::new());
     }
     pub fn pop(&mut self) {
         self.inner.pop();
+        if let Some(undo) = self.alias_undo.pop() {
+            let view = std::sync::Arc::make_mut(&mut self.alias_view);
+            for (name, prev) in undo.into_iter().rev() {
+                match prev {
+                    Some(ty) => view.insert(name, ty),
+                    None => view.remove(&name),
+                };
+            }
+        }
     }
     /// Number of open frames (>= 1); the top frame's index is `depth() - 1`.
     pub fn depth(&self) -> usize {
@@ -96,12 +117,23 @@ impl Scope {
     }
     /// Declare in the top-most frame. Returns the prior info if any.
     pub fn declare(&mut self, name: &str, info: SymbolInfo) -> Option<SymbolInfo> {
+        if info.kind == SymbolKind::Type {
+            let prev = std::sync::Arc::make_mut(&mut self.alias_view)
+                .insert(name.to_string(), info.ty.clone());
+            if let Some(undo) = self.alias_undo.last_mut() {
+                undo.push((name.to_string(), prev));
+            }
+        }
         self.inner.insert(name, info)
     }
     /// Mutate an already-declared symbol's type (used to refine buffer
     /// types after their RHS infers).
     pub fn set_type(&mut self, name: &str, ty: Type) {
         if let Some(info) = self.inner.get_mut(name) {
+            if info.kind == SymbolKind::Type {
+                std::sync::Arc::make_mut(&mut self.alias_view)
+                    .insert(name.to_string(), ty.clone());
+            }
             info.ty = ty;
         }
     }
@@ -112,14 +144,8 @@ impl Scope {
     /// (innermost frame wins on a name collision, matching `lookup`'s
     /// shadowing), for `resolve_type_expr`'s delegation to the shared
     /// `types::resolve::resolve_type`.
-    pub fn type_aliases(&self) -> HashMap<String, Type> {
-        let mut out = HashMap::default();
-        for (name, info) in self.inner.iter() {
-            if info.kind == SymbolKind::Type {
-                out.entry(name.to_string()).or_insert_with(|| info.ty.clone());
-            }
-        }
-        out
+    pub fn type_aliases(&self) -> std::sync::Arc<HashMap<String, Type>> {
+        self.alias_view.clone()
     }
 }
 

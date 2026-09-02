@@ -21,7 +21,7 @@ pub(super) fn pre_declare_chip_name(ctx: &mut LowerCtx, c: &ChipDecl) {
     // The stack is never empty (the base frame holds the module's top-level
     // declarations), so this always lands somewhere.
     if let Some(frame) = ctx.pass1_chips.last_mut() {
-        frame.insert(c.name.clone(), std::sync::Arc::new(c.clone()));
+        std::sync::Arc::make_mut(frame).insert(c.name.clone(), std::sync::Arc::new(c.clone()));
     }
 }
 
@@ -89,52 +89,64 @@ pub(super) fn pre_declare_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             )
         }),
         TopDecl::Let(l) => pre_declare_exec_signal(ctx, l),
-        TopDecl::AnonChip(ac) => {
-            let chip_node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::MICROCHIP_ALT,
-                source_range: ac.range.clone(),
-                ports: GateIO::default(),
-                ..Default::default()
-            });
-            if let Some(node) = ctx.builder.module.nodes.get_mut(&chip_node_id) {
-                node.kind = NodeKind::Chip;
-                let props = std::sync::Arc::make_mut(&mut node.properties);
-                if ac.closed {
-                    props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
-                }
-                if let Some(label) =
-                    resolve_label_text(ac.label.as_deref(), ac.label_expr.as_ref(), &ctx.const_env)
-                {
-                    props.insert(*sym::NAME_LABEL, Literal::String(label));
-                }
-                if let Some(doc) = ctx.doc_comments.get(&ac.range.start.offset) {
-                    props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
-                }
-            }
-            // Tag pre-declared nodes with chip_id.
-            let saved = ctx.current_anon_chip.take();
-            ctx.current_anon_chip = Some(chip_node_id);
-            for s in &ac.body.stmts {
-                match s {
-                    // Nested declaration shadows a same-named outer one for
-                    // any LATER initializer in this body — see
-                    // `pre_declare_chip_name`.
-                    Stmt::ChipDecl(c) => pre_declare_chip_name(ctx, c),
-                    Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
-                    Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
-                    Stmt::Array(a) => pre_declare_array(ctx, a),
-                    Stmt::Map(m) => pre_declare_map(ctx, m),
-                    Stmt::In(i) => pre_declare_input(ctx, i),
-                    Stmt::OutBinding(o) if o.side.is_some() => {
-                        report_non_root_side(ctx, &o.range);
-                    }
-                    _ => {}
-                }
-            }
-            ctx.current_anon_chip = saved;
-        }
+        TopDecl::AnonChip(ac) => pre_declare_anon_chip(ctx, ac),
         _ => {}
     }
+}
+
+/// Create an anonymous chip's Chip node and register its body's storage
+/// declarations. Callable directly with the `AnonChipDecl` so a statement-level
+/// `chip { }` need not be rewrapped in a cloned `TopDecl` first.
+pub(super) fn pre_declare_anon_chip(ctx: &mut LowerCtx, ac: &AnonChipDecl) {
+    let chip_node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::MICROCHIP_ALT,
+        source_range: ac.range.clone(),
+        ports: GateIO::default(),
+        ..Default::default()
+    });
+    if let Some(node) = ctx.builder.module.nodes.get_mut(&chip_node_id) {
+        node.kind = NodeKind::Chip;
+        let props = std::sync::Arc::make_mut(&mut node.properties);
+        if ac.closed {
+            props.insert(*sym::CHIP_CLOSED, Literal::Bool(true));
+        }
+        if let Some(label) =
+            resolve_label_text(ac.label.as_deref(), ac.label_expr.as_ref(), &ctx.const_env)
+        {
+            props.insert(*sym::NAME_LABEL, Literal::String(label));
+        }
+        if let Some(doc) = ctx.doc_comments.get(&ac.range.start.offset) {
+            props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
+        }
+    }
+    // Pair the node with its decl so `lower_anon_chip` finds it without a
+    // whole-module scan. Keyed by (range, enclosing chip), the same pair the
+    // scan matched on.
+    ctx.anon_chip_nodes.insert(
+        (ac.range.clone(), ctx.current_anon_chip),
+        chip_node_id,
+    );
+    // Tag pre-declared nodes with chip_id.
+    let saved = ctx.current_anon_chip.take();
+    ctx.current_anon_chip = Some(chip_node_id);
+    for s in &ac.body.stmts {
+        match s {
+            // Nested declaration shadows a same-named outer one for
+            // any LATER initializer in this body. See
+            // `pre_declare_chip_name`.
+            Stmt::ChipDecl(c) => pre_declare_chip_name(ctx, c),
+            Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
+            Stmt::Buffer(b) => pre_declare_buffer(ctx, b),
+            Stmt::Array(a) => pre_declare_array(ctx, a),
+            Stmt::Map(m) => pre_declare_map(ctx, m),
+            Stmt::In(i) => pre_declare_input(ctx, i),
+            Stmt::OutBinding(o) if o.side.is_some() => {
+                report_non_root_side(ctx, &o.range);
+            }
+            _ => {}
+        }
+    }
+    ctx.current_anon_chip = saved;
 }
 
 /// Pre-declare a top-level `let x: exec` local signal: create a stable Union

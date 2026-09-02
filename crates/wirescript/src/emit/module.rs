@@ -63,7 +63,7 @@ pub(super) fn emit_module(
     template_cache: &std::sync::Arc<crate::template_cache::TemplateCache>,
 ) -> Result<(), EmitError> {
     let value_sym = *sym::VALUE;
-    let mut inlined_by_node: StdMap<NodeId, Vec<(WirePort, Literal)>> = StdMap::new();
+    let mut inlined_by_node: HashMap<NodeId, Vec<(WirePort, Literal)>> = HashMap::default();
     for w in &module.wires {
         let src_node = module.nodes.get(&w.source.node_id);
         if src_node.map(|n| n.gate_class) == Some(gc::LITERAL) {
@@ -77,7 +77,7 @@ pub(super) fn emit_module(
         }
     }
 
-    let mut wire_target_index: StdMap<(NodeId, WirePort), NodeId> = StdMap::new();
+    let mut wire_target_index: HashMap<(NodeId, WirePort), NodeId> = HashMap::default();
     for w in &module.wires {
         wire_target_index.insert((w.target.node_id, w.target.port), w.source.node_id);
         ctx.wire_sources
@@ -158,7 +158,7 @@ pub(super) fn emit_module(
         }
         .with_id_split();
 
-        let mut gate_inlined: StdMap<Sym, &Literal> = StdMap::new();
+        let mut gate_inlined: HashMap<Sym, &Literal> = HashMap::default();
         if let Some(entries) = inlined_by_node.get(id) {
             for (port_idx, lit) in entries {
                 let port_sym = crate::intern::intern(port_idx.as_str());

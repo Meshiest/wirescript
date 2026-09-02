@@ -46,6 +46,7 @@ pub(super) fn build_chip_module(
         captured_events: HashMap::default(),
         next_chain_id: 0,
         current_anon_chip: None,
+        anon_chip_nodes: crate::collections::HashMap::default(),
         mod_return_exec: None,
         mod_return_var: None,
         mod_return_record: None,

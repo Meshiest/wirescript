@@ -165,6 +165,11 @@ pub(super) struct LowerCtx<'a> {
     /// When inside an anonymous chip body, nodes get tagged with this
     /// chip_id so the emitter routes them to a child grid.
     pub(super) current_anon_chip: Option<NodeId>,
+    /// Anonymous-chip Chip nodes created by `pre_declare_anon_chip`, keyed
+    /// by (decl range, enclosing chip at predeclare time) so
+    /// `lower_anon_chip` can pair a decl with its node without scanning
+    /// every module node.
+    pub(super) anon_chip_nodes: crate::collections::HashMap<(SourceRange, Option<NodeId>), NodeId>,
     /// Accumulated exec from `return` statements inside an inlined mod.
     /// Each return merges into this via chained union gates.
     pub(super) mod_return_exec: Option<PortRef>,
@@ -398,7 +403,11 @@ pub(super) struct LowerCtx<'a> {
     ///
     /// Always non-empty: the base frame holds the module's top-level
     /// declarations.
-    pub(super) pass1_chips: Vec<HashMap<String, std::sync::Arc<ChipDecl>>>,
+    /// Frames are `Arc`-shared: a chip instantiation snapshots the whole
+    /// stack by refcount bump (`build_chip_module`), and a shared frame is
+    /// only deep-cloned if something actually inserts into it
+    /// (`Arc::make_mut` in `pre_declare_chip_name`).
+    pub(super) pass1_chips: Vec<std::sync::Arc<HashMap<String, std::sync::Arc<ChipDecl>>>>,
     /// Bare names the importing module itself owns — snapshotted from `scope`
     /// after pass-1 pre-declaration (its `in`/`out`/`var`/`array`/… ), before
     /// any `import * as` namespace lowers its members in pass 2. A namespaced
@@ -545,7 +554,7 @@ impl<'a> LowerCtx<'a> {
         self.scope.push(tag);
         self.scoped_consts.push(HashMap::default());
         self.scoped_const_declared.push(HashSet::default());
-        self.pass1_chips.push(HashMap::default());
+        self.pass1_chips.push(std::sync::Arc::new(HashMap::default()));
     }
 
     /// If a state decl at `range`'s source location was already lowered — the

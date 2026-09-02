@@ -161,6 +161,46 @@ fn decl_name(d: &TopDecl) -> Option<&str> {
     }
 }
 
+/// The accumulated import-merged declaration list, with the two indexes the
+/// per-import passes query: `used` is the union of every runtime identifier
+/// referenced by the decls so far (what `collect_runtime_idents_in_decls`
+/// recomputed from scratch per fixpoint sweep), and `bound` maps each bound
+/// top-level name to the source files that bind it (what the diamond-dedup
+/// checks rescanned the whole list for). Declarations are only ever added, so
+/// both indexes update monotonically on `push`/`insert_front`.
+#[derive(Default)]
+struct DeclAccum {
+    decls: Vec<TopDecl>,
+    used: HashSet<String>,
+    bound: HashMap<String, Vec<Arc<str>>>,
+}
+
+impl DeclAccum {
+    fn index(&mut self, d: &TopDecl) {
+        collect_runtime_idents_in_decl(d, &mut self.used);
+        let file = d.range().file.clone();
+        for n in decl_names(d) {
+            self.bound.entry(n).or_default().push(file.clone());
+        }
+    }
+    fn push(&mut self, d: TopDecl) {
+        self.index(&d);
+        self.decls.push(d);
+    }
+    fn insert_front(&mut self, d: TopDecl) {
+        self.index(&d);
+        self.decls.insert(0, d);
+    }
+    /// `decls.iter().any(|e| decl_binds(e, name))`.
+    fn binds(&self, name: &str) -> bool {
+        self.bound.contains_key(name)
+    }
+    /// `decls.iter().any(|e| decl_binds(e, name) && e.range().file == file)`.
+    fn binds_in_file(&self, name: &str, file: &Arc<str>) -> bool {
+        self.bound.get(name).is_some_and(|files| files.iter().any(|f| f == file))
+    }
+}
+
 fn resolve_file(
     path: &str,
     relative_to: &str,
@@ -204,7 +244,7 @@ fn resolve_file(
     // after the ones it imports — chips/mods register in source order during
     // lowering, so appending would make every call into an imported module a
     // use-before-declaration.
-    let mut sub_decls: Vec<TopDecl> = Vec::new();
+    let mut sub_decls = DeclAccum::default();
     for imp in &sub_imports {
         resolve_import(
             imp,
@@ -217,9 +257,10 @@ fn resolve_file(
             &mut HashMap::default(),
         );
     }
-    if !sub_decls.is_empty() {
-        sub_decls.append(&mut imported_ast.decls);
-        imported_ast.decls = sub_decls;
+    if !sub_decls.decls.is_empty() {
+        let mut merged = sub_decls.decls;
+        merged.append(&mut imported_ast.decls);
+        imported_ast.decls = merged;
     }
 
     stack.remove(&canon);
@@ -237,7 +278,7 @@ fn resolve_import(
     cache: &mut HashMap<String, ParseResult>,
     stack: &mut HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
-    target_decls: &mut Vec<TopDecl>,
+    target: &mut DeclAccum,
     target_doc_comments: &mut HashMap<usize, String>,
 ) {
     let canon = loader.canonical_path(&imp.path, relative_to);
@@ -285,9 +326,6 @@ fn resolve_import(
         target_doc_comments.insert(*k, v.clone());
     }
 
-    let already_has =
-        |decls: &[TopDecl], name: &str| -> bool { decls.iter().any(|e| decl_binds(e, name)) };
-
     match &imp.kind {
         ImportKind::All => {
             for d in importable {
@@ -298,15 +336,13 @@ fn resolve_import(
                 // duplicate-name check (WS013) fires, rather than silently
                 // dropping one and aliasing the two onto a single storage gate.
                 let d_file = d.range().file.clone();
-                let is_diamond = decl_names(&d).iter().any(|n| {
-                    target_decls
-                        .iter()
-                        .any(|e| decl_binds(e, n) && e.range().file == d_file)
-                });
+                let is_diamond = decl_names(&d)
+                    .iter()
+                    .any(|n| target.binds_in_file(n, &d_file));
                 if is_diamond {
                     continue;
                 }
-                target_decls.push(d);
+                target.push(d);
             }
         }
         ImportKind::Named(bindings) => {
@@ -314,7 +350,7 @@ fn resolve_import(
             // Everything this import contributes goes after here; the closure
             // pass below pulls dependencies in discovery order, which is not
             // declaration order, so the block is re-sorted at the end.
-            let import_start = target_decls.len();
+            let import_start = target.decls.len();
             for b in bindings {
                 let effective_name = b.alias.as_deref().unwrap_or(&b.name);
                 let Some(d) = importable.iter().find(|d| decl_binds(d, &b.name)) else {
@@ -331,10 +367,7 @@ fn resolve_import(
                 // A same name selected from a DIFFERENT file is a real collision —
                 // keep it so WS013 fires instead of silently aliasing them.
                 let d_file = d.range().file.clone();
-                let same_file_present = target_decls
-                    .iter()
-                    .any(|e| decl_binds(e, effective_name) && e.range().file == d_file);
-                if same_file_present {
+                if target.binds_in_file(effective_name, &d_file) {
                     continue;
                 }
                 if let Some(alias) = &b.alias {
@@ -356,9 +389,9 @@ fn resolve_import(
                         ));
                         continue;
                     }
-                    target_decls.push(d);
+                    target.push(d);
                 } else {
-                    target_decls.push(d.clone());
+                    target.push(d.clone());
                 }
             }
             // Pull in non-requested declarations that are referenced by
@@ -368,19 +401,16 @@ fn resolve_import(
             // chains (A calls B calls C) are fully resolved.
             // TypeAlias declarations are NOT pulled — they are inlined below.
             loop {
-                let used = collect_runtime_idents_in_decls(target_decls);
                 let mut added = false;
                 for d in &importable {
                     if matches!(d, TopDecl::TypeAlias(_)) { continue; }
                     let names = decl_names(d);
                     if !names.is_empty()
-                        && names.iter().any(|n| used.contains(n.as_str()))
+                        && names.iter().any(|n| target.used.contains(n.as_str()))
                         && !names.iter().any(|n| binding_names.contains(n.as_str()))
-                        && !names
-                            .iter()
-                            .any(|n| target_decls.iter().any(|e| decl_binds(e, n)))
+                        && !names.iter().any(|n| target.binds(n))
                     {
-                        target_decls.push(d.clone());
+                        target.push(d.clone());
                         added = true;
                     }
                 }
@@ -400,7 +430,7 @@ fn resolve_import(
                     order.entry(n).or_insert(i);
                 }
             }
-            target_decls[import_start..].sort_by_key(|d| {
+            target.decls[import_start..].sort_by_key(|d| {
                 decl_names(d)
                     .iter()
                     .filter_map(|n| order.get(n).copied())
@@ -417,7 +447,7 @@ fn resolve_import(
                 })
                 .collect();
             if !type_aliases.is_empty() {
-                for d in target_decls.iter_mut() {
+                for d in target.decls.iter_mut() {
                     expand_type_aliases_in_decl(d, &type_aliases);
                 }
             }
@@ -452,7 +482,7 @@ fn resolve_import(
                 }
             }
 
-            target_decls.push(TopDecl::Namespace(NamespaceDecl {
+            target.push(TopDecl::Namespace(NamespaceDecl {
                 name: ns_name.clone(),
                 decls,
                 source_path: imp.path.clone(),
@@ -469,17 +499,16 @@ fn resolve_import(
     // namespaces travel, so importing a file does not leak its every import.
     if !source_namespaces.is_empty() {
         loop {
-            let used = collect_runtime_idents_in_decls(target_decls);
             let mut added = false;
             for ns in &source_namespaces {
                 if let Some(name) = decl_name(ns)
-                    && used.contains(name)
-                    && !already_has(target_decls, name)
+                    && target.used.contains(name)
+                    && !target.binds(name)
                 {
                     // Prepend: lowering registers declarations in source order,
                     // so a namespace appended after its caller would read as a
                     // use before declaration and resolve to nothing.
-                    target_decls.insert(0, ns.clone());
+                    target.insert_front(ns.clone());
                     added = true;
                 }
             }
@@ -564,7 +593,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
     let mut diagnostics = parsed.diagnostics.clone();
     let mut doc_comments = parsed.doc_comments.clone();
 
-    let mut decls: Vec<TopDecl> = Vec::new();
+    let mut merged = DeclAccum::default();
     let mut main_decls: Vec<TopDecl> = Vec::new();
     let mut cache: HashMap<String, ParseResult> = HashMap::default();
     let mut stack: HashSet<String> = HashSet::default();
@@ -581,7 +610,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
                 &mut cache,
                 &mut stack,
                 &mut diagnostics,
-                &mut decls,
+                &mut merged,
                 &mut doc_comments,
             );
         } else {
@@ -593,7 +622,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
     // file OR another imported declaration references it — imported mods
     // reference their defining module's constants inside their bodies.
     let mut used_idents = collect_idents_in_decls(&main_decls);
-    used_idents.extend(collect_idents_in_decls(&decls));
+    used_idents.extend(collect_idents_in_decls(&merged.decls));
     for d in &parsed.ast.decls {
         if let TopDecl::Import(imp) = d
             && let ImportKind::Named(bindings) = &imp.kind {
@@ -611,6 +640,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
     }
 
     // Imported declarations come first, then main file declarations
+    let mut decls = merged.decls;
     decls.extend(main_decls);
 
     ResolveResult {
@@ -645,14 +675,6 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
         // import set.
         imported_files: cache.into_keys().collect(),
     }
-}
-
-fn collect_runtime_idents_in_decls(decls: &[TopDecl]) -> HashSet<String> {
-    let mut idents = HashSet::default();
-    for d in decls {
-        collect_runtime_idents_in_decl(d, &mut idents);
-    }
-    idents
 }
 
 fn collect_runtime_idents_in_decl(d: &TopDecl, idents: &mut HashSet<String>) {

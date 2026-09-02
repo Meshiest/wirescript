@@ -103,6 +103,13 @@ fn disk_prefab_resolver_depth(entry_file: &str, fold_mode: FoldMode, depth: usiz
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
+    // Per-resolver memo: a program that spawns the same `$./file` prefab from
+    // many sites resolves it once; repeat references reuse the bytes (the
+    // embed step already dedups identical bytes by content hash, so this
+    // also keeps a multiply-referenced `.ws` prefab to a single embedded
+    // blob instead of one per nondeterministic recompile).
+    let cache: std::sync::Mutex<HashMap<std::path::PathBuf, Vec<u8>>> =
+        std::sync::Mutex::new(HashMap::default());
     PrefabResolver::new(move |path: &str| {
         let full = if let Some(rel) = path.strip_prefix("./") {
             base.join(rel)
@@ -111,6 +118,9 @@ fn disk_prefab_resolver_depth(entry_file: &str, fold_mode: FoldMode, depth: usiz
         } else {
             base.join(path)
         };
+        if let Some(bytes) = cache.lock().unwrap().get(&full) {
+            return Ok(bytes.clone());
+        }
         // A `.ws` reference is a SOURCE prefab: compile it here and embed the
         // result, mirroring `default_nested_compiler` for inline `$```…````
         // blocks (its own `$./…` refs resolve relative to the `.ws` file).
@@ -133,12 +143,17 @@ fn disk_prefab_resolver_depth(entry_file: &str, fold_mode: FoldMode, depth: usiz
                 inner_opts,
             )
             .map_err(|e| format!("prefab {} failed to compile: {e}", full.display()))?;
-            return result
+            let bytes = result
                 .world
                 .to_brz_vec()
-                .map_err(|e| format!("prefab {} .brz encode failed: {e}", full.display()));
+                .map_err(|e| format!("prefab {} .brz encode failed: {e}", full.display()))?;
+            cache.lock().unwrap().insert(full, bytes.clone());
+            return Ok(bytes);
         }
-        std::fs::read(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))
+        let bytes =
+            std::fs::read(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))?;
+        cache.lock().unwrap().insert(full, bytes.clone());
+        Ok(bytes)
     })
 }
 
@@ -447,7 +462,6 @@ fn compile_to_world_inner(
     if opts.nested_compiler.is_none() {
         opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
     }
-    let t0 = std::time::Instant::now();
     let resolved = resolve(source, file, &FsLoader);
     opts.module_doc = resolved.ast.module_doc.clone().or_else(|| {
         resolved
@@ -513,7 +527,6 @@ fn compile_to_world_inner(
 
     let world =
         build_world(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
-    eprintln!("[compile] total: {:.2}s", t0.elapsed().as_secs_f64());
 
     Ok(CompileWorldResult {
         world,

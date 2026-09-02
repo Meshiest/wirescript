@@ -312,6 +312,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         captured_events: HashMap::default(),
         next_chain_id: 0,
         current_anon_chip: None,
+        anon_chip_nodes: crate::collections::HashMap::default(),
         mod_return_exec: None,
         mod_return_var: None,
         mod_return_record: None,
@@ -358,7 +359,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         scoped_const_declared: Vec::new(),
         dropped_ranges: Vec::new(),
         // Base frame: the module's own top-level declarations.
-        pass1_chips: vec![HashMap::default()],
+        pass1_chips: vec![std::sync::Arc::new(HashMap::default())],
         // Populated from `scope` right after pass 1 (top-level module only;
         // stays empty for a chip body, which has no `import * as`).
         importer_names: HashSet::default(),
@@ -1303,23 +1304,24 @@ fn cse_pure_gates(root: &mut Module) {
     }
 
     // A pure gate's behaviour is fully determined by (class, properties, the set
-    // of wires feeding its input ports). Format a stable, order-independent key.
-    fn cse_key(n: &crate::ir::Node, incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>) -> String {
-        let mut props: Vec<(&str, String)> = n
+    // of wires feeding its input ports). Build a stable, order-independent key:
+    // structured rather than formatted, so only property VALUES (which may hold
+    // f64s with no Eq/Hash) go through a canonicalizing Debug render.
+    type CseKey = (
+        &'static str,
+        Vec<(&'static str, String)>,
+        Vec<(WirePort, NodeId, WirePort)>,
+    );
+    fn cse_key(n: &crate::ir::Node, incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>) -> CseKey {
+        let mut props: Vec<(&'static str, String)> = n
             .properties
             .iter()
             .map(|(k, v)| (crate::intern::resolve(*k), format!("{v:?}")))
             .collect();
         props.sort_unstable();
-        let mut ins: Vec<String> = incoming
-            .map(|v| {
-                v.iter()
-                    .map(|(tp, sid, sp)| format!("{tp:?}<-{sid:?}.{sp:?}"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        ins.sort_unstable();
-        format!("{}\u{1}{props:?}\u{1}{ins:?}", n.gate_class)
+        let mut ins: Vec<(WirePort, NodeId, WirePort)> = incoming.cloned().unwrap_or_default();
+        ins.sort_unstable_by_key(|(tp, sid, sp)| (*tp as u16, sid.0, *sp as u16));
+        (n.gate_class, props, ins)
     }
 
     fn cse_module(module: &mut Module, redirect: &mut HashMap<NodeId, NodeId>) {
@@ -1370,7 +1372,7 @@ fn cse_pure_gates(root: &mut Module) {
         // guarantees those are final, so a single visit suffices. Gates trapped
         // in a combinational cycle (later rejected by `analyze`) never reach
         // in-degree zero and are simply left unmerged.
-        let mut seen: HashMap<(Option<NodeId>, String), NodeId> = HashMap::default();
+        let mut seen: HashMap<(Option<NodeId>, CseKey), NodeId> = HashMap::default();
         let mut qi = 0;
         while qi < queue.len() {
             let id = queue[qi];
@@ -1779,6 +1781,7 @@ pub fn compile_chip_template(
         captured_events: HashMap::default(),
         next_chain_id: 0,
         current_anon_chip: None,
+        anon_chip_nodes: crate::collections::HashMap::default(),
         mod_return_exec: None,
         mod_return_var: None,
         mod_return_record: None,
@@ -1824,7 +1827,7 @@ pub fn compile_chip_template(
         scoped_const_declared: Vec::new(),
         dropped_ranges: Vec::new(),
         // Base frame: the module's own top-level declarations.
-        pass1_chips: vec![HashMap::default()],
+        pass1_chips: vec![std::sync::Arc::new(HashMap::default())],
         // Populated from `scope` right after pass 1 (top-level module only;
         // stays empty for a chip body, which has no `import * as`).
         importer_names: HashSet::default(),

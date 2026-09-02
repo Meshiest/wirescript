@@ -209,9 +209,9 @@ dependencies = [
 
 [[package]]
 name = "brdb"
-version = "0.10.4"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbcd0bf7111e88e646f4b0b250fe9a0de2e2ca04c6126563a1c92e38fb7f1a88"
+checksum = "6323a5fec9d63f58ad51399686dc55adbad3a98df12511c246710a53c25b22f6"
 dependencies = [
  "blake3",
  "indexmap",
@@ -220,6 +220,7 @@ dependencies = [
  "lalrpop-util 0.21.0",
  "rmp",
  "rusqlite",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "thiserror",

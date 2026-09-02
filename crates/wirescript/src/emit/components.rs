@@ -9,7 +9,7 @@ use super::*;
 pub(super) fn build_gate_component(
     gate_class: &'static str,
     ports: &crate::ir::GateIO,
-    inlined: &StdMap<Sym, &Literal>,
+    inlined: &HashMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
     nested_compiler: Option<&NestedCompiler>,
@@ -41,7 +41,7 @@ pub(super) fn build_gate_component(
 fn build_gate_data_map(
     gate_class: &'static str,
     ports: &crate::ir::GateIO,
-    inlined: &StdMap<Sym, &Literal>,
+    inlined: &HashMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
     nested_compiler: Option<&NestedCompiler>,
@@ -396,7 +396,7 @@ fn build_weapon_ammo_override(lit: &Literal) -> Option<NativeStruct> {
 pub(super) fn build_adv_inventory_component(
     gate_class: &'static str,
     ports: &crate::ir::GateIO,
-    inlined: &StdMap<Sym, &Literal>,
+    inlined: &HashMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
     nested_compiler: Option<&NestedCompiler>,
@@ -443,7 +443,7 @@ pub(super) fn build_adv_inventory_component(
 pub(crate) fn roundtrip_adv_inventory_component(node: &Node) -> brdb::schema::BrdbValue {
     use brdb::schema::ReadBrdbSchema;
     let mut world = World::new();
-    let mut inlined: StdMap<Sym, &Literal> = StdMap::new();
+    let mut inlined: HashMap<Sym, &Literal> = HashMap::default();
     for (k, v) in node.properties.as_ref() {
         inlined.insert(*k, v);
     }

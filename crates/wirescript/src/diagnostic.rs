@@ -5,14 +5,14 @@
 
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Pos {
     pub offset: usize,
     pub line: u32,
     pub col: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SourceRange {
     pub file: Arc<str>,
     pub start: Pos,

@@ -472,7 +472,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // the pass-1 step that never ran for a namespaced decl) then lower
             // the body.
             for ac in ns_anon_chips {
-                pre_declare_decl(ctx, &TopDecl::AnonChip(ac.clone()));
+                pre_declare_anon_chip(ctx, ac);
                 lower_anon_chip(ctx, ac);
             }
             // Hand each importer-owned bare name back to the importer, only now
@@ -571,17 +571,25 @@ pub(super) fn lower_buffer_body(ctx: &mut LowerCtx, d: &BufferDecl) {
 /// get tagged for the emitter to route into a child grid.
 pub(super) fn lower_anon_chip(ctx: &mut LowerCtx, d: &AnonChipDecl) {
     // Find the chip node that was created during pre_declare_decl.
+    // Fast path: `pre_declare_anon_chip` recorded the node under this exact
+    // (range, enclosing chip) pair. The scan below matches on the same pair
+    // and remains only as a safety net for a node created out of band.
     let chip_node_id = ctx
-        .builder
-        .module
-        .nodes
-        .iter()
-        .find(|(_, n)| {
-            n.kind == NodeKind::Chip
-                && n.source_range == d.range
-                && n.chip_id == ctx.current_anon_chip
-        })
-        .map(|(id, _)| *id);
+        .anon_chip_nodes
+        .get(&(d.range.clone(), ctx.current_anon_chip))
+        .copied()
+        .or_else(|| {
+            ctx.builder
+                .module
+                .nodes
+                .iter()
+                .find(|(_, n)| {
+                    n.kind == NodeKind::Chip
+                        && n.source_range == d.range
+                        && n.chip_id == ctx.current_anon_chip
+                })
+                .map(|(id, _)| *id)
+        });
     let Some(chip_node_id) = chip_node_id else {
         return;
     };
@@ -630,7 +638,7 @@ fn is_pure_chip_stmt(s: &Stmt) -> bool {
 fn lower_chip_body(ctx: &mut LowerCtx, block: &Block) {
     for s in &block.stmts {
         if let Stmt::AnonChip(ac) = s {
-            pre_declare_decl(ctx, &TopDecl::AnonChip(ac.clone()));
+            pre_declare_anon_chip(ctx, ac);
         }
     }
     for s in &block.stmts {

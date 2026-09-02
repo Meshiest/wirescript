@@ -19,7 +19,7 @@
 use crate::collections::{HashMap, HashSet};
 
 use petgraph::algo::tarjan_scc;
-use petgraph::graphmap::DiGraphMap;
+use petgraph::graphmap::GraphMap;
 use petgraph::unionfind::UnionFind;
 
 use crate::ir::{NodeId, Wire};
@@ -64,7 +64,8 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         .filter(|w| node_set.contains(&w.source.node_id) && node_set.contains(&w.target.node_id))
         .collect();
 
-    let mut g: DiGraphMap<&NodeId, ()> = DiGraphMap::new();
+    let mut g: GraphMap<&NodeId, (), petgraph::Directed, rustc_hash::FxBuildHasher> =
+        GraphMap::with_capacity(node_ids.len(), in_scope.len());
     for id in &node_ids {
         g.add_node(id);
     }

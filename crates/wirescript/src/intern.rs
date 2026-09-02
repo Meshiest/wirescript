@@ -1,7 +1,11 @@
 use lasso::{Spur, ThreadedRodeo};
 use std::sync::LazyLock;
 
-static INTERN: LazyLock<ThreadedRodeo> = LazyLock::new(ThreadedRodeo::default);
+/// Fx-hashed interner: compiler symbols are non-adversarial, and the default
+/// SipHash showed up as measurable wall time in intern/resolve-heavy passes.
+type FxRodeo = ThreadedRodeo<Spur, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+
+static INTERN: LazyLock<FxRodeo> = LazyLock::new(|| FxRodeo::with_hasher(Default::default()));
 
 /// Interned symbol handle. 4 bytes, Copy, cheap to hash and compare.
 pub type Sym = Spur;

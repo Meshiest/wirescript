@@ -13,7 +13,7 @@ pub(super) fn emit_bus(
     bricks: &mut Vec<brdb::Brick>,
     bus: &BusLayout,
     module: &Module,
-    wire_target_index: &StdMap<(NodeId, WirePort), NodeId>,
+    wire_target_index: &HashMap<(NodeId, WirePort), NodeId>,
 ) -> Vec<usize> {
     let mut brick_ids = Vec::with_capacity(bus.nodes.len());
     for node in &bus.nodes {

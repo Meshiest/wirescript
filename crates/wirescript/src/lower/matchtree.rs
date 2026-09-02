@@ -177,11 +177,13 @@ fn payload_columns<'a>(
 /// column becomes `v`'s payload columns, rows naming a different constructor
 /// are dropped, and a matching or wildcard-like row expands its cell to `v`'s
 /// sub-patterns (wildcards for a wildcard-like cell).
-fn specialize<'a>(
+fn specialize_rows<'a>(
     cols: &[Col<'a>],
     rows: &[Row],
     idx: usize,
     v: &VariantDef,
+    matching: &[usize],
+    wilds: &[usize],
     enum_defs: &'a HashMap<String, EnumDef>,
 ) -> (Vec<Col<'a>>, Vec<Row>) {
     let arity = payload_arity(&v.payload);
@@ -191,30 +193,52 @@ fn specialize<'a>(
     new_cols.extend(payload_columns(&cols[idx].path, parent_ty, v, enum_defs));
     new_cols.extend(clone_cols(&cols[idx + 1..]));
 
-    let mut new_rows = Vec::new();
-    for row in rows {
-        match cell_head(&row.cells[idx], cols[idx].ty.as_ref()) {
-            Some(name) if name != v.name => {}
-            _ => {
-                let mut cells = row.cells[..idx].to_vec();
-                cells.extend(expand_matching(&row.cells[idx], v));
-                cells.extend(row.cells[idx + 1..].iter().cloned());
-                new_rows.push(Row { arm: row.arm, cells });
-            }
-        }
+    // `matching` and `wilds` are ascending row indices; their merge preserves
+    // original row order, so first-match-wins is untouched. `expand_matching`
+    // gives a wildcard-like row `arity` wildcards, same as a matrix filter.
+    let mut new_rows = Vec::with_capacity(matching.len() + wilds.len());
+    for r in merge_asc(matching, wilds) {
+        let row = &rows[r];
+        let mut cells = row.cells[..idx].to_vec();
+        cells.extend(expand_matching(&row.cells[idx], v));
+        cells.extend(row.cells[idx + 1..].iter().cloned());
+        new_rows.push(Row { arm: row.arm, cells });
     }
     (new_cols, new_rows)
 }
 
+fn merge_asc(a: &[usize], b: &[usize]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i] < b[j] {
+            out.push(a[i]);
+            i += 1;
+        } else {
+            out.push(b[j]);
+            j += 1;
+        }
+    }
+    out.extend_from_slice(&a[i..]);
+    out.extend_from_slice(&b[j..]);
+    out
+}
+
 /// `Default(matrix)`: drop the switched column, keeping only the rows that do
-/// not name a constructor there (they impose no constraint on it).
-fn default_matrix<'a>(cols: &[Col<'a>], rows: &[Row], idx: usize) -> (Vec<Col<'a>>, Vec<Row>) {
+/// not name a constructor there (they impose no constraint on it) - exactly
+/// the precomputed `wilds` index list.
+fn default_matrix_rows<'a>(
+    cols: &[Col<'a>],
+    rows: &[Row],
+    idx: usize,
+    wilds: &[usize],
+) -> (Vec<Col<'a>>, Vec<Row>) {
     let mut new_cols = clone_cols(&cols[..idx]);
     new_cols.extend(clone_cols(&cols[idx + 1..]));
-    let new_rows = rows
+    let new_rows = wilds
         .iter()
-        .filter(|row| cell_head(&row.cells[idx], cols[idx].ty.as_ref()).is_none())
-        .map(|row| {
+        .map(|&r| {
+            let row = &rows[r];
             let mut cells = row.cells[..idx].to_vec();
             cells.extend(row.cells[idx + 1..].iter().cloned());
             Row { arm: row.arm, cells }
@@ -243,28 +267,52 @@ fn compile(cols: &[Col], rows: &[Row], enum_defs: &HashMap<String, EnumDef>) -> 
     };
     let edef = cols[idx].ty.as_ref().expect("a constrained column has a governing enum").edef;
 
-    let mut used: Vec<&str> = Vec::new();
-    for row in rows {
-        if let Some(name) = cell_head(&row.cells[idx], cols[idx].ty.as_ref()) {
-            if !used.contains(&name) {
-                used.push(name);
-            }
+    // Group rows by head constructor in one pass (O(1) name lookup via
+    // `vmap`, matching `head_variant_name`'s reading: a `Variant` names any
+    // member, a bare `Binding` only a UNIT member). A wildcard-like row
+    // belongs to every case AND the default; per-case rows are the ascending
+    // index-merge of its own group with the wildcard rows, which is exactly
+    // what `Specialize` filtering the full row list produces.
+    let vmap: HashMap<&str, usize> = edef
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.name.as_str(), i))
+        .collect();
+    let head_idx = |cell: &Pattern| -> Option<usize> {
+        match cell {
+            Pattern::Variant { variant, .. } => vmap.get(variant.as_str()).copied(),
+            Pattern::Binding { name, .. } => vmap
+                .get(name.as_str())
+                .copied()
+                .filter(|&i| matches!(edef.variants[i].payload, Payload::Unit)),
+            Pattern::Wildcard(_) => None,
+        }
+    };
+    let mut by_variant: Vec<Vec<usize>> = vec![Vec::new(); edef.variants.len()];
+    let mut wilds: Vec<usize> = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        match head_idx(&row.cells[idx]) {
+            Some(vi) => by_variant[vi].push(r),
+            None => wilds.push(r),
         }
     }
 
     let mut cases = Vec::new();
-    for v in &edef.variants {
-        if used.contains(&v.name.as_str()) {
-            let (sub_cols, sub_rows) = specialize(cols, rows, idx, v, enum_defs);
-            cases.push((v.discriminant, compile(&sub_cols, &sub_rows, enum_defs)));
+    for (vi, v) in edef.variants.iter().enumerate() {
+        if by_variant[vi].is_empty() {
+            continue;
         }
+        let (sub_cols, sub_rows) =
+            specialize_rows(cols, rows, idx, v, &by_variant[vi], &wilds, enum_defs);
+        cases.push((v.discriminant, compile(&sub_cols, &sub_rows, enum_defs)));
     }
 
-    let complete = edef.variants.iter().all(|v| used.contains(&v.name.as_str()));
+    let complete = by_variant.iter().all(|g| !g.is_empty());
     let default = if complete {
         None
     } else {
-        let (def_cols, def_rows) = default_matrix(cols, rows, idx);
+        let (def_cols, def_rows) = default_matrix_rows(cols, rows, idx, &wilds);
         Some(Box::new(compile(&def_cols, &def_rows, enum_defs)))
     };
 

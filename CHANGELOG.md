@@ -3,6 +3,17 @@
 ## 1.9.0
 
 - Const-heavy programs compile about a third faster. Lowering deep-copied the whole constant table on every expression it lowered.
+- A program with many enum variants and match arms compiles dramatically faster. Exhaustiveness checking and match lowering were each cubic in the arm count.
+- Large programs compile 10% to 15% faster, from fewer allocations in the fold and CSE passes and faster hashing in emit and layout.
+- A source prefab referenced from several sites is compiled once and embedded once, so a program that spawns the same `$./file.ws` repeatedly produces a much smaller bundle.
+- Deeply nested chips, deeply nested record types, and files with many imports no longer slow down faster than they grow.
+
+### brdb
+
+- Updated to brdb 0.11.0, which writes a save roughly three times faster.
+- Each schema struct compiles into a write plan once and replays per instance, instead of re-resolving every field's type for every component.
+- Brick and wire chunks use specialized encoders when the loaded schema matches the expected shape, and fall back to the generic writer when it does not.
+- Archive blobs are compressed in parallel.
 
 ### Fixes
 

@@ -24,9 +24,12 @@ pub(super) use instance::*;
 /// param/port. Arity comes from the spread expression's tuple/record type
 /// (recorded by typecheck); an unresolved / non-tuple spread expands to nothing
 /// (typecheck already reported it). A call with no spreads is returned as-is.
-pub(in crate::lower) fn expand_spread_args(ctx: &LowerCtx, args: &[CallArg]) -> Vec<CallArg> {
+pub(in crate::lower) fn expand_spread_args<'a>(
+    ctx: &LowerCtx,
+    args: &'a [CallArg],
+) -> std::borrow::Cow<'a, [CallArg]> {
     if !args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
-        return args.to_vec();
+        return std::borrow::Cow::Borrowed(args);
     }
     let mut out = Vec::with_capacity(args.len());
     for a in args {
@@ -88,7 +91,7 @@ pub(in crate::lower) fn expand_spread_args(ctx: &LowerCtx, args: &[CallArg]) -> 
             other => out.push(other.clone()),
         }
     }
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 pub(super) fn lower_chip_call(

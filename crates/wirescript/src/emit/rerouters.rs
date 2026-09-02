@@ -81,7 +81,7 @@ pub(super) fn emit_port_rerouters(world: &mut World, ctx: &EmitContext, module: 
 
     // side → [(source offset, node id, is_input)], later sorted per side so
     // ins and outs interleave in declaration order (the spec's ordering rule).
-    let mut by_side: StdMap<&'static str, Vec<(usize, NodeId, bool)>> = StdMap::new();
+    let mut by_side: HashMap<&'static str, Vec<(usize, NodeId, bool)>> = HashMap::default();
     for (ids, is_input) in [(&module.inputs, true), (&module.outputs, false)] {
         for id in ids.iter() {
             let Some(node) = module.nodes.get(id) else {

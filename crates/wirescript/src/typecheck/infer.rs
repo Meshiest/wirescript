@@ -292,8 +292,9 @@ fn build_scan_locals(ctx: &TypeCheckCtx, decl: &crate::ast::ChipDecl) -> ScanLoc
     // param-less mod (or one with only primitive params, the common case)
     // resolves nothing and never pays for it, which is what keeps the whole scan
     // from going O(N^2) again on a deep chain of primitive-typed mods.
-    let alias_map: std::cell::RefCell<Option<crate::collections::HashMap<String, Type>>> =
-        std::cell::RefCell::new(None);
+    let alias_map: std::cell::RefCell<
+        Option<std::sync::Arc<crate::collections::HashMap<String, Type>>>,
+    > = std::cell::RefCell::new(None);
     let resolve = |te: &crate::ast::TypeExpr| -> Type {
         if let crate::ast::TypeExpr::Name { name, .. } = te
             && let Some(prim) = crate::types::resolve::primitive(name)

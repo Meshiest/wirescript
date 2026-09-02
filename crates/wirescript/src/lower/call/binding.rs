@@ -71,21 +71,25 @@ pub(super) fn resolve_caller_captures(
 }
 
 pub(crate) fn compute_scope_captures(module: &Module) -> Vec<NodeId> {
-    let internal: HashSet<NodeId> = module.nodes.keys().cloned().collect();
+    let mut internal: HashSet<NodeId> =
+        HashSet::with_capacity_and_hasher(module.nodes.len(), Default::default());
+    internal.extend(module.nodes.keys().copied());
+    // `external` preserves first-seen order (instantiation remaps by index);
+    // the set only answers membership.
     let mut external = Vec::new();
+    let mut seen: HashSet<NodeId> = HashSet::default();
+    let visit = |id: NodeId, external: &mut Vec<NodeId>, seen: &mut HashSet<NodeId>| {
+        if !internal.contains(&id) && seen.insert(id) {
+            external.push(id);
+        }
+    };
     for w in &module.wires {
-        if !internal.contains(&w.source.node_id) && !external.contains(&w.source.node_id) {
-            external.push(w.source.node_id);
-        }
-        if !internal.contains(&w.target.node_id) && !external.contains(&w.target.node_id) {
-            external.push(w.target.node_id);
-        }
+        visit(w.source.node_id, &mut external, &mut seen);
+        visit(w.target.node_id, &mut external, &mut seen);
     }
     for child_module in module.chips.values() {
         for &cap_id in &child_module.scope_captures {
-            if !internal.contains(&cap_id) && !external.contains(&cap_id) {
-                external.push(cap_id);
-            }
+            visit(cap_id, &mut external, &mut seen);
         }
     }
     external
