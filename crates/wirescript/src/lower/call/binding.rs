@@ -4,6 +4,16 @@
 use super::*;
 use crate::collections::HashSet;
 
+/// Strips a call argument's `&` / `ref` sigil. `&x` names the same storage as
+/// bare `x`, but it parses as `Expr::RefOf`, which resolves to no binding at
+/// all, so a ref/container argument must be unwrapped before it is looked up.
+pub(super) fn deref_arg(arg: &Expr) -> &Expr {
+    match arg {
+        Expr::RefOf { operand, .. } => operand.as_ref(),
+        other => other,
+    }
+}
+
 pub(super) fn resolve_caller_captures(
     ctx: &mut LowerCtx,
     chip_decl: &ChipDecl,
@@ -29,7 +39,9 @@ pub(super) fn resolve_caller_captures(
         let resolved_record = ctx.record_or_tuple_fields(&param.typ);
 
         if let Some(fields) = &resolved_record {
-            if let Some(Binding::Record(rec_fields)) = resolve_field_chain(ctx, arg_expr).cloned() {
+            if let Some(Binding::Record(rec_fields)) =
+                resolve_field_chain(ctx, deref_arg(arg_expr)).cloned()
+            {
                 for field in fields {
                     if !matches!(&field.typ, TypeExpr::Array { .. } | TypeExpr::Ref { .. }) {
                         continue;
@@ -42,6 +54,7 @@ pub(super) fn resolve_caller_captures(
                 }
             }
         } else if matches!(&param.typ, TypeExpr::Ref { .. } | TypeExpr::Array { .. }) {
+            let arg_expr = deref_arg(arg_expr);
             let var_rec = if let Expr::Ident { name, .. } = arg_expr {
                 ctx.lookup_var(name).cloned()
             } else if let Some(Binding::Var(v)) = resolve_field_chain(ctx, arg_expr).cloned() {

@@ -972,6 +972,68 @@ on go { inc(&x) }",
     );
 }
 
+/// The chip twin of `addr_of_arg_binds_ref_param_so_write_lands`. A chip
+/// resolves a ref/container argument in `call/binding.rs` and `call/wiring.rs`,
+/// neither of which saw through `Expr::RefOf`, so `&x` fed the ref pin nothing
+/// and every write through the param was dropped with no diagnostic.
+#[test]
+fn addr_of_arg_binds_chip_ref_param() {
+    for arg in ["&x", "ref x"] {
+        let src = format!(
+            "var x: int = 0
+chip inc(v: *int) {{ v = v + 1 }}
+in go: exec
+on go {{ inc({arg}) }}"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        let x_var = find_gate(&r, "BrickComponentType_WireGraphPseudo_Var");
+        assert!(
+            r.module.wires.iter().any(|w| w.source.node_id == x_var
+                && w.source.port == crate::ir::port_registry::WirePort::VarRef),
+            "`inc({arg})` left the chip ref pin unfed, so the write vanished"
+        );
+    }
+}
+
+/// Same for the container and record forms: `&arr` and `&rec` must bind the
+/// caller's storage exactly as the bare spellings do.
+#[test]
+fn addr_of_arg_binds_chip_container_and_record_params() {
+    let arr = compile(
+        "var a: int[]
+chip push1(xs: int[]) { xs.push(1) }
+in go: exec
+on go { push1(&a) }",
+    );
+    assert_no_errors(&arr);
+    let a_var = find_gate(&arr, "BrickComponentType_WireGraphPseudo_ArrayVar");
+    assert!(
+        arr.module.wires.iter().any(|w| w.source.node_id == a_var),
+        "`push1(&a)` left the array ref pin unfed"
+    );
+
+    let rec = compile(
+        "type P = { x: int, y: int }
+chip setx(s: *P, v: int) { s.x = v }
+         var p: P = { x: 0, y: 0 }
+in go: exec
+on go { setx(&p, 1) }",
+    );
+    assert_no_errors(&rec);
+    let wired = rec
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|n| rec.module.wires.iter().any(|w| w.source.node_id == n.id))
+        .count();
+    assert!(
+        wired >= 1,
+        "`setx(&p, 1)` left every field of `p` unwired, so the write vanished"
+    );
+}
+
 #[test]
 fn unassigned_output_warning() {
     let r = compile(

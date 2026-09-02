@@ -32,6 +32,17 @@ pub(super) fn wire_chip_args_and_outputs(
         let Some(arg_expr) = positional_args.get(i) else {
             continue;
         };
+        // `&x` / `ref x` names the same storage as bare `x`, so strip the sigil
+        // for a param that binds storage. Every resolution below needs it: the
+        // ref/array pin, the record fields, and the general value path a map
+        // param takes. Value params keep the argument as written.
+        let arg_expr: &Expr = if crate::lower::context::container_storage(&param.typ).is_some()
+            || ctx.record_or_tuple_fields(&param.typ).is_some()
+        {
+            deref_arg(arg_expr)
+        } else {
+            arg_expr
+        };
 
         // A `*Record` is NOT a scalar ref: `record_or_tuple_fields` reports its
         // per-field shape, so let it fall through to the record branch below,

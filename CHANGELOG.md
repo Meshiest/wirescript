@@ -11,6 +11,7 @@
 - `rec.field.Value` reads the field's backing variable. Only `x.Value` on a plain identifier resolved, so the field spelling lowered to a placeholder and left its consumer unwired.
 - A record literal passed to a `*T` parameter is a `WS008` error when a reference field has no variable behind it. An `in` port or expression has no storage to write back to, and the call previously compiled with the caller wiring a value where the body read a reference.
 - A `chip` with a `*T` parameter binds each call site to its own argument. Every call after the first reused the first instance's captured variables, so writes through the reference landed on the first argument and the later arguments' variables were left unwired.
+- `&x` and `ref x` bind a `chip`'s reference, array, record, or map parameter to the caller's storage. Only the `mod` form stripped the sigil, so the chip form left the parameter's pin unfed and silently dropped every write through it.
 
 ## 1.8.0
 
