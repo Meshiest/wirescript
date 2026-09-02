@@ -394,7 +394,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             {
                 let mut emit_counts = crate::collections::HashMap::default();
                 for h in &ns_handlers {
-                    crate::lower::count_emits_in_block(&h.body, false, &mut emit_counts);
+                    crate::lower::count_emits_in_handler(h, false, &mut emit_counts);
                 }
                 for ac in &ns_anon_chips {
                     crate::lower::count_emits_in_block(&ac.body, false, &mut emit_counts);

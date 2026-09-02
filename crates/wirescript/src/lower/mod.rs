@@ -140,6 +140,37 @@ pub enum FoldMode {
 /// conditional emit needs a backing var even as the ONLY site, else the
 /// single-site fast path wires the value straight to the rerouter,
 /// UNCONDITIONALLY, leaving the branch's taken-exec dead.
+/// How many times a handler's body is lowered. `on a | b { ... }` lowers it
+/// once per trigger part (see `lower_handler`'s `Trigger::Union` arm), and a
+/// part may itself be a union.
+fn trigger_multiplicity(t: &crate::ast::Trigger) -> usize {
+    match t {
+        crate::ast::Trigger::Union { parts, .. } => {
+            parts.iter().map(trigger_multiplicity).sum::<usize>().max(1)
+        }
+        _ => 1,
+    }
+}
+
+/// Emit counts for one handler, scaled by how many times its body is lowered.
+/// Counting the body once leaves a union-trigger handler's single `emit` short
+/// of the 2-driver threshold, so the output gets no backing var and the lowered
+/// copies fan in on its rerouter, which fails to load in-game.
+pub(super) fn count_emits_in_handler(
+    h: &Handler,
+    in_branch: bool,
+    counts: &mut HashMap<String, (usize, bool)>,
+) {
+    let mut body: HashMap<String, (usize, bool)> = HashMap::default();
+    count_emits_in_block(&h.body, in_branch, &mut body);
+    let reps = trigger_multiplicity(&h.trigger);
+    for (name, (count, branched)) in body {
+        let entry = counts.entry(name).or_insert((0, false));
+        entry.0 += count * reps;
+        entry.1 |= branched;
+    }
+}
+
 pub(super) fn count_emits_in_block(
     block: &Block,
     in_branch: bool,
@@ -171,7 +202,7 @@ pub(super) fn count_emits_in_block(
             }
             Stmt::LetElse(l) => count_emits_in_block(&l.else_block, true, counts),
             Stmt::AnonChip(ac) => count_emits_in_block(&ac.body, in_branch, counts),
-            Stmt::Handler(h) => count_emits_in_block(&h.body, in_branch, counts),
+            Stmt::Handler(h) => count_emits_in_handler(h, in_branch, counts),
             // A `match` STATEMENT arm is a conditional emit site, exactly like
             // an `if` branch: recurse into each block-bodied arm with
             // `in_branch = true`, so an output emitted from an arm gets a
@@ -196,7 +227,7 @@ fn count_output_value_emits(ast: &Script) -> HashMap<String, (usize, bool)> {
     let mut counts = HashMap::default();
     for d in &ast.decls {
         match d {
-            TopDecl::Handler(h) => count_emits_in_block(&h.body, false, &mut counts),
+            TopDecl::Handler(h) => count_emits_in_handler(h, false, &mut counts),
             TopDecl::AnonChip(ac) => count_emits_in_block(&ac.body, false, &mut counts),
             _ => {}
         }

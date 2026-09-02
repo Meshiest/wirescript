@@ -216,8 +216,6 @@ pub fn build_world(
     // native copied selection, with bounds computed from the microchip shell.
     world.make_prefab();
 
-    print_emit_stats();
-
     Ok(world)
 }
 
@@ -235,26 +233,6 @@ const WALL_ROT: brdb::Quat4f = brdb::Quat4f {
     z: 0.0,
     w: std::f32::consts::FRAC_1_SQRT_2,
 };
-
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
-static EMIT_CLONE_NS: AtomicU64 = AtomicU64::new(0);
-static EMIT_BRICK_NS: AtomicU64 = AtomicU64::new(0);
-static EMIT_CHIP_FULL_NS: AtomicU64 = AtomicU64::new(0);
-static EMIT_CLONE_COUNT: AtomicU64 = AtomicU64::new(0);
-static EMIT_BRICK_COUNT: AtomicU64 = AtomicU64::new(0);
-static EMIT_COMP_NS: AtomicU64 = AtomicU64::new(0);
-
-pub fn print_emit_stats() {
-    let clone_s = EMIT_CLONE_NS.load(AtomicOrd::Relaxed) as f64 / 1e9;
-    let brick_s = EMIT_BRICK_NS.load(AtomicOrd::Relaxed) as f64 / 1e9;
-    let comp_s = EMIT_COMP_NS.load(AtomicOrd::Relaxed) as f64 / 1e9;
-    let chip_s = EMIT_CHIP_FULL_NS.load(AtomicOrd::Relaxed) as f64 / 1e9;
-    let clones = EMIT_CLONE_COUNT.load(AtomicOrd::Relaxed);
-    let bricks = EMIT_BRICK_COUNT.load(AtomicOrd::Relaxed);
-    eprintln!(
-        "[emit:detail] clone path: {clone_s:.2}s ({clones} clones), brick construction: {brick_s:.2}s ({bricks} bricks), component build: {comp_s:.2}s, chip full emit: {chip_s:.2}s"
-    );
-}
 
 /// Emit `.brz` bundle bytes — zstd-packed, portable, good for bundle
 /// transfer and in-memory preview. `BR.World.LoadAdditive` doesn't accept

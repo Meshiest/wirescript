@@ -5,8 +5,8 @@ use crate::ir::Literal;
 
 fn empty_ctx() -> ConstCtx<'static> {
     ConstCtx {
-        consts: crate::collections::HashMap::default(),
-        module_consts: crate::collections::HashMap::default(),
+        consts: Arc::new(crate::collections::HashMap::default()),
+        module_consts: Arc::new(crate::collections::HashMap::default()),
         enum_defs: Arc::new(crate::collections::HashMap::default()),
         lookup_mod: None,
     }
@@ -92,7 +92,12 @@ fn eval_mod_call_with(
     for (name, lit) in caller_locals {
         consts.insert(name, lit);
     }
-    let cx = ConstCtx { consts, module_consts, enum_defs: enum_defs.clone(), lookup_mod: None };
+    let cx = ConstCtx {
+        consts: Arc::new(consts),
+        module_consts: Arc::new(module_consts),
+        enum_defs: enum_defs.clone(),
+        lookup_mod: None,
+    };
     eval_call(decl, args, &cx, &mut budget)
 }
 
@@ -578,6 +583,7 @@ fn eval_mod_call_resolving(
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
     let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
+    let module_consts = Arc::new(module_consts);
     let cx = ConstCtx {
         consts: module_consts.clone(),
         module_consts,
@@ -640,6 +646,7 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
     else {
         panic!("expected the last decl to be `let probe = ...`")
     };
+    let module_consts = Arc::new(module_consts);
     let cx = ConstCtx {
         consts: module_consts.clone(),
         module_consts,

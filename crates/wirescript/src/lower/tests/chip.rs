@@ -1754,6 +1754,12 @@ fn assert_no_port_fanin(r: &LowerResult) {
         let mut counts: crate::collections::HashMap<(crate::ir::NodeId, WirePort), usize> =
             crate::collections::HashMap::default();
         for w in &m.wires {
+            // `WirePort::Layout` edges are synthetic placement hints, not wires:
+            // boundary_pins skips them and emit does not turn them into
+            // connections, so several into one node is normal.
+            if w.target.port == WirePort::Layout || w.source.port == WirePort::Layout {
+                continue;
+            }
             *counts.entry((w.target.node_id, w.target.port)).or_insert(0) += 1;
         }
         for ((node, port), count) in &counts {
@@ -1951,6 +1957,44 @@ on b { emit result = 2 }";
             .any(|n| n.note == Some("out_backing")),
         "expected an out_backing PseudoVar for the multi-emit output"
     );
+}
+
+/// `on a | b { ... }` lowers its body once per trigger part, so ONE syntactic
+/// `emit` becomes two drivers on the output rerouter. The emit prescan walks a
+/// handler body once regardless of trigger count, so it saw a single emit,
+/// skipped the backing var, and the two copies fanned in. Fan-in on a rerouter
+/// makes the save fail to load, and `check` reported nothing.
+#[test]
+fn union_trigger_emit_routes_through_backing_var() {
+    let src = "out result: int
+var v: int = 7
+in a: exec
+in b: exec
+on a | b { emit result = v }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert_no_port_fanin(&r);
+    assert!(
+        r.module
+            .nodes
+            .values()
+            .any(|n| n.note == Some("out_backing")),
+        "a union-trigger emit needs a backing var: its body lowers once per part"
+    );
+}
+
+/// The same count must hold for a union trigger nested in an anon chip, which
+/// the prescan reaches through `Stmt::Handler`.
+#[test]
+fn union_trigger_emit_in_anon_chip_routes_through_backing_var() {
+    let src = "out result: int
+var v: int = 7
+in a: exec
+in b: exec
+chip on a | b { emit result = v }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert_no_port_fanin(&r);
 }
 
 #[test]

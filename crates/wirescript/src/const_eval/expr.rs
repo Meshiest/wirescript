@@ -69,7 +69,7 @@ pub struct ConstCtx<'a> {
     /// constants overlaid by every currently-open scope frame (built by
     /// `TypeCheckCtx::const_lookup` / `LowerCtx::const_lookup`). This is what
     /// an ordinary expression resolves names against.
-    pub consts: ConstEnv,
+    pub consts: std::sync::Arc<ConstEnv>,
     /// The MODULE-LEVEL constants ONLY — the top-level `const`/`let`
     /// bindings, with no scope-local frames merged in. Kept separate from
     /// `consts` because a `const mod` BODY (see `interp::eval_call`) is
@@ -79,7 +79,7 @@ pub struct ConstCtx<'a> {
     /// `lower::call::inline` lowers an ordinary mod: it pushes a fresh
     /// `ScopeTag::MODULE` frame holding the parameters ON TOP of the module
     /// scope rather than inheriting the call site's frames.
-    pub module_consts: ConstEnv,
+    pub module_consts: std::sync::Arc<ConstEnv>,
     /// Resolves a call's callee NAME to its declaration, so `eval_expr`'s
     /// `Expr::Call` arm can tell whether it's calling a `const mod` (and if
     /// so, get the `ChipDecl` `interp::eval_call` needs its body/params from).
@@ -716,7 +716,7 @@ fn eval_match_arm_body(
     let mut consts = cx.consts.clone();
     for (name, slot_path) in captures {
         if let Some(lit) = matchtree::navigate_capture_literal(scrut_lit, &slot_path) {
-            consts.insert(name, lit);
+            std::sync::Arc::make_mut(&mut consts).insert(name, lit);
         }
     }
     let inner_cx = ConstCtx {

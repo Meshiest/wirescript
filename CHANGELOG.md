@@ -1,5 +1,13 @@
 # Wirescript Changelog
 
+## 1.9.0
+
+- Const-heavy programs compile about a third faster. Lowering deep-copied the whole constant table on every expression it lowered.
+
+### Fixes
+
+- A union-trigger handler (`on a | b { emit r = v }`) compiles. Its body lowers once per part, so one emit became two drivers on the output and failed at emit with no earlier diagnostic.
+
 ## 1.8.1
 
 - Refreshed the baked gate inventory from the current game build: the string gates carry their clearer display names (`Contains` is now `String Contains`, `Format Text` is now `Format String`, `Length` is now `Get String Length`). No gates, ports, or behavior changed.

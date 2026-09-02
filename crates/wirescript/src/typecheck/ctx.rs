@@ -483,8 +483,8 @@ impl<'a> TypeCheckCtx<'a> {
         lookup_mod: Option<&'b dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
     ) -> crate::const_eval::ConstCtx<'b> {
         crate::const_eval::ConstCtx {
-            consts: self.const_lookup(),
-            module_consts: self.const_env.clone(),
+            consts: Arc::new(self.const_lookup()),
+            module_consts: Arc::new(self.const_env.clone()),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
@@ -536,8 +536,8 @@ impl<'a> TypeCheckCtx<'a> {
             consts.remove(&name);
         }
         crate::const_eval::ConstCtx {
-            consts,
-            module_consts: self.const_env.clone(),
+            consts: Arc::new(consts),
+            module_consts: Arc::new(self.const_env.clone()),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
@@ -562,8 +562,8 @@ impl<'a> TypeCheckCtx<'a> {
             consts.remove(&name);
         }
         crate::const_eval::ConstCtx {
-            consts,
-            module_consts: self.const_env.clone(),
+            consts: Arc::new(consts),
+            module_consts: Arc::new(self.const_env.clone()),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }

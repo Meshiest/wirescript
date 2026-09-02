@@ -438,8 +438,8 @@ pub fn build_const_env(
             // so this per-fixpoint-iteration hand-off is a refcount bump, not a
             // deep clone of the whole (game-derived, growing) registry.
             let cx = crate::const_eval::ConstCtx {
-                consts: env.clone(),
-                module_consts: env.clone(),
+                consts: std::sync::Arc::new(env.clone()),
+                module_consts: std::sync::Arc::new(env.clone()),
                 enum_defs: enum_defs.clone(),
                 lookup_mod: Some(&lookup_mod),
             };

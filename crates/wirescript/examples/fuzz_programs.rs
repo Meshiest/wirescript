@@ -1554,6 +1554,16 @@ impl Gen {
         }
     }
 
+    /// `x`, `&x` and `ref x` all name the same storage at a call site, so a
+    /// ref or container argument is spelled all three ways across a run.
+    fn ref_arg_spelling(&mut self, name: String) -> String {
+        match self.rng.below(3) {
+            0 => format!("&{name}"),
+            1 => format!("ref {name}"),
+            _ => name,
+        }
+    }
+
     fn fresh(&mut self, p: &str) -> String {
         self.n += 1;
         format!("{p}{}", self.n)
@@ -2169,7 +2179,8 @@ impl Gen {
                             if vars.is_empty() {
                                 return String::new();
                             }
-                            args.push(vars[self.rng.below(vars.len())].name.clone());
+                            let v = vars[self.rng.below(vars.len())].name.clone();
+                            args.push(self.ref_arg_spelling(v));
                         }
                         PTy::Rec(ridx) | PTy::RecDestr(ridx) => {
                             let lit = self.record_lit(sc, *ridx, 1);

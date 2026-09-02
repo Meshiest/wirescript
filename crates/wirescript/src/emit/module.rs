@@ -363,7 +363,6 @@ pub(super) fn emit_module(
             )?,
             })
         };
-        // EMIT_COMP_NS.fetch_add(_ct.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
         brick.add_component_box(comp_boxed);
 
         // Second component: floating name label on I/O gates and variables.
@@ -460,8 +459,6 @@ pub(super) fn emit_module(
         bricks.push(brick);
         ctx.node_brick_ids.insert(**id, brick_id);
         ctx.class_index.insert(**id, node.gate_class);
-        // EMIT_BRICK_NS.fetch_add(_bt.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
-        // EMIT_BRICK_COUNT.fetch_add(1, AtomicOrd::Relaxed);
     }
 
     emit_annotations(world, bricks, &layout.annotations);
@@ -570,7 +567,6 @@ pub(super) fn emit_module(
         ctx.class_index.insert(**id, node.gate_class);
         world.register_microchip_link(chip_brick_id, chip_entity_id);
 
-        // EMIT_CHIP_FULL_NS.fetch_add(_ft.elapsed().as_nanos() as u64, AtomicOrd::Relaxed);
     }
 
     // ── Pass 3: emit this module's wires ──

@@ -590,16 +590,22 @@ impl<'a> LowerCtx<'a> {
     /// applied outer-to-inner so an inner scope's `let` shadows an outer
     /// scope's (and both shadow a same-named top-level constant). Mirrors
     /// `typecheck::TypeCheckCtx::const_lookup` exactly, so both stages agree
-    /// on which name resolves to which literal. `const_env` is small, so
-    /// cloning per lookup is cheap.
-    pub(super) fn const_lookup(&self) -> HashMap<String, Literal> {
+    /// on which name resolves to which literal. With no scope frame to
+    /// overlay, the module env IS the answer, so it is shared rather than
+    /// copied: this runs per lowered expression, and a program with a large
+    /// top-level `const` table would otherwise deep-clone every entry each
+    /// time.
+    pub(super) fn const_lookup(&self) -> std::sync::Arc<HashMap<String, Literal>> {
+        if self.scoped_consts.iter().all(|f| f.is_empty()) {
+            return self.const_env.clone();
+        }
         let mut env: HashMap<String, Literal> = (*self.const_env).clone();
         for frame in &self.scoped_consts {
             for (name, lit) in frame {
                 env.insert(name.clone(), lit.clone());
             }
         }
-        env
+        std::sync::Arc::new(env)
     }
 
     /// The `ConstCtx` for `const_eval::eval_expr`, built from
@@ -619,7 +625,7 @@ impl<'a> LowerCtx<'a> {
     ) -> crate::const_eval::ConstCtx<'b> {
         crate::const_eval::ConstCtx {
             consts: self.const_lookup(),
-            module_consts: (*self.const_env).clone(),
+            module_consts: self.const_env.clone(),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
@@ -702,8 +708,8 @@ impl<'a> LowerCtx<'a> {
         lookup_mod: Option<&'b dyn Fn(&str) -> Option<std::sync::Arc<ChipDecl>>>,
     ) -> crate::const_eval::ConstCtx<'b> {
         crate::const_eval::ConstCtx {
-            consts: self.const_lookup_declared_only(),
-            module_consts: (*self.const_env).clone(),
+            consts: std::sync::Arc::new(self.const_lookup_declared_only()),
+            module_consts: self.const_env.clone(),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
@@ -1259,7 +1265,7 @@ pub(super) type VarCacheSnapshot = HashMap<NodeId, Option<NodeId>>;
 
 pub(super) fn snapshot_var_caches(ctx: &LowerCtx) -> VarCacheSnapshot {
     let mut out = VarCacheSnapshot::default();
-    for (_, binding) in ctx.scope.iter() {
+    for (_, binding) in ctx.scope.iter_syms() {
         snapshot_cache_in_binding(binding, &mut out);
     }
     out
@@ -1289,7 +1295,7 @@ fn snapshot_cache_in_binding(binding: &Binding, out: &mut VarCacheSnapshot) {
 /// block-scoped and gone at the join.
 pub(super) fn cache_touched_since(ctx: &LowerCtx, snap: &VarCacheSnapshot) -> HashSet<NodeId> {
     let mut out = HashSet::default();
-    for (_, binding) in ctx.scope.iter() {
+    for (_, binding) in ctx.scope.iter_syms() {
         cache_touched_in_binding(binding, snap, &mut out);
     }
     out

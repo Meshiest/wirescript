@@ -92,7 +92,7 @@ pub fn eval_call(
     }
     budget.depth -= 1;
 
-    let mut env: ConstEnv = cx.module_consts.clone();
+    let mut env: ConstEnv = (*cx.module_consts).clone();
     for (i, param) in decl.inputs.iter().enumerate() {
         // Zipping `inputs` with `args` would silently truncate on an arity
         // mismatch, and the unbound parameter would then surface as the
@@ -108,7 +108,7 @@ pub fn eval_call(
         env.insert(param.name.clone(), arg.clone());
     }
     let mut call_cx = ConstCtx {
-        consts: env,
+        consts: std::sync::Arc::new(env),
         module_consts: cx.module_consts.clone(),
         enum_defs: cx.enum_defs.clone(),
         lookup_mod: cx.lookup_mod,
@@ -439,7 +439,7 @@ fn exec_block(
                     // outer binding before the shadow appeared, while still
                     // dropping the shadow itself.
                     shadowed.push((name.clone(), cx.consts.get(name.as_str()).cloned()));
-                    cx.consts.insert(name, value);
+                    std::sync::Arc::make_mut(&mut cx.consts).insert(name, value);
                 }
             }
             Stmt::Return { value, range } => {
@@ -565,11 +565,15 @@ fn exec_block(
                         match prev {
                             // Previously bound in an enclosing scope: put
                             // that value back (mutations included).
-                            Some(value) => cx.consts.insert(name, value),
+                            Some(value) => {
+                                std::sync::Arc::make_mut(&mut cx.consts).insert(name, value)
+                            }
                             // Previously unbound: the declaration introduced
                             // the name, so it must vanish entirely rather
                             // than linger as an empty/default value.
-                            None => cx.consts.remove(name.as_str()),
+                            None => {
+                                std::sync::Arc::make_mut(&mut cx.consts).remove(name.as_str())
+                            }
                         };
                     }
                     // A `return` inside the branch stops the ENCLOSING body
@@ -722,7 +726,7 @@ fn exec_mutating_method_call(
         Literal::Map(pairs) => Literal::Map(mutate_map(pairs, field, args, es, &*cx, budget)?),
         _ => return Err(unsupported()),
     };
-    cx.consts.insert(name.clone(), updated);
+    std::sync::Arc::make_mut(&mut cx.consts).insert(name.clone(), updated);
     Ok(())
 }
 

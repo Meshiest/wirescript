@@ -181,8 +181,8 @@ fn eval_one(
     // clone rather than a refcount bump; hover queries are not the hot loop
     // this refactor targets.
     let cx = crate::const_eval::ConstCtx {
-        consts: env.clone(),
-        module_consts: module_env.clone(),
+        consts: std::sync::Arc::new(env.clone()),
+        module_consts: std::sync::Arc::new(module_env.clone()),
         enum_defs: std::sync::Arc::new(enum_defs.clone()),
         lookup_mod: Some(lookup_mod),
     };
