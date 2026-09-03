@@ -1977,3 +1977,12 @@ fn a_user_mod_named_after_a_prelude_variant_shadows_it_in_const_eval() {
         Some(other) => panic!("unexpected fold for `y`: {other:?}"),
     }
 }
+
+/// `d is Dir.E` folds through the same discriminant projection both sides use,
+/// so a constant enum answers its own variant test at compile time.
+#[test]
+fn const_is_folds_to_a_bool() {
+    let src = "enum Dir { N, E, S, W }\nconst d = Dir.E\nconst hit = d is Dir.E\nconst miss = d is Dir.N\n";
+    assert_eq!(eval_ok(src, "hit"), Literal::Bool(true));
+    assert_eq!(eval_ok(src, "miss"), Literal::Bool(false));
+}

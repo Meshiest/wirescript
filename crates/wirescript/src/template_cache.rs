@@ -422,6 +422,10 @@ fn collect_calls_in_expr(expr: &Expr, known: &HashSet<String>, out: &mut HashSet
             collect_calls_in_expr(obj, known, out)
         }
         Expr::Unsafe { inner, .. } => collect_calls_in_expr(inner, known, out),
+        Expr::Is { value, path, .. } => {
+            collect_calls_in_expr(value, known, out);
+            collect_calls_in_expr(path, known, out);
+        }
         Expr::IndexAccess { obj, index, .. } => {
             collect_calls_in_expr(obj, known, out);
             collect_calls_in_expr(index, known, out);

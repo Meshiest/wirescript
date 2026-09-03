@@ -1058,6 +1058,12 @@ fn collect_idents_in_expr(e: &Expr, idents: &mut HashSet<String>) {
             collect_idents_in_expr(left, idents);
             collect_idents_in_expr(right, idents);
         }
+        // The variant path names the enum, so an import used ONLY by a variant
+        // test still counts as used.
+        Expr::Is { value, path, .. } => {
+            collect_idents_in_expr(value, idents);
+            collect_idents_in_expr(path, idents);
+        }
         Expr::UnOp { operand, .. } => collect_idents_in_expr(operand, idents),
         Expr::Call { callee, args, .. } => {
             collect_idents_in_expr(callee, idents);

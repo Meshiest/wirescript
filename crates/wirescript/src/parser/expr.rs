@@ -11,7 +11,10 @@ fn infix_prec(op: &str) -> Option<u8> {
         "|" => Some(4),
         "^" => Some(5),
         "&" => Some(6),
-        "==" | "!=" => Some(7),
+        // `is` (the enum variant test) reads as a comparison, so it binds like
+        // one. Only the contextual check in `parse_binary` ever passes it here;
+        // an operator token can never spell `is`.
+        "==" | "!=" | "is" => Some(7),
         "<" | "<=" | ">" | ">=" => Some(8),
         "<<" | ">>" => Some(9),
         "+" | "-" | ".." => Some(10),
@@ -156,7 +159,14 @@ impl<'a> Parser<'a> {
                 self.advance();
             }
             let tok = self.peek().clone();
-            if tok.kind != TokenKind::Op {
+            // `value is Enum.Variant` is a word-shaped infix operator.
+            // Contextual, like `enum` and `unsafe`: it only reads as the
+            // operator when a name follows it, so a variable spelled `is`
+            // stays usable (`is = is + 1`, `is(2)`, `is + 1`).
+            let variant_test = tok.kind == TokenKind::Ident
+                && tok.text == "is"
+                && self.peek_at(1).kind == TokenKind::Ident;
+            if tok.kind != TokenKind::Op && !variant_test {
                 self.pos = saved;
                 break;
             }
@@ -172,6 +182,21 @@ impl<'a> Parser<'a> {
             // Also skip newlines after the operator
             while self.peek().kind == TokenKind::Newline {
                 self.advance();
+            }
+            // The right side of `is` is the variant path alone: taking only a
+            // postfix expression keeps `e is E.A && b` grouping as
+            // `(e is E.A) && b`, and leaves a non-path right side to
+            // typecheck's WS066 rather than swallowing the rest of the line.
+            if variant_test {
+                let path = self.parse_postfix();
+                let start = lhs.range().start;
+                let end = path.range().end;
+                lhs = Expr::Is {
+                    value: Box::new(lhs),
+                    path: Box::new(path),
+                    range: self.make_range(start, end),
+                };
+                continue;
             }
             let next_min = if is_right_assoc(&tok.text) {
                 prec

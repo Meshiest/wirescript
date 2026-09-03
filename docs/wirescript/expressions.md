@@ -38,7 +38,7 @@ Operators are listed from **lowest** (loosest binding) to **highest** (tightest 
 | 4 | `\|` | Left | Bitwise OR |
 | 5 | `^` | Left | Bitwise XOR |
 | 6 | `&` | Left | Bitwise AND |
-| 7 | `==` `!=` | Left | Equality |
+| 7 | `==` `!=` `is` | Left | Equality, enum variant test |
 | 8 | `<` `<=` `>` `>=` | Left | Comparison |
 | 9 | `<<` `>>` | Left | Bitwise shift |
 | 10 | `+` `-` `..` | Left | Addition, subtraction, string concat |
@@ -134,6 +134,9 @@ All comparison operators return `bool`.
 | `>=` | Greater or equal | (same as `==`) |
 
 Comparison accepts all wire variant types (`int`, `float`, `bool`, `string`, `entity`, `controller`, `character`) in any combination.
+
+`value is Enum.Variant` tests which variant an enum value holds and also
+returns `bool`; see [enums](enums.md#is).
 
 ```wirescript
 let isZero = count == 0

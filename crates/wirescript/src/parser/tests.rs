@@ -1910,3 +1910,47 @@
         let r = crate::parse(src, "t.ws");
         assert!(!r.diagnostics.is_empty(), "expected a diagnostic for the missing 'else'");
     }
+
+    // `is` variant test
+
+    #[test]
+    fn is_parses_as_a_variant_test() {
+        // `value is Enum.Variant` is its own expression node, holding the value
+        // and the variant path it names.
+        let s = parse_ok("enum Shape { Empty, Circle(float) }\nin s: Shape\nout b = s is Shape.Circle\n");
+        let out = s.decls.iter().find_map(|d| match d {
+            TopDecl::Out(o) => Some(o),
+            _ => None,
+        }).expect("out decl");
+        let Some(Expr::Is { value, path, .. }) = out.value.as_ref() else {
+            panic!("expected Expr::Is, got {:?}", out.value)
+        };
+        assert!(matches!(value.as_ref(), Expr::Ident { name, .. } if name == "s"));
+        let Expr::FieldAccess { obj, field, .. } = path.as_ref() else {
+            panic!("expected a variant path, got {:?}", path)
+        };
+        assert_eq!(field, "Circle");
+        assert!(matches!(obj.as_ref(), Expr::Ident { name, .. } if name == "Shape"));
+    }
+
+    #[test]
+    fn is_binds_like_an_equality_operator() {
+        // `a is E.V && b` groups as `(a is E.V) && b`, matching `==`.
+        let s = parse_ok("enum E { A, B }\nin e: E\nin b: bool\nout r = e is E.A && b\n");
+        let out = s.decls.iter().find_map(|d| match d {
+            TopDecl::Out(o) => Some(o),
+            _ => None,
+        }).expect("out decl");
+        let Some(Expr::BinOp { op, left, .. }) = out.value.as_ref() else {
+            panic!("expected a top-level BinOp, got {:?}", out.value)
+        };
+        assert_eq!(op, "&&");
+        assert!(matches!(left.as_ref(), Expr::Is { .. }), "left: {:?}", left);
+    }
+
+    #[test]
+    fn is_stays_usable_as_a_name() {
+        // Contextual, like `enum` and `unsafe`: `is` is only the operator when a
+        // name follows it, so a variable spelled `is` still parses.
+        parse_ok("var is: int = 0\non start {\n  is = is + 1\n}\nin start: exec\n");
+    }

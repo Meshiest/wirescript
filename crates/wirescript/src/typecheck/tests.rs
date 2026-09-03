@@ -4175,7 +4175,7 @@
             (
                 "const cfg = { rooms: 2, timer: 60 }\n\
                  var x: int = 0\n\
-                 on Clock(interval = 1.0, enabled = true, onTime = cfg) { x = x + 1 }",
+                 on ChatCommand(\"greet\", description = cfg) { x = x + 1 }",
                 "a record",
             ),
             // POSITIONAL config field, record — a separate slot from the above
@@ -4190,7 +4190,7 @@
             (
                 "const arr = [1, 2, 3]\n\
                  var x: int = 0\n\
-                 on Clock(interval = 1.0, enabled = true, onTime = arr) { x = x + 1 }",
+                 on ChatCommand(\"greet\", description = arr) { x = x + 1 }",
                 "an array",
             ),
         ] {
@@ -4213,9 +4213,9 @@
     #[test]
     fn a_scalar_constant_in_a_scalar_config_slot_is_still_accepted() {
         assert_no_diags(&tc(
-            "const T = 0.5\n\
+            "const T = \"help text\"\n\
              var x: int = 0\n\
-             on Clock(interval = 1.0, enabled = true, onTime = T) { x = x + 1 }",
+             on ChatCommand(\"greet\", description = T) { x = x + 1 }",
         ));
     }
 
@@ -4739,4 +4739,70 @@
             "a var-backed field must be accepted: {:?}",
             good.diagnostics
         );
+    }
+
+    // `is` variant test
+
+    #[test]
+    fn is_types_as_a_bool() {
+        assert_no_diags(&tc(
+            "enum Shape { Empty, Circle(float) }\n\
+             var s: Shape = Shape.Empty\n\
+             out hit: bool = s is Shape.Circle",
+        ));
+        // A variant path on the left is an enum value too, so it tests fine.
+        assert_no_diags(&tc(
+            "enum Shape { Empty, Circle(float) }\n\
+             out hit: bool = Shape.Empty is Shape.Circle",
+        ));
+    }
+
+    #[test]
+    fn is_on_a_non_enum_value_is_ws066() {
+        let r = tc(
+            "enum Shape { Empty, Circle(float) }\n\
+             var n: int = 0\n\
+             out hit = n is Shape.Circle",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS066"),
+            "expected WS066 for a non-enum left side: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn is_without_a_variant_on_the_right_is_ws066() {
+        // An enum value on the right names no variant, so it is not a test.
+        let r = tc(
+            "enum Shape { Empty, Circle(float) }\n\
+             var s: Shape = Shape.Empty\n\
+             var other: Shape = Shape.Circle(1.0)\n\
+             out hit = s is other",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS066"),
+            "expected WS066 for a right side that is not a variant: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn is_rejects_an_unknown_variant() {
+        let r = tc(
+            "enum Shape { Empty, Circle(float) }\n\
+             var s: Shape = Shape.Empty\n\
+             out hit = s is Shape.Nope",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS060"),
+            "expected WS060 for an unknown variant: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn is_stays_usable_as_an_identifier() {
+        // Contextual, like `unsafe`: only `is <name>` is the operator.
+        assert_no_diags(&tc("var is: int = 1\nout n = is + 1"));
     }

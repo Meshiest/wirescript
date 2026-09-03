@@ -16,6 +16,7 @@ types.
 - [Declaration](#declaration)
 - [Construction](#construction)
 - [`.Discriminant`](#discriminant)
+- [`is`](#is)
 - [Enum and int conversion](#enum-and-int-conversion)
 - [`match`](#match)
 - [`if let` / `let else`](#if-let--let-else)
@@ -106,6 +107,31 @@ out matches = s.Discriminant == Shape.Rect.Discriminant   // runtime read vs con
 
 `.Discriminant` (and `match`) on a value that isn't an enum is a
 [`WS066`](diagnostics.md) error.
+
+## `is`
+
+`value is Enum.Variant` asks whether the value currently holds that variant and
+yields a `bool`. It is the discriminant comparison above, spelled the way it
+reads:
+
+```wirescript
+enum Shape { Empty, Circle(float), Rect(float, float) }
+
+static var s: Shape = Shape.Circle(5.0)
+in ready: bool
+
+out round = s is Shape.Circle                  // same gates as the compare above
+out other = !(s is Shape.Circle)               // negate with `!`
+out go = s is Shape.Rect && ready              // binds like `==`
+```
+
+The test compares tags, so a payload variant answers on its tag alone and binds
+nothing; [`match`](#match) and [`if let`](#if-let--let-else) are how a payload
+comes back out. The right side must name a variant of the same enum: `s is v`
+(two values) and `s is Other.Empty` (a different enum) are errors.
+
+A test whose two sides are both compile-time constants folds away, so testing
+a `const` value costs no gates.
 
 ## Enum and int conversion
 

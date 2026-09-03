@@ -488,6 +488,7 @@ module.exports = grammar({
         $.dereference_expression,
         $.unsafe_expression,
         $.binary_expression,
+        $.variant_test,
         $.call_expression,
         $.field_expression,
         $.tuple_index_expression,
@@ -539,6 +540,34 @@ module.exports = grammar({
       prec.right(
         PREC.unary,
         seq('unsafe', field('argument', $._expression)),
+      ),
+
+    // `<value> is <Enum>.<Variant>`, the enum variant test. It binds like
+    // `==`, and its right side is a path alone, so `e is E.A && b` groups as
+    // `(e is E.A) && b` and `e is E.A + 1` as `(e is E.A) + 1`, matching the
+    // reference parser.
+    //
+    // KNOWN DIVERGENCE from the compiler, which treats `is` as a CONTEXTUAL
+    // keyword (only `is <name>` opens the form, so `var is: int` still
+    // compiles), for the same lexer reason as `unsafe_expression` above.
+    variant_test: ($) =>
+      prec.left(
+        PREC.equality,
+        seq(
+          field('value', $._expression),
+          'is',
+          field('variant', $.variant_path),
+        ),
+      ),
+
+    // The `Enum.Variant` path after `is`, its own rule rather than a reused
+    // `field_expression`: the dots bind tighter than anything around them, so
+    // there is exactly one way to read `e is E.A` and the path cannot end
+    // early and leave `.A` to project the test's own result.
+    variant_path: ($) =>
+      prec.right(
+        PREC.postfix + 1,
+        seq($.identifier, repeat1(seq('.', $.identifier))),
       ),
 
     binary_expression: ($) => {

@@ -1864,3 +1864,44 @@ fn unsafe_payload_read_gets_the_named_slot() {
     // The value read comes from the payload slot's own gate.
     assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"));
 }
+
+#[test]
+fn is_lowers_like_a_discriminant_comparison() {
+    // `s is Shape.Circle` means `s.Discriminant == Shape.Circle.Discriminant`,
+    // so it must produce the identical gate-class multiset: one compare
+    // against the variant's baked tag, with no extra storage or branching.
+    let with_is = compile(
+        "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Empty\n\
+         out hit = s is Shape.Circle\n",
+    );
+    let with_disc = compile(
+        "enum Shape { Empty, Circle(float) }\nstatic var s: Shape = Shape.Empty\n\
+         out hit = s.Discriminant == Shape.Circle.Discriminant\n",
+    );
+    assert_no_errors(&with_is);
+    assert!(!has_gate(&with_is, "_Unsupported"));
+    assert!(has_gate(
+        &with_is,
+        "BrickComponentType_WireGraph_Expr_CompareEqual"
+    ));
+    assert_eq!(
+        gate_class_counts(&with_is),
+        gate_class_counts(&with_disc),
+        "`is` must lower identically to a discriminant comparison"
+    );
+}
+
+#[test]
+fn is_on_a_constant_enum_folds_away() {
+    // Both sides are compile-time constants, so the fold pass reduces the test
+    // to a literal and no comparison gate survives.
+    let r = compile_folded(
+        "enum Dir { N, E, S, W }\nconst d = Dir.E\nout hit = d is Dir.E\n",
+    );
+    assert_no_errors(&r);
+    assert!(!has_gate(&r, "_Unsupported"));
+    assert!(
+        !has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        "a constant `is` must fold, not emit a compare"
+    );
+}

@@ -82,6 +82,8 @@
 
 "unsafe" @keyword.modifier
 
+"is" @keyword.operator
+
 ; ------------------------------------------------------------------- literals
 
 (integer) @number

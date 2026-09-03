@@ -692,6 +692,7 @@ fn expr_has_direct_exec(
             expr_has_direct_exec(ctx, obj, locals, edges)
         }
         Expr::Unsafe { inner, .. } => expr_has_direct_exec(ctx, inner, locals, edges),
+        Expr::Is { value, .. } => expr_has_direct_exec(ctx, value, locals, edges),
         Expr::UnOp { operand, .. } | Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
             expr_has_direct_exec(ctx, operand, locals, edges)
         }
@@ -1481,6 +1482,81 @@ fn flatten_access(e: &Expr) -> (&Expr, Vec<String>) {
 /// one the value is (never checked, that is the point of the spelling) and the
 /// field names its slot. Any further segments project into a record-typed
 /// payload exactly as they would on a plain record.
+/// `value is Enum.Variant`: an enum value on the left, a variant PATH on the
+/// right, `bool` out. The right side must name a variant rather than merely be
+/// enum-typed, since `a is b` compares two values and `is` deliberately does
+/// not spell that. Both sides must be the same enum, because discriminants are
+/// only comparable within one.
+///
+/// Every failure recovers as `Type::Bool` so a surrounding condition doesn't
+/// cascade a second mismatch off an `Any`.
+pub(super) fn infer_variant_test(
+    ctx: &mut TypeCheckCtx,
+    value: &Expr,
+    path: &Expr,
+    range: &SourceRange,
+) -> Type {
+    let value_ty = unwrap_ref(&infer(ctx, value));
+    // Infers the path first, so an unknown variant reports WS060 from the
+    // shared resolution rather than the weaker "not a variant" below.
+    let path_ty = infer(ctx, path);
+    if !matches!(value_ty, Type::Enum { .. }) {
+        ctx.emit(
+            "WS066",
+            format!(
+                "`is` needs an enum value on the left, found `{}`",
+                crate::analysis::types::type_str(&value_ty)
+            ),
+            value.range().clone(),
+        );
+        return Type::Bool;
+    }
+    // A variant path is a `.`-chain whose last segment names a variant of the
+    // enum it resolved to (`Shape.Circle`, `ns.Shape.Circle`).
+    let names_a_variant = match (path, &path_ty) {
+        (Expr::FieldAccess { field, .. }, Type::Enum { name, .. }) => ctx
+            .enum_defs
+            .get(name)
+            .is_some_and(|def| def.variants.iter().any(|v| &v.name == field)),
+        _ => false,
+    };
+    if !names_a_variant {
+        // An unknown variant already reported WS060; adding a second
+        // diagnostic on the same span would just be noise.
+        if !matches!(path_ty, Type::Any) {
+            ctx.emit(
+                "WS066",
+                format!(
+                    "`is` needs an enum variant on the right (`Enum.Variant`), found `{}`",
+                    crate::analysis::types::type_str(&path_ty)
+                ),
+                path.range().clone(),
+            );
+        }
+        return Type::Bool;
+    }
+    if let (Type::Enum { name: vn, .. }, Type::Enum { name: pn, .. }) = (&value_ty, &path_ty)
+        && vn != pn
+    {
+        ctx.emit(
+            "WS003",
+            format!("`is` needs a variant of `{vn}`, found one of `{pn}`"),
+            path.range().clone(),
+        );
+    }
+    // Lowering desugars the test into `==` over the two discriminants, carrying
+    // this node's range, and `lower_binop` reads its operator rule out of this
+    // map by range. Without the entry the comparison has no rule to lower with
+    // and falls back to an `_Unsupported` placeholder.
+    if let Some(rule) = resolve_op("==", &[Type::Int, Type::Int]) {
+        ctx.op_resolutions.insert(
+            (range.file.clone(), range.start.offset, range.end.offset),
+            rule.clone(),
+        );
+    }
+    Type::Bool
+}
+
 pub(super) fn infer_unsafe_access(ctx: &mut TypeCheckCtx, inner: &Expr, range: &SourceRange) -> Type {
     let (base, segs) = flatten_access(inner);
     let base_ty = unwrap_ref(&infer(ctx, base));
@@ -1594,6 +1670,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
     let expected = ctx.expected_ty.take();
     match e {
         Expr::Unsafe { inner, range } => infer_unsafe_access(ctx, inner, range),
+        Expr::Is { value, path, range } => infer_variant_test(ctx, value, path, range),
         Expr::IntLit { .. } => Type::Int,
         Expr::AtomLit { .. } => Type::Int,
         Expr::FloatLit { .. } => Type::Float,

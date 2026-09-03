@@ -161,6 +161,10 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 None => synthesise_unsupported_range(ctx, range),
             }
         }
+        Expr::Is { value, path, range } => {
+            let compare = Expr::variant_test_desugared(value, path, range);
+            lower_expr(ctx, &compare)
+        }
         Expr::FieldAccess { obj, field, range } => lower_field_access(ctx, obj, field, range, e),
         Expr::IndexAccess { obj, index, range } => lower_index_access(ctx, obj, index, range, e),
         Expr::IfExpr {

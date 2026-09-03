@@ -59,8 +59,8 @@
             config_enum_for_named_arg("SweepSimple", "direction"),
             Some("EBrickDirection")
         );
-        // Event path: Clock's config is all bool/float — no enum.
-        assert_eq!(config_enum_for_named_arg("Clock", "enabled"), None);
+        // Event path: CustomEvent's config is a bool, so no enum.
+        assert_eq!(config_enum_for_named_arg("CustomEvent", "isObject"), None);
         // A wired input (not config) never resolves as a config enum.
         assert_eq!(config_enum_for_named_arg("Clock", "interval"), None);
         // Unknown callee / arg.

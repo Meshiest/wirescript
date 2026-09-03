@@ -145,9 +145,9 @@ fn display_text_font_ref_lands_as_data() {
 fn clock_event_config_lands_as_data() {
     // Clock is an event: the body chains from its Pulse; `interval`/`enabled`
     // are wire inputs (so they MAY be dynamic) but a CONSTANT value bakes into
-    // the gate's scalar data default — no carrier gate — just like the
-    // pulseOn/onTime/offTime settings-menu config. A variable value would wire.
-    let src = "static var n: int = 0\non Clock(interval = 2.0, enabled = true, pulseOn = false, onTime = 0.5, offTime = 0.5) {\n  n = n + 1\n}\n";
+    // the gate's scalar data default, with no carrier gate. A variable value would
+    // wire.
+    let src = "static var n: int = 0\non Clock(interval = 2.0, enabled = true) {\n  n = n + 1\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
     let c = "BrickComponentType_Clock";
@@ -161,16 +161,24 @@ fn clock_event_config_lands_as_data() {
         !has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
         "a constant interval must bake, not materialize a carrier"
     );
-    assert!(matches!(
-        prop(&r, c, "bPulseOn"),
-        Some(Literal::Bool(false))
-    ));
-    assert!(
-        matches!(prop(&r, c, "OnTimeSeconds"), Some(Literal::Float(f)) if (*f - 0.5).abs() < 1e-9)
-    );
-    assert!(
-        matches!(prop(&r, c, "OffTimeSeconds"), Some(Literal::Float(f)) if (*f - 0.5).abs() < 1e-9)
-    );
+}
+
+#[test]
+fn clock_inert_struct_fields_are_not_config() {
+    // `bPulseOn`/`OnTimeSeconds`/`OffTimeSeconds` live in the Clock's data
+    // struct but the gate never reads them, so the event takes no config: an
+    // arg naming one is WS041, not a silently baked property.
+    for src in [
+        "static var n: int = 0\non Clock(interval = 2.0, pulseOn = false) {\n  n = n + 1\n}\n",
+        "static var n: int = 0\non Clock(interval = 2.0, onTime = 0.5) {\n  n = n + 1\n}\n",
+        "static var n: int = 0\non Clock(interval = 2.0, offTime = 0.5) {\n  n = n + 1\n}\n",
+    ] {
+        assert!(
+            errors(src).contains(&"WS041".to_string()),
+            "inert Clock struct field should be WS041: {:?}",
+            errors(src)
+        );
+    }
 }
 
 #[test]
@@ -509,10 +517,11 @@ fn non_constant_font_config_is_rejected() {
 
 #[test]
 fn non_constant_event_config_is_rejected() {
-    // `pulseOn` is constant-only Clock config; a variable would be silently
-    // dropped at lowering, so it must be a WS028 typecheck error. (`enabled` is
-    // a wire input, so it accepts a variable — covered separately.)
-    let src = "in flag: bool\nstatic var n: int = 0\non Clock(interval = 2.0, pulseOn = flag) {\n  n = n + 1\n}\n";
+    // `isObject` is constant-only CustomEvent config; a variable would be
+    // silently dropped at lowering, so it must be a WS028 typecheck error.
+    // (Clock's `enabled` is a wire input, so it accepts a variable; that case is
+    // covered separately.)
+    let src = "in flag: bool\nstatic var n: int = 0\non CustomEvent(\"dmg\", isObject = flag) -> (amount: int) {\n  n = amount\n}\n";
     assert!(
         errors(src).contains(&"WS028".to_string()),
         "non-constant event config should be WS028: {:?}",

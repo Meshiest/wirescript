@@ -195,6 +195,10 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
         }
         Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } => visit_expr(obj, on_call),
         Expr::Unsafe { inner, .. } => visit_expr(inner, on_call),
+        Expr::Is { value, path, .. } => {
+            visit_expr(value, on_call);
+            visit_expr(path, on_call);
+        }
         Expr::IndexAccess { obj, index, .. } => {
             visit_expr(obj, on_call);
             visit_expr(index, on_call);

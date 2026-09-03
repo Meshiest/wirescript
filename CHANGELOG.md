@@ -1,5 +1,13 @@
 # Wirescript Changelog
 
+## 1.10.0
+
+- `value is Enum.Variant` tests which variant an enum value holds, the shorthand for comparing discriminants. It binds like `==`, and a test whose two sides are both constant folds away.
+
+### Fixes
+
+- `on Clock` takes only `interval` and `enabled`. `pulseOn`, `onTime` and `offTime` are inert fields of the gate's data struct, so passing them baked config the gate never reads; naming one is now a `WS041` error.
+
 ## 1.9.0
 
 - Const-heavy programs compile about a third faster. Lowering deep-copied the whole constant table on every expression it lowered.

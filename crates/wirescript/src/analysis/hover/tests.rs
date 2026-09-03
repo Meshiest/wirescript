@@ -730,14 +730,17 @@ chip a(uid: string) -> int {
 
     #[test]
     fn event_config_param_hovers() {
-        // Hovering an event config arg name (`pulseOn`) identifies it as Clock
-        // config and names the gate field it sets (`enabled` is a wire input,
-        // not config).
-        let src = "static var n: int = 0\non Clock(interval = 2.0, pulseOn = false) {\n  n = n + 1\n}";
+        // Hovering an event config arg name (`isObject`) identifies it as
+        // CustomEvent config and names the gate field it sets (Clock's
+        // `interval` is a wire input, not config).
+        let src = "static var n: int = 0\non CustomEvent(\"dmg\", isObject = true) -> (amount: int) {\n  n = amount\n}";
         let line = src.lines().nth(1).unwrap();
-        let h = hover_for(src, 1, line.find("pulseOn").unwrap()).expect("hover on pulseOn");
-        assert!(h.contains("Clock"), "should mention the event: {h}");
-        assert!(h.contains("bPulseOn"), "should name the gate field: {h}");
+        let h = hover_for(src, 1, line.find("isObject").unwrap()).expect("hover on isObject");
+        assert!(h.contains("CustomEvent"), "should mention the event: {h}");
+        assert!(
+            h.contains("bIsObjectEvent"),
+            "should name the gate field: {h}"
+        );
     }
 
     #[test]

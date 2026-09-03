@@ -429,7 +429,9 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         // The Clock event auto-emits an exec pulse at a configured interval; the
         // handler body chains from its `Pulse` output. `interval` and `enabled`
         // wire into the gate's `IntervalSeconds` / `bEnabled` inputs (so they may
-        // be dynamic); pulseOn/onTime/offTime are settings-menu constant config.
+        // be dynamic) and are its only args. The data struct's remaining fields
+        // (`bPulseOn`, `OnTimeSeconds`, `OffTimeSeconds`) are inert: the gate
+        // never reads them.
         (
             "Clock",
             EventSpec {
@@ -437,11 +439,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 gate_class: "BrickComponentType_Clock",
                 data: vec![],
                 config_positional: vec![],
-                config_named: vec![
-                    ("pulseon", "bPulseOn"),
-                    ("ontime", "OnTimeSeconds"),
-                    ("offtime", "OffTimeSeconds"),
-                ],
+                config_named: vec![],
                 input_named: vec![
                     ("interval", "IntervalSeconds", Type::Float),
                     ("enabled", "bEnabled", Type::Bool),

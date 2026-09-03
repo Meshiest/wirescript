@@ -595,3 +595,39 @@ let v = unsafe e.B.0
           (identifier)
           (identifier))
         (integer)))))
+
+================================================================================
+is tests an enum variant
+================================================================================
+
+let hit = s is Shape.Circle
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (variant_test
+      (identifier)
+      (variant_path
+        (identifier)
+        (identifier)))))
+
+================================================================================
+is binds like an equality operator
+================================================================================
+
+let ok = e is E.A && flag
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_declaration
+    (identifier)
+    (binary_expression
+      (variant_test
+        (identifier)
+        (variant_path
+          (identifier)
+          (identifier)))
+      (identifier))))

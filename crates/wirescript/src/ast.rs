@@ -1005,6 +1005,19 @@ pub enum Expr {
         inner: Box<Expr>,
         range: SourceRange,
     },
+    /// `value is Enum.Variant`: whether the value currently holds that
+    /// variant. It compares discriminants, so a payload variant answers on its
+    /// tag alone and binds nothing; `match` and `if let` are how a payload
+    /// comes back out.
+    ///
+    /// `path` is the `Enum.Variant` `FieldAccess` chain, kept unresolved so the
+    /// variant name is a normal reference for hover, go-to-definition and
+    /// rename.
+    Is {
+        value: Box<Expr>,
+        path: Box<Expr>,
+        range: SourceRange,
+    },
 }
 
 /// An element of an array literal: a single value or a `...spread` of another
@@ -1033,6 +1046,25 @@ impl ArrayElem {
 }
 
 impl Expr {
+    /// The `<value>.Discriminant == <path>.Discriminant` comparison an
+    /// [`Expr::Is`] stands for. Lowering and constant folding both go through
+    /// this, so the two spellings cannot drift apart.
+    pub fn variant_test_desugared(value: &Expr, path: &Expr, range: &SourceRange) -> Expr {
+        fn discriminant_of(e: &Expr) -> Expr {
+            Expr::FieldAccess {
+                obj: Box::new(e.clone()),
+                field: "Discriminant".to_string(),
+                range: e.range().clone(),
+            }
+        }
+        Expr::BinOp {
+            op: "==".to_string(),
+            left: Box::new(discriminant_of(value)),
+            right: Box::new(discriminant_of(path)),
+            range: range.clone(),
+        }
+    }
+
     pub fn range(&self) -> &SourceRange {
         match self {
             Expr::IntLit { range, .. }
@@ -1061,7 +1093,8 @@ impl Expr {
             | Expr::NestedPrefab { range, .. }
             | Expr::MapLit { range, .. }
             | Expr::VariantCtor { range, .. }
-            | Expr::Unsafe { range, .. } => range,
+            | Expr::Unsafe { range, .. }
+            | Expr::Is { range, .. } => range,
         }
     }
 
@@ -1093,7 +1126,8 @@ impl Expr {
             | Expr::NestedPrefab { range, .. }
             | Expr::MapLit { range, .. }
             | Expr::VariantCtor { range, .. }
-            | Expr::Unsafe { range, .. } => range,
+            | Expr::Unsafe { range, .. }
+            | Expr::Is { range, .. } => range,
         }
     }
 }

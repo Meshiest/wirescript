@@ -1113,15 +1113,14 @@ Wirescript name, as a [built-in game enum](enums.md#built-in-game-enums) --
 ## Clock (Event)
 
 The Clock gate emits a periodic execution pulse forever; it reads as an event.
-`interval` and `enabled` are **wire inputs** — they may be constants (baked) or
-dynamic (a variable wires in), so you can toggle the clock at runtime. `pulseOn`,
-`onTime`, and `offTime` are constant-only settings-menu config. The handler body
-runs on each pulse.
+It takes `interval` and `enabled`, both **wire inputs**: a constant bakes into
+the gate and a variable wires in, so the rate and the on/off state can change at
+runtime. The handler body runs on each pulse.
 
 ```wirescript
 in running: bool
 var ticks: int = 0
-on Clock(interval = 2.0, enabled = running, pulseOn = false, onTime = 0.5, offTime = 0.5) {
+on Clock(interval = 2.0, enabled = running) {
   ticks = ticks + 1
 }
 ```

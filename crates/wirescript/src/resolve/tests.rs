@@ -197,6 +197,25 @@
     }
 
     #[test]
+    fn import_used_only_in_a_variant_test_not_unused() {
+        // The variant test is the only mention of `o`, so the usage scan has to
+        // walk into it to see the read.
+        let loader = mem(&[("lib.ws", "static var o: Option<int> = None")]);
+        let r = resolve(
+            "import { o } from \"lib\"
+out hit = o is Option.Some",
+            "main.ws",
+            &loader,
+        );
+        let ws014: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "WS014").collect();
+        assert!(
+            ws014.is_empty(),
+            "an import read only by a variant test must not be reported unused: {:?}",
+            ws014
+        );
+    }
+
+    #[test]
     fn import_used_in_event_config_not_unused() {
         // `on Clock(interval = TICK)` reads TICK in the handler's CONFIG args,
         // which the usage scan skipped — it only walked the handler body — so a

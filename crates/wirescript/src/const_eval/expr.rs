@@ -416,6 +416,13 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
         // construction and the two-evaluator seam (see the NOTE at the top of
         // this file) is not crossed: this is still the SAME law, just fed an
         // operand `expr_to_literal_in` could not produce on its own.
+        // `value is Enum.Variant`: folds through the discriminant comparison it
+        // stands for, so a constant enum answers its own variant test here
+        // rather than reaching lowering as a gate.
+        Expr::Is { value, path, range } => {
+            let compare = Expr::variant_test_desugared(value, path, range);
+            return eval_expr(&compare, cx, budget);
+        }
         Expr::BinOp {
             op,
             left,
