@@ -1134,6 +1134,126 @@ pub(super) fn lower_match_expr(
     lower_decision(ctx, &decision, &root, arms, &result_ty, range)
 }
 
+/// The record/enum-VALUE twin of [`lower_match_expr`]. A `match` whose arms are
+/// records or enum values has no single wire to hand back, so it lowers to one
+/// `Select` per LEAF FIELD instead of one per match - the same shape the
+/// record-valued if-expr takes in `value_record_fields`, over the same decision
+/// tree, in the same first-match-wins order, sharing `select_record_fields`.
+///
+/// `None` means "this match carries no record", which every caller treats as
+/// "not a record source" and falls through on: a block-bodied arm (checked
+/// BEFORE anything is lowered, so a match that cannot produce a value emits
+/// nothing rather than half a Select tree), a scrutinee with no record
+/// decomposition, or an arm body that resolves to no field map.
+pub(super) fn lower_match_expr_record(
+    ctx: &mut LowerCtx,
+    scrutinee: &Expr,
+    arms: &[MatchArm],
+    range: &SourceRange,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    // A block-bodied arm carries no value at all (the statement form builds an
+    // exec chain instead), so there is no per-field choice to make.
+    if arms.iter().any(|a| matches!(a.body, MatchBody::Block(_))) {
+        return None;
+    }
+    let scrut_ty = unwrap_ref(&ctx.type_of(scrutinee));
+    let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
+    let decision = crate::lower::matchtree::build(&ctx.enum_defs, &scrut_ty, &arm_patterns);
+    let root = match_scrutinee_record(ctx, scrutinee)?;
+    // Const-elision fast path, identical to `lower_match_expr`'s: a
+    // compile-time-known `__disc` resolves straight to the taken leaf, so only
+    // that arm lowers and no Select/compare is built for the rest.
+    if ctx.nofold_depth == 0
+        && let Some(leaf) = try_const_decision(ctx, &decision, scrutinee)
+    {
+        return lower_decision_record(ctx, &leaf, &root, arms, range);
+    }
+    lower_decision_record(ctx, &decision, &root, arms, range)
+}
+
+/// [`lower_decision`]'s per-field twin: walk one decision node into a field map
+/// rather than a single port.
+fn lower_decision_record(
+    ctx: &mut LowerCtx,
+    decision: &crate::lower::matchtree::Decision,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    arms: &[MatchArm],
+    range: &SourceRange,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    use crate::lower::matchtree::Decision;
+    match decision {
+        Decision::Leaf(i) => lower_match_arm_record(ctx, &arms[*i], root),
+        // No arm matched. Unlike the scalar path there is no zero LITERAL to
+        // fall back on - a record is several wires - and this node is only
+        // reachable for a non-exhaustive match, already a WS054 error. It
+        // contributes no fields, and the fold below makes the last case the
+        // innermost value instead.
+        Decision::Fail => None,
+        Decision::Switch { path, cases, default } => {
+            // One `__disc` read per Switch, like the scalar path. A Switch with
+            // a single case and no default needs no test at all (nothing else
+            // is reachable), so it reads no disc either.
+            let disc_port = if cases.len() > 1 || default.is_some() {
+                Some(
+                    read_disc_at_path(ctx, root, path, range)
+                        .unwrap_or_else(|| synthesise_unsupported_range(ctx, range)),
+                )
+            } else {
+                None
+            };
+            // Fold RIGHT exactly as `lower_decision` does, so the arms are
+            // tested in the same order.
+            let mut acc = default
+                .as_ref()
+                .and_then(|d| lower_decision_record(ctx, d, root, arms, range));
+            for (k, sub) in cases.iter().rev() {
+                let sub_fields = lower_decision_record(ctx, sub, root, arms, range)?;
+                acc = Some(match acc {
+                    Some(else_fields) => {
+                        // `disc_port` is read whenever a test can be needed,
+                        // which is exactly when `acc` is already `Some`.
+                        let dp = disc_port?;
+                        let cond = emit_disc_eq(ctx, dp, *k, range);
+                        crate::lower::stmt::select_record_fields(
+                            ctx,
+                            cond,
+                            &sub_fields,
+                            &else_fields,
+                            range,
+                        )
+                    }
+                    // The innermost fallback: no Select, no `disc == k` compare.
+                    None => sub_fields,
+                });
+            }
+            acc
+        }
+    }
+}
+
+/// [`lower_match_arm`]'s record twin: bind the arm's payload captures the same
+/// way, then resolve its body as a per-field record instead of a single port.
+fn lower_match_arm_record(
+    ctx: &mut LowerCtx,
+    arm: &MatchArm,
+    root: &HashMap<crate::intern::Sym, Binding>,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    let MatchBody::Expr(expr) = &arm.body else {
+        return None;
+    };
+    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
+    let mut captures = Vec::new();
+    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
+    for (name, slot_path) in captures {
+        if let Some(binding) = navigate_capture(root, &slot_path) {
+            ctx.scope.insert(&name, binding);
+        }
+    }
+    let fields = crate::lower::stmt::value_record_fields(ctx, expr);
+    ctx.pop_scope();
+    fields
+}
+
 /// The scrutinee's `__disc` + payload-slot `Binding::Record`, shared by
 /// `lower_match_expr` and `lower_match_stmt`. A NAMED scrutinee resolves
 /// through the scope (`resolve_field_chain`); an INLINE enum construction

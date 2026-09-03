@@ -344,6 +344,40 @@ column alone, which is powerful but sharp: mutating one field's array by itself
 correspondence the whole-array ops rely on. Prefer the whole-record ops
 (`push`/`pop`/`pts[i]`) unless you specifically want a single column.
 
+**Choosing between two records.** A record has no single wire, so an `if`
+expression or a `match` expression over records makes the choice **per leaf
+field**: one `Select` per leaf, all reading the one lowered condition (or, for
+a `match`, the one `__disc` read). It reads like an ordinary conditional value:
+
+```wirescript
+type Point = { x: int, y: int }
+enum Pick { First, Second }
+
+var a: Point = { x: 1, y: 2 }
+var b: Point = { x: 3, y: 4 }
+var chosen: Point = { x: 0, y: 0 }
+var which: Pick = Pick.First
+in go: exec
+
+on go {
+  chosen = if which is Pick.First then a else b   // 2 Selects, one per field
+  chosen = match which { First => a, Second => b }
+  let alias = match which { First => a, Second => b }
+  chosen.x = alias.y
+}
+```
+
+The same holds for an enum value, whose leaves are its discriminant and payload
+slots, so `match outer { A => Shape.Circle(r), B => Shape.Empty }` chooses the
+tag and each slot alongside it.
+
+One limit on the `let` spelling: an arm or branch that is itself a **call** does
+not bind per field. A multi-output gate (`m.get(k)` is `{Value, Found}`) and a
+record-returning `mod` each carry a shape the binding cannot split, so
+`let m = if c then mk(1) else mk(2)` falls back to the single-value auto-unwrap.
+Assign to a record `var` instead, or bind each call first and choose between the
+two names.
+
 **Which fields are allowed.** Every leaf field must be a value the wire graph can
 store -- a number, `bool`, `string`, `vector`/`rotator`/`color`, an entity type,
 or a nested record/array/map. A reference-only field (`*T`, `zone`, `teleport`, a

@@ -331,8 +331,9 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
 
 /// A binding whose initializer has no value (`Type::Never` — a void container
 /// mutation like `a.push(x)` / `m.set(k, v)` used as a value) has nothing to
-/// bind. Report it and return `true`. Nothing but a void mutation produces
-/// `Never` today, so this can't fire spuriously. Shared by `let`/`var`/`out`.
+/// bind. Report it and return `true`. Only two things produce `Never` - a void
+/// container mutation (`a.push(x)` / `m.set(k, v)`) and a `mod`/`chip` call
+/// with no output - so this can't fire spuriously. Shared by `let`/`var`/`out`.
 pub(super) fn reject_never_value(
     ctx: &mut TypeCheckCtx,
     inferred: &Type,
@@ -342,29 +343,63 @@ pub(super) fn reject_never_value(
     if !matches!(inferred, Type::Never) {
         return false;
     }
+    emit_no_value(ctx, Some(name), range);
+    true
+}
+
+/// The shared WS072 message for a `Never`-typed expression read as a value,
+/// naming the binding when there is one. Also the sink `infer::coerce_or_emit`
+/// routes a `Never` source to, so the assignment / argument / output spellings
+/// report the same thing as a binding rather than a bare type mismatch.
+pub(crate) fn emit_no_value(ctx: &mut TypeCheckCtx, name: Option<&str>, range: &SourceRange) {
+    let subject = match name {
+        Some(n) => format!("`{n}` is bound to an expression that"),
+        None => "this expression".to_string(),
+    };
     ctx.emit(
-        "WS003",
+        "WS072",
         format!(
-            "`{name}` is bound to an expression that produces no value (a void mutation \
-             such as `a.push(x)` or `m.set(k, v)`); use it as a statement, not a value"
+            "{subject} produces no value: a void mutation such as `a.push(x)` or \
+             `m.set(k, v)`, or a `mod`/`chip` with no output. Use it as a statement, \
+             not a value; a `mod` that should hand back a value needs an output \
+             (`mod f() -> (r: int)`)"
         ),
         range.clone(),
     );
-    true
 }
 
 /// `reject_never_value` for a `let` binding: returning `true` lets the caller
 /// skip the ordinary annotation check, which would only add a redundant WS016.
+///
+/// One exemption: `let inst = SomeChip(trigger)` on a chip with NO outputs.
+/// A top-level `let` is the documented way to INSTANTIATE a named chip (see
+/// `docs/wirescript/chips.md`, "Exec Chips"), and an output-less one has
+/// nothing to give the binding, so the `let` is a placement, not a read. The
+/// name still carries `Never`, so any later USE of it reports through the
+/// ordinary value-position checks. A void container mutation has no such
+/// spelling and stays rejected.
 pub(super) fn reject_never_binding(
     ctx: &mut TypeCheckCtx,
     l: &crate::ast::LetDecl,
     inferred: &Type,
 ) -> bool {
+    if is_user_chip_call(ctx, &l.value) {
+        return false;
+    }
     let name = match &l.binding {
         crate::ast::LetBinding::Ident { name, .. } => name.as_str(),
         _ => "<binding>",
     };
     reject_never_value(ctx, inferred, l.value.range(), name)
+}
+
+/// Is `e` a direct call to a user `mod`/`chip` by name (`Foo(...)`, not a
+/// method call, builtin, or namespaced member)? Used only for the
+/// instantiation exemption above.
+fn is_user_chip_call(ctx: &TypeCheckCtx, e: &crate::ast::Expr) -> bool {
+    matches!(e, crate::ast::Expr::Call { callee, .. }
+        if matches!(callee.as_ref(), crate::ast::Expr::Ident { name, .. }
+            if ctx.resolve_mod(name).is_some()))
 }
 
 pub(super) fn check_let_type_annotation(

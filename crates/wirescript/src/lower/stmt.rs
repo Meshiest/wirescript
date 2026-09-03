@@ -538,6 +538,19 @@ pub(super) fn value_record_fields(
             range,
         ));
     }
+    // `match s { A => p, B => q }` yielding a RECORD or an ENUM value: the same
+    // per-leaf choice the if-expr arm above makes, spread over the match's
+    // decision tree. Must precede the `Call`/enum-typed fallback at the bottom,
+    // which would lower an enum-typed match through the SCALAR match path and
+    // report each arm as WS071. Without this arm every consumer bailed on the
+    // `None` and a record-valued match assigned nothing at all - no Select, no
+    // store, no diagnostic.
+    if let Expr::MatchExpr { scrutinee, arms, range } = value
+        && let Some(rec) =
+            crate::lower::expr::lower_match_expr_record(ctx, scrutinee, arms, range)
+    {
+        return Some(rec);
+    }
     // `pts[i]` reads a record ARRAY element as a record value (per-field
     // ArrayGet), so it can be assigned/pushed like any other record.
     if let Expr::IndexAccess { obj, index, range } = value
@@ -624,7 +637,7 @@ pub(super) fn value_record_fields(
 /// both branches to be the same record type, so a one-sided field cannot appear
 /// in a well-formed program, and taking the intersection keeps a mis-typed one
 /// from wiring a Select with a missing input.
-fn select_record_fields(
+pub(super) fn select_record_fields(
     ctx: &mut LowerCtx,
     cond_port: PortRef,
     then_fields: &HashMap<crate::intern::Sym, Binding>,

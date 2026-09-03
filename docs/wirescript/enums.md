@@ -325,6 +325,13 @@ out area = match s {
 top-level `out` port directly either -- expose a derived scalar, such as
 `.Discriminant` or a `match` result, instead.)
 
+A `let` that ALIASES an enum in storage decomposes too, so an array element, a
+map value, and a record field all match directly (`match arr[i] { .. }`, or
+`let e = h.shape` first). The one spelling that does not is `m.get(k)`: that
+method returns a `{Value, Found}` result record rather than the value, which is
+the [`WS066`](diagnostics.md) "requires an enum scrutinee" error naming that
+shape. Subscript it (`m[k]`) or read the member (`m.get(k).Value`).
+
 ## `if let` / `let else`
 
 These are single-variant refutable binds -- shorthand for a `match` with one

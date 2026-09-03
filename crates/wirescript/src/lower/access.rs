@@ -349,6 +349,39 @@ pub(super) fn lower_field_access(
         };
         return lower_expr(ctx, &distributed);
     }
+    // The same distribution over a `match`: `(match s { A => p, B => q }).f`
+    // becomes `match s { A => p.f, B => q.f }`. Record/enum arms carry no single
+    // wire, so without this the field fell to the swizzle / SplitVector
+    // fallback over a placeholder. Distributing (rather than reading one leaf
+    // out of the per-field Select tree the value form builds) also costs one
+    // Select instead of one per leaf. Block-bodied arms carry no value, so they
+    // are left to the statement form.
+    if let Expr::MatchExpr { scrutinee, arms, range: m_range } = obj
+        && arms.iter().all(|a| matches!(a.body, MatchBody::Expr(_)))
+    {
+        let distributed = Expr::MatchExpr {
+            scrutinee: scrutinee.clone(),
+            arms: arms
+                .iter()
+                .map(|a| {
+                    let MatchBody::Expr(body) = &a.body else {
+                        unreachable!("guarded above")
+                    };
+                    MatchArm {
+                        pattern: a.pattern.clone(),
+                        body: MatchBody::Expr(Expr::FieldAccess {
+                            obj: Box::new(body.clone()),
+                            field: field.to_string(),
+                            range: range.clone(),
+                        }),
+                        range: a.range.clone(),
+                    }
+                })
+                .collect(),
+            range: m_range.clone(),
+        };
+        return lower_expr(ctx, &distributed);
+    }
     // `<value>.Discriminant` (an enum value, or a bare variant path like
     // `Shape.Circle`) always projects to its integer discriminant - see the
     // "Enum value layout" doc on `LowerCtx::enum_defs`. Checked directly on

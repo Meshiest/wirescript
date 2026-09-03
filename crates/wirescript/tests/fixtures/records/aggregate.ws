@@ -13,6 +13,13 @@ type Point = { x: int, y: int }
 type Mixed = { n: int, f: float, s: string }
 type Line = { a: Point, b: Point }
 
+enum Which { First, Second }
+enum Shape { Empty, Circle(float), Rect(float, float) }
+
+// Set to `Opaque(true)` in the handler, so the record/enum choices below are
+// made at RUNTIME by a Select rather than folded to one arm at compile time.
+var takeA: bool = false
+
 var pass: int = 0
 var total: int = 0
 
@@ -40,6 +47,8 @@ mod assertBool(want: bool, got: bool, label: string) {
 }
 
 on ReadBrickGrid() {
+  takeA = Opaque(true)
+
   // ---------- record VARIABLE ----------
   var p: Point = { x: 3, y: 5 }
   assert(3, p.x, "var field x init")
@@ -242,6 +251,45 @@ on ReadBrickGrid() {
   assert(2, srt[0].y, "sort by x carried y along: row 0 y")
   assert(30, srt[2].x, "sort by x ascending: row 2 x")
   assert(1, srt[2].y, "sort by x carried y along: row 2 y")
+
+  // ---------- record CHOSEN per leaf field ----------
+  // A record has no single wire, so an `if`/`match` over records picks each
+  // leaf independently. The failure this catches is a choice that silently
+  // wired only the first field, or dropped the whole statement.
+  var ca: Point = { x: 71, y: 72 }
+  var cb: Point = { x: 81, y: 82 }
+  var chosen: Point = { x: 0, y: 0 }
+
+  chosen = if takeA then ca else cb
+  assert(71, chosen.x, "if-expr record choice: then-side x")
+  assert(72, chosen.y, "if-expr record choice: then-side y")
+  chosen = if !takeA then ca else cb
+  assert(81, chosen.x, "if-expr record choice: else-side x")
+  assert(82, chosen.y, "if-expr record choice: else-side y")
+
+  chosen = match Which.First { First => ca, Second => cb }
+  assert(71, chosen.x, "match-expr record arm: first arm x")
+  assert(72, chosen.y, "match-expr record arm: first arm y")
+  var w: Which = Which.Second
+  chosen = match w { First => ca, Second => cb }
+  assert(81, chosen.x, "match-expr record arm: second arm x")
+  assert(82, chosen.y, "match-expr record arm: second arm y")
+
+  // The same choice bound to a `let` and then read by field.
+  let picked = match w { First => ca, Second => cb }
+  assert(81, picked.x, "match-expr record bound to a let: x")
+  assert(82, picked.y, "match-expr record bound to a let: y")
+
+  // Enum VALUE arms: the leaves are the tag plus each payload slot, so the
+  // chosen variant must carry its own payload, not the other arm's.
+  var shape: Shape = Shape.Empty
+  shape = match w { First => Shape.Circle(2.5), Second => Shape.Rect(3.0, 4.0) }
+  assert(12.0, match shape { Circle(r) => r * 2.0, Rect(rw, rh) => rw * rh, Empty => 0.0 },
+         "match-expr enum arm: second arm keeps its own payload")
+  w = Which.First
+  shape = match w { First => Shape.Circle(2.5), Second => Shape.Rect(3.0, 4.0) }
+  assert(5.0, match shape { Circle(r) => r * 2.0, Rect(rw, rh) => rw * rh, Empty => 0.0 },
+         "match-expr enum arm: first arm keeps its own payload")
 
   BroadcastChatMessage("aggregate checks: ${pass}/${total}")
 }

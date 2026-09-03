@@ -167,3 +167,159 @@ fn chip_record_ref_param_rebinds_per_call_site() {
         );
     }
 }
+
+
+/// A `match` EXPRESSION whose arms are record VALUES must lower to a per-field
+/// `Select` tree and write the target's fields. It used to drop the whole
+/// statement — no Select, no `Var_Set`, no diagnostic — while the statement
+/// form (`match s { A => { r = p } ... }`) lowered correctly.
+#[test]
+fn match_expr_with_record_arms_writes_target_fields() {
+    let src = "type P = { x: int, y: int }\n\
+               enum S { A, B }\n\
+               var r: P = { x: 0, y: 0 }\n\
+               var p: P = { x: 1, y: 2 }\n\
+               var q: P = { x: 3, y: 4 }\n\
+               var s: S = S.A\n\
+               in go: exec\n\
+               on go { r = match s { A => p, B => q } }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        2,
+        "one Select per record leaf field (x, y)"
+    );
+    // Two leaves written into `r`, plus the source reads.
+    assert!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set") >= 2,
+        "each of `r`'s fields must be written"
+    );
+}
+
+/// The same for a `match` expression whose arms are ENUM values: an enum value
+/// is a `__disc` + payload-slot record, so it takes the identical per-leaf
+/// Select path.
+#[test]
+fn match_expr_with_enum_arms_writes_target_slots() {
+    let src = "enum Dir { N, E }\n\
+               enum S { A, B }\n\
+               var out1: Dir = Dir.N\n\
+               var d1: Dir = Dir.N\n\
+               var d2: Dir = Dir.E\n\
+               var s: S = S.A\n\
+               in go: exec\n\
+               on go { out1 = match s { A => d1, B => d2 } }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        1,
+        "one Select for the `__disc` leaf"
+    );
+    assert!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set") >= 1,
+        "the target's `__disc` must be written"
+    );
+}
+
+/// A record-valued `match` expression bound to a `let`, then read by field.
+#[test]
+fn match_expr_record_bound_to_let_reads_field() {
+    let src = "type P = { x: int, y: int }\n\
+               enum S { A, B }\n\
+               var o: int = 0\n\
+               var p: P = { x: 1, y: 2 }\n\
+               var q: P = { x: 3, y: 4 }\n\
+               var s: S = S.A\n\
+               in go: exec\n\
+               on go { let m = match s { A => p, B => q }\n o = m.x }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select") >= 1,
+        "the read field must come through a Select"
+    );
+}
+
+/// A record-valued `match` in every other value position: a record array push,
+/// a record map set, an `out` port, and a `mod`/`chip` argument. Each routes
+/// through the same shared resolver, so a gap in one is a gap in all.
+#[test]
+fn match_expr_record_resolves_in_every_value_position() {
+    let src = "type P = { x: int, y: int }\n\
+               enum S { A, B }\n\
+               var p: P = { x: 1, y: 2 }\n\
+               var q: P = { x: 3, y: 4 }\n\
+               var s: S = S.A\n\
+               var arr: P[]\n\
+               var mp: Map<int, P>\n\
+               var g1: int = 0\n\
+               var g2: int = 0\n\
+               mod takeRec(v: P) -> (o: int) { return v.x + v.y }\n\
+               chip ChRec(v: P) -> (o: int) { out o = v.x - v.y }\n\
+               in go: exec\n\
+               on go {\n\
+                 arr.push(match s { A => p, B => q })\n\
+                 mp.set(1, match s { A => p, B => q })\n\
+                 g1 = takeRec(match s { A => p, B => q })\n\
+                 g2 = ChRec(match s { A => p, B => q })\n\
+               }\n\
+               out sum = (match s { A => p, B => q }).x";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+}
+
+/// A `mod` takes a record argument in every form its `chip` twin does. The
+/// container-element and record-valued-conditional spellings used to reach the
+/// callee as one opaque value port, so each field read in the body lowered to
+/// an `_Unsupported` placeholder.
+#[test]
+fn mod_record_argument_accepts_every_value_form() {
+    let src = "type P = { x: int, y: int }\n\
+               var p: P = { x: 1, y: 2 }\n\
+               var q: P = { x: 3, y: 4 }\n\
+               var arr: P[]\n\
+               var mp: Map<int, P>\n\
+               var c: bool = false\n\
+               var g1: int = 0\n\
+               var g2: int = 0\n\
+               var g3: int = 0\n\
+               mod takeRec(v: P) -> (o: int) { return v.x + v.y }\n\
+               in go: exec\n\
+               on go {\n\
+                 arr.push(p)\n\
+                 mp.set(1, p)\n\
+                 g1 = takeRec(if c then p else q)\n\
+                 g2 = takeRec(arr[0])\n\
+                 g3 = takeRec(mp[1])\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+}
+
+/// `let m = if c then p else q` on records binds a per-field record, the same
+/// way the assignment form writes one. Only the assignment position resolved,
+/// so the `let` reported WS071 on each branch and read a placeholder.
+#[test]
+fn record_valued_if_expr_binds_to_a_let() {
+    let src = "type P = { x: int, y: int }\n\
+               var p: P = { x: 1, y: 2 }\n\
+               var q: P = { x: 3, y: 4 }\n\
+               var c: bool = false\n\
+               var o: int = 0\n\
+               in go: exec\n\
+               on go { let m = if c then p else q\n o = m.y }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select") >= 1,
+        "the read field must come through a Select"
+    );
+}

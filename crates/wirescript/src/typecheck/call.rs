@@ -514,7 +514,19 @@ pub(super) fn type_user_symbol_call(
         }
         return Type::Record(fields);
     }
-    Type::Any
+    // No outputs at all: the call has nothing to give a value position. `Never`
+    // is the existing "produces no value" type (a void container mutation like
+    // `a.push(x)` already carries it), so the shared rejections
+    // (`let_binding::reject_never_value`, `infer::coerce_or_emit`) catch a
+    // consumer that reads it while every statement-position call stays clean.
+    // `Any` used to make `o = noret(1)` typecheck, after which lowering handed
+    // the caller its exec continuation and wired an exec pin into the store's
+    // `Value`. An `exec =` trigger keeps `Any`: that spelling carries the
+    // chain's completion, which lowering does return as a real port.
+    if has_exec_arg {
+        return Type::Any;
+    }
+    Type::Never
 }
 
 /// Reference-only types: like a variable ref, these wire and reroute but are not

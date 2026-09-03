@@ -47,17 +47,16 @@ root-level `var`, array, map, `buffer`, `in` and `out` declarations. Imported
 state is **shared, not copied** -- every importer reads and writes the same
 storage gate, so a library module can own state that several entry files drive.
 
-**Handlers come across only with the import-all form.** `import "lib"` carries a
-module's top-level `on` handlers; a selective or namespace import does not,
-because both select declarations BY NAME and a handler has none to select. The
-exclusion is silent - no error and no warning at any stage. The receiver gate is
-simply never emitted, and at runtime every event it would have caught is
-discarded.
+**A SELECTIVE import drops the module's handlers.** `import "lib"` and
+`import * as lib from "lib"` both carry a module's top-level `on` handlers;
+`import { helper } from "lib"` does not, because it selects declarations BY NAME
+and a handler has none to select. No error, no warning: the receiver gate is
+never emitted, so the events it would have caught go nowhere.
 
-The trap is the edit that narrows an import: turning `import "lib"` into
-`import { helper } from "lib"` to quiet an unused-name warning also drops every
-handler that module declared, and nothing in `just check` or `just compile`
-reports it.
+The trap is the edit that narrows an import. Turning `import "lib"` into
+`import { helper } from "lib"` to quiet an unused-name warning drops every
+handler that module declared, and neither `just check` nor `just compile` says
+so. Narrowing to `import * as lib from "lib"` keeps them.
 
 The robust arrangement is to keep `on` handlers in the **entry** file regardless:
 expose the logic from the library as a `mod`, and let each entry file declare the

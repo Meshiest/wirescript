@@ -74,6 +74,26 @@ pub(in crate::lower) fn lower_chip_call_inline(
             record_bindings.push((param.name.clone(), fields));
             continue;
         }
+        // The record value forms neither arm above resolves: a container
+        // element, a nested field of one, and a record-valued `if`/`match`.
+        // Routed through the shared resolver, the same one the
+        // microchip-instance path uses for its record pins (`call::wiring`), so
+        // a `mod` takes every form its `chip` twin does instead of dropping
+        // these to `_Unsupported`. A CALL / enum-construction argument is
+        // deliberately absent: the `wants_record` arm below already claims
+        // those, and it applies the single-record-output unwrap this resolver
+        // does not. Gated on the param being record/tuple shaped, so a scalar
+        // argument never pays a speculative lowering.
+        if (matches!(
+            record_arg,
+            Expr::IndexAccess { .. } | Expr::FieldAccess { .. } | Expr::TuplePick { .. }
+        ) || crate::lower::decl::conditional_over_non_calls(record_arg))
+            && ctx.record_or_tuple_fields(&param.typ).is_some()
+            && let Some(fields) = crate::lower::stmt::value_record_fields(ctx, record_arg)
+        {
+            record_bindings.push((param.name.clone(), fields));
+            continue;
+        }
         match &param.typ {
             // A container param (`T[]`, `Map<K,V>`, `ref T`) captures the
             // caller's var/input binding by reference, so the mod body resolves

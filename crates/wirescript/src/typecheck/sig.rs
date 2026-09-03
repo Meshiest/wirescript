@@ -475,6 +475,14 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // receiver params are never `Ref`-typed, so this is a no-op for
     // them.
     let param_ty = unwrap_ref(&param.ty);
+    // An argument that produces no value (a void mutation, a `mod`/`chip` with
+    // no output) has no wire to pass, whatever the param type - including an
+    // `any` param, which `coerce` would wave through. Same WS072 sink every
+    // other value position uses.
+    if matches!(arg_ty, Type::Never) && !matches!(param_ty, Type::Never) {
+        crate::typecheck::let_binding::emit_no_value(ctx, None, arg_expr.range());
+        return;
+    }
     if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch {
         ctx.emit(
             "WS003",

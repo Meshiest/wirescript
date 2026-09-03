@@ -48,17 +48,69 @@
         assert_no_diags(&tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0, 9) }"));
     }
 
+    /// A `mod`/`chip` with no output has no value to give, so reading its call
+    /// as one is a WS072 error. It used to type as `any`, which accepted every
+    /// consumer; lowering then handed the caller its EXEC CONTINUATION, so the
+    /// destination read an exec pin as data with no diagnostic at any level.
+    #[test]
+    fn no_output_mod_call_used_as_value_errors() {
+        let pre = "mod noret(x: int) { }\nvar o: int = 0\nin go: exec";
+        let no_value = |r: &TypeCheckResult| {
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS072" && d.message.contains("no value"))
+        };
+        // Assignment RHS, `let` initializer, annotated `var`, and an argument.
+        assert!(no_value(&tc(&format!("{pre}\non go {{ o = noret(1) }}"))), "assign");
+        // A bare `let` of a no-output call binds nothing but is the documented
+        // chip-INSTANTIATION spelling, so it is allowed; READING the name is
+        // what reports.
+        assert_no_diags(&tc(&format!("{pre}\non go {{ let v = noret(1) }}")));
+        assert!(
+            no_value(&tc(&format!("{pre}\non go {{ let v = noret(1)\n o = v }}"))),
+            "let then read"
+        );
+        assert!(no_value(&tc(&format!("{pre}\non go {{ var v: int = noret(1) }}"))), "var");
+        assert!(
+            no_value(&tc(&format!("{pre}\non go {{ PrintToConsole(noret(1)) }}"))),
+            "argument"
+        );
+        // An operand reports what it IS rather than a missing '+' overload
+        // naming `never`, and an interpolated read reports too.
+        assert!(no_value(&tc(&format!("{pre}\non go {{ o = noret(1) + 1 }}"))), "operand");
+        assert!(no_value(&tc(&format!("{pre}\non go {{ o = -noret(1) }}"))), "unary operand");
+        assert!(
+            no_value(&tc(&format!(
+                "{pre}\non go {{ PrintToConsole(\"${{noret(1)}}\") }}"
+            ))),
+            "interpolation"
+        );
+        // A chip with no output is the same shape.
+        assert!(
+            no_value(&tc(&format!(
+                "chip nochip(x: int) {{ }}\nvar q: int = 0\nin g2: exec\non g2 {{ q = nochip(1) }}"
+            ))),
+            "chip"
+        );
+        // Statement position is the normal way to call one and stays clean.
+        assert_no_diags(&tc(&format!("{pre}\non go {{ noret(1) }}")));
+        // A mod that DOES declare an output still binds.
+        assert_no_diags(&tc(
+            "mod ret(x: int) -> (r: int) { out r = x }\nvar o: int = 0\nin go: exec\non go { o = ret(1) }",
+        ));
+    }
+
     #[test]
     fn void_container_mutation_used_as_value_errors() {
         // Void mutations (`push`/`insert`/`clear`/`set`/`copyFrom`/...) return
-        // `Never`, not `Any`, so binding their "result" is a WS003 error instead
+        // `Never`, not `Any`, so binding their "result" is a WS072 error instead
         // of silently accepting an unusable value. As a statement they're fine,
         // and value-returning methods (`pop`, `get`) still bind.
         let pre = "var a: int[]\nvar m: Map<string,int>\nin go: exec\n";
         let no_value = |r: &TypeCheckResult| {
             r.diagnostics
                 .iter()
-                .any(|d| d.code == "WS003" && d.message.contains("no value"))
+                .any(|d| d.code == "WS072" && d.message.contains("no value"))
         };
         assert!(no_value(&tc(&format!("{pre}on go {{ let r = a.push(5) }}"))), "let/push");
         assert!(no_value(&tc(&format!("{pre}on go {{ let r = m.set(\"k\", 1) }}"))), "let/set");

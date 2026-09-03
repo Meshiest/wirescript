@@ -1874,6 +1874,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         }
         Expr::UnOp { op, operand, range } => {
             let operand_t = infer(ctx, operand);
+            if matches!(operand_t, Type::Never) {
+                crate::typecheck::let_binding::emit_no_value(ctx, None, operand.range());
+                return Type::Any;
+            }
             let unwrapped = op_operand_type(&operand_t);
             // `resolve_op` maps unary `-` to the table's `-u` key internally.
             let rule = resolve_op(op.as_str(), &[unwrapped]);
@@ -1906,6 +1910,14 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         } => {
             let lt = infer(ctx, left);
             let rt = infer(ctx, right);
+            // An operand with no value at all reports THAT, rather than a
+            // missing overload naming `never` - a type the author never wrote.
+            for (t, e) in [(&lt, left.as_ref()), (&rt, right.as_ref())] {
+                if matches!(t, Type::Never) {
+                    crate::typecheck::let_binding::emit_no_value(ctx, None, e.range());
+                    return Type::Any;
+                }
+            }
             // Comparing two whole records has no lowering: each operand's
             // first-field projection in `op_operand_type` lets `rec == rec`
             // typecheck, then both sides lower to `_Unsupported`. A record
@@ -3663,6 +3675,16 @@ fn check_null(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
 
 /// The shared WS003 sink.
 pub(crate) fn coerce_or_emit(ctx: &mut TypeCheckCtx, from: &Type, to: &Type, range: &SourceRange) {
+    // `Never` is not a mismatched value type, it is the ABSENCE of one, so
+    // "expected int, got never" describes the wrong problem. Route it to the
+    // same WS072 message the binding rejection uses. Checked WITHOUT consulting
+    // `coerce`, which lets `Never` through an `any` sink under the universal
+    // any-coerces-to-anything rule - an `any` PORT still needs a wire, and a
+    // `Never` source has none, so `PrintToConsole(noret(1))` must report too.
+    if matches!(from, Type::Never) && !matches!(to, Type::Never) {
+        crate::typecheck::let_binding::emit_no_value(ctx, None, range);
+        return;
+    }
     if coerce(from, to) == CoerceRule::Mismatch {
         ctx.emit(
             "WS003",

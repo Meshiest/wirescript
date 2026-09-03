@@ -1,5 +1,15 @@
 # Wirescript Changelog
 
+## 1.10.1
+
+### Fixes
+
+- A `match` expression whose arms are records or enum values compiles, choosing per leaf field like the record-valued `if`. The record spelling dropped the statement silently; the enum spelling was a `WS071` per arm.
+- `let m = if c then a else b` / `let m = match s { .. }` bind a record per field. An arm that is itself a call keeps the single-value auto-unwrap.
+- `(match s { .. }).field` reads that field, distributing over the arms like the `if` spelling.
+- A `mod` record argument accepts a container element or a record-valued `if`/`match`, as its `chip` twin already did.
+- An expression with no value read as one is a `WS072` error. A no-output `mod`/`chip` typed as `any`, so `o = noret(1)` silently wired the caller's exec continuation in as data.
+
 ## 1.10.0
 
 - `value is Enum.Variant` tests which variant an enum value holds, the shorthand for comparing discriminants. It binds like `==`, and a test whose two sides are both constant folds away.
