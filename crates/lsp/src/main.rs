@@ -512,6 +512,10 @@ struct DocState {
 struct Backend {
     client: Client,
     docs: Mutex<HashMap<Url, DocState>>,
+    /// Whether the client accepts a dynamic `workspace/didChangeWatchedFiles`
+    /// registration, read from its initialize capabilities. Set once in
+    /// `initialize`, read once in `initialized`.
+    watch_files: std::sync::atomic::AtomicBool,
 }
 
 /// A loader that serves imports from the OPEN EDITOR BUFFERS first, falling back
@@ -730,6 +734,23 @@ impl Backend {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // An importer's diagnostics are only refreshed by an edit to a file the
+        // editor has OPEN (`reanalyze_other_docs` walks open documents). A
+        // module changed or CREATED on disk while closed would leave every file
+        // importing it showing diagnostics for the version that is gone - the
+        // shape that reads as "the LSP is wrong about my import". Watching the
+        // workspace's `.ws` files closes that gap; registered below, in
+        // `initialized`, only when the client offers it.
+        self.watch_files.store(
+            params
+                .capabilities
+                .workspace
+                .as_ref()
+                .and_then(|w| w.did_change_watched_files.as_ref())
+                .and_then(|f| f.dynamic_registration)
+                .unwrap_or(false),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // A client that brings its own formatter (the VS Code extension uses
         // its prettier plugin) can opt out of server-side formatting so the
         // editor doesn't list two identical providers.
@@ -831,9 +852,37 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        if self.watch_files.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = self
+                .client
+                .register_capability(vec![Registration {
+                    id: "wirescript-watch-ws".into(),
+                    method: "workspace/didChangeWatchedFiles".into(),
+                    register_options: serde_json::to_value(
+                        DidChangeWatchedFilesRegistrationOptions {
+                            watchers: vec![FileSystemWatcher {
+                                glob_pattern: GlobPattern::String("**/*.ws".into()),
+                                kind: None,
+                            }],
+                        },
+                    )
+                    .ok(),
+                }])
+                .await;
+        }
         self.client
             .log_message(MessageType::INFO, "wirescript LSP initialized")
             .await;
+    }
+
+    /// A `.ws` file changed on disk. Only files the editor has open are
+    /// analyzed, so the changed one may not be among them - what matters is
+    /// refreshing the open files that IMPORT it, which is exactly what
+    /// `reanalyze_other_docs` does.
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        for change in &params.changes {
+            self.reanalyze_other_docs(&change.uri).await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -1533,6 +1582,7 @@ async fn main() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         docs: Mutex::new(HashMap::new()),
+        watch_files: std::sync::atomic::AtomicBool::new(false),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }

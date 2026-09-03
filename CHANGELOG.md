@@ -15,6 +15,10 @@
 - A namespaced `let` initialized through such an alias carries its type, so reading it is no longer a `WS002`.
 - An alias collision between an importer and the module it imports is a `WS012`. The traveling namespace was dropped instead.
 
+### Editor
+
+- The LSP watches the workspace's `.ws` files, so a module changed or created on disk while closed refreshes the files importing it. Only edits to OPEN documents did, leaving stale diagnostics about a version that was gone.
+
 ## 1.10.0
 
 - `value is Enum.Variant` tests which variant an enum value holds, the shorthand for comparing discriminants. It binds like `==`, and a test whose two sides are both constant folds away.

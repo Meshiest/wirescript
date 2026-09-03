@@ -629,7 +629,11 @@
     /// needed since we drive the handlers in-process.
     fn build_backend() -> LspService<Backend> {
         let (service, _socket) =
-            LspService::new(|client| Backend { client, docs: Mutex::new(HashMap::new()) });
+            LspService::new(|client| Backend {
+                client,
+                docs: Mutex::new(HashMap::new()),
+                watch_files: std::sync::atomic::AtomicBool::new(false),
+            });
         service
     }
 
