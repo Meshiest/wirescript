@@ -26,7 +26,9 @@ const CLOSE = "<!-- /toc -->";
 
 // The README's Table of Contents lists the other PAGES, not its own sections;
 // it is hand-written and stays that way.
-const SKIP = new Set(["README.md"]);
+// README is the book's landing page; SUMMARY is generated and CHANGELOG is
+// copied in by the book build, so neither is an authored page.
+const SKIP = new Set(["README.md", "SUMMARY.md", "CHANGELOG.md"]);
 
 /** GitHub's heading slug: strip markdown, drop punctuation, spaces to hyphens. */
 export function slug(heading) {

@@ -19,8 +19,9 @@ fuzz_findings/
 dumps/
 crates/wirescript/data/asset_dump.json
 
-# mdBook output and the CHANGELOG/SUMMARY staged into the book source
+# mdBook output, and the CHANGELOG copied into the book source at build time.
+# `docs/src/SUMMARY.md` and `docs/assets/wirescript-hljs.js` are generated too,
+# but tracked: CI builds the book without running the generators, and
+# `just doc-check` fails when either has drifted from its source.
 docs/book/
-docs/src/SUMMARY.md
 docs/src/CHANGELOG.md
-docs/assets/wirescript-hljs.js

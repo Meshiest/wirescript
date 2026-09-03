@@ -29,6 +29,7 @@ mkdir -p _site/docs _site/sdk/examples
 if command -v mdbook >/dev/null 2>&1; then
   echo "  building the book with mdbook..."
   node ../wirescript/scripts/gen_book_summary.mjs
+  node ../wirescript/scripts/gen_hljs_lang.mjs
   cp ../../CHANGELOG.md ../../docs/src/CHANGELOG.md
   mdbook build ../../docs -d "$(pwd)/_site/docs"
   rm -f ../../docs/src/CHANGELOG.md
