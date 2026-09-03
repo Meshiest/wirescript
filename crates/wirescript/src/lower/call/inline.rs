@@ -84,11 +84,14 @@ pub(in crate::lower) fn lower_chip_call_inline(
         // those, and it applies the single-record-output unwrap this resolver
         // does not. Gated on the param being record/tuple shaped, so a scalar
         // argument never pays a speculative lowering.
-        if (matches!(
+        if matches!(
             record_arg,
-            Expr::IndexAccess { .. } | Expr::FieldAccess { .. } | Expr::TuplePick { .. }
-        ) || crate::lower::decl::conditional_over_non_calls(record_arg))
-            && ctx.record_or_tuple_fields(&param.typ).is_some()
+            Expr::IndexAccess { .. }
+                | Expr::FieldAccess { .. }
+                | Expr::TuplePick { .. }
+                | Expr::IfExpr { .. }
+                | Expr::MatchExpr { .. }
+        ) && ctx.record_or_tuple_fields(&param.typ).is_some()
             && let Some(fields) = crate::lower::stmt::value_record_fields(ctx, record_arg)
         {
             record_bindings.push((param.name.clone(), fields));

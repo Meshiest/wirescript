@@ -1249,7 +1249,7 @@ fn lower_match_arm_record(
             ctx.scope.insert(&name, binding);
         }
     }
-    let fields = crate::lower::stmt::value_record_fields(ctx, expr);
+    let fields = crate::lower::stmt::branch_record_fields(ctx, expr);
     ctx.pop_scope();
     fields
 }

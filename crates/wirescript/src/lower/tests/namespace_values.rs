@@ -793,3 +793,74 @@ fn namespaced_handler_wires_its_own_members() {
         "a namespaced handler referencing its own members must still lower its write"
     );
 }
+
+/// A namespace reached TWO levels deep. `main` imports `mid` as a namespace,
+/// and `mid` imports `leaf` as one of its own; `mid`'s members name `L.` to
+/// reach it. That inner alias travels in beside `M`, but the seal a namespaced
+/// body is checked under hid every outer frame, so `L` read as an unknown
+/// identifier and every use of it lowered to a placeholder.
+#[test]
+fn transitive_namespace_resolves_in_a_namespaced_body() {
+    let (tc, lr) = compile_with_libs(
+        &[
+            ("leaf.ws", "let value = 10\nmod bump(n: int) -> (r: int) { return n + value }"),
+            (
+                "mid.ws",
+                "import * as L from \"leaf\"\n\
+                 let topLet = L.value\n\
+                 mod useLet(n: int) -> (r: int) { return n + L.value }\n\
+                 mod useMod(n: int) -> (r: int) { return L.bump(n) }",
+            ),
+        ],
+        "import * as M from \"mid\"\n\
+         var a: int = 0\nvar b: int = 0\nvar c: int = 0\n\
+         in go: exec\n\
+         on go { a = M.useLet(1)\n b = M.useMod(2)\n c = M.topLet }",
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "typecheck errors: {:?}",
+        tc.diagnostics
+    );
+    assert!(
+        !lr.module.nodes.values().any(|n| n.gate_class == "_Unsupported"),
+        "a transitive namespace read must lower to real gates: {:?}",
+        lr.diagnostics
+    );
+    // Every one of the three reads drives its own store, so none was dropped.
+    assert_eq!(
+        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        3,
+        "each of `a`/`b`/`c` must be written"
+    );
+    // The two `n + L.value` bodies and `bump`'s own add are real gates, so the
+    // transitive read reached arithmetic rather than folding to a placeholder.
+    let adds = count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathAdd");
+    assert!(adds >= 2, "expected the inlined `n + …` adds, got {adds}");
+}
+
+/// The alias COLLIDES: the importer and the module it imports both spell their
+/// `import * as` the same. Both would be hoisted into one flat namespace table
+/// keyed by name, so the traveling one is dropped rather than silently
+/// replacing the importer's. That is a WS012, not a bare unknown identifier.
+#[test]
+fn colliding_namespace_alias_reports_rather_than_shadowing() {
+    let mut files = std::collections::HashMap::default();
+    files.insert("leaf.ws".to_string(), "let value = 10".into());
+    files.insert(
+        "mid.ws".to_string(),
+        "import * as Other from \"leaf\"\nlet value = Other.value".into(),
+    );
+    let loader = MemLoader { files };
+    let resolved = resolve("import * as Other from \"mid\"\nout z = Other.value", "test", &loader);
+    assert!(
+        resolved
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "WS012" && d.message.contains("already taken")),
+        "expected a WS012 alias collision, got {:?}",
+        resolved.diagnostics
+    );
+}

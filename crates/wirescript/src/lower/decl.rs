@@ -1155,11 +1155,14 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // here. Gated on a record type and a non-call source (a record-returning
     // CALL is handled below via `pending_inline_record`), so a scalar or call
     // RHS never routes here.
-    if (matches!(
+    if matches!(
         &d.value,
-        Expr::IndexAccess { .. } | Expr::FieldAccess { .. } | Expr::TuplePick { .. }
-    ) || conditional_over_non_calls(&d.value))
-        && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Enum { .. })
+        Expr::IndexAccess { .. }
+            | Expr::FieldAccess { .. }
+            | Expr::TuplePick { .. }
+            | Expr::IfExpr { .. }
+            | Expr::MatchExpr { .. }
+    ) && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Enum { .. })
         && let Some(src) = crate::lower::stmt::value_record_fields(ctx, &d.value)
     {
         match &d.binding {
@@ -1198,7 +1201,10 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // `__disc` scalar (which dropped the payload for the non-Call forms).
     if (matches!(&d.value, Expr::Call { .. } | Expr::VariantCtor { .. })
         || matches!(&rhs_type, Type::Enum { .. }))
-        && let Some(record) = ctx.pending_inline_record.take()
+        && let Some(record) = ctx
+            .pending_inline_record
+            .take()
+            .map(crate::lower::stmt::unwrap_single_record_output)
     {
         match &d.binding {
             LetBinding::Ident { name, .. } => {
@@ -1321,37 +1327,6 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
 }
 
 /// Lower a record literal into a `HashMap<Sym, Binding>`.
-/// Is `e` a record-valued `if`/`match` EXPRESSION every one of whose leaves is
-/// something other than a call? Those are the leaves `value_record_fields`
-/// resolves without lowering anything it might then throw away.
-///
-/// A CALL leaf is deliberately excluded. Two shapes hide behind one: a
-/// multi-output GATE (`m.get(k)` is `{Value, Found}`), which that resolver has
-/// no field map for and would leave a dead gate behind after failing; and a
-/// record-returning `mod`, whose map arrives keyed by the OUTPUT name
-/// (`{o: {x, y}}`) rather than by the record's own fields, so binding it makes
-/// `m.x` unresolvable. Both keep the pre-existing auto-unwrap by falling
-/// through to the general path below.
-pub(super) fn conditional_over_non_calls(e: &Expr) -> bool {
-    let leaf_ok = |l: &Expr| !matches!(l, Expr::Call { .. });
-    match e {
-        Expr::IfExpr { then_branch, else_branch, .. } => {
-            [then_branch.as_ref(), else_branch.as_ref()].into_iter().all(|b| {
-                leaf_ok(b) && (!matches!(b, Expr::IfExpr { .. } | Expr::MatchExpr { .. })
-                    || conditional_over_non_calls(b))
-            })
-        }
-        Expr::MatchExpr { arms, .. } => arms.iter().all(|a| match &a.body {
-            crate::ast::MatchBody::Expr(b) => {
-                leaf_ok(b) && (!matches!(b, Expr::IfExpr { .. } | Expr::MatchExpr { .. })
-                    || conditional_over_non_calls(b))
-            }
-            crate::ast::MatchBody::Block(_) => false,
-        }),
-        _ => false,
-    }
-}
-
 pub(super) fn lower_record_lit(
     ctx: &mut LowerCtx,
     fields: &[RecordLitField],

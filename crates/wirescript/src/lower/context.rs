@@ -270,6 +270,12 @@ pub(super) struct LowerCtx<'a> {
     /// mod call. Its internal output nodes are removed, so `let s = mod(...)`
     /// consumes this to bind `s` as a record (`s.field` reads the source port).
     pub(super) pending_inline_record: Option<HashMap<crate::intern::Sym, Binding>>,
+    /// The port `value_record_fields` got from lowering a record-SHAPED value
+    /// that turned out to carry no field map (its `may_produce_record`
+    /// fallback). Only `branch_record_fields` reads it, to reach a MULTI-OUTPUT
+    /// GATE's per-port record without lowering the call a second time. Set on
+    /// every `value_record_fields` call, so it is never stale across two.
+    pub(super) last_value_record_port: Option<PortRef>,
     /// Field→binding map stashed by a `return { ... }` record literal while an
     /// inline mod body is being lowered. A record literal is not a standalone
     /// expression, and `-> { a, b }` is a single record-typed output, so the

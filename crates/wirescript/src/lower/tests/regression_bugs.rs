@@ -323,3 +323,114 @@ fn record_valued_if_expr_binds_to_a_let() {
         "the read field must come through a Select"
     );
 }
+
+/// A MULTI-OUTPUT gate result chosen by an `if` picks each port separately.
+/// `m.get(k)` is `{Value, Found}`, but the conditional built ONE Select over
+/// port 0, so `c.Found` read the *value* Select and the gate's `bFound` port
+/// was wired nowhere - typecheck-clean, no placeholder, wrong at runtime.
+#[test]
+fn multi_output_result_through_a_conditional_selects_per_port() {
+    let src = "var m: Map<int, int>\n\
+               var ok: bool = false\n\
+               var v: int = 0\n\
+               var c: bool = false\n\
+               in go: exec\n\
+               on go {\n\
+                 c = Opaque(true)\n\
+                 let r = if c then m.get(7) else m.get(8)\n\
+                 ok = r.Found\n\
+                 v = r.Value\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        2,
+        "one Select per output port (Value, Found)"
+    );
+    // BOTH Selects must reach a store: one shared source (what the bug did)
+    // leaves the other Select driving nothing.
+    let selects: Vec<crate::ir::NodeId> = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .map(|n| n.id)
+        .collect();
+    for sel in &selects {
+        assert!(
+            r.module.wires.iter().any(|w| w.source.node_id == *sel
+                && w.target.port == crate::lower::WirePort::Value),
+            "Select {sel} drives no store, so one port's choice was dropped"
+        );
+    }
+    // Each Select reads a DIFFERENT pair of source ports (the two `bFound`
+    // ports vs the two `Value` ports).
+    let feeds: std::collections::HashSet<_> = r
+        .module
+        .wires
+        .iter()
+        .filter(|w| selects.contains(&w.target.node_id)
+            && matches!(w.target.port, crate::lower::WirePort::InputA | crate::lower::WirePort::InputB))
+        .map(|w| w.source)
+        .collect();
+    assert_eq!(feeds.len(), 4, "expected 2 bFound + 2 Value feeds, got {feeds:?}");
+}
+
+/// A `mod` with ONE record-typed output hands back the record itself, not a
+/// wrapper keyed by the output name. Typecheck already reports the call as the
+/// record (`mk().x` is the field, `mk().o` a WS010), but lowering bound
+/// `{o: {x, y}}`: `r = mk(1)` wrote no field at all, and `let d = mk(1)` then
+/// `d.x` lowered to a placeholder.
+#[test]
+fn single_record_output_mod_unwraps_to_its_fields() {
+    let src = "type P = { x: int, y: int }\n\
+               mod mkP(n: int) -> (o: P) { out o = { x: n, y: n * 2 } }\n\
+               var r: P = { x: 0, y: 0 }\n\
+               var a: int = 0\n\
+               in go: exec\n\
+               on go {\n\
+                 r = mkP(1)\n\
+                 let d = mkP(2)\n\
+                 a = d.x\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    // Both of `r`'s fields, plus `a`.
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        3,
+        "`r.x`, `r.y` and `a` must each be written"
+    );
+}
+
+/// A record-returning `mod` in each arm of a conditional: the arms unwrap, so
+/// the choice is still made per leaf field.
+#[test]
+fn record_returning_mod_in_both_conditional_arms_selects_per_field() {
+    let src = "type P = { x: int, y: int }\n\
+               mod mkP(n: int) -> (o: P) { out o = { x: n, y: n * 2 } }\n\
+               var r: P = { x: 0, y: 0 }\n\
+               var c: bool = false\n\
+               in go: exec\n\
+               on go {\n\
+                 c = Opaque(true)\n\
+                 r = if c then mkP(1) else mkP(3)\n\
+               }";
+    let r = compile(src);
+    assert_no_errors(&r);
+    assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        2,
+        "one Select per record field"
+    );
+    // `r.x`, `r.y`, plus the `c = Opaque(true)` probe write.
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        3,
+        "both of `r`'s fields must be written"
+    );
+}

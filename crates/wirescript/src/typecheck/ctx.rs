@@ -140,6 +140,13 @@ impl Scope {
     pub fn lookup(&self, name: &str) -> Option<&SymbolInfo> {
         self.inner.get(name)
     }
+    /// Every module-global (ROOT frame) symbol. Unlike `lookup` this ignores
+    /// the seal (see `set_floor`), which is the point: the namespace check
+    /// needs to find the traveling namespaces it is about to re-declare
+    /// INSIDE the sealed frame.
+    pub fn iter_root(&self) -> impl Iterator<Item = (&str, &SymbolInfo)> {
+        self.inner.iter_root()
+    }
     /// Snapshot of every `SymbolKind::Type` alias currently visible
     /// (innermost frame wins on a name collision, matching `lookup`'s
     /// shadowing), for `resolve_type_expr`'s delegation to the shared

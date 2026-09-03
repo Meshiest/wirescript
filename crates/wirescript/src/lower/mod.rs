@@ -343,6 +343,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         exec_signal_payloads: HashMap::default(),
         in_handler_body: false,
         pending_inline_record: None,
+        last_value_record_port: None,
         pending_return_record: None,
         pending_out_records: HashMap::default(),
         chip_call_stack: Vec::new(),
@@ -1808,6 +1809,7 @@ pub fn compile_chip_template(
         exec_signal_payloads: HashMap::default(),
         in_handler_body: false,
         pending_inline_record: None,
+        last_value_record_port: None,
         pending_return_record: None,
         pending_out_records: HashMap::default(),
         chip_call_stack: if chip_decl.name.is_empty() {

@@ -371,12 +371,10 @@ The same holds for an enum value, whose leaves are its discriminant and payload
 slots, so `match outer { A => Shape.Circle(r), B => Shape.Empty }` chooses the
 tag and each slot alongside it.
 
-One limit on the `let` spelling: an arm or branch that is itself a **call** does
-not bind per field. A multi-output gate (`m.get(k)` is `{Value, Found}`) and a
-record-returning `mod` each carry a shape the binding cannot split, so
-`let m = if c then mk(1) else mk(2)` falls back to the single-value auto-unwrap.
-Assign to a record `var` instead, or bind each call first and choose between the
-two names.
+An arm that is itself a **call** splits the same way. A record-returning `mod`
+contributes its record's fields, and a multi-output gate contributes one leaf
+per output port -- so `let c = if hit then m.get(a) else m.get(b)` gives `c` a
+real `Value` and a real `Found`, each chosen by its own `Select`.
 
 **Which fields are allowed.** Every leaf field must be a value the wire graph can
 store -- a number, `bool`, `string`, `vector`/`rotator`/`color`, an entity type,

@@ -501,16 +501,42 @@ fn resolve_import(
         loop {
             let mut added = false;
             for ns in &source_namespaces {
-                if let Some(name) = decl_name(ns)
-                    && target.used.contains(name)
-                    && !target.binds(name)
-                {
-                    // Prepend: lowering registers declarations in source order,
-                    // so a namespace appended after its caller would read as a
-                    // use before declaration and resolve to nothing.
-                    target.insert_front(ns.clone());
-                    added = true;
+                let Some(name) = decl_name(ns) else { continue };
+                if !target.used.contains(name) {
+                    continue;
                 }
+                let ns_file = ns.range().file.clone();
+                // Already travelled (the same module reached twice).
+                if target.binds_in_file(name, &ns_file) {
+                    continue;
+                }
+                // A DIFFERENT declaration already owns the alias - most often
+                // the importer's own `import * as <same name>`. Both are
+                // hoisted to one flat namespace table keyed by name, so the
+                // second would silently replace the first and every reference
+                // through it would read the wrong module. Report it instead;
+                // renaming either alias resolves it.
+                if target.binds(name) {
+                    let via = match ns {
+                        TopDecl::Namespace(n) => n.source_path.clone(),
+                        _ => String::new(),
+                    };
+                    diagnostics.push(Diagnostic::error(
+                        "WS012",
+                        format!(
+                            "namespace alias '{name}' is already taken here, so the \
+                             imported module's own `import * as {name} from '{via}'` cannot \
+                             travel in with it. Rename one of the two aliases",
+                        ),
+                        imp.range.clone(),
+                    ));
+                    continue;
+                }
+                // Prepend: lowering registers declarations in source order,
+                // so a namespace appended after its caller would read as a
+                // use before declaration and resolve to nothing.
+                target.insert_front(ns.clone());
+                added = true;
             }
             if !added {
                 break;

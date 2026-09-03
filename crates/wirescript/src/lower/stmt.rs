@@ -527,8 +527,8 @@ pub(super) fn value_record_fields(
         range,
     } = value
     {
-        let then_fields = value_record_fields(ctx, then_branch)?;
-        let else_fields = value_record_fields(ctx, else_branch)?;
+        let then_fields = branch_record_fields(ctx, then_branch)?;
+        let else_fields = branch_record_fields(ctx, else_branch)?;
         let cond_port = lower_expr(ctx, cond);
         return Some(select_record_fields(
             ctx,
@@ -618,14 +618,81 @@ pub(super) fn value_record_fields(
     // still falls through to `None` below without a wasted lowering.
     let may_produce_record = matches!(value, Expr::Call { .. } | Expr::VariantCtor { .. })
         || matches!(ctx.type_of(value), Type::Enum { .. });
+    ctx.last_value_record_port = None;
     if may_produce_record {
         ctx.pending_inline_record = None;
-        let _ = lower_expr(ctx, value);
+        let port = lower_expr(ctx, value);
+        // Kept for `branch_record_fields`, the one caller that can still make
+        // something of a record-shaped value with no field map.
+        ctx.last_value_record_port = Some(port);
         if let Some(rec) = ctx.pending_inline_record.take() {
-            return Some(rec);
+            return Some(unwrap_single_record_output(rec));
         }
     }
     None
+}
+
+/// A single RECORD-typed output arrives keyed by the OUTPUT name - `mod mk() ->
+/// (o: P)` stashes `{o: {x, y}}` - while typecheck reports the call as the
+/// record ITSELF (`mk().x` is the field, `mk().o` is a WS010). Unwrap so the
+/// two agree; this is the same auto-unwrap `call::inline` already applies to a
+/// record ARGUMENT, now applied to every other consumer of a record value.
+/// A MULTI-output call is passed through whole, since each of its outputs is a
+/// real member, and so is a single non-record output (an enum's `__disc` slot
+/// map, whose one entry is not a `Binding::Record`).
+pub(super) fn unwrap_single_record_output(
+    rec: HashMap<crate::intern::Sym, Binding>,
+) -> HashMap<crate::intern::Sym, Binding> {
+    if rec.len() == 1
+        && let Some(Binding::Record(inner)) = rec.values().next()
+    {
+        return inner.clone();
+    }
+    rec
+}
+
+/// [`value_record_fields`] for a BRANCH of a record-valued `if`/`match`, which
+/// resolves one shape more: a MULTI-OUTPUT GATE result (`m.get(k)` is
+/// `{Value, Found}`) as its per-port record, so the conditional chooses each
+/// port separately.
+///
+/// Deliberately not in `value_record_fields` itself. Everywhere else a
+/// multi-output result auto-unwraps to its FIRST port, which is what a scalar
+/// sink expects (`var n: int = m.get(k)`); returning a record there would
+/// change what those consumers receive. In a conditional it is the opposite:
+/// one Select over port 0 is all the branches ever produced, so `c.Found` read
+/// the *value* Select and the `bFound` port was wired nowhere at all.
+pub(super) fn branch_record_fields(
+    ctx: &mut LowerCtx,
+    value: &Expr,
+) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    if let Some(rec) = value_record_fields(ctx, value) {
+        return Some(rec);
+    }
+    // Reuses the port `value_record_fields` just lowered rather than lowering
+    // the call a second time.
+    let port = ctx.last_value_record_port.take()?;
+    let Type::Record(fields) = unwrap_ref(&ctx.type_of(value)) else {
+        return None;
+    };
+    if fields.len() < 2 {
+        return None;
+    }
+    let outputs = ctx.builder.module.nodes.get(&port.node_id)?.ports.outputs.len();
+    if outputs < 2 {
+        return None;
+    }
+    let mut out = HashMap::default();
+    for (name, _) in &fields {
+        // All or nothing: a field with no matching port would leave a hole the
+        // Select tree would silently drop, which is the bug being fixed.
+        let p = crate::lower::access::resolve_output_field_port(ctx, port.node_id, name)?;
+        out.insert(
+            crate::intern::intern(name),
+            Binding::Local(LocalRecord { port: p }),
+        );
+    }
+    Some(out)
 }
 
 /// Choose between two record values per LEAF FIELD: one `Select` gate for each

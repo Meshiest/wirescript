@@ -34,7 +34,11 @@ fn ns_record_field(t: Option<&Type>, name: &str) -> Option<Type> {
 /// Members resolve against `ns_map` as built so far — source order. A forward
 /// reference yields `None` and stays `any`. Spread and duplicate
 /// keys follow the same last-wins rule as `infer`'s record-literal arm.
-fn ns_value_type(ns_map: &HashMap<String, NsDeclInfo>, e: &Expr) -> Option<Type> {
+fn ns_value_type(
+    ns_map: &HashMap<String, NsDeclInfo>,
+    outer: &HashMap<String, HashMap<String, NsDeclInfo>>,
+    e: &Expr,
+) -> Option<Type> {
     if let Some(t) = literal_expr_type(e) {
         return Some(t);
     }
@@ -42,7 +46,22 @@ fn ns_value_type(ns_map: &HashMap<String, NsDeclInfo>, e: &Expr) -> Option<Type>
     match e {
         Expr::Ident { name, .. } => member(name),
         Expr::FieldAccess { obj, field, .. } => {
-            ns_record_field(ns_value_type(ns_map, obj).as_ref(), field)
+            if let Some(t) = ns_record_field(ns_value_type(ns_map, outer, obj).as_ref(), field) {
+                return Some(t);
+            }
+            // `L.member` where `L` is ANOTHER namespace - the one this module
+            // imported for itself, which travels in beside us. It is registered
+            // before us (resolve prepends it), so its members are already in
+            // `outer`. Without this a member initialized from one typed as
+            // nothing, and reading it from the importer was a WS002 "not a
+            // readable value".
+            let Expr::Ident { name: base, .. } = obj.as_ref() else {
+                return None;
+            };
+            outer
+                .get(base.as_str())
+                .and_then(|m| m.get(field.as_str()))
+                .and_then(|i| i.value_type.clone())
         }
         Expr::RecordLit { fields, .. } => {
             let mut rec: Vec<(String, Type)> = Vec::new();
@@ -55,10 +74,10 @@ fn ns_value_type(ns_map: &HashMap<String, NsDeclInfo>, e: &Expr) -> Option<Type>
             for f in fields {
                 match f {
                     RecordLitField::Named { name, value, .. } => {
-                        set(name, ns_value_type(ns_map, value)?)
+                        set(name, ns_value_type(ns_map, outer, value)?)
                     }
                     RecordLitField::Shorthand { name, .. } => set(name, member(name)?),
-                    RecordLitField::Spread { value, .. } => match ns_value_type(ns_map, value)? {
+                    RecordLitField::Spread { value, .. } => match ns_value_type(ns_map, outer, value)? {
                         Type::Record(inner) => {
                             for (n, ty) in inner {
                                 set(&n, ty);
@@ -619,6 +638,12 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     event_data: None,
                 },
             );
+            // The namespaces registered so far, including one that traveled in
+            // with THIS module (resolve prepends it, so it is already
+            // registered). Moved OUT rather than borrowed, so the member loop
+            // below can read it while still using `ctx` mutably; restored, plus
+            // this namespace's own entry, at the end of the arm.
+            let outer_ns = std::mem::take(&mut ctx.namespaces);
             let mut ns_map = HashMap::default();
             for d in &ns.decls {
                 match d {
@@ -730,7 +755,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         LetBinding::Ident { name, .. } => {
                             let ty = match &l.typ {
                                 Some(te) => Some(resolve_type_expr(ctx, te)),
-                                None => ns_value_type(&ns_map, &l.value),
+                                None => ns_value_type(&ns_map, &outer_ns, &l.value),
                             };
                             ns_map.insert(
                                 name.clone(),
@@ -747,14 +772,14 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         // off the initializer's record type so they carry the
                         // field's type rather than `any`.
                         LetBinding::Record { names, .. } => {
-                            let src = ns_value_type(&ns_map, &l.value);
+                            let src = ns_value_type(&ns_map, &outer_ns, &l.value);
                             for name in names {
                                 let ty = ns_record_field(src.as_ref(), name);
                                 ns_map.insert(name.clone(), ns_let_member(ty));
                             }
                         }
                         LetBinding::RecordDestruct { fields, .. } => {
-                            let src = ns_value_type(&ns_map, &l.value);
+                            let src = ns_value_type(&ns_map, &outer_ns, &l.value);
                             for f in fields {
                                 // `{ a: x }` binds `x` to field `a`; a `...rest`
                                 // binds a record of whatever is left, which this
@@ -894,6 +919,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     _ => {}
                 }
             }
+            ctx.namespaces = outer_ns;
             ctx.namespaces.insert(ns.name.clone(), ns_map);
         }
     }

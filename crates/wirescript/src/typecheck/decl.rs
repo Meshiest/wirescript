@@ -1005,7 +1005,29 @@ fn check_decl_inner(
             // an isolated scope (siblings registered as bare names) so operator
             // resolutions and expression types get recorded — otherwise the
             // inlined body's arithmetic and sibling calls lower to _Unsupported.
+            // A namespace this module imported for ITSELF (`import * as D` in
+            // the file we are namespacing) travels in beside us as its own
+            // top-level namespace, and our members name it. It lives in an
+            // OUTER frame, which the seal below hides, so re-declare it inside
+            // this frame first. Matched by origin file, the same rule
+            // `namespace_visible` applies at the use site, so this admits only
+            // the namespaces our own members were written against - never the
+            // importer's.
+            let member_file = ns.decls.first().map(|d| d.range().file.clone());
+            let traveling: Vec<(String, SymbolInfo)> = match &member_file {
+                Some(file) => ctx
+                    .scope
+                    .iter_root()
+                    .filter(|(_, s)| s.kind == SymbolKind::Namespace)
+                    .filter(|(_, s)| s.decl_range.file == *file)
+                    .map(|(n, s)| (n.to_string(), s.clone()))
+                    .collect(),
+                None => Vec::new(),
+            };
             ctx.push_scope();
+            for (name, info) in traveling {
+                ctx.scope.declare(&name, info);
+            }
             for d in &ns.decls {
                 register_decl(ctx, d);
             }
