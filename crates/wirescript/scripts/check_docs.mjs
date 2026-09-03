@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const docsDir = join(repoRoot, "docs", "wirescript");
+const docsDir = join(repoRoot, "docs", "src");
 const checkBin = join(
   repoRoot,
   "target",

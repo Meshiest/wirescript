@@ -1,5 +1,5 @@
 //! Guards that every `WSxxx` diagnostic code emitted from
-//! `crates/wirescript/src/` is documented in `docs/wirescript/diagnostics.md`,
+//! `crates/wirescript/src/` is documented in `docs/src/diagnostics.md`,
 //! and that nothing documented there has lost its emit site.
 //!
 //! `ws_reachability.rs` proves a code CAN fire end-to-end, but nothing proved
@@ -91,15 +91,15 @@ fn src_codes() -> BTreeSet<String> {
     codes
 }
 
-/// Every `WSddd` code appearing in `docs/wirescript/diagnostics.md`.
+/// Every `WSddd` code appearing in `docs/src/diagnostics.md`.
 fn doc_codes() -> (BTreeSet<String>, PathBuf) {
     // CARGO_MANIFEST_DIR is crates/wirescript; the doc lives at
-    // <repo root>/docs/wirescript/diagnostics.md, i.e. two levels up.
+    // <repo root>/docs/src/diagnostics.md, i.e. two levels up.
     let doc_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("docs")
-        .join("wirescript")
+        .join("src")
         .join("diagnostics.md");
     let text = fs::read_to_string(&doc_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", doc_path.display()));

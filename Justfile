@@ -28,14 +28,49 @@ lsp:
 check-bin:
     cargo build --release -p wirescript --bin wirescript-check
 
-# Regenerate the Contents list at the top of each docs/wirescript page
+# Regenerate the Contents list at the top of each docs/src page
 doc-toc:
     node crates/wirescript/scripts/gen_doc_toc.mjs
 
-# Type-check every ```wirescript example in docs/wirescript (CI gate)
+# Type-check every ```wirescript example in docs/src (CI gate)
 doc-check: check-bin
     node crates/wirescript/scripts/check_docs.mjs
     node crates/wirescript/scripts/gen_doc_toc.mjs --check
+    node crates/wirescript/scripts/gen_book_summary.mjs --check
+    node crates/wirescript/scripts/gen_hljs_lang.mjs --check
+
+# Regenerate the book's table of contents from the playground's page list
+doc-summary:
+    node crates/wirescript/scripts/gen_book_summary.mjs
+
+# Regenerate the book's highlight.js grammar from the playground's monarch.js
+doc-hljs:
+    node crates/wirescript/scripts/gen_hljs_lang.mjs
+
+# the version .github/workflows/deploy-playground.yml builds the published book with
+MDBOOK_VERSION := "0.5.2"
+
+# Build the docs book into docs/book (`just mdbook serve` previews with live reload)
+[windows]
+mdbook *ARGS='build': doc-summary doc-hljs
+    @if (-not (Get-Command mdbook -ErrorAction SilentlyContinue)) { \
+      Write-Host "mdbook not installed. cargo install mdbook --version {{ MDBOOK_VERSION }}"; \
+      Write-Host "or grab a binary from https://github.com/rust-lang/mdBook/releases"; \
+      exit 1 }
+    Copy-Item -Path CHANGELOG.md -Destination docs/src/ -Force
+    mdbook {{ ARGS }} docs
+    Remove-Item docs/src/CHANGELOG.md -Force -ErrorAction SilentlyContinue
+
+# Build the docs book into docs/book (`just mdbook serve` previews with live reload)
+[unix]
+mdbook *ARGS='build': doc-summary doc-hljs
+    @command -v mdbook >/dev/null || { \
+      echo "mdbook not installed. cargo install mdbook --version {{ MDBOOK_VERSION }}" >&2; \
+      echo "or grab a binary from https://github.com/rust-lang/mdBook/releases" >&2; \
+      exit 1; }
+    cp -f CHANGELOG.md docs/src/CHANGELOG.md
+    mdbook {{ ARGS }} docs
+    rm -f docs/src/CHANGELOG.md
 
 # Build WASM module (for playground/SDK)
 wasm:
@@ -90,13 +125,13 @@ treesitter:
 # Copy wirescript docs (+ the CHANGELOG) into playground for serving
 [windows]
 playground-docs:
-    Copy-Item -Path docs/wirescript/*.md -Destination crates/wasm/playground/docs/ -Force
+    Copy-Item -Path docs/src/*.md -Destination crates/wasm/playground/docs/ -Force
     Copy-Item -Path CHANGELOG.md -Destination crates/wasm/playground/docs/ -Force
 
 # Copy wirescript docs (+ the CHANGELOG) into playground for serving
 [unix]
 playground-docs:
-    cp -f docs/wirescript/*.md crates/wasm/playground/docs/
+    cp -f docs/src/*.md crates/wasm/playground/docs/
     cp -f CHANGELOG.md crates/wasm/playground/docs/
 
 # Build everything (lib + lsp + cli + wasm + vscode)

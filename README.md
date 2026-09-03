@@ -1,6 +1,8 @@
 # Wirescript
 
-Try it in the browser at [wirescript.brickadia.dev](https://wirescript.brickadia.dev/).
+Try it in the browser at [wirescript.brickadia.dev](https://wirescript.brickadia.dev/),
+and read the language reference at
+[wirescript.brickadia.dev/docs](https://wirescript.brickadia.dev/docs/).
 
 Looking for larger programs to read or remix? See
 [Meshiest/wirescript-projects](https://github.com/Meshiest/wirescript-projects/) -
@@ -68,9 +70,13 @@ out doubled = count.Value * 2
 - LSP + VS Code extension: diagnostics, hover, completions, go-to-definition,
   formatting, rename, organize imports, fill-record-fields, and inlay hints
 
-The language reference lives in [docs/wirescript/](docs/wirescript/). The
-compiler is `crates/wirescript`, the LSP server is `crates/lsp`, the browser
-playground is `crates/wasm`, and the editor extension is `editors/vscode`.
+The language reference is published at
+[wirescript.brickadia.dev/docs](https://wirescript.brickadia.dev/docs/) and its
+source lives in [docs/src/](docs/src/) (`just mdbook` renders it locally with
+[mdBook](https://rust-lang.github.io/mdBook/), `just mdbook serve` previews it
+with live reload). The compiler is
+`crates/wirescript`, the LSP server is `crates/lsp`, the browser playground is
+`crates/wasm`, and the editor extension is `editors/vscode`.
 
 ## LSP + VS Code Extension
 

@@ -1498,7 +1498,7 @@ fn a_single_output_const_mod_still_returns_its_value() {
 /// WS028, and a hard `UnrepresentableLiteral` emit abort), each pinned by
 /// its own test in `lower/tests` / `typecheck/tests`.
 ///
-/// `docs/wirescript/chips.md` steers users straight into this shape: it
+/// `docs/src/chips.md` steers users straight into this shape: it
 /// rejects `const chip C(v: int) -> (r: int)` and tells them to "use a mod".
 #[test]
 fn a_single_named_output_const_mod_yields_a_bare_value() {

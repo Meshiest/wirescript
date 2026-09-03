@@ -57,7 +57,7 @@ A browser-based development environment for Wirescript with full language suppor
 };
 
 // Pages fetched from docs/*.md
-const DOC_MANIFEST = {
+export const DOC_MANIFEST = {
   Overview: 'docs/README.md',
   Syntax: 'docs/syntax.md',
   Types: 'docs/types.md',

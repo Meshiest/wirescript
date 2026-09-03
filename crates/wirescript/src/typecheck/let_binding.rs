@@ -373,7 +373,7 @@ pub(crate) fn emit_no_value(ctx: &mut TypeCheckCtx, name: Option<&str>, range: &
 ///
 /// One exemption: `let inst = SomeChip(trigger)` on a chip with NO outputs.
 /// A top-level `let` is the documented way to INSTANTIATE a named chip (see
-/// `docs/wirescript/chips.md`, "Exec Chips"), and an output-less one has
+/// `docs/src/chips.md`, "Exec Chips"), and an output-less one has
 /// nothing to give the binding, so the `let` is a placement, not a read. The
 /// name still carries `Never`, so any later USE of it reports through the
 /// ordinary value-position checks. A void container mutation has no such

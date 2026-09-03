@@ -18,3 +18,9 @@ fuzz_findings/
 # generated data/gate_semantics.json is the committed artifact).
 dumps/
 crates/wirescript/data/asset_dump.json
+
+# mdBook output and the CHANGELOG/SUMMARY staged into the book source
+docs/book/
+docs/src/SUMMARY.md
+docs/src/CHANGELOG.md
+docs/assets/wirescript-hljs.js

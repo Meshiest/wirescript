@@ -150,7 +150,7 @@ fn a_destructured_constant_chain_resolves_regardless_of_order() {
 /// `12345` is a plain literal control: it bakes correctly either way, so a
 /// failure here means "wrong value", not "nothing was baked".
 ///
-/// `docs/wirescript/chips.md` sends users directly at this shape — it rejects
+/// `docs/src/chips.md` sends users directly at this shape — it rejects
 /// `const chip C(v: int) -> (r: int)` and tells them to use a `mod` instead.
 #[test]
 fn a_single_named_output_const_mod_result_bakes_as_a_scalar() {

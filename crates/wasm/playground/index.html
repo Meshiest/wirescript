@@ -417,6 +417,30 @@
       transform: rotate(-90deg);
     }
 
+    /* Hidden with opacity, not `display`, so it stays keyboard-reachable while
+       only appearing on header hover. */
+    #docs-site-link {
+      margin-left: 6px;
+      color: #999;
+      text-decoration: none;
+      font-size: 11px;
+      line-height: 1;
+      padding: 1px 4px;
+      border-radius: 3px;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s, background 0.15s;
+    }
+
+    #docs-panel-header:hover #docs-site-link,
+    #docs-site-link:focus {
+      opacity: 1;
+    }
+
+    #docs-site-link:hover {
+      color: #ddd;
+      background: #3c3c3c;
+    }
+
     #docs-panel-body {
       flex: 1;
       display: flex;
@@ -863,6 +887,8 @@
       <div id="docs-panel-header">
         <span class="toggle-icon">&#9660;</span>
         <span>Documentation</span>
+        <a id="docs-site-link" href="https://wirescript.brickadia.dev/docs/" target="_blank" rel="noopener"
+           title="Open the full documentation site">&#8599;</a>
         <button id="docs-dock-btn" style="margin-left:auto;background:none;border:1px solid #555;color:#999;cursor:pointer;font-size:10px;padding:1px 6px;border-radius:3px;">Move to Side</button>
       </div>
       <div id="docs-panel-body"></div>
@@ -1575,6 +1601,8 @@
         // Docs panel header toggle + dock button
         document.getElementById('docs-panel-header').addEventListener('click', (e) => {
           if (e.target.id === 'docs-dock-btn' || e.target.closest('#docs-dock-btn')) return;
+          // Following the docs-site link should not also collapse the panel.
+          if (e.target.closest('#docs-site-link')) return;
           toggleDocs();
         });
         document.getElementById('docs-dock-btn').addEventListener('click', (e) => {

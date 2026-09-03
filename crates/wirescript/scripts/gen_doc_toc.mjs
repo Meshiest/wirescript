@@ -19,7 +19,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const docsDir = join(repoRoot, "docs", "wirescript");
+const docsDir = join(repoRoot, "docs", "src");
 
 const OPEN = "<!-- toc -->";
 const CLOSE = "<!-- /toc -->";

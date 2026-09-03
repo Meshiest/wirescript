@@ -1,0 +1,26 @@
+[book]
+title = "Wirescript"
+description = "Language reference for Wirescript, which compiles to Brickadia wire graphs."
+src = "src"
+language = "en"
+
+[build]
+build-dir = "book"
+# `src/SUMMARY.md` is generated, so a missing page is a bug in the generator
+# rather than something to stub out.
+create-missing = false
+
+[output.html]
+# `wirescript` is not a language highlight.js ships, so it is registered at load
+# time from the playground's own grammar (see scripts/gen_hljs_lang.mjs).
+additional-js = ["assets/wirescript-hljs.js"]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+# Every page already carries a `just doc-toc` "Contents" list.
+no-section-label = true
+git-repository-url = "https://github.com/Meshiest/wirescript"
+edit-url-template = "https://github.com/Meshiest/wirescript/edit/main/docs/{path}"
+
+[output.html.fold]
+enable = true
+level = 1

@@ -8,6 +8,11 @@ export const monarchLanguage = {
     'if', 'else', 'then', 'match', 'on', 'return', 'emit', 'await',
     'var', 'array', 'buffer', 'let', 'const', 'fn', 'chip', 'mod', 'in', 'out', 'open', 'ref',
     'import', 'from', 'as', 'event', 'static', 'type',
+    // Contextual: the parser also accepts these as ordinary identifiers, so a
+    // variable named `enum` highlights as a keyword. Worth it -- they are the
+    // spelling of whole language features (tagged unions, payload access,
+    // variant tests) and went unhighlighted entirely.
+    'enum', 'unsafe', 'is',
   ],
 
   typeKeywords: [

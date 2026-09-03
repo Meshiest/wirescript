@@ -3089,7 +3089,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // `Enum.FromInt(n)` builds a value of enum `Enum` whose
             // discriminant is the int `n`, every payload slot defaulted to its
             // zero value - a tag-only constructor (see
-            // `docs/wirescript/enums.md`). Recognized only when `Enum` is a
+            // `docs/src/enums.md`). Recognized only when `Enum` is a
             // known, unshadowed enum type AND has no variant literally named
             // `FromInt` (a real variant of that name still wins, constructed by
             // the block below). Placed BEFORE that block because

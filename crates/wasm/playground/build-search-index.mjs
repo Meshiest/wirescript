@@ -8,27 +8,19 @@
 // Each entry: { page, section, text, keywords: {word: score} }
 
 import { readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 const DOCS_DIR = process.argv[2] || 'docs';
 const OUT = process.argv[3] || join(DOCS_DIR, 'search-index.json');
 
-// Keys must match DOC_PAGES in docs.js (the page key, not the display title)
-const MANIFEST = {
-  'README.md': 'Overview',
-  'syntax.md': 'Syntax',
-  'types.md': 'Types',
-  'expressions.md': 'Expressions',
-  'statements.md': 'Statements',
-  'chips.md': 'Chips & Mods',
-  'builtins.md': 'Builtins',
-  'exec-context.md': 'Exec Context',
-  'best-practices.md': 'Best Practices',
-  'folding.md': 'Constant Folding',
-  'diagnostics.md': 'Diagnostics',
-  'upgrading.md': 'Upgrading',
-  'CHANGELOG.md': 'Changelog',
-};
+// file -> page key, inverted from the single page list in `docs.js`. Keeping a
+// second copy here silently drops pages from search when the two drift.
+const docsJs = join(dirname(fileURLToPath(import.meta.url)), 'docs.js');
+const { DOC_MANIFEST } = await import(pathToFileURL(docsJs).href);
+const MANIFEST = Object.fromEntries(
+  Object.entries(DOC_MANIFEST).map(([page, path]) => [path.replace(/^docs\//, ''), page]),
+);
 
 // ── Stop words (common English words that add no search value) ──
 const STOP = new Set([

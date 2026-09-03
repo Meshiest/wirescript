@@ -21,6 +21,21 @@ jobs:
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
+      # Prebuilt binary rather than `cargo install`: seconds, not minutes.
+      # build-playground.sh SKIPS the book when mdbook is absent, so a silent
+      # failure here would publish the playground with no /docs/ site. Hence the
+      # pinned version and the explicit version check below.
+      - name: Install mdBook
+        env:
+          MDBOOK_VERSION: "0.5.2"
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify mdBook is on PATH
+        run: mdbook --version
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:

@@ -22,7 +22,22 @@ cp playground/docs.js _site/
 
 echo "Copying docs + examples..."
 mkdir -p _site/docs _site/sdk/examples
-cp ../../docs/wirescript/*.md _site/docs/
+
+# The docs ship twice over one path: mdBook renders `syntax.html` for /docs/,
+# and the raw `syntax.md` beside it is what the playground panel fetches at
+# runtime. mdBook CLEANS its output directory, so it must run before the copy.
+if command -v mdbook >/dev/null 2>&1; then
+  echo "  building the book with mdbook..."
+  node ../wirescript/scripts/gen_book_summary.mjs
+  cp ../../CHANGELOG.md ../../docs/src/CHANGELOG.md
+  mdbook build ../../docs -d "$(pwd)/_site/docs"
+  rm -f ../../docs/src/CHANGELOG.md
+else
+  echo "  mdbook not found, skipping the book (the playground docs panel still works)"
+  echo "  install it with: cargo install mdbook --locked"
+fi
+
+cp ../../docs/src/*.md _site/docs/
 cp ../../CHANGELOG.md _site/docs/
 node playground/build-search-index.mjs _site/docs _site/docs/search-index.json
 cp playground/sdk/examples/*.ws _site/sdk/examples/
@@ -56,7 +71,7 @@ cp pkg/wasm.js _sdk/wirescript-sdk/playground/pkg/
 # playground is a self-contained docs viewer and cross-doc links (e.g. the
 # migration guide's link to the CHANGELOG) resolve offline.
 mkdir -p _sdk/wirescript-sdk/playground/docs
-cp ../../docs/wirescript/*.md _sdk/wirescript-sdk/playground/docs/
+cp ../../docs/src/*.md _sdk/wirescript-sdk/playground/docs/
 cp ../../CHANGELOG.md _sdk/wirescript-sdk/playground/docs/
 node playground/build-search-index.mjs _sdk/wirescript-sdk/playground/docs _sdk/wirescript-sdk/playground/docs/search-index.json
 

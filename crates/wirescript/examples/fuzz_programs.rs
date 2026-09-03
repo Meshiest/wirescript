@@ -752,7 +752,7 @@ fn scan_enum_var_variants(src: &str) -> StdMap<String, StdMap<String, Vec<String
 
 /// The variant name off an RHS of the shape `EnumName.Variant`, optionally
 /// followed by `(...)` / `{ .. }` / nothing (a unit variant) - i.e. an enum
-/// construction expression (see docs/wirescript/enums.md#construction).
+/// construction expression (see docs/src/enums.md#construction).
 /// `None` for anything else (a plain value, a record literal, ..).
 fn enum_ctor_variant_name(rhs: &str) -> Option<&str> {
     let rhs = rhs.trim_start();
@@ -1490,7 +1490,7 @@ struct Scope {
     mod_ret: Option<Ty>,
     // (name, index into `Gen::enums`) of top-level enum-typed `var`s reachable
     // here - match/if-let scrutinees are picked from this list, never from an
-    // `in` port (an enum port doesn't decompose - see docs/wirescript/enums.md
+    // `in` port (an enum port doesn't decompose - see docs/src/enums.md
     // "Scrutinee must be a value, not a port"). Like `rec_binds`, mod/chip
     // bodies start with this empty (their own `Scope::default()`) - they never
     // see outer top-level state, only their own params.
@@ -2589,7 +2589,7 @@ impl Gen {
 
     /// Build a construction expression for one variant, using the correct
     /// bracket form for its declared shape (bare path / `(...)` / `{ ... }` -
-    /// see docs/wirescript/enums.md#construction) so it never trips WS065.
+    /// see docs/src/enums.md#construction) so it never trips WS065.
     fn enum_ctor_variant(&mut self, eidx: usize, vidx: usize) -> String {
         let ename = self.enums[eidx].name.clone();
         let variant = self.enums[eidx].variants[vidx].clone();
@@ -2620,7 +2620,7 @@ impl Gen {
 
     /// One top-level enum-typed `var` per declared enum (most of the time) -
     /// the only shape a match/if-let scrutinee is allowed to be (never an
-    /// `in` port; see docs/wirescript/enums.md's port caveat). Skipping some
+    /// `in` port; see docs/src/enums.md's port caveat). Skipping some
     /// enums some of the time keeps "declared but never turned into state" a
     /// live case too (exercises the type alone, e.g. via `.Discriminant` on a
     /// variant path elsewhere, without every enum growing a var).
