@@ -194,17 +194,9 @@ async function activate(context) {
       const filesJson = getFilesJson(doc);
       const bytes = w.wirescript_compile(source, baseName, filesJson);
       fs.writeFileSync(outPath, Buffer.from(bytes));
-      const { execSync } = require("child_process");
-      try {
-        if (process.platform === "win32") {
-          execSync(`powershell -command "Set-Clipboard -Path '${outPath.replace(/'/g, "''")}'"`);
-        } else if (process.platform === "darwin") {
-          execSync(`osascript -e 'set the clipboard to POSIX file "${outPath}"'`);
-        } else {
-          execSync(`xclip -selection clipboard -t text/uri-list -i <<< "file://${outPath}"`);
-        }
+      if (copyFileToClipboard(outPath)) {
         vscode.window.showInformationMessage(`Compiled → ${baseName}.brz (copied to clipboard)`);
-      } catch {
+      } else {
         await vscode.env.clipboard.writeText(outPath);
         vscode.window.showInformationMessage(`Compiled → ${outPath} (path copied)`);
       }
@@ -212,6 +204,62 @@ async function activate(context) {
       vscode.window.showErrorMessage(`Wirescript compile failed: ${e}`);
     }
   }));
+}
+
+// Put `filePath` on the clipboard as a file drop (uri-list) rather than as text,
+// returning false if no helper on this machine managed it.
+//
+// On Linux the tool depends on the display server: xclip is X11-only, so under
+// Wayland it either fails or copies into XWayland's clipboard where
+// wayland-native apps never see it. DISPLAY is usually set under Wayland too,
+// so WAYLAND_DISPLAY is what distinguishes them; each stays the other's
+// fallback since either may be the one installed.
+function copyFileToClipboard(filePath) {
+  const { execFileSync } = require("child_process");
+  const { pathToFileURL } = require("url");
+  let candidates;
+  if (process.platform === "win32") {
+    candidates = [
+      {
+        cmd: "powershell",
+        args: ["-NoProfile", "-Command", `Set-Clipboard -Path '${filePath.replace(/'/g, "''")}'`],
+        input: "",
+      },
+    ];
+  } else if (process.platform === "darwin") {
+    candidates = [
+      { cmd: "osascript", args: ["-e", `set the clipboard to POSIX file "${filePath}"`], input: "" },
+    ];
+  } else {
+    // RFC 2483: CRLF-terminated absolute URIs. pathToFileURL percent-encodes, so
+    // paths with spaces survive -- the old hand-built `file://${path}` did not.
+    const uri = pathToFileURL(filePath).href + "\r\n";
+    const wayland = { cmd: "wl-copy", args: ["--type", "text/uri-list"], input: uri };
+    const x11 = {
+      cmd: "xclip",
+      args: ["-selection", "clipboard", "-t", "text/uri-list", "-i"],
+      input: uri,
+    };
+    candidates = process.env.WAYLAND_DISPLAY ? [wayland, x11] : [x11, wayland];
+  }
+  for (const { cmd, args, input } of candidates) {
+    try {
+      execFileSync(cmd, args, {
+        input,
+        // xclip and wl-copy hand the selection to a forked background process
+        // that lives until another app claims the clipboard. It inherits our
+        // stdio, so a captured stdout/stderr pipe never reaches EOF and the
+        // call blocks long after the copy landed. Discard the child's output;
+        // the exit status still reports "not installed" / "no display".
+        stdio: ["pipe", "ignore", "ignore"],
+        timeout: 5000,
+      });
+      return true;
+    } catch {
+      // Try the next helper.
+    }
+  }
+  return false;
 }
 
 function deactivate() {}

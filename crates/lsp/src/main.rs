@@ -1407,6 +1407,18 @@ impl LanguageServer for Backend {
             tower_lsp::jsonrpc::Error::invalid_params(format!("cannot read {file}: {e}"))
         })?;
 
+        // Everything below narrates the compile into the LSP output channel
+        // ("Wirescript Language Server" in VS Code) via window/logMessage. A
+        // compile is the one thing here that can take real time or fail deep in
+        // the pipeline, and until now it was entirely opaque from the editor.
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("[compile] start {file} -> {out_path}"),
+            )
+            .await;
+        let started = std::time::Instant::now();
+
         let client = self.client.clone();
         let src_owned = src.clone();
         let file_owned = file.clone();
@@ -1420,10 +1432,22 @@ impl LanguageServer for Backend {
             let progress_cb: wirescript::ProgressCallback =
                 std::sync::Arc::new(move |p: wirescript::CompileProgress| {
                     let client = client.clone();
+                    // Stamped here, on the compile thread, so the number is the
+                    // phase's real start time even if the spawned tasks (which
+                    // are independent, hence not strictly ordered) interleave.
+                    let ms = started.elapsed().as_millis();
                     rt.spawn(async move {
                         client.send_notification::<CompileProgressNotification>(
-                        serde_json::json!({ "step": p.step, "total": p.total, "done": p.done })
+                        serde_json::json!({ "step": p.step, "total": p.total, "done": p.done, "label": p.label })
                     ).await;
+                        if !p.done {
+                            client
+                                .log_message(
+                                    MessageType::INFO,
+                                    format!("[compile] {}/{} {} ({ms}ms)", p.step, p.total, p.label),
+                                )
+                                .await;
+                        }
                     });
                 });
             wirescript::compile_with_progress(
@@ -1480,11 +1504,39 @@ impl LanguageServer for Backend {
                         })
                     })
                     .collect();
+                self.client
+                    .log_message(
+                        MessageType::ERROR,
+                        format!(
+                            "[compile] failed: {} problem{} in {}ms",
+                            diags.len(),
+                            if diags.len() == 1 { "" } else { "s" },
+                            started.elapsed().as_millis()
+                        ),
+                    )
+                    .await;
+                for d in &diags {
+                    self.client
+                        .log_message(
+                            MessageType::ERROR,
+                            format!(
+                                "[compile]   {}:{}:{} {} {}",
+                                d.range.file, d.range.start.line, d.range.start.col, d.code, d.message
+                            ),
+                        )
+                        .await;
+                }
                 return Ok(Some(serde_json::json!({ "ok": false, "diagnostics": items })));
             }
             // Emit / IO failures have no per-source location — keep them as a plain
             // error the extension can pop up.
             Err(e) => {
+                self.client
+                    .log_message(
+                        MessageType::ERROR,
+                        format!("[compile] error: {e} ({}ms)", started.elapsed().as_millis()),
+                    )
+                    .await;
                 return Err(tower_lsp::jsonrpc::Error {
                     code: tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
                     message: e.to_string().into(),
@@ -1493,11 +1545,49 @@ impl LanguageServer for Backend {
             }
         };
 
-        std::fs::write(out_path, &result.brz).map_err(|e| tower_lsp::jsonrpc::Error {
-            code: tower_lsp::jsonrpc::ErrorCode::InternalError,
-            message: format!("write failed: {e}").into(),
-            data: None,
-        })?;
+        if let Err(e) = std::fs::write(out_path, &result.brz) {
+            self.client
+                .log_message(MessageType::ERROR, format!("[compile] write failed: {e}"))
+                .await;
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+                message: format!("write failed: {e}").into(),
+                data: None,
+            });
+        }
+
+        let warnings = result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, wirescript::diagnostic::Severity::Warning))
+            .count();
+        for d in result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, wirescript::diagnostic::Severity::Warning))
+        {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!(
+                        "[compile]   {}:{}:{} {} {}",
+                        d.range.file, d.range.start.line, d.range.start.col, d.code, d.message
+                    ),
+                )
+                .await;
+        }
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "[compile] ok -> {out_path} ({} bytes, {} warning{}, {}ms)",
+                    result.brz.len(),
+                    warnings,
+                    if warnings == 1 { "" } else { "s" },
+                    started.elapsed().as_millis()
+                ),
+            )
+            .await;
 
         Ok(Some(serde_json::json!({ "ok": true, "path": out_path })))
     }

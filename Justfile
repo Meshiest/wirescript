@@ -112,6 +112,16 @@ vscode:
 vscode:
     cd editors/vscode && npm install && npm run build
 
+# Run the VS Code extension's unit tests
+[windows]
+vscode-test:
+    Set-Location editors/vscode; npm test
+
+# Run the VS Code extension's unit tests
+[unix]
+vscode-test:
+    cd editors/vscode && npm test
+
 # Regenerate the tree-sitter parser from grammar.js and run its corpus
 [windows]
 treesitter:

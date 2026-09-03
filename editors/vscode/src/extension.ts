@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as os from "os";
+import { copyFileToClipboard } from "./clipboard";
 import {
   workspace,
   ExtensionContext,
@@ -438,9 +439,19 @@ export function activate(context: ExtensionContext) {
   let compiling = false;
   client.onNotification("wirescript/compileProgress", (params: any) => {
     if (!compiling || params.done) return;
-    compileStatus.text = `$(sync~spin) Compiling: ${params.step}/${params.total}`;
+    // The server names the phase it is entering; showing it turns a stalled
+    // "4/4" into "4/4 emit", which says where the time actually went. The
+    // matching per-phase timings go to the LSP output channel server-side.
+    const phase = params.label ? ` ${params.label}` : "";
+    compileStatus.text = `$(sync~spin) Compiling: ${params.step}/${params.total}${phase}`;
     compileStatus.show();
   });
+
+  // Client-side half of the compile log. The server logs the compile itself
+  // (phases, timings, diagnostics) into this same channel via window/logMessage;
+  // these lines cover the steps only the extension can see.
+  const logCompile = (msg: string) =>
+    client.outputChannel.appendLine(`[compile] ${msg}`);
 
   // Compile and copy .brz to clipboard as file drop (for Brickadia paste)
   context.subscriptions.push(
@@ -470,6 +481,7 @@ export function activate(context: ExtensionContext) {
       } catch (err: any) {
         compileStatus.text = "$(error) Compile failed";
         setTimeout(() => compileStatus.hide(), 5000);
+        logCompile(`request failed: ${err.message || err}`);
         window.showErrorMessage(
           `Wirescript compile failed: ${err.message || err}`,
         );
@@ -518,35 +530,32 @@ export function activate(context: ExtensionContext) {
         return;
       }
 
-      const { execSync } = require("child_process");
-      try {
-        if (process.platform === "win32") {
-          execSync(
-            `powershell -command "Set-Clipboard -Path '${outPath.replace(/'/g, "''")}'"`,
-          );
-        } else if (process.platform === "darwin") {
-          execSync(
-            `osascript -e 'set the clipboard to POSIX file "${outPath}"'`,
-          );
-        } else {
-          execSync(
-            `xclip -selection clipboard -t text/uri-list -i <<< "file://${outPath}"`,
-          );
-        }
+      // The build itself is done, so retire the persistent indicator BEFORE the
+      // clipboard hand-off; success is reported by the transient status-bar
+      // message below. Clearing it here means a slow or wedged clipboard helper
+      // can never again strand the spinner on the last compile step.
+      compileStatus.hide();
+
+      if (copyFileToClipboard(outPath)) {
+        logCompile(`copied ${baseName}.brz to the clipboard as a file drop`);
         window.setStatusBarMessage(
           `$(check) Compiled → ${baseName}.brz (copied to clipboard)`,
           5000,
         );
-      } catch {
+      } else {
         env.clipboard.writeText(outPath);
+        // Only place this is explained: the status bar just says "path copied",
+        // which looks like success until you try to paste into Brickadia.
+        logCompile(
+          process.platform === "linux"
+            ? `no clipboard helper worked, copied the path as text instead — install wl-clipboard (Wayland) or xclip (X11) for a file drop`
+            : `no clipboard helper worked, copied the path as text instead`,
+        );
         window.setStatusBarMessage(
           `$(check) Compiled → ${outPath} (path copied)`,
           5000,
         );
       }
-      // Success is reported via the transient status-bar message above; clear the
-      // persistent compile indicator so it doesn't linger after the build.
-      compileStatus.hide();
     }),
   );
 }

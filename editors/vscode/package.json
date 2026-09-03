@@ -61,7 +61,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p ."
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test out/clipboard.test.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

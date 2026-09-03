@@ -200,6 +200,11 @@ pub struct CompileProgress {
     pub step: u32,
     pub total: u32,
     pub done: bool,
+    /// The phase this step is about to run ("resolve", "lower", "layout",
+    /// "emit", "prefab"), or "done" on the terminal event. Reported so a
+    /// caller's progress UI and logs can name the phase rather than showing a
+    /// bare step counter -- which is all you got when a compile appeared stuck.
+    pub label: &'static str,
 }
 
 pub type ProgressCallback = std::sync::Arc<dyn Fn(CompileProgress) + Send + Sync>;
@@ -270,13 +275,14 @@ fn compile_with_opts_inner(
         let step = step.clone();
         let total = total.clone();
         let progress = progress.clone();
-        move || {
+        move |label: &'static str| {
             let s = step.fetch_add(1, Ordering::Relaxed) + 1;
             if let Some(cb) = &progress {
                 cb(CompileProgress {
                     step: s,
                     total: total.load(Ordering::Relaxed),
                     done: false,
+                    label,
                 });
             }
         }
@@ -295,7 +301,7 @@ fn compile_with_opts_inner(
         opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
     }
 
-    report();
+    report("resolve");
     let resolved = resolve(source, file, &FsLoader);
     // Grow the progress total by the number of embedded prefabs (each `$./file`
     // reference and each inline `$```…``` ` block is a sub-compile the emit step
@@ -335,7 +341,7 @@ fn compile_with_opts_inner(
         std::sync::Arc::new(cache)
     };
 
-    report();
+    report("lower");
     let lowered = lower(LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
@@ -370,7 +376,7 @@ fn compile_with_opts_inner(
         return Err(CompileError::HasErrors(errors));
     }
 
-    report();
+    report("layout");
     let lopts = layout_options_for(&resolved.ast, Some(resolved.source_map.clone()));
     let lr = layout_with_opts(&lowered.module, &lopts);
 
@@ -397,7 +403,7 @@ fn compile_with_opts_inner(
                 if let Some(cb) = &progress {
                     let tot = total.load(Ordering::Relaxed);
                     let s = (step.fetch_add(1, Ordering::Relaxed) + 1).min(tot);
-                    cb(CompileProgress { step: s, total: tot, done: false });
+                    cb(CompileProgress { step: s, total: tot, done: false, label: "prefab" });
                 }
             })
         };
@@ -417,7 +423,7 @@ fn compile_with_opts_inner(
         }
     }
 
-    report();
+    report("emit");
     let brz = emit_brz(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
 
     if let Some(ref cb) = progress {
@@ -426,6 +432,7 @@ fn compile_with_opts_inner(
             step: tot,
             total: tot,
             done: true,
+            label: "done",
         });
     }
 
