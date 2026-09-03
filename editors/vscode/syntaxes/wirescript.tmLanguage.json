@@ -21,8 +21,22 @@
     "comments": {
       "patterns": [
         {
+          "include": "#block-comment"
+        },
+        {
           "name": "comment.line.double-slash.wirescript",
           "match": "//.*$"
+        }
+      ]
+    },
+    "block-comment": {
+      "comment": "Block comments nest, matching the reference lexer.",
+      "name": "comment.block.wirescript",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [
+        {
+          "include": "#block-comment"
         }
       ]
     },
