@@ -146,12 +146,11 @@ fn container_receiver_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
             // member's registered container type directly. The namespace symbol
             // itself is typeless (`any`), so recursing into it would drop the
             // element/value type and mistype the method result as `any`.
-            if let Expr::Ident { name: ns, .. } = obj.as_ref()
+            if let Expr::Ident { name: ns, range: ns_range } = obj.as_ref()
                 && ctx.scope.lookup(ns).map(|s| s.kind) == Some(SymbolKind::Namespace)
             {
                 return ctx
-                    .namespaces
-                    .get(ns)
+                    .ns_members(ns, &ns_range.file)
                     .and_then(|m| m.get(field))
                     .and_then(|info| info.value_type.clone());
             }
@@ -1984,11 +1983,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // typed `any` and every use of it against a concrete type was a
             // spurious mismatch. Read the member's indexed type instead.
             // (`ns.f(args)` calls are handled in the Call arm, before this.)
-            if let Expr::Ident { name: ns_name, .. } = obj.as_ref()
+            if let Expr::Ident { name: ns_name, range: ns_range } = obj.as_ref()
                 && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
                 && let Some(ty) = ctx
-                    .namespaces
-                    .get(ns_name.as_str())
+                    .ns_members(ns_name, &ns_range.file)
                     .and_then(|m| m.get(field.as_str()))
                     .and_then(|info| info.value_type.clone())
             {
@@ -1999,12 +1997,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             // value type, or a bare callable used as a value): error, matching
             // the plain/selective forms, instead of falling through to `any` and
             // lowering to `_Unsupported`.
-            if let Expr::Ident { name: ns_name, .. } = obj.as_ref()
+            if let Expr::Ident { name: ns_name, range: ns_range } = obj.as_ref()
                 && ctx.scope.lookup(ns_name).map(|s| s.kind) == Some(SymbolKind::Namespace)
             {
                 let present = ctx
-                    .namespaces
-                    .get(ns_name.as_str())
+                    .ns_members(ns_name, &ns_range.file)
                     .map(|m| m.contains_key(field.as_str()))
                     .unwrap_or(false);
                 let msg = if present {
@@ -3171,8 +3168,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 && ctx.namespace_visible(ns_name, &ns_range.file)
             {
                 let ns_lookup = ctx
-                    .namespaces
-                    .get(ns_name.as_str())
+                    .ns_members(ns_name, &ns_range.file)
                     .and_then(|ns_map| ns_map.get(field.as_str()))
                     .map(|info| (info.kind, info.return_type.clone(), info.params.clone()));
                 match ns_lookup {
@@ -3490,7 +3486,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     name,
                     range: base_range,
                 } = obj.as_ref()
-                && ctx.namespaces.contains_key(name.as_str())
+                && ctx.ns_members(name, &base_range.file).is_some()
                 && ctx
                     .scope
                     .lookup(name)

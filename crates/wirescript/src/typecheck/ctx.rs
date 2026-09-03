@@ -193,6 +193,12 @@ pub struct TypeCheckCtx<'a> {
     pub(super) exec_stack: Vec<ExecMode>,
     pub file: String,
     pub namespaces: HashMap<String, HashMap<String, NsDeclInfo>>,
+    /// The same members, keyed first by the FILE whose `import * as` introduced
+    /// the alias. An alias is file-local (see `namespace_visible`), so two
+    /// modules may each write `import * as Other` and mean different modules;
+    /// `namespaces` above is keyed by name alone and keeps only one of them.
+    /// Resolution consults this with the REFERENCE's file before falling back.
+    pub namespaces_by_file: HashMap<Arc<str>, HashMap<String, HashMap<String, NsDeclInfo>>>,
     pub if_contexts: HashMap<(Arc<str>, usize), bool>,
     pub var_read_contexts: HashMap<(Arc<str>, usize), bool>,
     /// Declaration sites, `(file, decl_range.start.offset)`, of `match` /
@@ -370,6 +376,7 @@ impl<'a> TypeCheckCtx<'a> {
             exec_stack: vec![ExecMode::Pure],
             file: file.to_string(),
             namespaces: HashMap::default(),
+            namespaces_by_file: HashMap::default(),
             if_contexts: HashMap::default(),
             var_read_contexts: HashMap::default(),
             readonly_captures: crate::collections::HashSet::default(),
@@ -637,10 +644,35 @@ impl<'a> TypeCheckCtx<'a> {
         match self.scope.lookup(ns_name) {
             Some(sym) if sym.kind == SymbolKind::Namespace => {
                 let origin = sym.decl_range.file.as_ref();
-                origin.is_empty() || origin == ref_file
+                // The last clause covers a same-named alias in another file
+                // holding the scope entry: the symbol is still a namespace, and
+                // THIS file declares its own, so the reference is legitimate.
+                // Guarded by the arm above, so a local shadowing the name is
+                // still not a namespace reference.
+                origin.is_empty() || origin == ref_file || self.ns_own(ns_name, ref_file).is_some()
             }
             _ => false,
         }
+    }
+
+    /// The members of the alias `name` as written in `ref_file`, or `None` when
+    /// that file declares no such alias.
+    pub(super) fn ns_own(
+        &self,
+        name: &str,
+        ref_file: &str,
+    ) -> Option<&HashMap<String, NsDeclInfo>> {
+        self.namespaces_by_file.get(ref_file)?.get(name)
+    }
+
+    /// Namespace members for a reference in `ref_file`: that file's own alias
+    /// first, then the flat map for a namespace that traveled in.
+    pub(super) fn ns_members(
+        &self,
+        name: &str,
+        ref_file: &str,
+    ) -> Option<&HashMap<String, NsDeclInfo>> {
+        self.ns_own(name, ref_file).or_else(|| self.namespaces.get(name))
     }
 
     /// True when `name` IS a namespace symbol but is hidden from `ref_file`

@@ -860,12 +860,11 @@ pub(crate) fn is_ref_able(ctx: &TypeCheckCtx, e: &Expr) -> bool {
         // `&S.g` correctly, so without this arm the `&` check would wrongly
         // reject it as WS008.
         Expr::FieldAccess { obj, field, .. } => {
-            if let Expr::Ident { name: ns, .. } = obj.as_ref()
+            if let Expr::Ident { name: ns, range: ns_range } = obj.as_ref()
                 && ctx.scope.lookup(ns).map(|s| s.kind) == Some(SymbolKind::Namespace)
             {
                 return ctx
-                    .namespaces
-                    .get(ns)
+                    .ns_members(ns, &ns_range.file)
                     .and_then(|m| m.get(field))
                     .map(|info| {
                         matches!(

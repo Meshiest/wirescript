@@ -842,25 +842,45 @@ fn transitive_namespace_resolves_in_a_namespaced_body() {
 }
 
 /// The alias COLLIDES: the importer and the module it imports both spell their
-/// `import * as` the same. Both would be hoisted into one flat namespace table
-/// keyed by name, so the traveling one is dropped rather than silently
-/// replacing the importer's. That is a WS012, not a bare unknown identifier.
+/// `import * as` the same. An alias is FILE-LOCAL, so this is not a conflict --
+/// each file's `Other` means its own import. Both tables are keyed by name
+/// alone, so the traveling one used to be dropped and every reference through
+/// it read as an unknown identifier.
 #[test]
-fn colliding_namespace_alias_reports_rather_than_shadowing() {
-    let mut files = std::collections::HashMap::default();
-    files.insert("leaf.ws".to_string(), "let value = 10".into());
-    files.insert(
-        "mid.ws".to_string(),
-        "import * as Other from \"leaf\"\nlet value = Other.value".into(),
+fn colliding_namespace_alias_resolves_per_file() {
+    let (tc, lr) = compile_with_libs(
+        &[
+            ("leaf.ws", "let value = 10
+mod bump(n: int) -> (r: int) { return n + value }"),
+            (
+                "mid.ws",
+                "import * as Other from \"leaf\"
+                 let value = Other.value
+                 mod useIt(n: int) -> (r: int) { return Other.bump(n) }",
+            ),
+        ],
+        "import * as Other from \"mid\"
+         var a: int = 0
+         in go: exec
+         on go { a = Other.useIt(5) }
+         out z = Other.value",
     );
-    let loader = MemLoader { files };
-    let resolved = resolve("import * as Other from \"mid\"\nout z = Other.value", "test", &loader);
     assert!(
-        resolved
-            .diagnostics
+        tc.diagnostics
             .iter()
-            .any(|d| d.code == "WS012" && d.message.contains("already taken")),
-        "expected a WS012 alias collision, got {:?}",
-        resolved.diagnostics
+            .all(|d| d.severity != crate::diagnostic::Severity::Error),
+        "typecheck errors: {:?}",
+        tc.diagnostics
+    );
+    assert!(
+        !lr.module.nodes.values().any(|n| n.gate_class == "_Unsupported"),
+        "both `Other`s must resolve: {:?}",
+        lr.diagnostics
+    );
+    // `leaf`'s `n + value` really inlined, so the call went through the INNER
+    // alias rather than resolving back to the importer's same-named one.
+    assert!(
+        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathAdd") >= 1,
+        "the inlined body's arithmetic must be present"
     );
 }

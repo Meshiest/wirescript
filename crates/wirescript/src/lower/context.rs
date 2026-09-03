@@ -276,6 +276,12 @@ pub(super) struct LowerCtx<'a> {
     /// GATE's per-port record without lowering the call a second time. Set on
     /// every `value_record_fields` call, so it is never stale across two.
     pub(super) last_value_record_port: Option<PortRef>,
+    /// `import * as` namespaces keyed by the FILE that wrote the import, then by
+    /// alias. An alias is file-local, so two modules may each write
+    /// `import * as Other`; `scope` keeps one binding per name, and this is what
+    /// lets a module's body reach its OWN alias (see `ns_mod_scopes`).
+    pub(super) ns_by_file:
+        HashMap<std::sync::Arc<str>, HashMap<String, Binding>>,
     /// Field→binding map stashed by a `return { ... }` record literal while an
     /// inline mod body is being lowered. A record literal is not a standalone
     /// expression, and `-> { a, b }` is a single record-typed output, so the

@@ -489,13 +489,31 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             // `LowerCtx::ns_mod_scopes`). Both the `ns.f` access and a bare
             // sibling call reach the same source ChipDecl, so the location key is
             // shared.
-            let ns_scope = std::sync::Arc::new(ns_decls.clone());
+            // A namespaced body also reaches through the aliases ITS module
+            // imported for itself (`Other.bump(n)` inside a module that wrote
+            // `import * as Other`). Those travel in as their own top-level
+            // namespaces, but the ambient scope keeps one binding per name, so
+            // a same-named alias in the importer would win at the inline site.
+            // Carry them in the module's own frame, where they shadow it.
+            let mut body_scope = ns_decls.clone();
+            if let Some(file) = ns.decls.first().map(|d| d.range().file.clone())
+                && let Some(own) = ctx.ns_by_file.get(&file)
+            {
+                for (n, b) in own {
+                    body_scope.entry(n.clone()).or_insert_with(|| b.clone());
+                }
+            }
+            let ns_scope = std::sync::Arc::new(body_scope);
             for d in &ns.decls {
                 if let TopDecl::Chip(c) = d {
                     let key = (c.range.file.to_string(), c.range.start.offset);
                     ctx.ns_mod_scopes.insert(key, ns_scope.clone());
                 }
             }
+            ctx.ns_by_file
+                .entry(ns.range.file.clone())
+                .or_default()
+                .insert(ns.name.clone(), Binding::Namespace(ns_decls.clone()));
             ctx.scope
                 .insert(&ns.name, Binding::Namespace(ns_decls));
         }

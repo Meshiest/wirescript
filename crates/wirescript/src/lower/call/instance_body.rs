@@ -65,6 +65,7 @@ pub(super) fn build_chip_module(
         exec_signal_payloads: HashMap::default(),
         pending_inline_record: None,
         last_value_record_port: None,
+        ns_by_file: HashMap::default(),
         pending_return_record: None,
         pending_out_records: HashMap::default(),
         chip_call_stack: ctx.chip_call_stack.clone(),

@@ -510,28 +510,10 @@ fn resolve_import(
                 if target.binds_in_file(name, &ns_file) {
                     continue;
                 }
-                // A DIFFERENT declaration already owns the alias - most often
-                // the importer's own `import * as <same name>`. Both are
-                // hoisted to one flat namespace table keyed by name, so the
-                // second would silently replace the first and every reference
-                // through it would read the wrong module. Report it instead;
-                // renaming either alias resolves it.
-                if target.binds(name) {
-                    let via = match ns {
-                        TopDecl::Namespace(n) => n.source_path.clone(),
-                        _ => String::new(),
-                    };
-                    diagnostics.push(Diagnostic::error(
-                        "WS012",
-                        format!(
-                            "namespace alias '{name}' is already taken here, so the \
-                             imported module's own `import * as {name} from '{via}'` cannot \
-                             travel in with it. Rename one of the two aliases",
-                        ),
-                        imp.range.clone(),
-                    ));
-                    continue;
-                }
+                // A same-named alias from ANOTHER file is not a conflict: an
+                // `import * as` name is file-local, so the importer's `Other`
+                // and the imported module's own `Other` coexist. Typecheck and
+                // lowering keep them apart by the file each was written in.
                 // Prepend: lowering registers declarations in source order,
                 // so a namespace appended after its caller would read as a
                 // use before declaration and resolve to nothing.

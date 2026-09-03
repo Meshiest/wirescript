@@ -13,7 +13,7 @@
 - An expression with no value read as one is a `WS072` error. A no-output `mod`/`chip` typed as `any`, so `o = noret(1)` wired the caller's exec continuation in as data.
 - A namespace reached two levels deep resolves. The seal over a namespaced body also hid the alias that module imported for itself.
 - A namespaced `let` initialized through such an alias carries its type, so reading it is no longer a `WS002`.
-- An alias collision between an importer and the module it imports is a `WS012`. The traveling namespace was dropped instead.
+- An `import * as` alias is file-local, so an importer and the module it imports may both use the same one. Both tables were keyed by name alone, so the inner namespace was dropped and every reference through it was an unknown identifier.
 
 ### Editor
 

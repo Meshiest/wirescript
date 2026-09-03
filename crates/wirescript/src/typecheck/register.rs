@@ -626,24 +626,44 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             // needed.
         }
         TopDecl::Namespace(ns) => {
-            declare_or_dup(
-                ctx,
-                &ns.name,
-                SymbolInfo {
-                    kind: SymbolKind::Namespace,
-                    name: ns.name.clone(),
-                    ty: Type::Any,
-                    decl_range: ns.range.clone(),
-                    signature: None,
-                    event_data: None,
-                },
+            // An `import * as` alias is file-local, so a second namespace of the
+            // same name (one module's own import traveling in beside the
+            // importer's) is not a duplicate declaration. `namespaces_by_file`
+            // is what keeps them apart; the flat scope entry is only a fallback.
+            let shadows_namespace = matches!(
+                ctx.scope.lookup(&ns.name),
+                Some(s) if s.kind == SymbolKind::Namespace
             );
+            let info = SymbolInfo {
+                kind: SymbolKind::Namespace,
+                name: ns.name.clone(),
+                ty: Type::Any,
+                decl_range: ns.range.clone(),
+                signature: None,
+                event_data: None,
+            };
+            if shadows_namespace {
+                ctx.scope.declare(&ns.name, info);
+            } else {
+                declare_or_dup(ctx, &ns.name, info);
+            }
             // The namespaces registered so far, including one that traveled in
             // with THIS module (resolve prepends it, so it is already
             // registered). Moved OUT rather than borrowed, so the member loop
             // below can read it while still using `ctx` mutably; restored, plus
             // this namespace's own entry, at the end of the arm.
-            let outer_ns = std::mem::take(&mut ctx.namespaces);
+            let member_file = ns.decls.first().map(|d| d.range().file.clone());
+            let mut outer_ns = std::mem::take(&mut ctx.namespaces);
+            // Overlay the aliases THIS module wrote for itself, so a member
+            // initialized through one (`let v = Other.value`) resolves to that
+            // module's `Other` and not the importer's same-named one.
+            if let Some(file) = &member_file
+                && let Some(own) = ctx.namespaces_by_file.get(file)
+            {
+                for (n, m) in own {
+                    outer_ns.insert(n.clone(), m.clone());
+                }
+            }
             let mut ns_map = HashMap::default();
             for d in &ns.decls {
                 match d {
@@ -920,6 +940,10 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 }
             }
             ctx.namespaces = outer_ns;
+            ctx.namespaces_by_file
+                .entry(ns.range.file.clone())
+                .or_default()
+                .insert(ns.name.clone(), ns_map.clone());
             ctx.namespaces.insert(ns.name.clone(), ns_map);
         }
     }

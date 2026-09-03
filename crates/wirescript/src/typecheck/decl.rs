@@ -1013,14 +1013,32 @@ fn check_decl_inner(
             // `namespace_visible` applies at the use site, so this admits only
             // the namespaces our own members were written against - never the
             // importer's.
+            // Taken from the per-FILE table, not the scope: the flat scope keeps
+            // one symbol per name, so an alias shadowed by a same-named one in
+            // the importer would be invisible here -- which is exactly the case
+            // this frame exists to serve.
             let member_file = ns.decls.first().map(|d| d.range().file.clone());
             let traveling: Vec<(String, SymbolInfo)> = match &member_file {
                 Some(file) => ctx
-                    .scope
-                    .iter_root()
-                    .filter(|(_, s)| s.kind == SymbolKind::Namespace)
-                    .filter(|(_, s)| s.decl_range.file == *file)
-                    .map(|(n, s)| (n.to_string(), s.clone()))
+                    .namespaces_by_file
+                    .get(file)
+                    .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|n| {
+                        let info = SymbolInfo {
+                            kind: SymbolKind::Namespace,
+                            name: n.clone(),
+                            ty: Type::Any,
+                            decl_range: SourceRange {
+                                file: file.clone(),
+                                ..Default::default()
+                            },
+                            signature: None,
+                            event_data: None,
+                        };
+                        (n, info)
+                    })
                     .collect(),
                 None => Vec::new(),
             };

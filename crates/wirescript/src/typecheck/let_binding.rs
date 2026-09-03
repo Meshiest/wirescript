@@ -49,9 +49,8 @@ pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding,
             // so mark it unindexed rather than risk calling a valid
             // projection a typo.
             Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
-                Expr::Ident { name: ns, .. } => ctx
-                    .namespaces
-                    .get(ns.as_str())
+                Expr::Ident { name: ns, range: ns_range } => ctx
+                    .ns_members(ns, &ns_range.file)
                     .and_then(|m| m.get(field.as_str()))
                     .and_then(|info| info.return_type.as_ref())
                     .and_then(|te| match te {
