@@ -502,12 +502,33 @@ fn check_decl_inner(
                     // bidirectional literal like `null` to the port's type. Both
                     // sides unwrap refs so `out y: *int = x` compares int against
                     // int, the ref-ness being the exposure mode, not a value type.
-                    ctx.in_pure(|ctx| infer::check(ctx, value, &unwrap_ref(&resolved)));
+                    let value_ty =
+                        ctx.in_pure(|ctx| infer::check(ctx, value, &unwrap_ref(&resolved)));
+                    // The value has to fit the PORT as well as this site's own
+                    // annotation, which are different types whenever an earlier
+                    // site typed the port. Annotation-versus-port is settled in
+                    // registration for a top-level `out`, since every one of
+                    // them is a registered site.
+                    check_annotated_port_write(
+                        ctx,
+                        &b.name,
+                        &resolved,
+                        &value_ty,
+                        value.range(),
+                    );
                 } else {
                     // An unannotated `out y = a.push(5)` would publish a nothing;
                     // reject a void-mutation `Never`.
                     let value_ty = ctx.in_pure(|ctx| infer::infer(ctx, value));
-                    reject_never_value(ctx, &unwrap_ref(&value_ty), value.range(), &b.name);
+                    // A `Never` value has already been reported as producing
+                    // nothing, and the port check would say so a second time.
+                    if !reject_never_value(ctx, &unwrap_ref(&value_ty), value.range(), &b.name) {
+                        // This site declares no type of its own, so the value
+                        // answers to whatever type the port already carries -
+                        // an earlier handler-declared `out shared: int` binds
+                        // a later `out shared = "x"` here.
+                        check_port_write(ctx, &b.name, &value_ty, value.range());
+                    }
                     if let Expr::Ident { name, .. } = value
                         && let Some(sym) = ctx.scope.lookup(name)
                         && sym.kind == SymbolKind::Var

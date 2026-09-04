@@ -23,6 +23,7 @@ mod generics;
 mod imports;
 mod namespace_values;
 mod opaque;
+mod out_reads;
 mod port_side;
 mod purity;
 mod records;

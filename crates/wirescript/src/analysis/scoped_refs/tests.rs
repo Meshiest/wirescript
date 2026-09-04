@@ -793,6 +793,134 @@ fn general_expr_trigger_call_is_not_recolored_by_a_synthetic_token() {
 }
 
 #[test]
+fn renaming_an_output_port_also_renames_its_reads() {
+    // A rename that moves the declaration but leaves the reads behind produces
+    // a silently dangling port, so this is a test rather than a manual check.
+    let src = "in a: int\n\
+               out y: int = a + 1\n\
+               out z: int = y * 2\n\
+               out w: int = y + 3";
+    // `y` is declared on line 1; the raw site for a coarse decl like `out` is
+    // the whole statement (col 0, the `out` keyword) since `references_at`
+    // leaves narrowing to the name token to the LSP wiring layer's
+    // `find_name_range` (see `prepare_rename_at`), not to this function.
+    // Both reads sit at col 13.
+    let (name, sites) = rename_sites(src, 1, 4);
+    assert_eq!(name, "y");
+    assert_eq!(
+        sites,
+        vec![(1, 0), (2, 13), (3, 13)],
+        "declaration plus both reads"
+    );
+}
+
+#[test]
+fn a_shadowed_port_rename_stays_on_the_var() {
+    // `count` names a var and a port. Every read belongs to the var, so
+    // renaming from a read must not pull the port's declaration in.
+    let src = "var count: int = 0\n\
+               in go: bool\n\
+               out count: int = count";
+    let (name, sites) = rename_sites(src, 2, 17);
+    assert_eq!(name, "count");
+    // (0, 0) is the var's raw coarse decl site (the whole `var count: int =
+    // 0` statement, starting at the `var` keyword) - see the narrowing note
+    // above.
+    assert!(
+        sites.contains(&(0, 0)),
+        "the read must resolve to the var declaration: {sites:?}"
+    );
+}
+
+#[test]
+fn renaming_a_handler_declared_port_reaches_a_cross_handler_read() {
+    // A port declared inside a top-level `on` handler is hoisted into a real
+    // file-scope boundary port, so a read of it from
+    // an unrelated handler must be part of the same rename, not left dangling
+    // outside the declaring handler's lexical block.
+    let src = "on Clock(interval = 0.2) {\n\
+               @top out flash: bool = Toggle()\n\
+               }\n\
+               in go: exec\n\
+               on go {\n\
+               var b: bool = flash\n\
+               }";
+    // `flash` is declared on line 1; the raw coarse decl site starts at col 5
+    // (the `out` keyword, past the `@top` side annotation) - see the
+    // narrowing note in `renaming_an_output_port_also_renames_its_reads`.
+    // The cross-handler read sits on line 5 col 14.
+    let (name, sites) = rename_sites(src, 1, 9);
+    assert_eq!(name, "flash");
+    assert_eq!(
+        sites,
+        vec![(1, 5), (5, 14)],
+        "declaration plus the cross-handler read"
+    );
+}
+
+#[test]
+fn renaming_an_anon_chip_declared_port_reaches_a_cross_chip_read() {
+    // A file-scope anon chip's `out` binding is the same kind of hoisted
+    // boundary port as a handler-declared one, so a read outside the chip
+    // body must be part of the rename too.
+    let src = "chip { out shared: int = 1 }\n\
+               in go: exec\n\
+               on go {\n\
+               var v: int = shared\n\
+               }";
+    // `shared` is declared on line 0; the raw coarse decl site starts at
+    // col 7 (the `out` keyword, past `chip { `) - see the narrowing note in
+    // `renaming_an_output_port_also_renames_its_reads`. The cross-chip read
+    // sits on line 3 col 13.
+    let (name, sites) = rename_sites(src, 0, 11);
+    assert_eq!(name, "shared");
+    assert_eq!(
+        sites,
+        vec![(0, 7), (3, 13)],
+        "declaration plus the cross-chip read"
+    );
+}
+
+#[test]
+fn renaming_a_statement_level_anon_chip_port_reaches_a_later_read() {
+    // A `chip { }` written as a STATEMENT inside a handler declares a real
+    // boundary port too (`typecheck::stmt::check_anon_chip_stmts` registers it
+    // into the handler's frame, `lower_block_inner` pre-declares it), so a read
+    // later in that handler is part of the same rename rather than dangling
+    // outside the chip's own block.
+    let src = "in go: exec
+               on go {
+               chip { out shared: int = 1 }
+               var v: int = shared
+               }";
+    let (name, sites) = rename_sites(src, 2, 26);
+    assert_eq!(name, "shared");
+    assert_eq!(
+        sites,
+        vec![(2, 22), (3, 28)],
+        "declaration plus the later in-handler read"
+    );
+}
+
+#[test]
+fn renaming_a_nested_anon_chip_port_reaches_a_read_outside_both() {
+    // An anon chip pushes no scope frame, so one nested inside a file-scope
+    // anon chip declares a file-wide port exactly as its parent does.
+    let src = "chip { chip { out shared: int = 1 } }
+               in go: exec
+               on go {
+               var v: int = shared
+               }";
+    let (name, sites) = rename_sites(src, 0, 18);
+    assert_eq!(name, "shared");
+    assert_eq!(
+        sites,
+        vec![(0, 14), (3, 28)],
+        "declaration plus the cross-chip read"
+    );
+}
+
+#[test]
 fn atom_hash_is_a_64_bit_i64() {
     // Every atom value is `xxh64(name) as i64` — a bit-preserving reinterpret of
     // a u64, so it always fits an i64 (high-bit-set names read as negative).

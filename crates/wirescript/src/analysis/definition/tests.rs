@@ -306,3 +306,42 @@
         let loc = goto(SHAPE_ENUM_MAIN, "", 1, col).expect("unit variant name still resolves via the existing resolver");
         assert_eq!(loc.start_line, 0);
     }
+
+    #[test]
+    fn goto_definition_on_a_port_read_lands_on_its_declaration() {
+        let main = "in a: int\nout y: int = a + 1\nout z: int = y * 2\n";
+        let loc = goto(main, "", 2, 13).expect("goto on a port read should resolve");
+        assert_eq!(loc.file, None, "same-file port: {loc:?}");
+        assert_eq!(loc.start_line, 1, "`out y` is declared on line 1, got {loc:?}");
+    }
+
+    #[test]
+    fn goto_on_a_handler_declared_port_read_lands_on_its_declaration() {
+        // `flash` is a boundary port hoisted out of the `on Clock` handler
+        // a module-boundary port; go-to-definition on a read from an
+        // unrelated handler must still land on the declaration inside it.
+        let main = "on Clock(interval = 0.2) {\n\
+                    @top out flash: bool = Toggle()\n\
+                    }\n\
+                    in go: exec\n\
+                    on go {\n\
+                    var b: bool = flash\n\
+                    }";
+        let loc = goto(main, "", 5, 14).expect("goto on a handler-declared port read should resolve");
+        assert_eq!(loc.file, None, "same-file port: {loc:?}");
+        assert_eq!(loc.start_line, 1, "`out flash` is declared on line 1, got {loc:?}");
+    }
+
+    #[test]
+    fn goto_on_an_anon_chip_declared_port_read_lands_on_its_declaration() {
+        // Same hoisting as a handler-declared port, but for a file-scope anon
+        // chip's `out` binding.
+        let main = "chip { out shared: int = 1 }\n\
+                    in go: exec\n\
+                    on go {\n\
+                    var v: int = shared\n\
+                    }";
+        let loc = goto(main, "", 3, 13).expect("goto on an anon-chip-declared port read should resolve");
+        assert_eq!(loc.file, None, "same-file port: {loc:?}");
+        assert_eq!(loc.start_line, 0, "`out shared` is declared on line 0, got {loc:?}");
+    }

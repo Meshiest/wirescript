@@ -203,6 +203,137 @@ pub(super) fn register_builtin_enums(ctx: &mut TypeCheckCtx) {
 
 // ---------- decl registration (1st pass) ----------
 
+/// Whether this VALUE needs more than one wire. A tuple literal counts: the
+/// parser desugars `(a, b)` to a `RecordLit` with numeric field names.
+/// Lowering leaves such a port's own pin unwired.
+fn value_needs_more_than_one_wire(e: &Expr) -> bool {
+    matches!(e, Expr::RecordLit { .. })
+}
+
+/// Whether a port annotated with this type dissolves into one pin per field.
+/// Mirrors `lower::predeclare::pre_declare_output`'s explode condition
+/// (`LowerCtx::record_or_tuple_fields`): a record, a tuple, a ref to either,
+/// or a ref to an enum.
+fn port_dissolves_into_field_pins(t: &Type) -> bool {
+    match t {
+        Type::Record(_) | Type::Tuple(_) => true,
+        Type::Ref(inner) => {
+            matches!(**inner, Type::Enum { .. }) || port_dissolves_into_field_pins(inner)
+        }
+        _ => false,
+    }
+}
+
+/// Register the port named `name` under `out_scope_key`, or - if a port of
+/// that name is already registered - reconcile this site with it instead of
+/// replacing it.
+///
+/// The registered type is the first CONCRETE one any site states. An
+/// unannotated site registers `Type::Any`, which a later annotated site
+/// upgrades, so file order does not decide the port's type. Two sites that
+/// each state a concrete type is a conflict, and the FIRST governs, matching
+/// lowering's precedence. The two passes must agree on both the SET of sites
+/// and on WHICH site's type governs.
+///
+/// Several sites driving one port is legal, but lowering wires each value into
+/// ONE typed var with no cross-site conversion, so a later site stating a
+/// different type is WS003 at that site's annotation.
+///
+/// This compares two DECLARATIONS, before any value is inferred. Checking a
+/// VALUE against the port is `check_port_write`'s job.
+fn register_port_site(ctx: &mut TypeCheckCtx, o: &OutBinding) {
+    let name = o.name.as_str();
+    let annotated = o.typ.as_ref();
+    let decl_range = &o.range;
+    // `resolve_type_expr` is NOT pure - it emits (e.g. WS002 "unknown type").
+    // The canonical check for this site's own annotation runs later (the
+    // `TopDecl::Out`/`Stmt::OutBinding` value check), so discard what this
+    // registration pass produces.
+    let diag_mark = ctx.diagnostics.len();
+    let resolved = annotated.map(|te| resolve_type_expr(ctx, te));
+    ctx.diagnostics.truncate(diag_mark);
+
+    // A port is readable only when it carries a SINGLE wire, so a record- or
+    // tuple-shaped one is not registered: the annotation states that shape
+    // when there is one, the value states it otherwise. Registering it would
+    // let a bare read type-check and then lower to nothing. WS002 instead.
+    if resolved.as_ref().is_some_and(port_dissolves_into_field_pins)
+        || o.value.as_ref().is_some_and(value_needs_more_than_one_wire)
+    {
+        return;
+    }
+    let key = out_scope_key(name);
+    if let Some(existing) = ctx.scope.lookup(&key) {
+        let existing_ty = existing.ty.clone();
+        // `Type::Any` is what an unannotated site registers, and it states
+        // nothing. A later site carrying a real annotation supplies the port's
+        // type rather than conflicting with the absence of one, so the port
+        // ends up with the same type whichever order the two sites appear in.
+        let Some(new_ty) = resolved.filter(|t| !matches!(t, Type::Any)) else {
+            return;
+        };
+        if matches!(existing_ty, Type::Any) {
+            ctx.scope.set_type(&key, new_ty);
+        } else if new_ty != existing_ty {
+            ctx.emit(
+                "WS003",
+                format!(
+                    "'{name}' is already declared as an output port with type {}, \
+                     so it cannot also be declared here as {}",
+                    crate::analysis::types::type_str(&existing_ty),
+                    crate::analysis::types::type_str(&new_ty),
+                ),
+                type_expr_range(annotated.expect("resolved implies annotated")),
+            );
+        }
+        return;
+    }
+    #[cfg(test)]
+    ctx.port_sites.push(name.to_string());
+    ctx.scope.declare(
+        &key,
+        SymbolInfo {
+            kind: SymbolKind::Out,
+            name: name.to_string(),
+            ty: resolved.unwrap_or(Type::Any),
+            decl_range: decl_range.clone(),
+            signature: None,
+            event_data: None,
+        },
+    );
+}
+
+/// Register every `out` declared inside a top-level handler body (or a
+/// captured event's body) as a readable port, the typecheck-side counterpart
+/// of `lower::predeclare::pre_declare_handler_outputs`. The site set comes
+/// from `ast::handler_port_sites`, shared with that pass and with
+/// `scoped_refs`'s widening pass so the three cannot claim different sites.
+///
+/// Declares directly into `ctx.scope` with no frame pushed first, so the name
+/// lands in whichever frame the caller already has open - the file root for
+/// a top-level handler - making it readable from anywhere in the file, not
+/// only from inside the declaring handler.
+fn register_handler_outputs(ctx: &mut TypeCheckCtx, block: &Block) {
+    for o in crate::ast::handler_port_sites(block) {
+        register_port_site(ctx, o);
+    }
+}
+
+/// Register every plain `out` written directly in an anon chip body as a
+/// module-boundary port, the typecheck-side counterpart of
+/// `lower::predeclare::pre_declare_anon_chip`, over the shared site set
+/// `ast::anon_chip_port_sites` names.
+///
+/// An anon chip shares its parent's scope rather than opening one, so an `out`
+/// in its body is a module-boundary port like a top-level `out`, just drawn
+/// inside a box, and both a read of its name and a write to it from elsewhere
+/// resolve through the port registry.
+pub(super) fn register_anon_chip_outputs(ctx: &mut TypeCheckCtx, stmts: &[Stmt]) {
+    for o in crate::ast::anon_chip_port_sites(stmts) {
+        register_port_site(ctx, o);
+    }
+}
+
 pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
     match d {
         TopDecl::Var(v) => {
@@ -532,6 +663,14 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     event_data: None,
                 },
             );
+            // `let e = on Clock(...) { ... }` (a captured event) carries a
+            // handler body here and is lowered handler-style by
+            // `lower_event_decl`, so its `out` bindings are top-level handler
+            // bindings too - see `register_handler_outputs`. Lowering's pass
+            // 1a (`lower/mod.rs`) walks this same field for the same reason.
+            if let Some(body) = &e.captured_body {
+                register_handler_outputs(ctx, body);
+            }
         }
         TopDecl::AnonChip(ac) => {
             // Anon chip shares parent scope — register its inner decls.
@@ -544,6 +683,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     _ => {}
                 }
             }
+            register_anon_chip_outputs(ctx, &ac.body.stmts);
         }
         TopDecl::TypeAlias(t) => {
             if t.type_params.is_empty() {
@@ -610,10 +750,31 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 },
             );
         }
-        TopDecl::Out(_)
-        | TopDecl::Let(_)
+        // A port is a readable value, but it must NOT occupy the ordinary name
+        // tier: `var count` alongside `out count = count` is a shipping idiom
+        // whose right-hand side has always meant the var. The `out:` prefix
+        // keys ports exactly the way lowering's `output_scope_key` does, so the
+        // two passes cannot disagree on which sites are ports, and a chip or
+        // mod body gets correct scoping from the existing scope push and pop
+        // with no new context field. Goes through `register_port_site` so a
+        // top-level `out` and a handler-declared `out` of the same name
+        // are subject to the identical first-wins/conflict rule -
+        // see that function's doc comment.
+        TopDecl::Out(o) => {
+            register_port_site(ctx, o);
+        }
+        // A handler-body `out` becomes a module-boundary port exactly the way
+        // `pre_declare_handler_outputs` (`lower/predeclare.rs`) hoists it for
+        // lowering, so it must be registered here too or a read of its name
+        // reports WS002 even though lowering would wire it correctly: two
+        // independent scope systems (this one, and `LowerCtx`'s) must agree
+        // on which sites are ports. Declared from THIS dispatch (no scope
+        // pushed for the handler body first), so the name lands in whatever
+        // frame is currently open - the file root for a top-level handler,
+        // matching `TopDecl::Out`'s placement exactly.
+        TopDecl::Handler(h) => register_handler_outputs(ctx, &h.body),
+        TopDecl::Let(_)
         | TopDecl::LetElse(_)
-        | TopDecl::Handler(_)
         | TopDecl::Assign(_)
         | TopDecl::If(_)
         | TopDecl::IfLet(_)
@@ -937,6 +1098,25 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         );
                     }
                     _ => {}
+                }
+            }
+            // A member module's own top-level handler may declare a boundary
+            // port too (`on trig { out hport: int = 7 }`), hoisted by
+            // lowering's namespace arm exactly as a top-level `out` member is,
+            // so `L.hport` reads it the same way `L.count` reads an `out`
+            // member. Runs after the loop so an explicit `out` member of the
+            // same name governs, matching `pre_declare_handler_outputs`'s
+            // skip-if-already-a-port rule.
+            for d in &ns.decls {
+                let TopDecl::Handler(h) = d else { continue };
+                for o in crate::ast::handler_port_sites(&h.body) {
+                    let ty = o.typ.as_ref().map(|te| resolve_type_expr(ctx, te));
+                    ns_map.entry(o.name.clone()).or_insert(NsDeclInfo {
+                        kind: SymbolKind::Out,
+                        return_type: None,
+                        params: Vec::new(),
+                        value_type: ty,
+                    });
                 }
             }
             ctx.namespaces = outer_ns;

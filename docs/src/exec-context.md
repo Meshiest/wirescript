@@ -220,6 +220,22 @@ on changed {
 }
 ```
 
+### Reading an Output Port
+
+An output port reads as the value driving it, so one port can feed another:
+
+```wirescript
+in a: int
+out y: int = a + 1
+out z: int = y * 2
+```
+
+A port resolves only when no variable, binding, input, buffer or parameter owns
+the name, so `var count` alongside `out count = count` reads the variable.
+
+A port holds no state, so reading one inside its own value is a loop with no
+tick barrier and reports WS005. Route it through a `buffer` or a variable.
+
 ## Handler Exec Chains
 
 Handlers create exec chains -- sequences of exec gates connected by their exec output pins. Each statement in a handler body is a link in the chain:

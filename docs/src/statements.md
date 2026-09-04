@@ -615,6 +615,36 @@ chip Counter(bump: exec) -> (value: int, done: exec) {
 
 Value output bindings are evaluated in pure context. Exec outputs are wired via `emit` in exec context.
 
+### Handler-declared outputs
+
+A top-level `on` handler can declare its own port, hoisted to the module
+boundary:
+
+```wirescript
+on Clock(interval = 0.5) {
+  @top out blink: bool = Toggle()
+}
+```
+
+A single unconditional site wires straight into the port. Two sites, or one
+inside an `if`, share a backing variable so the writes cannot fan in.
+
+An anonymous `chip { }` shares the surrounding scope, so an `out` in its body is
+a module-boundary port too, readable from anywhere in the file:
+
+```wirescript
+chip { out shared: int = 1 }
+in go: exec
+on go {
+  var v: int = shared
+}
+```
+
+A named `chip` or `mod` is its own boundary, so an `out` there binds to that
+chip's port. Hoisting reaches only top-level handlers: an `out` in a handler
+inside any chip, named or anonymous, is WS073. Declare it in the chip body or
+its signature.
+
 ### WS017 -- Ambiguous variable output type
 
 When `out foo = someVar` is used and `someVar` has no explicit type annotation, the compiler emits **WS017** because it cannot determine whether you want the variable's value or a reference to it:

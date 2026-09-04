@@ -147,13 +147,13 @@ impl<V> Scope<V> {
         self.frames.iter().rev().flat_map(|f| f.entries.iter().map(|(k, v)| (*k, v)))
     }
 
-    /// Iterate only the module-global (ROOT) frame — the outermost scope.
-    /// These are the names a chip body closes over; handler-local and block
-    /// frames are intentionally excluded.
-    pub fn iter_root(&self) -> impl Iterator<Item = (&str, &V)> {
-        self.frames
+    /// Iterate every entry `get` can reach: the frames at or above the floor,
+    /// innermost first. A name declared in two open frames is yielded once per
+    /// frame, so a caller that cares about distinct names dedupes by key.
+    pub fn iter_visible(&self) -> impl Iterator<Item = (&str, &V)> {
+        self.frames[self.floor..]
             .iter()
-            .filter(|f| f.tag.contains(ScopeTag::ROOT))
+            .rev()
             .flat_map(|f| f.entries.iter().map(|(k, v)| (crate::intern::resolve(*k), v)))
     }
 

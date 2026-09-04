@@ -2950,7 +2950,7 @@ pub(super) fn lower_out_binding(
     ctx: &mut LowerCtx,
     name: &str,
     value: Option<&Expr>,
-    _range: &SourceRange,
+    range: &SourceRange,
 ) {
     let Some(value) = value else { return };
     // An ENUM value driving an output port has no materialization yet: the
@@ -2982,12 +2982,25 @@ pub(super) fn lower_out_binding(
         .get(&crate::lower::context::output_scope_key(name))
         .cloned()
     {
-        wire_record_output(ctx, &out_fields, value, _range);
+        wire_record_output(ctx, &out_fields, value, range);
         return;
     }
     let out = match ctx.lookup_output(name).cloned() {
         Some(o) => o,
-        None => return,
+        None => {
+            // Nothing pre-declared a port for this binding, so the value has
+            // nowhere to go.
+            ctx.error(
+                "WS073",
+                format!(
+                    "`out {name}` has no port to bind to, so its value is dropped. \
+                     Declare the port at the top level of the file, in a chip body, \
+                     or in the chip's signature."
+                ),
+                range,
+            );
+            return;
+        }
     };
     // A RECORD assigned to an output (`out card = someRecord`). A record has no
     // single value port, so lowering it as an expression yields an
@@ -3005,12 +3018,64 @@ pub(super) fn lower_out_binding(
         ctx.pending_out_records.insert(name.to_string(), record);
         return;
     }
+    // A backed output written from an exec chain does the same `Var_Set` an
+    // `emit name = value` does, regardless of whether the value happens to be a
+    // literal: this must run before the constant-seed branch below, or a
+    // literal-valued handler site (e.g. `out n: int = 1`) would instead rebake
+    // the var's `InitialValue` on every call, producing zero `Var_Set` gates
+    // for what pass 1 already counted as a value-driving site. Direct-wiring
+    // here instead would fan in with the var-to-rerouter wire `lower` adds
+    // once at the end.
+    if let Some(backing) = ctx.output_backing_vars.get(name).cloned()
+        && let Some(exec) = ctx.current_exec
+    {
+        let inner = backing.inner_type.clone();
+        let value_port = lower_expr(ctx, value);
+        let set_node = ctx.add_gate(AddNodeOpts {
+            gate_class: gc::VAR_SET,
+            source_range: range.clone(),
+            note: Some("out_set"),
+            ports: GateIO {
+                inputs: vec![
+                    PortSpec {
+                        name: *sym::EXEC,
+                        ty: Type::Exec,
+                    },
+                    PortSpec {
+                        name: *sym::VAR_REF,
+                        ty: Type::Ref(Box::new(inner.clone())),
+                    },
+                    PortSpec {
+                        name: *sym::VALUE,
+                        ty: inner.clone(),
+                    },
+                ],
+                outputs: vec![PortSpec {
+                    name: *sym::EXEC_OUT,
+                    ty: Type::Exec,
+                }],
+            },
+            ..Default::default()
+        });
+        ctx.connect(exec, set_node.port(WirePort::Exec));
+        ctx.connect(
+            backing.node_id.port(WirePort::VarRef),
+            set_node.port(WirePort::VarRef),
+        );
+        ctx.connect(value_port, set_node.port(WirePort::Value));
+        ctx.current_exec = Some(set_node.port(WirePort::ExecOut));
+        return;
+    }
     // A var-backed output (it is also emitted to) must NOT take a direct driver
-    // from its initializer — that would fan-in with the backing var's own feed.
-    // A constant default seeds the backing var's `InitialValue`; the var then
-    // drives the output once. A non-constant default is left to the direct wire
-    // below (rare, and it is the sole driver only when there is no emit, which
-    // would not have created a backing var).
+    // from its initializer, since that would fan in with the backing var's own
+    // feed. A constant default seeds the backing var's `InitialValue`; the var
+    // then drives the output once. A declaration's value is always lowered
+    // with no current exec chain (`mod.rs`'s pass-2 loop and the
+    // namespace-member loop above both clear it before lowering one), so this
+    // branch only ever sees a genuine default, never a handler-body write. A
+    // non-constant default is left to the direct wire below (rare, and it is
+    // the sole driver only when there is no emit, which would not have
+    // created a backing var).
     if let Some(backing) = ctx.output_backing_vars.get(name).cloned()
         && let Some(lit) = expr_to_literal_in(value, &ctx.const_env)
     {

@@ -3845,6 +3845,293 @@
         ranges
     }
 
+    /// A port is readable by name only when it carries a single wire. A record-
+    /// or tuple-shaped one does not: the annotated form dissolves into one pin
+    /// per field, and the unannotated form leaves its own pin unwired because
+    /// the value goes to `pending_out_records` (or has no single port at all).
+    /// The registry must claim neither, in every spelling that reaches the name.
+    #[test]
+    fn a_record_typed_port_is_not_readable_by_name() {
+        let annotated = "type Point = { x: int, y: int }\n\
+                         in a: int\nout p: Point = { x: a, y: 2 }\n";
+        for (label, tail) in [
+            ("a bare read in a handler", "in go: exec\non go { var v: Point = p }"),
+            ("an annotated port initialized from it", "out q: Point = p"),
+            ("a field projection", "in go: exec\non go { var v: int = p.x }"),
+            ("an unannotated port initialized from it", "out q = p"),
+        ] {
+            let r = tc(&format!("{annotated}{tail}"));
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "WS002" && d.message.contains("'p'")),
+                "reading a record port must be WS002 - {label}: {:?}",
+                r.diagnostics
+            );
+        }
+        // The same rule keyed on the VALUE, for a site with no annotation. A
+        // tuple literal parses as a record literal, so both spellings land here.
+        for (label, src) in [
+            (
+                "an unannotated record-valued port",
+                "in a: int\nout p = { x: a, y: 2 }\nout q: int = p",
+            ),
+            ("an unannotated tuple-valued port", "in a: int\nout p = (a, 2)\nout q: int = p"),
+        ] {
+            let r = tc(src);
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "WS002" && d.message.contains("'p'")),
+                "reading an unannotated record-valued port must be WS002 - {label}: {:?}",
+                r.diagnostics
+            );
+        }
+        // Ports nobody reads by name still compile, in every one of these forms.
+        assert_no_diags(&tc(annotated));
+        assert_no_diags(&tc("in a: int\nout t: (int, int) = (a, 2)"));
+        assert_no_diags(&tc("in a: int\nout p = { x: a, y: 2 }"));
+        let r = tc("in a: int\nout t: (int, int) = (a, 2)\nout u: (int, int) = t");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS002" && d.message.contains("'t'")),
+            "reading a tuple port must be WS002: {:?}",
+            r.diagnostics
+        );
+        // An annotated record port keeps every per-field pin, and each one is
+        // driven: refusing the bare read must not cost the port its wiring.
+        let lowered = lower_for_ports(annotated);
+        let pins: Vec<crate::ir::NodeId> = top_level_ports(&lowered)
+            .filter(|(_, label)| label == "p_x" || label == "p_y")
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(pins.len(), 2, "both field pins must exist: {:?}", lowered.module.nodes);
+        for pin in pins {
+            assert!(
+                lowered.module.wires.iter().any(|w| w.target.node_id == pin),
+                "every field pin must be driven; wires: {:?}",
+                lowered.module.wires
+            );
+        }
+    }
+
+    /// Every module-boundary port name typecheck's registry claimed for `src`.
+    fn typecheck_port_sites(src: &str) -> std::collections::BTreeSet<String> {
+        tc(src).port_sites.into_iter().collect()
+    }
+
+    /// Lower `src` with folding off. Neither this nor `typecheck_port_sites`
+    /// asserts the program is diagnostic-free: several cases in the corpus below
+    /// are deliberately rejected shapes whose whole point is that NEITHER side
+    /// claims a port.
+    fn lower_for_ports(src: &str) -> crate::lower::LowerResult {
+        let p = parse(src, "test");
+        assert!(p.diagnostics.is_empty(), "parse diagnostics: {:?}", p.diagnostics);
+        let tc_result = typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default());
+        crate::lower::lower(crate::lower::LowerInput {
+            ast: &p.ast,
+            type_of_expr: &tc_result.type_of_expr,
+            op_resolutions: &tc_result.op_resolutions,
+            file: "test",
+            module_name: None,
+            template_cache: std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+            doc_comments: &p.doc_comments,
+            fold_mode: crate::lower::FoldMode::ForceOff,
+            ce_slots: &crate::typecheck::CeSlotMap::default(),
+        })
+    }
+
+    /// The `PortLabel` of every top-level (non-chip) `Output` node in `src`'s
+    /// module. Read off the emitted module rather than from instrumentation: a
+    /// boundary port IS such a node. A record- or tuple-typed port never appears
+    /// under its own name, because `record_output_pins` labels its pins
+    /// `<name>_<field>` instead.
+    fn lowering_boundary_ports(src: &str) -> std::collections::BTreeSet<String> {
+        top_level_ports(&lower_for_ports(src))
+            .map(|(_, label)| label)
+            .collect()
+    }
+
+    fn top_level_ports(
+        r: &crate::lower::LowerResult,
+    ) -> impl Iterator<Item = (crate::ir::NodeId, String)> + '_ {
+        r.module
+            .nodes
+            .values()
+            .filter(|n| n.kind == crate::ir::NodeKind::Output && n.chip_id.is_none())
+            .filter_map(|n| match n.properties.get(&*crate::intern::sym::PORT_LABEL) {
+                Some(crate::ir::Literal::String(name)) => Some((n.id, name.to_string())),
+                _ => None,
+            })
+    }
+
+    /// THE structural invariant behind readable outputs: every port typecheck's
+    /// registry hands out as readable must be a port lowering actually emits,
+    /// and each phase must claim exactly the set this corpus pins for it.
+    ///
+    /// A name only typecheck claims is a silent miscompile: the read
+    /// type-checks and lowers to nothing, so the read and the write both
+    /// disappear with no diagnostic. The reverse is slack, and the safe
+    /// direction: lowering emits a pin the source cannot name (a record port's
+    /// per-field pins, or an unannotated record-valued port's dead single pin),
+    /// which at worst leaves a port nobody can read.
+    ///
+    /// Five hand-written traversals decide this between them
+    /// (`lower::predeclare::pre_declare_handler_outputs` and
+    /// `pre_declare_anon_chip`, `typecheck::register::register_handler_outputs`
+    /// and `register_anon_chip_outputs`, and
+    /// `analysis::scoped_refs::widen_hoisted_out_bindings`). The site set inside
+    /// a body comes from the shared `ast::handler_port_sites` /
+    /// `ast::anon_chip_port_sites` enumerators, but WHICH bodies each traversal
+    /// feeds them is decided per pass, which is what this corpus pins
+    /// down. Both the annotated and the unannotated axis are covered: a rule
+    /// keyed on one of them alone passes every row of the other.
+    #[test]
+    fn port_registry_matches_lowerings_boundary_ports() {
+        // (label, source, ports typecheck registers, port labels lowering emits)
+        let cases: &[(&str, &str, &[&str], &[&str])] = &[
+            ("a top-level out", "in a: int\nout y: int = a", &["y"], &["y"]),
+            (
+                "an unannotated top-level out, read by another",
+                "in a: int\nout y = a + 1\nout z: int = y",
+                &["y", "z"],
+                &["y", "z"],
+            ),
+            (
+                "a top-level handler body",
+                "on Clock(interval = 0.2) {\n@top out flash: bool = Toggle()\n}",
+                &["flash"],
+                &["flash"],
+            ),
+            (
+                "a handler body's nested if / if let / let else",
+                "in go: exec\nin n: int\non go {\nif n > 0 { out a: int = 1 } else { out b: int = 2 }\nif let Some(v) = Option.Some(n) { out c: int = v }\nlet Some(w) = Option.Some(n) else { out d: int = 4\nreturn }\n}",
+                &["a", "b", "c", "d"],
+                &["a", "b", "c", "d"],
+            ),
+            (
+                "a handler nested in a handler body",
+                "in go: exec\non go {\non Clock(interval = 0.2) { out inner: int = 1 }\n}",
+                &["inner"],
+                &["inner"],
+            ),
+            (
+                "a captured event's body",
+                "let e = on Clock(interval = 0.2) {\nout flash: bool = Toggle()\n}",
+                &["flash"],
+                &["flash"],
+            ),
+            (
+                "a file-scope anon chip",
+                "chip { out shared: int = 1 }",
+                &["shared"],
+                &["shared"],
+            ),
+            (
+                "a statement-level anon chip inside a handler",
+                "in go: exec\non go {\nchip { out shared: int = 1 }\nvar v: int = shared\n}",
+                &["shared"],
+                &["shared"],
+            ),
+            (
+                "an anon chip nested in an anon chip",
+                "chip { chip { out shared: int = 1 } }",
+                &["shared"],
+                &["shared"],
+            ),
+            (
+                // A named chip's own body `out` is that CHIP's port, declared
+                // through its signature frame, not a module-boundary one. Its
+                // node carries a `chip_id`, so it is not a top-level port
+                // either.
+                "a named chip body",
+                "out ok: int = 1\nchip Named(t: exec) -> (r: int) { out r = 2 }\nin go: exec\nlet q = Named(go)",
+                &["ok"],
+                &["ok"],
+            ),
+            (
+                // WS073: a handler inside a chip is not hoisted, so `flash` has
+                // no port on either side.
+                "a handler inside a named chip",
+                "out ok: int = 1\nchip Named(t: exec) { on t { out flash: int = 2 } }\nin go: exec\nlet q = Named(go)",
+                &["ok"],
+                &["ok"],
+            ),
+            (
+                // WS023: `@side` is only legal on a root-level `out`, so an anon
+                // chip's `@side out` never becomes a port.
+                "an @side-annotated anon chip out",
+                "out ok: int = 1\nchip { @top out sided: int = 2 }",
+                &["ok"],
+                &["ok"],
+            ),
+            (
+                // A record-typed boundary port dissolves into one pin per field,
+                // so there is no single wire for a bare read: typecheck must not
+                // claim it, while lowering emits (and drives) the per-field pins
+                // under their own labels.
+                "a record-typed port",
+                "type Point = { x: int, y: int }\nin a: int\nout ok: int = a\nout p: Point = { x: a, y: 2 }",
+                &["ok"],
+                &["ok", "p_x", "p_y"],
+            ),
+            (
+                "a tuple-typed port",
+                "in a: int\nout ok: int = a\nout t: (int, int) = (a, 2)",
+                &["ok"],
+                &["ok", "t_0", "t_1"],
+            ),
+            (
+                // With no annotation the VALUE decides. A record literal (and a
+                // tuple literal, which parses as one) has no single wire, and
+                // lowering leaves the port's own pin unwired, so a read would
+                // resolve to a permanent zero. Typecheck must not claim it even
+                // though lowering still emits the pin.
+                "an unannotated record-valued port",
+                "in a: int\nout ok: int = a\nout p = { x: a, y: 2 }",
+                &["ok"],
+                &["ok", "p"],
+            ),
+            (
+                "an unannotated tuple-valued port",
+                "in a: int\nout ok: int = a\nout p = (a, 2)",
+                &["ok"],
+                &["ok", "p"],
+            ),
+        ];
+        let set = |names: &[&str]| -> std::collections::BTreeSet<String> {
+            names.iter().map(|s| (*s).to_string()).collect()
+        };
+        let mut saw_a_port = false;
+        for (label, src, tc_expected, lo_expected) in cases {
+            let tc_expected = set(tc_expected);
+            let lo_expected = set(lo_expected);
+            let tc_ports = typecheck_port_sites(src);
+            let lo_ports = lowering_boundary_ports(src);
+            assert_eq!(
+                tc_ports, tc_expected,
+                "typecheck's port registry claimed the wrong set - {label}"
+            );
+            assert_eq!(
+                lo_ports, lo_expected,
+                "lowering emitted the wrong boundary ports - {label}"
+            );
+            // The soundness direction, restated as its own assert so a future
+            // row cannot satisfy both tables above while still handing out a
+            // readable name that lowers to nothing.
+            assert!(
+                tc_ports.is_subset(&lo_ports),
+                "every readable port must exist in the module - {label}\n  \
+                 typecheck claimed: {tc_ports:?}\n  lowering emitted:  {lo_ports:?}"
+            );
+            saw_a_port |= !tc_expected.is_empty();
+        }
+        // A corpus that claimed nothing anywhere would satisfy every equality
+        // vacuously.
+        assert!(saw_a_port, "the corpus must claim at least one real port");
+    }
+
     /// The EXACT-PARITY invariant that `lower::context`, `lower::stmt`,
     /// `lower::decl` and `typecheck::ctx` all cite by name. It was cited by
     /// four doc comments for a long time without ever being written, and that
@@ -4857,4 +5144,616 @@
     fn is_stays_usable_as_an_identifier() {
         // Contextual, like `unsafe`: only `is <name>` is the operator.
         assert_no_diags(&tc("var is: int = 1\nout n = is + 1"));
+    }
+
+    #[test]
+    fn an_output_port_is_readable_as_a_value() {
+        // A port lowers to its rerouter output, so it reads as a value like
+        // any other.
+        let r = tc("in a: int\nout y: int = a + 1\nout z: int = y * 2");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn a_same_named_var_wins_over_the_output_port() {
+        // `var count` alongside `out count = count` is a shipping idiom in 12
+        // files of the corpus. The right-hand side has always meant the var and
+        // must keep meaning it, so ports resolve only after the ordinary tier
+        // misses.
+        let r = tc("var count: int = 0\nin go: bool\nout count: int = count");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn an_unannotated_output_port_reads_as_any() {
+        // Registration runs in pass 1, before any value is inferred, so an
+        // unannotated port carries `any`. This matches what the namespaced
+        // `NsDeclInfo` path already reports for the same declaration.
+        let r = tc("in a: int\nout y = a + 1\nout z: int = y");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn a_handler_declared_port_is_readable_from_inside_its_own_handler() {
+        // A port declared inside an `on` handler body is registered here as
+        // well as by `pre_declare_handler_outputs`, or a later read of its
+        // name in the SAME block reports WS002 while lowering wires it.
+        let r = tc(
+            "static var ticks: int = 0\n\
+             on Clock(interval = 0.2) {\n\
+             ticks = ticks + 1\n\
+             out counted: int = ticks\n\
+             var seen: int = counted\n\
+             }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn a_handler_declared_port_is_readable_from_outside_its_handler() {
+        // The same name, read from a different top-level handler entirely -
+        // registration must land at file scope, not inside a frame the
+        // declaring handler pushes and pops.
+        let r = tc(
+            "in go: exec\n\
+             static var ticks: int = 0\n\
+             on Clock(interval = 0.2) {\n\
+             ticks = ticks + 1\n\
+             out counted: int = ticks\n\
+             }\n\
+             on go {\n\
+             var seen: int = counted\n\
+             }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn a_port_type_conflict_reports_the_same_way_regardless_of_file_order() {
+        // A top-level `out` and a handler-declared `out` of the same name but
+        // disagreeing types: registration is first-wins, so whichever site
+        // pass 1 reaches first sets the port's type and the other one
+        // conflicts against it. Swapping which site comes first in the file
+        // must not change whether the file checks clean - both orders are a
+        // genuine conflict and both must report WS003, not just one of them.
+        let out_first = tc(
+            "out counted: int = 5\n\
+             on Clock(interval = 0.2) {\n\
+             out counted: string = \"hi\"\n\
+             }\n\
+             let x: int = counted + 1",
+        );
+        assert!(
+            out_first.diagnostics.iter().any(|d| d.code == "WS003"),
+            "out-before-handler order should report WS003; diagnostics: {:?}",
+            out_first.diagnostics
+        );
+        let handler_first = tc(
+            "on Clock(interval = 0.2) {\n\
+             out counted: string = \"hi\"\n\
+             }\n\
+             out counted: int = 5\n\
+             let x: int = counted + 1",
+        );
+        assert!(
+            handler_first.diagnostics.iter().any(|d| d.code == "WS003"),
+            "handler-before-out order should report WS003 too; diagnostics: {:?}",
+            handler_first.diagnostics
+        );
+        // An unannotated site beside an annotated one is not a declaration
+        // conflict: the annotation states the port's type and the unannotated
+        // site states nothing, so the port ends up typed either way and the
+        // unannotated site's value is judged against it in both orders.
+        let ws003 = |r: &TypeCheckResult| {
+            r.diagnostics.iter().filter(|d| d.code == "WS003").count()
+        };
+        let unannotated_first = tc(
+            "in go: exec
+             out shared = \"x\"
+             on go {
+             out shared: int = 1
+             }",
+        );
+        let annotated_first = tc(
+            "in go: exec
+             on go {
+             out shared: int = 1
+             }
+             out shared = \"x\"",
+        );
+        assert_eq!(
+            (ws003(&unannotated_first), ws003(&annotated_first)),
+            (1, 1),
+            "an unannotated site and an annotated one must report identically in \
+             both orders; unannotated first: {:?}, annotated first: {:?}",
+            unannotated_first.diagnostics,
+            annotated_first.diagnostics
+        );
+    }
+
+    #[test]
+    fn conflicting_branch_sites_report_ws003_instead_of_silently_wiring() {
+        // Two conditional sites for the same handler-declared port,
+        // disagreeing on type. Lowering wires both branches into ONE typed
+        // backing var with no cross-site conversion, so the disagreement has
+        // to be reported here: the fixture guard cannot catch it, since it
+        // only checks for placeholders and an empty diagnostics list.
+        let r = tc(
+            "in go: exec\n\
+             in cond: bool\n\
+             on go {\n\
+             if cond {\n\
+             out branch: int = 1\n\
+             } else {\n\
+             out branch: string = \"x\"\n\
+             }\n\
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "disagreeing branch types for one port must report WS003; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_unannotated_update_site_is_checked_against_the_registered_port_type() {
+        // A site with no annotation at all is the natural way to write an
+        // update, and it reaches the same port the annotated site typed. The
+        // signature frame knows nothing about a module-boundary port, so the
+        // port registry is what this value answers to.
+        let r = tc(
+            "in go1: exec\n\
+             in go2: exec\n\
+             on go1 {\n\
+             out shared: int = 1\n\
+             }\n\
+             on go2 {\n\
+             out shared = \"x\"\n\
+             }\n\
+             let x: int = shared + 1",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "an unannotated update site with a mismatched value must report WS003; \
+             diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_emit_into_a_handler_declared_port_is_checked_against_it() {
+        // `emit` drives a port's backing variable the same way an `out`
+        // binding does, so its payload answers to the port's declared type.
+        let r = tc(
+            "in go1: exec\n\
+             in go2: exec\n\
+             on go1 {\n\
+             out shared: int = 1\n\
+             }\n\
+             on go2 {\n\
+             emit shared = \"x\"\n\
+             }\n\
+             let x: int = shared + 1",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "an emit payload that does not fit the port must report WS003; \
+             diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_emit_into_a_handler_declared_port_with_a_matching_value_stays_clean() {
+        let r = tc(
+            "in go1: exec\n\
+             in go2: exec\n\
+             on go1 {\n\
+             out shared: int = 1\n\
+             }\n\
+             on go2 {\n\
+             emit shared = 2\n\
+             }\n\
+             let x: int = shared + 1",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn an_unannotated_top_level_out_is_checked_against_the_registered_port_type() {
+        // A top-level `out` with no annotation is an update site for a port an
+        // earlier handler already typed, and its value has to fit that type.
+        let r = tc(
+            "in go1: exec\n\
+             on go1 {\n\
+             out shared: int = 1\n\
+             }\n\
+             out shared = \"x\"\n\
+             let x: int = shared + 1",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "an unannotated top-level out with a mismatched value must report \
+             WS003; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_unannotated_top_level_out_with_a_matching_value_stays_clean() {
+        let r = tc(
+            "in go1: exec\n\
+             on go1 {\n\
+             out shared: int = 1\n\
+             }\n\
+             out shared = 2\n\
+             let x: int = shared + 1",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn a_return_beside_an_anon_chip_port_is_checked_against_it() {
+        // The anon chip registers its port into the frame open around it, and
+        // a `return` in the same body delivers to that port just as an `out`
+        // or an `emit` there would. Finding the sole output has to look
+        // wherever a port write looks, or the three spellings disagree.
+        let r = tc(
+            "in go: exec\n\
+             in s: string\n\
+             on go {\n\
+             chip { out shared: int }\n\
+             return s\n\
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a return into an anon-chip-declared port must be checked against \
+             it; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_return_beside_an_anon_chip_port_with_a_matching_value_stays_clean() {
+        let r = tc(
+            "in go: exec\n\
+             in n: int\n\
+             on go {\n\
+             chip { out shared: int }\n\
+             return n\n\
+             }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn an_anon_chip_out_is_a_module_boundary_port_for_writes() {
+        // An anon chip shares its parent's scope rather than opening one, so a
+        // plain `out` in its body is a module-boundary port and a write to
+        // that name from anywhere else in the file lands in it.
+        let r = tc(
+            "in go: exec\n\
+             chip {\n\
+             out shared: int = 1\n\
+             }\n\
+             on go {\n\
+             out shared = \"x\"\n\
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a write that does not fit an anon-chip-declared port must report \
+             WS003; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_anon_chip_out_written_with_a_matching_value_stays_clean() {
+        let r = tc(
+            "in go: exec\n\
+             chip {\n\
+             out shared: int = 1\n\
+             }\n\
+             on go {\n\
+             out shared = 2\n\
+             }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn an_anon_chip_out_is_readable_by_name() {
+        // The read side of the same port. Lowering resolves this through its
+        // output scope key, so a name it wires must not report WS002 here.
+        let r = tc(
+            "chip {\n\
+             out shared: int = 1\n\
+             }\n\
+             out other: int = shared",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn a_side_annotated_anon_chip_out_is_not_claimed_as_a_port() {
+        // A side annotation is only valid on a top-level port, so lowering
+        // pre-declares nothing for this site and reports it instead. Claiming
+        // it here would type a port lowering never creates, and would make a
+        // read of the name resolve to something that is not there.
+        let r = tc(
+            "chip {\n\
+             @bottom out shared: int = 1\n\
+             }\n\
+             out other: int = shared",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS002"),
+            "a side-annotated anon-chip out is not a port, so reading its name \
+             must report WS002; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_annotated_out_reports_a_mismatched_value_exactly_once() {
+        // The value is checked against the annotation, and the annotation
+        // against the port. When those are the same type the port adds
+        // nothing, so one mismatch has to produce one report.
+        for src in [
+            "in s: string\n\
+             out y: int = s",
+            "in go: exec\n\
+             in s: string\n\
+             on go { out y: int = s }",
+            "chip Foo(v: string) -> (r: int) {\n\
+             out r: int = v\n\
+             }\n\
+             in a: string\n\
+             out z: int = Foo(a)",
+        ] {
+            let r = tc(src);
+            assert_eq!(
+                r.diagnostics.iter().filter(|d| d.code == "WS003").count(),
+                1,
+                "one mismatch must report once; src {:?}, diagnostics: {:?}",
+                src,
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn an_annotation_the_port_does_not_share_still_checks_the_value() {
+        // Coercion is not transitive, so the value fitting the annotation
+        // and the annotation fitting the port do not add up to the value
+        // fitting the port. A string reaches a `bool` annotation and a
+        // `bool` reaches an `int` port, but a string does not reach an `int`.
+        let r = tc(
+            "in go: exec\n\
+             in s: string\n\
+             on go { out shared: int = 1 }\n\
+             on go { out shared: bool = s }",
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS003" && d.message == "expected int, got string"),
+            "the value must still be checked against the port when the \
+             annotation differs from it; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_bad_value_expression_does_not_swallow_the_port_write_error() {
+        // Inferring the value reports its own WS003 for the mismatched `if`
+        // branches, at the whole expression's range. The port write is a
+        // separate problem with a separate fix and must be reported too, so
+        // the author is not left to discover it one round later.
+        let r = tc(
+            "in go1: exec\n\
+             in go2: exec\n\
+             in c: bool\n\
+             on go1 {\n\
+             out shared: int = 1\n\
+             }\n\
+             on go2 {\n\
+             out shared = if c then Vec(0.0, 0.0, 0.0) else \"s\"\n\
+             }",
+        );
+        let value_range_reports = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "WS003" && d.message.contains("expected int"))
+            .count();
+        assert!(
+            value_range_reports > 0,
+            "the port write must be reported alongside the branch mismatch; \
+             diagnostics: {:?}",
+            r.diagnostics
+        );
+        assert_eq!(
+            r.diagnostics.iter().filter(|d| d.code == "WS003").count(),
+            2,
+            "exactly the branch mismatch and the port write must report; \
+             diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_return_into_a_handler_declared_port_is_checked_against_it() {
+        // `return <value>` wires straight into the boundary's output when
+        // there is exactly one, and a handler-declared `out` is that output
+        // just as much as a top-level one is.
+        let r = tc(
+            "in go: exec
+             in go2: exec
+             on go {
+             out shared: int
+             }
+             on go2 {
+             return \"x\"
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a returned value that does not fit the sole output must report \
+             WS003; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_return_matching_the_sole_handler_declared_port_stays_clean() {
+        let r = tc(
+            "in go: exec
+             in go2: exec
+             on go {
+             out shared: int
+             }
+             on go2 {
+             return 5
+             }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn an_out_sites_annotation_is_checked_against_the_signature_output() {
+        // The value fits the annotation (an int coerces to a string) and it
+        // fits the port (int into int), so only comparing what the site CLAIMS
+        // to deliver against the signature catches this. Nothing registers a
+        // port inside a chip body, so this site has no other guard.
+        let r = tc(
+            "chip Foo(v: int) -> (r: int) {
+             out r: string = v
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "an out site declaring a type its signature output cannot accept \
+             must report WS003; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_signature_output_is_not_judged_by_a_same_named_port() {
+        // The chip's output annotation does not resolve, so its type is
+        // unknown. Unknown is not an invitation for an unrelated top-level
+        // port to answer for the chip's body: the only thing wrong here is the
+        // unknown type name.
+        let r = tc(
+            "in a: int
+             out shared: int = a
+             chip Foo(v: string) -> (shared: Nope) {
+             out shared = v
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS002"),
+            "the unknown type must still report WS002; diagnostics: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "the top-level port must not judge the chip's own output; \
+             diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_emit_is_checked_once_a_later_site_states_the_ports_type() {
+        // The first site registered leaves the port's type unstated; a later
+        // annotated site states it, and every site is then judged against it.
+        let r = tc(
+            "in go: exec
+             in go2: exec
+             out shared = 1
+             on go {
+             out shared: int = 1
+             }
+             on go2 {
+             emit shared = \"x\"
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "an emit payload must be checked against a type stated by a later \
+             site; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_mod_signature_output_wins_over_a_same_named_top_level_port() {
+        // Two authorities can type the name `shared` here: the mod's own
+        // signature output and the top-level port. Inside the mod body the
+        // signature wins, so an int value is accepted even though the port is
+        // a string.
+        let r = tc(
+            "out shared: string = \"hi\"\n\
+             mod pick(v: int) -> (shared: int) {\n\
+             out shared = v\n\
+             }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn a_mod_signature_output_is_what_its_body_is_checked_against() {
+        // The other half of the ordering guard: a value that fits the
+        // same-named top-level port but not the mod's own output still
+        // reports, so the signature is genuinely the authority in the body
+        // rather than the check being skipped there.
+        let r = tc(
+            "out shared: string = \"hi\"\n\
+             mod pick(v: string) -> (shared: int) {\n\
+             out shared = v\n\
+             }",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS003"),
+            "a mod body value that does not fit the mod's own output must \
+             report WS003; diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_any_typed_mod_output_still_wins_over_a_same_named_top_level_port() {
+        // The `any` keyword is a declared type, so a signature output carrying
+        // it answers for its own body and the same-named top-level port is
+        // never reached. Only an output nothing typed at all hands the
+        // question on.
+        let r = tc(
+            "out shared: int = 1\n\
+             mod pick(v: string) -> (shared: any) {\n\
+             out shared = v\n\
+             }",
+        );
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn an_unannotated_update_site_with_a_matching_value_stays_clean() {
+        // Guard for the fallback added above: a value that DOES match the
+        // registered port type must not start reporting a spurious mismatch.
+        let r = tc(
+            "in go1: exec\n\
+             in go2: exec\n\
+             on go1 {\n\
+             out shared: int = 1\n\
+             }\n\
+             on go2 {\n\
+             out shared = 2\n\
+             }\n\
+             let x: int = shared + 1",
+        );
+        assert_no_diags(&r);
     }

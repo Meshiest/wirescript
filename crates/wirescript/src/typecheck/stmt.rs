@@ -63,6 +63,7 @@ pub(super) fn check_anon_chip_stmts(
                 _ => {}
             }
         }
+        register_anon_chip_outputs(ctx, stmts);
     }
     for s in stmts {
         // A chip's PURE statements (`let`/`var`/`out`/`buffer`/declarations) are
@@ -448,8 +449,7 @@ fn check_stmt_inner(
                     // genuine mismatch; coercions — including string → bool
                     // and primitive → string — pass). Both sides unwrap refs
                     // so the ref-ness is treated as exposure mode rather
-                    // than a value-type difference; mirrors `TopDecl::Out`
-                    // at ~1624.
+                    // than a value-type difference; mirrors `TopDecl::Out`.
                     let value_ty = infer::infer(ctx, value);
                     infer::coerce_or_emit(
                         ctx,
@@ -457,23 +457,27 @@ fn check_stmt_inner(
                         &unwrap_ref(&resolved),
                         value.range(),
                     );
-                }
-            } else if let Some(value) = &b.value {
-                // No annotation: `b.name`'s declared type comes from the
-                // enclosing decl's signature (`out r = v` inside `chip Foo(..)
-                // -> (r: T)`) — check the value against it via the current
-                // `out_ctx` frame. Both sides unwrap refs, same as the
-                // annotated branch above. Not an output (e.g. shadowed by
-                // something else) → nothing to check against.
-                let vty = infer::infer(ctx, value);
-                if let Some(out_ty) = current_output_ty(ctx, &b.name) {
-                    infer::coerce_or_emit(
+                    // Two more things have to hold, and neither follows from
+                    // the annotation check above. What the site CLAIMS to
+                    // deliver has to fit the port, or an annotation that merely
+                    // coerces the value (`out r: string = v` on an `int` port)
+                    // would leave the conversion unwired and drive the port
+                    // with an `int`. And the value has to fit the port on any
+                    // leg the annotation does not already cover.
+                    check_annotated_port_write(
                         ctx,
-                        &unwrap_ref(&vty),
-                        &unwrap_ref(&out_ty),
+                        &b.name,
+                        &resolved,
+                        &value_ty,
                         value.range(),
                     );
+                    check_port_declaration(ctx, &b.name, &resolved, &type_expr_range(te));
                 }
+            } else if let Some(value) = &b.value {
+                // No annotation of its own, so the port's declared type is the
+                // only thing the value answers to.
+                let value_ty = infer::infer(ctx, value);
+                check_port_write(ctx, &b.name, &value_ty, value.range());
             }
         }
         Stmt::Emit(e) => {
@@ -486,14 +490,11 @@ fn check_stmt_inner(
             }
             if let Some(ref val) = e.value {
                 let t = infer::infer(ctx, val);
-                // If `e.name` is a declared output (not a local exec
-                // signal), its payload must match the declared type — both
-                // sides unwrap refs, matching every other coercion check.
-                // A local signal (no `out_ctx` entry for the name) is left
-                // alone: nothing to check against.
-                if let Some(out_ty) = current_output_ty(ctx, &e.name) {
-                    infer::coerce_or_emit(ctx, &unwrap_ref(&t), &unwrap_ref(&out_ty), val.range());
-                }
+                // An `emit` with a payload drives its output's backing
+                // variable exactly the way an `out` binding does, so the
+                // payload answers to the same declared type. A local exec
+                // signal has no declared type and passes straight through.
+                check_port_write(ctx, &e.name, &t, val.range());
                 // Remember the ferried payload type so a later
                 // `let { .. } = await sig` can type its destructured fields.
                 ctx.signal_payload_types.insert(e.name.clone(), t);
@@ -761,38 +762,12 @@ fn check_stmt_inner(
                 );
             }
             if let Some(expr) = value {
-                // `return <value>` wires into the enclosing single output (see
-                // lowering's `output_count() == 1` path) — this fires the same
-                // whether the `return` is in a mod/chip body OR a top-level
-                // handler with one module output, so it's checked in both.
-                // Clone the frame out first: `ctx.out_ctx.last()` borrows `ctx`
-                // immutably, but `infer::check`/`infer::infer` below need
-                // `&mut ctx`.
-                let frame: Option<Vec<EventDataField>> = ctx.out_ctx.last().cloned();
-                match frame.as_deref() {
-                    Some([only]) => {
-                        infer::check(ctx, expr, &unwrap_ref(&only.ty));
-                    }
-                    // Zero outputs, or multiple: nothing to check `return`'s
-                    // value against for zero (there's no declared output);
-                    // for multiple, a bare `Type::Tuple` of the outputs'
-                    // types is the wrong shape to check against — the
-                    // working multi-output mechanism is `return { a: .., b:
-                    // .. }` (a NAME-keyed record, special-cased earlier in
-                    // lowering's `Stmt::Return`, forwarded per-field rather
-                    // than through a single value port), and `coerce`'s
-                    // tuple/record-shape matching (`as_tuple_elems`) only
-                    // treats an INDEX-keyed record (an actual tuple literal)
-                    // as tuple-shaped — a name-keyed record return would
-                    // false-positive WS003 against a positional
-                    // `Type::Tuple`. Left unchecked rather than risk
-                    // rejecting the legitimate case.
-                    // TODO(P0-11): multi-output `return` value not yet
-                    // checked.
-                    _ => {
-                        infer::infer(ctx, expr);
-                    }
-                }
+                // `return <value>` is a port write: lowering wires it straight
+                // into the enclosing boundary's output when there is exactly
+                // one. That includes a handler-declared port, which is why the
+                // output is resolved by `check_return_value` rather than read
+                // off the current frame.
+                check_return_value(ctx, expr);
             }
         }
     }

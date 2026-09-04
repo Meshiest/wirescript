@@ -143,6 +143,29 @@ pub(super) fn pre_declare_anon_chip(ctx: &mut LowerCtx, ac: &AnonChipDecl) {
             Stmt::OutBinding(o) if o.side.is_some() => {
                 report_non_root_side(ctx, &o.range);
             }
+            // An anon chip shares its parent's scope rather than opening one,
+            // so a plain (non-`@side`) `out` written directly in its body is
+            // a module-boundary output exactly like a top-level `out`, just
+            // drawn inside a box; pre-declare it the same way.
+            Stmt::OutBinding(o) => {
+                if ctx.lookup_output(&o.name).is_some() {
+                    continue;
+                }
+                ctx.with_nofold(o.no_fold, |ctx| {
+                    pre_declare_output(
+                        ctx,
+                        &o.name,
+                        o.value.as_ref(),
+                        o.typ.as_ref(),
+                        o.side,
+                        o.label.as_deref(),
+                        o.label_expr.as_ref(),
+                        o.invisible,
+                        true,
+                        &o.range,
+                    )
+                });
+            }
             _ => {}
         }
     }
@@ -2818,6 +2841,43 @@ pub(super) fn pre_declare_output(
         &crate::lower::context::output_scope_key(name),
         Binding::Output(NodeRecord { node_id, ty: t }),
     );
+}
+
+/// Register every `out` declared inside a top-level handler body as a module
+/// boundary port, so `lookup_output` resolves it when the body lowers.
+///
+/// The site set comes from `ast::handler_port_sites`, shared with typecheck's
+/// `register_handler_outputs` and `scoped_refs`'s widening pass so the three
+/// cannot claim different sites. The backing-var rule is what keeps two sites
+/// from fanning into one rerouter.
+///
+/// A name that already resolves as an output binds to that port instead of
+/// minting a second one, which is why the caller runs this pass AFTER the whole
+/// pass-1 loop.
+///
+/// `boundary` is `pre_declare_output`'s, and matches whatever the enclosing
+/// module's own top-level `out` passes: true for the entry file, false for a
+/// namespaced module's members.
+pub(super) fn pre_declare_handler_outputs(ctx: &mut LowerCtx, block: &Block, boundary: bool) {
+    for o in crate::ast::handler_port_sites(block) {
+        if ctx.lookup_output(&o.name).is_some() {
+            continue;
+        }
+        ctx.with_nofold(o.no_fold, |ctx| {
+            pre_declare_output(
+                ctx,
+                &o.name,
+                o.value.as_ref(),
+                o.typ.as_ref(),
+                o.side,
+                o.label.as_deref(),
+                o.label_expr.as_ref(),
+                o.invisible,
+                boundary,
+                &o.range,
+            )
+        });
+    }
 }
 
 #[cfg(test)]

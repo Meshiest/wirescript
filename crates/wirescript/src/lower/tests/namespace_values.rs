@@ -977,3 +977,102 @@ fn namespaced_record_type_decomposes_like_a_named_import() {
         a.properties
     );
 }
+
+/// Regression: a namespace's own `out` DECLARATION must be lowered in pure
+/// position, never inheriting a preceding namespace's leftover exec chain. A
+/// `TopDecl::Namespace` is neither `is_handler_like` nor `is_pure_top_decl`, so
+/// when namespace A (whose own handler writes a var) is lowered before
+/// namespace B (which declares `out n: int = 5` and separately writes `n` from
+/// its own handler, giving `n` a backing var), `mod.rs`'s pass-2 loop flushed
+/// A's handler-end exec into `current_exec` before calling into B's namespace
+/// arm, and nothing there cleared it before B's own outputs loop ran: B's
+/// declared default took a `Var_Set` fed by A's unrelated trigger instead of
+/// baking `InitialValue`, silently dropping the default until A's trigger fired.
+#[test]
+fn namespace_output_declaration_does_not_inherit_a_preceding_namespaces_exec() {
+    let (tc, lr) = compile_with_libs(
+        &[
+            ("a.ws", "var x: int = 0\nin tick: exec\non tick { x = x + 1 }"),
+            ("b.ws", "in bump: exec\nout n: int = 5\non bump { emit n = 9 }"),
+        ],
+        "import * as A from \"a\"\nimport * as B from \"b\"",
+    );
+    assert_clean(&tc, &lr);
+    let backing = lr
+        .module
+        .nodes
+        .values()
+        .find(|n| n.note == Some("out_backing"))
+        .expect("B's out n must be var-backed (default + emit)");
+    assert_eq!(
+        backing.properties.get(&*crate::intern::sym::INITIAL_VALUE),
+        Some(&crate::ir::Literal::Int(5)),
+        "the declared default must bake InitialValue = 5: {:?}",
+        backing.properties
+    );
+    let a_increment = lr
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class.contains("Var_Increment"))
+        .map(|(id, _)| *id)
+        .expect("A's `x = x + 1` must lower to a Var_Increment");
+    let sets: Vec<crate::ir::NodeId> = lr
+        .module
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.gate_class == VAR_SET)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(
+        sets.len(),
+        1,
+        "only `emit n = 9` drives a Var_Set; the declaration must not add one"
+    );
+    let set_exec_source = feed_source(&lr.module, sets[0], crate::ir::port_registry::WirePort::Exec);
+    assert_ne!(
+        set_exec_source,
+        Some(a_increment),
+        "B's Var_Set must not be driven by A's unrelated exec chain"
+    );
+}
+
+/// A namespaced module's own top-level `on` handler may declare a boundary
+/// port, exactly as its top-level `out` already does. Pass 1a in `lower/mod.rs`
+/// walks only the entry file's decls, so `ns.decls` needs its own hoist; without
+/// it the port had no binding and `lower_out_binding` reported WS073 against a
+/// module whose `out` IS at the top level of its file.
+#[test]
+fn a_namespaced_modules_handler_declared_output_hoists_like_its_top_level_one() {
+    let (tc, lr) = compile_with_lib(
+        "in trig: exec\non trig { out hport: int = 7 }\nout tport: int = 3",
+        "import * as L from \"lib\"\nout a: int = L.hport\nout b: int = L.tport",
+    );
+    assert_clean(&tc, &lr);
+    // Both spellings must produce the SAME shape: one boundary port apiece,
+    // each read through its own rerouter by the importer.
+    let ports: Vec<&str> = lr
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class.contains("MicrochipOutput"))
+        .map(|n| n.gate_class)
+        .collect();
+    assert_eq!(
+        ports.len(),
+        4,
+        "two importer ports plus the module's two: {:?}",
+        lr.module.nodes
+    );
+    let reads = lr
+        .module
+        .wires
+        .iter()
+        .filter(|w| w.source.port == crate::ir::port_registry::WirePort::RerOutput)
+        .count();
+    assert_eq!(
+        reads, 2,
+        "`L.hport` and `L.tport` must both read through a port rerouter; wires: {:?}",
+        lr.module.wires
+    );
+}

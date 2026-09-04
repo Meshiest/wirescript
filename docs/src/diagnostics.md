@@ -109,6 +109,7 @@ See [Generics](types.md#generics).
 | `WS019` | A prefab reference must end in `.brz`. | `$./level` |
 | `WS023` | A side annotation (`@left`/`@right`/`@top`/`@bottom`) is only valid on a top-level port of the compiled file, not inside a chip/mod body. | `chip { @left in go: exec }` |
 | `WS040` | A `@label(<expr>)` isn't a compile-time constant, in a position that requires a baked label (a port, chip, or nested `var`). | `@label(hp) in x: int` |
+| `WS073` | An `out` binding has no port to bind to, so its value is dropped. Declare the port at the top level of the file, in a chip body, or in the chip's signature. | `chip { on Clock { out x = Toggle() } }` |
 
 ## Collections & shapes
 

@@ -69,3 +69,45 @@
         let src = "var xs: int[]\nmod g(x: int) {\n  if x > 0 { xs.push(x) }\n}";
         assert!(mod_exec(src, "g"), "if-statement mod should be exec");
     }
+
+    #[test]
+    fn a_handler_declared_port_is_collected_as_a_symbol() {
+        // Completion offers whatever `collect_symbols_for_file` returns. A port
+        // declared inside a handler is a real boundary port after hoisting, so it
+        // must appear like any top-level `out`.
+        let src = "on Clock(interval = 0.2) {
+@top out flash: bool = Toggle()
+}";
+        let resolved = crate::resolve::resolve(src, "test", &crate::resolve::FsLoader);
+        let tc = crate::typecheck::typecheck(
+            &resolved.ast,
+            "test",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        let syms = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
+        assert!(
+            syms.iter().any(|s| s.name == "flash" && s.kind == "out"),
+            "handler-declared port must be a collected symbol: {:?}",
+            syms.iter().map(|s| (&s.name, s.kind)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_anon_chip_declared_port_is_collected_as_a_symbol() {
+        // A file-scope anon chip's `out` binding is the same kind of hoisted
+        // boundary port as a handler-declared one, so completion must offer it
+        // too.
+        let src = "chip { out shared: int = 1 }";
+        let resolved = crate::resolve::resolve(src, "test", &crate::resolve::FsLoader);
+        let tc = crate::typecheck::typecheck(
+            &resolved.ast,
+            "test",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        let syms = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
+        assert!(
+            syms.iter().any(|s| s.name == "shared" && s.kind == "out"),
+            "anon-chip-declared port must be a collected symbol: {:?}",
+            syms.iter().map(|s| (&s.name, s.kind)).collect::<Vec<_>>()
+        );
+    }

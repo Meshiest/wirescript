@@ -183,6 +183,15 @@ pub(super) fn count_emits_in_block(
                 entry.0 += 1;
                 entry.1 |= in_branch;
             }
+            // A handler-body `out name = value` drives the port exactly the way
+            // `emit name = value` does, so it feeds the same backing-var
+            // decision. Two sites left uncounted wire two sources into one
+            // rerouter, which emit rejects as a FanIn.
+            Stmt::OutBinding(o) if o.value.is_some() => {
+                let entry = counts.entry(o.name.clone()).or_insert((0, false));
+                entry.0 += 1;
+                entry.1 |= in_branch;
+            }
             Stmt::If(i) => {
                 count_emits_in_block(&i.then_block, true, counts);
                 if let Some(eb) = &i.else_block {
@@ -389,6 +398,26 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // Pass 1: register I/O + vars + buffers.
     for d in &input.ast.decls {
         pre_declare_decl(&mut ctx, d);
+    }
+    // Pass 1a: a top-level `on` handler may DECLARE a boundary output
+    // (`on Clock { @top out flash: bool = Toggle() }`). Run after the loop
+    // above, not inside it, so a handler-declared name binds to an explicit
+    // top-level `out` of the same name wherever that declaration sits in the
+    // file rather than minting a second port for it.
+    for d in &input.ast.decls {
+        match d {
+            TopDecl::Handler(h) => pre_declare_handler_outputs(&mut ctx, &h.body, true),
+            // `let foo = on Trigger { ... }` (a captured event) carries its
+            // handler body here and is lowered handler-style by
+            // `lower_event_decl`, so its `out` bindings are top-level
+            // handler bindings too.
+            TopDecl::Event(e) => {
+                if let Some(body) = &e.captured_body {
+                    pre_declare_handler_outputs(&mut ctx, body, true);
+                }
+            }
+            _ => {}
+        }
     }
     // Snapshot the names the importer itself owns (everything pass 1 just
     // registered) so a pass-2 `import * as` namespace member can't clobber one

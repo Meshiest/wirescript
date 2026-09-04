@@ -1010,13 +1010,27 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
         // pre-fallback situation this whole arm narrows: fall back to the
         // same `_Unsupported`/WSP001 placeholder, rather than baking a
         // `Type::Any` literal gate around a value with nowhere honest to go.
-        None => match ctx.const_lookup().get(name).cloned() {
-            Some(lit) => match wire_type_of_literal(&lit) {
-                Some(ty) => literal_node_range(ctx, range, ty, lit),
-                None => synthesise_unsupported_range(ctx, range),
-            },
-            None => synthesise_unsupported_range(ctx, range),
-        },
+        None => {
+            if let Some(lit) = ctx.const_lookup().get(name).cloned()
+                && let Some(ty) = wire_type_of_literal(&lit)
+            {
+                return literal_node_range(ctx, range, ty, lit);
+            }
+            // Fallback tier: an output port reads as its rerouter's
+            // `RER_Output`, the same port a namespaced `L.count` read already
+            // resolves to. Keyed under the `out:` prefix, so it is reached only
+            // when nothing in the ordinary tier owns the name. Placed after the
+            // constant lookup so a `const` parameter keeps winning, which is
+            // also the order typecheck resolves in.
+            if let Some(Binding::Output(out)) = ctx
+                .scope
+                .get(&crate::lower::context::output_scope_key(name))
+                .cloned()
+            {
+                return out.node_id.port(WirePort::RerOutput);
+            }
+            synthesise_unsupported_range(ctx, range)
+        }
     }
 }
 

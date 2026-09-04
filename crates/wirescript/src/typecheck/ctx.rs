@@ -1,6 +1,7 @@
 //! Type-checker state: symbols, scopes, the shared context, and its result.
 
 use super::*;
+use crate::types::mono::unwrap_ref;
 
 // ---------- scope + symbol info ----------
 
@@ -140,12 +141,11 @@ impl Scope {
     pub fn lookup(&self, name: &str) -> Option<&SymbolInfo> {
         self.inner.get(name)
     }
-    /// Every module-global (ROOT frame) symbol. Unlike `lookup` this ignores
-    /// the seal (see `set_floor`), which is the point: the namespace check
-    /// needs to find the traveling namespaces it is about to re-declare
-    /// INSIDE the sealed frame.
-    pub fn iter_root(&self) -> impl Iterator<Item = (&str, &SymbolInfo)> {
-        self.inner.iter_root()
+    /// Every symbol `lookup` can reach, innermost frame first: the same frames
+    /// and the same seal, enumerated instead of queried by name. A name
+    /// declared in two open frames appears once per frame.
+    pub fn iter_visible(&self) -> impl Iterator<Item = (&str, &SymbolInfo)> {
+        self.inner.iter_visible()
     }
     /// Snapshot of every `SymbolKind::Type` alias currently visible
     /// (innermost frame wins on a name collision, matching `lookup`'s
@@ -155,6 +155,17 @@ impl Scope {
         self.alias_view.clone()
     }
 }
+
+/// Scope key for a readable output port. Mirrors lowering's
+/// `lower::context::output_scope_key`, so the two passes agree on where a port
+/// lives and neither can shadow an ordinary binding of the same name. A scope
+/// iterator sees the prefix, so a consumer wanting ordinary bindings skips it.
+pub(crate) fn out_scope_key(name: &str) -> String {
+    format!("{OUT_SCOPE_PREFIX}{name}")
+}
+
+/// The prefix `out_scope_key` stamps on a port's scope key.
+const OUT_SCOPE_PREFIX: &str = "out:";
 
 // ---------- exec/pure context ----------
 
@@ -351,6 +362,19 @@ pub struct TypeCheckCtx<'a> {
     /// `typecheck::tests`) — a disagreement means code gets type-checked but
     /// not lowered, or lowered without ever being checked.
     pub dropped_ranges: Vec<(SourceRange, String)>,
+    /// Every module-boundary port `register_port_site` has declared, in the
+    /// order it declared them (a reconciled second site for a name already
+    /// registered adds nothing). Read by
+    /// `port_registry_matches_lowerings_boundary_ports` in `typecheck::tests`,
+    /// which compares it against the boundary ports lowering actually emitted.
+    ///
+    /// `cfg(test)` because it cannot be derived: the AST is the INPUT to the
+    /// dispatch under test, and a read-probe reports a false negative for a
+    /// port registered into a handler or block frame, which is the shape the
+    /// test exists to cover. Lowering's half is read off the emitted module's
+    /// port labels and needs no field.
+    #[cfg(test)]
+    pub port_sites: Vec<String>,
     /// Memoized `mod`/`chip`-is-exec-requiring answers, keyed by bare name (see
     /// [`infer::mod_is_exec_requiring`](crate::typecheck::infer::mod_is_exec_requiring)).
     /// A mod whose INLINED direct flow reads or writes a container (or calls an
@@ -400,6 +424,8 @@ impl<'a> TypeCheckCtx<'a> {
             // `mod_decls`'s own doc comment).
             mod_decls: vec![HashMap::default()],
             dropped_ranges: Vec::new(),
+            #[cfg(test)]
+            port_sites: Vec::new(),
             exec_requiring_memo: crate::collections::HashMap::default(),
             expected_ty: None,
         }
@@ -737,6 +763,10 @@ pub struct TypeCheckResult {
     /// Source ranges of `if`/`else` blocks a const-evaluable condition
     /// dropped (never type-checked) — see `TypeCheckCtx::dropped_ranges`.
     pub dropped_ranges: Vec<(SourceRange, String)>,
+    /// Every module-boundary port the registry claimed, set out in full on
+    /// `TypeCheckCtx::port_sites`.
+    #[cfg(test)]
+    pub port_sites: Vec<String>,
 }
 
 /// The declared type of output `name` in the CURRENT (innermost) `out_ctx`
@@ -753,4 +783,170 @@ pub struct TypeCheckResult {
 /// name.
 pub(super) fn current_output_ty(ctx: &TypeCheckCtx, name: &str) -> Option<Type> {
     ctx.out_ctx.last()?.iter().find(|f| f.name == name).map(|f| f.ty.clone())
+}
+
+/// The type output `name` is declared with, refs unwrapped, or `None` when
+/// nothing declares one.
+///
+/// The enclosing mod/chip signature frame answers first, then the
+/// module-boundary port registry. A signature output and a port may share a
+/// name, so `out r = v` inside `mod f(...) -> (r: T)` must mean the mod's `r`,
+/// never a top-level port of that name.
+///
+/// `Type::Any` means "nothing stated here" and defers to the next authority,
+/// except in a real signature frame, where it is an output whose annotation
+/// failed to resolve and must still shadow an unrelated port. `out_ctx[0]` is
+/// the one frame that is not a signature: it is synthesized from top-level
+/// `out` declarations and lists no handler-declared port. The `any` keyword is
+/// `Type::Opaque`, a real declared type that answers.
+fn declared_output_ty(ctx: &TypeCheckCtx, name: &str) -> Option<Type> {
+    let in_signature_frame = ctx.out_ctx.len() > 1;
+    match current_output_ty(ctx, name).map(|t| unwrap_ref(&t)) {
+        Some(t) if in_signature_frame || !matches!(t, Type::Any) => Some(t),
+        _ => ctx
+            .scope
+            .lookup(&out_scope_key(name))
+            .map(|s| unwrap_ref(&s.ty))
+            .filter(|t| !matches!(t, Type::Any)),
+    }
+}
+
+/// Check a value flowing into output `name` against that output's declared
+/// type, reporting WS003 on a mismatch.
+///
+/// Every syntactic form that can drive an output's backing variable answers
+/// here: an `out` binding annotated or not, an `emit` payload, a top-level
+/// `out`, and `return` via `check_return_value`. A new such form gets the whole
+/// rule by calling this, and no caller resolves a port itself.
+///
+/// An annotated site's own type goes through `check_port_declaration` instead.
+///
+/// Quiet when nothing declares a type for `name`: it is not a typed output
+/// here, and whatever check owns the name speaks instead.
+pub(super) fn check_port_write(
+    ctx: &mut TypeCheckCtx,
+    name: &str,
+    value_ty: &Type,
+    range: &SourceRange,
+) {
+    if let Some(port_ty) = declared_output_ty(ctx, name) {
+        infer::coerce_or_emit(ctx, &unwrap_ref(value_ty), &port_ty, range);
+    }
+}
+
+/// The value check for an `out` site that carries its own annotation.
+///
+/// Value-against-annotation and annotation-against-port are both checked
+/// elsewhere, and neither implies the value fits the PORT: coercion is not
+/// transitive. `string -> any -> int` passes both legs while `string -> int`
+/// is a mismatch, as does `string -> bool -> int`.
+///
+/// Skipped when the port's type IS the annotation, which would report one
+/// mismatch twice at one range. Compared by equality, not coercibility, since
+/// `any` coerces to anything and is exactly the annotation whose value still
+/// needs checking.
+pub(super) fn check_annotated_port_write(
+    ctx: &mut TypeCheckCtx,
+    name: &str,
+    annotated_ty: &Type,
+    value_ty: &Type,
+    range: &SourceRange,
+) {
+    let Some(port_ty) = declared_output_ty(ctx, name) else {
+        return;
+    };
+    if port_ty == unwrap_ref(annotated_ty) {
+        return;
+    }
+    infer::coerce_or_emit(ctx, &unwrap_ref(value_ty), &port_ty, range);
+}
+
+/// Check the type an `out` site DECLARES against the port it writes, reporting
+/// at the annotation's own range.
+///
+/// Defers when a WS003 already sits at that range, which `register_port_site`
+/// puts there for a registered site with a message naming both. Only this
+/// entry point suppresses: at a VALUE's range a WS003 from inferring the value
+/// is a different problem, and the port write still has to be reported too.
+pub(super) fn check_port_declaration(
+    ctx: &mut TypeCheckCtx,
+    name: &str,
+    declared_ty: &Type,
+    range: &SourceRange,
+) {
+    if ctx
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "WS003" && d.range == *range)
+    {
+        return;
+    }
+    check_port_write(ctx, name, declared_ty, range);
+}
+
+/// `check_port_write` for a value that has not been inferred yet: the output's
+/// declared type is pushed INTO the expression, so a `null` or a record
+/// literal resolves to the port's type rather than being typed blind and
+/// compared after the fact. Returns the value's inferred type.
+fn check_port_write_expr(ctx: &mut TypeCheckCtx, name: &str, value: &Expr) -> Type {
+    match declared_output_ty(ctx, name) {
+        Some(port_ty) => infer::check(ctx, value, &port_ty),
+        None => infer::infer(ctx, value),
+    }
+}
+
+/// The output a `return <value>` delivers to, or `None` when the enclosing
+/// boundary does not have exactly one.
+///
+/// Mirrors lowering's `output_count() == 1` / `first_output()` pair
+/// (`lower/stmt.rs`), which decides whether a returned value is wired at all.
+/// Inside a mod or chip the outputs are the signature's own; at the module
+/// boundary they are the registered ports, which the synthesized `out_ctx[0]`
+/// frame cannot see.
+///
+/// The port scan covers every frame `lookup` reaches, so it agrees with
+/// `declared_output_ty` about which ports exist. Distinct NAMES count: one
+/// port declared in two open frames is still the one port a `return` wires to.
+fn sole_output_name(ctx: &TypeCheckCtx) -> Option<String> {
+    if ctx.out_ctx.len() > 1 {
+        return match ctx.out_ctx.last()?.as_slice() {
+            [only] => Some(only.name.clone()),
+            _ => None,
+        };
+    }
+    let mut sole: Option<&str> = None;
+    for (key, info) in ctx.scope.iter_visible() {
+        if !key.starts_with(OUT_SCOPE_PREFIX) {
+            continue;
+        }
+        match sole {
+            Some(seen) if seen == info.name => {}
+            Some(_) => return None,
+            None => sole = Some(&info.name),
+        }
+    }
+    sole.map(str::to_string)
+}
+
+/// Check the value of a `return` against the output it is wired into.
+///
+/// One output in scope is a port write like any other. None means nothing to
+/// check against. With several, the value is left to `infer` alone: the
+/// working form is `return { a: .., b: .. }`, a NAME-keyed record forwarded
+/// per field, and checking it against a positional `Type::Tuple` would report
+/// a false WS003, since `coerce`'s `as_tuple_elems` treats only an INDEX-keyed
+/// record as tuple-shaped.
+///
+/// TODO(P0-11): a multi-output `return` value is not checked, in either of its
+/// forms - the name-keyed record above, and a positional tuple
+/// (`return (1, "x")`), which lowering DOES wire per element.
+pub(super) fn check_return_value(ctx: &mut TypeCheckCtx, value: &Expr) {
+    match sole_output_name(ctx) {
+        Some(name) => {
+            check_port_write_expr(ctx, &name, value);
+        }
+        None => {
+            infer::infer(ctx, value);
+        }
+    }
 }

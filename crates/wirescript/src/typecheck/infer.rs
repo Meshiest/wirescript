@@ -18,9 +18,9 @@ use crate::types::mono::unwrap_ref;
 
 use super::{
     call_param_config_enum, check_args, check_stmt, is_reference_type, op_operand_type,
-    output_record_type, resolve_op, resolve_type_expr, sig_of_callspec, target_name,
-    type_param_mask, type_user_symbol_call, CallSignature, ExecMode, Param, ParamKind, SymbolInfo,
-    SymbolKind, TypeCheckCtx,
+    out_scope_key, output_record_type, resolve_op, resolve_type_expr, sig_of_callspec,
+    target_name, type_param_mask, type_user_symbol_call, CallSignature, ExecMode, Param,
+    ParamKind, SymbolInfo, SymbolKind, TypeCheckCtx,
 };
 
 /// Bound on how deep `$./….ws` source-prefab references are followed while
@@ -1807,6 +1807,13 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         expected.as_ref(),
                         range,
                     );
+                }
+                // Fallback tier: an output port is readable, lowering to its
+                // rerouter's `RER_Output`. Reached only when nothing in the
+                // ordinary tier owns the name, which is what keeps `var count`
+                // plus `out count = count` resolving to the var.
+                if let Some(port) = ctx.scope.lookup(&out_scope_key(name)).cloned() {
+                    return unwrap_ref(&port.ty);
                 }
                 ctx.emit(
                     "WS002",

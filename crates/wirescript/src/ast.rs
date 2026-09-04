@@ -738,6 +738,64 @@ impl Stmt {
     }
 }
 
+/// Every `out` a handler body declares as a module-boundary port, in source
+/// order.
+///
+/// Three passes claim this exact set of sites and must never disagree on it -
+/// `lower::predeclare::pre_declare_handler_outputs` binds each as a port,
+/// `typecheck::register::register_handler_outputs` makes each readable, and
+/// `analysis::scoped_refs::widen_hoisted_out_bindings` widens each binding's
+/// scope so a rename reaches its reads. They share this one enumerator so the
+/// set cannot drift apart between them.
+///
+/// Recurses through `if`, `if let`, `let else` and a nested handler, so a
+/// conditional site still declares its port. Stops at a chip/mod or anon chip
+/// body: those `out`s belong to that chip, not to the module boundary.
+pub fn handler_port_sites(block: &Block) -> Vec<&OutBinding> {
+    let mut sites = Vec::new();
+    collect_handler_port_sites(block, &mut sites);
+    sites
+}
+
+fn collect_handler_port_sites<'a>(block: &'a Block, sites: &mut Vec<&'a OutBinding>) {
+    for s in &block.stmts {
+        match s {
+            Stmt::OutBinding(o) => sites.push(o),
+            Stmt::If(i) => {
+                collect_handler_port_sites(&i.then_block, sites);
+                if let Some(eb) = &i.else_block {
+                    collect_handler_port_sites(eb, sites);
+                }
+            }
+            Stmt::IfLet(i) => {
+                collect_handler_port_sites(&i.then_block, sites);
+                if let Some(eb) = &i.else_block {
+                    collect_handler_port_sites(eb, sites);
+                }
+            }
+            Stmt::LetElse(l) => collect_handler_port_sites(&l.else_block, sites),
+            Stmt::Handler(h) => collect_handler_port_sites(&h.body, sites),
+            _ => {}
+        }
+    }
+}
+
+/// Every `out` an anon chip body declares as a module-boundary port. An anon
+/// chip shares its parent's scope rather than opening one, so a plain `out`
+/// written DIRECTLY in its body is a boundary port like a top-level `out`,
+/// just drawn inside a box.
+///
+/// Shallow by design, and the same three passes consume it. An `@side`
+/// annotation is WS023 on a non-root `out` and never becomes a port, so it is
+/// excluded. A conditional or nested-handler `out` deeper in the body is not a
+/// port of the chip either (WS073), so nothing recurses.
+pub fn anon_chip_port_sites(stmts: &[Stmt]) -> impl Iterator<Item = &OutBinding> {
+    stmts.iter().filter_map(|s| match s {
+        Stmt::OutBinding(o) if o.side.is_none() => Some(o),
+        _ => None,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct Assign {
     pub target: Expr,

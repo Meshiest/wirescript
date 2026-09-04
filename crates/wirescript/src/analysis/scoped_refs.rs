@@ -271,8 +271,135 @@ pub(crate) fn build_scope_model(script: &Script) -> ScopeModel {
     let mut model = ScopeModel::default();
     let mut walker = Walker { model: &mut model };
     walker.walk_script(script);
+    widen_hoisted_out_bindings(script, &mut model);
     resolve_uses(&mut model);
     model
+}
+
+/// An `out` written inside a top-level handler body, a captured event's body,
+/// or an anon chip's body is a real boundary port, not a block-local binding.
+/// `walk_stmt`'s `Stmt::OutBinding` arm registers every one with the enclosing
+/// block as its `scope`, because that arm also serves the block-local form (an
+/// `out` nested inside a named chip or mod, which stays local per WS073).
+/// Widen exactly the hoisted ones to the frame the port lands in, using the
+/// same site sets `typecheck::register::register_handler_outputs` /
+/// `register_anon_chip_outputs` and `lower::predeclare::
+/// pre_declare_handler_outputs` / `pre_declare_anon_chip` claim, so a read
+/// from outside the declaring block finds the binding a rename moves.
+///
+/// The frame is `None` (file-wide) for a top-level handler body, a captured
+/// event body, and a file-scope anon chip. A statement-level `chip { }` is
+/// registered by `typecheck::stmt::check_anon_chip_stmts` into whichever frame
+/// is already open, which is the block holding the `chip { }` statement, so its
+/// ports widen to that block instead. An anon chip pushes no frame of its own,
+/// so one nested in another widens to the same frame as its parent.
+///
+/// Matched by `name_range` (a `SourceRange` is unique per source occurrence):
+/// the ordinary walk already pushed exactly one `Binding` per
+/// `Stmt::OutBinding`, and this only widens its `scope` field in place.
+fn widen_hoisted_out_bindings(script: &Script, model: &mut ScopeModel) {
+    let mut hoisted: Vec<(SourceRange, Option<SourceRange>)> = Vec::new();
+    for d in &script.decls {
+        match d {
+            TopDecl::Handler(h) => {
+                collect_hoisted_handler_outs(&h.body, &mut hoisted);
+                collect_anon_chip_outs(&h.body.stmts, Some(&h.body.range), &mut hoisted);
+            }
+            TopDecl::Event(e) => {
+                if let Some(b) = &e.captured_body {
+                    collect_hoisted_handler_outs(b, &mut hoisted);
+                    collect_anon_chip_outs(&b.stmts, Some(&b.range), &mut hoisted);
+                }
+            }
+            TopDecl::AnonChip(ac) => {
+                collect_anon_chip_body_outs(&ac.body.stmts, None, &mut hoisted)
+            }
+            TopDecl::Chip(c) => {
+                collect_anon_chip_outs(&c.body.stmts, Some(&c.body.range), &mut hoisted)
+            }
+            _ => {}
+        }
+    }
+    if hoisted.is_empty() {
+        return;
+    }
+    for b in model.bindings.iter_mut() {
+        if b.kind == "out"
+            && let Some((_, frame)) = hoisted.iter().find(|(r, _)| *r == b.name_range)
+        {
+            b.scope = frame.clone();
+        }
+    }
+}
+
+/// Widen the ports an anon chip body declares DIRECTLY - every non-`@side`
+/// `Stmt::OutBinding` among `stmts`, the shallow scan
+/// `register_anon_chip_outputs` performs - to `frame`, then keep walking for
+/// anon chips nested deeper. A conditional or nested-handler `out` inside an
+/// anon chip body is not a port of it (WS023 for `@side`, WS073 for the
+/// nested-handler case), so only a direct one counts.
+fn collect_anon_chip_body_outs(
+    stmts: &[Stmt],
+    frame: Option<&SourceRange>,
+    out: &mut Vec<(SourceRange, Option<SourceRange>)>,
+) {
+    for o in crate::ast::anon_chip_port_sites(stmts) {
+        out.push((o.range.clone(), frame.cloned()));
+    }
+    collect_anon_chip_outs(stmts, frame, out);
+}
+
+/// Find every statement-level `chip { }` reachable from `stmts` and widen its
+/// ports to the frame `check_anon_chip_stmts` registers them in. `frame` is the
+/// scope of the block holding these statements (`None` at file scope); each
+/// block that opens a typecheck frame passes its own range down, while an anon
+/// chip - which shares its parent's frame - passes `frame` through unchanged.
+fn collect_anon_chip_outs(
+    stmts: &[Stmt],
+    frame: Option<&SourceRange>,
+    out: &mut Vec<(SourceRange, Option<SourceRange>)>,
+) {
+    for s in stmts {
+        match s {
+            Stmt::AnonChip(ac) => collect_anon_chip_body_outs(&ac.body.stmts, frame, out),
+            Stmt::If(i) => {
+                collect_anon_chip_outs(&i.then_block.stmts, Some(&i.then_block.range), out);
+                if let Some(eb) = &i.else_block {
+                    collect_anon_chip_outs(&eb.stmts, Some(&eb.range), out);
+                }
+            }
+            Stmt::IfLet(i) => {
+                collect_anon_chip_outs(&i.then_block.stmts, Some(&i.then_block.range), out);
+                if let Some(eb) = &i.else_block {
+                    collect_anon_chip_outs(&eb.stmts, Some(&eb.range), out);
+                }
+            }
+            Stmt::LetElse(l) => {
+                collect_anon_chip_outs(&l.else_block.stmts, Some(&l.else_block.range), out)
+            }
+            Stmt::Handler(h) => {
+                collect_anon_chip_outs(&h.body.stmts, Some(&h.body.range), out)
+            }
+            Stmt::ChipDecl(c) => {
+                collect_anon_chip_outs(&c.body.stmts, Some(&c.body.range), out)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect every site `ast::handler_port_sites` names - the set lowering's
+/// `pre_declare_handler_outputs` and typecheck's `register_handler_outputs`
+/// claim, shared with them so this third system agrees by construction. Every
+/// one of them is file-wide: `register_handler_outputs` runs from the top-level
+/// dispatch, with no frame pushed for the handler body.
+fn collect_hoisted_handler_outs(
+    block: &Block,
+    out: &mut Vec<(SourceRange, Option<SourceRange>)>,
+) {
+    for o in crate::ast::handler_port_sites(block) {
+        out.push((o.range.clone(), None));
+    }
 }
 
 struct Walker<'a> {

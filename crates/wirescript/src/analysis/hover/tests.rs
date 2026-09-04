@@ -1098,3 +1098,40 @@ chip a(uid: string) -> int {
         let h = hover_for(src, 2, col).expect("a `let` record literal key should hover");
         assert!(h.contains("value") && h.contains("int"), "hover text: {h}");
     }
+
+    #[test]
+    fn hover_on_a_port_read_reports_the_port_type() {
+        let src = "in a: int\nout y: int = a + 1\nout z: int = y * 2";
+        // The `y` inside `y * 2`, line 2 col 13.
+        let h = hover_for(src, 2, 13).expect("hover on a port read must resolve");
+        assert!(h.contains("int"), "hover text: {h}");
+    }
+
+    #[test]
+    fn hover_on_a_handler_declared_port_read_reports_the_port_type() {
+        // `flash` is a boundary port hoisted out of the `on Clock` handler
+        // a module-boundary port, so hovering a read of it from an
+        // unrelated handler must still resolve.
+        let src = "on Clock(interval = 0.2) {\n\
+                   @top out flash: bool = Toggle()\n\
+                   }\n\
+                   in go: exec\n\
+                   on go {\n\
+                   var b: bool = flash\n\
+                   }";
+        let h = hover_for(src, 5, 14).expect("hover on a handler-declared port read must resolve");
+        assert!(h.contains("bool"), "hover text: {h}");
+    }
+
+    #[test]
+    fn hover_on_an_anon_chip_declared_port_read_reports_the_port_type() {
+        // Same hoisting as a handler-declared port, but for a file-scope anon
+        // chip's `out` binding.
+        let src = "chip { out shared: int = 1 }\n\
+                   in go: exec\n\
+                   on go {\n\
+                   var v: int = shared\n\
+                   }";
+        let h = hover_for(src, 3, 13).expect("hover on an anon-chip-declared port read must resolve");
+        assert!(h.contains("int"), "hover text: {h}");
+    }

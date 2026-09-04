@@ -218,6 +218,8 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
         var_read_contexts: ctx.var_read_contexts,
         diagnostics: ctx.diagnostics,
         dropped_ranges: ctx.dropped_ranges,
+        #[cfg(test)]
+        port_sites: ctx.port_sites,
     }
 }
 

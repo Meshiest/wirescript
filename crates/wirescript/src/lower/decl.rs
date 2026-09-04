@@ -384,6 +384,28 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     _ => {}
                 }
             }
+            // A namespaced module's own top-level `on` handler may declare a
+            // boundary port (`on trig { out hport: int = 7 }`), the same
+            // hoist pass 1a gives the entry file's handlers. `ns.decls` is not
+            // walked by pass 1a, so do it here, after the member loop above so
+            // a handler-declared name binds to an explicit `out` member of the
+            // same name rather than minting a second port. `boundary` is false
+            // to match what the `TopDecl::Out` member arm passes.
+            for h in &ns_handlers {
+                pre_declare_handler_outputs(ctx, &h.body, false);
+                // Same namespace-map capture the `TopDecl::Out` arm does, so
+                // `L.hport` reads the port's value. An explicit `out` member of
+                // the same name already governs, so never overwrite one.
+                for o in crate::ast::handler_port_sites(&h.body) {
+                    if let Some(binding) = ctx
+                        .scope
+                        .get(&crate::lower::context::output_scope_key(&o.name))
+                        .cloned()
+                    {
+                        ns_decls.entry(o.name.clone()).or_insert(binding);
+                    }
+                }
+            }
             // A namespaced `out` reached by 2+ emits, a conditional emit, or a
             // default-plus-emit needs a backing var exactly like a top-level one,
             // but the top-level pass-1b prescan does not descend into `ns.decls`.
@@ -399,7 +421,20 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                 for ac in &ns_anon_chips {
                     crate::lower::count_emits_in_block(&ac.body, false, &mut emit_counts);
                 }
-                for o in &ns_outputs {
+                let ns_handler_ports: Vec<&OutBinding> = ns_handlers
+                    .iter()
+                    .flat_map(|h| crate::ast::handler_port_sites(&h.body))
+                    .collect();
+                // A value on an `out` MEMBER is a persistent default driver, so
+                // any emit beside it fans in with it. A value on a
+                // handler-declared port is that port's own driving site, which
+                // `count_emits_in_handler` has already counted - the split
+                // top-level pass 1b makes with `defaulted_outputs`.
+                let sites = ns_outputs
+                    .iter()
+                    .map(|o| (*o, o.value.is_some()))
+                    .chain(ns_handler_ports.into_iter().map(|o| (o, false)));
+                for (o, has_default) in sites {
                     let (count, in_branch) =
                         emit_counts.get(&o.name).copied().unwrap_or((0, false));
                     // Only an output actually EMITTED to needs a backing var (an
@@ -408,7 +443,7 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
                     // would otherwise fan in with. The top-level prescan gets the
                     // `count == 0` exclusion for free by iterating only emitted
                     // outputs; here we scan every output, so exclude it directly.
-                    if count == 0 || (count < 2 && !in_branch && o.value.is_none()) {
+                    if count == 0 || (count < 2 && !in_branch && !has_default) {
                         continue;
                     }
                     crate::lower::create_output_backing_var(ctx, &o.name);
@@ -422,12 +457,22 @@ pub(super) fn lower_decl(ctx: &mut LowerCtx, d: &TopDecl) {
             }
             // Same ordering rule as buffers: an `out x = <expr>` initializer may
             // name a member declared after it, so wire the values only once the
-            // whole module is in scope.
+            // whole module is in scope. A declaration is not a step on any
+            // handler's exec chain: `mod.rs`'s pass-2 loop clears
+            // `current_exec` around a top-level `out`'s own lowering, but this
+            // namespace arm is reached through `lower_decl` for `TopDecl::Namespace`,
+            // which that pass-2 loop does not recognize as pure, so a preceding
+            // namespace's handler exec end can still be sitting in
+            // `current_exec` here. Clear it for the same reason `mod.rs` does,
+            // or a member's default value takes a `Var_Set` off an unrelated
+            // handler instead of baking `InitialValue`.
+            let saved_exec = ctx.current_exec.take();
             for o in ns_outputs {
                 ctx.with_nofold(o.no_fold, |ctx| {
                     lower_out_binding(ctx, &o.name, o.value.as_ref(), &o.range)
                 });
             }
+            ctx.current_exec = saved_exec;
             // Capture each value member's binding into this namespace's map,
             // NOW — before the next `import * as` lowers its own members and
             // overwrites the shared bare names. An importer-owned member was
