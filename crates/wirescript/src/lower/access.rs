@@ -765,6 +765,15 @@ pub(super) fn lower_index_access(
         };
         return lower_expr(ctx, &distributed);
     }
+    // `s[i]` on a string is a single-character Substring, not a container read.
+    // Try the constant fold first so a known character costs no gate, then emit
+    // the gate. Both work in pure context, since Substring is an `Expr_` gate.
+    if matches!(unwrap_ref(&ctx.type_of(obj)), Type::String) {
+        if let Some(port) = const_fold_index_access(ctx, e, range) {
+            return port;
+        }
+        return lower_string_index(ctx, obj, index, range);
+    }
     if let Some(port) = lower_index_access_runtime(ctx, obj, index, range) {
         return port;
     }
@@ -789,6 +798,47 @@ pub(super) fn lower_index_access(
     }
     synthesise_unsupported(ctx, e)
 }
+
+/// `s[i]`: one Unicode character starting at `i`, via the game's Substring
+/// gate with a baked `Length` of 1. Negative and out-of-range indices are the
+/// gate's own business, which is why the constant fold declines them.
+fn lower_string_index(
+    ctx: &mut LowerCtx,
+    obj: &Expr,
+    index: &Expr,
+    range: &SourceRange,
+) -> PortRef {
+    let text = lower_expr(ctx, obj);
+    let start = lower_expr(ctx, index);
+    let mut properties = HashMap::default();
+    properties.insert(intern_static("Length"), Literal::Int(1));
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::STRING_SUBSTRING,
+        source_range: range.clone(),
+        properties,
+        ports: GateIO {
+            inputs: vec![
+                PortSpec {
+                    name: *sym::INPUT,
+                    ty: Type::String,
+                },
+                PortSpec {
+                    name: intern_static("Start"),
+                    ty: Type::Int,
+                },
+            ],
+            outputs: vec![PortSpec {
+                name: *sym::OUTPUT,
+                ty: Type::String,
+            }],
+        },
+        ..Default::default()
+    });
+    ctx.connect(text, node_id.port(WirePort::Input));
+    ctx.connect(start, PortRef { node_id, port: WirePort::Start });
+    node_id.port(WirePort::Output)
+}
+
 
 /// The ordinary (gate-emitting) lowering of `obj[index]`. `None` means "no
 /// runtime form here", letting [`lower_index_access`] try a compile-time fold

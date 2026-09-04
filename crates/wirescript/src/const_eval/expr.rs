@@ -335,6 +335,28 @@ pub fn eval_expr(e: &Expr, cx: &ConstCtx, budget: &mut Budget) -> Result<Literal
                         range: range.clone(),
                     }),
                 },
+                // Indexing counts Unicode code points, matching the game's own
+                // `String_Length`. Only a non-negative in-range index folds: the
+                // Substring gate reads a negative start from the end and has its
+                // own out-of-range behavior, so anything else is left to it
+                // rather than guessed at compile time.
+                Literal::String(s) => match idx {
+                    Literal::Int(i) if i >= 0 => match s.chars().nth(i as usize) {
+                        Some(c) => Ok(Literal::String(c.to_string())),
+                        None => Err(ConstError {
+                            reason: ConstReason::Unsupported("a string index past the end"),
+                            range: range.clone(),
+                        }),
+                    },
+                    Literal::Int(_) => Err(ConstError {
+                        reason: ConstReason::Unsupported("a negative string index"),
+                        range: index.range().clone(),
+                    }),
+                    _ => Err(ConstError {
+                        reason: ConstReason::Unsupported("a non-integer string index"),
+                        range: index.range().clone(),
+                    }),
+                },
                 _ => Err(ConstError {
                     reason: ConstReason::Unsupported("indexing this constant"),
                     range: obj.range().clone(),

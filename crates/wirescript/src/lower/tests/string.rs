@@ -263,44 +263,49 @@ fn numeric_literal_still_uses_literal_node() {
 }
 
 #[test]
-fn identical_constant_strings_dedup_within_chip() {
-    // Three copies of the constant `"PREFIX: "` — each a String_Concatenate
-    // wrapper feeding a `..` — collapse to one gate that fans out to all three
-    // `.. name` concats, instead of one wrapper per line.
-    let src = "in pl: character\n\
-               in ctrl: controller\n\
-               in go: exec\n\
-               on go {\n\
-                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())\n\
-                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())\n\
-                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())\n\
+fn constant_string_operand_bakes_into_each_concat() {
+    // Three copies of the constant `"PREFIX: "`, each feeding its own `..`.
+    // A concat's `InputA` is a native `str` field read from data when unwired,
+    // so every copy bakes into its consumer and no carrier gate survives: three
+    // gates for three lines, not three plus a shared constant.
+    let src = "in pl: character
+               in ctrl: controller
+               in go: exec
+               on go {
+                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())
+                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())
+                 ctrl.DisplayText(\"PREFIX: \" .. pl.GetDisplayName())
                }";
     let r = compile(src);
     assert_no_errors(&r);
     let concat = "BrickComponentType_WireGraph_Expr_String_Concatenate";
-    // 1 shared constant wrapper + 3 per-line `.. name` concats.
     assert_eq!(
         gate_count(&r, concat),
-        4,
-        "identical constant strings should share one gate"
+        3,
+        "one concat per line, with the constant baked rather than carried"
     );
-    // The constant wrapper (no incoming wire) drives all three consumers.
-    let targets: std::collections::HashSet<crate::ir::NodeId> =
-        r.module.wires.iter().map(|w| w.target.node_id).collect();
-    let shared = r
+    let baked = r
         .module
         .nodes
-        .iter()
-        .find(|(id, n)| n.gate_class == concat && !targets.contains(id))
-        .map(|(id, _)| *id)
-        .expect("one constant concat wrapper with no wired input");
-    let fanout = r
-        .module
-        .wires
-        .iter()
-        .filter(|w| w.source.node_id == shared)
+        .values()
+        .filter(|n| {
+            n.gate_class == concat
+                && n.properties.get(&*crate::intern::sym::INPUT_A)
+                    == Some(&crate::ir::Literal::String("PREFIX: ".into()))
+        })
         .count();
-    assert_eq!(fanout, 3, "shared constant should fan out to 3 consumers");
+    assert_eq!(baked, 3, "each concat carries the constant in its own InputA");
+    // No carrier left behind: every remaining concat has a wired input.
+    let targets: std::collections::HashSet<crate::ir::NodeId> =
+        r.module.wires.iter().map(|w| w.target.node_id).collect();
+    assert!(
+        r.module
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.gate_class == concat)
+            .all(|(id, _)| targets.contains(id)),
+        "a constant-only concat wrapper must not survive"
+    );
 }
 
 #[test]
@@ -718,5 +723,79 @@ fn string_arg_into_bool_chip_param_inserts_compare_at_call_site() {
                 && w.target.node_id == v_pin.id
         }),
         "the compare's bOutput must feed the chip's bool param pin, not the raw string"
+    );
+}
+
+#[test]
+fn string_index_lowers_to_a_substring_gate() {
+    // `s[i]` is one Unicode character starting at `i`, which the game's
+    // Substring gate produces directly. It is a pure `Expr_` gate, so unlike an
+    // array read this needs no exec context.
+    let r = compile("in s: string\nin i: int\nout c: string = s[i]");
+    assert_no_errors(&r);
+    assert!(
+        !r.module.nodes.values().any(|n| n.gate_class == "_Unsupported"),
+        "must not lower to a placeholder: {:?}",
+        r.diagnostics
+    );
+    let sub = "BrickComponentType_WireGraph_Expr_String_Substring";
+    assert_eq!(gate_count(&r, sub), 1, "one Substring gate");
+    let node = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == sub)
+        .expect("substring gate");
+    assert_eq!(
+        node.properties.get(&crate::intern::intern("Length")),
+        Some(&crate::ir::Literal::Int(1)),
+        "a single-character read bakes Length = 1: {:?}",
+        node.properties
+    );
+}
+
+#[test]
+fn constant_string_index_folds_to_a_literal() {
+    // Both operands constant, so the character is known at compile time and no
+    // Substring gate is emitted. Indexing counts Unicode code points, matching
+    // the game's own string length semantics.
+    let r = compile("in go: bool\nout c: string = \"foo\"[2]");
+    assert_no_errors(&r);
+    assert_eq!(
+        gate_count(&r, "BrickComponentType_WireGraph_Expr_String_Substring"),
+        0,
+        "a constant index emits no gate"
+    );
+    assert!(
+        r.module.nodes.values().any(|n| n
+            .properties
+            .values()
+            .any(|v| *v == crate::ir::Literal::String("o".into()))),
+        "folds to the third code point: {:?}",
+        r.module.nodes.values().map(|n| n.properties.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn string_index_counts_code_points_and_declines_out_of_range() {
+    // Byte indexing would split the two-byte character; code-point indexing
+    // yields it whole.
+    let r = compile("in go: bool\nout c: string = \"n\u{e9}o\"[1]");
+    assert_no_errors(&r);
+    assert!(
+        r.module.nodes.values().any(|n| n
+            .properties
+            .values()
+            .any(|v| *v == crate::ir::Literal::String("\u{e9}".into()))),
+        "index 1 is the whole second code point: {:?}",
+        r.module.nodes.values().map(|n| n.properties.clone()).collect::<Vec<_>>()
+    );
+    // Past the end, the gate decides rather than the compiler guessing.
+    let oob = compile("in go: bool\nout c: string = \"foo\"[9]");
+    assert_no_errors(&oob);
+    assert_eq!(
+        gate_count(&oob, "BrickComponentType_WireGraph_Expr_String_Substring"),
+        1,
+        "an out-of-range constant index keeps the gate"
     );
 }

@@ -5,6 +5,11 @@
 - `out` ports are readable by name, and a top-level `on` handler can declare its own port: `on Clock { @top out flash: bool = Toggle() }`.
 - An `out` written directly in an anonymous `chip { }` is a module-boundary port too, readable by name from anywhere in the file.
 - An `out` with no port to bind to is a `WS073` error rather than a silent drop of the binding, its driver and its value.
+- `s[i]` reads one Unicode character from a string, in pure context as well as exec, and folds when both sides are constant.
+
+### Fixes
+
+- A constant string operand bakes into the concatenation that consumes it instead of carrying a gate of its own, so `"n=" .. n` emits one gate rather than two.
 
 ## 1.10.1
 

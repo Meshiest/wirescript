@@ -664,19 +664,45 @@ fn collect_generic_type_aliases(
 /// Recurses into chip sub-modules.
 fn inline_bare_scalar_literals(module: &mut Module) {
     let value_sym = *sym::VALUE;
+    // A string literal has no `_Literal` form: `lower_literal` gives it a
+    // `String_Concatenate` carrying the text in `InputA` with the other fields
+    // empty. Recognizing that shape here lets a literal operand bake into a
+    // `str` field the same way an int or bool one does. Only a carrier with no
+    // wired inputs qualifies, which is what separates it from a real 2-input
+    // concatenation.
+    let wired_targets: crate::collections::HashSet<crate::ir::NodeId> =
+        module.wires.iter().map(|w| w.target.node_id).collect();
+    let is_empty_str = |n: &crate::ir::Node, k| match n.properties.get(&k) {
+        None => true,
+        Some(Literal::String(s)) => s.is_empty(),
+        _ => false,
+    };
     let mut inlines: Vec<(usize, crate::ir::NodeId, WirePort, Literal)> = Vec::new();
     for (i, w) in module.wires.iter().enumerate() {
         let Some(src) = module.nodes.get(&w.source.node_id) else {
             continue;
         };
-        if src.gate_class != gc::LITERAL {
+        let lit = if src.gate_class == gc::LITERAL {
+            match src.properties.get(&value_sym) {
+                Some(
+                    l @ (Literal::Int(_)
+                    | Literal::Float(_)
+                    | Literal::Bool(_)
+                    | Literal::String(_)),
+                ) => l.clone(),
+                _ => continue,
+            }
+        } else if src.gate_class == gc::STRING_CONCATENATE
+            && !wired_targets.contains(&w.source.node_id)
+            && is_empty_str(src, *sym::INPUT_B)
+            && is_empty_str(src, intern("Separator"))
+        {
+            match src.properties.get(&*sym::INPUT_A) {
+                Some(l @ Literal::String(_)) => l.clone(),
+                _ => continue,
+            }
+        } else {
             continue;
-        }
-        let lit = match src.properties.get(&value_sym) {
-            Some(
-                l @ (Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) | Literal::String(_)),
-            ) => l.clone(),
-            _ => continue,
         };
         let Some(target) = module.nodes.get(&w.target.node_id) else {
             continue;
@@ -690,9 +716,14 @@ fn inline_bare_scalar_literals(module: &mut Module) {
         inlines.push((i, w.target.node_id, w.target.port, lit));
     }
     let mut drop_wires: Vec<usize> = Vec::with_capacity(inlines.len());
+    let mut inlined_sources: crate::collections::HashSet<crate::ir::NodeId> =
+        crate::collections::HashSet::default();
     for (i, target_id, port, lit) in inlines {
         if let Some(target) = module.nodes.get_mut(&target_id) {
             std::sync::Arc::make_mut(&mut target.properties).insert(intern(port.as_str()), lit);
+            if let Some(w) = module.wires.get(i) {
+                inlined_sources.insert(w.source.node_id);
+            }
             drop_wires.push(i);
         }
     }
@@ -706,6 +737,13 @@ fn inline_bare_scalar_literals(module: &mut Module) {
         wire_idx += 1;
         keep
     });
+    // A carrier whose every consumer took the value inline is now unreachable.
+    // Drop it here rather than leaving it for a later prune: the fold pass also
+    // removes these, so leaving them would make the module differ by fold mode.
+    inlined_sources.retain(|id| !module.wires.iter().any(|w| w.source.node_id == *id));
+    if !inlined_sources.is_empty() {
+        module.nodes.retain(|id, _| !inlined_sources.contains(id));
+    }
     for child in module.chips.values_mut() {
         inline_bare_scalar_literals(child);
     }
@@ -1128,6 +1166,8 @@ fn inline_orphan_literals(module: &mut Module) {
         // consumers that accept an inline string variant. Unlike
         // `_Literal`, this is gated on `port_accepts_inline_variant` — a string
         // can't fill a wire-only port, so those keep the real concat gate.
+        // A native `str` field is handled pre-fold by
+        // `inline_bare_scalar_literals`, which keeps that case fold-invariant.
         concat_ids.clear();
         concat_ids.extend(
             module

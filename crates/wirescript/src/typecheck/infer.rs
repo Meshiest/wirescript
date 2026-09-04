@@ -2287,6 +2287,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     }
                     v.as_ref().clone()
                 }
+                // `s[i]` is the single Unicode character at `i`, so it yields a
+                // string. The Substring gate behind it is pure, so this carries
+                // no exec-context requirement the way a container read does.
+                Type::String => Type::String,
                 _ => Type::Any,
             }
         }

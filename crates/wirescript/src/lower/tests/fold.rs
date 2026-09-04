@@ -1284,3 +1284,31 @@ fn fold_keeps_dynamic_var_label_source() {
         );
     }
 }
+
+#[test]
+fn constant_string_operand_inlines_into_its_concat_consumer() {
+    // A bare string literal lowers to a `String_Concatenate` wrapper carrying
+    // the text in `InputA`. When that wrapper's only consumer is another
+    // concat, the text belongs in the consumer's own `InputA`/`InputB` data:
+    // those are native `str` fields, and a Concatenate reads an unwired input
+    // from data, which is exactly how the wrapper itself supplies its text.
+    let r = compile_folded("in n: int\nout s: string = \"n=\" .. n");
+    no_errors(&r);
+    assert_eq!(
+        count_class(&r.module, gc::STRING_CONCATENATE),
+        1,
+        "the literal operand must bake into the real concat, leaving one gate: {:?}",
+        r.module
+            .nodes
+            .values()
+            .map(|n| (n.gate_class, n.properties.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        r.module.nodes.values().any(|n| n.gate_class == gc::STRING_CONCATENATE
+            && n.properties.get(&*crate::intern::sym::INPUT_A)
+                == Some(&crate::ir::Literal::String("n=".into()))),
+        "the surviving concat carries the baked operand: {:?}",
+        r.module.nodes.values().map(|n| n.properties.clone()).collect::<Vec<_>>()
+    );
+}
