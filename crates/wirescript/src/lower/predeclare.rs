@@ -1358,6 +1358,15 @@ fn init_record_fields(init: Option<&Expr>) -> HashMap<String, &Expr> {
 /// field into a per-field array/map of that field's type (the parallel-arrays
 /// representation). Non-variant leaf fields are rejected by typecheck; this
 /// falls back to a scalar gate defensively.
+
+/// How deep a record's field tree may be decomposed before lowering gives up.
+/// A record alias that names itself (`type L = { tail: L }`) has no finite
+/// storage or pin layout, and every walk below follows aliases at every level,
+/// so each needs a bound. Typecheck rejects such an alias, but lowering still
+/// runs on a rejected program. Matches the type resolver's `MAX_ALIAS_DEPTH`;
+/// real record nesting is far shallower.
+const MAX_RECORD_FIELD_DEPTH: u32 = 32;
+
 fn record_field_storage(
     ctx: &mut LowerCtx,
     kind: VarStorage,
@@ -1367,13 +1376,30 @@ fn record_field_storage(
     init: Option<&Expr>,
     map_key: Option<&Type>,
     range: &SourceRange,
+    depth: u32,
 ) -> Binding {
     let label = format!("{label_base}.{field_name}");
+    // A record alias whose body names itself (`type L = { tail: L }`) expands
+    // without end here, because the field walk below follows aliases at every
+    // level. Typecheck reports the alias itself, but lowering still runs on a
+    // rejected program, so the recursion needs its own bound: past it, stop
+    // decomposing and let the field take a single scalar gate. The cap matches
+    // the type resolver's `MAX_ALIAS_DEPTH`; real record nesting is far shallower.
+    let too_deep = depth >= MAX_RECORD_FIELD_DEPTH;
+    if depth == MAX_RECORD_FIELD_DEPTH {
+        ctx.diagnostics.push(Diagnostic::error(
+            "WS002",
+            format!(
+                "record type nests more than {MAX_RECORD_FIELD_DEPTH} levels deep at                  `{label}` - a record alias that names itself has no finite storage layout"
+            ),
+            range.clone(),
+        ));
+    }
     // A nested record (inline `{ … }` or via an alias) recurses regardless of
     // the record's own storage kind — a record ARRAY of a record field is
     // parallel arrays one level deeper. `record_fields_of` follows aliases at
     // every level, which `resolve_local_type` (empty alias table) would not.
-    if let Some(sub_fields) = ctx.record_or_tuple_fields(field_typ) {
+    if let Some(sub_fields) = ctx.record_or_tuple_fields(field_typ).filter(|_| !too_deep) {
         let sub_inits = init_record_fields(init);
         let mut fmap = HashMap::default();
         for f in &sub_fields {
@@ -1388,6 +1414,7 @@ fn record_field_storage(
                     sub_inits.get(&f.name).copied(),
                     map_key,
                     range,
+                    depth + 1,
                 ),
             );
         }
@@ -1405,7 +1432,7 @@ fn record_field_storage(
     // recursion above already does a level deeper. Routing through
     // `enum_container_columns` reuses that recursion rather than duplicating it,
     // so the two layouts stay described in one place.
-    if let Some(cols) = enum_container_columns(ctx, field_typ, range) {
+    if let Some(cols) = enum_container_columns(ctx, field_typ, range).filter(|_| !too_deep) {
         if kind == VarStorage::Var {
             let field_type = ctx.resolve_local_type(field_typ);
             if let Type::Enum { name: enum_name, args } = &field_type
@@ -1419,7 +1446,7 @@ fn record_field_storage(
         for c in &cols {
             fmap.insert(
                 crate::intern::intern(&c.name),
-                record_field_storage(ctx, kind, &label, &c.name, &c.typ, None, map_key, range),
+                record_field_storage(ctx, kind, &label, &c.name, &c.typ, None, map_key, range, depth + 1),
             );
         }
         return Binding::Record(fmap);
@@ -1756,6 +1783,7 @@ pub(super) fn build_record_fields(
                 sub_inits.get(&f.name).copied(),
                 map_key,
                 range,
+                0,
             ),
         );
     }
@@ -2692,13 +2720,17 @@ fn record_input_pins(
     te: &TypeExpr,
     prefix: &str,
     range: &SourceRange,
+    depth: u32,
 ) -> HashMap<crate::intern::Sym, Binding> {
+    if depth >= MAX_RECORD_FIELD_DEPTH {
+        return HashMap::default();
+    }
     let fields = ctx.record_or_tuple_fields(te).unwrap_or_default();
     let mut out = HashMap::default();
     for field in &fields {
         let port_name = format!("{prefix}_{}", field.name);
         if ctx.record_or_tuple_fields(&field.typ).is_some() {
-            let inner = record_input_pins(ctx, &field.typ, &port_name, range);
+            let inner = record_input_pins(ctx, &field.typ, &port_name, range, depth + 1);
             out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
             continue;
         }
@@ -2732,13 +2764,17 @@ pub(super) fn record_output_pins(
     te: &TypeExpr,
     prefix: &str,
     range: &SourceRange,
+    depth: u32,
 ) -> HashMap<crate::intern::Sym, Binding> {
+    if depth >= MAX_RECORD_FIELD_DEPTH {
+        return HashMap::default();
+    }
     let fields = ctx.record_or_tuple_fields(te).unwrap_or_default();
     let mut out = HashMap::default();
     for field in &fields {
         let port_name = format!("{prefix}_{}", field.name);
         if ctx.record_or_tuple_fields(&field.typ).is_some() {
-            let inner = record_output_pins(ctx, &field.typ, &port_name, range);
+            let inner = record_output_pins(ctx, &field.typ, &port_name, range, depth + 1);
             out.insert(crate::intern::intern(&field.name), Binding::Record(inner));
             continue;
         }
@@ -2760,7 +2796,7 @@ pub(super) fn pre_declare_input(ctx: &mut LowerCtx, d: &InDecl) {
     // port and its field accesses lowered to `_Unsupported`/swizzle gates —
     // mirrors the standalone-chip input expansion in `lower::mod`.
     if ctx.record_or_tuple_fields(&d.typ).is_some() {
-        let record_fields = record_input_pins(ctx, &d.typ, &d.name, &d.range);
+        let record_fields = record_input_pins(ctx, &d.typ, &d.name, &d.range, 0);
         ctx.scope.insert(&d.name, Binding::Record(record_fields));
         return;
     }
@@ -2806,7 +2842,7 @@ pub(super) fn pre_declare_output(
         && let Some(fields) = ctx.record_or_tuple_fields(te)
     {
         let _ = &fields;
-        let record_fields = record_output_pins(ctx, te, name, range);
+        let record_fields = record_output_pins(ctx, te, name, range, 0);
         ctx.scope.insert(
             &crate::lower::context::output_scope_key(name),
             Binding::Record(record_fields),

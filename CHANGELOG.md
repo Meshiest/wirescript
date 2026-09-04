@@ -11,6 +11,10 @@
 ### Fixes
 
 - A constant string operand bakes into the concatenation that consumes it instead of carrying a gate of its own, so `"n=" .. n` emits one gate rather than two.
+- `on WholeGridTargeted()` compiles. Its trigger port was missing from the wire-port table, so the event panicked the compiler instead of lowering.
+- A self-referential record alias (`type L = { tail: L }`) used as a variable or a port reports its error instead of exhausting the stack.
+- `.length()` on a `const` array or map folds to its value in pure context. The map form wired the container reference in place of the value with no diagnostic.
+- A `*T` parameter is invariant, since it aliases the caller's storage rather than riding a wire: binding one to a differently-typed variable is a `WS003`.
 
 ## 1.10.1
 

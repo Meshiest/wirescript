@@ -5803,3 +5803,40 @@
             .expect("the `.exec` access must be typed");
         assert_eq!(*ty, Type::Exec, "`.exec` on a call is an exec value");
     }
+
+    // ---- `*T` parameters alias storage, so they are invariant ----
+
+    #[test]
+    fn a_ref_param_bound_to_a_differently_typed_var_is_ws003() {
+        // A `*T` parameter is the caller's own variable gate, not a value on a
+        // wire. There is no wire to convert on, so the callee writes its type
+        // straight into that gate: `*string` bound to an `int` var puts a
+        // string in int storage.
+        for src in [
+            "mod put(v: *string) { v = \"hi\" }\nvar n: int = 0\nin go: exec\non go { put(n) }",
+            "mod inc(v: *int) { v = v + 1 }\nvar y: float = 0.0\nin go: exec\non go { inc(y) }",
+            "chip C(a: *int, t: exec) { on t { a = a + 1 } }\nvar y: float = 0.0\nin go: exec\nlet c = C(y, go)",
+        ] {
+            let r = tc(src);
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "WS003" && d.severity == Severity::Error),
+                "a ref param bound to a differently-typed var must be WS003:\n{src}\ngot: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn a_ref_param_bound_to_a_matching_var_stays_clean() {
+        // The guard above must not fire on the ordinary, correct spelling.
+        for src in [
+            "mod inc(v: *int) { v = v + 1 }\nvar n: int = 0\nin go: exec\non go { inc(n) }",
+            "mod put(v: *string) { v = \"hi\" }\nvar s: string = \"\"\nin go: exec\non go { put(s) }",
+            "mod setv(v: *vector) { v = Vec(1.0, 2.0, 3.0) }\nvar p: vector\nin go: exec\non go { setv(p) }",
+            "mod inc(v: ref int) { v = v + 1 }\nvar n: int = 0\nin go: exec\non go { inc(n) }",
+        ] {
+            assert_no_diags(&tc(src));
+        }
+    }

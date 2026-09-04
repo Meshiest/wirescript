@@ -79,6 +79,10 @@ wire_ports! {
     Uptime = "Uptime",
     Tolerance = "Tolerance",
     Target = "Target",
+    // `WholeGridTargeted`'s trigger output. That gate has no `ExecOut`, so this
+    // port doubles as the exec the handler body chains from (the dump types it
+    // `any`), the same shape as `Clock`'s `Pulse`.
+    Targeted = "Targeted",
     SmoothTime = "SmoothTime",
     Function = "Function",
     Duration = "Duration",

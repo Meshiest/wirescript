@@ -723,3 +723,88 @@ fn a_mutating_method_on_a_const_container_is_rejected_and_a_read_only_one_is_not
         r.diagnostics
     );
 }
+
+/// `.length()` on a `const` container in PURE context. Typecheck exempts a
+/// non-mutating read on a `const` receiver from the exec-context rule
+/// (`container_call_exec_exempt`) on the premise that it folds, so lowering has
+/// to actually fold it. The map form used to wire the map REFERENCE into the
+/// consumer with no diagnostic at all, and the array form a placeholder.
+///
+/// The indexed analogue (`const_fold_index_access`) already closes exactly this
+/// hole for `t[i]` / `m[k]`.
+#[test]
+fn const_container_length_folds_in_pure_context() {
+    for (src, want) in [
+        ("const m = { \"a\": 1, \"b\": 2 }\nconst n = m.length()\nout o = n", 2),
+        ("const m = { \"a\": 1, \"b\": 2 }\nout o = m.length()", 2),
+        ("const m = { \"a\": 1, \"b\": 2 }\nlet n = m.length()\nout o = n", 2),
+        ("const a = [1, 2, 3]\nconst n = a.length()\nout o = n", 3),
+        ("const a = [1, 2, 3]\nout o = a.length()", 3),
+    ] {
+        let r = compile(src);
+        assert_no_errors(&r);
+        assert!(
+            !has_gate(&r, crate::ir::gate_class::UNSUPPORTED),
+            "`.length()` on a const container fell to a placeholder:\n{src}"
+        );
+        // The value must reach the consumer as a baked constant, not as the
+        // container's own ref port (which is the silent-miscompile shape). A
+        // constant feeding a dataless target (an output rerouter's `RerInput`)
+        // is carried by a materialized-constant gate rather than a bare literal
+        // node - the same shape the `m[k]` index fold already produces.
+        let baked = r.module.nodes.values().any(|n| {
+            n.note
+                .is_some_and(|note| note.starts_with("materialized constant"))
+                && n.properties.values().any(|l| *l == Literal::Int(want))
+        });
+        assert!(
+            baked,
+            "expected the folded length {want} baked into a constant carrier for:\n{src}\nnodes: {:?}",
+            r.module
+                .nodes
+                .values()
+                .map(|n| (n.gate_class, n.note))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !r.module.wires.iter().any(|w| {
+                matches!(w.source.port, WirePort::MapVarRef | WirePort::ArrayVarRef)
+                    && r.module.nodes.get(&w.target.node_id).is_some_and(|n| {
+                        n.gate_class == crate::ir::gate_class::MICROCHIP_OUTPUT
+                    })
+            }),
+            "a container REF reached an output port, which is the silent miscompile:\n{src}"
+        );
+    }
+}
+
+/// A `const`-receiver container read that CANNOT fold (a runtime key) has no
+/// pure-context form: there is no exec chain to sequence the gate on. It must
+/// say so. Handing back the receiver's own ref port instead makes the container
+/// REFERENCE stand in for the value, with no diagnostic anywhere - typecheck
+/// exempted the read (`container_call_exec_exempt`) expecting a fold that could
+/// not happen. The array path already reports; the map path did not.
+#[test]
+fn an_unfoldable_const_container_read_in_pure_context_is_reported() {
+    for src in [
+        "const m = { \"a\": 1, \"b\": 2 }\nin k: string\nout o = m.get(k)",
+        "const m = { \"a\": 1 }\nin k: string\nout o = m.has(k)",
+        "const a = [1, 2, 3]\nin x: int\nout o = a.find(x)",
+    ] {
+        let r = compile(src);
+        assert!(
+            !r.diagnostics.is_empty(),
+            "an unfoldable const container read in pure context must be reported:\n{src}"
+        );
+        assert!(
+            !r.module.wires.iter().any(|w| {
+                matches!(w.source.port, WirePort::MapVarRef | WirePort::ArrayVarRef)
+                    && r.module
+                        .nodes
+                        .get(&w.target.node_id)
+                        .is_some_and(|n| n.gate_class == crate::ir::gate_class::MICROCHIP_OUTPUT)
+            }),
+            "the container REFERENCE must not stand in for the value:\n{src}"
+        );
+    }
+}

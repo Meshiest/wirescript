@@ -328,6 +328,7 @@ pub(super) fn build_chip_module(
                 &out.typ,
                 &out.name,
                 &chip_decl.range,
+                0,
             );
             child_ctx.scope.insert(
                 &crate::lower::context::output_scope_key(&out.name),

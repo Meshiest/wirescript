@@ -149,3 +149,44 @@ fn every_event_binds_all_gate_outputs() {
         gaps.join("\n")
     );
 }
+
+/// Every port name an event actually wires must exist in the `WirePort`
+/// registry. `WirePort::from_name` panics on an unknown name, and lowering
+/// calls it for the event's `exec_out` as well as each data port, so a gate
+/// whose port is missing from the registry takes down the whole compile
+/// thread rather than reporting a diagnostic.
+#[test]
+fn every_event_port_is_in_the_wire_port_registry() {
+    use wirescript::catalog::events::events;
+    use wirescript::ir::port_registry::WirePort;
+
+    let known: HashSet<&str> = WirePort::all_names().iter().copied().collect();
+    let mut missing: Vec<String> = Vec::new();
+
+    let mut names: Vec<&&str> = events().keys().collect();
+    names.sort();
+    for name in names {
+        let evt = &events()[*name];
+        if !known.contains(evt.exec_out) {
+            missing.push(format!("{name}.{} (exec_out)", evt.exec_out));
+        }
+        for d in &evt.data {
+            if !known.contains(d.port) {
+                missing.push(format!("{name}.{} (data `{}`)", d.port, d.name));
+            }
+        }
+        for (_surface, port, _ty) in &evt.input_named {
+            if !known.contains(port) {
+                missing.push(format!("{name}.{port} (input)"));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these event ports are missing from the `WirePort` registry, so using the \
+         event panics the compiler (add each to the `wire_ports!` table in \
+         ir/port_registry.rs):\n{}",
+        missing.join("\n")
+    );
+}

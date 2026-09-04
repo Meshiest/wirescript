@@ -206,3 +206,30 @@ fn zone_and_teleport_annotations_keep_their_type_through_lowering() {
     assert_eq!(port_ty("z"), Some(Type::Zone), "`in z: zone` must stay Type::Zone through lowering, not degrade to Type::Any");
     assert_eq!(port_ty("p"), Some(Type::Teleport), "`in p: teleport` must stay Type::Teleport through lowering, not degrade to Type::Any");
 }
+
+/// A self-referential record alias used as STORAGE must terminate. Typecheck
+/// reports `WS002 recursive type alias` and hands lowering a program it has
+/// already rejected, but lowering decomposes a record var into one gate per
+/// field by following aliases at every level, so the alias's own field
+/// re-expands forever unless the recursion is bounded.
+///
+/// Runs the compile on its own thread with a deadline: a regression here is a
+/// HANG, and a plain assertion would wedge the whole suite instead of failing.
+#[test]
+fn a_self_referential_record_alias_used_as_storage_terminates() {
+    for src in [
+        "type L<T> = { tail: L<T> }\nvar l: L<int>",
+        "type L = { tail: L }\nvar l: L",
+        "type L<T> = { tail: L<T> }\nin l: L<int>",
+        "type P<T> = { a: Q<T> }\ntype Q<T> = { b: P<T> }\nvar p: P<int>",
+    ] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(compile(src).diagnostics.len());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(20)).is_ok(),
+            "lowering did not terminate for a recursive record alias:\n{src}"
+        );
+    }
+}

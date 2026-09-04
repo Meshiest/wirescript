@@ -483,6 +483,30 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         crate::typecheck::let_binding::emit_no_value(ctx, None, arg_expr.range());
         return;
     }
+    // A `*T` parameter aliases the caller's STORAGE, so it is invariant. Every
+    // other argument rides a wire, and a wire can carry a conversion; a ref
+    // carries none - the callee writes its own type straight into the gate the
+    // caller declared, so a `*string` bound to an `int` var puts a string in
+    // int storage. Checked against the variable's DECLARED type rather than the
+    // inferred argument type, which has already auto-dereferenced.
+    if let Type::Ref(want) = &param.ty
+        && is_concrete_storage_type(want)
+        && let Some(have) = storage_inner_type(ctx, arg_expr)
+        && have != **want
+    {
+        ctx.emit(
+            "WS003",
+            format!(
+                "argument '{}': `*{}` aliases the caller's storage, so it needs a                  `{}` variable - `{}` storage cannot be written through it",
+                param.name,
+                crate::analysis::types::type_str(want),
+                crate::analysis::types::type_str(want),
+                crate::analysis::types::type_str(&have),
+            ),
+            arg_expr.range().clone(),
+        );
+        return;
+    }
     if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch {
         ctx.emit(
             "WS003",
@@ -494,6 +518,34 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
             ),
             arg_expr.range().clone(),
         );
+    }
+}
+
+/// Whether a `*T` parameter's `T` is concrete enough to hold a caller's storage
+/// to. A generic parameter, `any`, or an `Opaque` probe is satisfied by any
+/// variable, so those keep the ordinary coercion path.
+fn is_concrete_storage_type(t: &Type) -> bool {
+    !matches!(t, Type::Param(_) | Type::Any | Type::Opaque)
+}
+
+/// The DECLARED inner type of the storage an argument names, for an argument
+/// that is a variable (bare, or written `&x` / `ref x`). `None` for anything
+/// that is a value on a wire, which coerces normally.
+fn storage_inner_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
+    let target = match e {
+        Expr::RefOf { operand, .. } => operand.as_ref(),
+        other => other,
+    };
+    let Expr::Ident { name, .. } = target else {
+        return None;
+    };
+    let sym = ctx.scope.lookup(name)?;
+    if sym.kind != SymbolKind::Var {
+        return None;
+    }
+    match &sym.ty {
+        Type::Ref(inner) => Some(inner.as_ref().clone()),
+        _ => None,
     }
 }
 

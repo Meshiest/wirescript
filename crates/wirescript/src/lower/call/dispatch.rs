@@ -2,6 +2,36 @@
 
 use super::*;
 
+/// Whether `obj` already names a real array/map storage gate, in which case the
+/// ordinary runtime lowering owns the call and no fold may run ahead of it.
+fn receiver_has_runtime_container(ctx: &LowerCtx, obj: &Expr) -> bool {
+    let Expr::Ident { name, .. } = obj else {
+        // Any other receiver shape (a field, an element, a parameter) is
+        // resolved by the paths below, which this fold must not pre-empt.
+        return true;
+    };
+    ctx.lookup_var(name)
+        .is_some_and(|v| matches!(v.storage, VarStorage::Array | VarStorage::Map))
+}
+
+/// A container method call whose value is a compile-time constant, materialized
+/// as a literal source gate. The method-call analogue of
+/// `access::const_fold_index_access`, sharing its `wire_type_of_literal` +
+/// `literal_node_range` pair so both agree on which literals have a wire form.
+fn const_fold_container_call(
+    ctx: &mut LowerCtx,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let lit = {
+        let lookup = |n: &str| ctx.resolve_mod(n);
+        let mut budget = crate::const_eval::Budget::default();
+        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?
+    };
+    let ty = crate::lower::expr::wire_type_of_literal(&lit)?;
+    Some(crate::lower::expr::literal_node_range(ctx, range, ty, lit))
+}
+
 pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     let (callee, args, type_args, range) = match e {
         Expr::Call {
@@ -112,6 +142,24 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if crate::catalog::arrays::is_array_method(field)
             || crate::catalog::maps::is_map_method(field)
         {
+            // A read whose value is already compile-time known, on a receiver
+            // that has no runtime container gate here. Typecheck exempts a
+            // non-mutating call on a `const` receiver from the exec-context
+            // rule (`container_call_exec_exempt`) because it is expected to
+            // fold, so lowering owes it a fold: in pure context there is no
+            // exec chain to hang the real gate on, and the map path answers
+            // that by handing back the receiver's own ref port - the container
+            // reference silently standing in for the value.
+            //
+            // Ordered exactly like `const_fold_index_access`: only when the
+            // receiver resolves to NO runtime container binding, so a `const`
+            // shadowed by a same-named runtime `var` still reads the var and no
+            // program that already lowered correctly can change.
+            if !receiver_has_runtime_container(ctx, obj)
+                && let Some(port) = const_fold_container_call(ctx, e, range)
+            {
+                return port;
+            }
             materialize_const_container(ctx, obj);
         }
         if let Expr::Ident { name, .. } = obj.as_ref()

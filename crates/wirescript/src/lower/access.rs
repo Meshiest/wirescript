@@ -1125,9 +1125,15 @@ pub(super) fn map_exec_op(
     extra_out: Vec<(WirePort, Type)>,
     ret: WirePort,
 ) -> PortRef {
+    // No exec chain to sequence the gate on, so there is no form for this op
+    // here. Report it: handing back `map_ref` puts the container REFERENCE
+    // where the consumer expects the VALUE, and a read on a `const` receiver is
+    // exempt from the exec-context rule (`container_call_exec_exempt`) on the
+    // premise that it folds, so nothing else speaks up when the fold declines.
+    // Matches what the array path already does for the same shape.
     let exec_in = match ctx.current_exec {
         Some(e) => e,
-        None => return map_ref,
+        None => return synthesise_unsupported_range(ctx, range),
     };
     let mut inputs = vec![
         PortSpec { name: *sym::EXEC, ty: Type::Exec },
