@@ -509,7 +509,22 @@ pub(super) fn lower_field_access(
     // reuse the port rather than lowering the object again.
     let mut call_port = None;
     if let Expr::Call { .. } = obj {
+        // Where the caller's chain stands before the call runs. `.exec` names
+        // the call's own exec output and puts the chain back here, so the
+        // statement after it takes the same source the call did: one exec
+        // output driving two exec inputs runs both, which is the fork.
+        let entry_exec = ctx.current_exec;
         let obj_port = lower_expr(ctx, obj);
+        if field == "exec"
+            && let Some(done) = ctx.current_exec
+            && Some(done) != entry_exec
+        {
+            // A multi-output mod stashed its record; nothing here reads it, and
+            // leaving it would hand the stash to an unrelated later field access.
+            ctx.pending_inline_record.take();
+            ctx.current_exec = entry_exec;
+            return done;
+        }
         // An inline mod stashes its multi-output record (field -> source
         // binding) instead of exposing named ports, so prefer that stash and
         // project the field out of it - exactly as `lower_let_decl` binds

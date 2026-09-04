@@ -451,7 +451,7 @@ let jmp = input.Jump       // bool
 need to reference that completion signal — to sequence on it (`await`), handle it
 (`on`), or wire it into another gate's `exec =`.
 
-Three cases resolve through `.exec`:
+Four cases resolve through `.exec`:
 
 - **A call that returns a bare `exec`.** Some builtins produce an exec whose
   underlying port has a gate-specific name (e.g. a `Change` detector's exec port
@@ -473,6 +473,29 @@ Three cases resolve through `.exec`:
   on start {
     emit reset
     await t.exec             // resumes after InitTables ran
+  }
+  ```
+
+- **A call inside a handler.** `.exec` binds that call's exec output without
+  advancing the current chain, so the call runs as a branch and the statement
+  after it runs right away. `emit` in value position names the chain point the
+  branch forks from. See
+  [Forking the Exec Chain](exec-context.md#forking-the-exec-chain):
+
+  ```wirescript
+  var m: int = 0
+  var n: int = 0
+  in start: exec
+
+  chip Later() -> (count: int) {
+    m = m + 1
+    out count = m.Value
+  }
+
+  on start {
+    let d = Later().exec     // Later runs; the chain carries on
+    n = 1                    // runs alongside Later, not after it
+    await d                  // rejoins once Later has finished
   }
   ```
 

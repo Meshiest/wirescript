@@ -1954,3 +1954,64 @@
         // name follows it, so a variable spelled `is` still parses.
         parse_ok("var is: int = 0\non start {\n  is = is + 1\n}\nin start: exec\n");
     }
+
+    /// The statements of the one top-level handler in `src`.
+    fn handler_body(src: &str) -> Vec<Stmt> {
+        let s = parse_ok(src);
+        s.decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h.body.stmts.clone()),
+                _ => None,
+            })
+            .expect("handler")
+    }
+
+    #[test]
+    fn emit_in_value_position_is_the_current_exec_atom() {
+        // `emit` names the current exec chain point when an expression is
+        // expected, the same dual-role shape `if`/`match` already have.
+        let body = handler_body("in go: exec
+on go {
+  let d = SleepTicks(emit, delay = 2)
+}
+");
+        let Some(Stmt::Let(l)) = body.first() else {
+            panic!("expected a let, got {:?}", body.first())
+        };
+        let Expr::Call { args, .. } = &l.value else {
+            panic!("expected a call, got {:?}", l.value)
+        };
+        assert!(
+            matches!(args.first(), Some(CallArg::Positional(Expr::CurrentExec { .. }))),
+            "`emit` as an argument must parse as Expr::CurrentExec: {args:?}"
+        );
+    }
+
+    #[test]
+    fn emit_statement_still_wins_inside_a_block_expression() {
+        // A block expression's statement list keeps reading `emit name` as an
+        // emit STATEMENT; only a bare `emit` is the current-exec atom.
+        let body = handler_body(
+            "out done: exec
+var n: int = 0
+in go: exec
+on go {
+  n = {
+    emit done
+    5
+  }
+}
+",
+        );
+        let Some(Stmt::Assign(a)) = body.first() else {
+            panic!("expected an assignment, got {:?}", body.first())
+        };
+        let Expr::BlockExpr { stmts, .. } = &a.value else {
+            panic!("expected a block expression, got {:?}", a.value)
+        };
+        assert!(
+            matches!(stmts.as_slice(), [Stmt::Emit(e)] if e.name == "done"),
+            "`emit done` in a block expr is an emit statement: {stmts:?}"
+        );
+    }

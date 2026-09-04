@@ -15,6 +15,7 @@ mod const_init;
 mod const_params;
 mod cse;
 mod enums;
+mod exec_fork;
 mod flatten;
 mod fold;
 mod fusion;

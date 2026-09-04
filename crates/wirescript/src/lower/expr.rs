@@ -46,6 +46,14 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             let lit = default_literal_for_var_type(&t).unwrap_or(Literal::Float(0.0));
             literal_node(ctx, e, t, lit)
         }
+        // `emit` in value position is the exec chain point the handler has
+        // reached. Pure context has none, which typecheck already reported as
+        // WS007; the placeholder only gives that program's consumer a port to
+        // wire, without a second (generic) diagnostic on top.
+        Expr::CurrentExec { range } => match ctx.current_exec {
+            Some(port) => port,
+            None => synthesise_unsupported_no_warn(ctx, range),
+        },
         Expr::StringLit { value, .. } => {
             literal_node(ctx, e, Type::String, Literal::String(value.clone()))
         }

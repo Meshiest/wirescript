@@ -319,6 +319,7 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
         | Expr::StringLit { .. }
         | Expr::BoolLit { .. }
         | Expr::NullLit { .. }
+        | Expr::CurrentExec { .. }
         | Expr::AssetRef { .. }
         | Expr::Ident { .. } => {}
     }

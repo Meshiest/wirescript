@@ -934,6 +934,14 @@ pub enum Expr {
     NullLit {
         range: SourceRange,
     },
+    /// `emit` in value position: the exec chain point the enclosing handler has
+    /// reached, typed `exec`. Pairs with `.exec` on a call, which binds that
+    /// call's exec output without advancing the chain, so together they fork:
+    /// since one exec output driving two exec inputs runs both. Only meaningful
+    /// in exec context; pure context is a WS007.
+    CurrentExec {
+        range: SourceRange,
+    },
     Ident {
         name: String,
         range: SourceRange,
@@ -1132,6 +1140,7 @@ impl Expr {
             | Expr::InterpLit { range, .. }
             | Expr::BoolLit { range, .. }
             | Expr::NullLit { range, .. }
+            | Expr::CurrentExec { range, .. }
             | Expr::Ident { range, .. }
             | Expr::FieldAccess { range, .. }
             | Expr::IndexAccess { range, .. }
@@ -1165,6 +1174,7 @@ impl Expr {
             | Expr::InterpLit { range, .. }
             | Expr::BoolLit { range, .. }
             | Expr::NullLit { range, .. }
+            | Expr::CurrentExec { range, .. }
             | Expr::Ident { range, .. }
             | Expr::FieldAccess { range, .. }
             | Expr::IndexAccess { range, .. }

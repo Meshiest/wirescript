@@ -763,6 +763,9 @@ fn expr_has_direct_exec(
             }
             d
         }
+        // `emit` names the chain point the caller has reached, so a mod whose
+        // body reads it has nothing to name at a pure call site.
+        Expr::CurrentExec { .. } => true,
         Expr::IntLit { .. }
         | Expr::AtomLit { .. }
         | Expr::FloatLit { .. }
@@ -1680,6 +1683,20 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         // to that type via `check`/`check_null` (var/out init, assignment, a
         // call arg, a record field), which is where `null` earns a real value.
         Expr::NullLit { .. } => Type::Any,
+        // `emit` in value position is the current exec chain point. There is no
+        // chain to name in pure context, so that is an error rather than a
+        // silent resolution to nothing.
+        Expr::CurrentExec { range } => {
+            if ctx.exec_mode() != ExecMode::Exec {
+                ctx.emit(
+                    "WS007",
+                    "`emit` as a value names the current exec chain point, and there \
+                     is none outside an exec context",
+                    range.clone(),
+                );
+            }
+            Type::Exec
+        }
         Expr::InterpLit { parts, .. } => {
             // Match legacy exactly: unwrap a leading `Ref` off the part's type
             // before the string-coercion check, so an interpolated var ref
@@ -2113,6 +2130,18 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             if field == "exec"
                 && (matches!(ot, Type::Exec)
                     || matches!(&ot, Type::Record(fs) if matches!(fs.first(), Some((_, Type::Exec)))))
+            {
+                return Type::Exec;
+            }
+            // `.exec` on a CALL names that call's own exec output, bound as an
+            // `exec` value without joining the current chain, so the call runs
+            // as a branch off the chain point the caller is standing on. A
+            // result that already carries a field spelled `exec` (a chip
+            // declaring one, or the completion field an `exec =` argument adds)
+            // is projected below and keeps whatever type it declares.
+            if field == "exec"
+                && matches!(obj.as_ref(), Expr::Call { .. })
+                && !matches!(&ot, Type::Record(fs) if fs.iter().any(|(n, _)| n == "exec"))
             {
                 return Type::Exec;
             }

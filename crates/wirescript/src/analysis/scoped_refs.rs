@@ -1209,6 +1209,7 @@ impl<'a> Walker<'a> {
             | Expr::StringLit { .. }
             | Expr::BoolLit { .. }
             | Expr::NullLit { .. }
+            | Expr::CurrentExec { .. }
             | Expr::AssetRef { .. }
             | Expr::PrefabRef { .. }
             | Expr::NestedPrefab { .. } => {}

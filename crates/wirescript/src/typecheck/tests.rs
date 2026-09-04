@@ -5757,3 +5757,49 @@
         );
         assert_no_diags(&r);
     }
+
+    // ---- `emit` as a value, and `.exec` on a call ----
+
+    #[test]
+    fn emit_as_a_value_types_as_exec() {
+        let r = tc("in go: exec\non go {\n  let d: exec = emit\n}");
+        assert_no_diags(&r);
+    }
+
+    #[test]
+    fn emit_as_a_value_outside_an_exec_context_is_ws007() {
+        let r = tc("let d: exec = emit");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS007" && d.severity == Severity::Error),
+            "`emit` in pure context must be a WS007 error, not a silent nothing: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn call_dot_exec_types_as_exec() {
+        // `.exec` names the call's own exec output, so it types as `exec`
+        // rather than falling through to `any`, which coerces to everything
+        // and would let a real mistype past unremarked.
+        let src = "var m: int = 0\n\
+                   chip Later() -> (count: int) {\n\
+                   m = 7\n\
+                   out count = m.Value\n\
+                   }\n\
+                   in go: exec\n\
+                   on go {\n\
+                   let d = Later().exec\n\
+                   await d\n\
+                   }";
+        let r = tc(src);
+        assert_no_diags(&r);
+        let access = "Later().exec";
+        let start = src.find(access).expect("call site");
+        let ty = r
+            .type_of_expr
+            .get(&(std::sync::Arc::from("test"), start, start + access.len()))
+            .expect("the `.exec` access must be typed");
+        assert_eq!(*ty, Type::Exec, "`.exec` on a call is an exec value");
+    }

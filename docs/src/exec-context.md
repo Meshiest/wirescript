@@ -10,6 +10,7 @@ Understanding exec vs pure context is fundamental to writing correct Wirescript.
 - [How to Enter Exec Context](#how-to-enter-exec-context)
 - [Reading Variables: Exec vs Pure](#reading-variables-exec-vs-pure)
 - [Handler Exec Chains](#handler-exec-chains)
+- [Forking the Exec Chain](#forking-the-exec-chain)
 - [Exec Context in Conditional Expressions vs Statements](#exec-context-in-conditional-expressions-vs-statements)
 - [Summary of Context Rules](#summary-of-context-rules)
 - [Await](#await)
@@ -253,6 +254,70 @@ on RoundStart() {
 ```
 
 The wire graph executes these in sequence: event fires, then node 1, then node 2, then node 3, then the branch.
+
+## Forking the Exec Chain
+
+A call in statement position joins the chain: the statement after it runs when
+the call has finished. Reading `.exec` off the call instead binds the call's own
+exec output as an `exec` value and leaves the chain where it was, so the call
+runs as a branch and the following statement runs right away.
+
+`emit` in value position is the other half. It names the exec chain point the
+handler has reached, typed `exec`, which is what a branch forks from.
+
+```wirescript
+var m: int = 0
+var n: int = 0
+in start: exec
+
+chip Later() -> (count: int) {
+  m = m + 1
+  out count = m.Value
+}
+
+on start {
+  let d = Later().exec   // forks: Later runs, and the chain carries on
+  n = 1                  // runs alongside Later, not after it
+  await d                // rejoins once Later has finished
+  n = 2
+}
+```
+
+One exec output driving two exec inputs runs both, so the fork needs no gate of
+its own: the same chain point feeds the branch and the next statement.
+
+`emit` is also what you hand to an [`exec =` argument](#4-explicit-exec-argument)
+to trigger a call from the current chain point. That call never joins the chain,
+so it forks the same way, and its completion comes back on the result's `.exec`
+field:
+
+```wirescript
+var m: int = 0
+var n: int = 0
+in start: exec
+
+chip Later() -> (count: int) {
+  m = m + 1
+  out count = m.Value
+}
+
+on start {
+  n = 1
+  let d = Later(exec = emit)   // Later fires from this chain point
+  n = 2                        // and so does this, in the same pass
+  await d.exec                 // rejoins once Later has run
+}
+```
+
+Both spellings compile to the same fan-out. Prefer `exec = emit` when the call
+site is choosing the trigger, and `<call>.exec` when an ordinary call that would
+otherwise splice into the chain should run beside it instead.
+
+`let _ = <call>.exec` fires and forgets: `_` discards the binding only, and the
+call still runs.
+
+`emit` as a value is meaningful in exec context alone. Pure context has no chain
+point to name, so it reports WS007 rather than resolving to nothing.
 
 ## Exec Context in Conditional Expressions vs Statements
 

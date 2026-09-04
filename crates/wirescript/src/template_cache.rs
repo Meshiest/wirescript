@@ -505,6 +505,7 @@ fn collect_calls_in_expr(expr: &Expr, known: &HashSet<String>, out: &mut HashSet
         | Expr::StringLit { .. }
         | Expr::BoolLit { .. }
         | Expr::NullLit { .. }
+        | Expr::CurrentExec { .. }
         | Expr::AssetRef { .. }
         | Expr::PrefabRef { .. }
         | Expr::NestedPrefab { .. }

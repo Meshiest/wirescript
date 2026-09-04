@@ -6,6 +6,7 @@
 - An `out` written directly in an anonymous `chip { }` is a module-boundary port too, readable by name from anywhere in the file.
 - An `out` with no port to bind to is a `WS073` error rather than a silent drop of the binding, its driver and its value.
 - `s[i]` reads one Unicode character from a string, in pure context as well as exec, and folds when both sides are constant.
+- `<call>.exec` binds a call's exec output without joining the current chain, so the call runs as a branch while the chain carries on, and `emit` in value position names the chain point it forks from.
 
 ### Fixes
 

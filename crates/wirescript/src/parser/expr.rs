@@ -699,6 +699,16 @@ impl<'a> Parser<'a> {
                     range: self.make_range(t.start, t.end),
                 }
             }
+            // `emit` names the current exec chain point. A dual-role keyword,
+            // like `if` and `match`: statement dispatch claims `emit NAME`
+            // first, so reaching `parse_primary` means an expression was
+            // expected and only the bare atom can appear.
+            TokenKind::Kw if t.text == "emit" => {
+                self.advance();
+                Expr::CurrentExec {
+                    range: self.make_range(t.start, t.end),
+                }
+            }
             TokenKind::Kw if t.text == "if" => {
                 self.advance();
                 let cond = self.parse_expr();
@@ -1051,9 +1061,12 @@ impl<'a> Parser<'a> {
                 break;
             }
             // `let`/`var`/`static` parse as statements; everything else falls
-            // through as an expression below.
+            // through as an expression below. `emit` is a statement leader only
+            // when a target name follows it. A bare `emit` is the current-exec
+            // atom, which belongs to the expression path.
             let is_stmt_kw = self.peek().kind == TokenKind::Kw
-                && matches!(self.peek().text.as_str(), "let" | "var" | "static");
+                && (matches!(self.peek().text.as_str(), "let" | "var" | "static")
+                    || (self.peek().text == "emit" && self.peek_at(1).kind == TokenKind::Ident));
             if is_stmt_kw {
                 if let Some(s) = self.parse_stmt() {
                     stmts.push(s);
