@@ -1062,3 +1062,39 @@ chip a(uid: string) -> int {
         let h = hover_for(EASING_SRC, 3, col).expect(".Discriminant on a built-in enum value should hover");
         assert!(h.contains("Discriminant") && h.contains("int"), "should show it yields int: {h}");
     }
+
+    /// A record-literal key hovers wherever the literal is written: a `var`, an
+    /// array element type, and a literal nested inside another.
+    #[test]
+    fn hover_on_record_literal_keys_in_a_var_array_initializer() {
+        let src = "type V = {value: int}\n\
+                   type H = {value: V}\n\
+                   var hs: H[] = [{value: {value: 10}}]";
+        let l = src.lines().nth(2).unwrap();
+        let outer = l.find("{value:").unwrap() + 1;
+        let inner = l.rfind("value:").unwrap();
+        assert_eq!(
+            hover_for(src, 2, outer).as_deref(),
+            Some("```wirescript\nfield value: {value: int}\n```"),
+            "outer key of a nested literal in a var array initializer"
+        );
+        // The two keys are spelled the same, so the innermost literal
+        // containing the cursor is the one that must answer.
+        assert_eq!(
+            hover_for(src, 2, inner).as_deref(),
+            Some("```wirescript\nfield value: int\n```"),
+            "inner key of a nested literal"
+        );
+    }
+
+    /// The shape the line-scanning resolver did handle must keep working.
+    #[test]
+    fn hover_on_a_record_literal_key_in_a_let_still_works() {
+        let src = "type V = {value: int}\n\
+                   in go: bool\n\
+                   let v: V = {value: 10}";
+        let l = src.lines().nth(2).unwrap();
+        let col = l.find("{value").unwrap() + 1;
+        let h = hover_for(src, 2, col).expect("a `let` record literal key should hover");
+        assert!(h.contains("value") && h.contains("int"), "hover text: {h}");
+    }

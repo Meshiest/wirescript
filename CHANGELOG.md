@@ -14,10 +14,13 @@
 - A namespace reached two levels deep resolves. The seal over a namespaced body also hid the alias that module imported for itself.
 - A namespaced `let` initialized through such an alias carries its type, so reading it is no longer a `WS002`.
 - An `import * as` alias is file-local, so an importer and the module it imports may both use the same one. Both tables were keyed by name alone, so the inner namespace was dropped and every reference through it was an unknown identifier.
+- A namespaced record type (`Ns.Point`) resolves to its fields, so a var or array declared with one decomposes and keeps its element type. It typed as `any` and loaded empty.
+- Two `import * as` in one file under the same alias is a `WS012`; unreported, the second shadowed the first and every reference read whichever module came last.
 
 ### Editor
 
 - The LSP watches the workspace's `.ws` files, so a module changed or created on disk while closed refreshes the files importing it. Only edits to OPEN documents did, leaving stale diagnostics about a version that was gone.
+- A record-literal key hovers wherever the literal is written, including a `var`, an array initializer, and a literal nested in another; only `let x: T = {` resolved before.
 
 ## 1.10.0
 

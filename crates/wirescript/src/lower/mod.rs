@@ -319,8 +319,24 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         type_aliases: {
             let mut m = HashMap::default();
             for d in &input.ast.decls {
-                if let crate::ast::TopDecl::TypeAlias(ta) = d {
-                    m.insert(ta.name.clone(), ta.typ.clone());
+                match d {
+                    crate::ast::TopDecl::TypeAlias(ta) => {
+                        m.insert(ta.name.clone(), ta.typ.clone());
+                    }
+                    // `import * as Ns` arrives as a Namespace decl holding the
+                    // imported module's declarations. Its aliases are keyed
+                    // `Ns.Name`, the spelling the parser produces for a
+                    // qualified type and the keying
+                    // `collect_generic_type_aliases` uses for the generic half
+                    // of this map.
+                    crate::ast::TopDecl::Namespace(ns) => {
+                        for nd in &ns.decls {
+                            if let crate::ast::TopDecl::TypeAlias(ta) = nd {
+                                m.insert(format!("{}.{}", ns.name, ta.name), ta.typ.clone());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             m

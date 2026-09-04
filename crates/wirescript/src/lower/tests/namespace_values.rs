@@ -884,3 +884,96 @@ mod bump(n: int) -> (r: int) { return n + value }"),
         "the inlined body's arithmetic must be present"
     );
 }
+
+/// Two `import * as` in ONE file under the same alias IS a conflict, unlike
+/// `colliding_namespace_alias_resolves_per_file` where the two are written in
+/// different files and are therefore independent. Unreported, the second
+/// shadows the first and every reference through the alias reads whichever
+/// module came last.
+#[test]
+fn duplicate_namespace_alias_in_one_file_reports() {
+    let mut files = std::collections::HashMap::default();
+    files.insert("a.ws".to_string(), "let value = 1".to_string());
+    files.insert("b.ws".to_string(), "let value = 10".to_string());
+    let loader = MemLoader { files };
+    let r = resolve(
+        "import * as Other from \"a\"
+         import * as Other from \"b\"
+         out v: int = Other.value",
+        "test",
+        &loader,
+    );
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS012" && d.message.contains("already bound in this file")),
+        "expected a WS012 for the same-file duplicate alias, got {:?}",
+        r.diagnostics
+    );
+}
+
+/// The same module reached twice under one alias is a redundant import, not a
+/// collision. Compared by canonical target, so two spellings of one file do
+/// not report either.
+#[test]
+fn repeated_namespace_import_of_one_module_is_not_a_conflict() {
+    let mut files = std::collections::HashMap::default();
+    files.insert("a.ws".to_string(), "let value = 1".to_string());
+    let loader = MemLoader { files };
+    let r = resolve(
+        "import * as Other from \"a\"
+         import * as Other from \"a\"
+         out v: int = Other.value",
+        "test",
+        &loader,
+    );
+    assert!(
+        r.diagnostics.is_empty(),
+        "importing one module twice under one alias is redundant, not a conflict: {:?}",
+        r.diagnostics
+    );
+}
+
+/// A namespace-qualified RECORD type (`Other.Value`) decomposes into per-field
+/// containers exactly as the same alias does when it is imported by name.
+#[test]
+fn namespaced_record_type_decomposes_like_a_named_import() {
+    let (_, lr) = compile_with_libs(
+        &[("lib.ws", "type Value = {value: int}")],
+        "import * as Other from \"lib\"
+         type ValueHolder = {value: Other.Value}
+         var valueholders: ValueHolder[] = [{value: {value: 10}}]",
+    );
+    let arrays: Vec<_> = lr
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .collect();
+    assert_eq!(arrays.len(), 1, "one array per leaf field: {arrays:?}");
+    let a = arrays[0];
+    // Decomposition must reach the LEAF field, not stop at the first level.
+    assert_eq!(
+        a.properties.get(&*crate::intern::sym::NAME_LABEL),
+        Some(&crate::ir::Literal::String("valueholders.value.value".into())),
+        "label shows how deep decomposition got: {:?}",
+        a.properties
+    );
+    // An `any` element type ships a float array for a declared `int`.
+    assert!(
+        a.ports
+            .outputs
+            .iter()
+            .any(|p| p.ty == Type::Ref(Box::new(Type::Array(Box::new(Type::Int))))),
+        "element type must be int, not any: {:?}",
+        a.ports.outputs
+    );
+    // The game cannot load a `Record` inside an array variant; only the
+    // flattened leaf value is storable.
+    assert_eq!(
+        a.properties.get(&crate::intern::intern("InitialValue")),
+        Some(&crate::ir::Literal::Array(vec![crate::ir::Literal::Int(10)])),
+        "initializer must bake the leaf value: {:?}",
+        a.properties
+    );
+}

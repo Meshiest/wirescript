@@ -337,7 +337,18 @@ pub fn hover_at(
         .or_else(|| hover_builtin_call(source, &word, line, col))
         .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
         .or_else(|| hover_on_keyword(source, &word, resource_estimates, line))
-        .or_else(|| hover_record_or_type_field(source, symbols, doc_comments, &word, line, col))
+        .or_else(|| {
+            hover_record_or_type_field(
+                source,
+                file,
+                type_map,
+                symbols,
+                doc_comments,
+                &word,
+                line,
+                col,
+            )
+        })
         .or_else(|| hover_namespace_member(source, symbols, doc_comments, resource_estimates, &word, line, col))
         .or_else(|| hover_enum_discriminant_variant_path(source, file, &word, line, col))
         .or_else(|| hover_enum_variant_path(source, file, symbols, &word, line, col))
@@ -1754,12 +1765,20 @@ fn hover_on_keyword(
 /// shows as a field, not as a param.
 fn hover_record_or_type_field(
     source: &str,
+    file: &str,
+    type_map: &TypeMap,
     symbols: &[SymbolDef],
     doc_comments: &HashMap<usize, String>,
     word: &str,
     line: usize,
     col: usize,
 ) -> Option<String> {
+    // Record literal field, resolved through the type map. Tried before the
+    // line-scanning resolver below, which only recognizes one written shape.
+    if let Some(v) = resolve_record_lit_field_typed(source, file, type_map, word, line, col) {
+        return Some(v);
+    }
+
     // Record literal field (e.g. `{ counter: score }`)
     if let Some(v) = resolve_record_lit_field(source, symbols, word, line) {
         return Some(v);
@@ -2204,6 +2223,69 @@ fn hover_namespace_member(
     let qualified = format!("{obj_name}.{word}");
     let sym = symbols.iter().find(|s| s.name == qualified)?;
     Some(render_decl_hover(sym, doc_comments, resource_estimates, None))
+}
+
+/// Record-literal field key resolved through the TYPE MAP: the typechecker
+/// records a type for every `Expr::RecordLit` it visits, keyed by that
+/// literal's own byte range, so no written shape needs recognizing textually
+/// the way [`resolve_record_lit_field`] below does.
+///
+/// The innermost enclosing literal wins: `{value: {value: 10}}` spells both
+/// keys the same, and only the containing literal distinguishes them.
+///
+/// The field-key-span derivation mirrors [`hover_enum_field_construction`]'s: a
+/// `RecordLitField::Named`'s `range` spans the WHOLE `key: value`, so the key
+/// span comes from the field name's byte length.
+fn resolve_record_lit_field_typed(
+    source: &str,
+    file: &str,
+    type_map: &TypeMap,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    let line_str = source.lines().nth(line)?;
+    let word_off = line_offset_at(source, line) + word_start_in_line(line_str, col);
+
+    let parsed = crate::parser::parse(source, file);
+    let mut best: Option<(usize, usize)> = None;
+    {
+        let mut on_handler = |_: &Handler| {};
+        let mut on_expr = |e: &Expr| {
+            let Expr::RecordLit { fields, range } = e else {
+                return;
+            };
+            for f in fields {
+                let (name, key_start, key_end) = match f {
+                    crate::ast::RecordLitField::Named { name, range, .. } => {
+                        (name.as_str(), range.start.offset, range.start.offset + name.len())
+                    }
+                    crate::ast::RecordLitField::Shorthand { name, range } => {
+                        (name.as_str(), range.start.offset, range.end.offset)
+                    }
+                    crate::ast::RecordLitField::Spread { .. } => continue,
+                };
+                if name != word || word_off < key_start || word_off > key_end {
+                    continue;
+                }
+                let span = (range.start.offset, range.end.offset);
+                if best.is_none_or(|(bs, be)| span.1 - span.0 < be - bs) {
+                    best = Some(span);
+                }
+            }
+        };
+        super::visit::visit_program(&parsed.ast, &mut on_handler, &mut on_expr);
+    }
+    let (start, end) = best?;
+    let ty = type_map.get(&(std::sync::Arc::from(file), start, end))?;
+    let Type::Record(fields) = ty else {
+        return None;
+    };
+    let (_, field_ty) = fields.iter().find(|(n, _)| n == word)?;
+    Some(format!(
+        "```wirescript\nfield {word}: {}\n```",
+        super::types::type_str(field_ty)
+    ))
 }
 
 fn resolve_record_lit_field(source: &str, symbols: &[SymbolDef], field: &str, line: usize) -> Option<String> {

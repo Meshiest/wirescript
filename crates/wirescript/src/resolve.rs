@@ -482,6 +482,36 @@ fn resolve_import(
                 }
             }
 
+            // Only a duplicate alias written in the SAME file is a conflict; an
+            // `import * as` name is file-local, so a same-named alias from
+            // another file coexists with it (see the travelling-namespace loop
+            // below). One module reached twice under one alias is a redundant
+            // import rather than a collision, so compare canonical targets:
+            // `"utils"` and `"./utils"` name one file and must not report.
+            let prior = target.decls.iter().find_map(|d| match d {
+                TopDecl::Namespace(n) if n.name == *ns_name && n.range.file == imp.range.file => {
+                    Some(n.source_path.clone())
+                }
+                _ => None,
+            });
+            if let Some(prior_path) = prior {
+                if loader.canonical_path(&prior_path, relative_to) != canon {
+                    diagnostics.push(Diagnostic::error(
+                        "WS012",
+                        format!(
+                            "namespace alias '{ns_name}' is already bound in this file to \
+                             '{prior_path}', so this import would silently replace it and every \
+                             reference through '{ns_name}' would read the wrong module. Rename \
+                             one of the two aliases"
+                        ),
+                        imp.range.clone(),
+                    ));
+                }
+                // The alias is already bound in this file either way; a second
+                // namespace under it would shadow the first.
+                return;
+            }
+
             target.push(TopDecl::Namespace(NamespaceDecl {
                 name: ns_name.clone(),
                 decls,

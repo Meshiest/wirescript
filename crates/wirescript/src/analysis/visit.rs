@@ -61,6 +61,16 @@ fn visit_decl<'a>(
                 visit_expr(e, on_call);
             }
         }
+        TopDecl::Array(a) => {
+            for el in &a.init {
+                visit_expr(el.expr(), on_call);
+            }
+        }
+        TopDecl::Map(m) => {
+            if let Some(e) = &m.init {
+                visit_expr(e, on_call);
+            }
+        }
         TopDecl::Buffer(b) => visit_expr(&b.init, on_call),
         TopDecl::Out(o) => {
             if let Some(e) = &o.value {
@@ -114,6 +124,16 @@ fn visit_stmt<'a>(
         Stmt::ExprStmt(es) => visit_expr(&es.expr, on_call),
         Stmt::Var(v) => {
             if let Some(e) = &v.init {
+                visit_expr(e, on_call);
+            }
+        }
+        Stmt::Array(a) => {
+            for el in &a.init {
+                visit_expr(el.expr(), on_call);
+            }
+        }
+        Stmt::Map(m) => {
+            if let Some(e) = &m.init {
                 visit_expr(e, on_call);
             }
         }
@@ -230,6 +250,7 @@ fn visit_expr<'a>(e: &'a Expr, on_call: &mut dyn FnMut(&'a Expr)) {
             }
         }
         Expr::RecordLit { fields, .. } => {
+            on_call(e);
             for f in fields {
                 match f {
                     RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
