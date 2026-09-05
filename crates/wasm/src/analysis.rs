@@ -1,10 +1,44 @@
 
 use serde::Serialize;
 use wirescript::analysis::{
-    Location, TextRange, TypeMap, collect_symbols, definition_at, find_enclosing_call,
-    find_name_range, format_wirescript, hover_at, named_arg_value, receiver_methods,
-    references_at, type_str,
+    Location, TextRange, TypeMap, byte_to_char_col, char_col_to_byte, char_col_to_utf16_col,
+    collect_symbols, definition_at, find_enclosing_call, find_name_range, format_wirescript,
+    hover_at, line_text, named_arg_value, receiver_methods, references_at, type_str,
+    utf16_col_to_char_col,
 };
+
+// Three column conventions meet in this file. The editor (Monaco, and the VS Code SDK shim) counts columns in UTF-16 code
+// units; `analysis::` takes and returns 0-based CHAR columns; the compiler's
+// `Pos::col` is a 1-based BYTE column. They agree only while a line is pure
+// ASCII, and slicing a line with the wrong one lands mid-character and traps
+// the wasm module until the page is reloaded. Convert at this boundary and
+// nowhere else.
+
+/// Editor column -> the 0-based char column `analysis::` expects.
+fn in_col(source: &str, line: u32, col: u32) -> usize {
+    utf16_col_to_char_col(line_text(source, line as usize), col as usize)
+}
+
+/// A 0-based char column from `analysis::` -> the editor's UTF-16 column. A
+/// column past the end of its line passes through: the two agree below
+/// U+10000, so that is right whenever the line is not the one it names.
+fn out_char_col(source: &str, line: usize, col: usize) -> usize {
+    let l = line_text(source, line);
+    if l.chars().count() < col {
+        return col;
+    }
+    char_col_to_utf16_col(l, col)
+}
+
+/// A 0-based byte column (`Pos::col - 1`, and what `Location`/`TextRange`
+/// carry) -> the editor's UTF-16 column.
+fn out_byte_col(source: &str, line: usize, col: usize) -> usize {
+    let l = line_text(source, line);
+    if l.len() < col {
+        return col;
+    }
+    char_col_to_utf16_col(l, byte_to_char_col(l, col))
+}
 use wirescript::ast::*;
 use wirescript::catalog::calls::calls;
 use wirescript::catalog::events::events;
@@ -56,27 +90,33 @@ pub struct LocationOut {
     pub file: Option<String>,
 }
 
-impl From<Location> for LocationOut {
-    fn from(loc: Location) -> Self {
-        LocationOut {
-            start_line: loc.start_line,
-            start_col: loc.start_col,
-            end_line: loc.end_line,
-            end_col: loc.end_col,
-            file: loc.file,
-        }
+/// Both `Location` and `TextRange` carry 0-based BYTE columns (each is built
+/// straight from a `SourceRange`), so converting one for the editor needs the
+/// source it was measured against, which is why neither is a `From` impl.
+/// A cross-file `Location` is left alone: its columns index a file this
+/// frontend does not hold, and the playground is single-file anyway.
+fn location_out(source: &str, loc: Location) -> LocationOut {
+    let same_file = loc.file.is_none();
+    let conv = |line: usize, col: usize| {
+        if same_file { out_byte_col(source, line, col) } else { col }
+    };
+    LocationOut {
+        start_col: conv(loc.start_line, loc.start_col),
+        end_col: conv(loc.end_line, loc.end_col),
+        start_line: loc.start_line,
+        end_line: loc.end_line,
+        file: loc.file,
     }
 }
 
-impl From<TextRange> for LocationOut {
-    fn from(r: TextRange) -> Self {
-        LocationOut {
-            start_line: r.start_line,
-            start_col: r.start_col,
-            end_line: r.end_line,
-            end_col: r.end_col,
-            file: None,
-        }
+#[allow(dead_code)]
+fn text_range_out(source: &str, r: TextRange) -> LocationOut {
+    LocationOut {
+        start_line: r.start_line,
+        start_col: out_byte_col(source, r.start_line, r.start_col),
+        end_line: r.end_line,
+        end_col: out_byte_col(source, r.end_line, r.end_col),
+        file: None,
     }
 }
 
@@ -103,9 +143,17 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
             code: d.code.clone(),
             message: d.message.clone(),
             start_line: d.range.start.line.saturating_sub(1) as usize,
-            start_col: d.range.start.col.saturating_sub(1) as usize,
+            start_col: out_byte_col(
+                source,
+                d.range.start.line.saturating_sub(1) as usize,
+                d.range.start.col.saturating_sub(1) as usize,
+            ),
             end_line: d.range.end.line.saturating_sub(1) as usize,
-            end_col: d.range.end.col.saturating_sub(1) as usize,
+            end_col: out_byte_col(
+                source,
+                d.range.end.line.saturating_sub(1) as usize,
+                d.range.end.col.saturating_sub(1) as usize,
+            ),
         })
         .collect();
     serde_json::to_string(&diags).unwrap_or_else(|_| "[]".into())
@@ -168,13 +216,14 @@ pub fn completions(
     let resolved = resolve(source, "editor", &loader);
     let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let symbols = collect_symbols(&resolved.ast, &tc.type_of_expr);
+    let col = in_col(source, line, col) as u32;
     let mut items: Vec<CompletionOut> = Vec::new();
 
     // Prefab file reference `$./file.brz` / `$/abs.brz`: complete from the
     // registered (dragged-in) prefab paths.
     {
         let l = source.lines().nth(line as usize).unwrap_or("");
-        let col_idx = (col as usize).min(l.len());
+        let col_idx = char_col_to_byte(l, col as usize);
         let before = &l[..col_idx];
         if let Some(dollar) = before.rfind('$') {
             let frag = &before[dollar + 1..];
@@ -204,7 +253,7 @@ pub fn completions(
     // Asset reference `$AssetType/AssetName`: types after `$`, names after `$Type/`.
     {
         let l = source.lines().nth(line as usize).unwrap_or("");
-        let col_idx = (col as usize).min(l.len());
+        let col_idx = char_col_to_byte(l, col as usize);
         let before = &l[..col_idx];
         if let Some(dollar) = before.rfind('$') {
             let frag = &before[dollar + 1..];
@@ -595,9 +644,11 @@ pub fn hover(source: &str, line: u32, col: u32, files_json: &str) -> Option<Stri
     let tc = typecheck_with_inference(&resolved.ast, "editor").0;
     let symbols = collect_symbols(&resolved.ast, &tc.type_of_expr);
     let estimates = wirescript::analysis::collect_estimates(&resolved.ast, &tc, "editor");
+    let pre_resolve = parse(source, "editor");
     let value = hover_at(
         source,
         "editor",
+        &pre_resolve.ast,
         &symbols,
         &tc.type_of_expr,
         &resolved.doc_comments,
@@ -606,7 +657,7 @@ pub fn hover(source: &str, line: u32, col: u32, files_json: &str) -> Option<Stri
         &tc.dropped_ranges,
         &estimates,
         line as usize,
-        col as usize,
+        in_col(source, line, col),
     )?;
     Some(serde_json::to_string(&HoverOut { value }).ok()?)
 }
@@ -635,11 +686,10 @@ pub fn definition_with_files(
         "editor",
         &loader,
         line as usize,
-        col as usize,
+        in_col(source, line, col),
     )?;
 
-    let out: LocationOut = loc.into();
-    Some(serde_json::to_string(&out).ok()?)
+    Some(serde_json::to_string(&location_out(source, loc)).ok()?)
 }
 
 #[cfg(test)]
@@ -657,7 +707,7 @@ pub fn references_with_files(
     // only ever returns same-file sites (cross-file rename lives in the LSP).
     let parsed = parse(source, "editor");
     let (target, sites) =
-        references_at(&parsed.ast, source, "editor", line as usize, col as usize)?;
+        references_at(&parsed.ast, source, "editor", line as usize, in_col(source, line, col))?;
     let refs: Vec<LocationOut> = sites
         .into_iter()
         .map(|site| {
@@ -669,11 +719,15 @@ pub fn references_with_files(
             } else {
                 site.range
             };
+            let (sl, el) = (
+                range.start.line.saturating_sub(1) as usize,
+                range.end.line.saturating_sub(1) as usize,
+            );
             LocationOut {
-                start_line: range.start.line.saturating_sub(1) as usize,
-                start_col: range.start.col.saturating_sub(1) as usize,
-                end_line: range.end.line.saturating_sub(1) as usize,
-                end_col: range.end.col.saturating_sub(1) as usize,
+                start_line: sl,
+                start_col: out_byte_col(source, sl, range.start.col.saturating_sub(1) as usize),
+                end_line: el,
+                end_col: out_byte_col(source, el, range.end.col.saturating_sub(1) as usize),
                 file: None,
             }
         })
@@ -746,7 +800,7 @@ pub fn inlay_hints(source: &str, files_json: &str) -> String {
         .into_iter()
         .map(|h| InlayHintOut {
             line: h.line,
-            col: h.col,
+            col: out_char_col(source, h.line, h.col),
             label: h.label,
             kind: match h.kind {
                 wirescript::analysis::InlayHintKind::Type => "type",

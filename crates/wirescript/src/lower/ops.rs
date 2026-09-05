@@ -59,9 +59,9 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     let in_a = rule.ports.inputs[0];
     let in_b = rule.ports.inputs[1];
     let out = rule.ports.output;
-    let in_a_sym = intern(in_a.as_str());
-    let in_b_sym = intern(in_b.as_str());
-    let out_sym = intern(out.as_str());
+    let in_a_sym = in_a.sym();
+    let in_b_sym = in_b.sym();
+    let out_sym = out.sym();
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: rule.gate_class,
         source_range: range.clone(),
@@ -137,16 +137,16 @@ fn wrap_object_for_math(
         ports: GateIO {
             inputs: vec![
                 PortSpec {
-                    name: intern(WirePort::BInputA.as_str()),
+                    name: WirePort::BInputA.sym(),
                     ty: operand_ty.clone(),
                 },
                 PortSpec {
-                    name: intern(WirePort::BInputB.as_str()),
+                    name: WirePort::BInputB.sym(),
                     ty: Type::Bool,
                 },
             ],
             outputs: vec![PortSpec {
-                name: intern(WirePort::BOutput.as_str()),
+                name: WirePort::BOutput.sym(),
                 ty: Type::Bool,
             }],
         },
@@ -217,9 +217,9 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             } else {
                 (Type::Any, Type::Any, Type::Any)
             };
-            let in_a_sym = intern(in_a.as_str());
-            let in_b_sym = intern(in_b.as_str());
-            let out_sym = intern(out_port.as_str());
+            let in_a_sym = in_a.sym();
+            let in_b_sym = in_b.sym();
+            let out_sym = out_port.sym();
             let node_id = ctx.add_gate(AddNodeOpts {
                 gate_class,
                 source_range: inner_range.clone(),
@@ -259,8 +259,8 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     };
     let in_a = rule.ports.inputs[0];
     let out = rule.ports.output;
-    let in_a_sym = intern(in_a.as_str());
-    let out_sym = intern(out.as_str());
+    let in_a_sym = in_a.sym();
+    let out_sym = out.sym();
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: rule.gate_class,
         source_range: range.clone(),
@@ -302,7 +302,7 @@ pub(super) fn build_format_text(
     range: &SourceRange,
 ) -> PortRef {
     let inputs = (0..slots.len())
-        .map(|i| PortSpec { name: intern(FORMAT_SLOTS[i].as_str()), ty: Type::Any })
+        .map(|i| PortSpec { name: FORMAT_SLOTS[i].sym(), ty: Type::Any })
         .collect();
     let mut props = HashMap::default();
     props.insert(intern_static("FormatString"), Literal::String(format_string));

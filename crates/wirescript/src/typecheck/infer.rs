@@ -1370,11 +1370,27 @@ pub(super) fn check_match_pattern(
                 },
             );
         }
-        Pattern::Variant { variant, sub, range } => {
+        Pattern::Variant { enum_path, variant, sub, range } => {
             let Type::Enum { name: en, args } = matched else {
                 bind_sub_as_any(ctx, sub, mutable);
                 return;
             };
+            // `Shape.Circle(r)` on a `Shape` scrutinee is the qualified
+            // spelling construction and `is` both require; naming a DIFFERENT
+            // enum is the mistake it exists to catch, since the variant name
+            // alone can belong to several enums.
+            if let Some(q) = enum_path
+                && q != en
+                && !q.is_empty()
+            {
+                ctx.emit(
+                    "WS060",
+                    format!(
+                        "pattern names enum `{q}`, but the value being matched is a `{en}`"
+                    ),
+                    range.clone(),
+                );
+            }
             let edef = match ctx.enum_defs.get(en) {
                 Some(d) => d.clone(),
                 None => {
@@ -1867,10 +1883,19 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             match t {
                 Type::Ref(inner) => *inner,
                 Type::Any => Type::Any,
+                // A bare variable name in exec context ALREADY auto-derefs, so
+                // `*x` infers the value type rather than a `ref`. `*x` is
+                // documented as the explicit spelling of that same read
+                // (`docs/src/expressions.md`), so a deref of something
+                // ref-able is the value it just produced, not a mismatch.
+                other if super::is_ref_able(ctx, operand) => other,
                 other => {
                     ctx.emit(
                         "WS003",
-                        format!("expected ref T, got {:?}", other),
+                        format!(
+                            "`*` needs a reference, got {}",
+                            crate::analysis::types::type_str(&other)
+                        ),
                         range.clone(),
                     );
                     Type::Any
@@ -2288,7 +2313,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         }
         Expr::IndexAccess { obj, index, range } => {
             let ot = unwrap_ref(&infer(ctx, obj));
-            infer(ctx, index);
+            check_index_type(ctx, &ot, index);
             match &ot {
                 Type::Array(inner) => {
                     if ctx.exec_mode() != ExecMode::Exec && !index_access_is_const(ctx, e) {
@@ -2564,14 +2589,20 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             Type::Record(rec_fields)
         }
         Expr::Array { elements, .. } => {
-            // Type each element so it lands in the type map; the array's element
-            // type is taken from the first element. A spread contributes its
-            // source array's element type, a plain item its value type. Whether
-            // the elements must be constant literals is enforced at the
-            // declaration site (top level) — not here, since the same literal is
-            // valid with runtime elements in an exec-context assignment.
-            let mut elem = Type::Any;
-            for (i, el) in elements.iter().enumerate() {
+            // Type each element so it lands in the type map, and take the
+            // array's element type as the WIDENING JOIN of them all, not
+            // element 0's. A spread contributes its source array's element
+            // type, a plain item its value type. Whether the elements must be
+            // constant literals is enforced at the declaration site (top
+            // level), not here, since the same literal is valid with runtime
+            // elements in an exec-context assignment.
+            //
+            // Element 0's type is the wrong answer in the direction that stays
+            // silent: it only asks the rest to coerce INTO it, so `[1, 2.5]`
+            // reads as `int[]` and stores the float in an int-variant gate,
+            // while the equally mixed `["a", 1]` reads as `string[]`.
+            let mut elem: Option<Type> = None;
+            for el in elements {
                 let t = unwrap_ref(&infer(ctx, el.expr()));
                 let et = match el {
                     ArrayElem::Spread(_) => match t {
@@ -2580,33 +2611,37 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     },
                     ArrayElem::Item(_) => t,
                 };
-                if i == 0 {
-                    elem = et;
-                } else if !matches!(elem, Type::Any)
-                    && coerce(&et, &elem) == CoerceRule::Mismatch
-                {
-                    // A literal's elements must be homogeneous — every element
-                    // has to coerce into the first element's type, because they
-                    // all share one backing array-variant gate. Without this a
-                    // `[1, "hello", 2]` typed the array `int[]` from element 0
-                    // and pushed the string constant into the int variant with
-                    // no diagnostic. (Top-level `var` initializers are checked
-                    // against the DECLARED element type in
-                    // `check_top_level_array_init`; this covers exec-context
-                    // assignments, which reach `infer` + a whole-array coerce
-                    // that only inspects element 0.)
-                    ctx.emit(
-                        "WS003",
-                        format!(
-                            "array element: expected {}, got {}",
-                            crate::analysis::types::type_str(&elem),
-                            crate::analysis::types::type_str(&et),
-                        ),
-                        el.expr().range().clone(),
-                    );
-                }
+                elem = Some(match elem {
+                    None => et,
+                    Some(acc) if matches!(acc, Type::Any) || matches!(et, Type::Any) => {
+                        if matches!(acc, Type::Any) { et } else { acc }
+                    }
+                    Some(acc) => match crate::types::coerce::widening_join_all([acc.clone(), et.clone()]) {
+                        Some(joined) => joined,
+                        None => {
+                            // A literal's elements share one backing
+                            // array-variant gate, so they have to have a
+                            // common type. (Top-level `var` initializers are
+                            // checked against the DECLARED element type in
+                            // `check_top_level_array_init`; this covers
+                            // exec-context assignments, which reach `infer`
+                            // plus a whole-array coerce that only inspects
+                            // element 0.)
+                            ctx.emit(
+                                "WS003",
+                                format!(
+                                    "array element: expected {}, got {}",
+                                    crate::analysis::types::type_str(&acc),
+                                    crate::analysis::types::type_str(&et),
+                                ),
+                                el.expr().range().clone(),
+                            );
+                            acc
+                        }
+                    },
+                });
             }
-            Type::Array(Box::new(elem))
+            Type::Array(Box::new(elem.unwrap_or(Type::Any)))
         }
         // Reached only when a map literal is used somewhere OTHER than a
         // `var` initializer or an assignment RHS to a map var — those
@@ -3729,6 +3764,25 @@ fn check_null(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
 }
 
 /// The shared WS003 sink.
+/// Type an `xs[i]` / `m[k]` subscript's index, and check it against what the
+/// container is keyed by: an array (and a string) by `int`, a map by its own
+/// key type.
+///
+/// The method spelling `m.set(k, v)` goes through the ordinary argument path;
+/// the `m[k]` subscript, which is the only spelling an array has, reaches here
+/// instead, on both sides of an assignment.
+pub(crate) fn check_index_type(ctx: &mut TypeCheckCtx, container: &Type, index: &Expr) {
+    let got = unwrap_ref(&infer(ctx, index));
+    let want = match container {
+        Type::Array(_) | Type::String => Type::Int,
+        Type::Map(k, _) => k.as_ref().clone(),
+        // Anything else is a shape lowering resolves dynamically (or an
+        // already-reported error); there is no key type to check against.
+        _ => return,
+    };
+    coerce_or_emit(ctx, &got, &want, index.range());
+}
+
 pub(crate) fn coerce_or_emit(ctx: &mut TypeCheckCtx, from: &Type, to: &Type, range: &SourceRange) {
     // `Never` is not a mismatched value type, it is the ABSENCE of one, so
     // "expected int, got never" describes the wrong problem. Route it to the

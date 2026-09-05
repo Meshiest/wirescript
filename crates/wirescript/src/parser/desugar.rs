@@ -1,15 +1,6 @@
-//! AST rewrites that are not grammar: gate-builtin call forms and the
-//! source-offset fixup for re-parsed string interpolations.
+//! AST rewrites that are not grammar: the gate-builtin call forms.
 
 use super::*;
-
-fn shift_pos(p: &mut Pos, origin: &Pos) {
-    p.offset += origin.offset;
-    p.line = p.line.saturating_sub(1) + origin.line;
-    if p.line == origin.line {
-        p.col = p.col.saturating_sub(1) + origin.col;
-    }
-}
 
 /// Rewrite an EXPRESSION-form gate builtin into its method-call / read form:
 /// `GetVariable(v)` → `v`; `GetMapElement(m, k)` → `m.get(k)`. The container is
@@ -89,75 +80,5 @@ pub(super) fn gate_builtin_assign(e: &Expr) -> Option<Assign> {
             Some(assign(v, value))
         }
         _ => None,
-    }
-}
-
-pub(super) fn shift_expr_offsets(expr: &mut Expr, origin: Pos) {
-    {
-        let r = expr.range_mut();
-        shift_pos(&mut r.start, &origin);
-        shift_pos(&mut r.end, &origin);
-    }
-    match expr {
-        Expr::FieldAccess { obj, .. } => shift_expr_offsets(obj, origin),
-        Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
-            shift_expr_offsets(operand, origin);
-        }
-        Expr::IndexAccess { obj, index, .. } => {
-            shift_expr_offsets(obj, origin);
-            shift_expr_offsets(index, origin);
-        }
-        Expr::TuplePick { obj, .. } => shift_expr_offsets(obj, origin),
-        Expr::UnOp { operand, .. } => shift_expr_offsets(operand, origin),
-        Expr::BinOp { left, right, .. } => {
-            shift_expr_offsets(left, origin);
-            shift_expr_offsets(right, origin);
-        }
-        Expr::Call { callee, args, .. } => {
-            shift_expr_offsets(callee, origin);
-            for a in args {
-                match a {
-                    CallArg::Positional(e) => shift_expr_offsets(e, origin),
-                    CallArg::Named { value, .. } => shift_expr_offsets(value, origin),
-                    CallArg::Spread(e) => shift_expr_offsets(e, origin),
-                }
-            }
-        }
-        Expr::IfExpr {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            shift_expr_offsets(cond, origin);
-            shift_expr_offsets(then_branch, origin);
-            shift_expr_offsets(else_branch, origin);
-        }
-        Expr::MatchExpr { scrutinee, .. } => {
-            shift_expr_offsets(scrutinee, origin);
-        }
-        Expr::Array { elements, .. } => {
-            for el in elements {
-                shift_expr_offsets(el.expr_mut(), origin);
-            }
-        }
-        Expr::MapLit { entries, .. } => {
-            for e in entries.iter_mut() {
-                shift_expr_offsets(&mut e.key, origin);
-                shift_expr_offsets(&mut e.value, origin);
-            }
-        }
-        Expr::VariantCtor { path, fields, .. } => {
-            shift_expr_offsets(path, origin);
-            for f in fields.iter_mut() {
-                match f {
-                    RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
-                        shift_expr_offsets(value, origin);
-                    }
-                    RecordLitField::Shorthand { .. } => {}
-                }
-            }
-        }
-        _ => {}
     }
 }

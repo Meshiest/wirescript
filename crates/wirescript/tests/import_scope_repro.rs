@@ -1,38 +1,11 @@
-//! Repro: mods imported from another file fail to resolve module-level `let`
-//! constants referenced inside their bodies (WS002 unknown identifier +
-//! WS004 overload cascades), even when the constants are ALSO explicitly
-//! imported. Reported 2026-07-01 compiling the wirescript repo's
-//! projects/input files.
+//! Regression: a mod imported from another file must resolve the module-level
+//! `let` constants its body references (they used to cascade into WS002 +
+//! WS004), whether the constant is imported explicitly or pulled in by the
+//! resolver's dependency closure. Reported 2026-07-01 against the projects/input
+//! programs.
 
-use wirescript::resolve::{resolve, FsLoader, MemLoader};
+use wirescript::resolve::{resolve, MemLoader};
 use wirescript::typecheck::typecheck;
-
-fn diag_report(label: &str, source: &str, file: &str) {
-    let resolved = resolve(source, file, &FsLoader);
-    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
-    eprintln!("=== {label}: {} resolve diags, {} tc diags", resolved.diagnostics.len(), tc.diagnostics.len());
-    for d in resolved.diagnostics.iter().chain(tc.diagnostics.iter()).take(25) {
-        eprintln!(
-            "  [{}] {} ({}:{}:{})",
-            d.code, d.message, d.range.file, d.range.start.line, d.range.start.col
-        );
-    }
-}
-
-#[test]
-fn real_project_files_typecheck() {
-    // Local-only debug probe over the wirescript repo's input files (it only
-    // prints diagnostics, no assertions). Those absolute paths don't exist in
-    // CI or on other machines, so skip a missing file instead of panicking.
-    let base = r"C:\Users\cake\dev\brickadia\wirescript\projects\input";
-    for name in ["lib.ws", "cursor.ws", "calibrate.ws", "test_cursor.ws"] {
-        let path = format!("{base}\\{name}");
-        let Ok(src) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        diag_report(name, &src, &path);
-    }
-}
 
 /// Minimal shape: file B imports a mod from file A; the mod's body uses a
 /// module-level `let` from A. Also imports the let explicitly.

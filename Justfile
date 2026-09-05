@@ -76,6 +76,12 @@ mdbook *ARGS='build': doc-summary doc-hljs
 wasm:
     wasm-pack build crates/wasm --target nodejs --release --out-dir playground/sdk/pkg
 
+# Fuzz the compiler: generate random programs and report anything that
+# crashes, emits an `_Unsupported` placeholder, or fails to compile.
+# `just fuzz 20000 7` runs 20k programs from seed 7.
+fuzz count='5000' seed='1':
+    cargo run --release --example fuzz_programs -p wirescript -- --count {{count}} --seed {{seed}}
+
 # Check a .ws file for errors
 check file:
     cargo run --release --bin wirescript-check -- {{file}}

@@ -74,11 +74,12 @@
             Some(CaseValue::Vector { x: 0.5, y: 0.25, z: -0.75 })
         );
         let quat_cases = t.cases("BrickComponentType_WireGraph_Expr_QuatDotProduct");
+        // The probe writes 0.7071067811865476, the shortest round-trip spelling
+        // of FRAC_1_SQRT_2; both name the same f64.
+        let h = std::f64::consts::FRAC_1_SQRT_2;
         assert_eq!(
             quat_cases[0].inputs[0].value,
-            Some(CaseValue::Quat {
-                x: 0.0, y: 0.0, z: 0.7071067811865476, w: 0.7071067811865476
-            })
+            Some(CaseValue::Quat { x: 0.0, y: 0.0, z: h, w: h })
         );
         // 3-arg Color(...) defaults alpha to 1.0.
         let hex_cases = t.cases("BrickComponentType_WireGraph_Expr_ColorToHex");

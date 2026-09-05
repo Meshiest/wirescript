@@ -959,16 +959,72 @@ fn sole_output_name(ctx: &TypeCheckCtx) -> Option<String> {
 /// a false WS003, since `coerce`'s `as_tuple_elems` treats only an INDEX-keyed
 /// record as tuple-shaped.
 ///
-/// TODO(P0-11): a multi-output `return` value is not checked, in either of its
-/// forms - the name-keyed record above, and a positional tuple
-/// (`return (1, "x")`), which lowering DOES wire per element.
+/// With several, the value is inferred first and then checked LEAF BY LEAF
+/// against the ports it is wired into (see [`check_multi_output_return`]).
 pub(super) fn check_return_value(ctx: &mut TypeCheckCtx, value: &Expr) {
     match sole_output_name(ctx) {
         Some(name) => {
             check_port_write_expr(ctx, &name, value);
         }
         None => {
-            infer::infer(ctx, value);
+            let t = infer::infer(ctx, value);
+            check_multi_output_return(ctx, &unwrap_ref(&t), value);
         }
+    }
+}
+
+/// Check each leaf of a multi-output `return` against the output it is wired
+/// into.
+///
+/// `return { a: .., b: .. }` forwards per NAME and `return (x, y)` per
+/// POSITION, and lowering wires both that way, so every leaf is an ordinary
+/// port write. The whole value cannot be checked against one `Type::Tuple`
+/// instead: `coerce`'s `as_tuple_elems` treats only an INDEX-keyed record as
+/// tuple-shaped, so the name-keyed form (the working spelling) would report a
+/// false WS003.
+///
+/// A leaf whose name matches no output is left alone: an extra or misspelled
+/// field is a shape question, not a type one, and the port-binding pass owns
+/// it.
+fn check_multi_output_return(ctx: &mut TypeCheckCtx, value_ty: &Type, value: &Expr) {
+    // Only a signature frame (a `mod`/`chip`'s own outputs) has a declaration
+    // ORDER to pair a positional return against; the synthesized module-level
+    // frame is a scope scan with none.
+    if ctx.out_ctx.len() <= 1 {
+        return;
+    }
+    let outs: Vec<String> = match ctx.out_ctx.last() {
+        Some(o) if o.len() > 1 => o.iter().map(|f| f.name.clone()).collect(),
+        _ => return,
+    };
+    let Type::Record(fields) = value_ty else {
+        return;
+    };
+    let positional =
+        !fields.is_empty() && fields.iter().enumerate().all(|(i, (k, _))| *k == i.to_string());
+    // Field ranges come from the literal when the value is one, so a mismatch
+    // points at the offending element rather than the whole `return`.
+    let lit_ranges: Vec<&SourceRange> = match value {
+        Expr::RecordLit { fields: f, .. } => f
+            .iter()
+            .map(|x| match x {
+                RecordLitField::Named { range, .. }
+                | RecordLitField::Shorthand { range, .. }
+                | RecordLitField::Spread { range, .. } => range,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    for (i, (key, ft)) in fields.iter().enumerate() {
+        let name = if positional {
+            outs.get(i)
+        } else {
+            outs.iter().find(|n| *n == key)
+        };
+        let Some(name) = name.cloned() else {
+            continue;
+        };
+        let range = lit_ranges.get(i).copied().unwrap_or_else(|| value.range());
+        check_port_write(ctx, &name, &unwrap_ref(ft), range);
     }
 }

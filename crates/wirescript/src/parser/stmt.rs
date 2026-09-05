@@ -5,6 +5,11 @@ use super::*;
 impl<'a> Parser<'a> {
     pub(super) fn parse_block(&mut self) -> Block {
         let start = self.expect(TokenKind::LBrace, None).start;
+        if !self.enter_nesting() {
+            self.leave_nesting(1);
+            let end = self.peek().end;
+            return Block { stmts: Vec::new(), range: self.make_range(start, end) };
+        }
         self.eat_newlines();
         let mut stmts: Vec<Stmt> = Vec::new();
         while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
@@ -21,10 +26,11 @@ impl<'a> Parser<'a> {
                     // under `stmt_start` (harmless when it's the same offset)
                     // to keep this the safest, most permissive insertion.
                     let decl_start = s.range().start.offset;
+                    let file: std::sync::Arc<str> = self.file.into();
                     if decl_start != stmt_start.offset {
-                        self.doc_comments.insert(decl_start, doc.clone());
+                        self.doc_comments.insert((file.clone(), decl_start), doc.clone());
                     }
-                    self.doc_comments.insert(stmt_start.offset, doc);
+                    self.doc_comments.insert((file, stmt_start.offset), doc);
                 }
                 // Drain any synthetic let bindings queued by parse_handler
                 // (expression triggers).  They must appear *before* the handler.
@@ -37,6 +43,7 @@ impl<'a> Parser<'a> {
             self.eat_newlines();
         }
         let end = self.expect(TokenKind::RBrace, None).end;
+        self.leave_nesting(1);
         Block {
             stmts,
             range: self.make_range(start, end),
@@ -628,7 +635,14 @@ impl<'a> Parser<'a> {
         if self.match_tok(TokenKind::Kw, Some("else")).is_some() {
             self.eat_newlines();
             if self.check(TokenKind::Kw, Some("if")) {
+                // `else if` chains nest an `If` per arm, so the chain length is
+                // a tree depth even though it reads as a flat ladder.
+                if !self.enter_nesting() {
+                    self.leave_nesting(1);
+                    return None;
+                }
                 let inner = self.parse_if_stmt();
+                self.leave_nesting(1);
                 let r = match &inner {
                     Stmt::If(i) => i.range.clone(),
                     Stmt::IfLet(i) => i.range.clone(),

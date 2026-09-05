@@ -49,7 +49,7 @@ used in the wrong one, or when a feedback loop has no tick barrier. See
 | `WS002` | Unknown name or type — an undefined variable, an unknown type, an undefined namespace base, a namespace base shadowed by a local binding of the same name, or a misused generic alias (bare, wrong arity, or recursive). | `let x = undefinedVar` / `var x: Widget` / `import * as u` then `mod g(u: int) { u.f() }` |
 | `WS012` | Import error — a circular import, an unresolvable file, or a named binding not found in the target module. | `import { nope } from "utils"` |
 | `WS013` | Duplicate declaration, or an output that is never assigned. | two `var x: int = 0` in one scope |
-| `WS014` | *(warning)* Unused import. | `import { clamp } from "u"`, `clamp` never used |
+| `WS014` | *(warning)* Unused import, or a named import that leaves behind the `on` handlers / anonymous chips the module installs (write `import "mod"` to install those too). | `import { clamp } from "u"`, `clamp` never used |
 | `WS021` | Use before declaration — a chip/mod is called above the point where it's declared (declarations register in source order). | `helper()` above `mod helper() { }` |
 | `WS043` | An `on <call> -> <pattern>` general (non-event) trigger's call has no exec-typed output for `on` to auto-extract — it needs an event, or a call whose result includes an exec field (e.g. via `exec = ...`). | `on pair(5) -> (p, q) { }` where `pair` has two plain (non-exec) outputs and no `exec =` arg |
 | `WS060` | Unknown variant on an enum path (`Enum.Variant`) - the enum has no variant with that name. | `enum Shape { Empty }` then `Shape.Nope` |

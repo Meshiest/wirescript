@@ -132,11 +132,11 @@ pub(in crate::lower) fn lower_builtin_call(
             if let Expr::Ident { name, .. } = arg_expr
                 && let Some(v) = crate::catalog::enum_member_value(enum_type, name)
             {
-                properties.insert(intern(p.port.as_str()), Literal::Int(v));
+                properties.insert(p.port.sym(), Literal::Int(v));
                 continue;
             }
             if let Some(v) = enum_config_discriminant(ctx, arg_expr, enum_type) {
-                properties.insert(intern(p.port.as_str()), Literal::Int(v));
+                properties.insert(p.port.sym(), Literal::Int(v));
                 continue;
             }
             let resolved = match expr_to_literal_in(arg_expr, &ctx.const_lookup()) {
@@ -145,7 +145,7 @@ pub(in crate::lower) fn lower_builtin_call(
                 _ => None,
             };
             if let Some(v) = resolved {
-                properties.insert(intern(p.port.as_str()), Literal::Int(v));
+                properties.insert(p.port.sym(), Literal::Int(v));
                 continue;
             }
         }

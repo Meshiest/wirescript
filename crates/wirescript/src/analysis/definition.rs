@@ -1,6 +1,6 @@
 use super::references::find_name_range;
 use super::symbols::SymbolDef;
-use super::text::word_at;
+use super::text::{cursor_byte_offset, word_at};
 use crate::ast::*;
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
@@ -556,19 +556,6 @@ fn resolve_field_definition(
 }
 
 // ---------- custom-event send-site → receiver navigation ----------
-
-/// Byte offset of the cursor, matching the lexer's source-offset convention
-/// (the same one `analysis::text` uses for other cursor queries).
-fn cursor_byte_offset(source: &str, line: usize, col: usize) -> usize {
-    let line_start: usize = source.lines().take(line).map(|l| l.len() + 1).sum();
-    let line_str = source.lines().nth(line).unwrap_or("");
-    let bc = line_str
-        .char_indices()
-        .nth(col)
-        .map(|(b, _)| b)
-        .unwrap_or(line_str.len());
-    line_start + bc
-}
 
 /// If `call` is a `SendCustomEvent(...)` / `SendGlobalCustomEvent(...)` send and
 /// `off` sits on its channel-name string literal, return that channel name plus

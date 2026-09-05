@@ -5,9 +5,39 @@
 ### Fixes
 
 - `var a: int[] = []` and `var a: float[] = [1, 2]` keep their declared element type inside a handler, as they already did at top level. A local array literal fell to a whole-array coerce that refused `any[]` into `int[]`.
+- `wirescript-check` reports diagnostics from imported modules. It filtered them to the file named on the command line, so a rejected program printed `no errors` and exited 0.
+- A program nested more than 400 levels deep is a `WSP001` error. Every later pass recurses over the tree, and a stack overflow aborts rather than panicking, so the editor died silently.
+- `cargo clippy` passes on the workspace. A loop in import resolution that could only run once and four quaternion test constants were hard errors.
+- `import { x } from "lib"` warns (`WS014`) when it leaves `lib`'s `on` handlers behind. A handler binds no name to select, so the named form never brought one in and nothing said so.
+- A module reached by two import paths installs its handlers once. The diamond check is keyed on the names a declaration binds, and a handler binds none.
+- An `enum` can be imported. Listed as neither importable nor named, a named import answered "not found" and a whole-module import left the type unknown.
+- Two modules that each declare the same top-level `let` is a `WS013`, as it already was for a `mod`/`chip`. Shadowing within one file stays legal.
+- A record field or container element written as an assignment target is type-checked. `p.x = "wrong"` on an `x: int` and `a["str"] = 1` on an `int[]` compiled clean.
+- An array literal's element type is the widening join of its elements, not element 0's. `[1, 2.5]` typed `int[]` and rode the float into an int-variant gate.
+- `var c: exec`, `var c: never`, `int[][]` and `Map<int, int[]>` are `WS025` errors. A storage gate holds one wire variant; the check listed only `zone`/`teleport`/`prefab`/`any`.
+- Both quote styles read the escape table the syntax reference publishes. The single-quoted reader had no `\r` or `\0`.
+- A doc comment stays with the declaration it was written on. The table was keyed by byte offset alone across files, so a chip's header text could come from another module.
+- A `match` arm or `if let` pattern accepts `Shape.Circle(r)`, the spelling construction and `is` both require. It was a parse error that cascaded through the rest of the match.
+- A multi-output `mod`'s `return` is checked per port. `-> (a: int, b: string)` took `return { a: someString, b: someInt }` and wired the string into the `int` gate.
+- A container method given `exec = trigger` no longer captures the statements after it. The saved exec context was restored past fourteen early returns.
+- `on x` / `on !x` over a `var` compiles, as the statement reference documents. The check matched the var's symbol type, which is a reference to what it stores.
+- `*x` in exec context reads the variable, as the expression reference documents. The bare name auto-derefs first, so `*x` saw a value where it wanted a reference.
+- `out y: *int = &x` and `= ref x` bind the same storage as `out y: *int = x`. Only the expected side of the check unwrapped the reference.
+- `"x ${n GARBAGE} y"` is a `WSP001` error. The slot's sub-parser read one expression and discarded whatever followed it.
+- An error inside `${...}` reports at its own position. The slot is lexed where it sits, rather than shifted afterwards by a walker that missed several expression shapes.
+- `@layout("cube")` no longer hangs a tall brick down through the layer below it. A layer shared one z while the step was measured from the layer beneath.
+
+### Editor
+
+- A cursor past a non-ASCII character no longer kills the language server or traps the playground. Nothing converted between byte, char and UTF-16 columns at the protocol boundary.
+- Hover, completion and go-to-definition work in a CRLF file. Line offsets summed `len + 1`, which drops the `\r`, so every position past line 1 drifted.
+- The language server runs parse, resolve, typecheck and hover on the big stack `compile` reserves rather than the ~2 MiB editor worker thread.
 
 ### Performance
 
+- Hover answers without re-parsing the file. `hover_at` re-parsed its whole source at eight sites in one request.
+- The language server waits 150ms before analysing an edit, and analyses only the newest one. Typing outran the front end, so intermediate states were analysed and thrown away.
+- Lowering reads a wire port's interned name from the port's own cache. Around thirty sites re-interned a name the port already had.
 - Code layout sorts its adjacency once when building it rather than per node visited, so adopting unplaced nodes no longer re-sorts the same neighbour lists thousands of times.
 - Constant-literal inlining indexes the surviving wire sources once instead of rescanning every wire per candidate, and interns its port names once rather than per wire.
 - The type checker shares the module constant table rather than deep-copying it on every constant evaluation.

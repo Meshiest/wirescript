@@ -172,7 +172,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
         ) {
             props.insert(*sym::NAME_LABEL, Literal::String(label));
         }
-        if let Some(doc) = ctx.doc_comments.get(&chip_decl.range.start.offset) {
+        if let Some(doc) = ctx.doc_comments.get(&crate::parser::doc_key(&chip_decl.range)) {
             props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
         }
     }

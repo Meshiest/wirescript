@@ -273,13 +273,18 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
     let mut placements: HashMap<NodeId, Placement> = HashMap::default();
     let mut x = 0i32;
     let mut y = 0i32;
-    let mut z = Z_PLANE;
+    // The BOTTOM plane of the current layer. `Placement::z` is a brick CENTRE
+    // (emit offsets x and y by their half-extents but passes z straight
+    // through), so each brick sits half its own height above this. Sharing one
+    // centre across a layer hangs a tall brick down into the layer below, and
+    // the game drops intersecting bricks at load with no error.
+    let mut layer_base = Z_PLANE;
     let mut row_height = 0i32;
     let mut col = 0usize;
     let mut row_in_layer = 0usize;
     let mut raw_max_x = 0i32;
     let mut raw_max_y = 0i32;
-    let mut raw_max_z = z;
+    let mut raw_max_z = layer_base;
     // Layers are spaced by the tallest brick actually in the layer, floored at
     // the nominal step. A fixed step would be silently wrong for the few bricks
     // taller than it — and bricks that intersect are DROPPED by the game with
@@ -291,13 +296,14 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
         let (hsx, hsy) = brick_half_size(node);
         let fw = hsx * 2;
         let fh = hsy * 2;
+        let hsz = brick_half_height(node);
 
-        placements.insert(**id, Placement { x, y, z });
+        placements.insert(**id, Placement { x, y, z: layer_base + hsz });
         raw_max_x = raw_max_x.max(x + fw);
         raw_max_y = raw_max_y.max(y + fh);
-        raw_max_z = raw_max_z.max(z);
+        raw_max_z = raw_max_z.max(layer_base + 2 * hsz);
         row_height = row_height.max(fh);
-        layer_depth = layer_depth.max(2 * brick_half_height(node));
+        layer_depth = layer_depth.max(2 * hsz);
         x += fw;
         col += 1;
 
@@ -311,7 +317,7 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
             if row_in_layer >= side {
                 row_in_layer = 0;
                 y = 0;
-                z += Z_STEP_MIN.max(layer_depth);
+                layer_base += Z_STEP_MIN.max(layer_depth);
                 layer_depth = 0;
             }
         }

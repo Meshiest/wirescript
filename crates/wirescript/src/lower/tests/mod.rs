@@ -63,11 +63,7 @@ pub(super) fn compile(src: &str) -> LowerResult {
         fold_mode: FoldMode::ForceOff,
         ce_slots: &ce_slots,
     });
-    r.diagnostics.extend(
-        tc.diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Warning),
-    );
+    r.diagnostics.extend(tc.diagnostics);
     r
 }
 
@@ -94,11 +90,7 @@ pub(super) fn compile_folded(src: &str) -> LowerResult {
         fold_mode: FoldMode::ForceOn,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
-    r.diagnostics.extend(
-        tc.diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Warning),
-    );
+    r.diagnostics.extend(tc.diagnostics);
     r
 }
 
@@ -123,11 +115,7 @@ pub(super) fn compile_auto(src: &str) -> LowerResult {
         fold_mode: FoldMode::Auto,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
-    r.diagnostics.extend(
-        tc.diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Warning),
-    );
+    r.diagnostics.extend(tc.diagnostics);
     r
 }
 
@@ -160,6 +148,10 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
     })
 }
 
+/// Asserts a program lowered with no ERROR-severity diagnostic, typecheck's
+/// included. The `compile*` helpers above must therefore merge typecheck's
+/// errors, not only its warnings, or none of the 460-odd call sites of this
+/// function can see one.
 pub(super) fn assert_no_errors(r: &LowerResult) {
     assert!(
         r.diagnostics

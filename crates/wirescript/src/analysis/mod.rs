@@ -24,6 +24,13 @@ pub use assets::{asset_exists, asset_names, asset_type_exists, asset_type_for_po
 pub use symbols::SymbolDef;
 pub use types::{type_str, type_expr_str, infer_expr_type, type_from_name, receiver_methods, user_receiver_methods, collection_kind, CollectionKind};
 pub use text::{word_at, find_enclosing_call, named_arg_value, find_asset_refs, asset_ref_at, member_receiver_at, record_field_names, param_names, swizzle_fields, AssetRef};
+// Column-convention conversions: the lexer counts BYTES, `analysis` counts
+// CHARS, and an editor counts UTF-16 code units. A frontend converts at its
+// own protocol boundary, with these and nothing else.
+pub use text::{
+    byte_to_char_col, char_col_to_byte, char_col_to_utf16_col, cursor_byte_offset,
+    line_start_byte, line_text, utf16_col_to_char_col,
+};
 pub use hover::hover_at;
 pub use hover::{fill_record_at, RecordFill};
 pub use hover::{fill_match_arms_at, MatchArmsFill};

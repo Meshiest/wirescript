@@ -998,7 +998,7 @@ pub(super) fn array_exec_op(
     ];
     for (port, ty, _) in &extra_in {
         inputs.push(PortSpec {
-            name: intern(port.as_str()),
+            name: port.sym(),
             ty: ty.clone(),
         });
     }
@@ -1008,7 +1008,7 @@ pub(super) fn array_exec_op(
     }];
     for (port, ty) in &extra_out {
         outputs.push(PortSpec {
-            name: intern(port.as_str()),
+            name: port.sym(),
             ty: ty.clone(),
         });
     }
@@ -1140,11 +1140,11 @@ pub(super) fn map_exec_op(
         PortSpec { name: *sym::MAP_VAR_REF, ty: Type::Ref(Box::new(Type::Any)) },
     ];
     for (port, ty, _) in &extra_in {
-        inputs.push(PortSpec { name: intern(port.as_str()), ty: ty.clone() });
+        inputs.push(PortSpec { name: port.sym(), ty: ty.clone() });
     }
     let mut outputs = vec![PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec }];
     for (port, ty) in &extra_out {
-        outputs.push(PortSpec { name: intern(port.as_str()), ty: ty.clone() });
+        outputs.push(PortSpec { name: port.sym(), ty: ty.clone() });
     }
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class,
@@ -2538,6 +2538,31 @@ pub(super) fn lower_array_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
+    // `exec = <trigger>` makes the op a leaf, so the caller's exec context has
+    // to be restored on EVERY exit. Fourteen early returns sit between the
+    // method table's top and bottom, and one that skips the restore leaves
+    // every following statement wired onto the trigger instead of the
+    // surrounding chain; saving out here, around one call, cannot skip.
+    let uses_exec_arg = args
+        .iter()
+        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+    let saved_exec = ctx.current_exec;
+    let result = lower_array_method_inner(ctx, array_ref, elem_ty, method, args, range, e);
+    if uses_exec_arg {
+        ctx.current_exec = saved_exec;
+    }
+    result
+}
+
+fn lower_array_method_inner(
+    ctx: &mut LowerCtx,
+    array_ref: PortRef,
+    elem_ty: Type,
+    method: &str,
+    args: &[CallArg],
+    range: &SourceRange,
+    e: &Expr,
+) -> PortRef {
     let mutates = crate::catalog::arrays::array_method(method).is_some_and(|m| m.mutates);
     if reject_const_container_mutation(
         ctx,
@@ -2551,14 +2576,13 @@ pub(super) fn lower_array_method(
     // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
     // of the surrounding exec chain, so a read like `lut.get(i, exec = i + 1)`
     // works in a PURE context (e.g. an output binding). The get self-fires
-    // whenever the index changes (i + 1 is never the no-fire value 0). The op is a
-    // leaf in that case, so restore the caller's exec context afterward rather than
-    // advancing it.
+    // whenever the index changes (i + 1 is never the no-fire value 0). The op is
+    // a leaf in that case; the caller restores the exec context around this
+    // whole function, so every exit below restores it.
     let exec_arg: Option<&Expr> = args.iter().find_map(|a| match a {
         CallArg::Named { name, value, .. } if name == "exec" => Some(value),
         _ => None,
     });
-    let saved_exec = ctx.current_exec;
     if let Some(exec_expr) = exec_arg {
         let src = lower_expr(ctx, exec_expr);
         ctx.current_exec = Some(src);
@@ -3045,11 +3069,6 @@ pub(super) fn lower_array_method(
         }
         _ => synthesise_unsupported(ctx, e),
     };
-    // An explicit `exec =` trigger makes this op a leaf: restore the caller's exec
-    // context so the surrounding (possibly pure) lowering is unaffected.
-    if exec_arg.is_some() {
-        ctx.current_exec = saved_exec;
-    }
     method_result
 }
 

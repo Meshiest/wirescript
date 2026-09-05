@@ -556,7 +556,7 @@ fn try_lower_enum_to_integer(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
         source_range: e.range().clone(),
         ports: GateIO {
             inputs: vec![PortSpec {
-                name: intern(WirePort::Input.as_str()),
+                name: WirePort::Input.sym(),
                 ty: Type::Any,
             }],
             outputs: vec![PortSpec {
@@ -644,12 +644,12 @@ fn try_lower_integer_to_enum(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
                 _ => None,
             });
         let mut inputs = vec![PortSpec {
-            name: intern(WirePort::Input.as_str()),
+            name: WirePort::Input.sym(),
             ty: Type::Int,
         }];
         if wrap_port.is_some() {
             inputs.push(PortSpec {
-                name: intern(WirePort::BWrap.as_str()),
+                name: WirePort::BWrap.sym(),
                 ty: Type::Bool,
             });
         }

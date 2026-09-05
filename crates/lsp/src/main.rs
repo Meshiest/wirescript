@@ -16,7 +16,8 @@ use wirescript::analysis::{
     rename_edit_text, resolve_symbol, semantic_tokens, swizzle_fields, type_str,
     user_receiver_methods, word_at, AssetRef, CollectionKind, CrossFile, InlayHintKind, RefNs,
     RefSite, RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange, TypeMap,
-    VarReadContextMap,
+    VarReadContextMap, byte_to_char_col, char_col_to_byte, char_col_to_utf16_col, line_text,
+    utf16_col_to_char_col,
 };
 use wirescript::ast::{ImportKind, LetBinding, Script, TopDecl};
 use wirescript::catalog::arrays::ARRAY_METHODS;
@@ -34,29 +35,85 @@ impl tower_lsp::lsp_types::notification::Notification for CompileProgressNotific
     const METHOD: &'static str = "wirescript/compileProgress";
 }
 
-fn pos_to_lsp(p: wirescript::diagnostic::Pos) -> Position {
+// Three column conventions meet in this file. The compiler's `Pos::col` is a 1-based BYTE
+// column; `analysis::` takes and returns 0-based CHAR columns; the LSP protocol
+// carries 0-based UTF-16 code units (this server declares `utf-16` in
+// `initialize`, so that is not negotiable per client). They agree only while a
+// line is pure ASCII, and slicing a line with the wrong one lands mid-character
+// and panics. Convert at this boundary and nowhere else.
+
+/// Editor position -> the 0-based char column `analysis::` expects.
+fn lsp_col_to_char(source: &str, line: usize, character: u32) -> usize {
+    utf16_col_to_char_col(line_text(source, line), character as usize)
+}
+
+/// A 0-based char column from `analysis::` -> the editor's UTF-16 column.
+///
+/// A column past the end of the line it names is left alone rather than
+/// clamped: the two conventions agree for everything below U+10000, so passing
+/// it through is right whenever the line could not be read (a closed file that
+/// has since changed on disk), while clamping would collapse it onto the line's
+/// end.
+fn char_col_to_lsp(source: &str, line: usize, col: usize) -> u32 {
+    let l = line_text(source, line);
+    if l.chars().count() < col {
+        return col as u32;
+    }
+    char_col_to_utf16_col(l, col) as u32
+}
+
+/// A byte offset within a line (what the raw-text scanners in this file, and
+/// the lexer's `Pos::col`, produce) -> the editor's UTF-16 column.
+fn byte_off_to_lsp(source: &str, line: usize, byte: usize) -> u32 {
+    let l = line_text(source, line);
+    if l.len() < byte {
+        return byte as u32;
+    }
+    char_col_to_utf16_col(l, byte_to_char_col(l, byte)) as u32
+}
+
+/// Source text for `uri`, preferring the open document and falling back to
+/// disk. Needed only to convert one result's columns for the editor.
+fn source_for<'a>(docs: &'a HashMap<Url, DocState>, uri: &Url) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    match docs.get(uri) {
+        Some(d) => Cow::Borrowed(d.source.as_str()),
+        None => uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map_or(Cow::Borrowed(""), Cow::Owned),
+    }
+}
+
+fn pos_to_lsp(source: &str, p: wirescript::diagnostic::Pos) -> Position {
+    let line = p.line.saturating_sub(1);
     Position {
-        line: p.line.saturating_sub(1) as u32,
-        character: p.col.saturating_sub(1) as u32,
+        line: line as u32,
+        // `Pos::col` is a 1-based byte column.
+        character: byte_off_to_lsp(source, line as usize, p.col.saturating_sub(1) as usize),
     }
 }
 
-fn range_to_lsp(r: &wirescript::diagnostic::SourceRange) -> Range {
+fn range_to_lsp(source: &str, r: &wirescript::diagnostic::SourceRange) -> Range {
     Range {
-        start: pos_to_lsp(r.start),
-        end: pos_to_lsp(r.end),
+        start: pos_to_lsp(source, r.start),
+        end: pos_to_lsp(source, r.end),
     }
 }
 
-fn text_range_to_lsp(r: &TextRange) -> Range {
+/// A [`TextRange`] carries 0-based BYTE columns, `ref_site_to_text_range`
+/// builds it straight from a `SourceRange`, not the char columns the rest of
+/// `analysis::` returns.
+fn text_range_to_lsp(source: &str, r: &TextRange) -> Range {
     Range {
         start: Position {
             line: r.start_line as u32,
-            character: r.start_col as u32,
+            character: byte_off_to_lsp(source, r.start_line, r.start_col),
         },
         end: Position {
             line: r.end_line as u32,
-            character: r.end_col as u32,
+            character: byte_off_to_lsp(source, r.end_line, r.end_col),
         },
     }
 }
@@ -202,7 +259,7 @@ fn find_defining_file_sites(
     }
 
     let d_source = FsLoader.load(&import_path, &current_file).ok()?;
-    let d_ast = wirescript::parse(&d_source, &d_file).ast;
+    let d_ast = wirescript::on_big_stack(|| wirescript::parse(&d_source, &d_file)).ast;
 
     let decl_range = top_level_decl_range(&d_ast, export_name, ns)?;
     let name_range = find_name_range(&d_source, &decl_range, export_name).unwrap_or(decl_range);
@@ -300,7 +357,7 @@ fn collect_references_across_files(
             }
         }
         let file = uri_to_file_string(doc_uri);
-        let ast = wirescript::parse(&doc_state.source, &file).ast;
+        let ast = wirescript::on_big_stack(|| wirescript::parse(&doc_state.source, &file)).ast;
         for s in references_to_export(&ast, &file, &export_name, target.ns) {
             results.push((doc_uri.clone(), ref_site_to_text_range(&doc_state.source, &export_name, &s)));
         }
@@ -342,7 +399,7 @@ fn collect_references_across_files(
                     Err(_) => continue,
                 };
                 let file = path.to_string_lossy().to_string();
-                let ast = wirescript::parse(&src, &file).ast;
+                let ast = wirescript::on_big_stack(|| wirescript::parse(&src, &file)).ast;
                 for s in references_to_export(&ast, &file, &export_name, target.ns) {
                     results.push((entry_uri.clone(), ref_site_to_text_range(&src, &export_name, &s)));
                 }
@@ -362,7 +419,7 @@ fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str)
     for (doc_uri, doc_state) in docs.iter() {
         let file = uri_to_file_string(doc_uri);
         for r in wirescript::analysis::atom_references(&doc_state.source, &file, name) {
-            out.push(Location { uri: doc_uri.clone(), range: range_to_lsp(&r) });
+            out.push(Location { uri: doc_uri.clone(), range: range_to_lsp(&doc_state.source, &r) });
         }
     }
     // Same-directory disk scan, skipping already-open docs (canonical-path
@@ -391,7 +448,7 @@ fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str)
                 };
                 let file = path.to_string_lossy().to_string();
                 for r in wirescript::analysis::atom_references(&src, &file, name) {
-                    out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&r) });
+                    out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&src, &r) });
                 }
             }
         }
@@ -459,8 +516,8 @@ fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for r in find_asset_refs(source).into_iter().filter(AssetRef::is_file) {
         let range = Range {
-            start: Position { line: r.line as u32, character: r.start_col as u32 },
-            end: Position { line: r.line as u32, character: r.end_col as u32 },
+            start: Position { line: r.line as u32, character: char_col_to_lsp(source, r.line, r.start_col) },
+            end: Position { line: r.line as u32, character: char_col_to_lsp(source, r.line, r.end_col) },
         };
         if !r.path.ends_with(".brz") && !r.path.ends_with(".ws") {
             out.push(Diagnostic {
@@ -494,7 +551,7 @@ fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
 struct DocState {
     source: String,
     symbols: Vec<SymbolDef>,
-    doc_comments: wirescript::collections::HashMap<usize, String>,
+    doc_comments: wirescript::parser::DocComments,
     type_map: TypeMap,
     if_contexts: wirescript::analysis::IfContextMap,
     var_read_contexts: VarReadContextMap,
@@ -516,7 +573,19 @@ struct Backend {
     /// registration, read from its initialize capabilities. Set once in
     /// `initialize`, read once in `initialized`.
     watch_files: std::sync::atomic::AtomicBool,
+    /// Bumped by every `did_change`. A debounced handler analyses only if it
+    /// still holds the newest value when its wait ends, see [`DEBOUNCE`].
+    change_gen: std::sync::atomic::AtomicU64,
 }
+
+/// How long `did_change` waits before analysing.
+///
+/// One analysis is tens of milliseconds of synchronous front end on a large
+/// program, and typing outruns it, so without a window every intermediate
+/// buffer state is analysed in full and thrown away while hover and completion
+/// queue behind it. Long enough to swallow a burst of keystrokes, short enough
+/// that a pause reads as instant.
+const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// A loader that serves imports from the OPEN EDITOR BUFFERS first, falling back
 /// to disk, so an unsaved edit in an imported file is visible to the files that
@@ -567,7 +636,10 @@ impl Backend {
         // the same buffer per keystroke. The pre-resolve AST (kept for local
         // analysis: references, semantic tokens, rename) is cloned off before
         // resolve consumes the parse.
-        let pre_resolve = wirescript::parse(source, &file);
+        // On the big stack: this runs on a ~2 MiB tokio worker, and an
+        // overflow there aborts the process, so the server would vanish on
+        // `didOpen`. The spawn is ~100 us against tens of ms of work.
+        let pre_resolve = wirescript::on_big_stack(|| wirescript::parse(source, &file));
         let pre_resolve_ast = pre_resolve.ast.clone();
         // Snapshot the other open buffers so imports resolve against unsaved
         // edits (and skip a disk read); the lock is released before resolve.
@@ -588,10 +660,13 @@ impl Backend {
                 })
                 .unwrap_or_default(),
         };
-        let resolved = resolve_parsed(pre_resolve, &file, &loader);
-        let tc = typecheck_with_inference(&resolved.ast, &file).0;
-        let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
-        let resource_estimates = collect_estimates(&resolved.ast, &tc, &file);
+        let (resolved, tc, symbols, resource_estimates) = wirescript::on_big_stack(|| {
+            let resolved = resolve_parsed(pre_resolve, &file, &loader);
+            let tc = typecheck_with_inference(&resolved.ast, &file).0;
+            let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
+            let resource_estimates = collect_estimates(&resolved.ast, &tc, &file);
+            (resolved, tc, symbols, resource_estimates)
+        });
 
         if let Ok(mut docs) = self.docs.lock() {
             docs.insert(
@@ -623,7 +698,7 @@ impl Backend {
                     _ => DiagnosticSeverity::INFORMATION,
                 };
                 Diagnostic {
-                    range: range_to_lsp(&d.range),
+                    range: range_to_lsp(source, &d.range),
                     severity: Some(severity),
                     code: Some(NumberOrString::String(d.code.clone())),
                     source: Some("wirescript".into()),
@@ -677,7 +752,7 @@ impl Backend {
             .iter()
             .filter(|d| &*d.range.file == file.as_str() || d.range.file.is_empty())
             .map(|d| Diagnostic {
-                range: range_to_lsp(&d.range),
+                range: range_to_lsp(source, &d.range),
                 severity: Some(match d.severity {
                     wirescript::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
                     wirescript::diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
@@ -762,6 +837,10 @@ impl LanguageServer for Backend {
             .unwrap_or(true);
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                // Declared rather than negotiated: every column this server
+                // hands out is converted to UTF-16 at the protocol boundary
+                // (see `char_col_to_lsp`).
+                position_encoding: Some(PositionEncodingKind::UTF16),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -839,8 +918,8 @@ impl LanguageServer for Backend {
                 let target_uri = Url::from_file_path(&target).ok()?;
                 Some(DocumentLink {
                     range: Range {
-                        start: Position { line: r.line as u32, character: r.start_col as u32 },
-                        end: Position { line: r.line as u32, character: r.end_col as u32 },
+                        start: Position { line: r.line as u32, character: char_col_to_lsp(&doc.source, r.line, r.start_col) },
+                        end: Position { line: r.line as u32, character: char_col_to_lsp(&doc.source, r.line, r.end_col) },
                     },
                     target: Some(target_uri),
                     tooltip: Some("Open prefab file".into()),
@@ -899,12 +978,24 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        if let Some(change) = params.content_changes.first() {
-            let diags = self.analyze(&uri, &change.text);
-            self.client
-                .publish_diagnostics(uri.clone(), diags, None)
-                .await;
+        let Some(change) = params.content_changes.into_iter().next() else {
+            return;
+        };
+        // Coalesce a burst of keystrokes: wait, then analyse only if no newer
+        // change arrived meanwhile. A superseded handler returns without
+        // touching the front end at all.
+        let generation = self
+            .change_gen
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        tokio::time::sleep(DEBOUNCE).await;
+        if self.change_gen.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            return;
         }
+        let diags = self.analyze(&uri, &change.text);
+        self.client
+            .publish_diagnostics(uri.clone(), diags, None)
+            .await;
         self.reanalyze_other_docs(&uri).await;
     }
 
@@ -945,34 +1036,38 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let pos = params.text_document_position.position;
         let line = pos.line as usize;
-        let col = pos.character as usize;
+        // `pos.character` is a UTF-16 column; everything below wants a char one.
+        let raw_col = pos.character as usize;
         let uri = &params.text_document_position.text_document.uri;
 
         let prefab_paths = scan_prefab_paths(uri);
         let items = match self.docs.lock() {
             Ok(docs) => match docs.get(uri) {
                 Some(doc) => {
+                    let col = lsp_col_to_char(&doc.source, line, pos.character);
                     // Inside a `$```…``` ` nested-prefab block, complete against
                     // the INNER program so the outer file's context (SpawnPrefab
                     // params, outer symbols) doesn't leak into the isolated block.
                     if let Some((inner, il, ic)) =
                         nested_block_at(&doc.source, &uri_to_file_string(uri), line, col)
                     {
-                        let resolved = resolve(&inner, "nested", &FsLoader);
-                        let tc = typecheck_with_inference(&resolved.ast, "nested").0;
-                        let syms = collect_symbols_for_file(
-                            &resolved.ast,
-                            &tc.type_of_expr,
-                            Some("nested"),
-                        );
-                        build_completions(&inner, &syms, il, ic, &[])
+                        wirescript::on_big_stack(|| {
+                            let resolved = resolve(&inner, "nested", &FsLoader);
+                            let tc = typecheck_with_inference(&resolved.ast, "nested").0;
+                            let syms = collect_symbols_for_file(
+                                &resolved.ast,
+                                &tc.type_of_expr,
+                                Some("nested"),
+                            );
+                            build_completions(&inner, &syms, il, ic, &[])
+                        })
                     } else {
                         build_completions(&doc.source, &doc.symbols, line, col, &prefab_paths)
                     }
                 }
-                None => build_completions("", &[], line, col, &prefab_paths),
+                None => build_completions("", &[], line, raw_col, &prefab_paths),
             },
-            Err(_) => build_completions("", &[], line, col, &prefab_paths),
+            Err(_) => build_completions("", &[], line, raw_col, &prefab_paths),
         };
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -997,24 +1092,30 @@ impl LanguageServer for Backend {
         // supported.
         let uri = &params.text_document.uri;
         let pos = params.range.start;
-        let (line, col) = (pos.line as usize, pos.character as usize);
+        let line = pos.line as usize;
 
-        let (record_fill, match_fill) = match self.docs.lock() {
+        // The source comes out with the fills: their insertion columns are char
+        // columns, and converting one back for the editor needs the line text.
+        let (source, record_fill, match_fill) = match self.docs.lock() {
             Ok(docs) => match docs.get(uri) {
-                Some(doc) => (
-                    fill_record_at(&doc.source, &doc.symbols, line, col),
-                    fill_match_arms_at(&doc.source, &doc.symbols, &doc.type_map, &doc.pre_resolve_ast, line, col),
-                ),
-                None => (None, None),
+                Some(doc) => {
+                    let col = lsp_col_to_char(&doc.source, line, pos.character);
+                    (
+                        doc.source.clone(),
+                        fill_record_at(&doc.source, &doc.symbols, line, col),
+                        fill_match_arms_at(&doc.source, &doc.symbols, &doc.type_map, &doc.pre_resolve_ast, line, col),
+                    )
+                }
+                None => (String::new(), None, None),
             },
-            Err(_) => (None, None),
+            Err(_) => (String::new(), None, None),
         };
 
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
         if let Some(fill) = record_fill {
             let at = Position {
                 line: fill.line as u32,
-                character: fill.col as u32,
+                character: char_col_to_lsp(&source, fill.line, fill.col),
             };
             let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
             changes.insert(
@@ -1037,7 +1138,7 @@ impl LanguageServer for Backend {
         if let Some(fill) = match_fill {
             let at = Position {
                 line: fill.line as u32,
-                character: fill.col as u32,
+                character: char_col_to_lsp(&source, fill.line, fill.col),
             };
             let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
             changes.insert(
@@ -1070,19 +1171,24 @@ impl LanguageServer for Backend {
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
-                if let Some(value) = hover_at(
-                    &doc.source,
-                    &uri_to_file_string(uri),
-                    &doc.symbols,
-                    &doc.type_map,
-                    &doc.doc_comments,
-                    &doc.if_contexts,
-                    &doc.var_read_contexts,
-                    &doc.dropped_ranges,
-                    &doc.resource_estimates,
-                    pos.line as usize,
-                    pos.character as usize,
-                ) {
+                // `hover_at` walks the AST, so it gets the big stack like
+                // every other AST walk here.
+                if let Some(value) = wirescript::on_big_stack(|| {
+                    hover_at(
+                        &doc.source,
+                        &uri_to_file_string(uri),
+                        &doc.pre_resolve_ast,
+                        &doc.symbols,
+                        &doc.type_map,
+                        &doc.doc_comments,
+                        &doc.if_contexts,
+                        &doc.var_read_contexts,
+                        &doc.dropped_ranges,
+                        &doc.resource_estimates,
+                        pos.line as usize,
+                        lsp_col_to_char(&doc.source, pos.line as usize, pos.character),
+                    )
+                }) {
                     return Ok(Some(Hover {
                         contents: HoverContents::Markup(MarkupContent {
                             kind: MarkupKind::Markdown,
@@ -1103,10 +1209,10 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let line = pos.line as usize;
-        let col = pos.character as usize;
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
+                let col = lsp_col_to_char(&doc.source, line, pos.character);
                 // `$./file.brz` prefab reference → jump to the referenced file.
                 if let Some(r) = asset_ref_at(&doc.source, line, col) {
                     if r.is_file() {
@@ -1146,7 +1252,7 @@ impl LanguageServer for Backend {
                                 .iter()
                                 .map(|(u, r)| Location {
                                     uri: u.clone(),
-                                    range: text_range_to_lsp(r),
+                                    range: text_range_to_lsp(&source_for(&docs, u), r),
                                 })
                                 .collect();
                             return Ok(Some(GotoDefinitionResponse::Array(locations)));
@@ -1168,16 +1274,19 @@ impl LanguageServer for Backend {
                         .as_ref()
                         .and_then(|f| Url::from_file_path(f).ok())
                         .unwrap_or_else(|| uri.clone());
+                    let target_src = source_for(&docs, &target_uri);
                     return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: target_uri,
+                        uri: target_uri.clone(),
                         range: Range {
+                            // `Location`'s columns come from a `SourceRange`,
+                            // so they are byte columns too.
                             start: Position {
                                 line: loc.start_line as u32,
-                                character: loc.start_col as u32,
+                                character: byte_off_to_lsp(&target_src, loc.start_line, loc.start_col),
                             },
                             end: Position {
                                 line: loc.end_line as u32,
-                                character: loc.end_col as u32,
+                                character: byte_off_to_lsp(&target_src, loc.end_line, loc.end_col),
                             },
                         },
                     })));
@@ -1191,10 +1300,10 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let line = pos.line as usize;
-        let col = pos.character as usize;
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
+                let col = lsp_col_to_char(&doc.source, line, pos.character);
                 let file = uri_to_file_string(uri);
                 // Atom `:name` find-references — atoms are global (one xxHash64
                 // value per name, no scope), so gather every `:name` occurrence
@@ -1213,7 +1322,7 @@ impl LanguageServer for Backend {
                         .iter()
                         .map(|(u, r)| Location {
                             uri: u.clone(),
-                            range: text_range_to_lsp(r),
+                            range: text_range_to_lsp(&source_for(&docs, u), r),
                         })
                         .collect();
                     return Ok(Some(locations));
@@ -1230,16 +1339,16 @@ impl LanguageServer for Backend {
         let uri = &params.text_document.uri;
         let pos = params.position;
         let line = pos.line as usize;
-        let col = pos.character as usize;
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
+                let col = lsp_col_to_char(&doc.source, line, pos.character);
                 let file = uri_to_file_string(uri);
                 if let Some((range, placeholder)) =
                     prepare_rename_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
                 {
                     return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                        range: range_to_lsp(&range),
+                        range: range_to_lsp(&doc.source, &range),
                         placeholder,
                     }));
                 }
@@ -1253,10 +1362,10 @@ impl LanguageServer for Backend {
         let pos = params.text_document_position.position;
         let new_name = &params.new_name;
         let line = pos.line as usize;
-        let col = pos.character as usize;
 
         if let Ok(docs) = self.docs.lock() {
             if let Some(doc) = docs.get(uri) {
+                let col = lsp_col_to_char(&doc.source, line, pos.character);
                 let file = uri_to_file_string(uri);
                 if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
                     return Ok(None);
@@ -1269,7 +1378,7 @@ impl LanguageServer for Backend {
                     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
                     for (file_uri, r) in &refs {
                         changes.entry(file_uri.clone()).or_default().push(TextEdit {
-                            range: text_range_to_lsp(r),
+                            range: text_range_to_lsp(&source_for(&docs, file_uri), r),
                             new_text: rename_edit_text(r, &target.name, new_name),
                         });
                     }
@@ -1345,10 +1454,23 @@ impl LanguageServer for Backend {
                 SemTokenKind::Variable => 3,
                 SemTokenKind::Namespace => 4,
             };
+            // Both `col`s are 1-based byte columns; the protocol counts UTF-16
+            // units, so the length has to be measured after converting, not
+            // before. A span crossing lines has no single line to measure in;
+            // no name token does, so the byte width stands in.
+            let line = range.start.line.saturating_sub(1);
+            let start_char =
+                byte_off_to_lsp(&doc.source, line as usize, range.start.col.saturating_sub(1) as usize);
+            let length = if range.start.line == range.end.line {
+                byte_off_to_lsp(&doc.source, line as usize, range.end.col.saturating_sub(1) as usize)
+                    .saturating_sub(start_char)
+            } else {
+                range.end.col.saturating_sub(range.start.col)
+            };
             toks.push(Tok {
-                line: range.start.line.saturating_sub(1),
-                start_char: range.start.col.saturating_sub(1),
-                length: range.end.col.saturating_sub(range.start.col),
+                line,
+                start_char,
+                length,
                 token_type,
             });
         }
@@ -1607,7 +1729,7 @@ impl LanguageServer for Backend {
                     .map(|h| InlayHint {
                         position: Position {
                             line: h.line as u32,
-                            character: h.col as u32,
+                            character: char_col_to_lsp(&doc.source, h.line, h.col),
                         },
                         label: InlayHintLabel::String(h.label),
                         kind: Some(match h.kind {
@@ -1653,7 +1775,7 @@ impl LanguageServer for Backend {
                         },
                         end: Position {
                             line: lines as u32,
-                            character: last_line.len() as u32,
+                            character: last_line.chars().map(char::len_utf16).sum::<usize>() as u32,
                         },
                     },
                     new_text: formatted,
@@ -1673,8 +1795,16 @@ async fn main() {
         client,
         docs: Mutex::new(HashMap::new()),
         watch_files: std::sync::atomic::AtomicBool::new(false),
+        change_gen: std::sync::atomic::AtomicU64::new(0),
     });
-    Server::new(stdin, stdout, socket).serve(service).await;
+    // Above tower-lsp's default of 4. A debounced `did_change` holds its slot
+    // while it waits (see `DEBOUNCE`), so with the default a burst of five
+    // keystrokes would leave a hover queued behind them, the opposite of what
+    // the debounce is for. These slots are cheap: a waiting handler is idle.
+    Server::new(stdin, stdout, socket)
+        .concurrency_level(32)
+        .serve(service)
+        .await;
 }
 
 /// Completions for `receiver.` — array methods, var fields, record fields, or
@@ -2001,7 +2131,7 @@ fn enum_registry_from_source(
     if !source.contains("enum ") {
         return wirescript::typecheck::enums::build_registry(&[]);
     }
-    let ast = wirescript::parse(source, "completion").ast;
+    let ast = wirescript::on_big_stack(|| wirescript::parse(source, "completion")).ast;
     wirescript::typecheck::enums::build_registry(&ast.decls)
 }
 
@@ -2253,7 +2383,7 @@ fn build_completions(
     // candidate paths the frontend supplied (disk scan / drag registry). A
     // text edit over the whole `$…` fragment keeps `.`/`/` filtering robust.
     if let Some(l) = source.lines().nth(line) {
-        let col_idx = col.min(l.len());
+        let col_idx = char_col_to_byte(l, col);
         let before = &l[..col_idx];
         if let Some(dollar) = before.rfind('$') {
             let frag = &before[dollar + 1..];
@@ -2265,11 +2395,11 @@ fn build_completions(
                 let range = Range {
                     start: Position {
                         line: line as u32,
-                        character: (dollar + 1) as u32,
+                        character: byte_off_to_lsp(source, line, dollar + 1),
                     },
                     end: Position {
                         line: line as u32,
-                        character: col as u32,
+                        character: char_col_to_lsp(source, line, col),
                     },
                 };
                 for path in prefab_paths {
@@ -2295,7 +2425,7 @@ fn build_completions(
     // Asset reference `$AssetType/AssetName`: complete types after `$`, names
     // after `$Type/`.
     if let Some(l) = source.lines().nth(line) {
-        let col_idx = col.min(l.len());
+        let col_idx = char_col_to_byte(l, col);
         let before = &l[..col_idx];
         if let Some(dollar) = before.rfind('$') {
             let frag = &before[dollar + 1..];

@@ -51,16 +51,20 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
         // enclosing handler (`EventParam`, e.g. `on CustomEvent("x") -> (p:
         // character)`) can trigger a nested handler on its value/edge — `on p`
         // / `on !p`.
+        // A `var`'s symbol type is a `Ref` to its stored type, and a `*T`
+        // param's likewise. The checks below are about what is STORED, so both
+        // look through it; matching the outer type makes the `var` arm
+        // unreachable and every `on x` / `on !x` a WS001.
         let known_param_trigger = matches!(
             &sym,
             Some(s) if matches!(s.kind, SymbolKind::Param | SymbolKind::EventParam)
-                && matches!(s.ty, Type::Exec | Type::Bool | Type::Int | Type::Float | Type::Character | Type::Controller | Type::Entity)
+                && matches!(unwrap_ref(&s.ty), Type::Exec | Type::Bool | Type::Int | Type::Float | Type::Character | Type::Controller | Type::Entity)
         );
         // A `var` can trigger a handler on its value change — `on x` / `on !x`.
         let known_var_trigger = matches!(
             &sym,
             Some(s) if s.kind == SymbolKind::Var
-                && matches!(s.ty, Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
+                && matches!(unwrap_ref(&s.ty), Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
         );
         if !known_event
             && !known_capture

@@ -1259,6 +1259,12 @@ pub enum Pattern {
         range: SourceRange,
     },
     Variant {
+        /// The enum the pattern names, when it was written qualified
+        /// (`Shape.Circle(r)`). Construction and `is` both REQUIRE the
+        /// qualified form, so a pattern is routinely written that way too;
+        /// the scrutinee's own type is what decides the enum, and this is
+        /// checked against it rather than used to resolve.
+        enum_path: Option<String>,
         variant: String,
         sub: VariantPattern,
         range: SourceRange,

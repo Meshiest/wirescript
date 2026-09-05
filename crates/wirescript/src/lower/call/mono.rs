@@ -12,7 +12,7 @@ pub(in crate::lower) fn arg_port_type(ctx: &LowerCtx, port: PortRef) -> Option<T
             .or_else(|| m.chips.values().find_map(|c| find(c, id)))
     }
     let n = find(&ctx.builder.module, port.node_id)?;
-    let sym = intern(port.port.as_str());
+    let sym = port.port.sym();
     n.ports
         .find_output(sym)
         .or_else(|| n.ports.find_input(sym))

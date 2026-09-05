@@ -197,25 +197,63 @@ pub(super) fn type_expr_range(t: &TypeExpr) -> SourceRange {
 /// annotation: an unannotated declaration's inferred placeholder is
 /// `Type::Any`, never `Type::Opaque`, so it never reaches this check.
 pub(super) fn reject_any_storage(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRange, what: &str) {
-    if matches!(resolved, Type::Zone | Type::Teleport | Type::PrefabRef) {
-        let n = crate::analysis::types::type_str(resolved);
-        ctx.emit(
-            "WS025",
-            format!(
-                "'{n}' is a reference and cannot be stored: {what} needs a concrete \
-                 wire type — a '{n}' can only be wired or rerouted (like a var ref)"
-            ),
-            range,
-        );
-    } else if matches!(resolved, Type::Opaque) {
-        ctx.emit(
+    match resolved {
+        Type::Zone | Type::Teleport | Type::PrefabRef => {
+            let n = crate::analysis::types::type_str(resolved);
+            ctx.emit(
+                "WS025",
+                format!(
+                    "'{n}' is a reference and cannot be stored: {what} needs a concrete \
+                     wire type; a '{n}' can only be wired or rerouted (like a var ref)"
+                ),
+                range,
+            );
+        }
+        Type::Opaque => ctx.emit(
             "WS025",
             format!(
                 "'any' cannot be stored: {what} needs a concrete wire type \
                  (int/float/bool/string/vector/...)"
             ),
             range,
-        );
+        ),
+        // An exec edge is control flow, not a value: `var c: exec` wires an
+        // exec rerouter's output into the storage gate's data `.Value` pin,
+        // which the game will not load.
+        Type::Exec => ctx.emit(
+            "WS025",
+            format!(
+                "'exec' is control flow and cannot be stored: {what} needs a value type, \
+                 and an exec edge runs a gate rather than carrying one"
+            ),
+            range,
+        ),
+        // `never` is the type of an expression that produces nothing, and has
+        // no wire variant, so the gate falls back to a number.
+        Type::Never => ctx.emit(
+            "WS025",
+            format!("'never' cannot be stored: {what} needs a concrete wire type"),
+            range,
+        ),
+        // One storage gate holds one wire variant, so a container cannot be
+        // the thing inside another: `int[][]` and `Map<int, int[]>` fall back
+        // to a plain `Number`. (An array or map is storable in its own right;
+        // this only rejects one nested INSIDE another, which is what `what`
+        // always names here.)
+        Type::Array(_) | Type::Map(_, _)
+            if what == "an array's element type" || what == "a map's value type" =>
+        {
+            let n = crate::analysis::types::type_str(resolved);
+            ctx.emit(
+                "WS025",
+                format!(
+                    "'{n}' cannot be nested: {what} needs a concrete wire type, and one \
+                     storage gate holds one wire variant"
+                ),
+                range,
+            );
+        }
+        _ => {}
     }
 }
 

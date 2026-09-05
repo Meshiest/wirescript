@@ -15,7 +15,7 @@ fn label_source_is_string(ctx: &LowerCtx, p: PortRef) -> bool {
             n.ports
                 .outputs
                 .iter()
-                .find(|s| s.name == crate::intern::intern(p.port.as_str()))
+                .find(|s| s.name == p.port.sym())
         })
         .map(|s| s.ty == Type::String)
         .unwrap_or(false)

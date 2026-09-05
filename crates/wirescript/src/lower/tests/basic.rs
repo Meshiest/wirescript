@@ -2273,7 +2273,7 @@ fn field_access_vector_component_on_local_creates_split() {
     // `let a = ...; a.x` goes through the local-binding path, which previously
     // returned the whole vector port instead of splitting out the component.
     let r = compile(
-        "in p: character\non p {\n  let a = vec(1.0, 2.0, 3.0) + vec(4.0, 5.0, 6.0)\n  let cx = a.x\n  p.DisplayText(\"${cx}\")\n}",
+        "in p: character\non p {\n  let a = Vec(1.0, 2.0, 3.0) + Vec(4.0, 5.0, 6.0)\n  let cx = a.x\n  p.DisplayText(\"${cx}\")\n}",
     );
     assert!(
         r.diagnostics
@@ -2296,7 +2296,7 @@ fn splitvec_record_fields_reuse_single_split() {
     // ports of the one split. Previously the swizzle fallthrough re-split p's
     // first field (a scalar), so y/z read garbage. Exactly one SplitVector.
     let r = compile(
-        "in pl: character\non pl {\n  let v = vec(11.0, 22.0, 33.0)\n  let p = v.SplitVec()\n  let s = p.x + p.y + p.z\n  pl.DisplayText(\"${s}\")\n}",
+        "in pl: character\non pl {\n  let v = Vec(11.0, 22.0, 33.0)\n  let p = v.SplitVec()\n  let s = p.x + p.y + p.z\n  pl.DisplayText(\"${s}\")\n}",
     );
     assert!(
         r.diagnostics
@@ -2453,7 +2453,7 @@ on ControllerLeft() -> { controller: controller, userId: userId } {
 fn zone_event_input_binding() {
     let r = compile(
         "\
-in zoneA: entity
+in zoneA: zone
 on ZoneEntered(zone = zoneA) -> { character: character } {
   PrintToConsole(\"entered\")
 }",

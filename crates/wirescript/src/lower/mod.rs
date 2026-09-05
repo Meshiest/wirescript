@@ -100,7 +100,7 @@ pub struct LowerInput<'a> {
     pub file: &'a str,
     pub module_name: Option<&'a str>,
     pub template_cache: Arc<TemplateCache>,
-    pub doc_comments: &'a HashMap<usize, String>,
+    pub doc_comments: &'a crate::parser::DocComments,
     /// Whether the certified constant-fold pass runs — see [`FoldMode`]. A
     /// module-level `@nofold` (`input.ast.no_fold`) always disables it on
     /// top of this, regardless of mode.
@@ -1008,7 +1008,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
             let id = NodeId::fresh();
             let properties: HashMap<crate::intern::Sym, Literal> = fields
                 .iter()
-                .map(|(port, lit)| (intern(port.as_str()), lit.clone()))
+                .map(|(port, lit)| (port.sym(), lit.clone()))
                 .collect();
             make_nodes.push(Node {
                 id,
@@ -1047,7 +1047,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
     let mut drop_wires: Vec<usize> = Vec::with_capacity(inlines.len());
     for (i, target_id, port, lit) in inlines {
         if let Some(target) = module.nodes.get_mut(&target_id) {
-            std::sync::Arc::make_mut(&mut target.properties).insert(intern(port.as_str()), lit);
+            std::sync::Arc::make_mut(&mut target.properties).insert(port.sym(), lit);
         }
         drop_wires.push(i);
     }
@@ -1161,7 +1161,7 @@ fn inline_orphan_literals(module: &mut Module) {
                 None => continue,
             };
             // Convert PortIndex → Sym for use as a property key
-            let target_port_sym = intern(target_port.as_str());
+            let target_port_sym = target_port.sym();
             if let Some(target) = module.nodes.get_mut(&target_id) {
                 std::sync::Arc::make_mut(&mut target.properties)
                     .entry(target_port_sym)
@@ -1225,7 +1225,7 @@ fn inline_orphan_literals(module: &mut Module) {
             if !accepts {
                 continue;
             }
-            let target_port_sym = intern(target_port.as_str());
+            let target_port_sym = target_port.sym();
             if let Some(t) = module.nodes.get_mut(&target_id) {
                 std::sync::Arc::make_mut(&mut t.properties)
                     .entry(target_port_sym)
@@ -1864,7 +1864,7 @@ pub fn compile_chip_template(
     // for `ce_slots`: this builds an isolated per-chip template purely for
     // gate-count estimation, not the final emitted graph, so an unresolved
     // custom-event slot here just estimates as `float`.
-    let empty_docs: HashMap<usize, String> = HashMap::default();
+    let empty_docs = crate::parser::DocComments::default();
     let empty_ce_slots = CeSlotMap::default();
 
     let mut ctx = LowerCtx {

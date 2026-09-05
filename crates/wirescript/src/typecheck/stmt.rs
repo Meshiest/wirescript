@@ -957,7 +957,7 @@ fn infer_assign_target(
         }
     } else if let Expr::IndexAccess { obj, index, .. } = e {
         let obj_ty = infer_assign_target(ctx, obj);
-        infer::infer(ctx, index);
+        infer::check_index_type(ctx, &obj_ty, index);
         match obj_ty {
             Type::Array(inner) => *inner,
             // A map subscript write's value type is the map's VALUE type —
@@ -973,15 +973,41 @@ fn infer_assign_target(
         // The slot's own type, so a wrong-typed write is caught here rather
         // than silently coercing into the payload gate.
         infer::infer_unsafe_access(ctx, inner, range)
-    } else if let Expr::FieldAccess { obj, .. } | Expr::TuplePick { obj, .. } = e {
-        // A record/tuple field target (`p.x = 5`, `pts[i].inner.a = v`) is an
-        // lvalue that lowering resolves; the target itself stays permissive
-        // (typed `any`) as before. Infer the OBJECT for its side effect —
-        // recording its type in the type_map — so hover can resolve a field
-        // access written as an assignment target (`tk[i].phase = v`): without a
-        // recorded type for `tk[i]`, the field hover had nothing to read.
-        infer::infer(ctx, obj);
-        Type::Any
+    } else if let Expr::FieldAccess { obj, field, .. } = e {
+        // A record field target (`p.x = 5`, `pts[i].inner.a = v`) types as the
+        // FIELD, so a wrong-typed write is reported rather than wired. Typing
+        // it `any` also let a scalar into a record-typed field, which lowering
+        // then drops with no gates and no diagnostic.
+        //
+        // Inferring the object records its type in the type_map, which is what
+        // lets hover resolve a field access written as an assignment target
+        // (`tk[i].phase = v`).
+        //
+        // An object that is not a record, or a field the record does not
+        // declare, stays permissive: those are the shapes lowering resolves
+        // dynamically (a swizzle, `.Value`, an enum payload slot), and the
+        // read path already reports a genuinely unknown field.
+        let obj_ty = unwrap_ref(&infer::infer(ctx, obj));
+        match &obj_ty {
+            // A `*T` field aliases the caller's storage, so writing through
+            // one writes the pointee: the target's type is what it points at.
+            Type::Record(fields) => fields
+                .iter()
+                .find(|(n, _)| n == field)
+                .map(|(_, t)| unwrap_ref(t))
+                .unwrap_or(Type::Any),
+            _ => Type::Any,
+        }
+    } else if let Expr::TuplePick { obj, index, .. } = e {
+        // The tuple/record slot's own type, for the same reason.
+        let obj_ty = unwrap_ref(&infer::infer(ctx, obj));
+        match &obj_ty {
+            Type::Tuple(fields) => fields.get(*index).map(unwrap_ref).unwrap_or(Type::Any),
+            Type::Record(fields) => {
+                fields.get(*index).map(|(_, t)| unwrap_ref(t)).unwrap_or(Type::Any)
+            }
+            _ => Type::Any,
+        }
     } else {
         // Any other target shape (a call result `f() = 5`, a literal, an
         // operator expression) is not an lvalue. It used to fall through to

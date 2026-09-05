@@ -77,34 +77,53 @@ fn arithmetic_bakes() {
 }
 
 #[test]
-fn constant_chain_resolves_regardless_of_order() {
-    // `B` is defined in terms of `A`, and `C` in terms of `B`. Declaration
-    // order is not dependency order once imports are merged, so the constant
-    // environment iterates to a fixpoint.
-    let v = baked_array("let C = B * 2\nlet B = A + 1\nlet A = 5\nvar m: int[] = [A, B, C]");
+fn a_constant_chain_bakes_through_the_const_env_fixpoint() {
+    // `B` is defined in terms of `A`, and `C` in terms of `B`, so the constant
+    // environment has to iterate rather than evaluate once per declaration.
+    let v = baked_array("let A = 5\nlet B = A + 1\nlet C = B * 2\nvar m: int[] = [A, B, C]");
     assert_eq!(v, vec![Literal::Int(5), Literal::Int(6), Literal::Int(12)]);
 }
 
+/// Declare-before-use holds for a top-level `let` too, as it does for a
+/// `mod`/`chip` (WS021). The constant environment's fixpoint resolves a
+/// scrambled chain and the values still bake correctly, but the typechecker
+/// walks declarations in order and reports the forward reference. What keeps
+/// a merged multi-file program in dependency order is resolve's own
+/// reordering pass, not the fixpoint.
 #[test]
-fn constant_chain_through_a_const_mod_call_resolves_regardless_of_order() {
-    // Same shape as `constant_chain_resolves_regardless_of_order` above, but
-    // `A`'s own value comes from a `const mod` CALL rather than a literal —
-    // `B`, which depends on `A`, is still declared FIRST. `build_const_env`
-    // collects every top-level `const mod` from the whole decls list up
-    // front (not incrementally alongside the fixpoint that resolves
-    // `let`/`const` values), so a name's dependency on a const-mod-derived
-    // constant resolves the same way it always has for a plain one.
+fn a_forward_reference_between_top_level_lets_is_reported() {
+    let r = compile("let C = B * 2\nlet B = A + 1\nlet A = 5\nvar m: int[] = [A, B, C]");
+    let unknown: Vec<&str> = r
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "WS002")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        unknown.iter().any(|m| m.contains("'B'")) && unknown.iter().any(|m| m.contains("'A'")),
+        "a forward reference must be reported: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn a_constant_chain_through_a_const_mod_call_bakes() {
+    // Same shape as `a_constant_chain_bakes_through_the_const_env_fixpoint`
+    // above, but `A`'s value comes from a `const mod` CALL rather than a
+    // literal. `build_const_env` collects every top-level `const mod` from the
+    // whole decls list up front, not incrementally alongside the fixpoint that
+    // resolves `let`/`const` values, so a dependency on a const-mod-derived
+    // constant resolves like a plain one.
     //
-    // `f` itself is declared before its own call site (inside `A`'s
-    // initializer) — a call to a mod declared LATER than its caller is
-    // rejected outright (WS021, a separate concern from the ordering here;
-    // see `a_const_mod_call_must_still_be_declared_before_its_use` in
-    // `tests/const_differential.rs`), so that is not the order being
-    // exercised here.
+    // `f` is declared before its call site because a call to a mod declared
+    // LATER is a WS021 (see
+    // `a_const_mod_call_must_still_be_declared_before_its_use` in
+    // `tests/const_differential.rs`), and the same rule holds between the
+    // `let`s.
     let v = baked_array(
         "const mod f(n: int) -> int { return n + 1 }\n\
-         let B = A + 1\n\
          let A = f(4)\n\
+         let B = A + 1\n\
          var m: int[] = [A, B]",
     );
     assert_eq!(v, vec![Literal::Int(5), Literal::Int(6)]);
@@ -120,21 +139,18 @@ fn a_destructured_constant_bakes() {
 }
 
 #[test]
-fn a_destructured_constant_chain_resolves_regardless_of_order() {
-    // The destructuring analogue of `constant_chain_resolves_regardless_of_order`
-    // above, and the ordering constraint destructuring must respect: the
-    // destructure is declared BEFORE the record it splits, and a third
-    // constant built from its names is declared before BOTH. `build_const_env`
-    // iterates to a fixpoint — pass 1 evaluates `p`, pass 2 splits it into
-    // `x`/`y`, pass 3 resolves `SUM` — so declaration order does not matter
-    // here any more than it does for a plain constant chain.
+fn a_destructured_constant_chain_bakes() {
+    // The destructuring analogue of the plain constant chain above: `p` is a
+    // record, `{ x, y }` splits it, and `SUM` is built from the split names.
+    // `build_const_env` reaches all three in one build by iterating: pass 1
+    // evaluates `p`, pass 2 splits it, pass 3 resolves `SUM`.
     //
     // Values are chosen so every field is distinguishable and the combination
     // pins the mapping: a swapped x/y bakes [222, 111, 222111].
     let v = baked_array(
-        "const SUM = x * 1000 + y\n\
+        "const p = { x: 111, y: 222 }\n\
          const { x, y } = p\n\
-         const p = { x: 111, y: 222 }\n\
+         const SUM = x * 1000 + y\n\
          var m: int[] = [x, y, SUM]",
     );
     assert_eq!(v, vec![Literal::Int(111), Literal::Int(222), Literal::Int(111222)]);

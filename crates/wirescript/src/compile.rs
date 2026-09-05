@@ -83,6 +83,20 @@ fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     f()
 }
 
+/// Run `f` on the same big-stack worker [`compile`] uses.
+///
+/// Front-end recursion scales with program structure, and a stack overflow is
+/// not a panic: it aborts the process, so `catch_unwind` cannot turn it into a
+/// diagnostic. An editor answers each request on a ~2 MiB tokio worker, which
+/// a legal but deeply nested program outgrows, so every entry point that walks
+/// a user AST should come through here.
+///
+/// Reserved address space only: pages are committed as touched, and the spawn
+/// itself is around 100 us.
+pub fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    on_compile_stack(f)
+}
+
 /// Maximum depth of `$./file.ws` source-prefab compilation before it refuses
 /// (a runaway guard against a `.ws` prefab that references itself).
 const MAX_PREFAB_WS_DEPTH: usize = 8;
@@ -326,7 +340,7 @@ fn compile_with_opts_inner(
             .ast
             .decls
             .first()
-            .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
+            .and_then(|d| resolved.doc_comments.get(&crate::parser::doc_key(d.range())))
             .cloned()
     });
     // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
@@ -475,7 +489,7 @@ fn compile_to_world_inner(
             .ast
             .decls
             .first()
-            .and_then(|d| resolved.doc_comments.get(&d.range().start.offset))
+            .and_then(|d| resolved.doc_comments.get(&crate::parser::doc_key(d.range())))
             .cloned()
     });
     // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.

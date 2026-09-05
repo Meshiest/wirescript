@@ -158,12 +158,36 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                     event_data: None,
                 },
             );
-            if matches!(prev, Some(p) if matches!(p.kind, SymbolKind::In | SymbolKind::Out)) {
-                ctx.emit(
-                    "WS013",
-                    format!("'{name}' shadows the in/out port of the same name — rename one"),
-                    range.clone(),
-                );
+            match &prev {
+                Some(p) if matches!(p.kind, SymbolKind::In | SymbolKind::Out) => {
+                    ctx.emit(
+                        "WS013",
+                        format!("'{name}' shadows the in/out port of the same name; rename one"),
+                        range.clone(),
+                    );
+                }
+                // Shadowing is a same-file idiom, deliberately allowed above.
+                // Two DIFFERENT files each binding `name` at top level is not
+                // shadowing at all: imports merge into one flat scope, so one
+                // module's constant replaces the other's and every reference in
+                // both reads whichever came last. `mod`/`chip` report the same
+                // collision.
+                Some(p)
+                    if !p.decl_range.file.is_empty()
+                        && !range.file.is_empty()
+                        && p.decl_range.file != range.file =>
+                {
+                    ctx.emit(
+                        "WS013",
+                        format!(
+                            "duplicate declaration of '{name}': also declared in '{}'. Imports \
+                             merge into one flat scope, so rename one or import it with `as`",
+                            p.decl_range.file
+                        ),
+                        range.clone(),
+                    );
+                }
+                _ => {}
             }
         }
         LetBinding::Tuple { names, rest, range } => {

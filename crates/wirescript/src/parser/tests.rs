@@ -2015,3 +2015,121 @@ on go {
             "`emit done` in a block expr is an emit statement: {stmts:?}"
         );
     }
+
+    /// A program nested past `MAX_NEST_DEPTH` is refused with one diagnostic
+    /// instead of overflowing the stack.
+    ///
+    /// The three shapes each reach depth a different way: nested parens by
+    /// parser recursion, a `+` chain by left-nesting one `BinOp` per operand
+    /// with no deep recursion at all, and an `else if` ladder by nesting an
+    /// `If` per arm. All three overflow a 2 MiB stack, the size tokio gives
+    /// the worker an editor's analysis runs on, and an overflow aborts the
+    /// process: `catch_unwind` cannot turn it into a diagnostic.
+    #[test]
+    fn nesting_past_the_depth_limit_is_a_diagnostic_not_a_crash() {
+        let n = crate::parser::MAX_NEST_DEPTH + 50;
+        let deep = [
+            format!("on t() {{\n  o = {}1{}\n}}\n", "(".repeat(n), ")".repeat(n)),
+            format!(
+                "on t() {{\n  o = {}\n}}\n",
+                (0..n).map(|i| (i % 7).to_string()).collect::<Vec<_>>().join(" + ")
+            ),
+            format!(
+                "in c: int\non t() {{\n{}{{ o = 0 }}\n}}\n",
+                (0..n).map(|i| format!("  if c == {i} {{ o = {i} }} else ")).collect::<String>()
+            ),
+        ];
+        for src in &deep {
+            let p = parse(src, "t");
+            let depth_errs: Vec<_> = p
+                .diagnostics
+                .iter()
+                .filter(|d| d.message.contains("nests more than"))
+                .collect();
+            assert_eq!(depth_errs.len(), 1, "one message, not a cascade: {:?}", p.diagnostics);
+        }
+        // Just under the limit still parses clean.
+        let ok = format!(
+            "on t() {{\n  o = {}\n}}\n",
+            (0..crate::parser::MAX_NEST_DEPTH - 10)
+                .map(|i| (i % 7).to_string())
+                .collect::<Vec<_>>()
+                .join(" + ")
+        );
+        assert!(
+            parse(&ok, "t").diagnostics.is_empty(),
+            "{:?}",
+            parse(&ok, "t").diagnostics
+        );
+    }
+
+    /// An interpolation slot holds ONE expression, and says so when it does
+    /// not: a sub-parser that reads one expression and stops silently discards
+    /// the rest of the slot.
+    #[test]
+    fn leftover_tokens_in_an_interpolation_slot_are_reported() {
+        let r = parse("in n: int\nout s = \"x ${n GARBAGE} y\"\n", "t");
+        assert!(
+            r.diagnostics.iter().any(|d| d.message.contains("after the expression in `${...}`")),
+            "{:?}",
+            r.diagnostics
+        );
+        // A well-formed slot is untouched.
+        assert!(parse("in n: int\nout s = \"x ${n + 1} y\"\n", "t").diagnostics.is_empty());
+    }
+
+    /// A span inside `${...}` is the span in the FILE, whatever shape the
+    /// sub-expression is.
+    ///
+    /// The alternative is lexing the slot on its own and walking the tree
+    /// afterwards to shift its positions, which needs an arm per expression
+    /// shape: a record literal, an `is`, an `unsafe`, a block expression or a
+    /// match-arm body that the walker misses reports at line 1.
+    #[test]
+    fn spans_inside_an_interpolation_are_file_positions() {
+        // Each body is a shape the old shifting walker missed.
+        for body in ["{ a: n }", "n is E.A", "unsafe n.A.f", "{ let t = n; t }"] {
+            let src = format!("in n: int\n\n\n\nout s = \"v ${{ {body} }}\"\n");
+            let r = parse(&src, "t");
+            for d in &r.diagnostics {
+                assert_eq!(d.range.start.line, 5, "`{body}` reported off its own line: {d:?}");
+            }
+            let Some(TopDecl::Out(o)) = r.ast.decls.iter().find(|d| matches!(d, TopDecl::Out(_)))
+            else {
+                panic!("expected the `out` decl for `{body}`")
+            };
+            let Some(Expr::InterpLit { parts, .. }) = o.value.as_ref() else {
+                panic!("expected an interpolation for `{body}`")
+            };
+            let slot = parts
+                .iter()
+                .find_map(|p| match p {
+                    crate::ast::InterpPart::Expr(e) => Some(e),
+                    _ => None,
+                })
+                .expect("the `${...}` slot");
+            assert_eq!(slot.range().start.line, 5, "`{body}` span is not on its own line");
+        }
+    }
+
+    /// A `${...}` slot is lexed at its position in the file, and the lexer's
+    /// own source slicing stays fragment-local.
+    ///
+    /// Seeding the lexer's reported positions is what makes an interpolation's
+    /// spans right; seeding the offsets it INDEXES WITH aborts the compile,
+    /// since a slot late in a file would slice its short fragment at the
+    /// file offset.
+    #[test]
+    fn an_interpolation_slot_containing_a_string_lexes() {
+        let pad = "// filler\n".repeat(30);
+        for body in [
+            "s.Split(\"\\n\").Left",
+            "\"inner\"",
+            "f(\"a\", \"b\")",
+        ] {
+            let src = format!("{pad}in s: string\nout m = \"x ${{{body}}} y\"\n");
+            let r = parse(&src, "t");
+            let interp = r.diagnostics.iter().find(|d| d.code == "WSP001");
+            assert!(interp.is_none(), "`{body}`: {:?}", r.diagnostics);
+        }
+    }

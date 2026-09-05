@@ -2369,7 +2369,7 @@ fn is_event_data_gate(ctx: &LowerCtx, node: NodeId) -> bool {
 fn retype_output_port(ctx: &mut LowerCtx, node: NodeId, port: WirePort, ty: Type) {
     if let Some(n) = ctx.builder.module.nodes.get_mut(&node) {
         let io = std::sync::Arc::make_mut(&mut n.ports);
-        let name = crate::intern::intern(port.as_str());
+        let name = port.sym();
         for p in io.outputs.iter_mut() {
             if p.name == name {
                 p.ty = ty;
@@ -2953,6 +2953,15 @@ pub(super) fn lower_out_binding(
     range: &SourceRange,
 ) {
     let Some(value) = value else { return };
+    // `out y: *int = &x` / `= ref x` names the same storage as the bare
+    // `out y: *int = x`: the `&`/`ref` states the exposure mode the annotation
+    // already carries. `Expr::RefOf` names no binding, so without this unwrap
+    // it falls through to `lower_expr`, which has no form for it. Same unwrap
+    // `call/binding.rs` does for a `*T` argument.
+    let value = match value {
+        Expr::RefOf { operand, .. } => operand.as_ref(),
+        other => other,
+    };
     // An ENUM value driving an output port has no materialization yet: the
     // out-port isn't decomposed into `__disc` + slot pins (unlike a record,
     // which `pre_declare_output` DOES explode), so both the construction path

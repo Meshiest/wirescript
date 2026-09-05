@@ -536,3 +536,178 @@ out hit = o is Option.Some",
         );
     }
 
+
+    /// A named import brings only the names it lists, so a module's `on`
+    /// handlers stay behind, and it says so.
+    ///
+    /// The spelling matters: a test harness imports a module's pure helpers
+    /// precisely so it does NOT install that module's event surface, while a
+    /// library written to install behaviour looks identical at the import
+    /// site. Hence a warning rather than either behaviour changing.
+    #[test]
+    fn a_named_import_leaves_handlers_behind_and_says_so() {
+        let lib = "var counter: int = 0\non RoundStart() {\n  counter = 1\n}\n";
+        // `import * as L` wraps everything it brought in a `Namespace`, so
+        // the count has to look inside one.
+        fn count(decls: &[TopDecl]) -> usize {
+            decls
+                .iter()
+                .map(|d| match d {
+                    TopDecl::Handler(_) => 1,
+                    TopDecl::Namespace(n) => count(&n.decls),
+                    _ => 0,
+                })
+                .sum()
+        }
+        let resolved = |src: &str| {
+            let loader = mem(&[("lib.ws", lib)]);
+            resolve(src, "main.ws", &loader)
+        };
+
+        // The whole-module spellings install it.
+        assert_eq!(count(&resolved(r#"import "lib""#).ast.decls), 1);
+        assert_eq!(count(&resolved(r#"import * as L from "lib""#).ast.decls), 1);
+
+        // The named one does not, and warns.
+        let r = resolved(r#"import { counter } from "lib""#);
+        assert_eq!(count(&r.ast.decls), 0);
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS014" && d.message.contains("`on` handler")),
+            "the skipped handlers must be reported: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// A module reached by two import paths installs its handler once. The
+    /// diamond dedup is keyed on the names a declaration binds, and a handler
+    /// binds none, so it needs its own key.
+    #[test]
+    fn a_diamond_import_installs_a_handler_once() {
+        let loader = mem(&[
+            ("lib.ws", "var counter: int = 0\non RoundStart() {\n  counter = 1\n}\n"),
+            ("a.ws", "import \"lib\"\nmod ha() -> (r: int) { return counter }\n"),
+            ("b.ws", "import \"lib\"\nmod hb() -> (r: int) { return counter }\n"),
+        ]);
+        let r = resolve("import \"a\"\nimport \"b\"\n", "main.ws", &loader);
+        let handlers = r
+            .ast
+            .decls
+            .iter()
+            .filter(|d| matches!(d, TopDecl::Handler(_)))
+            .count();
+        assert_eq!(handlers, 1, "decls: {:?}", r.ast.decls.len());
+    }
+
+    /// An `enum` is importable, by every spelling that names it: it has to be
+    /// in both `is_importable` and `decl_name`, or a library can declare one
+    /// but never hand it out.
+    #[test]
+    fn an_enum_can_be_imported() {
+        let lib = "enum Shape { Empty, Circle(float) }\n";
+        for src in [r#"import "lib""#, r#"import { Shape } from "lib""#] {
+            let loader = mem(&[("lib.ws", lib)]);
+            let r = resolve(src, "main.ws", &loader);
+            assert!(
+                r.ast
+                    .decls
+                    .iter()
+                    .any(|d| matches!(d, TopDecl::Enum(e) if e.name == "Shape")),
+                "{src} should bring `Shape` in: {:?}",
+                r.diagnostics
+            );
+            assert!(
+                !r.diagnostics
+                    .iter()
+                    .any(|d| d.severity == crate::diagnostic::Severity::Error),
+                "{src}: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    /// Two modules that each bind the same top-level `let` collide, as they
+    /// already did for a `mod`/`chip`. Imports merge into one flat scope, so
+    /// otherwise one replaces the other and every reference in both files
+    /// reads whichever came last.
+    #[test]
+    fn a_cross_file_duplicate_let_is_a_diagnostic() {
+        let loader = mem(&[
+            ("a.ws", "let K = 1\nmod ga() -> (r: int) { return K }\n"),
+            ("b.ws", "let K = 2\nmod gb() -> (r: int) { return K }\n"),
+        ]);
+        let r = resolve("import \"a\"\nimport \"b\"\n", "main.ws", &loader);
+        let tc = crate::typecheck::typecheck(
+            &r.ast,
+            "main.ws",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        assert!(
+            tc.diagnostics
+                .iter()
+                .any(|d| d.code == "WS013" && d.message.contains("'K'")),
+            "expected WS013 for the duplicate `let K`: {:?}",
+            tc.diagnostics
+        );
+    }
+
+    /// Shadowing inside ONE file stays legal: it is the documented `const a`
+    /// then `let a` idiom, and the cross-file check must not catch it.
+    #[test]
+    fn same_file_let_shadowing_is_still_allowed() {
+        let loader = mem(&[]);
+        let r = resolve("const a = 1\nlet a = 2\n", "main.ws", &loader);
+        let tc = crate::typecheck::typecheck(
+            &r.ast,
+            "main.ws",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        assert!(
+            !tc.diagnostics.iter().any(|d| d.code == "WS013"),
+            "same-file shadowing is legal: {:?}",
+            tc.diagnostics
+        );
+    }
+
+    /// Doc comments from different files do not overwrite one another.
+    ///
+    /// Imports merge several parses into one map, so a key of byte offset
+    /// alone lets two declarations at the same offset in their own files
+    /// collide. A chip's doc comment is baked into the world as its header
+    /// text, so the loser comes out wearing the winner's title.
+    #[test]
+    fn doc_comments_from_two_files_do_not_collide() {
+        // Both `mod` declarations start at the same byte offset in their own
+        // file, which is exactly what an offset-only key cannot tell apart.
+        let loader = mem(&[(
+            "lib.ws",
+            "/// FROM LIB\nmod helper() -> (r: int) { return 1 }\n",
+        )]);
+        let r = resolve(
+            "import \"lib\"\n/// FROM MAIN\nmod other() -> (r: int) { return 2 }\n",
+            "main.ws",
+            &loader,
+        );
+        let docs: Vec<&String> = r.doc_comments.values().collect();
+        assert!(
+            docs.iter().any(|d| d.contains("FROM LIB")),
+            "the library's doc survived: {docs:?}"
+        );
+        assert!(
+            docs.iter().any(|d| d.contains("FROM MAIN")),
+            "the entry file's doc survived: {docs:?}"
+        );
+        // Each is filed against its own declaration, not merely present.
+        for d in &r.ast.decls {
+            if let TopDecl::Chip(c) = d {
+                let want = if c.name == "helper" { "FROM LIB" } else { "FROM MAIN" };
+                let got = r.doc_comments.get(&crate::parser::doc_key(&c.range));
+                assert!(
+                    got.is_some_and(|s| s.contains(want)),
+                    "`{}` should carry {want}, got {got:?}",
+                    c.name
+                );
+            }
+        }
+    }

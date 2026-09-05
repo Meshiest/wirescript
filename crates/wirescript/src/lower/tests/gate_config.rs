@@ -792,10 +792,10 @@ fn send_custom_event_inlines_name_and_data() {
 #[test]
 fn custom_event_typed_params_type_the_data_ports() {
     // `on CustomEvent("name", config…) -> (a: int, b: character, …)` — the
-    // leading positional bakes into EventName, config like `sameOwner` stays
+    // leading positional bakes into EventName, config like `isObject` stays
     // in the parens, and the typed `->` params type the DataOut ports;
     // unused slots default to float.
-    let src = "static var last: int = 0\non CustomEvent(\"dmg\", sameOwner = true) -> (amount: int, source: character) {\n  last = amount\n}\n";
+    let src = "static var last: int = 0\non CustomEvent(\"dmg\", isObject = true) -> (amount: int, source: character) {\n  last = amount\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
     let c = crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
@@ -1025,7 +1025,7 @@ fn send_custom_event_target_is_entity_typed() {
 fn on_arrow_tuple_custom_event_matches_inline() {
     // `-> (amount: int, source: character)` types the DataOut ports and bakes
     // EventName the same way as custom_event_typed_params_type_the_data_ports
-    // (which additionally carries a `sameOwner` config arg in the parens).
+    // (which additionally carries an `isObject` config arg in the parens).
     let arrow = "static var last: int = 0\non CustomEvent(\"dmg\") -> (amount: int, source: character) {\n  last = amount\n}\n";
     let r = compile(arrow);
     assert_no_errors(&r);

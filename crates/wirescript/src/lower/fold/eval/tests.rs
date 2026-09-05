@@ -293,9 +293,12 @@
             "color:Color(1.0,0.5,0.25,0.5)",
             Value::Color { r: 1.0, g: 0.5, b: 0.25, a: 0.5 },
         );
+        // 0.7071067811865476 is the shortest round-trip spelling of FRAC_1_SQRT_2,
+        // so the probe text and the constant name the same f64.
+        let h = std::f64::consts::FRAC_1_SQRT_2;
         check(
             "quat:Quat(0.0,0.0,0.7071067811865476,0.7071067811865476)",
-            Value::Quat { x: 0.0, y: 0.0, z: 0.7071067811865476, w: 0.7071067811865476 },
+            Value::Quat { x: 0.0, y: 0.0, z: h, w: h },
         );
     }
 

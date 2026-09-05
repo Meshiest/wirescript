@@ -134,6 +134,79 @@
         }
     }
 
+    /// A brick sits ON its layer's floor, not centred on it, and no two
+    /// bricks intersect in 3D.
+    ///
+    /// `Placement::z` is a brick CENTRE (emit offsets x and y by their
+    /// half-extents but passes z straight through), so a layer sharing one z
+    /// hangs anything taller than the step down into the layer below.
+    /// Anchoring each brick's BOTTOM at the floor is what keeps the slabs
+    /// disjoint whatever mix of heights lands in one, and the game drops
+    /// intersecting bricks at load with no error.
+    #[test]
+    fn cube_mode_never_overlaps_in_z_with_mixed_brick_heights() {
+        let tall_class = "Component_Internal_ProjectileSpawner_Cannon";
+        let tall = default_catalog()
+            .find_by_class(tall_class)
+            .expect("catalog must know the class this test is built on")
+            .half_size
+            .z;
+        assert!(2 * tall > 12, "the tall brick must exceed the nominal step");
+
+        // Which bricks share a layer depends on the node map's iteration
+        // order, so pin the invariant across many arrangements rather than
+        // constructing one.
+        for total in [8usize, 16, 27, 40, 54, 70] {
+            for tall_from in [0usize, total / 4, total / 2, total * 3 / 4] {
+                let mut m = Module::new("cube");
+                for i in 0..total {
+                    if i < tall_from {
+                        m.add_node(gate("g"));
+                    } else {
+                        m.add_node(Node { gate_class: tall_class, ..gate("g") });
+                    }
+                }
+                let l = layout_with_opts(&m, &cube_opts());
+                let boxes: Vec<[i32; 6]> = l
+                    .placements
+                    .iter()
+                    .map(|(id, p)| {
+                        let node = &m.nodes[id];
+                        let (hsx, hsy) = brick_half_size(node);
+                        let hsz = default_catalog()
+                            .find_by_class(node.gate_class)
+                            .map_or(DEFAULT_HALF_SIZE, |g| g.half_size.z);
+                        [p.x, p.x + 2 * hsx, p.y, p.y + 2 * hsy, p.z - hsz, p.z + hsz]
+                    })
+                    .collect();
+                for a in &boxes {
+                    assert!(
+                        a[4] >= l.bounds_min.z,
+                        "a brick hangs below the first layer's floor at total={total} \
+                         tall_from={tall_from}: {a:?} vs floor {}",
+                        l.bounds_min.z
+                    );
+                    assert!(a[5] <= l.bounds_max.z, "a brick reaches above the reported bounds: {a:?}");
+                }
+                for (i, a) in boxes.iter().enumerate() {
+                    for b in &boxes[i + 1..] {
+                        let disjoint = a[1] <= b[0]
+                            || b[1] <= a[0]
+                            || a[3] <= b[2]
+                            || b[3] <= a[2]
+                            || a[5] <= b[4]
+                            || b[5] <= a[4];
+                        assert!(
+                            disjoint,
+                            "cube bricks overlap at total={total} tall_from={tall_from}: \
+                             {a:?} and {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// A chip's interior is laid by a separate call, so the mode has to travel
     /// with the options rather than being read once at the root.
     #[test]

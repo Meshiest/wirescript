@@ -41,25 +41,24 @@ fn main() {
             module_name: None,
             fold_mode: FoldMode::Auto,
         });
-        let diags: Vec<_> = all
-            .iter()
-            .filter(|d| d.range.file.as_ref() == file_str || d.range.file.is_empty())
-            .collect();
-
-        if diags.is_empty() {
+        // Diagnostics from an imported module are reported too, against the file
+        // they came from. Dropping them printed "no errors" for programs the
+        // compiler rejects outright, and every real project here is multi-file.
+        if all.is_empty() {
             eprintln!("\x1b[32m✓\x1b[0m {}: no errors", file_arg);
             continue;
         }
 
-        for d in &diags {
+        for d in all.iter() {
             let (label, color) = match d.severity {
                 Severity::Error => { total_errors += 1; ("ERROR", "\x1b[31m") }
                 Severity::Warning => { total_warnings += 1; ("WARN", "\x1b[33m") }
                 _ => { ("INFO", "\x1b[36m") }
             };
+            let origin = if d.range.file.is_empty() { file_arg.as_str() } else { d.range.file.as_ref() };
             eprintln!(
                 "{}{}\x1b[0m [{}] {} ({}:{}:{})",
-                color, label, d.code, d.message, file_arg, d.range.start.line, d.range.start.col
+                color, label, d.code, d.message, origin, d.range.start.line, d.range.start.col
             );
         }
     }

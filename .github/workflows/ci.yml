@@ -31,8 +31,17 @@ jobs:
         with:
           tool: just
 
+      # The whole workspace, not just `-p wirescript`: `crates/lsp`,
+      # `crates/wasm` and `crates/cli` have tests of their own.
       - name: Tests
-        run: cargo test -p wirescript
+        run: cargo test --workspace
+
+      # Not `-D warnings`: the tree carries a long tail of style warnings that
+      # predate this gate. What this catches is clippy's deny-by-default lints
+      # (real bug smells like `never_loop`), plus any compile break in a crate
+      # `cargo test` does not reach.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
 
       - name: Doc examples type-check
         run: just doc-check

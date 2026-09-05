@@ -502,8 +502,16 @@ fn check_decl_inner(
                     // bidirectional literal like `null` to the port's type. Both
                     // sides unwrap refs so `out y: *int = x` compares int against
                     // int, the ref-ness being the exposure mode, not a value type.
+                    // `out y: *int = &x` / `= ref x` names the same storage as
+                    // `out y: *int = x`; the `&`/`ref` is the exposure mode the
+                    // annotation already states, not a second value type, so
+                    // the check looks through it on both sides.
+                    let checked: &Expr = match value {
+                        Expr::RefOf { operand, .. } if matches!(resolved, Type::Ref(_)) => operand,
+                        other => other,
+                    };
                     let value_ty =
-                        ctx.in_pure(|ctx| infer::check(ctx, value, &unwrap_ref(&resolved)));
+                        ctx.in_pure(|ctx| infer::check(ctx, checked, &unwrap_ref(&resolved)));
                     // The value has to fit the PORT as well as this site's own
                     // annotation, which are different types whenever an earlier
                     // site typed the port. Annotation-versus-port is settled in

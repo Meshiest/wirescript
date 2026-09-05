@@ -1,6 +1,10 @@
-//! Integration snapshot tests for the wirescript compiler.
+//! Integration tests for the whole compile pipeline: source -> IR -> layout ->
+//! BRZ bytes.
 //!
-//! Tests exercise the full compile pipeline: source → IR → layout → BRZ bytes.
+//! Despite the file name, most of these are not snapshots: they assert a
+//! program reaches real gates. `assert_compiles_clean` is the floor (no error,
+//! no `_Unsupported` placeholder, non-empty output); the few tests with a
+//! structural claim state it directly.
 //! Tests are grouped by area:
 //!   basic chip/mod snapshots
 //!   scope capture BRZ tests
@@ -65,27 +69,64 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
     (nodes, wires, chips, brz_size)
 }
 
+/// Compile `src` and assert it produced a real circuit: no error diagnostic,
+/// no `_Unsupported` placeholder gate anywhere in the tree, and non-empty
+/// output.
+///
+/// `compile(...).expect(...)` alone passes on a program that type-checks and
+/// then lowers half its statements to placeholders, which is the failure this
+/// file exists to notice.
+fn assert_compiles_clean(src: &str, why: &str) {
+    let input = CompileInput {
+        source: src,
+        file: "test.ws",
+        module_name: None,
+        fold_mode: FoldMode::ForceOff,
+    };
+    let r = compile(input).unwrap_or_else(|e| panic!("{why}: {e}"));
+    let errors: Vec<_> = r
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == wirescript::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{why}: {errors:?}");
+    fn placeholders(m: &Module) -> usize {
+        m.nodes.values().filter(|n| n.gate_class == "_Unsupported").count()
+            + m.chips.values().map(placeholders).sum::<usize>()
+    }
+    let resolved = resolve(src, "test.ws", &FsLoader);
+    let tc = typecheck(&resolved.ast, "test.ws", &wirescript::typecheck::CeSlotMap::default());
+    let lowered = lower(LowerInput {
+        ast: &resolved.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file: "test.ws",
+        module_name: None,
+        template_cache: Arc::new(TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
+        fold_mode: FoldMode::ForceOff,
+        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
+    });
+    assert_eq!(placeholders(&lowered.module), 0, "{why}: lowered to a placeholder gate");
+    assert!(!r.brz.is_empty(), "{why}: empty output");
+}
+
 // ── basic chip/mod snapshots ─────────────────────────────────────────────────
 
 /// Simple chip Add(a, b) -> (r) called once with output port.
 #[test]
-fn snapshot_simple_chip() {
+fn a_simple_chip_compiles_clean() {
     let src = r#"
 chip Add(a: int, b: int) -> (r: int) { out r = a + b }
 let res = Add(1, 2)
 out result = res.r
 "#;
-    let (_, _, _, brz_size) = compile_stats(src);
-    assert!(
-        brz_size > 0,
-        "BRZ output should be non-empty, got {} bytes",
-        brz_size
-    );
+    assert_compiles_clean(src, "a chip called once with an output port");
 }
 
 /// Nested chip calls: Inner called inside Wrapper, Wrapper called twice.
 #[test]
-fn snapshot_nested_chip_calls() {
+fn nested_chip_calls_compile_clean() {
     let src = r#"
 chip Inner(x: int) -> (r: int) { out r = x + 1 }
 mod Wrapper(v: int) -> (result: int) {
@@ -97,13 +138,7 @@ let w1 = Wrapper(10)
 let w2 = Wrapper(20)
 out total = w1 + w2
 "#;
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
-    compile(input).expect("nested chip calls should compile");
+    assert_compiles_clean(src, "nested chip calls should compile");
 }
 
 // ── scope capture BRZ tests ──────────────────────────────────────────────────
@@ -111,7 +146,7 @@ out total = w1 + w2
 /// Mod captures var and array from parent scope; called 3 times.
 /// BRZ output must be > 100 bytes.
 #[test]
-fn snapshot_mod_with_parent_capture() {
+fn a_mod_capturing_parent_state_emits_a_real_circuit() {
     let src = r#"
 var counter: int = 0
 var log: int[]
@@ -137,7 +172,7 @@ out count = counter
 
 /// Forward reference: mod save(val) uses array log which is declared after the mod.
 #[test]
-fn snapshot_cross_file_capture_pattern() {
+fn a_forward_referenced_array_capture_compiles_clean() {
     let src = r#"
 mod save(val: int) {
     log.push(val)
@@ -148,37 +183,25 @@ on tick {
     save(42)
 }
 "#;
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
-    compile(input).expect("forward reference to array in mod should compile");
+    assert_compiles_clean(src, "forward reference to array in mod should compile");
 }
 
 // ── correctness equivalence tests ────────────────────────────────────────────
 
 /// Buffer capture: buffer prev_val is read by a mod that checks current != prev_val.
 #[test]
-fn snapshot_buffer_capture() {
+fn a_buffer_capture_compiles_clean() {
     let src = r#"
 in current: int
 buffer prev_val = current
 out changed = if current != prev_val then true else false
 "#;
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
-    compile(input).expect("buffer capture in pure context should compile");
+    assert_compiles_clean(src, "buffer capture in pure context should compile");
 }
 
 /// Exec chain in mods: two mods each with exec statements, called in a handler.
 #[test]
-fn snapshot_exec_chain_in_mod() {
+fn an_exec_chain_in_a_mod_compiles_clean() {
     let src = r#"
 var a: int = 0
 var b: int = 0
@@ -197,18 +220,12 @@ on tick {
 }
 out sum = a + b
 "#;
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
-    compile(input).expect("exec chain in mods should compile");
+    assert_compiles_clean(src, "exec chain in mods should compile");
 }
 
 /// Mod calling chip Double 3 times; assert chips == 3.
 #[test]
-fn snapshot_mod_calling_chip_repeated() {
+fn a_mod_calling_a_chip_repeatedly_instantiates_it_per_call() {
     let src = r#"
 chip Double(v: int) -> (r: int) { out r = v * 2 }
 mod apply_double(v: *int) {
@@ -236,7 +253,7 @@ out total = x + y + z
 
 /// Record params dissolve into individual ports on a chip.
 #[test]
-fn snapshot_record_dissolved_chip() {
+fn a_record_param_chip_compiles_clean() {
     let src = r#"
 type Vec2 = { x: int, y: int }
 chip add_vec(a: Vec2, b: Vec2) -> (r: Vec2) {
@@ -246,18 +263,12 @@ let p: Vec2 = { x: 1, y: 2 }
 let q: Vec2 = { x: 3, y: 4 }
 let result = add_vec(p, q)
 "#;
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
-    compile(input).expect("record param chip should compile");
+    assert_compiles_clean(src, "record param chip should compile");
 }
 
 /// 10 calls to chip Inc(x) -> (r); assert chips == 10, nodes >= 40, wires >= 30.
 #[test]
-fn snapshot_many_chip_instances_unique_wires() {
+fn ten_chip_calls_make_ten_instances() {
     let src = r#"
 chip Inc(x: int) -> (r: int) { out r = x + 1 }
 let v0 = Inc(0)
@@ -295,7 +306,7 @@ out result = v9.r
 
 /// Grandparent capture: mod add_score captures var score from root, called in handler.
 #[test]
-fn snapshot_grandparent_capture() {
+fn a_grandparent_var_capture_compiles_clean() {
     let src = r#"
 var score: int = 0
 mod add_score(pts: int) {
@@ -307,18 +318,12 @@ on tick {
 }
 out total = score
 "#;
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
-    compile(input).expect("grandparent var capture in mod should compile");
+    assert_compiles_clean(src, "grandparent var capture in mod should compile");
 }
 
 /// Mod chain: step() captures var, double_step() calls step() twice, double_step called twice.
 #[test]
-fn snapshot_mod_chain_with_capture() {
+fn a_mod_chain_with_capture_compiles_clean() {
     let src = r#"
 var counter: int = 0
 mod step() {
@@ -335,11 +340,5 @@ on tick {
 }
 out count = counter
 "#;
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
-    compile(input).expect("mod chain with capture should compile");
+    assert_compiles_clean(src, "mod chain with capture should compile");
 }

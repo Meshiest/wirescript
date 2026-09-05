@@ -919,8 +919,10 @@ fn scalar_payload_generic_enum_still_lowers_clean() {
     // arg is a SCALAR lays its payload out as a plain slot and lowers with no
     // placeholder - unaffected by the enum-arg nested-record path.
     let r = compile(
-        "enum Option<T> { Some(T), None }\n\
-         static var b: Option<int> = Option.Some(7)\n\
+        // `Maybe`, not `Option`: an enum spelled `Option` collides with the
+        // built-in one (WS013).
+        "enum Maybe<T> { Some(T), None }\n\
+         static var b: Maybe<int> = Maybe.Some(7)\n\
          out val: int\nout done: exec\n\
          on ReadBrickGrid() {\n\
            match b { Some(n) => { emit val = n } None => { emit val = 0 } }\n\

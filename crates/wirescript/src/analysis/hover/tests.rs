@@ -10,6 +10,7 @@
         hover_at(
             source,
             "test",
+            &crate::parser::parse(source, "test").ast,
             &symbols,
             &tc.type_of_expr,
             &resolved.doc_comments,
@@ -224,6 +225,7 @@
         let text = hover_at(
             src,
             "main",
+            &crate::parser::parse(src, "main").ast,
             &symbols,
             &tc.type_of_expr,
             &resolved.doc_comments,
@@ -375,6 +377,7 @@
         let text = hover_at(
             src,
             "main",
+            &crate::parser::parse(src, "main").ast,
             &symbols,
             &tc.type_of_expr,
             &resolved.doc_comments,
@@ -1134,4 +1137,40 @@ chip a(uid: string) -> int {
                    }";
         let h = hover_for(src, 3, 13).expect("hover on an anon-chip-declared port read must resolve");
         assert!(h.contains("int"), "hover text: {h}");
+    }
+
+    /// Every hover column on a line holding non-ASCII text must answer or
+    /// decline, never panic. This file's resolvers slice with a BYTE offset
+    /// while the incoming column is a CHAR one, and a mid-character slice
+    /// kills the LSP request task and poisons the wasm module until reload.
+    #[test]
+    fn hover_column_sweep_survives_non_ascii() {
+        let src = "// ─── grid ─── ünïcode héré 🙂\n\
+                   type Slot = { phase: int }\n\
+                   var tk: Slot[]\n\
+                   in go: exec\n\
+                   on go { tk[0].phase = 5 }\n";
+        for (line, text) in src.lines().enumerate() {
+            for col in 0..=text.chars().count() + 2 {
+                let _ = hover_for(src, line, col);
+            }
+        }
+    }
+
+    /// The same sweep over a CRLF file, where a line offset summed as
+    /// `len + 1` loses the `\r` and every type-map lookup past line 1 misses.
+    #[test]
+    fn hover_column_sweep_survives_crlf() {
+        let src = "type Slot = { phase: int }\r\n\
+                   var tk: Slot[]\r\n\
+                   in go: exec\r\n\
+                   on go { tk[0].phase = 5 }\r\n";
+        let col = src.lines().nth(3).unwrap().find("phase").unwrap();
+        let h = hover_for(src, 3, col + 1).expect("hover on tk[0].phase in a CRLF file");
+        assert!(h.contains("phase") && h.contains("int"), "got: {h}");
+        for (line, text) in src.lines().enumerate() {
+            for col in 0..=text.chars().count() + 2 {
+                let _ = hover_for(src, line, col);
+            }
+        }
     }

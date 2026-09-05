@@ -702,15 +702,17 @@ on player {
 
 #[test]
 fn var_reset_in_nested_mod() {
+    // `inner_mod` is declared first: calling a mod declared later is a WS021,
+    // which is not what this test is about.
     let r = compile("\
+mod inner_mod() {
+  var x: int = 0
+  x = x + 10
+}
 mod outer_mod() {
   var x: int = 0
   x = x + 1
   inner_mod()
-}
-mod inner_mod() {
-  var x: int = 0
-  x = x + 10
 }
 in player: character
 on player {

@@ -633,6 +633,7 @@
                 client,
                 docs: Mutex::new(HashMap::new()),
                 watch_files: std::sync::atomic::AtomicBool::new(false),
+                change_gen: std::sync::atomic::AtomicU64::new(0),
             });
         service
     }

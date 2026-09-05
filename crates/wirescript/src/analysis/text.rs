@@ -1,8 +1,68 @@
 /// Byte index just past the char at byte `i` of `s`. `i + 1` is only correct
 /// for ASCII — after an `rfind` that landed on a multi-byte char (e.g. `─` in
 /// a comment), `i + 1` is not a char boundary and slicing there panics.
-fn after_char(s: &str, i: usize) -> usize {
+pub fn after_char(s: &str, i: usize) -> usize {
     i + s[i..].chars().next().map_or(1, |c| c.len_utf8())
+}
+
+/// The text of 0-based `line`, without its line terminator. CRLF and LF files
+/// both yield the same string.
+pub fn line_text(source: &str, line: usize) -> &str {
+    source.lines().nth(line).unwrap_or("")
+}
+
+/// Byte offset where 0-based `line` starts in `source`, counting the newline
+/// bytes as they actually appear. `str::lines` strips the `\r` of a CRLF pair,
+/// so summing `l.len() + 1` loses one byte per line: on a CRLF file every
+/// offset past line 1 drifts, and slicing at one lands mid-character and
+/// panics. Past the last line this returns `source.len()`.
+pub fn line_start_byte(source: &str, line: usize) -> usize {
+    if line == 0 {
+        return 0;
+    }
+    let mut seen = 0usize;
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            seen += 1;
+            if seen == line {
+                return i + 1;
+            }
+        }
+    }
+    source.len()
+}
+
+/// Byte offset within one line's text of 0-based char column `col`, clamped to
+/// the end of the line. Every cursor coordinate reaching `analysis` is a char
+/// column; slicing with it directly is only correct while the line is ASCII.
+pub fn char_col_to_byte(line_str: &str, col: usize) -> usize {
+    line_str.char_indices().nth(col).map_or(line_str.len(), |(b, _)| b)
+}
+
+/// 0-based char column of byte offset `b` within one line's text.
+pub fn byte_to_char_col(line_str: &str, b: usize) -> usize {
+    let b = b.min(line_str.len());
+    line_str[..b].chars().count()
+}
+
+/// UTF-16 code-unit column (what the LSP protocol carries by default) to the
+/// char column `analysis` works in. Astral-plane characters, emoji, most
+/// notably, are two UTF-16 units and one char, so the two disagree on every
+/// line containing one.
+pub fn utf16_col_to_char_col(line_str: &str, u16col: usize) -> usize {
+    let mut units = 0usize;
+    for (chars, c) in line_str.chars().enumerate() {
+        if units >= u16col {
+            return chars;
+        }
+        units += c.len_utf16();
+    }
+    line_str.chars().count()
+}
+
+/// Char column to the UTF-16 code-unit column the LSP protocol expects back.
+pub fn char_col_to_utf16_col(line_str: &str, col: usize) -> usize {
+    line_str.chars().take(col).map(char::len_utf16).sum()
 }
 
 pub fn word_at(source: &str, line: usize, col: usize) -> Option<String> {
@@ -248,15 +308,8 @@ pub fn asset_ref_at(source: &str, line: usize, col: usize) -> Option<AssetRef> {
 }
 
 /// Byte offset of `(line, col)` (0-based char column) within `source`.
-fn cursor_byte_offset(source: &str, line: usize, col: usize) -> usize {
-    let line_start: usize = source.lines().take(line).map(|l| l.len() + 1).sum();
-    let line_str = source.lines().nth(line).unwrap_or("");
-    let bc = line_str
-        .char_indices()
-        .nth(col)
-        .map(|(b, _)| b)
-        .unwrap_or(line_str.len());
-    line_start + bc
+pub fn cursor_byte_offset(source: &str, line: usize, col: usize) -> usize {
+    line_start_byte(source, line) + char_col_to_byte(line_text(source, line), col)
 }
 
 /// Name of the call whose argument list the cursor sits inside, if any. Scans

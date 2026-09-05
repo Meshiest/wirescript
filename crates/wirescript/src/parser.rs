@@ -17,11 +17,23 @@ mod stmt;
 mod decl;
 mod pattern;
 
+/// Doc comments keyed by the file and the start offset of the declaration
+/// they precede.
+///
+/// The file is part of the key because imports merge several parses into one
+/// map, so an offset alone collides across files and the last writer wins. A
+/// chip's doc comment is baked into the world as its header text.
+pub type DocComments = HashMap<(std::sync::Arc<str>, usize), String>;
+
+/// The key [`DocComments`] stores a declaration under.
+pub fn doc_key(range: &SourceRange) -> (std::sync::Arc<str>, usize) {
+    (range.file.clone(), range.start.offset)
+}
+
 pub struct ParseResult {
     pub ast: Script,
     pub diagnostics: Vec<Diagnostic>,
-    /// Doc comments keyed by the start offset of the declaration they precede.
-    pub doc_comments: HashMap<usize, String>,
+    pub doc_comments: DocComments,
     /// Line indentation and `//` comments of this file's source.
     pub source_map: SourceMap,
 }
@@ -55,7 +67,7 @@ struct Parser<'a> {
     file: &'a str,
     pos: usize,
     diagnostics: Vec<Diagnostic>,
-    doc_comments: HashMap<usize, String>,
+    doc_comments: DocComments,
     /// Counter for generating unique synthetic binding names (`_on_expr_N`).
     expr_trigger_counter: usize,
     /// Synthetic `let` bindings queued by `parse_handler` for expression
@@ -72,7 +84,26 @@ struct Parser<'a> {
     /// body), where a trailing `{` is unambiguous again. The Go-style
     /// composite-literal disambiguation.
     no_brace_construct: bool,
+    /// Current nesting level, in expression operands, blocks and type levels.
+    /// See [`MAX_NEST_DEPTH`].
+    depth: usize,
+    /// Set once the depth limit has been reported, so the one diagnostic is
+    /// not repeated for every level still on the stack.
+    depth_exceeded: bool,
 }
+
+/// The deepest nesting the parser will build.
+///
+/// Every later pass walks this tree recursively, typecheck, the analysis
+/// walkers, and `Drop` on the boxed nodes themselves, so the depth the parser
+/// accepts is the depth all of them have to survive. A stack overflow is not a
+/// panic: it aborts the process, `catch_unwind` cannot see it, and an editor
+/// running analysis on a 2 MiB worker thread dies without reporting anything.
+/// Measured on that stack, the cliff is around 800 nested parens, 2000 `else
+/// if` arms and 3000 `+` operands; this leaves headroom under the tightest of
+/// those while sitting far above anything real code writes: across every `.ws`
+/// file in the example and project corpus the deepest is 76.
+pub(crate) const MAX_NEST_DEPTH: usize = 400;
 
 impl<'a> Parser<'a> {
     fn new(tokens: Vec<Token>, file: &'a str, initial: Vec<Diagnostic>) -> Self {
@@ -85,7 +116,37 @@ impl<'a> Parser<'a> {
             expr_trigger_counter: 0,
             pending_stmts: Vec::new(),
             no_brace_construct: false,
+            depth: 0,
+            depth_exceeded: false,
         }
+    }
+
+    /// Take one nesting level. `false` means the caller must not descend: the
+    /// program is past [`MAX_NEST_DEPTH`], which has been reported, and the
+    /// token stream has been wound to EOF so every enclosing loop unwinds
+    /// instead of spinning on input it can no longer consume.
+    fn enter_nesting(&mut self) -> bool {
+        self.depth += 1;
+        if self.depth <= MAX_NEST_DEPTH {
+            return true;
+        }
+        if !self.depth_exceeded {
+            let t = self.peek().clone();
+            self.error(
+                format!(
+                    "expression or block nests more than {MAX_NEST_DEPTH} levels deep; split it into named parts"
+                ),
+                t.start,
+                t.end,
+            );
+            self.depth_exceeded = true;
+            self.pos = self.tokens.len().saturating_sub(1);
+        }
+        false
+    }
+
+    fn leave_nesting(&mut self, levels: usize) {
+        self.depth = self.depth.saturating_sub(levels);
     }
 
     fn collect_doc_comment(&mut self) -> Option<String> {
@@ -222,6 +283,13 @@ impl<'a> Parser<'a> {
     }
 
     fn error(&mut self, message: impl Into<String>, start: Pos, end: Pos) {
+        // Past the depth limit the token stream has been wound to EOF, so every
+        // construct still on the stack is about to report its own missing
+        // `)`/`}`. The one message that explains the file is already recorded;
+        // the cascade behind it only buries it.
+        if self.depth_exceeded {
+            return;
+        }
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
             code: "WSP001".to_string(),
@@ -231,6 +299,9 @@ impl<'a> Parser<'a> {
     }
 
     fn warn(&mut self, message: impl Into<String>, start: Pos, end: Pos) {
+        if self.depth_exceeded {
+            return;
+        }
         self.diagnostics.push(Diagnostic {
             severity: Severity::Warning,
             code: "WSP001".to_string(),
@@ -298,7 +369,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 if let Some(doc) = doc {
-                    self.doc_comments.insert(d.range().start.offset, doc);
+                    self.doc_comments.insert(doc_key(d.range()), doc);
                 }
                 decls.push(d);
             } else if self.pos == before {

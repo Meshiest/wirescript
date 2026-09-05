@@ -348,7 +348,7 @@ pub(super) struct LowerCtx<'a> {
     pub(super) is_root_module: bool,
     /// `///` doc comments keyed by the declaration's source start offset.
     /// Consumed when stamping `DOC_TEXT` onto chip nodes.
-    pub(super) doc_comments: &'a HashMap<usize, String>,
+    pub(super) doc_comments: &'a crate::parser::DocComments,
     /// Depth of enclosing `@nofold` declaration subtrees. >0 means every gate
     /// created by `add_gate`/`add_event` gets stamped with the `_nofold`
     /// pseudo-property. Incremented/decremented around the lowering of each
@@ -481,7 +481,7 @@ impl<'a> LowerCtx<'a> {
         }
         let n = find_node(&self.builder.module, src.node_id)?;
         n.ports
-            .find_output(intern(src.port.as_str()))
+            .find_output(src.port.sym())
             .map(|p| p.ty.clone())
     }
 
@@ -1025,14 +1025,14 @@ impl<'a> LowerCtx<'a> {
         }
         let src_range = {
             let n = find_node(&self.builder.module, src.node_id)?;
-            if n.ports.find_output(intern(src.port.as_str()))?.ty != Type::String {
+            if n.ports.find_output(src.port.sym())?.ty != Type::String {
                 return None;
             }
             n.source_range.clone()
         };
         {
             let n = find_node(&self.builder.module, dst.node_id)?;
-            if n.ports.find_input(intern(dst.port.as_str()))?.ty != Type::Bool {
+            if n.ports.find_input(dst.port.sym())?.ty != Type::Bool {
                 return None;
             }
         }

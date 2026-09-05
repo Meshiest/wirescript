@@ -10,9 +10,31 @@ impl<'a> Parser<'a> {
     /// bare capitalized name into a unit-variant match once the scrutinee's
     /// enum type is known).
     pub(super) fn parse_pattern(&mut self) -> Pattern {
-        let name_tok = self.expect(TokenKind::Ident, None);
+        if !self.enter_nesting() {
+            self.leave_nesting(1);
+            let t = self.peek().clone();
+            return Pattern::Wildcard(self.make_range(t.start, t.end));
+        }
+        let p = self.parse_pattern_inner();
+        self.leave_nesting(1);
+        p
+    }
+
+    fn parse_pattern_inner(&mut self) -> Pattern {
+        let mut name_tok = self.expect(TokenKind::Ident, None);
         if name_tok.text == "_" {
             return Pattern::Wildcard(self.make_range(name_tok.start, name_tok.end));
+        }
+        // `Shape.Circle(r)`, the enum-qualified spelling. Construction and
+        // `is` both require it, so writing it in a pattern is the natural
+        // guess. The scrutinee's type still decides the enum; typecheck checks
+        // the qualifier against it.
+        let start = name_tok.start;
+        let mut enum_path = None;
+        if self.check(TokenKind::Dot, None) && self.peek_at(1).kind == TokenKind::Ident {
+            self.advance();
+            enum_path = Some(std::mem::take(&mut name_tok.text));
+            name_tok = self.expect(TokenKind::Ident, None);
         }
         if self.check(TokenKind::LParen, None) {
             self.advance();
@@ -29,9 +51,10 @@ impl<'a> Parser<'a> {
             }
             let end = self.expect(TokenKind::RParen, None).end;
             return Pattern::Variant {
+                enum_path,
                 variant: name_tok.text,
                 sub: VariantPattern::Positional(elems),
-                range: self.make_range(name_tok.start, end),
+                range: self.make_range(start, end),
             };
         }
         if self.check(TokenKind::LBrace, None) {
@@ -67,14 +90,26 @@ impl<'a> Parser<'a> {
             }
             let end = self.expect(TokenKind::RBrace, None).end;
             return Pattern::Variant {
+                enum_path,
                 variant: name_tok.text,
                 sub: VariantPattern::Named { fields, ignore_rest },
-                range: self.make_range(name_tok.start, end),
+                range: self.make_range(start, end),
             };
         }
-        Pattern::Binding {
-            name: name_tok.text,
-            range: self.make_range(name_tok.start, name_tok.end),
+        // A qualified name with no payload is a unit variant outright, there
+        // is nothing for the typechecker's bare-identifier reclassification to
+        // be ambiguous about.
+        match enum_path {
+            Some(_) => Pattern::Variant {
+                enum_path,
+                variant: name_tok.text,
+                sub: VariantPattern::Unit,
+                range: self.make_range(start, name_tok.end),
+            },
+            None => Pattern::Binding {
+                name: name_tok.text,
+                range: self.make_range(start, name_tok.end),
+            },
         }
     }
 }

@@ -48,9 +48,11 @@ out y = doubled");
 
 #[test]
 fn block_expr_no_stmts_is_just_expr() {
+    // `{ x + 1 }`, not `{ x }`: a lone identifier in braces is record-literal
+    // shorthand (`{ x: x }`), which is what the parser reads it as.
     let r = compile("\
 var x: int = 5
-let y = if x > 0 then { x } else { 0 }
+let y = if x > 0 then { x + 1 } else { 0 }
 out z = y");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);

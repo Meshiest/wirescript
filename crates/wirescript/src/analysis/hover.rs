@@ -7,7 +7,7 @@ use crate::ir::{Literal, Type};
 use crate::lower::ConstEnv;
 use super::{TypeMap, IfContextMap, VarReadContextMap};
 use super::types::{type_str, collection_kind, CollectionKind};
-use super::text::{word_at, find_enclosing_call};
+use super::text::{after_char, char_col_to_byte, find_enclosing_call, word_at};
 use super::symbols::SymbolDef;
 use super::gate_docs::gate_docs;
 use super::resource_estimate::{ResourceEstimate, lookup_estimate};
@@ -15,19 +15,33 @@ use super::resource_estimate::{ResourceEstimate, lookup_estimate};
 enum EstimateKind { Chip, Mod, Scope }
 
 /// Byte offset of the start of `line` within `source`.
-/// Each prior line contributes `len + 1` bytes (content + newline).
 fn line_offset_at(source: &str, line: usize) -> usize {
-    source.lines().take(line).map(|ln| ln.len() + 1).sum()
+    super::text::line_start_byte(source, line)
 }
 
-/// Given a line string and a column, find the byte offset of the start of the
-/// word containing that column (word chars: alphanumeric or `_`).
-fn word_start_in_line(line_str: &str, col: usize) -> usize {
-    let c = col.min(line_str.len());
-    line_str[..c]
+/// Byte offset of the start of the word (alphanumeric or `_`) containing byte
+/// offset `b` in `line_str`.
+fn word_start_at_byte(line_str: &str, b: usize) -> usize {
+    let b = b.min(line_str.len());
+    line_str[..b]
         .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| i + 1)
+        .map(|i| after_char(line_str, i))
         .unwrap_or(0)
+}
+
+/// Byte offset of the start of the word containing 0-based CHAR column `col`.
+/// Every cursor column arriving from an editor is a char column; the returned
+/// offset is a byte offset, which is what the rest of this file slices with.
+fn word_start_in_line(line_str: &str, col: usize) -> usize {
+    word_start_at_byte(line_str, char_col_to_byte(line_str, col))
+}
+
+/// Byte offset one past the end of the word containing byte offset `b`.
+fn word_end_at_byte(line_str: &str, b: usize) -> usize {
+    let b = b.min(line_str.len());
+    line_str[b..]
+        .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .map_or(line_str.len(), |i| b + i)
 }
 
 fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
@@ -141,9 +155,8 @@ fn literal_display_inner(lit: &Literal) -> String {
 /// call site in hand. A body const that reads a parameter therefore simply
 /// fails to evaluate (an unresolved name), and this returns `None` — never
 /// the placeholder, which would be a wrong value dressed up as a real one.
-fn const_hover_value(source: &str, file: &str, target_off: usize) -> Option<Literal> {
-    let parsed = crate::parser::parse(source, file);
-    let script = &parsed.ast;
+fn const_hover_value(ast: &Script, target_off: usize) -> Option<Literal> {
+    let script = ast;
     let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
     let module_env = crate::lower::build_const_env(&script.decls, &enum_defs);
     let mods = const_mod_table(&script.decls);
@@ -287,12 +300,16 @@ fn eval_const_in_block(
     None
 }
 
+/// `ast` is the file's PRE-RESOLVE parse. Eight of the resolvers below need
+/// it, and a hover runs per keystroke, so it comes from the caller rather than
+/// being parsed here.
 pub fn hover_at(
     source: &str,
     file: &str,
+    ast: &Script,
     symbols: &[SymbolDef],
     type_map: &TypeMap,
-    doc_comments: &HashMap<usize, String>,
+    doc_comments: &crate::parser::DocComments,
     if_contexts: &IfContextMap,
     var_read_contexts: &VarReadContextMap,
     dropped_ranges: &[(SourceRange, String)],
@@ -332,7 +349,7 @@ pub fn hover_at(
         .or_else(|| hover_data_driven_config(source, &word, line, col))
         .or_else(|| hover_config_enum_value(source, &word, line, col))
         .or_else(|| hover_collection_method(source, symbols, &word, line, col))
-        .or_else(|| hover_custom_event(source, file, &word, type_map, line, col))
+        .or_else(|| hover_custom_event(source, file, ast, &word, type_map, line, col))
         .or_else(|| hover_builtin_event(&word))
         .or_else(|| hover_builtin_call(source, &word, line, col))
         .or_else(|| hover_chip_or_mod_keyword(source, &word, symbols, resource_estimates, line))
@@ -341,6 +358,7 @@ pub fn hover_at(
             hover_record_or_type_field(
                 source,
                 file,
+                ast,
                 type_map,
                 symbols,
                 doc_comments,
@@ -350,13 +368,13 @@ pub fn hover_at(
             )
         })
         .or_else(|| hover_namespace_member(source, symbols, doc_comments, resource_estimates, &word, line, col))
-        .or_else(|| hover_enum_discriminant_variant_path(source, file, &word, line, col))
-        .or_else(|| hover_enum_variant_path(source, file, symbols, &word, line, col))
-        .or_else(|| hover_enum_field_construction(source, file, &word, line, col))
+        .or_else(|| hover_enum_discriminant_variant_path(source, ast, &word, line, col))
+        .or_else(|| hover_enum_variant_path(source, ast, symbols, &word, line, col))
+        .or_else(|| hover_enum_field_construction(source, ast, &word, line, col))
         .or_else(|| resolve_field_hover(source, file, type_map, symbols, line, col, &word))
-        .or_else(|| hover_generic_call(source, file, symbols, doc_comments, resource_estimates, type_map, &word, line, col))
-        .or_else(|| hover_user_symbol(source, file, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
-        .or_else(|| hover_enum_type_name(source, file, &word))
+        .or_else(|| hover_generic_call(source, file, ast, symbols, doc_comments, resource_estimates, type_map, &word, line, col))
+        .or_else(|| hover_user_symbol(source, file, ast, symbols, doc_comments, var_read_contexts, resource_estimates, &word, line, col))
+        .or_else(|| hover_enum_type_name(source, ast, &word))
         .or_else(|| hover_type_or_class(&word))
 }
 
@@ -797,12 +815,7 @@ fn word_is_named_arg_name(source: &str, line: usize, col: usize) -> bool {
     let Some(l) = source.lines().nth(line) else {
         return false;
     };
-    let c = col.min(l.len());
-    let word_end = l[c..]
-        .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| c + i)
-        .unwrap_or(l.len());
-    let rest = l[word_end..].trim_start();
+    let rest = l[word_end_at_byte(l, char_col_to_byte(l, col))..].trim_start();
     rest.starts_with('=') && !rest.starts_with("==")
 }
 
@@ -837,7 +850,7 @@ fn hover_collection_method(
     // rather than the receiver's. The symbol table keys type by name, which is
     // exactly the receiver here, and covers both top-level and handler-local vars.
     let obj_end = start - 1;
-    let obj_start = word_start_in_line(l, obj_end);
+    let obj_start = word_start_at_byte(l, obj_end);
     let obj_name = &l[obj_start..obj_end];
 
     // The receiver's DECLARED type string (`Map<string, int>`, `Grid<int>`, ...)
@@ -936,6 +949,7 @@ fn hover_builtin_event(word: &str) -> Option<String> {
 fn hover_custom_event(
     source: &str,
     file: &str,
+    ast: &Script,
     word: &str,
     type_map: &TypeMap,
     line: usize,
@@ -955,8 +969,7 @@ fn hover_custom_event(
 
     // Re-parse the same source: identical byte offsets, so `type_map` (keyed by
     // (file, start, end)) still resolves each sender arg's inferred type.
-    let parsed = crate::parser::parse(source, file);
-    let script = &parsed.ast;
+    let script = ast;
 
     let channel = if is_send {
         ce_send_channel_at(script, word, word_off)?
@@ -1326,7 +1339,7 @@ fn render_variant_payload(v: &crate::typecheck::enums::VariantDef) -> String {
 /// game enum) and its variant list. Runs after [`hover_user_symbol`] in the
 /// dispatch chain, so a value symbol of the same name (a `var`/`let`/mod, ...)
 /// always wins - an enum type name is never itself a registered value symbol.
-fn hover_enum_type_name(source: &str, file: &str, word: &str) -> Option<String> {
+fn hover_enum_type_name(source: &str, ast: &Script, word: &str) -> Option<String> {
     // Built-in game enum: resolved straight from the catalog's memoized table
     // (a cheap linear scan, no reparse) - checked first since it applies to
     // every file, unlike a user `enum`.
@@ -1342,8 +1355,7 @@ fn hover_enum_type_name(source: &str, file: &str, word: &str) -> Option<String> 
     if !source.contains("enum ") {
         return None;
     }
-    let parsed = crate::parser::parse(source, file);
-    let e = find_top_level_enum_decl(&parsed.ast.decls, word)?;
+    let e = find_top_level_enum_decl(&ast.decls, word)?;
     let def = crate::typecheck::enums::EnumDef {
         name: e.name.clone(),
         type_params: e.type_params.clone(),
@@ -1425,7 +1437,7 @@ fn hover_builtin_game_enum_type(word: &str) -> Option<String> {
 /// same name as an enum wins, so that name is not a construction site.
 fn hover_enum_variant_path(
     source: &str,
-    file: &str,
+    ast: &Script,
     symbols: &[SymbolDef],
     word: &str,
     line: usize,
@@ -1437,17 +1449,16 @@ fn hover_enum_variant_path(
         return None;
     }
     let obj_end = start - 1;
-    let obj_start = word_start_in_line(l, obj_end);
+    let obj_start = word_start_at_byte(l, obj_end);
     let enum_name = &l[obj_start..obj_end];
     if enum_name.is_empty() || super::resolve_symbol(symbols, enum_name, line, col).is_some() {
         return None;
     }
 
-    let parsed = crate::parser::parse(source, file);
-    let registry = crate::typecheck::enums::build_registry(&parsed.ast.decls);
+    let registry = crate::typecheck::enums::build_registry(&ast.decls);
     let def = registry.get(enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == word)?;
-    let is_user = find_top_level_enum_decl(&parsed.ast.decls, enum_name).is_some();
+    let is_user = find_top_level_enum_decl(&ast.decls, enum_name).is_some();
 
     let mut out = format!(
         "```wirescript\n{enum_name}.{}{}\n```\n\n**Discriminant:** `{}`",
@@ -1473,11 +1484,10 @@ fn hover_enum_variant_path(
 /// `parser::expr::parse_record_lit`), not just the key, so the key span is
 /// derived from the field name's byte length rather than read off a
 /// dedicated sub-range.
-fn hover_enum_field_construction(source: &str, file: &str, word: &str, line: usize, col: usize) -> Option<String> {
+fn hover_enum_field_construction(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
     let line_str = source.lines().nth(line)?;
     let word_off = line_offset_at(source, line) + word_start_in_line(line_str, col);
 
-    let parsed = crate::parser::parse(source, file);
     let mut hit: Option<(String, String)> = None; // (enum name, variant name)
     {
         let mut on_handler = |_: &Handler| {};
@@ -1510,11 +1520,11 @@ fn hover_enum_field_construction(source: &str, file: &str, word: &str, line: usi
                 hit = Some((enum_name.clone(), variant.clone()));
             }
         };
-        super::visit::visit_program(&parsed.ast, &mut on_handler, &mut on_call);
+        super::visit::visit_program(ast, &mut on_handler, &mut on_call);
     }
     let (enum_name, variant_name) = hit?;
 
-    let registry = crate::typecheck::enums::build_registry(&parsed.ast.decls);
+    let registry = crate::typecheck::enums::build_registry(&ast.decls);
     let def = registry.get(&enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
     let crate::typecheck::enums::Payload::Named(field_defs) = &vdef.payload else {
@@ -1539,7 +1549,7 @@ fn hover_enum_field_construction(source: &str, file: &str, word: &str, line: usi
 /// int` via `type_map` (the typechecker types `.Discriminant` as `Type::Int`
 /// regardless of whether the object is a bare value or a variant path - see
 /// `infer.rs`'s `field == "Discriminant"` arm).
-fn hover_enum_discriminant_variant_path(source: &str, file: &str, word: &str, line: usize, col: usize) -> Option<String> {
+fn hover_enum_discriminant_variant_path(source: &str, ast: &Script, word: &str, line: usize, col: usize) -> Option<String> {
     if word != "Discriminant" {
         return None;
     }
@@ -1549,20 +1559,19 @@ fn hover_enum_discriminant_variant_path(source: &str, file: &str, word: &str, li
         return None;
     }
     let variant_end = start - 1;
-    let variant_start = word_start_in_line(l, variant_end);
+    let variant_start = word_start_at_byte(l, variant_end);
     if variant_start == 0 || l.as_bytes()[variant_start - 1] != b'.' {
         return None; // a two-identifier chain (`s.Discriminant`) - not a variant path.
     }
     let variant_name = &l[variant_start..variant_end];
     let enum_end = variant_start - 1;
-    let enum_start = word_start_in_line(l, enum_end);
+    let enum_start = word_start_at_byte(l, enum_end);
     let enum_name = &l[enum_start..enum_end];
     if enum_name.is_empty() {
         return None;
     }
 
-    let parsed = crate::parser::parse(source, file);
-    let registry = crate::typecheck::enums::build_registry(&parsed.ast.decls);
+    let registry = crate::typecheck::enums::build_registry(&ast.decls);
     let def = registry.get(enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
     Some(format!(
@@ -1586,11 +1595,7 @@ fn word_is_call_or_method(source: &str, line: usize, col: usize) -> bool {
         return true;
     }
     // Call position: the next non-space char after the word is `(`.
-    let c = col.min(l.len());
-    let word_end = l[c..]
-        .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| c + i)
-        .unwrap_or(l.len());
+    let word_end = word_end_at_byte(l, char_col_to_byte(l, col));
     l[word_end..].trim_start().starts_with('(')
 }
 
@@ -1716,7 +1721,7 @@ fn hover_chip_or_mod_keyword(
     if word != "chip" && word != "mod" { return None; }
 
     let lo = line_offset_at(source, line);
-    let line_end = lo + source.lines().nth(line).map_or(0, |l| l.len() + 1);
+    let line_end = lo + super::text::line_text(source, line).len() + 1;
 
     for sym in symbols {
         if (sym.kind == "chip" || sym.kind == "mod")
@@ -1766,16 +1771,17 @@ fn hover_on_keyword(
 fn hover_record_or_type_field(
     source: &str,
     file: &str,
+    ast: &Script,
     type_map: &TypeMap,
     symbols: &[SymbolDef],
-    doc_comments: &HashMap<usize, String>,
+    doc_comments: &crate::parser::DocComments,
     word: &str,
     line: usize,
     col: usize,
 ) -> Option<String> {
     // Record literal field, resolved through the type map. Tried before the
     // line-scanning resolver below, which only recognizes one written shape.
-    if let Some(v) = resolve_record_lit_field_typed(source, file, type_map, word, line, col) {
+    if let Some(v) = resolve_record_lit_field_typed(source, file, ast, type_map, word, line, col) {
         return Some(v);
     }
 
@@ -1797,7 +1803,7 @@ fn hover_record_or_type_field(
                     // field name's offset.
                     let field_off = line_offset_at(source, line)
                         + word_start_in_line(source.lines().nth(line)?, col);
-                    if let Some(doc) = doc_comments.get(&field_off) {
+                    if let Some(doc) = doc_comments.get(&(sym.range.file.clone(), field_off)) {
                         hover += &format!("\n\n{doc}");
                     }
                     return Some(hover);
@@ -1826,8 +1832,9 @@ fn hover_record_or_type_field(
 fn hover_generic_call(
     source: &str,
     file: &str,
+    ast: &Script,
     symbols: &[SymbolDef],
-    doc_comments: &HashMap<usize, String>,
+    doc_comments: &crate::parser::DocComments,
     resource_estimates: &HashMap<String, ResourceEstimate>,
     type_map: &TypeMap,
     word: &str,
@@ -1839,8 +1846,7 @@ fn hover_generic_call(
     let l = source.lines().nth(line)?;
     let word_off = line_offset_at(source, line) + word_start_in_line(l, col);
 
-    let parsed = crate::parser::parse(source, file);
-    let script = &parsed.ast;
+    let script = ast;
 
     // The `Expr::Call` whose callee identifier `word` spans the cursor.
     let (args, type_args) = generic_call_at(script, word, word_off)?;
@@ -1948,7 +1954,7 @@ fn hover_generic_call(
         exec: sym.exec,
         is_const: sym.is_const,
     };
-    let mut out = render_decl_hover(&synth, doc_comments, resource_estimates, Some((source, file)));
+    let mut out = render_decl_hover(&synth, doc_comments, resource_estimates, Some((source, ast)));
 
     let bindings: Vec<String> = decl
         .type_params
@@ -2038,8 +2044,9 @@ fn positional_arg_types(
 fn hover_user_symbol(
     source: &str,
     file: &str,
+    ast: &Script,
     symbols: &[SymbolDef],
-    doc_comments: &HashMap<usize, String>,
+    doc_comments: &crate::parser::DocComments,
     var_read_contexts: &VarReadContextMap,
     resource_estimates: &HashMap<String, ResourceEstimate>,
     word: &str,
@@ -2074,7 +2081,7 @@ fn hover_user_symbol(
         return Some(v);
     }
 
-    let mut v = render_decl_hover(sym, doc_comments, resource_estimates, Some((source, file)));
+    let mut v = render_decl_hover(sym, doc_comments, resource_estimates, Some((source, ast)));
 
     // For var reads: show exec/pure context at the hovered location
     if sym.kind == "var" {
@@ -2106,9 +2113,9 @@ fn hover_user_symbol(
 /// is correct, not a shortcut.
 fn render_decl_hover(
     sym: &SymbolDef,
-    doc_comments: &HashMap<usize, String>,
+    doc_comments: &crate::parser::DocComments,
     resource_estimates: &HashMap<String, ResourceEstimate>,
-    value_ctx: Option<(&str, &str)>,
+    value_ctx: Option<(&str, &Script)>,
 ) -> String {
     let ty_str = sym.ty.as_deref().unwrap_or("unknown");
     let const_kw = if sym.is_const { "const " } else { "" };
@@ -2165,7 +2172,7 @@ fn render_decl_hover(
         // fails to evaluate) is simply omitted rather than guessed at.
         "let" if sym.is_const => {
             let value = value_ctx
-                .and_then(|(source, file)| const_hover_value(source, file, sym.range.start.offset))
+                .and_then(|(_source, ast)| const_hover_value(ast, sym.range.start.offset))
                 .map(|lit| literal_display(&lit));
             match value {
                 Some(val) => format!("```wirescript\nconst {}: {} = {}\n```", sym.name, ty_str, val),
@@ -2174,7 +2181,7 @@ fn render_decl_hover(
         }
         _ => format!("```wirescript\n{} {}: {}\n```", sym.kind, sym.name, ty_str),
     };
-    if let Some(doc) = doc_comments.get(&sym.range.start.offset) {
+    if let Some(doc) = doc_comments.get(&crate::parser::doc_key(&sym.range)) {
         v += &format!("\n\n{}", doc);
     }
     if matches!(sym.kind, "mod" | "chip" | "fn") {
@@ -2194,7 +2201,7 @@ fn render_decl_hover(
 fn hover_namespace_member(
     source: &str,
     symbols: &[SymbolDef],
-    doc_comments: &HashMap<usize, String>,
+    doc_comments: &crate::parser::DocComments,
     resource_estimates: &HashMap<String, ResourceEstimate>,
     word: &str,
     line: usize,
@@ -2202,19 +2209,12 @@ fn hover_namespace_member(
 ) -> Option<String> {
     // The cursor must be on the `member` half of an `obj.member` access.
     let l = source.lines().nth(line)?;
-    let c = col.min(l.len());
-    let start = l[..c]
-        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let start = word_start_in_line(l, col);
     if start == 0 || l.as_bytes()[start - 1] != b'.' {
         return None;
     }
     let obj_end = start - 1;
-    let obj_start = l[..obj_end]
-        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let obj_start = word_start_at_byte(l, obj_end);
     let obj_name = &l[obj_start..obj_end];
     // `obj` must be a namespace alias for this to be a namespace-member access.
     if !symbols.iter().any(|s| s.name == obj_name && s.kind == "namespace") {
@@ -2239,6 +2239,7 @@ fn hover_namespace_member(
 fn resolve_record_lit_field_typed(
     source: &str,
     file: &str,
+    ast: &Script,
     type_map: &TypeMap,
     word: &str,
     line: usize,
@@ -2247,7 +2248,6 @@ fn resolve_record_lit_field_typed(
     let line_str = source.lines().nth(line)?;
     let word_off = line_offset_at(source, line) + word_start_in_line(line_str, col);
 
-    let parsed = crate::parser::parse(source, file);
     let mut best: Option<(usize, usize)> = None;
     {
         let mut on_handler = |_: &Handler| {};
@@ -2274,7 +2274,7 @@ fn resolve_record_lit_field_typed(
                 }
             }
         };
-        super::visit::visit_program(&parsed.ast, &mut on_handler, &mut on_expr);
+        super::visit::visit_program(ast, &mut on_handler, &mut on_expr);
     }
     let (start, end) = best?;
     let ty = type_map.get(&(std::sync::Arc::from(file), start, end))?;
@@ -2600,7 +2600,9 @@ pub fn fill_match_arms_at(
     col: usize,
 ) -> Option<MatchArmsFill> {
     let cursor_line = (line + 1) as u32;
-    let cursor_col = (col + 1) as u32;
+    // AST ranges carry the lexer's BYTE columns, so the cursor's char column
+    // has to be converted before it is compared against one.
+    let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
 
     let best = enclosing_match_expr(ast, cursor_line, cursor_col)?;
     let Expr::MatchExpr { scrutinee, arms, range } = best else {
@@ -2653,15 +2655,19 @@ pub fn fill_match_arms_at(
     // `range.end.col - 2` (0-based) on `range.end.line - 1` (0-based): the
     // insertion point that keeps the new arms inside the braces.
     let close_line = (range.end.line - 1) as usize;
-    let close_col = (range.end.col as usize).saturating_sub(2);
+    let close_byte = (range.end.col as usize).saturating_sub(2);
     // A `}` sharing its line with the last arm (`match s { Circle(r) => 1.0 }`)
     // needs its own line break before the inserted arms; a `}` already alone
     // on its line (the common, formatted case) does not.
     let close_line_str = lines.get(close_line).copied().unwrap_or("");
-    let before_close = &close_line_str[..close_col.min(close_line_str.len())];
+    let close_byte = close_byte.min(close_line_str.len());
+    let before_close = close_line_str.get(..close_byte).unwrap_or(close_line_str);
     if !before_close.trim().is_empty() {
         text.insert(0, '\n');
     }
+    // The caller places an edit at this column, so hand back a char column
+    // rather than the lexer's byte one.
+    let close_col = super::text::byte_to_char_col(close_line_str, close_byte);
     Some(MatchArmsFill { line: close_line, col: close_col, text })
 }
 
@@ -2689,16 +2695,16 @@ pub(super) fn resolve_record_param_field_type(script: &crate::ast::Script, param
 
 fn resolve_field_hover(source: &str, file: &str, type_map: &TypeMap, symbols: &[SymbolDef], line: usize, col: usize, field: &str) -> Option<String> {
     let l = source.lines().nth(line)?;
-    let c = col.min(l.len());
-    let start = l[..c].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| i + 1).unwrap_or(0);
+    let c = char_col_to_byte(l, col);
+    let start = word_start_at_byte(l, c);
     if start == 0 || l.as_bytes()[start - 1] != b'.' {
         return None;
     }
     let obj_end = start - 1;
-    let obj_start = l[..obj_end].rfind(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| i + 1).unwrap_or(0);
+    let obj_start = word_start_at_byte(l, obj_end);
     let obj_name = &l[obj_start..obj_end];
     let lo = line_offset_at(source, line);
-    let field_end_col = l[c..].find(|ch: char| !ch.is_alphanumeric() && ch != '_').map(|i| c + i).unwrap_or(l.len());
+    let field_end_col = word_end_at_byte(l, c);
 
     let f: std::sync::Arc<str> = file.into();
     let fmt_field = |ty_display: String| format!("```wirescript\nfield {}: {}\n```", field, ty_display);

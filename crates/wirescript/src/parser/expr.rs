@@ -149,6 +149,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_binary(&mut self, min_prec: u8) -> Expr {
+        // One level for this call, then one more per operand appended below:
+        // `a + b + c + ...` recurses shallowly but left-nests one `BinOp` per
+        // operand, so the chain length is a tree depth just like `((((...))))`.
+        let mut levels = 1usize;
+        if !self.enter_nesting() {
+            self.leave_nesting(levels);
+            let t = self.peek().clone();
+            return Expr::Ident { name: String::new(), range: self.make_range(t.start, t.end) };
+        }
         let mut lhs = self.parse_prefix();
         loop {
             // Skip newlines to allow line continuation after operators:
@@ -196,6 +205,10 @@ impl<'a> Parser<'a> {
                     path: Box::new(path),
                     range: self.make_range(start, end),
                 };
+                if !self.enter_nesting() {
+                    break;
+                }
+                levels += 1;
                 continue;
             }
             let next_min = if is_right_assoc(&tok.text) {
@@ -203,6 +216,10 @@ impl<'a> Parser<'a> {
             } else {
                 prec + 1
             };
+            if !self.enter_nesting() {
+                break;
+            }
+            levels += 1;
             let rhs = self.parse_binary(next_min);
             let start = lhs.range().start;
             let end = rhs.range().end;
@@ -213,6 +230,7 @@ impl<'a> Parser<'a> {
                 range: self.make_range(start, end),
             };
         }
+        self.leave_nesting(levels);
         lhs
     }
 
@@ -672,11 +690,29 @@ impl<'a> Parser<'a> {
                             // `if`, or unparseable) produces no expression and
                             // the slot renders empty. `parse_expr` also surfaces
                             // parse errors inside the `${...}`.
-                            let lexed = crate::lexer::lex(&source, self.file);
+                            //
+                            // Lexed AT its position in the file, so every span
+                            // the sub-parse builds is already the real one.
+                            let lexed = crate::lexer::lex_at(&source, self.file, expr_origin);
                             let mut sub = Parser::new(lexed.tokens, self.file, lexed.diagnostics);
-                            let mut expr = sub.parse_expr();
+                            let expr = sub.parse_expr();
+                            // Anything left after the expression is text the
+                            // slot silently threw away: `"${n GARBAGE}"`
+                            // compiled with no diagnostic at all, rendering
+                            // just `n`.
+                            let leftover = sub.peek().clone();
+                            if leftover.kind != TokenKind::Eof {
+                                sub.error(
+                                    format!(
+                                        "unexpected '{}' after the expression in `${{...}}`; an \
+                                         interpolation slot holds one expression",
+                                        leftover.text
+                                    ),
+                                    leftover.start,
+                                    leftover.end,
+                                );
+                            }
                             self.diagnostics.extend(sub.diagnostics);
-                            shift_expr_offsets(&mut expr, expr_origin);
                             InterpPart::Expr(Box::new(expr))
                         }
                     })

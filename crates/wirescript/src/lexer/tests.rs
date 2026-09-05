@@ -304,3 +304,37 @@
         assert_eq!(r.tokens[0].kind, TokenKind::Kw);
         assert_eq!(r.tokens[0].text, "const");
     }
+
+    /// Both quote styles read the same escape table, the one published in
+    /// `docs/src/syntax.md`, including what they do with an escape neither
+    /// recognizes. Two readers with their own copies drift.
+    #[test]
+    fn both_quote_styles_read_the_same_escapes() {
+        let str_value = |src: &str| {
+            let r = lex(src, "t");
+            let v = r.tokens.iter().find_map(|t| match &t.value {
+                Some(TokenValue::Str(s)) => Some(s.clone()),
+                _ => None,
+            });
+            (v.expect("a string token"), r.diagnostics.len())
+        };
+        for (dq, sq, want) in [
+            (r#""a\nb""#, r"'a\nb'", "a\nb"),
+            (r#""a\tb""#, r"'a\tb'", "a\tb"),
+            (r#""a\rb""#, r"'a\rb'", "a\rb"),
+            (r#""a\0b""#, r"'a\0b'", "a\0b"),
+            (r#""a\\b""#, r"'a\\b'", r"a\b"),
+            (r#""a\$b""#, r"'a\$b'", "a$b"),
+        ] {
+            assert_eq!(str_value(dq), (want.to_string(), 0), "{dq}");
+            assert_eq!(str_value(sq), (want.to_string(), 0), "{sq}");
+        }
+        // Each style escapes its OWN delimiter, as the doc table says.
+        assert_eq!(str_value(r#""a\"b""#), ("a\"b".to_string(), 0));
+        assert_eq!(str_value(r"'a\'b'"), ("a'b".to_string(), 0));
+
+        // An unrecognized escape is reported by both, and its text is kept
+        // rather than dropped.
+        assert_eq!(str_value(r#""a\qb""#), (r"a\qb".to_string(), 1));
+        assert_eq!(str_value(r"'a\qb'"), (r"a\qb".to_string(), 1));
+    }

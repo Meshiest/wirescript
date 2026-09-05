@@ -316,7 +316,7 @@ fn build_variant_pattern(v: &VariantDef, subs: Vec<Pattern>) -> Pattern {
             ignore_rest: false,
         },
     };
-    Pattern::Variant { variant: v.name.clone(), sub, range: SourceRange::default() }
+    Pattern::Variant { enum_path: None, variant: v.name.clone(), sub, range: SourceRange::default() }
 }
 
 fn used_constructors(matrix: &[Vec<Pattern>], edef: &EnumDef) -> HashSet<String> {

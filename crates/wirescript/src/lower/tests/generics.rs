@@ -574,11 +574,15 @@ fn nested_generic_chip_monomorphizes_to_two_grids() {
     // still monomorphize per type: the two `Boxed` grids live nested under
     // `Outer`'s child module, so this only holds if the monomorph keying (and
     // the recursive `chip_template_keys` walk) sees through the nesting.
+    // `out b = y`, not `y.r`: a single-output chip hands back the output's
+    // value itself, so `y` IS the vector and `y.r` reads a field a `vector`
+    // does not have. (`x.r` passes only because an `int` has no fields to
+    // check the name against.)
     let src = "chip Boxed<T>(v: T) -> (r: T) { var stored: T = v\n out r = stored }\n\
-               chip Outer(n: int, vec: vector) -> (a: int, b: vector) {\n\
-               let x = Boxed(n)\n  let y = Boxed(vec)\n  out a = x.r\n  out b = y.r\n}\n\
-               in go: exec\nin n: int\nin vec: vector\n\
-               on go {\n  let o = Outer(n, vec)\n}\n";
+               chip Outer(n: int, v3: vector) -> (a: int, b: vector) {\n\
+               let x = Boxed(n)\n  let y = Boxed(v3)\n  out a = x\n  out b = y\n}\n\
+               in go: exec\nin n: int\nin v3: vector\n\
+               on go {\n  let o = Outer(n, v3)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
     emit_ok(&r).expect("emit must succeed");

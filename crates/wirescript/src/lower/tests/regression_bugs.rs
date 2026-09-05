@@ -434,3 +434,43 @@ fn record_returning_mod_in_both_conditional_arms_selects_per_field() {
         "both of `r`'s fields must be written"
     );
 }
+
+/// A container method given `exec = <trigger>` must not rewire the statements
+/// that follow it.
+///
+/// `exec =` makes the op a leaf, so the caller's exec context is saved and
+/// restored around it. A restore that sits past an early return leaves
+/// `current_exec` pointing at the trigger, and every following statement in
+/// the handler runs off `trig` instead of `RoundStart`. `insert` is the case
+/// here because it rejects named args and bails to `_Unsupported`.
+#[test]
+fn an_exec_arg_on_a_container_method_does_not_capture_the_following_statements() {
+    let r = compile(
+        "var xs: int[]\nvar a: int\nin trig: exec\n\
+         on RoundStart() {\n  xs.insert(index = 0, value = 7, exec = trig)\n  a = 1\n}\n",
+    );
+    let event = r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.kind == crate::ir::NodeKind::Event)
+        .map(|(id, _)| *id)
+        .expect("the RoundStart event node");
+    let set = r
+        .module
+        .nodes
+        .iter()
+        .find(|(_, n)| n.gate_class == crate::ir::gate_class::VAR_SET)
+        .map(|(id, _)| *id)
+        .expect("the `a = 1` set gate");
+    let driver = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == set && w.target.port == crate::ir::port_registry::WirePort::Exec)
+        .expect("`a = 1` must be driven by something");
+    assert_eq!(
+        driver.source.node_id, event,
+        "`a = 1` must run off RoundStart, not the `exec =` trigger"
+    );
+}

@@ -5840,3 +5840,162 @@
             assert_no_diags(&tc(src));
         }
     }
+
+    /// An array literal's element type is the widening join of its elements,
+    /// not element 0's.
+    ///
+    /// Element 0's type only asks the rest to coerce INTO it, which is silent
+    /// in the dangerous direction: `[1, 2.5]` reads as `int[]` and stores the
+    /// float in an int-variant gate, while `["a", 1]` reads as `string[]` and
+    /// `[1, "a"]` errors. The join answers all three the same way, and only
+    /// refuses a pair with no common widening.
+    #[test]
+    fn array_literal_element_type_is_the_join_not_element_zero() {
+        let r = tc("mod f(xs: int[]) -> (n: int) { return xs.length() }\n\
+                    in go: exec\n\
+                    on go { let n = f([1, 2.5]) }\n");
+        let errs: Vec<_> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errs.iter().any(|d| d.message.contains("expected int[], got float[]")),
+            "a float in an int array should be reported: {errs:?}"
+        );
+
+        // A homogeneous literal is unaffected, and a widening one is accepted
+        // at its widened type rather than the first element's.
+        assert_no_diags(&tc("mod g(xs: float[]) -> (n: int) { return xs.length() }\n\
+                             in go: exec\n\
+                             on go { let n = g([1, 2.5]) }\n"));
+
+        // Both orderings of a genuinely incompatible pair report.
+        for src in [
+            "in go: exec\non go { let a = [1, \"x\"] }\n",
+            "in go: exec\non go { let a = [\"x\", 1] }\n",
+        ] {
+            let r = tc(src);
+            assert!(
+                r.diagnostics.iter().any(|d| d.message.contains("array element")),
+                "mixed literal should report regardless of order: {src} -> {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    /// A storage gate holds one wire variant, so the element/value type of a
+    /// var, array or map has to be one. An exec edge, a `never` and a
+    /// container nested inside another are not, and reach the gate as whatever
+    /// variant it defaults to.
+    #[test]
+    fn unstorable_types_are_rejected_in_storage_positions() {
+        for (ty, want) in [
+            ("exec", "control flow"),
+            ("exec[]", "control flow"),
+            ("never", "cannot be stored"),
+            ("int[][]", "cannot be nested"),
+            ("Map<int, int[]>", "cannot be nested"),
+        ] {
+            let r = tc(&format!("in go: exec\nvar c: {ty}\non go {{ }}\n"));
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "WS025" && d.message.contains(want)),
+                "`var c: {ty}` should be WS025 ({want}): {:?}",
+                r.diagnostics
+            );
+        }
+        // The storable shapes stay storable.
+        for ty in ["int", "float[]", "Map<int, string>", "vector"] {
+            let r = tc(&format!("in go: exec\nvar c: {ty}\non go {{ }}\n"));
+            assert!(
+                !r.diagnostics.iter().any(|d| d.code == "WS025"),
+                "`var c: {ty}` is storable: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    /// A multi-output `mod`'s `return` is checked against the outputs it wires
+    /// into, in both its forms.
+    ///
+    /// A bare `infer` over the whole value checks neither: the name-keyed
+    /// record form wires the `string` into the `int` Variable gate, and the
+    /// positional tuple form, which lowering wires per element, goes the same
+    /// way. The single-output form catches the identical mistake.
+    #[test]
+    fn a_multi_output_return_is_checked_per_port() {
+        let errs = |src: &str| {
+            tc(src)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect::<Vec<_>>()
+        };
+
+        // Name-keyed: the fields are wired by name, so `a` gets the string.
+        let e = errs(
+            "mod two() -> (a: int, b: string) {\n  let t = \"x\"\n  let i = 5\n\
+             \x20 return { a: t, b: i }\n}\nin go: exec\non go { let r = two() }\n",
+        );
+        assert!(
+            e.iter().any(|d| d.message.contains("expected int, got string")),
+            "the swapped record field should report: {e:?}"
+        );
+
+        // Positional: wired per element, in declaration order.
+        let e = errs(
+            "mod two() -> (a: int, b: string) {\n  return (\"x\", 2)\n}\n\
+             in go: exec\non go { let r = two() }\n",
+        );
+        assert!(
+            e.iter().any(|d| d.message.contains("expected int, got string")),
+            "the swapped tuple element should report: {e:?}"
+        );
+
+        // Both spellings written correctly stay clean.
+        assert_no_diags(&tc(
+            "mod two() -> (a: int, b: string) {\n  let i = 5\n  let t = \"x\"\n\
+             \x20 return { a: i, b: t }\n}\n\
+             mod three() -> (a: int, b: string) {\n  return (1, \"y\")\n}\n\
+             in go: exec\non go { let r = two()\n  let q = three() }\n",
+        ));
+    }
+
+    /// A `match` / `if let` pattern accepts the enum-qualified spelling.
+    ///
+    /// Construction (`Shape.Circle(2.0)`) and `is` (`s is Shape.Circle`) both
+    /// REQUIRE the qualifier, so writing one in a pattern is the natural next
+    /// guess. Naming a different enum than the scrutinee is the mistake the
+    /// qualifier can actually make, so that reports.
+    #[test]
+    fn a_pattern_accepts_the_enum_qualified_form() {
+        let head = "enum Shape { Empty, Circle(float) }\nin go: exec\nvar s: Shape\nvar n: float\n";
+        assert_no_diags(&tc(&format!(
+            "{head}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n\
+             \x20   Shape.Empty => 0.0,\n    Shape.Circle(r) => r,\n  }}\n}}\n"
+        )));
+        assert_no_diags(&tc(&format!(
+            "{head}on go {{\n  s = Shape.Circle(2.0)\n  if let Shape.Circle(r) = s {{ n = r }}\n}}\n"
+        )));
+        // The unqualified spelling keeps working.
+        assert_no_diags(&tc(&format!(
+            "{head}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n\
+             \x20   Empty => 0.0,\n    Circle(r) => r,\n  }}\n}}\n"
+        )));
+        // A qualifier naming a different enum is reported: the variant name
+        // alone can belong to several enums, so this is the check the
+        // qualifier buys.
+        let r = tc(&format!(
+            "enum Other {{ Empty }}\n{head}on go {{\n  s = Shape.Circle(2.0)\n  n = match s {{\n\
+             \x20   Other.Empty => 0.0,\n    Shape.Circle(r) => r,\n  }}\n}}\n"
+        ));
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS060" && d.message.contains("names enum `Other`")),
+            "a mismatched qualifier should report: {:?}",
+            r.diagnostics
+        );
+    }

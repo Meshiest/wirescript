@@ -926,12 +926,13 @@ fn chip_ref_param_creates_var_binding() {
     let r = compile(
         "\
 var flag: bool = false
-chip Toggle(f: *bool) -> (result: int) {
+chip SetFlag(f: *bool) -> (result: int) {
   in run: exec
   on run { f = true }
   out result = 0
 }
-let r = Toggle(flag)",
+in go: exec
+on go { let r = SetFlag(flag) }",
     );
     assert_no_errors(&r);
     assert_eq!(r.module.chips.len(), 1);
@@ -1036,6 +1037,8 @@ on go { setx(&p, 1) }",
 
 #[test]
 fn unassigned_output_warning() {
+    // A bare `x + 1` statement assigns nothing, so `result` has no driver and
+    // `let b` reads a port that is never set.
     let r = compile(
         "\
 mod bad(x: int) -> (result: int) {
@@ -1046,7 +1049,25 @@ on player {
   let b = bad(5)
 }",
     );
-    assert_no_errors(&r);
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS013" && d.message.contains("'result' is never assigned")),
+        "an unwritten output must be reported: {:?}",
+        r.diagnostics
+    );
+    // Writing it clears the diagnostic.
+    let ok = compile(
+        "\
+mod good(x: int) -> (result: int) {
+  return x + 1
+}
+in player: character
+on player {
+  let b = good(5)
+}",
+    );
+    assert_no_errors(&ok);
 }
 
 /// Regression: chip value params that require exec (Var_Get) must be read
@@ -1723,7 +1744,7 @@ fn fill_array_builtins_lower_to_their_gates() {
 var players: character[]
 var ents: character[]
 var team: entity
-var zoneA: entity
+in zoneA: zone
 in t: exec
 on t {
   FillArrayFromPlayers(players)
@@ -2062,7 +2083,10 @@ fn exec_call_initializer_in_a_handler_nested_chip_runs_on_the_chain() {
     // for a top-level chip inheriting a leaked exec; here it dropped the
     // initializer entirely, no chip instance and no Var_Set.
     let r = compile(
-        "chip MyExecChip() { let t = ReadBrickGrid().GetLocationRotation() }\n\
+        "chip MyExecChip() -> (r: int) {\n\
+           let t = ReadBrickGrid().GetLocationRotation()\n\
+           return 1\n\
+         }\n\
          on ServerUptime() {\n\
            chip { var helo = MyExecChip() }\n\
          }\n",

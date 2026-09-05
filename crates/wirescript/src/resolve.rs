@@ -71,7 +71,7 @@ impl FileLoader for MemLoader {
 pub struct ResolveResult {
     pub ast: Script,
     pub diagnostics: Vec<Diagnostic>,
-    pub doc_comments: HashMap<usize, String>,
+    pub doc_comments: crate::parser::DocComments,
     /// The ENTRY file's source map. Imported files contribute declarations
     /// but no line geometry — same rule as `@layout("code")` itself, which
     /// is only read off the entry file. Shared behind an `Arc` because the
@@ -98,6 +98,10 @@ fn is_importable(d: &TopDecl) -> bool {
             | TopDecl::In(_)
             | TopDecl::Out(_)
             | TopDecl::TypeAlias(_)
+            // An `enum` is a type declaration like a `type` alias, and a
+            // library that hands back one of its variants is useless without
+            // it.
+            | TopDecl::Enum(_)
             // A top-level `on` handler in an imported file runs as part of the
             // importing program (a library that installs behaviour). Without
             // this the handler would be dropped, and an `on <expr>` handler's
@@ -110,6 +114,14 @@ fn is_importable(d: &TopDecl) -> bool {
             // the merge and silently dropped, taking its writes with it.
             | TopDecl::AnonChip(_)
     )
+}
+
+/// A declaration that installs behaviour by existing rather than by being
+/// named: a top-level `on` handler, or an anonymous `chip { ... }`. Importing a
+/// library at all brings these in, there is no name to select them by, and
+/// the whole point of such a library is that it runs.
+fn installs_behaviour(d: &TopDecl) -> bool {
+    matches!(d, TopDecl::Handler(_) | TopDecl::AnonChip(_))
 }
 
 /// Every top-level name a declaration introduces.
@@ -156,6 +168,7 @@ fn decl_name(d: &TopDecl) -> Option<&str> {
         TopDecl::In(i) => Some(&i.name),
         TopDecl::Out(o) => Some(&o.name),
         TopDecl::TypeAlias(t) => Some(&t.name),
+        TopDecl::Enum(e) => Some(&e.name),
         TopDecl::Namespace(n) => Some(&n.name),
         _ => None,
     }
@@ -173,6 +186,10 @@ struct DeclAccum {
     decls: Vec<TopDecl>,
     used: HashSet<String>,
     bound: HashMap<String, Vec<Arc<str>>>,
+    /// Source positions of the nameless declarations already merged. A handler
+    /// or anonymous chip binds no name, so the by-name diamond dedup cannot
+    /// see it, and a module reached twice would install its behaviour twice.
+    installed: HashSet<(Arc<str>, usize)>,
 }
 
 impl DeclAccum {
@@ -182,6 +199,15 @@ impl DeclAccum {
         for n in decl_names(d) {
             self.bound.entry(n).or_default().push(file.clone());
         }
+        if installs_behaviour(d) {
+            self.installed.insert((file, d.range().start.offset));
+        }
+    }
+
+    /// Whether the nameless behaviour declaration `d` has already been merged
+    /// (the same declaration of the same file, reached by another import edge).
+    fn already_installed(&self, d: &TopDecl) -> bool {
+        self.installed.contains(&(d.range().file.clone(), d.range().start.offset))
     }
     fn push(&mut self, d: TopDecl) {
         self.index(&d);
@@ -279,7 +305,7 @@ fn resolve_import(
     stack: &mut HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
     target: &mut DeclAccum,
-    target_doc_comments: &mut HashMap<usize, String>,
+    target_doc_comments: &mut crate::parser::DocComments,
 ) {
     let canon = loader.canonical_path(&imp.path, relative_to);
     if stack.contains(&canon) {
@@ -323,7 +349,7 @@ fn resolve_import(
         .collect();
 
     for (k, v) in &parsed.doc_comments {
-        target_doc_comments.insert(*k, v.clone());
+        target_doc_comments.insert(k.clone(), v.clone());
     }
 
     match &imp.kind {
@@ -336,9 +362,13 @@ fn resolve_import(
                 // duplicate-name check (WS013) fires, rather than silently
                 // dropping one and aliasing the two onto a single storage gate.
                 let d_file = d.range().file.clone();
-                let is_diamond = decl_names(&d)
-                    .iter()
-                    .any(|n| target.binds_in_file(n, &d_file));
+                let is_diamond = if installs_behaviour(&d) {
+                    target.already_installed(&d)
+                } else {
+                    decl_names(&d)
+                        .iter()
+                        .any(|n| target.binds_in_file(n, &d_file))
+                };
                 if is_diamond {
                     continue;
                 }
@@ -393,6 +423,25 @@ fn resolve_import(
                 } else {
                     target.push(d.clone());
                 }
+            }
+            // A named import brings ONLY what it names. A module's `on`
+            // handlers and anonymous chips bind no name to select, so they
+            // stay behind, which is the point of the spelling (a test harness
+            // imports a module's pure helpers without installing its event
+            // surface). It is warned about because a library written to
+            // install behaviour looks identical at the import site.
+            let skipped = importable.iter().filter(|d| installs_behaviour(d)).count();
+            if skipped > 0 {
+                diagnostics.push(Diagnostic::warning(
+                    "WS014",
+                    format!(
+                        "`import {{ ... }} from '{}'` brings only the names it lists, so the {} \
+                         `on` handler(s)/anonymous chip(s) '{}' installs are NOT included; \
+                         write `import \"{}\"` to install them too",
+                        imp.path, skipped, imp.path, imp.path
+                    ),
+                    imp.range.clone(),
+                ));
             }
             // Pull in non-requested declarations that are referenced by
             // the imported ones. Covers both transitive imports (from other
@@ -460,7 +509,7 @@ fn resolve_import(
                     .ast
                     .decls
                     .first()
-                    .and_then(|d| parsed.doc_comments.get(&d.range().start.offset))
+                    .and_then(|d| parsed.doc_comments.get(&crate::parser::doc_key(d.range())))
                     .cloned()
             });
 
@@ -577,13 +626,13 @@ fn rename_bound_name(d: &mut TopDecl, old: &str, new_name: &str) -> bool {
             *name = new_name.to_string();
             true
         }
-        LetBinding::Tuple { names, .. } => {
-            for n in names.iter_mut().filter(|n| *n == old) {
+        LetBinding::Tuple { names, .. } => match names.iter_mut().find(|n| *n == old) {
+            Some(n) => {
                 *n = new_name.to_string();
-                return true;
+                true
             }
-            false
-        }
+            None => false,
+        },
         LetBinding::RecordDestruct { fields, .. } => {
             for f in fields.iter_mut() {
                 if let RecordDestructField::Named { name, alias, .. } = f

@@ -111,7 +111,18 @@ pub struct LexResult {
 }
 
 pub fn lex(source: &str, file: &str) -> LexResult {
-    Lexer::new(source, file).run()
+    lex_at(source, file, Pos { offset: 0, line: 1, col: 1 })
+}
+
+/// Lex a FRAGMENT carved out of a larger file, reporting positions in the
+/// containing file's coordinates.
+///
+/// The one fragment is a `${...}` interpolation body, which the parser lexes
+/// and parses on its own. Seeding the lexer is what makes every span in that
+/// sub-tree right by construction; shifting them afterwards needs a walker
+/// over every expression shape, and a shape it misses reports at line 1.
+pub fn lex_at(source: &str, file: &str, origin: Pos) -> LexResult {
+    Lexer::new(source, file, origin).run()
 }
 
 /// The 0-based column of each line's first non-whitespace character;
@@ -148,10 +159,13 @@ struct Lexer<'a> {
     /// literal or a data table; `emit` is the single funnel every token
     /// passes through, so counting there cannot miss one.
     bracket_depth: i32,
+    /// Where this source sits in the containing file. `{0, 1, 1}` for a whole
+    /// file; see [`lex_at`].
+    origin: Pos,
 }
 
 impl<'a> Lexer<'a> {
-    fn new(source: &'a str, file: &str) -> Self {
+    fn new(source: &'a str, file: &str, origin: Pos) -> Self {
         Self {
             source,
             bytes: source.as_bytes(),
@@ -163,6 +177,7 @@ impl<'a> Lexer<'a> {
             diagnostics: Vec::new(),
             comments: Vec::new(),
             bracket_depth: 0,
+            origin,
         }
     }
 
@@ -330,11 +345,35 @@ impl<'a> Lexer<'a> {
         self.bytes.get(self.pos + off).map(|&b| b as char)
     }
 
+    /// The current position WITHIN this lexer's source. Callers slice
+    /// `self.source` with these offsets, so they stay fragment-local; [`abs`]
+    /// converts one for the outside world.
     fn snapshot(&self) -> Pos {
         Pos {
             offset: self.pos,
             line: self.line,
             col: self.col,
+        }
+    }
+
+    /// A local position in the containing file's coordinates. Applied at the
+    /// three places a position leaves this lexer, a token, a diagnostic, and
+    /// an interpolation slot's own origin, and nowhere else, since everything
+    /// in between indexes `self.source`.
+    ///
+    /// A fragment's first line CONTINUES the origin's line, so its columns
+    /// continue too; every later line starts at column 1 like any other. With
+    /// the whole-file origin `{0, 1, 1}` this is the identity.
+    fn abs(&self, p: Pos) -> Pos {
+        let line = p.line - 1 + self.origin.line;
+        Pos {
+            offset: p.offset + self.origin.offset,
+            line,
+            col: if line == self.origin.line {
+                p.col - 1 + self.origin.col
+            } else {
+                p.col
+            },
         }
     }
 
@@ -366,18 +405,15 @@ impl<'a> Lexer<'a> {
         self.tokens.push(Token {
             kind,
             text: text.into(),
-            start,
-            end,
+            start: self.abs(start),
+            end: self.abs(end),
             value,
         });
     }
 
     fn diag(&mut self, code: &str, message: impl Into<String>, start: Pos, end: Pos) {
-        self.diagnostics.push(Diagnostic::error(
-            code,
-            message.into(),
-            SourceRange::new(self.file.clone(), start, end),
-        ));
+        let range = SourceRange::new(self.file.clone(), self.abs(start), self.abs(end));
+        self.diagnostics.push(Diagnostic::error(code, message.into(), range));
     }
 
     /// Read an asset reference into a [`TokenKind::AssetRef`] token. Two forms
@@ -600,29 +636,7 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 let esc = self.bytes[self.pos] as char;
-                let mapped = match esc {
-                    'n' => Some('\n'),
-                    't' => Some('\t'),
-                    'r' => Some('\r'),
-                    '"' => Some('"'),
-                    '\\' => Some('\\'),
-                    '$' => Some('$'),
-                    '0' => Some('\0'),
-                    _ => None,
-                };
-                if let Some(ch) = mapped {
-                    literal.push(ch);
-                    self.advance();
-                } else {
-                    let p = self.snapshot();
-                    self.diag(
-                        "WSP001",
-                        format!("unknown string escape '\\{esc}'"),
-                        p,
-                        p,
-                    );
-                    self.advance();
-                }
+                self.push_escape(&mut literal, esc, '"');
                 continue;
             }
             if c == '$' && self.peek_char(1) == Some('{') {
@@ -663,8 +677,8 @@ impl<'a> Lexer<'a> {
                 }
                 parts.push(InterpPart::Expr {
                     source: self.source[expr_start_offset..self.pos].to_string(),
-                    start: expr_start,
-                    end: expr_end,
+                    start: self.abs(expr_start),
+                    end: self.abs(expr_end),
                 });
                 self.advance(); // consume closing '}'
                 continue;
@@ -690,6 +704,37 @@ impl<'a> Lexer<'a> {
             start,
             self.snapshot(),
         );
+    }
+
+    /// Append the escape `\<esc>` to `literal`, and consume it.
+    ///
+    /// One table for both quote styles, so they cannot drift: `quote` is the
+    /// delimiter of the literal being read, which escapes to itself, and
+    /// everything else is the table published in `docs/src/syntax.md`.
+    ///
+    /// An unrecognized escape is reported and its text kept verbatim, so the
+    /// recovered string still contains what was written.
+    fn push_escape(&mut self, literal: &mut String, esc: char, quote: char) {
+        let mapped = match esc {
+            'n' => Some('\n'),
+            't' => Some('\t'),
+            'r' => Some('\r'),
+            '\\' => Some('\\'),
+            '$' => Some('$'),
+            '0' => Some('\0'),
+            c if c == quote => Some(quote),
+            _ => None,
+        };
+        match mapped {
+            Some(ch) => literal.push(ch),
+            None => {
+                let p = self.snapshot();
+                self.diag("WSP001", format!("unknown string escape '\\{esc}'"), p, p);
+                literal.push('\\');
+                literal.push(esc);
+            }
+        }
+        self.advance();
     }
 
     fn read_single_quote_string(&mut self) {
@@ -721,22 +766,7 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 let esc = self.bytes[self.pos] as char;
-                let mapped = match esc {
-                    '\'' => Some('\''),
-                    '\\' => Some('\\'),
-                    'n' => Some('\n'),
-                    't' => Some('\t'),
-                    '$' => Some('$'),
-                    _ => None,
-                };
-                if let Some(ch) = mapped {
-                    literal.push(ch);
-                    self.advance();
-                } else {
-                    literal.push('\\');
-                    literal.push(esc);
-                    self.advance();
-                }
+                self.push_escape(&mut literal, esc, '\'');
                 continue;
             }
             if c == '$' && self.peek_char(1) == Some('{') {
@@ -777,8 +807,8 @@ impl<'a> Lexer<'a> {
                 }
                 parts.push(InterpPart::Expr {
                     source: self.source[expr_start_offset..self.pos].to_string(),
-                    start: expr_start,
-                    end: expr_end,
+                    start: self.abs(expr_start),
+                    end: self.abs(expr_end),
                 });
                 self.advance(); // closing '}'
                 continue;
