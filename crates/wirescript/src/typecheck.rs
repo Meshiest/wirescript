@@ -94,7 +94,10 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
     // Constant `let`s, resolved before any decl is checked so a `var` / `array`
     // initializer may name one. Built from the same function lowering uses, so
     // the two can't disagree about what counts as a compile-time constant.
-    ctx.const_env = crate::lower::build_const_env(&script.decls, &ctx.enum_defs);
+    ctx.const_env = std::sync::Arc::new(crate::lower::build_const_env(
+        &script.decls,
+        &ctx.enum_defs,
+    ));
     ctx.const_declared = crate::lower::build_const_declared_names(&script.decls);
     // `@label(expr)` on a port/chip/nested-var must fold to a compile-time
     // constant (the folded text is baked as the label) — a runtime value there

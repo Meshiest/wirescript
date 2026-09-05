@@ -3655,6 +3655,25 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
             .insert((r.file.clone(), r.start.offset, r.end.offset), rec.clone());
         return rec;
     }
+    // PROTOTYPE: push an expected element type into an array literal, so
+    // `var a: float[] = [1, 2]` / `var a: int[] = []` check element-wise
+    // instead of inferring `int[]`/`any[]` blind and failing a whole-array
+    // coerce.
+    if let Expr::Array { elements, .. } = e
+        && let Type::Array(want) = unwrap_ref(expected)
+    {
+        for el in elements {
+            match el {
+                ArrayElem::Item(v) => { check(ctx, v, &want); }
+                ArrayElem::Spread(v) => { check(ctx, v, &Type::Array(want.clone())); }
+            }
+        }
+        let r = e.range();
+        let arr = Type::Array(want.clone());
+        ctx.type_of_expr
+            .insert((r.file.clone(), r.start.offset, r.end.offset), arr.clone());
+        return arr;
+    }
     // Push the expected type down for the single node `infer` is about to type,
     // so a generic enum construction (`n: Option<int> = None`) can take its `T`
     // from the annotation. `infer_node` `take()`s it immediately, so it never

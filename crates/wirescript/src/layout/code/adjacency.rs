@@ -88,6 +88,16 @@ pub(super) fn build_adjacency(module: &Module) -> Adjacency {
                 .push(w.source.node_id);
         }
     }
+    // REVIEW EXPERIMENT: sort once here instead of cloning+sorting on every
+    // visit inside `adopt_line`'s per-node BFS.
+    let key = |m: &Module, id: &NodeId| {
+        (
+            m.nodes.get(id).map(|n| n.source_range.start.offset).unwrap_or(usize::MAX),
+            *id,
+        )
+    };
+    for v in consumers.values_mut() { v.sort_by_key(|id| key(module, id)); }
+    for v in producers.values_mut() { v.sort_by_key(|id| key(module, id)); }
     Adjacency {
         consumers,
         producers,
@@ -99,37 +109,28 @@ pub(super) fn build_adjacency(module: &Module) -> Adjacency {
 /// producers, both sorted by `(start.offset, id)` — stopping at the
 /// first node with a literal line. Traverses through other homeless
 /// nodes transitively; a visited set guards against cycles.
+///
+/// The neighbour ordering is established once by [`build_adjacency`], so this
+/// walk reads the lists as they stand rather than cloning and re-sorting them
+/// at every visited node.
 pub(super) fn adopt_line(
     start: NodeId,
-    module: &Module,
     adjacency: &Adjacency,
     literal_line: &HashMap<NodeId, i32>,
 ) -> Option<i32> {
-    let offset_of = |id: &NodeId| {
-        module
-            .nodes
-            .get(id)
-            .map(|n| n.source_range.start.offset)
-            .unwrap_or(usize::MAX)
-    };
-
     let mut visited: HashSet<NodeId> = HashSet::default();
     visited.insert(start);
     let mut queue: VecDeque<NodeId> = VecDeque::new();
     queue.push_back(start);
 
     while let Some(cur) = queue.pop_front() {
-        let mut neighbors: Vec<NodeId> = Vec::new();
-        if let Some(cs) = adjacency.consumers.get(&cur) {
-            let mut v = cs.clone();
-            v.sort_by_key(|id| (offset_of(id), *id));
-            neighbors.extend(v);
-        }
-        if let Some(ps) = adjacency.producers.get(&cur) {
-            let mut v = ps.clone();
-            v.sort_by_key(|id| (offset_of(id), *id));
-            neighbors.extend(v);
-        }
+        let neighbors = adjacency
+            .consumers
+            .get(&cur)
+            .into_iter()
+            .flatten()
+            .chain(adjacency.producers.get(&cur).into_iter().flatten())
+            .copied();
         for nb in neighbors {
             if !visited.insert(nb) {
                 continue;

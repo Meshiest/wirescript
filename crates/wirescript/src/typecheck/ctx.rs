@@ -246,7 +246,10 @@ pub struct TypeCheckCtx<'a> {
     /// (`1 << C_FLAG`) rather than restating its value. Populated before decl
     /// checking; must stay in step with lowering's own environment so both
     /// agree on exactly which initializers are constant.
-    pub const_env: crate::lower::ConstEnv,
+    /// Shared rather than owned: `const_ctx` hands it to `ConstCtx::module_consts`
+    /// on every const-evaluation, and a deep clone of the whole module constant
+    /// table there was one of the hottest allocation sites in the front end.
+    pub const_env: Arc<crate::lower::ConstEnv>,
     /// Every TOP-LEVEL name declared with the `const` keyword — see
     /// [`build_const_declared_names`](crate::lower::build_const_declared_names)
     /// and [`const_lookup_declared_only`](Self::const_lookup_declared_only).
@@ -409,7 +412,7 @@ impl<'a> TypeCheckCtx<'a> {
             signal_payload_types: HashMap::default(),
             generic_type_aliases: HashMap::default(),
             enum_defs: Arc::new(crate::collections::HashMap::default()),
-            const_env: crate::lower::ConstEnv::default(),
+            const_env: Arc::new(crate::lower::ConstEnv::default()),
             const_declared: crate::collections::HashSet::default(),
             active_combos: 1,
             scoped_consts: Vec::new(),
@@ -477,8 +480,21 @@ impl<'a> TypeCheckCtx<'a> {
     /// applied outer-to-inner so an inner scope's `let` shadows an outer
     /// scope's (and both shadow a same-named top-level constant). `const_env`
     /// is small, so cloning per lookup is cheap.
-    pub fn const_lookup(&self) -> crate::lower::ConstEnv {
-        let mut env = self.const_env.clone();
+    /// With no scope frame to overlay, the module env IS the answer, so it is
+    /// shared rather than copied — mirroring `LowerCtx::const_lookup`, whose
+    /// identical fast path this used to lack.
+    pub fn const_lookup(&self) -> Arc<crate::lower::ConstEnv> {
+        if self.scoped_consts.iter().all(|f| f.is_empty()) {
+            return self.const_env.clone();
+        }
+        Arc::new(self.const_lookup_owned())
+    }
+
+    /// [`const_lookup`](Self::const_lookup) as an OWNED map, for the callers
+    /// that go on to remove entries from it. Sharing it first and cloning it
+    /// back out would merge the module env twice.
+    fn const_lookup_owned(&self) -> crate::lower::ConstEnv {
+        let mut env = (*self.const_env).clone();
         for frame in &self.scoped_consts {
             for (name, lit) in frame {
                 env.insert(name.clone(), lit.clone());
@@ -549,8 +565,8 @@ impl<'a> TypeCheckCtx<'a> {
         lookup_mod: Option<&'b dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
     ) -> crate::const_eval::ConstCtx<'b> {
         crate::const_eval::ConstCtx {
-            consts: Arc::new(self.const_lookup()),
-            module_consts: Arc::new(self.const_env.clone()),
+            consts: self.const_lookup(),
+            module_consts: self.const_env.clone(),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
@@ -597,13 +613,19 @@ impl<'a> TypeCheckCtx<'a> {
         &self,
         lookup_mod: Option<&'b dyn Fn(&str) -> Option<Arc<ChipDecl>>>,
     ) -> crate::const_eval::ConstCtx<'b> {
-        let mut consts = self.const_lookup();
-        for name in self.placeholder_names() {
-            consts.remove(&name);
-        }
+        let placeholders = self.placeholder_names();
+        let consts = if placeholders.is_empty() {
+            self.const_lookup()
+        } else {
+            let mut c = self.const_lookup_owned();
+            for name in placeholders {
+                c.remove(&name);
+            }
+            Arc::new(c)
+        };
         crate::const_eval::ConstCtx {
-            consts: Arc::new(consts),
-            module_consts: Arc::new(self.const_env.clone()),
+            consts,
+            module_consts: self.const_env.clone(),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }
@@ -629,7 +651,7 @@ impl<'a> TypeCheckCtx<'a> {
         }
         crate::const_eval::ConstCtx {
             consts: Arc::new(consts),
-            module_consts: Arc::new(self.const_env.clone()),
+            module_consts: self.const_env.clone(),
             enum_defs: self.enum_defs.clone(),
             lookup_mod,
         }

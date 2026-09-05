@@ -1,5 +1,18 @@
 # Wirescript Changelog
 
+## 1.11.1
+
+### Fixes
+
+- `var a: int[] = []` and `var a: float[] = [1, 2]` keep their declared element type inside a handler, as they already did at top level. A local array literal fell to a whole-array coerce that refused `any[]` into `int[]`.
+
+### Performance
+
+- Code layout sorts its adjacency once when building it rather than per node visited, so adopting unplaced nodes no longer re-sorts the same neighbour lists thousands of times.
+- Constant-literal inlining indexes the surviving wire sources once instead of rescanning every wire per candidate, and interns its port names once rather than per wire.
+- The type checker shares the module constant table rather than deep-copying it on every constant evaluation.
+- Debug and test builds compile with `opt-level = 1`, so the integration suite exercises an optimized compiler: `cargo test -p wirescript` runs in 4.4s where it took 17.1s.
+
 ## 1.11.0
 
 - `out` ports are readable by name, and a top-level `on` handler can declare its own port: `on Clock { @top out flash: bool = Toggle() }`.

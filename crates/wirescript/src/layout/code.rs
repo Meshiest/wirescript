@@ -264,7 +264,7 @@ pub fn layout_code_with_budgets(
     let mut adopted: HashMap<NodeId, i32> = HashMap::default();
     let mut overflow: Vec<NodeId> = Vec::new();
     for id in homeless_sorted {
-        match adopt_line(id, module, &adjacency, &literal_line) {
+        match adopt_line(id, &adjacency, &literal_line) {
             Some(line) => {
                 adopted.insert(id, line);
             }

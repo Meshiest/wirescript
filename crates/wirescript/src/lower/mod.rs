@@ -677,6 +677,11 @@ fn inline_bare_scalar_literals(module: &mut Module) {
         Some(Literal::String(s)) => s.is_empty(),
         _ => false,
     };
+    // Interned once rather than per wire: `intern` is a global map lookup, and
+    // this loop runs over every wire in the module.
+    let separator_sym = intern("Separator");
+    let input_a_sym = *sym::INPUT_A;
+    let input_b_sym = *sym::INPUT_B;
     let mut inlines: Vec<(usize, crate::ir::NodeId, WirePort, Literal)> = Vec::new();
     for (i, w) in module.wires.iter().enumerate() {
         let Some(src) = module.nodes.get(&w.source.node_id) else {
@@ -694,10 +699,10 @@ fn inline_bare_scalar_literals(module: &mut Module) {
             }
         } else if src.gate_class == gc::STRING_CONCATENATE
             && !wired_targets.contains(&w.source.node_id)
-            && is_empty_str(src, *sym::INPUT_B)
-            && is_empty_str(src, intern("Separator"))
+            && is_empty_str(src, input_b_sym)
+            && is_empty_str(src, separator_sym)
         {
-            match src.properties.get(&*sym::INPUT_A) {
+            match src.properties.get(&input_a_sym) {
                 Some(l @ Literal::String(_)) => l.clone(),
                 _ => continue,
             }
@@ -720,7 +725,9 @@ fn inline_bare_scalar_literals(module: &mut Module) {
         crate::collections::HashSet::default();
     for (i, target_id, port, lit) in inlines {
         if let Some(target) = module.nodes.get_mut(&target_id) {
-            std::sync::Arc::make_mut(&mut target.properties).insert(intern(port.as_str()), lit);
+            // `port.sym()` is the per-variant cached symbol; interning
+            // `port.as_str()` here was a global-map lookup per inlined literal.
+            std::sync::Arc::make_mut(&mut target.properties).insert(port.sym(), lit);
             if let Some(w) = module.wires.get(i) {
                 inlined_sources.insert(w.source.node_id);
             }
@@ -740,7 +747,14 @@ fn inline_bare_scalar_literals(module: &mut Module) {
     // A carrier whose every consumer took the value inline is now unreachable.
     // Drop it here rather than leaving it for a later prune: the fold pass also
     // removes these, so leaving them would make the module differ by fold mode.
-    inlined_sources.retain(|id| !module.wires.iter().any(|w| w.source.node_id == *id));
+    // Index the surviving sources once (O(W)) rather than rescanning the whole
+    // wire list per candidate (O(S*W)); on a literal-dense program that scan was
+    // the most expensive thing lowering did.
+    if !inlined_sources.is_empty() {
+        let live_sources: crate::collections::HashSet<crate::ir::NodeId> =
+            module.wires.iter().map(|w| w.source.node_id).collect();
+        inlined_sources.retain(|id| !live_sources.contains(id));
+    }
     if !inlined_sources.is_empty() {
         module.nodes.retain(|id, _| !inlined_sources.contains(id));
     }
