@@ -1181,6 +1181,31 @@ fn drop_boundary_feeds(module: &mut Module, dead_feeds: &HashSet<NodeId>) {
 /// each successor it fed, enqueuing any that reach zero. One scan plus the
 /// worklist is O(nodes + wires), where the old rescan-to-fixpoint was
 /// O(chain-length x (nodes + wires)); the least fixed point is identical.
+/// Whether `gate_class` produces exec without being driven: every exec input
+/// its call spec declares is optional, so an unwired exec pin is the normal
+/// state rather than a missing trigger.
+///
+/// Computed from the catalog rather than listed, so a new self-firing gate is
+/// covered the day it is added. A class with no call spec (`Var_Set`, the
+/// boundary pins, the rerouters) is not self-firing: it is a chain step.
+fn self_firing(gate_class: &str) -> bool {
+    static SELF_FIRING: std::sync::LazyLock<HashSet<&'static str>> =
+        std::sync::LazyLock::new(|| {
+            crate::catalog::calls::calls()
+                .values()
+                .filter(|spec| {
+                    let exec_in: Vec<_> =
+                        spec.params.iter().filter(|p| p.ty == Type::Exec).collect();
+                    !exec_in.is_empty()
+                        && exec_in.iter().all(|p| p.optional)
+                        && spec.outputs.iter().any(|o| o.ty == Type::Exec)
+                })
+                .map(|spec| spec.gate_class)
+                .collect()
+        });
+    SELF_FIRING.contains(gate_class)
+}
+
 fn sweep_dead_exec(root: &mut Module) {
     // Pass 1: each gate's exec input ports, and which gates are sweep-eligible.
     // The port list derives entirely from the Arc-shared `GateIO`, so it's
@@ -1200,6 +1225,17 @@ fn sweep_dead_exec(root: &mut Module) {
                 || n.properties.contains_key(&*sym::NO_FOLD)
                 || n.gate_class == gc::REROUTER
             {
+                continue;
+            }
+            // A gate whose exec inputs are all OPTIONAL fires on its own:
+            // `Timer`'s `restart`/`pause`/`resume` only control a countdown
+            // that runs regardless, so nothing drives its exec pins in an
+            // ordinary program. Seeding it as untriggered deleted it, and the
+            // cascade below then took the whole `on t.Expired` handler with
+            // it, silently: `Timer(10.0)` plus its handler compiled to one
+            // node. Only a gate that REQUIRES an exec input is a chain step
+            // that a missing trigger makes dead.
+            if self_firing(n.gate_class) {
                 continue;
             }
             let ports = ports_memo

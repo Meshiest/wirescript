@@ -841,7 +841,25 @@ impl<'a> Parser<'a> {
                     t.start,
                     t.end,
                 );
-                self.advance();
+                // A token that CLOSES or separates an enclosing construct is
+                // left where it is: eating it makes the block, call or list
+                // around this expression run to EOF looking for its
+                // terminator, so `n = 1 +` before a `}` swallowed every
+                // declaration in the rest of the file. Anything else is
+                // consumed, which is what keeps the caller's loop advancing.
+                let closes_enclosing = matches!(
+                    t.kind,
+                    TokenKind::RBrace
+                        | TokenKind::RParen
+                        | TokenKind::RBracket
+                        | TokenKind::Comma
+                        | TokenKind::Semi
+                        | TokenKind::Newline
+                        | TokenKind::Eof
+                );
+                if !closes_enclosing {
+                    self.advance();
+                }
                 Expr::Ident {
                     name: String::new(),
                     range: self.make_range(t.start, t.end),

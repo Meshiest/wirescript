@@ -198,7 +198,11 @@ impl<'a> Lexer<'a> {
                     while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
                         self.advance();
                     }
-                    let text = self.source[content_start..self.pos].to_string();
+                    // `trim_end`, as the plain-comment path below already
+                    // does: the scan stops at `\n`, so on a CRLF file the text
+                    // would keep its `\r`, and a doc comment is baked into the
+                    // world as a chip's header text.
+                    let text = self.source[content_start..self.pos].trim_end().to_string();
                     let end = self.snapshot();
                     self.emit(TokenKind::DocComment, text, start, end, None);
                     continue;

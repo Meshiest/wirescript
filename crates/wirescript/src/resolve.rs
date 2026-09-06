@@ -330,22 +330,23 @@ fn resolve_import(
     };
 
     let parsed = cache.get(&canon).unwrap();
-    let importable: Vec<TopDecl> = parsed
+    // Borrowed, not cloned: a named import picks a handful of names out of a
+    // module and would otherwise deep-clone every declaration in it first.
+    // Each arm below clones only what it actually keeps.
+    let importable: Vec<&TopDecl> = parsed
         .ast
         .decls
         .iter()
         .filter(|d| is_importable(d))
-        .cloned()
         .collect();
     // The imported file's own `import * as Ns` bindings. These are not
     // importable by name, but a declaration we pull in may call through one
     // (`Ns.helper()`), so they travel with it — see the closure pass below.
-    let source_namespaces: Vec<TopDecl> = parsed
+    let source_namespaces: Vec<&TopDecl> = parsed
         .ast
         .decls
         .iter()
         .filter(|d| matches!(d, TopDecl::Namespace(_)))
-        .cloned()
         .collect();
 
     for (k, v) in &parsed.doc_comments {
@@ -362,17 +363,17 @@ fn resolve_import(
                 // duplicate-name check (WS013) fires, rather than silently
                 // dropping one and aliasing the two onto a single storage gate.
                 let d_file = d.range().file.clone();
-                let is_diamond = if installs_behaviour(&d) {
-                    target.already_installed(&d)
+                let is_diamond = if installs_behaviour(d) {
+                    target.already_installed(d)
                 } else {
-                    decl_names(&d)
+                    decl_names(d)
                         .iter()
                         .any(|n| target.binds_in_file(n, &d_file))
                 };
                 if is_diamond {
                     continue;
                 }
-                target.push(d);
+                target.push(d.clone());
             }
         }
         ImportKind::Named(bindings) => {
@@ -383,7 +384,7 @@ fn resolve_import(
             let import_start = target.decls.len();
             for b in bindings {
                 let effective_name = b.alias.as_deref().unwrap_or(&b.name);
-                let Some(d) = importable.iter().find(|d| decl_binds(d, &b.name)) else {
+                let Some(d) = importable.iter().copied().find(|d| decl_binds(d, &b.name)) else {
                     diagnostics.push(Diagnostic::error(
                         "WS012",
                         format!("'{}' not found in '{}'", b.name, imp.path),
@@ -459,7 +460,7 @@ fn resolve_import(
                         && !names.iter().any(|n| binding_names.contains(n.as_str()))
                         && !names.iter().any(|n| target.binds(n))
                     {
-                        target.push(d.clone());
+                        target.push((*d).clone());
                         added = true;
                     }
                 }
@@ -517,7 +518,7 @@ fn resolve_import(
             // named import already does. A namespaced `mod f() -> MyType` is
             // used from the importing module, where `MyType` is not in scope —
             // leaving the name unexpanded fails there with "unknown type".
-            let mut decls = importable;
+            let mut decls: Vec<TopDecl> = importable.into_iter().cloned().collect();
             let type_aliases: HashMap<String, TypeExpr> = decls
                 .iter()
                 .filter_map(|d| match d {
@@ -596,7 +597,7 @@ fn resolve_import(
                 // Prepend: lowering registers declarations in source order,
                 // so a namespace appended after its caller would read as a
                 // use before declaration and resolve to nothing.
-                target.insert_front(ns.clone());
+                target.insert_front((*ns).clone());
                 added = true;
             }
             if !added {
@@ -831,7 +832,33 @@ fn collect_runtime_idents_in_block(block: &Block, idents: &mut HashSet<String>) 
             Stmt::Buffer(b) => collect_idents_in_expr(&b.init, idents),
             Stmt::AnonChip(ac) => collect_runtime_idents_in_block(&ac.body, idents),
             Stmt::ChipDecl(c) => collect_runtime_idents_in_block(&c.body, idents),
-            _ => {}
+            // Branch forms, same as `if` above: a declaration named only
+            // inside one of these is still a dependency the closure pass has
+            // to pull in, or the import brings the caller without the callee.
+            Stmt::IfLet(i) => {
+                collect_idents_in_expr(&i.scrutinee, idents);
+                collect_runtime_idents_in_block(&i.then_block, idents);
+                if let Some(eb) = &i.else_block {
+                    collect_runtime_idents_in_block(eb, idents);
+                }
+            }
+            Stmt::LetElse(l) => {
+                collect_idents_in_expr(&l.scrutinee, idents);
+                collect_runtime_idents_in_block(&l.else_block, idents);
+            }
+            Stmt::Array(a) => {
+                for el in &a.init {
+                    collect_idents_in_expr(el.expr(), idents);
+                }
+            }
+            Stmt::Map(m) => {
+                if let Some(e) = &m.init {
+                    collect_idents_in_expr(e, idents);
+                }
+            }
+            // Listed rather than caught by a wildcard: these name no runtime
+            // value, and a new statement kind should be a compile error here.
+            Stmt::In(_) | Stmt::Return { value: None, .. } => {}
         }
     }
 }
@@ -1131,7 +1158,39 @@ fn collect_idents_in_block(block: &Block, idents: &mut HashSet<String>) {
                 collect_idents_in_expr(&a.exec_expr, idents);
             }
             Stmt::Buffer(b) => collect_idents_in_expr(&b.init, idents),
-            _ => {}
+            // `if let` / `let ... else` are branch forms like `if`, and their
+            // scrutinees and blocks are use sites. Missing them reported a
+            // genuinely-used import as unused (WS014), and Organize Imports
+            // then deleted it.
+            Stmt::IfLet(i) => {
+                collect_idents_in_expr(&i.scrutinee, idents);
+                collect_idents_in_block(&i.then_block, idents);
+                if let Some(eb) = &i.else_block {
+                    collect_idents_in_block(eb, idents);
+                }
+            }
+            Stmt::LetElse(l) => {
+                collect_idents_in_expr(&l.scrutinee, idents);
+                collect_idents_in_block(&l.else_block, idents);
+            }
+            Stmt::Array(a) => {
+                collect_idents_in_type_expr(&a.element_type, idents);
+                for el in &a.init {
+                    collect_idents_in_expr(el.expr(), idents);
+                }
+            }
+            Stmt::Map(m) => {
+                collect_idents_in_type_expr(&m.key_type, idents);
+                collect_idents_in_type_expr(&m.value_type, idents);
+                if let Some(e) = &m.init {
+                    collect_idents_in_expr(e, idents);
+                }
+            }
+            Stmt::In(i) => collect_idents_in_type_expr(&i.typ, idents),
+            // Listed rather than caught by a wildcard: a `return` with no
+            // value names nothing, and a new statement kind should be a
+            // compile error here, not a silently missed use site.
+            Stmt::Return { value: None, .. } => {}
         }
     }
 }
@@ -1217,7 +1276,50 @@ fn collect_idents_in_expr(e: &Expr, idents: &mut HashSet<String>) {
                 collect_idents_in_expr(&e.value, idents);
             }
         }
-        _ => {}
+        // A `match` arm's body is a use site like any other. Missing it
+        // reported a genuinely-used import as unused (WS014), and Organize
+        // Imports then deleted it.
+        Expr::MatchExpr { scrutinee, arms, .. } => {
+            collect_idents_in_expr(scrutinee, idents);
+            for a in arms {
+                match &a.body {
+                    MatchBody::Expr(e) => collect_idents_in_expr(e, idents),
+                    MatchBody::Block(b) => collect_idents_in_block(b, idents),
+                }
+            }
+        }
+        // The path names the enum, so `E.A { x: v }` uses `E` as well as `v`.
+        Expr::VariantCtor { path, fields, .. } => {
+            collect_idents_in_expr(path, idents);
+            for f in fields {
+                match f {
+                    RecordLitField::Named { value, .. } | RecordLitField::Spread { value, .. } => {
+                        collect_idents_in_expr(value, idents)
+                    }
+                    RecordLitField::Shorthand { name, .. } => {
+                        idents.insert(name.clone());
+                    }
+                }
+            }
+        }
+        Expr::Deref { operand, .. } | Expr::RefOf { operand, .. } => {
+            collect_idents_in_expr(operand, idents)
+        }
+        Expr::TuplePick { obj, .. } => collect_idents_in_expr(obj, idents),
+        Expr::Unsafe { inner, .. } => collect_idents_in_expr(inner, idents),
+        // Listed rather than caught by a wildcard: these name nothing, and a
+        // new expression kind should be a compile error here, not a silently
+        // missed use site.
+        Expr::IntLit { .. }
+        | Expr::AtomLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::NullLit { .. }
+        | Expr::CurrentExec { .. }
+        | Expr::AssetRef { .. }
+        | Expr::PrefabRef { .. }
+        | Expr::NestedPrefab { .. } => {}
     }
 }
 

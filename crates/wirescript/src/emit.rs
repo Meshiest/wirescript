@@ -160,6 +160,7 @@ pub fn build_world(
         invisible: opts.invisible,
         no_gate_labels: opts.no_gate_labels,
         root_shell_brick_id: chip_brick_id,
+        drivers: HashMap::default(),
     };
     emit_module(
         &mut world,
@@ -202,7 +203,7 @@ pub fn build_world(
 
     // Outer rerouters for `@side`-annotated root ports, wired through the
     // chip wall (remote wires — see save.rs add_wire).
-    emit_port_rerouters(&mut world, &ctx, module, opts);
+    emit_port_rerouters(&mut world, &mut ctx, module, opts)?;
 
     // Embed the full component catalog. `register_used_components()` below is a
     // commented-out fallback that embeds only used components, for game builds

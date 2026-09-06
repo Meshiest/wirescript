@@ -840,7 +840,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
             if !ctx.is_declared_const(&name) {
                 continue;
             }
-            if let Some(frame) = ctx.scoped_consts.last_mut() {
+            if let Some(frame) = ctx.scoped_consts_mut() {
                 if is_ident {
                     frame.insert(name.clone(), lit);
                 } else {
@@ -876,7 +876,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
         && !d.is_const
         && let Some(lit) = expr_to_literal_in(&d.value, &ctx.const_lookup())
     {
-        if let Some(frame) = ctx.scoped_consts.last_mut() {
+        if let Some(frame) = ctx.scoped_consts_mut() {
             frame.insert(name.clone(), lit);
         }
         // A plain `let` re-binding a name CLEARS any `const` mark it had —
@@ -946,7 +946,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 .iter()
                 .any(|(_, l)| matches!(l, Literal::Array(_) | Literal::Map(_)));
         for (name, lit) in pairs {
-            if let Some(frame) = ctx.scoped_consts.last_mut() {
+            if let Some(frame) = ctx.scoped_consts_mut() {
                 frame.insert(name.clone(), lit);
             }
             if let Some(frame) = ctx.scoped_const_declared.last_mut() {
@@ -1074,7 +1074,7 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
                 // Body-local only, exactly like the narrow recording above: a
                 // top-level `let`/`const` has no open frame here and is already
                 // covered by `build_const_env`.
-                if let Some(frame) = ctx.scoped_consts.last_mut() {
+                if let Some(frame) = ctx.scoped_consts_mut() {
                     frame.insert(name.clone(), lit);
                 }
                 // Same is_const tracking as the narrow recording above — a

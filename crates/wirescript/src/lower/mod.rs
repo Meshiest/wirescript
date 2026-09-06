@@ -383,6 +383,8 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         nofold_depth: input.ast.no_fold as u32,
         mono_stack: Vec::new(),
         scoped_consts: Vec::new(),
+        scoped_rev: 0,
+        const_lookup_memo: std::cell::RefCell::new(None),
         scoped_const_declared: Vec::new(),
         dropped_ranges: Vec::new(),
         // Base frame: the module's own top-level declarations.
@@ -1927,6 +1929,8 @@ pub fn compile_chip_template(
         nofold_depth: 0,
         mono_stack: Vec::new(),
         scoped_consts: Vec::new(),
+        scoped_rev: 0,
+        const_lookup_memo: std::cell::RefCell::new(None),
         scoped_const_declared: Vec::new(),
         dropped_ranges: Vec::new(),
         // Base frame: the module's own top-level declarations.

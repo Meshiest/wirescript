@@ -367,7 +367,24 @@ pub(super) struct LowerCtx<'a> {
     /// `name -> Literal` in the top frame here, so a constant-only config arg
     /// (see `const_lookup`) can resolve it the same way a top-level `let`
     /// resolves through `const_env`.
+    ///
+    /// Mutate it only through [`scoped_consts_mut`](Self::scoped_consts_mut),
+    /// [`take_scoped_consts`](Self::take_scoped_consts) or the scope push/pop
+    /// pair: each bumps `scoped_rev`, which is what tells
+    /// [`const_lookup`](Self::const_lookup)'s memo it has gone stale.
     pub(super) scoped_consts: Vec<HashMap<String, Literal>>,
+    /// Bumped by every change to `scoped_consts`, and compared against the
+    /// revision `const_lookup_memo` was built at.
+    pub(super) scoped_rev: u64,
+    /// The last `const_lookup` result and the `scoped_rev` it was built at.
+    ///
+    /// `const_lookup` merges the module's whole constant table with every open
+    /// scope frame, and lowering asks for it once per constant-evaluated
+    /// expression. On a const-heavy program that clone is the compiler's
+    /// single largest allocation site; scope frames change far less often than
+    /// expressions are lowered, so the merged map is worth keeping.
+    pub(super) const_lookup_memo:
+        std::cell::RefCell<Option<(u64, std::sync::Arc<HashMap<String, Literal>>)>>,
     /// `const_declared`'s scoped counterpart, mirroring
     /// `typecheck::TypeCheckCtx::scoped_const_declared` 1:1: which
     /// `scoped_consts` entries, in the SAME frame, were bound with `const`
@@ -562,8 +579,28 @@ impl<'a> LowerCtx<'a> {
     /// the new scope would be recorded one level too shallow, potentially
     /// leaking past its own scope's lifetime or clobbering a sibling scope's
     /// constant of the same name.
+    /// The innermost scope frame, for recording a constant bound in it.
+    /// Taking it through here is what keeps `const_lookup`'s memo honest.
+    pub(super) fn scoped_consts_mut(&mut self) -> Option<&mut HashMap<String, Literal>> {
+        self.scoped_rev += 1;
+        self.scoped_consts.last_mut()
+    }
+
+    /// Swap the whole frame stack aside (an inlined body starts with none of
+    /// the caller's) and hand back what was there, for the caller to restore.
+    pub(super) fn take_scoped_consts(&mut self) -> Vec<HashMap<String, Literal>> {
+        self.scoped_rev += 1;
+        std::mem::take(&mut self.scoped_consts)
+    }
+
+    pub(super) fn restore_scoped_consts(&mut self, frames: Vec<HashMap<String, Literal>>) {
+        self.scoped_rev += 1;
+        self.scoped_consts = frames;
+    }
+
     pub(super) fn push_scope(&mut self, tag: crate::scope::ScopeTag) {
         self.scope.push(tag);
+        self.scoped_rev += 1;
         self.scoped_consts.push(HashMap::default());
         self.scoped_const_declared.push(HashSet::default());
         self.pass1_chips.push(std::sync::Arc::new(HashMap::default()));
@@ -597,6 +634,7 @@ impl<'a> LowerCtx<'a> {
     /// Pop the frame pushed by `push_scope`.
     pub(super) fn pop_scope(&mut self) {
         self.scope.pop();
+        self.scoped_rev += 1;
         self.scoped_consts.pop();
         self.scoped_const_declared.pop();
         // Never pop the base frame — it holds the module's own top-level
@@ -620,13 +658,20 @@ impl<'a> LowerCtx<'a> {
         if self.scoped_consts.iter().all(|f| f.is_empty()) {
             return self.const_env.clone();
         }
+        if let Some((rev, env)) = self.const_lookup_memo.borrow().as_ref()
+            && *rev == self.scoped_rev
+        {
+            return env.clone();
+        }
         let mut env: HashMap<String, Literal> = (*self.const_env).clone();
         for frame in &self.scoped_consts {
             for (name, lit) in frame {
                 env.insert(name.clone(), lit.clone());
             }
         }
-        std::sync::Arc::new(env)
+        let env = std::sync::Arc::new(env);
+        *self.const_lookup_memo.borrow_mut() = Some((self.scoped_rev, env.clone()));
+        env
     }
 
     /// The `ConstCtx` for `const_eval::eval_expr`, built from

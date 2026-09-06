@@ -22,10 +22,37 @@ use crate::ir::port_registry::WirePort;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u32);
 
+thread_local! {
+    /// Node ids are minted from a PER-THREAD counter, reset at the start of
+    /// each compile (see [`NodeId::reset_for_compile`]).
+    ///
+    /// A process-global counter made output depend on how many compiles had
+    /// already run: the same source compiled twice in one process produced
+    /// different ids, and through them different brick order and a different
+    /// byte length, so no test could compare two compilations. A compile runs
+    /// its whole pipeline on one dedicated thread, so per-thread is per-compile
+    /// without a lock, and two concurrent compiles still cannot collide.
+    static NODE_COUNTER: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
 impl NodeId {
     pub fn fresh() -> Self {
-        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        Self(COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        NODE_COUNTER.with(|c| {
+            let id = c.get();
+            c.set(id + 1);
+            Self(id)
+        })
+    }
+
+    /// Number this compile's nodes from 1, restoring the caller's numbering
+    /// when the returned guard drops.
+    ///
+    /// Taken once at the head of a compile. A nested prefab compile takes one
+    /// too: on native it runs on its own thread and the save/restore is a
+    /// no-op, but on wasm32 it runs inline, where restoring is what stops it
+    /// renumbering the outer compile's remaining nodes onto ids already used.
+    pub fn compile_scope() -> NodeIdScope {
+        NodeIdScope(NODE_COUNTER.with(|c| c.replace(1)))
     }
 
     pub fn port(self, port: WirePort) -> PortRef {
@@ -33,6 +60,16 @@ impl NodeId {
             node_id: self,
             port,
         }
+    }
+}
+
+/// Restores the node numbering that was current when it was taken. See
+/// [`NodeId::compile_scope`].
+pub struct NodeIdScope(u32);
+
+impl Drop for NodeIdScope {
+    fn drop(&mut self) {
+        NODE_COUNTER.with(|c| c.set(self.0));
     }
 }
 

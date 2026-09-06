@@ -148,6 +148,8 @@ pub(super) fn build_chip_module(
         // `const_lookup`, `const_lookup_declared_only` and `is_declared_const`
         // all iterate frames and an empty one contributes no entry.
         scoped_consts: vec![HashMap::default()],
+        scoped_rev: 0,
+        const_lookup_memo: std::cell::RefCell::new(None),
         scoped_const_declared: vec![HashSet::default()],
         dropped_ranges: Vec::new(),
         // Snapshot the caller's whole `pass1_chips` FRAME STACK exactly as it

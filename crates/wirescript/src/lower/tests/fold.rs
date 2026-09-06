@@ -1312,3 +1312,39 @@ fn constant_string_operand_inlines_into_its_concat_consumer() {
         r.module.nodes.values().map(|n| n.properties.clone()).collect::<Vec<_>>()
     );
 }
+
+/// The fold pass does not delete a self-firing gate or the handler it drives.
+///
+/// `sweep_dead_exec` seeds every gate with an unwired exec input as
+/// untriggered. A `Timer`'s `restart`/`pause`/`resume` are optional controls
+/// on a countdown that runs regardless, so an ordinary program wires none of
+/// them: the Timer was seeded dead, and the cascade took its whole
+/// `on t.Expired` handler with it. `Timer(10.0)` plus a handler compiled to
+/// one node, with the fold pass on by default and no diagnostic anywhere.
+#[test]
+fn folding_keeps_a_self_firing_gate_and_its_handler() {
+    let src = "let t = Timer(10.0)\nvar n: int\non t.Expired {\n  n = 1 + 1\n}\n";
+    let folded = compile_folded(src);
+    assert!(
+        has_gate(&folded, crate::ir::gate_class::PSEUDO_TIMER),
+        "the Timer must survive folding: {:?}",
+        folded.module.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
+    );
+    assert!(
+        has_gate(&folded, crate::ir::gate_class::VAR_SET),
+        "the handler's write must survive folding: {:?}",
+        folded.module.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
+    );
+    // The exec edge from the Timer into the handler is intact.
+    let timer = find_gate(&folded, crate::ir::gate_class::PSEUDO_TIMER);
+    assert!(
+        folded.module.wires.iter().any(|w| w.source.node_id == timer
+            && w.target.port == crate::ir::port_registry::WirePort::Exec),
+        "the Timer must still drive the handler"
+    );
+
+    // A chain that genuinely has no trigger is still swept: this is the
+    // behaviour the seed exists for, and the fix must not disable it.
+    let orphan = compile_folded("var n: int\nin unused: exec\non RoundStart() { n = 1 }\n");
+    assert!(has_gate(&orphan, crate::ir::gate_class::VAR_SET));
+}

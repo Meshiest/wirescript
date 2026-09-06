@@ -68,7 +68,10 @@ fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
         let handle = std::thread::Builder::new()
             .name("wirescript-compile".into())
             .stack_size(COMPILE_STACK_SIZE)
-            .spawn_scoped(s, f)
+            .spawn_scoped(s, || {
+                let _ids = crate::ir::NodeId::compile_scope();
+                f()
+            })
             .expect("failed to spawn compile worker thread");
         match handle.join() {
             Ok(v) => v,
@@ -80,6 +83,7 @@ fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 /// wasm32 has no threads — run inline (wasm callers control their own stack).
 #[cfg(target_arch = "wasm32")]
 fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    let _ids = crate::ir::NodeId::compile_scope();
     f()
 }
 

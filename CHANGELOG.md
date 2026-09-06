@@ -26,18 +26,28 @@
 - `"x ${n GARBAGE} y"` is a `WSP001` error. The slot's sub-parser read one expression and discarded whatever followed it.
 - An error inside `${...}` reports at its own position. The slot is lexed where it sits, rather than shifted afterwards by a walker that missed several expression shapes.
 - `@layout("cube")` no longer hangs a tall brick down through the layer below it. A layer shared one z while the step was measured from the layer beneath.
+- A name used only in a `match` arm, an `if let` or a `let ... else` counts as used. The import walkers reached `if` alone, so `WS014` called it unused and Organize Imports deleted it.
+- `WS053` reaches every branch form. The walker descended into `if` alone, so the same parked `emit`/`await` pair inside an `if let` or a `match` arm went unreported.
+- A dangling operator before a `}` no longer swallows the rest of the file. Error recovery consumed the token it failed on, brace included, so nothing after the block was parsed.
+- `Timer(10.0)` and the handler it drives survive folding. The dead-chain sweep seeded every gate with an unwired exec input as untriggered, but a `Timer` fires on its own.
+- A `mod` returning from inside a branch, called purely, reports at the call site. It handed back the never-allocated node as a port, so the program lowered clean and failed at emit naming `n0`.
+- A doc comment in a CRLF file does not keep its `\r`. The text ran one byte past its end, and a doc comment is baked into the world as a chip's header.
+- Two sources into one brick port is caught wherever the wire is drawn. The check was keyed on the IR node and local to one module, so the bus lanes, `@side` rerouters and `@label` wires bypassed it.
 
 ### Editor
 
 - A cursor past a non-ASCII character no longer kills the language server or traps the playground. Nothing converted between byte, char and UTF-16 columns at the protocol boundary.
 - Hover, completion and go-to-definition work in a CRLF file. Line offsets summed `len + 1`, which drops the `\r`, so every position past line 1 drifted.
 - The language server runs parse, resolve, typecheck and hover on the big stack `compile` reserves rather than the ~2 MiB editor worker thread.
+- Closing a file clears its diagnostics. They belong to the server until it says otherwise, so every marker stayed on screen for the rest of the session.
 
 ### Performance
 
 - Hover answers without re-parsing the file. `hover_at` re-parsed its whole source at eight sites in one request.
 - The language server waits 150ms before analysing an edit, and analyses only the newest one. Typing outran the front end, so intermediate states were analysed and thrown away.
 - Lowering reads a wire port's interned name from the port's own cache. Around thirty sites re-interned a name the port already had.
+- Lowering allocates 24% less on a large const-heavy program. Its constant lookup rebuilt the merged scope table per expression rather than per scope change.
+- An import borrows the module it reads rather than deep-cloning every declaration first. A named import that takes three names out of a hundred cloned all hundred.
 - Code layout sorts its adjacency once when building it rather than per node visited, so adopting unplaced nodes no longer re-sorts the same neighbour lists thousands of times.
 - Constant-literal inlining indexes the surviving wire sources once instead of rescanning every wire per candidate, and interns its port names once rather than per wire.
 - The type checker shares the module constant table rather than deep-copying it on every constant evaluation.

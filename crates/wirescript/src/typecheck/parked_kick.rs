@@ -30,6 +30,13 @@ fn check_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 check_block(ctx, e);
             }
         }
+        TopDecl::IfLet(i) => {
+            check_block(ctx, &i.then_block);
+            if let Some(e) = &i.else_block {
+                check_block(ctx, e);
+            }
+        }
+        TopDecl::LetElse(l) => check_block(ctx, &l.else_block),
         _ => {}
     }
 }
@@ -51,8 +58,57 @@ fn check_block(ctx: &mut TypeCheckCtx, block: &Block) {
                     check_block(ctx, e);
                 }
             }
+            // Every branch form opens its own chain, not just `if`. Reaching
+            // only `if` left the sole guard against a permanently parked chain
+            // dark inside `if let`, `let ... else` and every `match` arm.
+            Stmt::IfLet(i) => {
+                check_block(ctx, &i.then_block);
+                if let Some(e) = &i.else_block {
+                    check_block(ctx, e);
+                }
+            }
+            Stmt::LetElse(l) => check_block(ctx, &l.else_block),
+            Stmt::Assign(a) => check_expr(ctx, &a.value),
+            Stmt::Let(l) => check_expr(ctx, &l.value),
+            Stmt::ExprStmt(e) => check_expr(ctx, &e.expr),
+            Stmt::Return { value: Some(e), .. } => check_expr(ctx, e),
+            Stmt::OutBinding(o) => {
+                if let Some(e) = &o.value {
+                    check_expr(ctx, e);
+                }
+            }
+            Stmt::Emit(e) => {
+                if let Some(v) = &e.value {
+                    check_expr(ctx, v);
+                }
+            }
             _ => {}
         }
+    }
+}
+
+/// A `match` arm's body and a block expression are each their own chain, and
+/// both can hold the `emit`/`await` pair. They are reached through expression
+/// position, which the statement walk above never descends into.
+fn check_expr(ctx: &mut TypeCheckCtx, e: &Expr) {
+    match e {
+        Expr::MatchExpr { arms, .. } => {
+            for a in arms {
+                match &a.body {
+                    MatchBody::Expr(e) => check_expr(ctx, e),
+                    MatchBody::Block(b) => check_block(ctx, b),
+                }
+            }
+        }
+        Expr::BlockExpr { stmts, value, .. } => {
+            scan_chain(ctx, stmts);
+            check_expr(ctx, value);
+        }
+        Expr::IfExpr { then_branch, else_branch, .. } => {
+            check_expr(ctx, then_branch);
+            check_expr(ctx, else_branch);
+        }
+        _ => {}
     }
 }
 

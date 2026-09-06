@@ -711,3 +711,41 @@ out hit = o is Option.Some",
             }
         }
     }
+
+    /// A name used only inside a `match` arm, an `if let` or a `let ... else`
+    /// counts as used.
+    ///
+    /// The import walkers reached `if` and nothing else, so an import named
+    /// only in one of the other branch forms reported WS014 "unused import"
+    /// and Organize Imports deleted it, and the dependency closure left the
+    /// callee behind so the call lowered to an `_Unsupported` placeholder.
+    #[test]
+    fn a_name_used_only_in_a_branch_form_counts_as_used() {
+        let lib = "const K = 7\nmod helper() -> (r: int) { return 1 }\n";
+        let bodies = [
+            "  n = match s { E.A => K, E.B => helper() }\n",
+            "  if let E.B = s { n = K } else { n = helper() }\n",
+        ];
+        for body in bodies {
+            let loader = mem(&[("lib.ws", lib)]);
+            let src = format!(
+                "import {{ K, helper }} from \"lib\"\nenum E {{ A, B }}\nin go: exec\n\
+                 var s: E\nvar n: int\non go {{\n  s = E.A\n{body}}}\n"
+            );
+            let r = resolve(&src, "main.ws", &loader);
+            let unused: Vec<&str> = r
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == "WS014")
+                .map(|d| d.message.as_str())
+                .collect();
+            assert!(unused.is_empty(), "{body}: {unused:?}");
+            // The dependency closure pulled both in, so nothing is missing.
+            for want in ["K", "helper"] {
+                assert!(
+                    r.ast.decls.iter().any(|d| decl_binds(d, want)),
+                    "{body}: `{want}` should have travelled"
+                );
+            }
+        }
+    }

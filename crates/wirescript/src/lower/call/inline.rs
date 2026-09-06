@@ -280,7 +280,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
     //
     // Restored after `pop_scope` below. Every push and pop inside the body is
     // balanced, so the swapped-in stack is back to depth 0 by then.
-    let saved_scoped_consts = std::mem::take(&mut ctx.scoped_consts);
+    let saved_scoped_consts = ctx.take_scoped_consts();
     let saved_scoped_const_declared = std::mem::take(&mut ctx.scoped_const_declared);
     // `out <name> = <record>` bindings are per-body: swap the caller's aside so
     // this expansion starts empty and cannot consume (or be polluted by) an
@@ -312,7 +312,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
         if let Some(frame) = ctx.scoped_const_declared.last_mut() {
             frame.insert(name.clone());
         }
-        if let Some(frame) = ctx.scoped_consts.last_mut() {
+        if let Some(frame) = ctx.scoped_consts_mut() {
             frame.insert(name, lit);
         }
     }
@@ -681,7 +681,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // `push_scope`). Assigned rather than pushed onto: the body's stack is
     // empty again after its balanced `pop_scope`, and anything a callee body
     // recorded is scoped to that body by construction.
-    ctx.scoped_consts = saved_scoped_consts;
+    ctx.restore_scoped_consts(saved_scoped_consts);
     ctx.scoped_const_declared = saved_scoped_const_declared;
 
     // The mod body may have written to vars passed through records.
@@ -792,14 +792,37 @@ pub(in crate::lower) fn lower_chip_call_inline(
         ctx.mono_stack.pop();
     }
 
-    let result = if let Some(out_port) = return_output_port {
-        out_port
-    } else {
-        ctx.current_exec.unwrap_or_else(|| PortRef {
-            node_id: NodeId(0),
-            port: WirePort::ExecOut,
-        })
-    };
-
-    result
+    if let Some(out_port) = return_output_port {
+        return out_port;
+    }
+    // One scalar output, no wire into it, and no chain to continue from: the
+    // body's value comes from a `return` inside a branch, and selecting
+    // between branches needs an exec context the caller does not have. This
+    // used to fall through to the sentinel below, so the program type-checked,
+    // lowered, and then failed at emit with a `DroppedWire` naming `n0`, which
+    // says nothing about the call that caused it.
+    if chip_decl.outputs.len() == 1
+        && ctx.current_exec.is_none()
+        && ctx.pending_inline_record.is_none()
+    {
+        ctx.error(
+            "WS007",
+            format!(
+                "`{}` returns from inside a branch, so choosing between its returns needs \
+                 an exec context: call it from a handler or a `mod` body, or pass \
+                 `exec = ...`",
+                chip_decl.name
+            ),
+            _range,
+        );
+        return crate::lower::expr::synthesise_unsupported_no_warn(ctx, _range);
+    }
+    // A record or multi-output result travels in `pending_inline_record`, not
+    // a scalar port, so this return value is never read. `NodeId(0)` is the
+    // never-allocated node, and saying so is the point: a caller that DOES
+    // wire it produces a dangling reference emit rejects.
+    ctx.current_exec.unwrap_or(PortRef {
+        node_id: NodeId(0),
+        port: WirePort::ExecOut,
+    })
 }

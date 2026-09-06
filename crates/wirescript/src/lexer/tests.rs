@@ -338,3 +338,26 @@
         assert_eq!(str_value(r#""a\qb""#), (r"a\qb".to_string(), 1));
         assert_eq!(str_value(r"'a\qb'"), (r"a\qb".to_string(), 1));
     }
+
+    /// A doc comment in a CRLF file does not keep its `\r`.
+    ///
+    /// The scan stops at `\n`, so the text ran one byte past its end. A doc
+    /// comment is baked into the world as a chip's header text, so the stray
+    /// carriage return shipped into the save.
+    #[test]
+    fn a_doc_comment_does_not_keep_its_carriage_return() {
+        for (src, want) in [
+            ("/// title\r\nvar n: int\r\n", "title"),
+            ("/// title\nvar n: int\n", "title"),
+            // Only ONE leading space is skipped, so the rest is content.
+            ("///   padded   \r\n", "  padded"),
+        ] {
+            let r = lex(src, "t");
+            let doc = r
+                .tokens
+                .iter()
+                .find(|t| t.kind == TokenKind::DocComment)
+                .expect("a doc comment token");
+            assert_eq!(doc.text, want, "{src:?}");
+        }
+    }

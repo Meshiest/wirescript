@@ -27,6 +27,50 @@ pub(super) struct EmitContext {
     /// dynamic `@label` (`Module.root_dynamic_label`) into this brick's label
     /// `Text` port.
     pub(super) root_shell_brick_id: usize,
+    /// The source already drawn into each brick input port, across the WHOLE
+    /// world. See [`EmitContext::add_wire`].
+    pub(super) drivers: HashMap<(usize, BString, BString), (usize, BString, BString)>,
+}
+
+impl EmitContext {
+    /// Draw one wire, refusing a second distinct source into an input port.
+    ///
+    /// Two sources on one input port make the game reject the whole save at
+    /// load, so this is the last place it can be caught. Keyed on the BRICK
+    /// port rather than the IR node, which is what the game sees and the only
+    /// key the bus lanes, `@side` rerouters and `@label` wires share with the
+    /// ordinary per-node ones. An exact-duplicate wire is drawn as before.
+    pub(super) fn add_wire(
+        &mut self,
+        world: &mut World,
+        conn: WireConnection,
+    ) -> Result<(), EmitError> {
+        let key = (
+            conn.target.brick_id,
+            conn.target.component_type.clone(),
+            conn.target.port_name.clone(),
+        );
+        let src = (
+            conn.source.brick_id,
+            conn.source.component_type.clone(),
+            conn.source.port_name.clone(),
+        );
+        match self.drivers.get(&key) {
+            Some(existing) if *existing != src => {
+                return Err(EmitError::FanIn(format!(
+                    "brick {} port {}.{} is driven by two sources: brick {} {}.{} and \
+                     brick {} {}.{} (a lowering bug, the save would fail to load)",
+                    key.0, key.1, key.2, existing.0, existing.1, existing.2, src.0, src.1, src.2,
+                )));
+            }
+            Some(_) => return Ok(()),
+            None => {
+                self.drivers.insert(key, src);
+            }
+        }
+        world.add_wire(conn);
+        Ok(())
+    }
 }
 
 /// Resolve a wire source to its var/array-var label, following the source
@@ -572,10 +616,6 @@ pub(super) fn emit_module(
     // ── Pass 3: emit this module's wires ──
     let layout_port_id = WirePort::Layout;
     let port_index = build_port_index(module, &ctx.node_brick_ids);
-    // Single-driver invariant: a real input port accepts exactly one source.
-    // Records the source already drawn into each (target, port) so a second,
-    // DISTINCT source is caught as a fan-in below.
-    let mut driver: HashMap<(NodeId, WirePort), (NodeId, WirePort)> = HashMap::default();
     for w in &module.wires {
         if w.source.port == layout_port_id || w.target.port == layout_port_id {
             continue;
@@ -597,32 +637,12 @@ pub(super) fn emit_module(
         if matches!(dst_class, Some(c) if *c == gc::LITERAL || *c == gc::UNSUPPORTED) {
             continue;
         }
-        // Two DISTINCT sources into one input port load-fail the whole save. An
-        // exact-duplicate wire (same source) is drawn as before; bus-lane fan-in
-        // is already suppressed above, and literal/unsupported sources were
-        // skipped (they inline, not wire).
-        let tgt_key = (w.target.node_id, w.target.port);
-        let src_key = (w.source.node_id, w.source.port);
-        match driver.get(&tgt_key) {
-            Some(&existing) if existing != src_key => {
-                return Err(EmitError::FanIn(format!(
-                    "{}.{} is driven by two sources: {}.{} and {}.{} (a lowering bug — \
-                     the save would fail to load)",
-                    w.target.node_id,
-                    w.target.port.as_str(),
-                    existing.0,
-                    existing.1.as_str(),
-                    w.source.node_id,
-                    w.source.port.as_str(),
-                )));
-            }
-            Some(_) => {}
-            None => {
-                driver.insert(tgt_key, src_key);
-            }
-        }
+        // Two DISTINCT sources into one input port load-fail the whole save;
+        // `EmitContext::add_wire` is the single place that check lives.
+        // Bus-lane fan-in is suppressed above, and literal/unsupported sources
+        // were skipped (they inline, not wire).
         match wire_to_connection_indexed(w, &ctx.node_brick_ids, &ctx.class_index, &port_index) {
-            Ok(conn) => world.add_wire(conn),
+            Ok(conn) => ctx.add_wire(world, conn)?,
             Err(e) => {
                 // FATAL — see `EmitError::DroppedWire`. A wire that can't be
                 // drawn means a value never arrives and nothing downstream can
@@ -686,14 +706,17 @@ pub(super) fn emit_module(
             let Some(&host_brick) = ctx.node_brick_ids.get(host) else {
                 continue;
             };
-            world.add_wire(WireConnection {
-                source,
-                target: BrdbWirePort {
-                    brick_id: host_brick,
-                    component_type: BString::Static("Component_TextDisplay"),
-                    port_name: BString::Static("Text"),
+            ctx.add_wire(
+                world,
+                WireConnection {
+                    source,
+                    target: BrdbWirePort {
+                        brick_id: host_brick,
+                        component_type: BString::Static("Component_TextDisplay"),
+                        port_name: BString::Static("Text"),
+                    },
                 },
-            });
+            )?;
         }
         // Module-level dynamic `@label`: wire the value into the ROOT shell
         // brick's label `Text` port (the shell hosts a placeholder-empty
@@ -709,14 +732,17 @@ pub(super) fn emit_module(
                     &ctx.class_index,
                     &port_index,
                 ) {
-                    Ok(source) => world.add_wire(WireConnection {
-                        source,
-                        target: BrdbWirePort {
-                            brick_id: ctx.root_shell_brick_id,
-                            component_type: BString::Static("Component_TextDisplay"),
-                            port_name: BString::Static("Text"),
+                    Ok(source) => ctx.add_wire(
+                        world,
+                        WireConnection {
+                            source,
+                            target: BrdbWirePort {
+                                brick_id: ctx.root_shell_brick_id,
+                                component_type: BString::Static("Component_TextDisplay"),
+                                port_name: BString::Static("Text"),
+                            },
                         },
-                    }),
+                    )?,
                     // FATAL — a root `@label` that loses its runtime source
                     // would ship a chip with a blank title and no diagnostic.
                     Err(e) => {
@@ -733,7 +759,13 @@ pub(super) fn emit_module(
     // A lane hop reads a rerouter's `RER_Output` and drives the next one's
     // `RER_Input`; a `BusEnd::Node` end resolves exactly like a module wire
     // end, so a tap on a chip port goes through the same remap.
-    let bus_end = |e: BusEnd, as_source: bool| -> Result<BrdbWirePort, EmitError> {
+    // Takes the two index maps rather than `ctx`, so the loop below can still
+    // borrow `ctx` mutably to draw the wire it resolves.
+    let bus_end = |e: BusEnd,
+                   as_source: bool,
+                   node_brick_ids: &HashMap<NodeId, usize>,
+                   class_index: &HashMap<NodeId, &'static str>|
+     -> Result<BrdbWirePort, EmitError> {
         match e {
             BusEnd::Bus(i) => {
                 let brick_id = *bus_brick_ids
@@ -749,13 +781,9 @@ pub(super) fn emit_module(
                     }),
                 })
             }
-            BusEnd::Node(p) => resolve_wire_end(
-                p.node_id,
-                p.port,
-                &ctx.node_brick_ids,
-                &ctx.class_index,
-                &port_index,
-            ),
+            BusEnd::Node(p) => {
+                resolve_wire_end(p.node_id, p.port, node_brick_ids, class_index, &port_index)
+            }
         }
     };
     // Name an end the way a reader can act on: a lane brick by its index,
@@ -781,7 +809,11 @@ pub(super) fn emit_module(
         // going to be drawn anyway, so dropping it loses a wire the reader can
         // see missing; a bus wire's original was suppressed and will never be
         // redrawn, so dropping it silently strands the consumer forever.
-        let (source, target) = match (bus_end(bw.source, true), bus_end(bw.target, false)) {
+        let ends = (
+            bus_end(bw.source, true, &ctx.node_brick_ids, &ctx.class_index),
+            bus_end(bw.target, false, &ctx.node_brick_ids, &ctx.class_index),
+        );
+        let (source, target) = match ends {
             (Ok(s), Ok(t)) => (s, t),
             (src, tgt) => {
                 let cause = src.err().or(tgt.err());
@@ -795,7 +827,7 @@ pub(super) fn emit_module(
                 });
             }
         };
-        world.add_wire(WireConnection { source, target });
+        ctx.add_wire(world, WireConnection { source, target })?;
     }
 
     Ok(())

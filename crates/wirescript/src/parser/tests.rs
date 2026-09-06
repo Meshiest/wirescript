@@ -2133,3 +2133,55 @@ on go {
             assert!(interp.is_none(), "`{body}`: {:?}", r.diagnostics);
         }
     }
+
+    /// A dangling operator before a closing token does not swallow the rest of
+    /// the file.
+    ///
+    /// `parse_primary`'s error arm consumed whatever token it failed on,
+    /// including the `}` that closes the block around it: the block then ran
+    /// to EOF looking for its terminator and every declaration after it was
+    /// never parsed at all, so nothing in the rest of the file was checked.
+    #[test]
+    fn a_dangling_operator_does_not_swallow_the_rest_of_the_file() {
+        let r = parse(
+            "in go: exec\nvar n: int\non go {\n  n = 1 +\n}\nmod later() -> (r: int) { return 42 }\n",
+            "t",
+        );
+        assert!(
+            r.ast.decls.iter().any(|d| matches!(d, TopDecl::Chip(c) if c.name == "later")),
+            "`mod later` must still parse: {:?}",
+            r.ast.decls.len()
+        );
+        // And the recovery reports the operator alone, not a phantom missing
+        // brace at EOF.
+        assert!(
+            !r.diagnostics.iter().any(|d| d.message.contains("expected RBrace")),
+            "{:?}",
+            r.diagnostics
+        );
+    }
+
+    /// Leaving a closing token in place must not let any recovery loop spin.
+    ///
+    /// Every prefix of a program with a dangling operator before each bracket
+    /// kind is parsed; a hang here fails as a test timeout rather than a
+    /// wrong answer, which is why the shapes are swept rather than sampled.
+    #[test]
+    fn recovery_terminates_on_every_truncated_prefix() {
+        let programs = [
+            "in go: exec\nvar n: int\non go {\n  n = 1 +\n}\nmod m() -> (r: int) { return 1 }\n",
+            "in a: int\nout r = f(a +\n)\n",
+            "var xs: int[] = [1, 2 +\n]\n",
+            "type P = { x: int }\nvar p: P\nin go: exec\non go { p = { x: 1 + } }\n",
+            "in go: exec\non go { let m = { 1 => 2 + } }\n",
+            "enum E { A }\nin go: exec\nvar s: E\nvar n: int\non go { n = match s { E.A => 1 + } }\n",
+        ];
+        for src in programs {
+            for end in 0..=src.len() {
+                if !src.is_char_boundary(end) {
+                    continue;
+                }
+                let _ = parse(&src[..end], "t");
+            }
+        }
+    }

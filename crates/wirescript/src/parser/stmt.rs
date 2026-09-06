@@ -13,6 +13,7 @@ impl<'a> Parser<'a> {
         self.eat_newlines();
         let mut stmts: Vec<Stmt> = Vec::new();
         while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
+            let before = self.pos;
             let doc = self.collect_doc_comment();
             let stmt_start = self.peek().start;
             if let Some(s) = self.parse_stmt() {
@@ -41,6 +42,13 @@ impl<'a> Parser<'a> {
                 self.synchronize();
             }
             self.eat_newlines();
+            // A statement that consumed nothing would spin here. Recovery
+            // paths deliberately leave a closing token in place (see
+            // `parse_primary`'s error arm), so this is the backstop that turns
+            // one into an exit rather than a hang.
+            if self.pos == before {
+                break;
+            }
         }
         let end = self.expect(TokenKind::RBrace, None).end;
         self.leave_nesting(1);

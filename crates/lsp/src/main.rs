@@ -1028,9 +1028,14 @@ impl LanguageServer for Backend {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = params.text_document.uri;
         if let Ok(mut docs) = self.docs.lock() {
-            docs.remove(&params.text_document.uri);
+            docs.remove(&uri);
         }
+        // Clear what this file was showing. Diagnostics belong to the server
+        // until it says otherwise, so dropping the document without publishing
+        // an empty set left every marker on screen for the rest of the session.
+        self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

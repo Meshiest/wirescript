@@ -5999,3 +5999,26 @@
             r.diagnostics
         );
     }
+
+    /// WS053, the only guard against a permanently parked exec chain, reaches
+    /// every branch form.
+    ///
+    /// The walker descended into `if` alone, so the same `emit`/`await` pair
+    /// inside an `if let`, a `let ... else` or a `match` arm went unreported.
+    #[test]
+    fn a_parked_kick_is_reported_in_every_branch_form() {
+        let head = "enum E { A, B(int) }\nin go: exec\nvar s: E\nout jump: exec\nvar r: int\n";
+        let bodies = [
+            "  if s is E.A { emit jump\n    await jump\n  }\n",
+            "  if let E.B(v) = s { emit jump\n    await jump\n  }\n",
+            "  r = match s {\n    E.A => { emit jump\n      await jump\n      1 }\n    E.B(v) => 0,\n  }\n",
+        ];
+        for body in bodies {
+            let r = tc(&format!("{head}on go {{\n  s = E.A\n{body}}}\n"));
+            assert!(
+                r.diagnostics.iter().any(|d| d.code == "WS053"),
+                "a parked kick here should be reported: {body} -> {:?}",
+                r.diagnostics
+            );
+        }
+    }

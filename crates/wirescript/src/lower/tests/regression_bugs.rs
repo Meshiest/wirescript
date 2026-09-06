@@ -474,3 +474,39 @@ fn an_exec_arg_on_a_container_method_does_not_capture_the_following_statements()
         "`a = 1` must run off RoundStart, not the `exec =` trigger"
     );
 }
+
+/// A branching-return `mod` called from a pure position reports at the call
+/// site, rather than compiling and failing at emit.
+///
+/// With no output wire and no chain to continue from, the inline call handed
+/// back `NodeId(0)`, the never-allocated node, as if it were a real port. The
+/// program type-checked and lowered clean and then died in emit with
+/// `DroppedWire("n0 -> ...")`, which names nothing the author wrote.
+#[test]
+fn a_branching_return_called_purely_reports_at_the_call_site() {
+    let src = "mod branchy(c: bool) -> (r: int) {\n\
+               \x20 if c { return 1 } else { return 2 }\n}\nout v = branchy(true)\n";
+    let r = compile(src);
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS007" && d.message.contains("returns from inside a branch")),
+        "expected a call-site diagnostic: {:?}",
+        r.diagnostics
+    );
+    // And no wire references the sentinel, which is what emit choked on.
+    assert!(
+        !r.module.wires.iter().any(|w| {
+            w.source.node_id == crate::ir::NodeId(0) || w.target.node_id == crate::ir::NodeId(0)
+        }),
+        "a wire still references the never-allocated node"
+    );
+
+    // From an exec context the same mod is fine.
+    let ok = compile(
+        "mod branchy(c: bool) -> (r: int) {\n\
+         \x20 if c { return 1 } else { return 2 }\n}\n\
+         in go: exec\nvar v: int\non go { v = branchy(true) }\n",
+    );
+    assert_no_errors(&ok);
+}

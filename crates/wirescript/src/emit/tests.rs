@@ -13,6 +13,7 @@
             invisible: false,
             no_gate_labels: false,
             root_shell_brick_id: 0,
+            drivers: HashMap::default(),
         }
     }
 
@@ -856,4 +857,50 @@
             z: 3.0,
         };
         assert!(reshape_literal_for_struct("Vector", &vec).is_none());
+    }
+
+    /// Two distinct sources into one BRICK input port is a fan-in, whichever
+    /// pass drew them.
+    ///
+    /// The check used to sit in `emit_module`'s own wire loop, keyed on IR
+    /// node and local to one module: the bus lanes, the `@side` rerouters and
+    /// the `@label` wires all draw into brick ports without an IR wire, so
+    /// none of them were covered, and a chip's ports were checked separately
+    /// from its parent's. The game rejects the whole save at load, so this is
+    /// the last place it can be caught.
+    #[test]
+    fn fan_in_is_caught_wherever_the_wire_is_drawn() {
+        let port = |brick: usize, name: &'static str| brdb::WirePort {
+            brick_id: brick,
+            component_type: BString::Static(gc::REROUTER),
+            port_name: BString::Static(name),
+        };
+        let into_target = |src: usize| WireConnection {
+            source: port(src, "RER_Output"),
+            target: port(99, "RER_Input"),
+        };
+
+        let mut ctx = empty_ctx();
+        let mut world = World::new();
+        assert!(ctx.add_wire(&mut world, into_target(1)).is_ok());
+        // The same wire again is a duplicate, not a fan-in.
+        assert!(ctx.add_wire(&mut world, into_target(1)).is_ok());
+        // A second, different source is.
+        let err = ctx.add_wire(&mut world, into_target(2)).unwrap_err();
+        assert!(
+            matches!(&err, EmitError::FanIn(m) if m.contains("driven by two sources")),
+            "expected a fan-in, got {err:?}"
+        );
+
+        // A different port on the same brick is untouched.
+        assert!(
+            ctx.add_wire(
+                &mut world,
+                WireConnection {
+                    source: port(2, "RER_Output"),
+                    target: port(99, "RER_Other"),
+                },
+            )
+            .is_ok()
+        );
     }

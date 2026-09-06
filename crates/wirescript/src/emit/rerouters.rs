@@ -76,7 +76,12 @@ fn rerouter_label_anchor_x(side: &str) -> f32 {
 /// against the chip brick's edge, pre-wired to the port's inner
 /// MicrochipInput/Output gate. The brdb writer serialises the cross-grid
 /// wires as remote wire sources automatically.
-pub(super) fn emit_port_rerouters(world: &mut World, ctx: &EmitContext, module: &Module, opts: &EmitOptions) {
+pub(super) fn emit_port_rerouters(
+    world: &mut World,
+    ctx: &mut EmitContext,
+    module: &Module,
+    opts: &EmitOptions,
+) -> Result<(), EmitError> {
     let side_sym = *sym::REROUTE_SIDE;
 
     // side → [(source offset, node id, is_input)], later sorted per side so
@@ -214,7 +219,8 @@ pub(super) fn emit_port_rerouters(world: &mut World, ctx: &EmitContext, module: 
                     target: rer_port("RER_Input"),
                 }
             };
-            world.add_wire(conn);
+            ctx.add_wire(world, conn)?;
         }
     }
+    Ok(())
 }
