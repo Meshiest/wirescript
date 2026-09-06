@@ -159,11 +159,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("character", WirePort::Character, Type::Character),
                 CallParam::req("resource", WirePort::Resource, Type::Entity),
             ],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::Amount,
-                ty: Type::Int,
-            }],
+            vec![CallOutput::plain(WirePort::Amount, Type::Int)],
         ),
     );
     m.insert(
@@ -201,15 +197,14 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("character", WirePort::Character, Type::Character),
                 CallParam::req("slot", WirePort::Slot, Type::Int),
             ],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::Item,
-                ty: Type::Record(vec![
+            vec![CallOutput::plain(
+                WirePort::Item,
+                Type::Record(vec![
                     ("Item".into(), Type::Entity),
                     ("BrickAsset".into(), Type::Entity),
                     ("EntityType".into(), Type::Entity),
                 ]),
-            }],
+            )],
         ),
     );
     m.insert(
@@ -218,11 +213,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetCurrentInventorySlot",
             gc::CHARACTER_GET_CURRENT_INVENTORY_SLOT,
             vec![CallParam::req("character", WirePort::Character, Type::Character)],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::Slot,
-                ty: Type::Int,
-            }],
+            vec![CallOutput::plain(WirePort::Slot, Type::Int)],
         ),
     );
     m.insert(
@@ -235,11 +226,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("resource", WirePort::Resource, Type::Entity),
                 CallParam::req("slot", WirePort::Slot, Type::Int),
             ],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::Amount,
-                ty: Type::Int,
-            }],
+            vec![CallOutput::plain(WirePort::Amount, Type::Int)],
         ),
     );
     m.insert(

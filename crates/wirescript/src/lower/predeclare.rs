@@ -202,22 +202,7 @@ pub(super) fn build_exec_signal_hub(ctx: &mut LowerCtx, name: &str, range: &Sour
     let hub = ctx.add_gate(AddNodeOpts {
         gate_class: gc::UNION,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_A,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::EXEC_B,
-                    ty: Type::Exec,
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::exec_join(),
         ..Default::default()
     });
     ctx.scope.insert(
@@ -1281,10 +1266,10 @@ fn make_array_var_gate(
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::ARRAY_VAR_REF,
-                ty: Type::Ref(Box::new(Type::Array(Box::new(elem_type.clone())))),
-            }],
+            outputs: vec![PortSpec::new(
+                              *sym::ARRAY_VAR_REF,
+                              Type::Ref(Box::new(Type::Array(Box::new(elem_type.clone())))),
+                          )],
         },
         properties,
         note: None,
@@ -1330,10 +1315,7 @@ fn make_map_var_gate(
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::MAP_VAR_REF,
-                ty: Type::Ref(Box::new(map_type.clone())),
-            }],
+            outputs: vec![PortSpec::new(*sym::MAP_VAR_REF, Type::Ref(Box::new(map_type.clone())))],
         },
         properties,
         note: None,
@@ -1353,19 +1335,7 @@ fn make_scalar_var_gate(
     ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_VAR,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: inner_type.clone(),
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(inner_type.clone())),
-                },
-            ],
-        },
+        ports: GateIO::var_storage(inner_type.clone()),
         properties,
         note: None,
         ..Default::default()
@@ -2356,6 +2326,13 @@ fn map_value_typeexpr(te: Option<&TypeExpr>) -> Option<&TypeExpr> {
     }
 }
 
+/// The text a `var`'s storage gate is labelled with in-game: its `@label` /
+/// `@label(expr)` when it has one, its source name otherwise.
+fn var_label(ctx: &LowerCtx, d: &VarDecl) -> String {
+    resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
+        .unwrap_or_else(|| d.name.clone())
+}
+
 pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // `resolve_local_type` monomorphizes a `T` annotation inside a generic mod
     // body (and is identical to `type_of_type_expr` everywhere else).
@@ -2378,9 +2355,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         if let Some(TypeExpr::Array { inner: elem_te, .. }) = d.typ.as_ref()
             && let Some(fields) = ctx.record_or_tuple_fields(elem_te)
         {
-            let label =
-                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-                    .unwrap_or_else(|| d.name.clone());
+            let label = var_label(ctx, d);
             declare_record_container(
                 ctx,
                 &d.name,
@@ -2405,9 +2380,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         if let Some(TypeExpr::Array { inner: elem_te, .. }) = d.typ.as_ref()
             && let Some(cols) = enum_container_columns(ctx, elem_te, &d.range)
         {
-            let label =
-                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-                    .unwrap_or_else(|| d.name.clone());
+            let label = var_label(ctx, d);
             declare_record_container(
                 ctx,
                 &d.name,
@@ -2422,8 +2395,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         }
         let elem_type = elem.as_ref().clone();
         let mut properties = HashMap::default();
-        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-            .unwrap_or_else(|| d.name.clone());
+        let label = var_label(ctx, d);
         properties.insert(*sym::NAME_LABEL, Literal::String(label));
         if let Some(Expr::Array { elements, .. }) = &d.init {
             // Element-wise compile-time string → bool for `var v: bool[] =
@@ -2452,9 +2424,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         if let Some(val_te) = map_value_typeexpr(d.typ.as_ref())
             && let Some(fields) = ctx.record_or_tuple_fields(val_te)
         {
-            let label =
-                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-                    .unwrap_or_else(|| d.name.clone());
+            let label = var_label(ctx, d);
             declare_record_container(
                 ctx,
                 &d.name,
@@ -2476,9 +2446,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         if let Some(val_te) = map_value_typeexpr(d.typ.as_ref())
             && let Some(cols) = enum_container_columns(ctx, val_te, &d.range)
         {
-            let label =
-                resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-                    .unwrap_or_else(|| d.name.clone());
+            let label = var_label(ctx, d);
             declare_record_container(
                 ctx,
                 &d.name,
@@ -2493,8 +2461,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         }
         let (key_ty, value_ty) = (key_ty.as_ref().clone(), value_ty.as_ref().clone());
         let mut properties = HashMap::default();
-        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-            .unwrap_or_else(|| d.name.clone());
+        let label = var_label(ctx, d);
         properties.insert(*sym::NAME_LABEL, Literal::String(label));
         bake_map_init(ctx, &mut properties, &d.name, &d.init, &key_ty, &value_ty);
         declare_map_var(ctx, &d.name, inner_type, properties, &d.range);
@@ -2510,8 +2477,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // any literal payload args) into `InitialValue` directly - general enum
     // const-eval is a later task (see `static_enum_ctor`).
     if let Type::Enum { name: enum_name, args } = &inner_type {
-        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-            .unwrap_or_else(|| d.name.clone());
+        let label = var_label(ctx, d);
         let args = args.clone();
         declare_enum_container(ctx, &d.name, enum_name, &args, &label, d.init.as_ref(), &d.range);
         return;
@@ -2525,8 +2491,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     // `pre_declare_input`; `record_fields_of` follows a `type P = { … }` alias
     // that `resolve_local_type`'s empty alias table cannot.
     if let Some(fields) = d.typ.as_ref().and_then(|te| ctx.record_or_tuple_fields(te)) {
-        let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-            .unwrap_or_else(|| d.name.clone());
+        let label = var_label(ctx, d);
         declare_record_container(
             ctx,
             &d.name,
@@ -2557,8 +2522,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
         .map(|lit| bake_literal_for_type(lit, &inner_type))
         .or_else(|| default_literal_for_var_type(&inner_type));
     let mut properties = HashMap::default();
-    let label = resolve_label_text(d.label.as_deref(), d.label_expr.as_ref(), &ctx.const_env)
-        .unwrap_or_else(|| d.name.clone());
+    let label = var_label(ctx, d);
     properties.insert(*sym::NAME_LABEL, Literal::String(label));
     if let Some(lit) = init_lit {
         properties.insert(*sym::INITIAL_VALUE, lit);
@@ -2567,19 +2531,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_VAR,
         source_range: d.range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: inner_type.clone(),
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(inner_type.clone())),
-                },
-            ],
-        },
+        ports: GateIO::var_storage(inner_type.clone()),
         properties,
         note: None,
         ..Default::default()
@@ -2605,19 +2557,10 @@ pub(super) fn pre_declare_buffer(ctx: &mut LowerCtx, d: &BufferDecl) {
         source_range: d.range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: *sym::INPUT,
-                    ty: inner_type.clone(),
-                },
-                PortSpec {
-                    name: *sym::TICKS_TO_WAIT,
-                    ty: Type::Int,
-                },
+                PortSpec::new(*sym::INPUT, inner_type.clone()),
+                PortSpec::new(*sym::TICKS_TO_WAIT, Type::Int),
             ],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: inner_type.clone(),
-            }],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, inner_type.clone())],
         },
         properties: [(*sym::TICKS_TO_WAIT, Literal::Int(1))]
             .into_iter()

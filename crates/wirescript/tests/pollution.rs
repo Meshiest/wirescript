@@ -37,6 +37,19 @@ fn collect_ids_by_chip(module: &Module, path: &str) -> Vec<(String, NodeId)> {
     result
 }
 
+/// Lowering produced no hard error. A pollution test that starts from a broken
+/// program proves nothing about isolation, so every one of them checks this
+/// before looking at the module graph.
+fn assert_no_errors(lr: &wirescript::lower::LowerResult) {
+    assert!(
+        lr.diagnostics
+            .iter()
+            .all(|d| d.severity != wirescript::diagnostic::Severity::Error),
+        "unexpected errors: {:?}",
+        lr.diagnostics
+    );
+}
+
 /// Parse → typecheck → lower a source string (no file imports).
 fn lower_source(src: &str) -> wirescript::lower::LowerResult {
     let resolved = ws_resolve(src, "test.ws", &FsLoader);
@@ -82,13 +95,7 @@ let r3 = ALU(5, 6)
 out total = r1.r + r2.r + r3.r
 "#;
     let lr = lower_source(src);
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != wirescript::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        lr.diagnostics
-    );
+    assert_no_errors(&lr);
 
     let chip_modules: Vec<_> = collect_chip_modules(&lr.module, "root");
     assert_eq!(
@@ -137,13 +144,7 @@ on tick {
 }
 "#;
     let lr = lower_source(src);
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != wirescript::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        lr.diagnostics
-    );
+    assert_no_errors(&lr);
 
     let chip_modules: Vec<_> = collect_chip_modules(&lr.module, "root");
     assert_eq!(
@@ -185,13 +186,7 @@ let r3 = compute(5, 6)
 out total = r1 + r2 + r3
 "#;
     let lr = lower_source(src);
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != wirescript::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        lr.diagnostics
-    );
+    assert_no_errors(&lr);
 
     let all_pairs = collect_ids_by_chip(&lr.module, "root");
     let mut seen: HashMap<NodeId, String> = HashMap::new();
@@ -225,13 +220,7 @@ let r = Big(1, 2, 3)
 out result = r.r
 "#;
     let lr = lower_source(src);
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != wirescript::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        lr.diagnostics
-    );
+    assert_no_errors(&lr);
 
     let layout_result = layout(&lr.module);
 
@@ -319,13 +308,7 @@ on tick {
 }
 "#;
     let lr = lower_source(src);
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != wirescript::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        lr.diagnostics
-    );
+    assert_no_errors(&lr);
 
     // Count direct chip instances in the root (each inc_var call embeds one Inc chip).
     let chip_count = lr.module.chips.len();
@@ -363,13 +346,7 @@ let r3 = ALU(5, 6)
 out total = r1.r + r2.r + r3.r
 "#;
     let lr = lower_source(src);
-    assert!(
-        lr.diagnostics
-            .iter()
-            .all(|d| d.severity != wirescript::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        lr.diagnostics
-    );
+    assert_no_errors(&lr);
 
     fn check_wires(module: &Module, path: &str) {
         for wire in &module.wires {

@@ -156,6 +156,43 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
     r
 }
 
+/// The error CODES a source type-checks to, in order. Typecheck only: these
+/// tests are about what the checker rejects, so they must not depend on
+/// lowering running at all.
+pub(super) fn errs(s: &str) -> Vec<String> {
+    crate::typecheck::typecheck(
+        &crate::parser::parse(s, "t").ast,
+        "t",
+        &crate::typecheck::CeSlotMap::default(),
+    )
+    .diagnostics
+    .into_iter()
+    .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+    .map(|d| d.code.to_string())
+    .collect()
+}
+
+/// The one child module a single-chip-instance program lowers to. `what` names
+/// it in the panic, so a lowering regression says which instance went missing
+/// rather than "unwrap on None".
+pub(super) fn only_chip<'a>(r: &'a LowerResult, what: &str) -> &'a crate::ir::Module {
+    r.module.chips.values().next().expect(what)
+}
+
+/// The module emits to a `.brz` without error. Lowering can produce a graph the
+/// emitter then rejects (an unknown gate class, a port that does not exist), so
+/// a lowering test that stops at `assert_no_errors` has not shown the program
+/// would load.
+pub(super) fn assert_emits(module: &crate::ir::Module, layout: &crate::layout::LayoutResult) {
+    let brz = crate::emit::emit_brz(
+        module,
+        layout,
+        &crate::emit::EmitOptions::default(),
+        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
+    );
+    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+}
+
 /// Asserts a program lowered with no ERROR-severity diagnostic, typecheck's
 /// included. The `compile*` helpers above must therefore merge typecheck's
 /// errors, not only its warnings, or none of the 460-odd call sites of this

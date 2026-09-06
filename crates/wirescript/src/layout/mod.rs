@@ -154,6 +154,23 @@ pub struct LayoutResult {
     pub bounds_max: IntVec3,
 }
 
+impl LayoutResult {
+    /// A module with nothing of its own to place. Its chips may still have
+    /// content, so their layouts are passed in; everything else is the zero,
+    /// `rotations` and `bus` included, since only Code mode ever fills those.
+    pub(super) fn empty(chip_layouts: HashMap<NodeId, LayoutResult>) -> Self {
+        Self {
+            placements: HashMap::default(),
+            chip_layouts,
+            annotations: Vec::new(),
+            rotations: HashMap::default(),
+            bus: BusLayout::default(),
+            bounds_min: IntVec3::default(),
+            bounds_max: IntVec3::default(),
+        }
+    }
+}
+
 /// How to render a nested chip's interior. Mirrors builder crate's
 /// `flat` flag.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -332,11 +349,7 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
 
     LayoutResult {
         placements,
-        chip_layouts: if recurse {
-            recurse_chips(module, opts)
-        } else {
-            HashMap::default()
-        },
+        chip_layouts: chip_layouts_of(module, opts, recurse),
         annotations: Vec::new(),
         // Only Code mode rotates bricks.
         rotations: HashMap::default(),
@@ -390,21 +403,7 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
 
     let mut placements: HashMap<NodeId, Placement> = HashMap::default();
     if laid.local.is_empty() {
-        return LayoutResult {
-            placements,
-            chip_layouts: if recurse {
-                recurse_chips(module, opts)
-            } else {
-                HashMap::default()
-            },
-            annotations: Vec::new(),
-            // Only Code mode rotates bricks.
-            rotations: HashMap::default(),
-            // Only Code mode buses values through the gutter.
-            bus: BusLayout::default(),
-            bounds_min: IntVec3::default(),
-            bounds_max: IntVec3::default(),
-        };
+        return LayoutResult::empty(chip_layouts_of(module, opts, recurse));
     }
 
     // Order matters: pin first so Vars move to the bottom strip and free
@@ -449,11 +448,7 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
 
     LayoutResult {
         placements,
-        chip_layouts: if recurse {
-            recurse_chips(module, opts)
-        } else {
-            HashMap::default()
-        },
+        chip_layouts: chip_layouts_of(module, opts, recurse),
         annotations: Vec::new(),
         // Only Code mode rotates bricks.
         rotations: HashMap::default(),
@@ -784,6 +779,22 @@ fn resolve_variable_sizes(
         out.insert(*id, (px, py));
     }
     (out, total_x, total_y)
+}
+
+/// Sub-layouts for the module's chips, or nothing when the caller wanted a
+/// single level. Every `LayoutResult` in the crate fills `chip_layouts` this
+/// way; going through one function is what keeps a new layout mode from
+/// forgetting the `recurse` flag.
+pub(super) fn chip_layouts_of(
+    module: &Module,
+    opts: &LayoutOptions,
+    recurse: bool,
+) -> HashMap<NodeId, LayoutResult> {
+    if recurse {
+        recurse_chips(module, opts)
+    } else {
+        HashMap::default()
+    }
 }
 
 fn recurse_chips(module: &Module, opts: &LayoutOptions) -> HashMap<NodeId, LayoutResult> {

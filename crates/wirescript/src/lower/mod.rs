@@ -261,19 +261,7 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
     let var_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_VAR,
         source_range: SourceRange::default(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: inner.clone(),
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(inner.clone())),
-                },
-            ],
-        },
+        ports: GateIO::var_storage(inner.clone()),
         note: Some("out_backing"),
         ..Default::default()
     });
@@ -289,14 +277,12 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
 }
 
 pub fn lower(input: LowerInput<'_>) -> LowerResult {
-    let ids = IdAllocator::default();
     // Root module name is on the top-level chip's emitted text label.
     // Explicit `module_name` wins; otherwise use the entry file's stem.
     let file_stem = std::path::Path::new(input.file)
         .file_stem()
         .and_then(|s| s.to_str());
     let builder = ModuleBuilder::new(input.module_name.or(file_stem).unwrap_or("main"));
-    let diagnostics: Vec<Diagnostic> = Vec::new();
     // Built once, up front, and reused for both `ctx.enum_defs` and
     // `build_const_env` below, the same registry a `const` enum-value
     // initializer's own const evaluation reads its discriminant from
@@ -307,24 +293,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&input.ast.decls));
 
     let mut ctx = LowerCtx {
-        builder,
-        ids,
-        diagnostics,
-        type_of_expr: input.type_of_expr,
-        op_resolutions: input.op_resolutions,
-        ce_slots: input.ce_slots,
         file: input.file.to_string(),
-        scope: crate::scope::Scope::new(),
-        handler_end_execs: Vec::new(),
-        current_exec: None,
-        handler_entry_exec: None,
-        captured_events: HashMap::default(),
-        next_chain_id: 0,
-        current_anon_chip: None,
-        anon_chip_nodes: crate::collections::HashMap::default(),
-        mod_return_exec: None,
-        mod_return_var: None,
-        mod_return_record: None,
         type_aliases: {
             let mut m = HashMap::default();
             for d in &input.ast.decls {
@@ -356,45 +325,20 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         // discriminant typecheck assigned - one source of truth for the tag,
         // never a re-derivation.
         enum_defs: enum_defs.clone(),
-        pending_emits: HashMap::default(),
-        output_backing_vars: HashMap::default(),
-        exec_signal_hubs: HashMap::default(),
-        exec_signal_keys: HashMap::default(),
-        next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: input.template_cache.clone(),
-        await_armed_port: None,
-        signal_awaits: HashMap::default(),
-        exec_branch_depth: 0,
-        exec_signal_payloads: HashMap::default(),
-        in_handler_body: false,
-        pending_inline_record: None,
-        last_value_record_port: None,
-        ns_by_file: HashMap::default(),
-        pending_return_record: None,
-        pending_out_records: HashMap::default(),
-        chip_call_stack: Vec::new(),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
         const_env: Arc::new(predeclare::build_const_env(&input.ast.decls, &enum_defs)),
         const_declared: Arc::new(predeclare::build_const_declared_names(&input.ast.decls)),
-        immutable_containers: HashSet::default(),
         is_root_module: true,
-        doc_comments: input.doc_comments,
         // Module-level `@nofold` (top of file + blank line) marks everything.
         nofold_depth: input.ast.no_fold as u32,
-        mono_stack: Vec::new(),
-        scoped_consts: Vec::new(),
-        scoped_rev: 0,
-        const_lookup_memo: std::cell::RefCell::new(None),
-        scoped_const_declared: Vec::new(),
-        dropped_ranges: Vec::new(),
-        // Base frame: the module's own top-level declarations.
-        pass1_chips: vec![std::sync::Arc::new(HashMap::default())],
-        // Populated from `scope` right after pass 1 (top-level module only;
-        // stays empty for a chip body, which has no `import * as`).
-        importer_names: HashSet::default(),
-        ns_mod_scopes: HashMap::default(),
-        import_state_dedup: crate::collections::HashMap::default(),
-        import_behavior_lowered: crate::collections::HashSet::default(),
+        ..LowerCtx::empty(
+            builder,
+            input.type_of_expr,
+            input.op_resolutions,
+            input.ce_slots,
+            input.doc_comments,
+        )
     };
 
     // Pass 1: register I/O + vars + buffers.
@@ -978,10 +922,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                     properties: std::sync::Arc::new(properties),
                     ports: std::sync::Arc::new(GateIO {
                         inputs: vec![],
-                        outputs: vec![PortSpec {
-                            name: out_port_sym,
-                            ty: ty.clone(),
-                        }],
+                        outputs: vec![PortSpec::new(out_port_sym, ty.clone())],
                     }),
                     source_range: src.source_range.clone(),
                     chip_id: src.chip_id,
@@ -1017,13 +958,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                 kind: NodeKind::Gate,
                 gate_class,
                 properties: std::sync::Arc::new(properties),
-                ports: std::sync::Arc::new(GateIO {
-                    inputs: vec![],
-                    outputs: vec![PortSpec {
-                        name: *sym::OUTPUT,
-                        ty: out_ty.clone(),
-                    }],
-                }),
+                ports: std::sync::Arc::new(GateIO::source(out_ty.clone())),
                 source_range: src.source_range.clone(),
                 chip_id: src.chip_id,
                 chain_id: src.chain_id,
@@ -1845,7 +1780,7 @@ pub fn compile_chip_template(
     cache: &Arc<TemplateCache>,
 ) -> Module {
     use crate::ast::*;
-    use crate::ir::build::{IdAllocator, ModuleBuilder};
+    use crate::ir::build::ModuleBuilder;
 
     let template_name = &chip_decl.name;
 
@@ -1870,77 +1805,26 @@ pub fn compile_chip_template(
     let empty_ce_slots = CeSlotMap::default();
 
     let mut ctx = LowerCtx {
-        builder,
-        ids: IdAllocator::default(),
-        diagnostics: Vec::new(),
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        ce_slots: &empty_ce_slots,
         file: file.to_string(),
-        scope: crate::scope::Scope::new(),
-        handler_end_execs: Vec::new(),
-        current_exec: None,
-        handler_entry_exec: None,
-        captured_events: HashMap::default(),
-        next_chain_id: 0,
-        current_anon_chip: None,
-        anon_chip_nodes: crate::collections::HashMap::default(),
-        mod_return_exec: None,
-        mod_return_var: None,
-        mod_return_record: None,
-        type_aliases: HashMap::default(),
-        // Standalone template path (resource estimation / cache) resolves
-        // record aliases from inline literals only, matching the empty
-        // `type_aliases` above — keep the generic map empty for parity.
-        generic_type_aliases: HashMap::default(),
-        // No whole-program `decls` slice available here to re-run
-        // `typecheck::enums::build_registry` against, so an enum-typed var in
-        // this isolated estimation path falls back to a bare scalar (see
-        // `declare_enum_container`'s unknown-enum fallback), the same graceful
-        // degradation as the empty alias maps above.
-        enum_defs: Arc::new(HashMap::default()),
-        pending_emits: HashMap::default(),
-        output_backing_vars: HashMap::default(),
-        exec_signal_hubs: HashMap::default(),
-        exec_signal_keys: HashMap::default(),
-        next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: cache.clone(),
-        await_armed_port: None,
-        signal_awaits: HashMap::default(),
-        exec_branch_depth: 0,
-        exec_signal_payloads: HashMap::default(),
-        in_handler_body: false,
-        pending_inline_record: None,
-        last_value_record_port: None,
-        ns_by_file: HashMap::default(),
-        pending_return_record: None,
-        pending_out_records: HashMap::default(),
         chip_call_stack: if chip_decl.name.is_empty() {
             Vec::new()
         } else {
             vec![chip_decl.range.clone()]
         },
-        known_fn_names: Arc::new(HashSet::default()),
-        const_env: Arc::new(ConstEnv::default()),
-        const_declared: Arc::new(HashSet::default()),
-        immutable_containers: HashSet::default(),
-        is_root_module: false,
-        doc_comments: &empty_docs,
-        nofold_depth: 0,
-        mono_stack: Vec::new(),
-        scoped_consts: Vec::new(),
-        scoped_rev: 0,
-        const_lookup_memo: std::cell::RefCell::new(None),
-        scoped_const_declared: Vec::new(),
-        dropped_ranges: Vec::new(),
-        // Base frame: the module's own top-level declarations.
-        pass1_chips: vec![std::sync::Arc::new(HashMap::default())],
-        // Populated from `scope` right after pass 1 (top-level module only;
-        // stays empty for a chip body, which has no `import * as`).
-        importer_names: HashSet::default(),
-        ns_mod_scopes: HashMap::default(),
-        import_state_dedup: crate::collections::HashMap::default(),
-        import_behavior_lowered: crate::collections::HashSet::default(),
+        // Standalone template path (resource estimation / cache) resolves
+        // record aliases from inline literals only, and has no whole-program
+        // `decls` slice to re-run `typecheck::enums::build_registry` against,
+        // so an enum-typed var here falls back to a bare scalar (see
+        // `declare_enum_container`'s unknown-enum fallback). Both maps stay at
+        // `empty`'s defaults, which is that graceful degradation.
+        ..LowerCtx::empty(
+            builder,
+            &tc.type_of_expr,
+            &tc.op_resolutions,
+            &empty_ce_slots,
+            &empty_docs,
+        )
     };
 
     for inp in &chip_decl.inputs {

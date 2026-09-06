@@ -31,43 +31,11 @@ pub(super) fn build_chip_module(
         },
     );
     let mut child_ctx = LowerCtx {
-        builder: child_builder,
-        ids: IdAllocator::default(),
-        diagnostics: Vec::new(),
-        type_of_expr: ctx.type_of_expr,
-        op_resolutions: ctx.op_resolutions,
-        ce_slots: ctx.ce_slots,
         file: ctx.file.clone(),
-        scope: crate::scope::Scope::new(),
-        handler_end_execs: Vec::new(),
-        in_handler_body: false,
-        current_exec: None,
-        handler_entry_exec: None,
-        captured_events: HashMap::default(),
-        next_chain_id: 0,
-        current_anon_chip: None,
-        anon_chip_nodes: crate::collections::HashMap::default(),
-        mod_return_exec: None,
-        mod_return_var: None,
-        mod_return_record: None,
         type_aliases: ctx.type_aliases.clone(),
         generic_type_aliases: ctx.generic_type_aliases.clone(),
         enum_defs: ctx.enum_defs.clone(),
-        pending_emits: HashMap::default(),
-        output_backing_vars: HashMap::default(),
-        exec_signal_hubs: HashMap::default(),
-        exec_signal_keys: HashMap::default(),
-        next_scope_id: ROOT_SCOPE_ID + 1,
         template_cache: ctx.template_cache.clone(),
-        await_armed_port: None,
-        signal_awaits: HashMap::default(),
-        exec_branch_depth: 0,
-        exec_signal_payloads: HashMap::default(),
-        pending_inline_record: None,
-        last_value_record_port: None,
-        ns_by_file: HashMap::default(),
-        pending_return_record: None,
-        pending_out_records: HashMap::default(),
         chip_call_stack: ctx.chip_call_stack.clone(),
         known_fn_names: ctx.known_fn_names.clone(),
         // A `const` parameter's call-site value overlays the module constants
@@ -102,9 +70,6 @@ pub(super) fn build_chip_module(
             }
             std::sync::Arc::new(set)
         },
-        immutable_containers: HashSet::default(),
-        is_root_module: false,
-        doc_comments: ctx.doc_comments,
         // `@nofold chip Foo(...) { ... }`: every gate lowered into this
         // child module (the chip's own body — built once and cloned for
         // every subsequent `template.instantiate` call) must carry
@@ -148,10 +113,7 @@ pub(super) fn build_chip_module(
         // `const_lookup`, `const_lookup_declared_only` and `is_declared_const`
         // all iterate frames and an empty one contributes no entry.
         scoped_consts: vec![HashMap::default()],
-        scoped_rev: 0,
-        const_lookup_memo: std::cell::RefCell::new(None),
         scoped_const_declared: vec![HashSet::default()],
-        dropped_ranges: Vec::new(),
         // Snapshot the caller's whole `pass1_chips` FRAME STACK exactly as it
         // stands at this instantiation point, so a body-local var/array/map
         // initializer inside THIS chip resolves a `const mod` call to the same
@@ -167,12 +129,20 @@ pub(super) fn build_chip_module(
         pass1_chips: ctx.pass1_chips.clone(),
         importer_names: ctx.importer_names.clone(),
         ns_mod_scopes: ctx.ns_mod_scopes.clone(),
-        // A chip body is its own module and performs no import merge — these
-        // stay empty (its per-instance state must NEVER dedup across instances
-        // by source location, which is exactly why the dedup lives only at the
-        // entry module's import sites, not inside `pre_declare_var`).
-        import_state_dedup: crate::collections::HashMap::default(),
-        import_behavior_lowered: crate::collections::HashSet::default(),
+        // Everything not named above stays at `empty`'s zero, and two of those
+        // are load-bearing rather than incidental: `import_state_dedup` and
+        // `import_behavior_lowered` must stay empty because a chip body is its
+        // own module and performs no import merge - its per-instance state must
+        // NEVER dedup across instances by source location, which is why the
+        // dedup lives only at the entry module's import sites and not inside
+        // `pre_declare_var`.
+        ..LowerCtx::empty(
+            child_builder,
+            ctx.type_of_expr,
+            ctx.op_resolutions,
+            ctx.ce_slots,
+            ctx.doc_comments,
+        )
     };
 
     // A chip is visual grouping only — wire refs cross the boundary freely — so
@@ -424,19 +394,7 @@ pub(super) fn build_chip_module(
         let var_id = child_ctx.add_gate(AddNodeOpts {
             gate_class: gc::PSEUDO_VAR,
             source_range: chip_decl.body.range.clone(),
-            ports: GateIO {
-                inputs: vec![],
-                outputs: vec![
-                    PortSpec {
-                        name: *sym::VALUE,
-                        ty: out_type.clone(),
-                    },
-                    PortSpec {
-                        name: *sym::VAR_REF,
-                        ty: Type::Ref(Box::new(out_type.clone())),
-                    },
-                ],
-            },
+            ports: GateIO::var_storage(out_type.clone()),
             note: Some("ret_val"),
             ..Default::default()
         });
@@ -464,22 +422,7 @@ pub(super) fn build_chip_module(
                     let union = child_ctx.add_gate(AddNodeOpts {
                         gate_class: gc::UNION,
                         source_range: chip_decl.range.clone(),
-                        ports: GateIO {
-                            inputs: vec![
-                                PortSpec {
-                                    name: *sym::EXEC_A,
-                                    ty: Type::Exec,
-                                },
-                                PortSpec {
-                                    name: *sym::EXEC_B,
-                                    ty: Type::Exec,
-                                },
-                            ],
-                            outputs: vec![PortSpec {
-                                name: *sym::EXEC_OUT,
-                                ty: Type::Exec,
-                            }],
-                        },
+                        ports: GateIO::exec_join(),
                         ..Default::default()
                     });
                     child_ctx.connect(fall, union.port(WirePort::ExecA));
@@ -502,28 +445,7 @@ pub(super) fn build_chip_module(
                 gate_class: gc::VAR_GET,
                 source_range: SourceRange::default(),
                 note: Some("ret_get"),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: *sym::VAR_REF,
-                            ty: Type::Ref(Box::new(inner.clone())),
-                        },
-                    ],
-                    outputs: vec![
-                        PortSpec {
-                            name: *sym::VALUE,
-                            ty: inner.clone(),
-                        },
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
-                    ],
-                },
+                ports: GateIO::var_read(inner.clone()),
                 ..Default::default()
             });
             child_ctx.connect(exec, get_id.port(WirePort::Exec));

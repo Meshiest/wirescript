@@ -1,5 +1,17 @@
     use super::*;
 
+    /// Resolution produced no hard error. Most of these tests then assert what
+    /// the import PULLED IN, which is meaningless if resolution failed first.
+    fn assert_resolves(r: &ResolveResult) {
+        assert!(
+            !r.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::diagnostic::Severity::Error),
+            "errors: {:?}",
+            r.diagnostics
+        );
+    }
+
     fn mem(files: &[(&str, &str)]) -> MemLoader {
         MemLoader {
             files: files
@@ -13,13 +25,7 @@
     fn import_all() {
         let loader = mem(&[("lib.ws", "mod foo(x: *int) { x = x + 1 }")]);
         let r = resolve(r#"import "lib""#, "main.ws", &loader);
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "errors: {:?}",
-            r.diagnostics
-        );
+        assert_resolves(&r);
         assert!(
             r.ast
                 .decls
@@ -35,13 +41,7 @@
             "mod foo(x: *int) { x = x + 1 }\nmod bar(x: *int) { x = x - 1 }",
         )]);
         let r = resolve(r#"import { foo } from "lib""#, "main.ws", &loader);
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "errors: {:?}",
-            r.diagnostics
-        );
+        assert_resolves(&r);
         assert!(
             r.ast
                 .decls
@@ -60,13 +60,7 @@
     fn import_alias() {
         let loader = mem(&[("lib.ws", "mod foo(x: *int) { x = x + 1 }")]);
         let r = resolve(r#"import { foo as inc } from "lib""#, "main.ws", &loader);
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "errors: {:?}",
-            r.diagnostics
-        );
+        assert_resolves(&r);
         assert!(
             r.ast
                 .decls
@@ -79,13 +73,7 @@
     fn import_namespace() {
         let loader = mem(&[("lib.ws", "mod foo(x: *int) { x = x + 1 }")]);
         let r = resolve(r#"import * as myLib from "lib""#, "main.ws", &loader);
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "errors: {:?}",
-            r.diagnostics
-        );
+        assert_resolves(&r);
         assert!(
             r.ast
                 .decls
@@ -127,13 +115,7 @@
     fn var_and_mod_both_importable() {
         let loader = mem(&[("lib.ws", "var x: int = 0\nmod foo(x: *int) { x = x + 1 }")]);
         let r = resolve(r#"import "lib""#, "main.ws", &loader);
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "errors: {:?}",
-            r.diagnostics
-        );
+        assert_resolves(&r);
         assert!(r.ast.decls.iter().any(|d| matches!(d, TopDecl::Var(v) if v.name == "x")));
         assert!(
             r.ast
@@ -147,13 +129,7 @@
     fn implicit_ws_extension() {
         let loader = mem(&[("utils.ws", "mod double(x: int) -> int { return x * 2 }")]);
         let r = resolve(r#"import "utils""#, "main.ws", &loader);
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "errors: {:?}",
-            r.diagnostics
-        );
+        assert_resolves(&r);
         assert!(
             r.ast
                 .decls
@@ -333,13 +309,7 @@ out hit = o is Option.Some",
             "main.ws",
             &loader,
         );
-        assert!(
-            !r.diagnostics
-                .iter()
-                .any(|d| d.severity == crate::diagnostic::Severity::Error),
-            "errors: {:?}",
-            r.diagnostics
-        );
+        assert_resolves(&r);
         let pos = |name: &str| {
             r.ast
                 .decls

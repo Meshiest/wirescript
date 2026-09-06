@@ -19,13 +19,7 @@ pub(super) fn resolve_caller_captures(
     chip_decl: &ChipDecl,
     args: &[CallArg],
 ) -> HashMap<String, VarRecord> {
-    let positional_args: Vec<&Expr> = args
-        .iter()
-        .filter_map(|a| match a {
-            CallArg::Positional(e) => Some(e),
-            CallArg::Named { .. } | CallArg::Spread(_) => None,
-        })
-        .collect();
+    let positional_args = positional_args(args);
     let mut captures = HashMap::default();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
         let Some(arg_expr) = positional_args.get(i) else {

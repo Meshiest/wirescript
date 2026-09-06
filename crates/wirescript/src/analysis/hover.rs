@@ -572,23 +572,31 @@ fn scalar_kind_of(ty: &Type) -> Option<&'static str> {
 }
 
 /// A gate data-struct field's registered default VALUE, rendered for display.
-/// Resolves the gate's data struct (`COMPONENT_TYPE_STRUCT_PAIRS`) and reads the
-/// field's default from brdb's `STRUCT_DEFAULTS` — the single source of truth the
-/// emitter itself uses. An enum field shows its member name (not the stored
-/// index); otherwise the value is read in its declared scalar `kind`
-/// (`bool`/`int`/`float`/`string`). `None` when the gate has no data struct, the
-/// field has no registered default, or the kind is non-scalar.
+/// The default value brdb registers for one field of a gate's data struct:
+/// resolve the gate class to its struct through `COMPONENT_TYPE_STRUCT_PAIRS`,
+/// then read the field out of `STRUCT_DEFAULTS` - the same source of truth the
+/// emitter bakes from. `None` when the gate has no data struct, or that struct
+/// no such field.
 #[cfg(feature = "brdb-full")]
-fn gate_field_default(gate_class: &str, field: &str, kind: &str) -> Option<String> {
+fn struct_field_default(gate_class: &str, field: &str) -> Option<&'static dyn brdb::AsBrdbValue> {
     let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
         .iter()
         .find(|(c, _)| *c == gate_class)
         .map(|(_, s)| *s)?;
-    let value = brdb::component_db::STRUCT_DEFAULTS
+    brdb::component_db::STRUCT_DEFAULTS
         .iter()
         .find(|(s, _)| *s == strct)
         .and_then(|(_, fs)| fs.iter().find(|(n, _)| *n == field))
-        .map(|(_, v)| v.as_ref())?;
+        .map(|(_, v)| v.as_ref())
+}
+
+/// An enum field shows its member name (not the stored index); otherwise
+/// [`struct_field_default`]'s value is read in its declared scalar `kind`
+/// (`bool`/`int`/`float`/`string`). `None` when the gate registers no such
+/// default, or the kind is non-scalar.
+#[cfg(feature = "brdb-full")]
+fn gate_field_default(gate_class: &str, field: &str, kind: &str) -> Option<String> {
+    let value = struct_field_default(gate_class, field)?;
     // Enum-typed field: the default is an index; show the member name.
     if let Some(et) = crate::catalog::config_field_enum_type(gate_class, field) {
         if let Ok(idx) = value.as_brdb_u8() {
@@ -626,15 +634,7 @@ fn gate_field_default(_gate_class: &str, _field: &str, _kind: &str) -> Option<St
 /// composite the emitter can bake.
 #[cfg(feature = "brdb-full")]
 fn composite_field_default(gate_class: &str, field: &str, ty: &Type) -> Option<String> {
-    let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
-        .iter()
-        .find(|(c, _)| *c == gate_class)
-        .map(|(_, s)| *s)?;
-    let value = brdb::component_db::STRUCT_DEFAULTS
-        .iter()
-        .find(|(s, _)| *s == strct)
-        .and_then(|(_, fs)| fs.iter().find(|(n, _)| *n == field))
-        .map(|(_, v)| v.as_ref())?;
+    let value = struct_field_default(gate_class, field)?;
     let schema = brdb::schemas::bricks_components_schema_max();
     // Read one named sub-field of the composite as an f64 (every numeric field
     // cross-casts, so f32-backed color channels read fine too). `struct_name`
@@ -705,15 +705,7 @@ fn field_default_display(gate_class: &str, field: &str, ty: &Type) -> Option<Str
 /// [`composite_field_default`] does.
 #[cfg(feature = "brdb-full")]
 fn vector2d_subport_default(gate_class: &str, parent: &str, axis: &str) -> Option<String> {
-    let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
-        .iter()
-        .find(|(c, _)| *c == gate_class)
-        .map(|(_, s)| *s)?;
-    let value = brdb::component_db::STRUCT_DEFAULTS
-        .iter()
-        .find(|(s, _)| *s == strct)
-        .and_then(|(_, fs)| fs.iter().find(|(n, _)| *n == parent))
-        .map(|(_, v)| v.as_ref())?;
+    let value = struct_field_default(gate_class, parent)?;
     let schema = brdb::schemas::bricks_components_schema_max();
     let id = schema.intern.get(axis)?;
     let f = value
@@ -819,6 +811,22 @@ fn word_is_named_arg_name(source: &str, line: usize, col: usize) -> bool {
     rest.starts_with('=') && !rest.starts_with("==")
 }
 
+/// The `obj` of the `obj.member` access the cursor sits on. `None` unless the
+/// word under the cursor is immediately preceded by a `.`; an empty string when
+/// the dot itself is (`.foo`), which every caller rejects on its own terms.
+///
+/// Textual, not AST-driven, because hover runs on the buffer as typed, which is
+/// routinely mid-edit and unparseable.
+fn receiver_at(source: &str, line: usize, col: usize) -> Option<&str> {
+    let l = source.lines().nth(line)?;
+    let start = word_start_in_line(l, col);
+    if start == 0 || l.as_bytes()[start - 1] != b'.' {
+        return None;
+    }
+    let obj_end = start - 1;
+    Some(&l[word_start_at_byte(l, obj_end)..obj_end])
+}
+
 /// Collection methods (`arr.push`, `m.get`, ...). Only fires on a `.method`
 /// access (the hovered word is immediately preceded by `.`), so a user symbol
 /// that happens to share a method name — e.g. `var sum = 0` — still hovers as
@@ -838,20 +846,13 @@ fn hover_collection_method(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    let l = source.lines().nth(line)?;
-    let start = word_start_in_line(l, col);
-    if start == 0 || l.as_bytes()[start - 1] != b'.' {
-        return None;
-    }
     // Dispatch on the RECEIVER's declared type. The receiver identifier of a
     // method call is NOT recorded as its own expression in `type_map` — only the
     // whole call's result type is, and at the same start offset — so a span
     // lookup there would grab the call's type (e.g. `get`'s `{ Value, Found }`)
     // rather than the receiver's. The symbol table keys type by name, which is
     // exactly the receiver here, and covers both top-level and handler-local vars.
-    let obj_end = start - 1;
-    let obj_start = word_start_at_byte(l, obj_end);
-    let obj_name = &l[obj_start..obj_end];
+    let obj_name = receiver_at(source, line, col)?;
 
     // The receiver's DECLARED type string (`Map<string, int>`, `Grid<int>`, ...)
     // drives dispatch and is what the map hover displays — the type the user wrote.
@@ -1443,14 +1444,7 @@ fn hover_enum_variant_path(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    let l = source.lines().nth(line)?;
-    let start = word_start_in_line(l, col);
-    if start == 0 || l.as_bytes()[start - 1] != b'.' {
-        return None;
-    }
-    let obj_end = start - 1;
-    let obj_start = word_start_at_byte(l, obj_end);
-    let enum_name = &l[obj_start..obj_end];
+    let enum_name = receiver_at(source, line, col)?;
     if enum_name.is_empty() || super::resolve_symbol(symbols, source, enum_name, line, col).is_some() {
         return None;
     }
@@ -2208,14 +2202,7 @@ fn hover_namespace_member(
     col: usize,
 ) -> Option<String> {
     // The cursor must be on the `member` half of an `obj.member` access.
-    let l = source.lines().nth(line)?;
-    let start = word_start_in_line(l, col);
-    if start == 0 || l.as_bytes()[start - 1] != b'.' {
-        return None;
-    }
-    let obj_end = start - 1;
-    let obj_start = word_start_at_byte(l, obj_end);
-    let obj_name = &l[obj_start..obj_end];
+    let obj_name = receiver_at(source, line, col)?;
     // `obj` must be a namespace alias for this to be a namespace-member access.
     if !symbols.iter().any(|s| s.name == obj_name && s.kind == "namespace") {
         return None;

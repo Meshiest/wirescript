@@ -150,18 +150,14 @@ fn resolve_enum_type_definition(ast: &Script, source: &str, word: &str) -> Optio
     Some(source_range_to_location(&r, None))
 }
 
-/// Go-to-definition for a VARIANT use in a construction path (`Shape.Circle`):
-/// the variant's own token inside the `enum Shape` declaration.
-/// `EnumVariantDecl::range` gives each variant its own source span (unlike a
-/// record field, which has none), so this resolves to the exact variant, not
-/// just the enum. `field` is the word under the cursor (the variant name).
-fn resolve_enum_variant_definition(
-    ast: &Script,
-    source: &str,
-    field: &str,
-    line: usize,
-    col: usize,
-) -> Option<Location> {
+/// The identifier immediately before the `.` that the cursor's word follows:
+/// the `Shape` of `Shape.Circle`, the `ns` of `ns.name`. `None` unless the
+/// cursor's word is preceded by a dot and the dot by a non-empty identifier.
+///
+/// Deliberately NOT [`crate::analysis::member_receiver_at`], which the
+/// completion path uses: that one also unwraps an index (`arr[i].` reports
+/// `arr[]`). Go-to-definition wants the plain `Ident.member` shape only.
+fn receiver_before_cursor_word(source: &str, line: usize, col: usize) -> Option<&str> {
     let l = source.lines().nth(line)?;
     let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
     let field_start = l[..c]
@@ -176,10 +172,23 @@ fn resolve_enum_variant_definition(
         .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .map(|i| i + 1)
         .unwrap_or(0);
-    let enum_name = &l[obj_start..dot];
-    if enum_name.is_empty() {
-        return None;
-    }
+    let name = &l[obj_start..dot];
+    (!name.is_empty()).then_some(name)
+}
+
+/// Go-to-definition for a VARIANT use in a construction path (`Shape.Circle`):
+/// the variant's own token inside the `enum Shape` declaration.
+/// `EnumVariantDecl::range` gives each variant its own source span (unlike a
+/// record field, which has none), so this resolves to the exact variant, not
+/// just the enum. `field` is the word under the cursor (the variant name).
+fn resolve_enum_variant_definition(
+    ast: &Script,
+    source: &str,
+    field: &str,
+    line: usize,
+    col: usize,
+) -> Option<Location> {
+    let enum_name = receiver_before_cursor_word(source, line, col)?;
     let e = find_enum_decl(&ast.decls, enum_name)?;
     let v = e.variants.iter().find(|v| v.name == field)?;
     let r = find_name_range(source, &v.range, &v.name).unwrap_or_else(|| v.range.clone());
@@ -445,25 +454,7 @@ fn resolve_namespace_definition(
     line: usize,
     col: usize,
 ) -> Option<Location> {
-    // Identifier immediately before the `.` the cursor's word follows.
-    let l = source.lines().nth(line)?;
-    let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
-    let field_start = l[..c]
-        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    if field_start == 0 || l.as_bytes().get(field_start - 1) != Some(&b'.') {
-        return None;
-    }
-    let dot = field_start - 1;
-    let obj_start = l[..dot]
-        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let ns = &l[obj_start..dot];
-    if ns.is_empty() {
-        return None;
-    }
+    let ns = receiver_before_cursor_word(source, line, col)?;
 
     for d in &ast.decls {
         let TopDecl::Import(imp) = d else { continue };
@@ -505,24 +496,7 @@ fn resolve_field_definition(
     line: usize,
     col: usize,
 ) -> Option<Location> {
-    let l = source.lines().nth(line)?;
-    let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
-    let field_start = l[..c]
-        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    if field_start == 0 || l.as_bytes().get(field_start - 1) != Some(&b'.') {
-        return None;
-    }
-    let dot = field_start - 1;
-    let obj_start = l[..dot]
-        .rfind(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let obj_name = &l[obj_start..dot];
-    if obj_name.is_empty() {
-        return None;
-    }
+    let obj_name = receiver_before_cursor_word(source, line, col)?;
 
     let obj_sym = symbols.iter().find(|s| s.name == obj_name)?;
     let ty_name = obj_sym.ty.as_deref()?;

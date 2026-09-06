@@ -16,14 +16,8 @@ use wirescript::{
 
 fn rerouter_ports() -> GateIO {
     GateIO {
-        inputs: vec![PortSpec {
-            name: wirescript::intern::intern("RER_Input"),
-            ty: Type::Any,
-        }],
-        outputs: vec![PortSpec {
-            name: wirescript::intern::intern("RER_Output"),
-            ty: Type::Any,
-        }],
+        inputs: vec![PortSpec::new(wirescript::intern::intern("RER_Input"), Type::Any)],
+        outputs: vec![PortSpec::new(wirescript::intern::intern("RER_Output"), Type::Any)],
     }
 }
 

@@ -10,13 +10,11 @@
 //!   scope capture BRZ tests
 //!   correctness equivalence tests
 
-use std::sync::Arc;
+mod common;
+
 use wirescript::compile::{CompileInput, compile};
 use wirescript::ir::Module;
-use wirescript::lower::{FoldMode, LowerInput, lower};
-use wirescript::resolve::{FsLoader, resolve};
-use wirescript::template_cache::TemplateCache;
-use wirescript::typecheck::typecheck;
+use wirescript::lower::FoldMode;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,19 +36,7 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
     let brz_size = result.brz.len();
 
     // --- IR stats via lower ---
-    let resolved = resolve(src, "test.ws", &FsLoader);
-    let tc = typecheck(&resolved.ast, "test.ws", &wirescript::typecheck::CeSlotMap::default());
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        file: "test.ws",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
+    let (_resolved, _tc, lowered) = common::run_stages(src, "test.ws", FoldMode::ForceOff);
 
     fn count_recursive(module: &Module) -> (usize, usize, usize) {
         let mut nodes = module.nodes.len();
@@ -94,19 +80,7 @@ fn assert_compiles_clean(src: &str, why: &str) {
         m.nodes.values().filter(|n| n.gate_class == "_Unsupported").count()
             + m.chips.values().map(placeholders).sum::<usize>()
     }
-    let resolved = resolve(src, "test.ws", &FsLoader);
-    let tc = typecheck(&resolved.ast, "test.ws", &wirescript::typecheck::CeSlotMap::default());
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        file: "test.ws",
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
+    let (_resolved, _tc, lowered) = common::run_stages(src, "test.ws", FoldMode::ForceOff);
     assert_eq!(placeholders(&lowered.module), 0, "{why}: lowered to a placeholder gate");
     assert!(!r.brz.is_empty(), "{why}: empty output");
 }

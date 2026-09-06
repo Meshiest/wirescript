@@ -187,7 +187,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("b", WirePort::InputB, Type::Int),
             ],
             exec: false,
-            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Int }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: None,
         },
     );
@@ -204,7 +204,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("outMax", WirePort::OutputMax, Type::Float),
             ],
             exec: false,
-            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Float }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Float)],
             receiver: None,
         },
     );

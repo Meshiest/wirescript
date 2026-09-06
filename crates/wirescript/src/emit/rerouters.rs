@@ -160,16 +160,7 @@ pub(super) fn emit_port_rerouters(
             );
             if invisible {
                 brick.visible = false;
-                brick.collision = Collision {
-                    player: false,
-                    player1: Some(false),
-                    player2: Some(false),
-                    player3: Some(false),
-                    weapon: false,
-                    interact: false,
-                    tool: false,
-                    physics: false,
-                };
+                brick.collision = no_collision();
             }
 
             if !invisible {

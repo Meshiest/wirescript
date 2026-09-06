@@ -26,16 +26,6 @@ fn find_one(m: &crate::ir::Module, class: &str) -> Option<crate::ir::NodeId> {
         .or_else(|| m.chips.values().find_map(|c| find_one(c, class)))
 }
 
-fn no_errors(r: &LowerResult) {
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
-}
-
 const ADD: &str = "BrickComponentType_WireGraph_Expr_MathAdd";
 const MUL: &str = "BrickComponentType_WireGraph_Expr_MathMultiply";
 const SUB: &str = "BrickComponentType_WireGraph_Expr_MathSubtract";
@@ -60,7 +50,7 @@ fn three_uses_merge_to_one_and_fan_out_to_all() {
     // The merge must be behavior-preserving: the surviving gate feeds every
     // original consumer, so no output loses its value.
     let r = compile("var x: int = 5\nout y = x + 1\nout z = x + 1\nout w = x + 1");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, ADD), 1, "three `x + 1` collapse to one");
     let add = find_one(&r.module, ADD).unwrap();
     assert_eq!(fanout(&r.module, add), 3, "the keeper feeds all three outputs");
@@ -74,7 +64,7 @@ fn deep_expression_merges_at_every_layer() {
     // every single layer, not just the first.
     let e = "((((x + 1) * 2) - 3) % 7) / 4";
     let r = compile(&format!("var x: int = 5\nout a = {e}\nout b = {e}"));
-    no_errors(&r);
+    assert_no_errors(&r);
     for (class, name) in [
         (ADD, "add"),
         (MUL, "multiply"),
@@ -93,7 +83,7 @@ fn shared_deep_subexpression_merges_under_divergent_tops() {
     // stay separate. `(x + 1)` is shared and merges to one; the two multiplies
     // that consume it keep their distinct constants.
     let r = compile("var x: int = 5\nout a = (x + 1) * 2\nout b = (x + 1) * 3");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, ADD), 1, "the shared `x + 1` merges");
     assert_eq!(count_class(&r.module, MUL), 2, "the divergent tops stay separate");
 }
@@ -101,14 +91,14 @@ fn shared_deep_subexpression_merges_under_divergent_tops() {
 #[test]
 fn string_interpolation_merges() {
     let r = compile("var s: string\nout a = \"hi ${s}\"\nout b = \"hi ${s}\"");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, FMT), 1, "identical FormatText merges");
 }
 
 #[test]
 fn string_equality_merges() {
     let r = compile("var s: string\nout a = s == \"x\"\nout b = s == \"x\"");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, EQ), 1);
 }
 
@@ -138,7 +128,7 @@ fn duplicate_inline_mod_body_is_collapsed() {
     let r = compile(
         "var x: int = 5\nmod dbl(v: int) -> int { return v * 2 }\nout y = dbl(x)\nout z = dbl(x)",
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, MUL), 1);
 }
 
@@ -176,7 +166,7 @@ fn mutation_between_reads_is_not_merged() {
         go("  a = x + 1\n  x = 10\n  b = x + 1")
     );
     let r = compile(&full);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, ADD),
         2,
@@ -193,7 +183,7 @@ fn mutation_inside_a_branch_is_not_merged() {
         go("  a = x + 1\n  if a > 0 { x = 99 }\n  b = x + 1")
     );
     let r = compile(&full);
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, ADD), 2);
 }
 
@@ -202,14 +192,14 @@ fn stateful_change_detector_not_merged() {
     // `Changed`/`Edge` outputs depend on eval history, not just current inputs,
     // so two of them are excluded from CSE even with identical inputs.
     let r = compile("var x: int = 5\nout a = Changed(x)\nout b = Changed(x)");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, CHANGE), 2, "change detectors stay separate");
 }
 
 #[test]
 fn stateful_edge_detector_not_merged() {
     let r = compile("var x: float = 5.0\nout a = Edge(x).Rising\nout b = Edge(x).Rising");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(count_class(&r.module, EDGE), 2, "edge detectors stay separate");
 }
 
@@ -219,7 +209,7 @@ fn nofold_barriered_gates_not_merged() {
     // property; CSE respects it and leaves them alone, even next to a normal
     // pair that DOES merge.
     let r = compile("var x: int = 5\nout a = x + 1\nout b = x + 1\n@nofold out c = x + 1");
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, ADD),
         2,
@@ -235,7 +225,7 @@ fn identical_gates_in_distinct_chips_not_merged() {
     let r = compile(
         "chip Inc(v: int) -> (r: int) { out r = v + 1 }\nvar x: int = 5\nlet p = Inc(x)\nlet q = Inc(x)\nout oa = p\nout ob = q",
     );
-    no_errors(&r);
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, ADD),
         2,

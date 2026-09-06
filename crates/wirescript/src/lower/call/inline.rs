@@ -18,13 +18,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
     // output-node removal below only scan this tail instead of the whole
     // module wire list (which made deep inline-call chains quadratic).
     let wire_start = ctx.builder.module.wires.len();
-    let positional_args: Vec<&Expr> = args
-        .iter()
-        .filter_map(|a| match a {
-            CallArg::Positional(e) => Some(e),
-            CallArg::Named { .. } | CallArg::Spread(_) => None,
-        })
-        .collect();
+    let positional_args = positional_args(args);
 
     // Generic mod (`mod pick<T>(...)`): rebuild the call's type substitution
     // from the args and push it so the body's `T`-typed annotations
@@ -530,19 +524,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
             let var_id = ctx.add_gate(AddNodeOpts {
                 gate_class: gc::PSEUDO_VAR,
                 source_range: chip_decl.body.range.clone(),
-                ports: GateIO {
-                    inputs: vec![],
-                    outputs: vec![
-                        PortSpec {
-                            name: *sym::VALUE,
-                            ty: out_type.clone(),
-                        },
-                        PortSpec {
-                            name: *sym::VAR_REF,
-                            ty: Type::Ref(Box::new(out_type.clone())),
-                        },
-                    ],
-                },
+                ports: GateIO::var_storage(out_type.clone()),
                 note: Some("ret_val"),
                 ..Default::default()
             });
@@ -566,22 +548,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 let union = ctx.add_gate(AddNodeOpts {
                     gate_class: gc::UNION,
                     source_range: chip_decl.body.range.clone(),
-                    ports: GateIO {
-                        inputs: vec![
-                            PortSpec {
-                                name: *sym::EXEC_A,
-                                ty: Type::Exec,
-                            },
-                            PortSpec {
-                                name: *sym::EXEC_B,
-                                ty: Type::Exec,
-                            },
-                        ],
-                        outputs: vec![PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        }],
-                    },
+                    ports: GateIO::exec_join(),
                     ..Default::default()
                 });
                 ctx.connect(fall, union.port(WirePort::ExecA));
@@ -604,28 +571,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
                 gate_class: gc::VAR_GET,
                 source_range: SourceRange::default(),
                 note: Some("ret_get"),
-                ports: GateIO {
-                    inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: *sym::VAR_REF,
-                            ty: Type::Ref(Box::new(inner.clone())),
-                        },
-                    ],
-                    outputs: vec![
-                        PortSpec {
-                            name: *sym::VALUE,
-                            ty: inner.clone(),
-                        },
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
-                    ],
-                },
+                ports: GateIO::var_read(inner.clone()),
                 ..Default::default()
             });
             ctx.connect(exec, get_id.port(WirePort::Exec));

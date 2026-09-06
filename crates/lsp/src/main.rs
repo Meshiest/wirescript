@@ -381,51 +381,94 @@ fn collect_references_across_files(
         }
     }
 
-    // Canonical filesystem paths of the open docs, so the same-directory disk
-    // scan below can skip them. Url equality can NOT decide "already open":
-    // the client's URI spelling (e.g. `file:///c%3A/…`) differs from
-    // `Url::from_file_path`'s (`file:///C:/…`), so a Url-keyed skip re-added
-    // every open doc from disk. References then showed each site twice, and
-    // rename emitted two identical TextEdits per site — overlapping edits the
-    // editor refuses to apply, silently leaving those files un-renamed.
+    for_each_unopened_sibling(docs, uri, d_canonical.as_deref(), |entry_uri, file, src| {
+        let ast = wirescript::on_big_stack(|| wirescript::parse(&src, &file)).ast;
+        for s in references_to_export(&ast, &file, &export_name, target.ns) {
+            results.push((entry_uri.clone(), ref_site_to_text_range(&src, &export_name, &s)));
+        }
+    });
+
+    sort_and_dedup(results)
+}
+
+/// A QUICKFIX code action that inserts `text` at a 0-based `line`/`col` in the
+/// document, converting the char column the analysis layer reports into the
+/// UTF-16 one the editor expects.
+fn insert_quickfix(
+    uri: &Url,
+    source: &str,
+    title: &str,
+    line: usize,
+    col: usize,
+    text: String,
+) -> CodeActionOrCommand {
+    let at = Position {
+        line: line as u32,
+        character: char_col_to_lsp(source, line, col),
+    };
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    changes.insert(
+        uri.clone(),
+        vec![TextEdit {
+            range: Range { start: at, end: at },
+            new_text: text,
+        }],
+    );
+    CodeActionOrCommand::CodeAction(CodeAction {
+        title: title.into(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Visit every `.ws` file beside `uri` that is not already open in the editor
+/// (nor `skip`), handing `f` its URL, its path as a `file` string, and its
+/// source read from disk.
+///
+/// Skipping is keyed on the CANONICAL path, never the `Url`: the client's URI
+/// spelling (`file:///c%3A/…`) differs from `Url::from_file_path`'s
+/// (`file:///C:/…`), so a Url-keyed skip re-added every open doc from disk.
+/// References then showed each site twice, and rename emitted two identical
+/// TextEdits per site - overlapping edits the editor refuses to apply, silently
+/// leaving those files un-renamed.
+fn for_each_unopened_sibling(
+    docs: &HashMap<Url, DocState>,
+    uri: &Url,
+    skip: Option<&std::path::Path>,
+    mut f: impl FnMut(Url, String, String),
+) {
     let open_paths: std::collections::HashSet<std::path::PathBuf> = docs
         .keys()
         .filter_map(|u| u.to_file_path().ok())
         .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
         .collect();
-
-    if let Ok(file_path) = uri.to_file_path() {
-        if let Some(dir) = file_path.parent() {
-            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if !path.extension().map_or(false, |e| e == "ws") {
-                    continue;
-                }
-                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-                if open_paths.contains(&canonical) {
-                    continue;
-                }
-                if d_canonical.as_ref() == Some(&canonical) {
-                    continue;
-                }
-                let entry_uri = match Url::from_file_path(&path) {
-                    Ok(u) => u,
-                    Err(_) => continue,
-                };
-                let src = match std::fs::read_to_string(&path) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let file = path.to_string_lossy().to_string();
-                let ast = wirescript::on_big_stack(|| wirescript::parse(&src, &file)).ast;
-                for s in references_to_export(&ast, &file, &export_name, target.ns) {
-                    results.push((entry_uri.clone(), ref_site_to_text_range(&src, &export_name, &s)));
-                }
-            }
+    let Ok(file_path) = uri.to_file_path() else {
+        return;
+    };
+    let Some(dir) = file_path.parent() else {
+        return;
+    };
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if !path.extension().map_or(false, |e| e == "ws") {
+            continue;
         }
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if open_paths.contains(&canonical) || skip == Some(canonical.as_path()) {
+            continue;
+        }
+        let Ok(entry_uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        f(entry_uri, path.to_string_lossy().to_string(), src);
     }
-
-    sort_and_dedup(results)
 }
 
 /// Find-references for an atom `:name`: every `:name` occurrence in every open
@@ -440,37 +483,11 @@ fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str)
             out.push(Location { uri: doc_uri.clone(), range: range_to_lsp(&doc_state.source, &r) });
         }
     }
-    // Same-directory disk scan, skipping already-open docs (canonical-path
-    // keyed, matching `collect_references_across_files`).
-    let open_paths: std::collections::HashSet<std::path::PathBuf> = docs
-        .keys()
-        .filter_map(|u| u.to_file_path().ok())
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
-        .collect();
-    if let Ok(file_path) = uri.to_file_path() {
-        if let Some(dir) = file_path.parent() {
-            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if !path.extension().map_or(false, |e| e == "ws") {
-                    continue;
-                }
-                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-                if open_paths.contains(&canonical) {
-                    continue;
-                }
-                let Ok(entry_uri) = Url::from_file_path(&path) else {
-                    continue;
-                };
-                let Ok(src) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                let file = path.to_string_lossy().to_string();
-                for r in wirescript::analysis::atom_references(&src, &file, name) {
-                    out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&src, &r) });
-                }
-            }
+    for_each_unopened_sibling(docs, uri, None, |entry_uri, file, src| {
+        for r in wirescript::analysis::atom_references(&src, &file, name) {
+            out.push(Location { uri: entry_uri.clone(), range: range_to_lsp(&src, &r) });
         }
-    }
+    });
     out
 }
 
@@ -1278,50 +1295,14 @@ impl LanguageServer for Backend {
 
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
         if let Some(fill) = record_fill {
-            let at = Position {
-                line: fill.line as u32,
-                character: char_col_to_lsp(&source, fill.line, fill.col),
-            };
-            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-            changes.insert(
-                uri.clone(),
-                vec![TextEdit {
-                    range: Range { start: at, end: at },
-                    new_text: fill.text,
-                }],
-            );
-            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: "Fill record fields".into(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }));
+            actions.push(insert_quickfix(
+                uri, &source, "Fill record fields", fill.line, fill.col, fill.text,
+            ));
         }
         if let Some(fill) = match_fill {
-            let at = Position {
-                line: fill.line as u32,
-                character: char_col_to_lsp(&source, fill.line, fill.col),
-            };
-            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-            changes.insert(
-                uri.clone(),
-                vec![TextEdit {
-                    range: Range { start: at, end: at },
-                    new_text: fill.text,
-                }],
-            );
-            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: "Fill missing match arms".into(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }));
+            actions.push(insert_quickfix(
+                uri, &source, "Fill missing match arms", fill.line, fill.col, fill.text,
+            ));
         }
 
         if actions.is_empty() {

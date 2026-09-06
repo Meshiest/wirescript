@@ -91,10 +91,10 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                             },
                             ports: GateIO {
                                 inputs: vec![],
-                                outputs: vec![PortSpec {
-                                    name: *sym::OUTPUT,
-                                    ty: var_rec.inner_type.clone(),
-                                }],
+                                outputs: vec![PortSpec::new(
+                                                  *sym::OUTPUT,
+                                                  var_rec.inner_type.clone(),
+                                              )],
                             },
                             ..Default::default()
                         });
@@ -107,26 +107,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                     let set_node = ctx.add_gate(AddNodeOpts {
                         gate_class: gc::VAR_SET,
                         source_range: v.range.clone(),
-                        ports: GateIO {
-                            inputs: vec![
-                                PortSpec {
-                                    name: *sym::EXEC,
-                                    ty: Type::Exec,
-                                },
-                                PortSpec {
-                                    name: *sym::VAR_REF,
-                                    ty: Type::Ref(Box::new(inner.clone())),
-                                },
-                                PortSpec {
-                                    name: *sym::VALUE,
-                                    ty: inner.clone(),
-                                },
-                            ],
-                            outputs: vec![PortSpec {
-                                name: *sym::EXEC_OUT,
-                                ty: Type::Exec,
-                            }],
-                        },
+                        ports: GateIO::var_write(inner.clone()),
                         ..Default::default()
                     });
                     ctx.connect(exec_in, set_node.port(WirePort::Exec));
@@ -247,23 +228,14 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                             note: Some("ret_set"),
                             ports: GateIO {
                                 inputs: vec![
-                                    PortSpec {
-                                        name: *sym::EXEC,
-                                        ty: Type::Exec,
-                                    },
-                                    PortSpec {
-                                        name: *sym::VAR_REF,
-                                        ty: Type::Ref(Box::new(inner.clone())),
-                                    },
-                                    PortSpec {
-                                        name: *sym::VALUE,
-                                        ty: inner.clone(),
-                                    },
+                                    PortSpec::exec(*sym::EXEC),
+                                    PortSpec::new(
+                                        *sym::VAR_REF,
+                                        Type::Ref(Box::new(inner.clone())),
+                                    ),
+                                    PortSpec::new(*sym::VALUE, inner.clone()),
                                 ],
-                                outputs: vec![PortSpec {
-                                    name: *sym::EXEC_OUT,
-                                    ty: Type::Exec,
-                                }],
+                                outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
                             },
                             ..Default::default()
                         });
@@ -287,22 +259,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
                     let union = ctx.add_gate(AddNodeOpts {
                         gate_class: gc::UNION,
                         source_range: SourceRange::default(),
-                        ports: GateIO {
-                            inputs: vec![
-                                PortSpec {
-                                    name: *sym::EXEC_A,
-                                    ty: Type::Exec,
-                                },
-                                PortSpec {
-                                    name: *sym::EXEC_B,
-                                    ty: Type::Exec,
-                                },
-                            ],
-                            outputs: vec![PortSpec {
-                                name: *sym::EXEC_OUT,
-                                ty: Type::Exec,
-                            }],
-                        },
+                        ports: GateIO::exec_join(),
                         ..Default::default()
                     });
                     ctx.connect(prev, union.port(WirePort::ExecA));
@@ -469,26 +426,7 @@ fn set_scalar_var(ctx: &mut LowerCtx, var_rec: &VarRecord, value_port: PortRef, 
     let set_node = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(inner.clone())),
-                },
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: inner.clone(),
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::var_write(inner.clone()),
         note: None,
         ..Default::default()
     });
@@ -738,23 +676,11 @@ pub(super) fn select_record_fields(
                     source_range: range.clone(),
                     ports: GateIO {
                         inputs: vec![
-                            PortSpec {
-                                name: *sym::INPUT_A,
-                                ty: ty.clone(),
-                            },
-                            PortSpec {
-                                name: *sym::INPUT_B,
-                                ty: ty.clone(),
-                            },
-                            PortSpec {
-                                name: *sym::B_SELECT_B,
-                                ty: Type::Bool,
-                            },
+                            PortSpec::new(*sym::INPUT_A, ty.clone()),
+                            PortSpec::new(*sym::INPUT_B, ty.clone()),
+                            PortSpec::new(*sym::B_SELECT_B, Type::Bool),
                         ],
-                        outputs: vec![PortSpec {
-                            name: *sym::OUTPUT,
-                            ty: ty.clone(),
-                        }],
+                        outputs: vec![PortSpec::new(*sym::OUTPUT, ty.clone())],
                     },
                     note: Some("record if-expr select".into()),
                     ..Default::default()
@@ -1174,26 +1100,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         let node_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::VAR_INCREMENT,
             source_range: s.range.clone(),
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::VAR_REF,
-                        ty: Type::Ref(Box::new(inner.clone())),
-                    },
-                    PortSpec {
-                        name: *sym::VALUE,
-                        ty: inner.clone(),
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
+            ports: GateIO::var_write(inner.clone()),
             note: None,
             ..Default::default()
         });
@@ -1217,26 +1124,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     let set_node = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: s.range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(inner.clone())),
-                },
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: inner.clone(),
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::var_write(inner.clone()),
         note: None,
         ..Default::default()
     });
@@ -1374,28 +1262,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let branch = ctx.add_gate(AddNodeOpts {
         gate_class: gc::BRANCH,
         source_range: s.range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::B_COND,
-                    ty: Type::Bool,
-                },
-            ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_OUT_A,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::EXEC_OUT_B,
-                    ty: Type::Exec,
-                },
-            ],
-        },
+        ports: GateIO::exec_branch(),
         ..Default::default()
     });
     ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
@@ -1461,22 +1328,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let union = ctx.add_gate(AddNodeOpts {
         gate_class: gc::UNION,
         source_range: s.range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_A,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::EXEC_B,
-                    ty: Type::Exec,
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::exec_join(),
         ..Default::default()
     });
     if let Some(e) = then_end {
@@ -1646,28 +1498,7 @@ fn lower_let_else_switch(
     let branch = ctx.add_gate(AddNodeOpts {
         gate_class: gc::BRANCH,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::B_COND,
-                    ty: Type::Bool,
-                },
-            ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_OUT_A,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::EXEC_OUT_B,
-                    ty: Type::Exec,
-                },
-            ],
-        },
+        ports: GateIO::exec_branch(),
         ..Default::default()
     });
     ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
@@ -1825,28 +1656,7 @@ fn lower_switch_cases(
     let branch = ctx.add_gate(AddNodeOpts {
         gate_class: gc::BRANCH,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::B_COND,
-                    ty: Type::Bool,
-                },
-            ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_OUT_A,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::EXEC_OUT_B,
-                    ty: Type::Exec,
-                },
-            ],
-        },
+        ports: GateIO::exec_branch(),
         ..Default::default()
     });
     ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
@@ -1874,22 +1684,7 @@ fn lower_switch_cases(
     let union = ctx.add_gate(AddNodeOpts {
         gate_class: gc::UNION,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_A,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::EXEC_B,
-                    ty: Type::Exec,
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::exec_join(),
         ..Default::default()
     });
     if let Some(e) = then_end {
@@ -1914,23 +1709,14 @@ fn lower_match_arm_stmt(
     arm: &MatchArm,
     root: &HashMap<crate::intern::Sym, Binding>,
 ) {
-    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
-    let mut captures = Vec::new();
-    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
-    for (name, slot_path) in captures {
-        if let Some(binding) = navigate_capture(root, &slot_path) {
-            ctx.scope.insert(&name, binding);
-        }
-    }
-    match &arm.body {
+    crate::lower::expr::with_arm_captures(ctx, arm, root, |ctx| match &arm.body {
         MatchBody::Block(block) => lower_block(ctx, block),
         // A statement-position expression arm runs for its side effects; its
         // value has no consumer (the match statement yields nothing).
         MatchBody::Expr(expr) => {
             lower_expr(ctx, expr);
         }
-    }
-    ctx.pop_scope();
+    })
 }
 
 /// `cond` resolves (through the current scope) to a `_Literal` gate carrying
@@ -2005,26 +1791,7 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
                         gate_class: gc::VAR_SET,
                         source_range: SourceRange::default(),
                         note: Some("out_set"),
-                        ports: GateIO {
-                            inputs: vec![
-                                PortSpec {
-                                    name: *sym::EXEC,
-                                    ty: Type::Exec,
-                                },
-                                PortSpec {
-                                    name: *sym::VAR_REF,
-                                    ty: Type::Ref(Box::new(inner.clone())),
-                                },
-                                PortSpec {
-                                    name: *sym::VALUE,
-                                    ty: inner.clone(),
-                                },
-                            ],
-                            outputs: vec![PortSpec {
-                                name: *sym::EXEC_OUT,
-                                ty: Type::Exec,
-                            }],
-                        },
+                        ports: GateIO::var_write(inner.clone()),
                         ..Default::default()
                     });
                     ctx.connect(exec, set_node.port(WirePort::Exec));
@@ -2116,10 +1883,7 @@ fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: Por
     // wire into the duration port. Lower the expressions *before* taking the
     // buffer's exec source so a duration var read chains on the emit path.
     let mut props = HashMap::default();
-    let mut inputs = vec![PortSpec {
-        name: *sym::INPUT,
-        ty: Type::Exec,
-    }];
+    let mut inputs = vec![PortSpec::exec(*sym::INPUT)];
     let delay_wire = match &spec.delay {
         // Bare `buffer emit`: one tick.
         None => {
@@ -2139,10 +1903,7 @@ fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: Por
                 None
             }
             None => {
-                inputs.push(PortSpec {
-                    name: delay_sym,
-                    ty: unit_ty.clone(),
-                });
+                inputs.push(PortSpec::new(delay_sym, unit_ty.clone()));
                 Some(lower_expr(ctx, d))
             }
         },
@@ -2154,10 +1915,7 @@ fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: Por
                 None
             }
             None => {
-                inputs.push(PortSpec {
-                    name: hold_sym,
-                    ty: unit_ty.clone(),
-                });
+                inputs.push(PortSpec::new(hold_sym, unit_ty.clone()));
                 Some(lower_expr(ctx, h))
             }
         },
@@ -2180,10 +1938,7 @@ fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: Por
         source_range: spec.range.clone(),
         ports: GateIO {
             inputs,
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::Exec,
-            }],
+            outputs: vec![PortSpec::exec(*sym::OUTPUT)],
         },
         properties: props,
         note: Some("buffered emit"),
@@ -2223,19 +1978,7 @@ fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId
     let store = ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_VAR,
         source_range: SourceRange::default(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: ty.clone(),
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(ty.clone())),
-                },
-            ],
-        },
+        ports: GateIO::var_storage(ty.clone()),
         properties: props,
         note: Some("signal payload store"),
         ..Default::default()
@@ -2255,26 +1998,7 @@ fn chain_var_set(ctx: &mut LowerCtx, var: NodeId, value_port: PortRef, ty: Type)
     let set = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: SourceRange::default(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(ty.clone())),
-                },
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty,
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::var_write(ty),
         note: Some("signal payload write"),
         ..Default::default()
     });
@@ -2291,28 +2015,7 @@ fn chain_var_get(ctx: &mut LowerCtx, var: NodeId, ty: Type) -> PortRef {
     let get = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_GET,
         source_range: SourceRange::default(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(ty.clone())),
-                },
-            ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty,
-                },
-                PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                },
-            ],
-        },
+        ports: GateIO::var_read(ty),
         note: Some("signal payload read"),
         ..Default::default()
     });
@@ -2384,19 +2087,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     let armed_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::PSEUDO_VAR,
         source_range: a.range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: Type::Bool,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(Type::Bool)),
-                },
-            ],
-        },
+        ports: GateIO::var_storage(Type::Bool),
         properties: {
             let mut p = HashMap::default();
             p.insert(*sym::INITIAL_VALUE, Literal::Bool(false));
@@ -2411,13 +2102,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         let true_lit = ctx.add_gate(AddNodeOpts {
             gate_class: gc::LITERAL,
             source_range: a.range.clone(),
-            ports: GateIO {
-                inputs: vec![],
-                outputs: vec![PortSpec {
-                    name: *sym::OUTPUT,
-                    ty: Type::Bool,
-                }],
-            },
+            ports: GateIO::source(Type::Bool),
             properties: {
                 let mut p = HashMap::default();
                 p.insert(*sym::VALUE, Literal::Bool(true));
@@ -2428,26 +2113,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         let arm_set = ctx.add_gate(AddNodeOpts {
             gate_class: gc::VAR_SET,
             source_range: a.range.clone(),
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::VAR_REF,
-                        ty: Type::Ref(Box::new(Type::Bool)),
-                    },
-                    PortSpec {
-                        name: *sym::VALUE,
-                        ty: Type::Bool,
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
+            ports: GateIO::var_write(Type::Bool),
             ..Default::default()
         });
         ctx.connect(exec_in, arm_set.port(WirePort::Exec));
@@ -2488,28 +2154,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     let get_armed = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_GET,
         source_range: a.range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(Type::Bool)),
-                },
-            ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: Type::Bool,
-                },
-                PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                },
-            ],
-        },
+        ports: GateIO::var_read(Type::Bool),
         ..Default::default()
     });
     ctx.connect(exec_port, get_armed.port(WirePort::Exec));
@@ -2522,28 +2167,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     let branch = ctx.add_gate(AddNodeOpts {
         gate_class: gc::BRANCH,
         source_range: a.range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::B_COND,
-                    ty: Type::Bool,
-                },
-            ],
-            outputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_OUT_A,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::EXEC_OUT_B,
-                    ty: Type::Exec,
-                },
-            ],
-        },
+        ports: GateIO::exec_branch(),
         ..Default::default()
     });
     ctx.connect(
@@ -2559,13 +2183,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     let false_lit = ctx.add_gate(AddNodeOpts {
         gate_class: gc::LITERAL,
         source_range: a.range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::Bool,
-            }],
-        },
+        ports: GateIO::source(Type::Bool),
         properties: {
             let mut p = HashMap::default();
             p.insert(*sym::VALUE, Literal::Bool(false));
@@ -2576,26 +2194,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
     let reset_set = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: a.range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(Type::Bool)),
-                },
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: Type::Bool,
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::var_write(Type::Bool),
         ..Default::default()
     });
     ctx.connect(
@@ -2731,22 +2330,7 @@ fn build_exec_union(ctx: &mut LowerCtx, ports: Vec<PortRef>) -> PortRef {
         let union = ctx.add_gate(AddNodeOpts {
             gate_class: gc::UNION,
             source_range: SourceRange::default(),
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_A,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::EXEC_B,
-                        ty: Type::Exec,
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
+            ports: GateIO::exec_join(),
             ..Default::default()
         });
         ctx.connect(first, union.port(WirePort::ExecA));
@@ -2757,22 +2341,7 @@ fn build_exec_union(ctx: &mut LowerCtx, ports: Vec<PortRef>) -> PortRef {
         let union = ctx.add_gate(AddNodeOpts {
             gate_class: gc::UNION,
             source_range: SourceRange::default(),
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_A,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::EXEC_B,
-                        ty: Type::Exec,
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
+            ports: GateIO::exec_join(),
             ..Default::default()
         });
         ctx.connect(current, union.port(WirePort::ExecA));
@@ -2844,13 +2413,7 @@ fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
     let true_lit = ctx.add_gate(AddNodeOpts {
         gate_class: gc::LITERAL,
         source_range: SourceRange::default(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::Bool,
-            }],
-        },
+        ports: GateIO::source(Type::Bool),
         properties: {
             let mut p = HashMap::default();
             p.insert(*sym::VALUE, Literal::Bool(true));
@@ -2861,26 +2424,7 @@ fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
     let arm_set = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_SET,
         source_range: SourceRange::default(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::VAR_REF,
-                    ty: Type::Ref(Box::new(Type::Bool)),
-                },
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: Type::Bool,
-                },
-            ],
-            outputs: vec![PortSpec {
-                name: *sym::EXEC_OUT,
-                ty: Type::Exec,
-            }],
-        },
+        ports: GateIO::var_write(Type::Bool),
         note: Some("emit arms await"),
         ..Default::default()
     });
@@ -3044,26 +2588,7 @@ pub(super) fn lower_out_binding(
             gate_class: gc::VAR_SET,
             source_range: range.clone(),
             note: Some("out_set"),
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::VAR_REF,
-                        ty: Type::Ref(Box::new(inner.clone())),
-                    },
-                    PortSpec {
-                        name: *sym::VALUE,
-                        ty: inner.clone(),
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
+            ports: GateIO::var_write(inner.clone()),
             ..Default::default()
         });
         ctx.connect(exec, set_node.port(WirePort::Exec));

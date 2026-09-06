@@ -19,6 +19,19 @@ pub(super) use inline::*;
 mod instance;
 pub(super) use instance::*;
 
+/// The call's arguments given by position, in order. `Named` and `Spread` args
+/// are dropped: a spread has already been expanded by
+/// [`expand_spread_args`] wherever positional binding runs, and a named arg
+/// binds by name, not index.
+pub(in crate::lower) fn positional_args(args: &[CallArg]) -> Vec<&Expr> {
+    args.iter()
+        .filter_map(|a| match a {
+            CallArg::Positional(e) => Some(e),
+            CallArg::Named { .. } | CallArg::Spread(_) => None,
+        })
+        .collect()
+}
+
 /// Expand each `...tuple` spread argument into one `TuplePick` positional arg per
 /// element, so the ordinary positional binding wires every element into its own
 /// param/port. Arity comes from the spread expression's tuple/record type

@@ -54,16 +54,7 @@ pub(super) fn check_anon_chip_stmts(
     pre_registered: bool,
 ) {
     if !pre_registered {
-        for s in stmts {
-            match s {
-                Stmt::Var(v) => register_decl(ctx, &TopDecl::Var(v.clone())),
-                Stmt::Buffer(b) => register_decl(ctx, &TopDecl::Buffer(b.clone())),
-                Stmt::Array(a) => register_decl(ctx, &TopDecl::Array(a.clone())),
-                Stmt::In(i) => register_decl(ctx, &TopDecl::In(i.clone())),
-                _ => {}
-            }
-        }
-        register_anon_chip_outputs(ctx, stmts);
+        register_anon_chip_decls(ctx, stmts);
     }
     for s in stmts {
         // A chip's PURE statements (`let`/`var`/`out`/`buffer`/declarations) are

@@ -435,18 +435,7 @@ impl<'a> Parser<'a> {
                     self.eat_newlines();
                     break;
                 }
-                let name_tok = self.expect(TokenKind::Ident, None);
-                let alias = if self.match_tok(TokenKind::Colon, None).is_some() {
-                    Some(self.expect(TokenKind::Ident, None).text)
-                } else {
-                    None
-                };
-                let field_end = self.peek().start;
-                fields.push(RecordDestructField::Named {
-                    name: name_tok.text,
-                    alias,
-                    range: self.make_range(name_tok.start, field_end),
-                });
+                fields.push(self.parse_record_destruct_field());
                 self.eat_newlines();
                 if self.match_tok(TokenKind::Comma, None).is_none() {
                     break;

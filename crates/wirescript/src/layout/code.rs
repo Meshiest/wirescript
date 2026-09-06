@@ -34,7 +34,7 @@ use crate::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, gate_cla
 use super::bus::{BusDemand, allocate_lanes};
 use super::{
     BusEnd, BusLayout, BusNode, BusNodeId, BusRole, BusWire, IntVec3, LayoutOptions, LayoutResult,
-    NodeRotation, TextAnnotation, Z_PLANE, brick_half_size, recurse_chips,
+    NodeRotation, TextAnnotation, Z_PLANE, brick_half_size, chip_layouts_of,
 };
 
 mod nodes;
@@ -210,19 +210,7 @@ pub fn layout_code_with_budgets(
         .collect();
 
     if spawnable.is_empty() {
-        return LayoutResult {
-            placements: HashMap::default(),
-            chip_layouts: if recurse {
-                recurse_chips(module, opts)
-            } else {
-                HashMap::default()
-            },
-            annotations: Vec::new(),
-            rotations: HashMap::default(),
-            bus: BusLayout::default(),
-            bounds_min: IntVec3::default(),
-            bounds_max: IntVec3::default(),
-        };
+        return LayoutResult::empty(chip_layouts_of(module, opts, recurse));
     }
 
     let anchor = anchor_file(&spawnable);
@@ -589,11 +577,7 @@ pub fn layout_code_with_budgets(
 
     LayoutResult {
         placements,
-        chip_layouts: if recurse {
-            recurse_chips(module, opts)
-        } else {
-            HashMap::default()
-        },
+        chip_layouts: chip_layouts_of(module, opts, recurse),
         annotations,
         rotations,
         bus,

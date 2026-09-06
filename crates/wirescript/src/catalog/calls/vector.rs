@@ -277,15 +277,14 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::SPLIT_VECTOR,
             params: vec![CallParam::req("v", WirePort::Input, Type::Vector)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::X,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::X,
+                Type::Record(vec![
                     ("x".into(), Type::Float),
                     ("y".into(), Type::Float),
                     ("z".into(), Type::Float),
                 ]),
-            }],
+            )],
             receiver: Some(Type::Vector),
         },
     );
@@ -313,16 +312,15 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::SPLIT_QUATERNION,
             params: vec![CallParam::req("q", WirePort::Input, Type::Quat)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::X,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::X,
+                Type::Record(vec![
                     ("X".into(), Type::Float),
                     ("Y".into(), Type::Float),
                     ("Z".into(), Type::Float),
                     ("W".into(), Type::Float),
                 ]),
-            }],
+            )],
             receiver: Some(Type::Quat),
         },
     );

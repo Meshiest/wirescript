@@ -39,11 +39,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("key", WirePort::Key, Type::String),
             ],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Value,
-                ty: Type::Int,
-            }],
+            vec![CallOutput::plain(WirePort::Value, Type::Int)],
         ),
     );
     m.insert(
@@ -52,11 +48,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetTeam",
             gc::GAMEMODE_GET_TEAM,
             vec![CallParam::req("character", WirePort::Character, Type::Character)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Team,
-                ty: Type::Entity,
-            }],
+            vec![CallOutput::plain(WirePort::Team, Type::Entity)],
         ),
     );
 
@@ -69,11 +61,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GAMEMODE_IS_BUILDER_TEAM,
             params: vec![CallParam::req("team", WirePort::Team, Type::Entity)],
             exec: false,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::BResult,
-                ty: Type::Bool,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::BResult, Type::Bool)],
             receiver: Some(Type::Entity),
         },
     );
@@ -84,11 +72,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GAMEMODE_IS_UNAFFILIATED_TEAM,
             params: vec![CallParam::req("team", WirePort::Team, Type::Entity)],
             exec: false,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::BResult,
-                ty: Type::Bool,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::BResult, Type::Bool)],
             receiver: Some(Type::Entity),
         },
     );
@@ -127,11 +111,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GAMEMODE_GET_CURRENT_ROUND,
             params: vec![],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::RoundNumber,
-                ty: Type::Int,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::RoundNumber, Type::Int)],
             receiver: None,
         },
     );
@@ -142,11 +122,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GAMEMODE_GET_TEAM_BY_NAME,
             params: vec![CallParam::req("name", WirePort::TeamName, Type::String)],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Team,
-                ty: Type::Entity,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Team, Type::Entity)],
             receiver: None,
         },
     );
@@ -172,11 +148,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GAMEMODE_GET_TEAM_NAME,
             params: vec![CallParam::req("team", WirePort::Team, Type::Entity)],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Name,
-                ty: Type::String,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Name, Type::String)],
             receiver: Some(Type::Entity),
         },
     );
@@ -190,11 +162,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("key", WirePort::Key, Type::String),
             ],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Value,
-                ty: Type::Int,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Value, Type::Int)],
             receiver: Some(Type::Entity),
         },
     );

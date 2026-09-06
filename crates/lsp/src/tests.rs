@@ -621,6 +621,20 @@
 
     // ---------- end-to-end LSP rename / references (scoped resolver) ----------
 
+    /// A rename's edits as document-change OPERATIONS.
+    ///
+    /// The server always answers in the `Operations` form, never the flat
+    /// `Edits` one: only `Operations` carries a per-file version, which is what
+    /// lets an editor refuse a stale multi-file rename instead of applying half
+    /// of it. A test that accepted either form would stop noticing a regression
+    /// to the flat shape.
+    fn rename_operations(edit: WorkspaceEdit) -> Vec<DocumentChangeOperation> {
+        match edit.document_changes.expect("document_changes present") {
+            DocumentChanges::Operations(ops) => ops,
+            DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
+        }
+    }
+
     /// A fresh `Backend` wired through the real `LanguageServer` trait (so its
     /// `rename`/`references`/`prepare_rename` handlers run exactly as the
     /// editor would call them), with no documents open yet. The returned
@@ -756,10 +770,7 @@ on CharacterSpawned() -> (character) {\n\
 
         std::fs::remove_dir_all(&dir).ok();
 
-        let changes = match edit.document_changes.expect("document_changes present") {
-            DocumentChanges::Operations(ops) => ops,
-            DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
-        };
+        let changes = rename_operations(edit);
         assert_eq!(changes.len(), 1, "only main.ws should be edited: {changes:?}");
         let DocumentChangeOperation::Edit(te) = &changes[0] else {
             panic!("expected a TextDocumentEdit operation: {:?}", changes[0]);
@@ -819,10 +830,7 @@ on CharacterSpawned() -> (character) {\n\
 
         std::fs::remove_dir_all(&dir).ok();
 
-        let changes = match edit.document_changes.expect("document_changes present") {
-            DocumentChanges::Operations(ops) => ops,
-            DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
-        };
+        let changes = rename_operations(edit);
         let mut by_file: HashMap<Url, usize> = HashMap::new();
         for op in &changes {
             let DocumentChangeOperation::Edit(te) = op else {
@@ -973,10 +981,7 @@ on CharacterSpawned() -> (character) {\n\
 
         std::fs::remove_dir_all(&dir).ok();
 
-        let changes = match edit.document_changes.expect("document_changes present") {
-            DocumentChanges::Operations(ops) => ops,
-            DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
-        };
+        let changes = rename_operations(edit);
         let main_te = changes
             .iter()
             .find_map(|op| {
@@ -1042,10 +1047,7 @@ on CharacterSpawned() -> (character) {\n\
 
         std::fs::remove_dir_all(&dir).ok();
 
-        let changes = match edit.document_changes.expect("document_changes present") {
-            DocumentChanges::Operations(ops) => ops,
-            DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
-        };
+        let changes = rename_operations(edit);
         assert_eq!(changes.len(), 1, "only main.ws may be edited: {changes:?}");
         let DocumentChangeOperation::Edit(te) = &changes[0] else {
             panic!("expected a TextDocumentEdit operation: {:?}", changes[0]);
@@ -1111,10 +1113,7 @@ on CharacterSpawned() -> (character) {\n\
 
         std::fs::remove_dir_all(&dir).ok();
 
-        let changes = match edit.document_changes.expect("document_changes present") {
-            DocumentChanges::Operations(ops) => ops,
-            DocumentChanges::Edits(_) => panic!("expected Operations, got flat Edits"),
-        };
+        let changes = rename_operations(edit);
         let mut by_file: HashMap<Url, Vec<TextEdit>> = HashMap::new();
         for op in &changes {
             let DocumentChangeOperation::Edit(te) = op else {

@@ -8,6 +8,8 @@
 //! bricks would look fine in every checker and be silently dropped by the
 //! game at load. These tests are the gate for that contract.
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -237,11 +239,10 @@ fn emitted_brick_corners_match_the_cells_layout_reserved() {
 /// exec gate that writes it — so one source pins both sides of the rule.
 #[test]
 fn a_rotated_gates_label_is_counter_rotated() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
     /// `(text, line height)` → the label rotations emitted for it.
-    fn labels(src: &str, file: &str, tmp: &str) -> Vec<(String, f32, f32)> {
+    fn labels(src: &str, file: &str) -> Vec<(String, f32, f32)> {
         let cr = wirescript::compile::compile(CompileInput {
             source: src,
             file,
@@ -249,45 +250,24 @@ fn a_rotated_gates_label_is_counter_rotated() {
             fold_mode: FoldMode::Auto,
         })
         .expect("should compile to brz");
-        let path = std::env::temp_dir().join(tmp);
-        std::fs::write(&path, &cr.brz).expect("write brz");
-        let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
         let mut out: Vec<(String, f32, f32)> = Vec::new();
-        for gid in 1..32 {
-            let Ok(chunks) = reader.brick_chunk_index(gid) else {
-                break;
+        for c in common::world_components(&cr.brz) {
+            let (
+                Some(BrdbValue::String(text)),
+                Some(BrdbValue::F32(line_height)),
+                Some(BrdbValue::F32(rotation)),
+            ) = (c.get("Text"), c.get("LineHeight"), c.get("Rotation"))
+            else {
+                continue;
             };
-            for chunk in chunks {
-                if chunk.num_components == 0 {
-                    continue;
-                }
-                let (_soa, comps) = reader
-                    .component_chunk_soa(gid, chunk.index)
-                    .expect("read components");
-                for c in comps {
-                    let (
-                        Some(BrdbValue::String(text)),
-                        Some(BrdbValue::F32(line_height)),
-                        Some(BrdbValue::F32(rotation)),
-                    ) = (c.get("Text"), c.get("LineHeight"), c.get("Rotation"))
-                    else {
-                        continue;
-                    };
-                    out.push((text.clone(), *line_height, *rotation));
-                }
-            }
+            out.push((text.clone(), *line_height, *rotation));
         }
         out.sort_by(|a, b| a.partial_cmp(b).unwrap());
         out
     }
 
     let body = "var spin: int = 0\nin go: exec\non go { spin = spin + 1 }\n";
-    let coded = labels(
-        &format!("@layout(\"code\")\n\n{body}"),
-        "spun.ws",
-        "ws_rotated_label_code.brz",
-    );
+    let coded = labels(&format!("@layout(\"code\")\n\n{body}"), "spun.ws");
     // The only `spin` tag at 1.2 is the rotated gate's own: a lane brick
     // carries colour and nothing else, so the bus contributes no text.
     let tag = |ls: &[(String, f32, f32)], h: f32| -> f32 {
@@ -322,7 +302,7 @@ fn a_rotated_gates_label_is_counter_rotated() {
     );
 
     // Without the code layout nothing rotates, so no tag is compensated.
-    let dag = labels(body, "spun_dag.ws", "ws_rotated_label_dag.brz");
+    let dag = labels(body, "spun_dag.ws");
     assert_eq!(tag(&dag, 1.2), -45.0);
     assert_eq!(tag(&dag, 2.4), -45.0);
 }

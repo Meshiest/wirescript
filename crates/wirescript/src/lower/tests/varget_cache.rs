@@ -20,13 +20,7 @@ const PRELUDE: &str = "var v: int = 5\nvar w: int = 0\nvar u: int = 0\nin go: ex
 #[test]
 fn unwritten_var_is_reused_across_an_if() {
     let r = compile(&format!("{PRELUDE}on go {{\n  w = v\n  if w > 0 {{ w = 1 }}\n  u = v\n}}"));
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, VAR_GET),
         2,
@@ -78,13 +72,7 @@ fn global_written_by_chip_instance_is_reread_fresh() {
     let r = compile(
         "var g: int = 0\nvar a: int = 0\nvar b: int = 0\nchip Bump() { g = g + 1 }\nin go: exec\non go {\n  a = g + 1\n  Bump()\n  b = g + 1\n}",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     // Two reads of `g` straddling the chip call must be distinct gates.
     let g_reads = count_class(&r.module, VAR_GET);
     assert!(

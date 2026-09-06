@@ -16,11 +16,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             exec: false,
             // Passthrough: the delayed output carries the input's type.
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Param("T".into()),
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Param("T".into()))],
             receiver: None,
         },
     );
@@ -36,11 +32,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             exec: false,
             // Passthrough: the delayed output carries the input's type.
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Param("T".into()),
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Param("T".into()))],
             receiver: None,
         },
     );
@@ -54,11 +46,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::EXEC_CYCLE,
             params: vec![CallParam::req("count", WirePort::Count, Type::Int)],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Int,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: None,
         },
     );
@@ -69,11 +57,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::EXEC_TOGGLE,
             params: vec![],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Bool,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Bool)],
             receiver: None,
         },
     );
@@ -89,11 +73,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("max", WirePort::Max, Type::Int),
             ],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Int,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: None,
         },
     );
@@ -111,11 +91,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             exec: false,
             // Generic: picks `a` or `b`, so the result carries their shared type.
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Param("T".into()),
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Param("T".into()))],
             receiver: None,
         },
     );
@@ -132,14 +108,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             exec: false,
             // Generic: auto-unwraps to the first (possibly swapped) value;
             // `.OutputB` is the other one. Both carry `a`/`b`'s shared type.
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::Output,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Output,
+                Type::Record(vec![
                     ("Output".into(), Type::Param("T".into())),
                     ("OutputB".into(), Type::Param("T".into())),
                 ]),
-            }],
+            )],
             receiver: None,
         },
     );
@@ -195,11 +170,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::REROUTER,
             params: vec![CallParam::req("value", WirePort::RerInput, Type::Any)],
             exec: false,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::RerOutput,
-                ty: Type::Opaque,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::RerOutput, Type::Opaque)],
             receiver: None,
         },
     );
@@ -210,11 +181,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::DELTA_TIME,
             params: vec![],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::DeltaTime,
-                ty: Type::Float,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::DeltaTime, Type::Float)],
             receiver: None,
         },
     );
@@ -225,11 +192,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::SERVER_UPTIME,
             params: vec![],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Uptime,
-                ty: Type::Float,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Uptime, Type::Float)],
             receiver: None,
         },
     );
@@ -276,11 +239,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::READ_BRICK_GRID,
             params: vec![],
             exec: false,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::BrickGrid,
-                ty: Type::Entity,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::BrickGrid, Type::Entity)],
             receiver: None,
         },
     );
@@ -295,11 +254,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("tolerance", WirePort::Tolerance, Type::Float),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::BOutput,
-                ty: Type::Bool,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::BOutput, Type::Bool)],
             receiver: None,
         },
     );
@@ -313,11 +268,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("smoothTime", WirePort::SmoothTime, Type::Float),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Value,
-                ty: Type::Float,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Value, Type::Float)],
             receiver: None,
         },
     );
@@ -337,11 +288,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("direction", WirePort::Direction, Type::Any),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: blend_variant(),
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, blend_variant())],
             receiver: None,
         },
     );
@@ -360,14 +307,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             exec: false,
             // Auto-unwraps to the interpolated `Value`; `.Arrived` pulses when it
             // reaches the target.
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Value,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Value,
+                Type::Record(vec![
                     ("Value".into(), blend_variant()),
                     ("Arrived".into(), Type::Exec),
                 ]),
-            }],
+            )],
             receiver: None,
         },
     );
@@ -386,16 +332,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             exec: false,
             outputs: vec![
-                CallOutput {
-            field: None,
-                    port: WirePort::Time,
-                    ty: Type::Float,
-                },
-                CallOutput {
-            field: None,
-                    port: WirePort::Expired,
-                    ty: Type::Exec,
-                },
+                CallOutput::plain(WirePort::Time, Type::Float),
+                CallOutput::plain(WirePort::Expired, Type::Exec),
             ],
             receiver: None,
         },
@@ -454,7 +392,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::EXPR_ENUM_TO_INTEGER,
             params: vec![CallParam::req("value", WirePort::Input, Type::Any)],
             exec: false,
-            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Int }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: None,
         },
     );
@@ -470,7 +408,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             exec: false,
             // The raw gate output is the numeric discriminant; the surface
             // result is the context-typed enum (see the note above).
-            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Int }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: None,
         },
     );
@@ -483,7 +421,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GET_UNIX_EPOCH,
             params: vec![],
             exec: false,
-            outputs: vec![CallOutput { field: None, port: WirePort::UnixEpoch, ty: Type::Int }],
+            outputs: vec![CallOutput::plain(WirePort::UnixEpoch, Type::Int)],
             receiver: None,
         },
     );
@@ -498,14 +436,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("useUTC", WirePort::BUseUTC, Type::Bool),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::Output,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Output,
+                Type::Record(vec![
                     ("Output".into(), Type::String),
                     ("Success".into(), Type::Bool),
                 ]),
-            }],
+            )],
             receiver: None,
         },
     );

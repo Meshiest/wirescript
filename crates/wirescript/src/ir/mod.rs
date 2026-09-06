@@ -15,7 +15,7 @@ pub mod port_registry;
 
 use crate::collections::HashMap;
 
-use crate::intern::Sym;
+use crate::intern::{sym, Sym};
 use crate::ir::port_registry::WirePort;
 
 /// Cheap numeric node identity — every node gets a globally unique u32.
@@ -370,6 +370,21 @@ pub struct PortSpec {
     pub ty: Type,
 }
 
+impl PortSpec {
+    pub fn new(name: Sym, ty: Type) -> Self {
+        Self { name, ty }
+    }
+
+    /// A control-flow port. `Type::Exec` carries no value, so the name is the
+    /// only thing that distinguishes one of these from another.
+    pub fn exec(name: Sym) -> Self {
+        Self {
+            name,
+            ty: Type::Exec,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GateIO {
     pub inputs: Vec<PortSpec>,
@@ -377,6 +392,89 @@ pub struct GateIO {
 }
 
 impl GateIO {
+    /// Ports of a pure source: nothing in, one `Output` carrying `ty`. The
+    /// shape of a `Literal`, of a folded constant, and of the gates that stand
+    /// in for one.
+    pub fn source(ty: Type) -> Self {
+        Self {
+            inputs: vec![],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, ty)],
+        }
+    }
+
+    /// Ports of the storage gate behind a `var` of `inner`: it holds the value
+    /// and hands out the ref that [`GateIO::var_read`] and
+    /// [`GateIO::var_write`] chain through.
+    pub fn var_storage(inner: Type) -> Self {
+        Self {
+            inputs: vec![],
+            outputs: vec![
+                PortSpec::new(*sym::VALUE, inner.clone()),
+                PortSpec::new(*sym::VAR_REF, Type::Ref(Box::new(inner))),
+            ],
+        }
+    }
+
+    /// Ports of an exec-driven read of a `var` of `inner` (`Var_Get`): the
+    /// value comes out alongside the exec continuation.
+    pub fn var_read(inner: Type) -> Self {
+        Self {
+            inputs: vec![
+                PortSpec::exec(*sym::EXEC),
+                PortSpec::new(*sym::VAR_REF, Type::Ref(Box::new(inner.clone()))),
+            ],
+            outputs: vec![
+                PortSpec::new(*sym::VALUE, inner),
+                PortSpec::exec(*sym::EXEC_OUT),
+            ],
+        }
+    }
+
+    /// Ports of an exec-driven write to a `var` of `inner`. Shared by
+    /// `Var_Set` and `Var_Increment`, which differ only in what they do with
+    /// the incoming `Value`.
+    pub fn var_write(inner: Type) -> Self {
+        Self {
+            inputs: vec![
+                PortSpec::exec(*sym::EXEC),
+                PortSpec::new(*sym::VAR_REF, Type::Ref(Box::new(inner.clone()))),
+                PortSpec::new(*sym::VALUE, inner),
+            ],
+            outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
+        }
+    }
+
+    /// Ports of `Union`: two exec inputs merged into one continuation.
+    pub fn exec_join() -> Self {
+        Self {
+            inputs: vec![PortSpec::exec(*sym::EXEC_A), PortSpec::exec(*sym::EXEC_B)],
+            outputs: vec![PortSpec::exec(*sym::EXEC_OUT)],
+        }
+    }
+
+    /// Ports of `Branch`: one exec in, one of two continuations out by
+    /// `bCond`.
+    pub fn exec_branch() -> Self {
+        Self {
+            inputs: vec![
+                PortSpec::exec(*sym::EXEC),
+                PortSpec::new(*sym::B_COND, Type::Bool),
+            ],
+            outputs: vec![
+                PortSpec::exec(*sym::EXEC_OUT_A),
+                PortSpec::exec(*sym::EXEC_OUT_B),
+            ],
+        }
+    }
+
+    /// Ports of `Logical_Not`.
+    pub fn bool_not() -> Self {
+        Self {
+            inputs: vec![PortSpec::new(*sym::B_INPUT, Type::Bool)],
+            outputs: vec![PortSpec::new(*sym::B_OUTPUT, Type::Bool)],
+        }
+    }
+
     pub fn all_port_names(&self) -> impl Iterator<Item = Sym> + '_ {
         self.inputs
             .iter()

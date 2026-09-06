@@ -71,20 +71,11 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             let inputs: Vec<PortSpec> = input_wires
                 .iter()
-                .map(|&(port, ty, _)| PortSpec {
-                    name: intern(port),
-                    ty: ty.clone(),
-                })
+                .map(|&(port, ty, _)| PortSpec::new(intern(port), ty.clone()))
                 .collect();
-            let mut outputs = vec![PortSpec {
-                name: intern(evt.exec_out),
-                ty: Type::Exec,
-            }];
+            let mut outputs = vec![PortSpec::exec(intern(evt.exec_out))];
             for d2 in &evt.data {
-                outputs.push(PortSpec {
-                    name: intern(d2.port),
-                    ty: d2.ty.clone(),
-                });
+                outputs.push(PortSpec::new(intern(d2.port), d2.ty.clone()));
             }
             let event_node = ctx.add_event(AddNodeOpts {
                 gate_class: evt.gate_class,

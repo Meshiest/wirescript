@@ -25,13 +25,7 @@ fn lowered(src: &str) -> LowerResult {
         fold_mode: FoldMode::ForceOff,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     r
 }
 
@@ -468,14 +462,8 @@ fn literal_source_crossings_are_left_alone() {
             gate_class: "BrickComponentType_WireGraph_Expr_MathAdd",
             properties: Arc::new(consumer_props),
             ports: Arc::new(GateIO {
-                inputs: vec![PortSpec {
-                    name: crate::intern::intern("InputA"),
-                    ty: Type::Int,
-                }],
-                outputs: vec![PortSpec {
-                    name: crate::intern::intern("Output"),
-                    ty: Type::Int,
-                }],
+                inputs: vec![PortSpec::new(crate::intern::intern("InputA"), Type::Int)],
+                outputs: vec![PortSpec::new(crate::intern::intern("Output"), Type::Int)],
             }),
             source_range: Default::default(),
             chip_id: None,
@@ -497,10 +485,7 @@ fn literal_source_crossings_are_left_alone() {
             properties: Arc::new(lit_props),
             ports: Arc::new(GateIO {
                 inputs: vec![],
-                outputs: vec![PortSpec {
-                    name: crate::intern::intern("Output"),
-                    ty: Type::Int,
-                }],
+                outputs: vec![PortSpec::new(crate::intern::intern("Output"), Type::Int)],
             }),
             source_range: Default::default(),
             chip_id: None,

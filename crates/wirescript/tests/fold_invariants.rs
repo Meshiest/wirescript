@@ -1,13 +1,12 @@
 //! The probe and verifier circuits are saturated with Opaque/@nofold —
 //! the fold pass must be a structural no-op on them. This is the standing
 //! proof that the optimizer cannot touch the instruments that certify it.
-use std::sync::Arc;
+
+mod common;
 
 use wirescript::ir::Module;
-use wirescript::lower::{lower, FoldMode, LowerInput};
-use wirescript::template_cache::TemplateCache;
-use wirescript::typecheck::typecheck;
-use wirescript::{resolve, FsLoader, Severity};
+use wirescript::lower::FoldMode;
+use wirescript::Severity;
 
 /// Recursively sum (node count, wire count) over `m` and every nested chip
 /// module — the fold pass operates tree-wide (chip boundaries included), so
@@ -39,29 +38,17 @@ fn count_module(m: &Module) -> (usize, usize) {
 fn counts(file: &str, fold_mode: FoldMode) -> (usize, usize) {
     let source = std::fs::read_to_string(file)
         .unwrap_or_else(|e| panic!("cannot read probe file {file}: {e}"));
-    let resolved = resolve(&source, file, &FsLoader);
+    let (resolved, tc, lowered) = common::run_stages(&source, file, fold_mode);
     assert!(
         resolved.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "resolve errors in {file}: {:?}",
         resolved.diagnostics
     );
-    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "typecheck errors in {file}: {:?}",
         tc.diagnostics
     );
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        file,
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
     assert!(
         lowered.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "lower errors in {file} (fold_mode={fold_mode:?}): {:?}",

@@ -12,13 +12,7 @@ use crate::typecheck::typecheck;
 /// The `InitialValue` baked into the first array gate of a module.
 fn baked_array(src: &str) -> Vec<Literal> {
     let r = compile(src);
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     // Recurses into child modules: an array declared inside a `chip { }` lives
     // in that chip's own module, not the root's node table.
     fn find(m: &crate::ir::Module) -> Option<Vec<Literal>> {

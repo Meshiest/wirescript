@@ -750,6 +750,32 @@ pub(super) fn lower_chip_decl(ctx: &mut LowerCtx, d: &ChipDecl) {
         .insert(&d.name, Binding::Chip(std::sync::Arc::new(d.clone())));
 }
 
+/// Bind a record-valued RHS through the `let`'s binding form: the whole record
+/// under one name, or destructured by field name or tuple position. `false` for
+/// a binding form this does not cover, which leaves the caller to keep looking
+/// for a way to lower the declaration.
+fn install_record_binding(
+    ctx: &mut LowerCtx,
+    d: &LetDecl,
+    src: HashMap<crate::intern::Sym, Binding>,
+) -> bool {
+    match &d.binding {
+        LetBinding::Ident { name, .. } => {
+            ctx.scope.insert(name, Binding::Record(src));
+        }
+        LetBinding::RecordDestruct {
+            fields: destruct_fields,
+            ..
+        } => install_record_destruct(ctx, &src, destruct_fields),
+        LetBinding::Tuple { names, rest, .. } => {
+            let order = tuple_positions(&ctx.type_of(&d.value), names.len());
+            install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
+        }
+        _ => return false,
+    }
+    true
+}
+
 pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     // Clear any leftover inline-mod record so only THIS statement's call can set
     // it (an inline mod call within `d.value` sets it definitively at its end).
@@ -1137,24 +1163,8 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     if let Expr::Ident { name: rhs_name, .. } = &d.value
         && let Some(Binding::Record(src)) = ctx.scope.get(rhs_name).cloned()
     {
-        match &d.binding {
-            LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(&name, Binding::Record(src));
-                return;
-            }
-            LetBinding::RecordDestruct {
-                fields: destruct_fields,
-                ..
-            } => {
-                install_record_destruct(ctx, &src, destruct_fields);
-                return;
-            }
-            LetBinding::Tuple { names, rest, .. } => {
-                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
-                install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
-                return;
-            }
-            _ => {}
+        if install_record_binding(ctx, d, src) {
+            return;
         }
     }
 
@@ -1189,24 +1199,8 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     }
 
     if let Some(Binding::Record(src)) = resolve_field_chain(ctx, &d.value).cloned() {
-        match &d.binding {
-            LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(&name, Binding::Record(src));
-                return;
-            }
-            LetBinding::RecordDestruct {
-                fields: destruct_fields,
-                ..
-            } => {
-                install_record_destruct(ctx, &src, destruct_fields);
-                return;
-            }
-            LetBinding::Tuple { names, rest, .. } => {
-                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
-                install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
-                return;
-            }
-            _ => {}
+        if install_record_binding(ctx, d, src) {
+            return;
         }
     }
 
@@ -1228,24 +1222,8 @@ pub(super) fn lower_let_decl(ctx: &mut LowerCtx, d: &LetDecl) {
     ) && matches!(ctx.type_of(&d.value), Type::Record(_) | Type::Enum { .. })
         && let Some(src) = crate::lower::stmt::value_record_fields(ctx, &d.value)
     {
-        match &d.binding {
-            LetBinding::Ident { name, .. } => {
-                ctx.scope.insert(&name, Binding::Record(src));
-                return;
-            }
-            LetBinding::RecordDestruct {
-                fields: destruct_fields,
-                ..
-            } => {
-                install_record_destruct(ctx, &src, destruct_fields);
-                return;
-            }
-            LetBinding::Tuple { names, rest, .. } => {
-                let order = tuple_positions(&ctx.type_of(&d.value), names.len());
-                install_tuple_destruct(ctx, &src, names, rest.as_ref(), &order);
-                return;
-            }
-            _ => {}
+        if install_record_binding(ctx, d, src) {
+            return;
         }
     }
 

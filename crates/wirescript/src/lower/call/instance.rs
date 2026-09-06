@@ -29,13 +29,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // `Box<int>` and `Box<vector>` get separate bodies AND separate grids (they
     // dedup on `template_key`, which would otherwise collapse them into one).
     // A non-generic chip keeps the bare name.
-    let positional_args: Vec<&Expr> = args
-        .iter()
-        .filter_map(|a| match a {
-            CallArg::Positional(e) => Some(e),
-            CallArg::Named { .. } | CallArg::Spread(_) => None,
-        })
-        .collect();
+    let positional_args = positional_args(args);
     let first_param_is_exec = chip_decl
         .inputs
         .first()

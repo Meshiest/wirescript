@@ -17,13 +17,7 @@ on player {
   x = 42
 }",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let set_count = r
         .module
         .nodes
@@ -61,13 +55,7 @@ on player {
   x = 2
 }",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let union_count = r
         .module
         .nodes
@@ -98,13 +86,7 @@ on player {
   x = 42
 }",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     // Two returns + fallthrough needs 2 merge union gates (chain):
     // union1 merges return1 + return2, union2 merges union1 + fallthrough.
     // (The if-joins collapse: each has only its else arm, so the prune

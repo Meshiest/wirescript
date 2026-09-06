@@ -350,6 +350,45 @@ fn register_handler_outputs(ctx: &mut TypeCheckCtx, block: &Block) {
     }
 }
 
+/// A declaration's parameters as `EventDataField`s, resolving each annotation
+/// and warning on a bare `any` as it goes.
+fn params_as_event_data(
+    ctx: &mut TypeCheckCtx,
+    params: &[crate::ast::Param],
+) -> Vec<EventDataField> {
+    params
+        .iter()
+        .map(|p| {
+            let ty = resolve_type_expr(ctx, &p.typ);
+            warn_any_annotation(ctx, &ty, type_expr_range(&p.typ));
+            EventDataField {
+                name: p.name.clone(),
+                ty,
+                is_const: p.is_const,
+            }
+        })
+        .collect()
+}
+
+/// Register what an anon-chip body contributes to the ENCLOSING scope. A chip
+/// shares its parent's scope, so its `var`/`buffer`/`array`/`in` declarations
+/// and its port sites name things there.
+///
+/// The other statement kinds are not skipped so much as not DECLARATIONS - the
+/// ordinary statement walk still checks them.
+pub(super) fn register_anon_chip_decls(ctx: &mut TypeCheckCtx, stmts: &[Stmt]) {
+    for s in stmts {
+        match s {
+            Stmt::Var(v) => register_decl(ctx, &TopDecl::Var(v.clone())),
+            Stmt::Buffer(b) => register_decl(ctx, &TopDecl::Buffer(b.clone())),
+            Stmt::Array(a) => register_decl(ctx, &TopDecl::Array(a.clone())),
+            Stmt::In(i) => register_decl(ctx, &TopDecl::In(i.clone())),
+            _ => {}
+        }
+    }
+    register_anon_chip_outputs(ctx, stmts);
+}
+
 /// Register every plain `out` written directly in an anon chip body as a
 /// module-boundary port, the typecheck-side counterpart of
 /// `lower::predeclare::pre_declare_anon_chip`, over the shared site set
@@ -498,19 +537,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             );
         }
         TopDecl::Fn(f) => {
-            let params: Vec<EventDataField> = f
-                .params
-                .iter()
-                .map(|p| {
-                    let ty = resolve_type_expr(ctx, &p.typ);
-                    warn_any_annotation(ctx, &ty, type_expr_range(&p.typ));
-                    EventDataField {
-                        name: p.name.clone(),
-                        ty,
-                        is_const: p.is_const,
-                    }
-                })
-                .collect();
+            let params = params_as_event_data(ctx, &f.params);
             let ret = f
                 .return_type
                 .as_ref()
@@ -581,19 +608,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     .map(|tp| (tp.name.clone(), type_param_mask(ctx, tp)))
                     .collect();
             }
-            let params: Vec<EventDataField> = c
-                .inputs
-                .iter()
-                .map(|p| {
-                    let ty = resolve_type_expr(ctx, &p.typ);
-                    warn_any_annotation(ctx, &ty, type_expr_range(&p.typ));
-                    EventDataField {
-                        name: p.name.clone(),
-                        ty,
-                        is_const: p.is_const,
-                    }
-                })
-                .collect();
+            let params = params_as_event_data(ctx, &c.inputs);
             let outputs: Vec<EventDataField> = c
                 .outputs
                 .iter()
@@ -703,19 +718,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 register_handler_outputs(ctx, body);
             }
         }
-        TopDecl::AnonChip(ac) => {
-            // Anon chip shares parent scope — register its inner decls.
-            for s in &ac.body.stmts {
-                match s {
-                    Stmt::Var(v) => register_decl(ctx, &TopDecl::Var(v.clone())),
-                    Stmt::Buffer(b) => register_decl(ctx, &TopDecl::Buffer(b.clone())),
-                    Stmt::Array(a) => register_decl(ctx, &TopDecl::Array(a.clone())),
-                    Stmt::In(i) => register_decl(ctx, &TopDecl::In(i.clone())),
-                    _ => {}
-                }
-            }
-            register_anon_chip_outputs(ctx, &ac.body.stmts);
-        }
+        TopDecl::AnonChip(ac) => register_anon_chip_decls(ctx, &ac.body.stmts),
         TopDecl::TypeAlias(t) => {
             if t.type_params.is_empty() {
                 let resolved = resolve_type_expr(ctx, &t.typ);

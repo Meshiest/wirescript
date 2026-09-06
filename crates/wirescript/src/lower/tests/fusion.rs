@@ -104,12 +104,7 @@ fn fuse_nand_buffer_in_chip_with_param() {
     let r = compile(
         "chip g(e: bool) {\n  buffer t: bool = !(t && e)\n}\nvar e: bool = true\ng(e)",
     );
-    let child = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("chip instance should produce a child module");
+    let child = only_chip(&r, "chip instance should produce a child module");
     let child_gates: Vec<_> = child.nodes.values().map(|n| n.gate_class).collect();
     let buffer = child
         .nodes

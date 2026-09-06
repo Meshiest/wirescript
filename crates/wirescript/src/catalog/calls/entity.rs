@@ -10,11 +10,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetLocation",
             gc::ENTITY_GET_LOCATION,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Vector,
-                ty: Type::Vector,
-            }],
+            vec![CallOutput::plain(WirePort::Vector, Type::Vector)],
         ),
     );
     // Entity_IsFrozen: pure query — `entity.IsFrozen()` returns the frozen state
@@ -25,11 +21,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "IsFrozen",
             gc::ENTITY_IS_FROZEN,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::BFrozen,
-                ty: Type::Bool,
-            }],
+            vec![CallOutput::plain(WirePort::BFrozen, Type::Bool)],
         ),
     );
     m.insert(
@@ -38,11 +30,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetRotation",
             gc::ENTITY_GET_ROTATION,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Rotation,
-                ty: Type::Rotator,
-            }],
+            vec![CallOutput::plain(WirePort::Rotation, Type::Rotator)],
         ),
     );
     m.insert(
@@ -51,14 +39,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetLocationRotation",
             gc::ENTITY_GET_LOCATION_ROTATION,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Vector,
-                ty: Type::Record(vec![
+            vec![CallOutput::plain(
+                WirePort::Vector,
+                Type::Record(vec![
                     ("Vector".into(), Type::Vector),
                     ("Rotation".into(), Type::Rotator),
                 ]),
-            }],
+            )],
         ),
     );
     m.insert(
@@ -67,11 +54,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetLinearVelocity",
             gc::ENTITY_GET_LINEAR_VELOCITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::LinearVelocity,
-                ty: Type::Vector,
-            }],
+            vec![CallOutput::plain(WirePort::LinearVelocity, Type::Vector)],
         ),
     );
     m.insert(
@@ -80,11 +63,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetAngularVelocity",
             gc::ENTITY_GET_ANGULAR_VELOCITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::AngularVelocity,
-                ty: Type::Vector,
-            }],
+            vec![CallOutput::plain(WirePort::AngularVelocity, Type::Vector)],
         ),
     );
     m.insert(
@@ -93,14 +72,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetVelocity",
             gc::ENTITY_GET_VELOCITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Vector,
-                ty: Type::Record(vec![
+            vec![CallOutput::plain(
+                WirePort::Vector,
+                Type::Record(vec![
                     ("Vector".into(), Type::Vector),
                     ("Rotation".into(), Type::Rotator),
                 ]),
-            }],
+            )],
         ),
     );
 
@@ -283,11 +261,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetTag",
             gc::ENTITY_GET_TAG,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Tag,
-                ty: Type::String,
-            }],
+            vec![CallOutput::plain(WirePort::Tag, Type::String)],
         ),
     );
     m.insert(
@@ -331,11 +305,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("entity", WirePort::Entity, Type::Entity),
                 CallParam::req("point", WirePort::Point, Type::Vector),
             ],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::LinearVelocity,
-                ty: Type::Vector,
-            }],
+            vec![CallOutput::plain(WirePort::LinearVelocity, Type::Vector)],
         ),
     );
     m.insert(
@@ -344,11 +314,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetSpeed",
             gc::ENTITY_GET_SPEED,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::Speed,
-                ty: Type::Float,
-            }],
+            vec![CallOutput::plain(WirePort::Speed, Type::Float)],
         ),
     );
     // Entity-scoped team access. Named distinctly from the character/player
@@ -359,11 +325,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetEntityTeam",
             gc::ENTITY_GET_TEAM,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::Team,
-                ty: Type::Entity,
-            }],
+            vec![CallOutput::plain(WirePort::Team, Type::Entity)],
         ),
     );
     m.insert(
@@ -387,14 +349,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::GET_OWN_TRANSFORM,
             params: vec![],
             exec: true,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::Location,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Location,
+                Type::Record(vec![
                     ("Location".into(), Type::Vector),
                     ("Rotation".into(), Type::Rotator),
                 ]),
-            }],
+            )],
             receiver: None,
         },
     );
@@ -423,10 +384,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("collisionChannel", WirePort::CollisionChannel, Type::Int),
             ],
             exec: true,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::HitDistance,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::HitDistance,
+                Type::Record(vec![
                     ("HitDistance".into(), Type::Float),
                     ("HitEntity".into(), Type::Entity),
                     ("HitLocation".into(), Type::Vector),
@@ -435,7 +395,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                     ("Hit".into(), Type::Exec),
                     ("Miss".into(), Type::Exec),
                 ]),
-            }],
+            )],
             receiver: None,
         },
     );

@@ -211,14 +211,14 @@ mod tests {
             properties: std::sync::Arc::new(crate::collections::HashMap::default()),
             ports: std::sync::Arc::new(GateIO {
                 inputs: vec![
-                    PortSpec { name: intern("Exec"), ty: Type::Exec },
-                    PortSpec { name: intern("MapVarRef"), ty: Type::Ref(Box::new(Type::Any)) },
-                    PortSpec { name: intern("Key"), ty: Type::String },
+                    PortSpec::exec(intern("Exec")),
+                    PortSpec::new(intern("MapVarRef"), Type::Ref(Box::new(Type::Any))),
+                    PortSpec::new(intern("Key"), Type::String),
                 ],
                 outputs: vec![
-                    PortSpec { name: intern("ExecOut"), ty: Type::Exec },
-                    PortSpec { name: intern("Value"), ty: value_ty },
-                    PortSpec { name: intern("bFound"), ty: Type::Bool },
+                    PortSpec::exec(intern("ExecOut")),
+                    PortSpec::new(intern("Value"), value_ty),
+                    PortSpec::new(intern("bFound"), Type::Bool),
                 ],
             }),
             source_range: crate::diagnostic::SourceRange::default(),

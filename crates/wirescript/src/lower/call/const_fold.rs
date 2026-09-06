@@ -50,13 +50,7 @@ pub(super) fn fold_const_chip_input(ctx: &mut LowerCtx, chip_node_id: NodeId, fo
         kind: NodeKind::Gate,
         gate_class: gc::LITERAL,
         properties: std::sync::Arc::new(props),
-        ports: std::sync::Arc::new(GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: fold.ty.clone(),
-            }],
-        }),
+        ports: std::sync::Arc::new(GateIO::source(fold.ty.clone())),
         source_range: pin_node.source_range.clone(),
         chip_id: pin_node.chip_id,
         chain_id: None,

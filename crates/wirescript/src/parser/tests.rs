@@ -1,5 +1,18 @@
     use super::*;
 
+    /// The first `on` handler in a parsed script, for a test that only declares
+    /// one. `what` names it in the panic so a parse regression says which
+    /// handler went missing.
+    fn first_handler<'a>(s: &'a Script, what: &str) -> &'a Handler {
+        s.decls
+            .iter()
+            .find_map(|d| match d {
+                TopDecl::Handler(h) => Some(h),
+                _ => None,
+            })
+            .expect(what)
+    }
+
     fn parse_ok(src: &str) -> Script {
         let r = parse(src, "test");
         assert!(
@@ -1392,14 +1405,7 @@
         }
         // …and it really lands as a positional CONFIG arg, not as a param.
         let s = parse_ok("const CH = \"evt_died\"\non CustomEvent(CH) -> (v: int) { }");
-        let handler = s
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                TopDecl::Handler(h) => Some(h),
-                _ => None,
-            })
-            .expect("a handler");
+        let handler = first_handler(&s, "a handler");
         assert_eq!(handler.config.len(), 1, "one positional config arg");
         assert!(
             matches!(
@@ -1441,14 +1447,7 @@
     fn on_arrow_absent_binds_nothing() {
         // No `->` present — no params bound.
         let s = parse_ok("on RoundStart() { }");
-        let handler = s
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                TopDecl::Handler(h) => Some(h),
-                _ => None,
-            })
-            .expect("a handler");
+        let handler = first_handler(&s, "a handler");
         assert!(handler.params.is_empty());
     }
 
@@ -1458,14 +1457,7 @@
         // killerWeaponName) fills slot 0 with a synthesized unused name and binds
         // `killer` at slot 1; nothing past slot 1 is materialized.
         let s = parse_ok("on CharacterDied() -> { killer } { }");
-        let handler = s
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                TopDecl::Handler(h) => Some(h),
-                _ => None,
-            })
-            .expect("a handler");
+        let handler = first_handler(&s, "a handler");
         assert_eq!(handler.params.len(), 2, "params: {:?}", handler.params);
         assert!(handler.params[0].name.starts_with("_arrow_unused_"));
         assert_eq!(handler.params[1].name, "killer");
@@ -1474,14 +1466,7 @@
     #[test]
     fn on_arrow_record_rename_binds_alias() {
         let s = parse_ok("on CharacterSpawned() -> { character: c } { }");
-        let handler = s
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                TopDecl::Handler(h) => Some(h),
-                _ => None,
-            })
-            .expect("a handler");
+        let handler = first_handler(&s, "a handler");
         assert_eq!(handler.params.len(), 1);
         assert_eq!(handler.params[0].name, "c");
     }
@@ -1491,14 +1476,7 @@
         // `-> p` (no parens) is shorthand for `-> (p)`: one untyped positional
         // capture. Works the same on named and custom events.
         let s = parse_ok("on CharacterDied() -> character { }");
-        let handler = s
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                TopDecl::Handler(h) => Some(h),
-                _ => None,
-            })
-            .expect("a handler");
+        let handler = first_handler(&s, "a handler");
         assert_eq!(handler.params.len(), 1);
         assert_eq!(handler.params[0].name, "character");
         assert!(handler.params[0].ty.is_none());
@@ -1508,14 +1486,7 @@
         );
 
         let s2 = parse_ok("on CustomEvent(\"dmg\") -> amount { }");
-        let h2 = s2
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                TopDecl::Handler(h) => Some(h),
-                _ => None,
-            })
-            .expect("a handler");
+        let h2 = first_handler(&s2, "a handler");
         assert_eq!(h2.params.len(), 1);
         assert_eq!(h2.params[0].name, "amount");
     }
@@ -1535,14 +1506,7 @@
     #[test]
     fn on_arrow_tuple_untyped_slot_parses() {
         let s = parse_ok("on CustomEvent(\"dmg\") -> (amount) { }");
-        let handler = s
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                TopDecl::Handler(h) => Some(h),
-                _ => None,
-            })
-            .expect("a handler");
+        let handler = first_handler(&s, "a handler");
         assert_eq!(handler.params.len(), 1);
         assert_eq!(handler.params[0].name, "amount");
         assert!(handler.params[0].ty.is_none());

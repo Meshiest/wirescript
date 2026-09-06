@@ -19,14 +19,8 @@ fn phase1_sample() {
     let mut module = Module::new("phase1_sample");
 
     let ports = Arc::new(GateIO {
-        inputs: vec![PortSpec {
-            name: wirescript::intern::intern("RER_Input"),
-            ty: Type::Any,
-        }],
-        outputs: vec![PortSpec {
-            name: wirescript::intern::intern("RER_Output"),
-            ty: Type::Any,
-        }],
+        inputs: vec![PortSpec::new(wirescript::intern::intern("RER_Input"), Type::Any)],
+        outputs: vec![PortSpec::new(wirescript::intern::intern("RER_Output"), Type::Any)],
     });
 
     let id_a = NodeId::fresh();

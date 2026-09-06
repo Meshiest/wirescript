@@ -10,8 +10,8 @@
             gate_class: crate::ir::gate_class::REROUTER,
             properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
-                inputs: vec![PortSpec { name: *crate::intern::sym::RER_INPUT, ty: Type::Any }],
-                outputs: vec![PortSpec { name: *crate::intern::sym::RER_OUTPUT, ty: Type::Any }],
+                inputs: vec![PortSpec::new(*crate::intern::sym::RER_INPUT, Type::Any)],
+                outputs: vec![PortSpec::new(*crate::intern::sym::RER_OUTPUT, Type::Any)],
             }),
             source_range: SourceRange::default(),
             chip_id: None,

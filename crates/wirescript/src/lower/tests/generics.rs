@@ -821,14 +821,6 @@ fn explicit_type_args_pin_return_only_type_param() {
 
 #[test]
 fn explicit_type_args_error_cases() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
-            .collect::<Vec<_>>()
-    };
     // out-of-mask: string isn't in Numeric
     assert!(errs("mod z<T: Numeric>() -> T { static var v: T = v\n return v }\nout r: int = z<string>()\n")
         .contains(&"WS033".to_string()));
@@ -855,14 +847,6 @@ fn type_args_do_not_break_comparison_parsing() {
 
 #[test]
 fn non_callable_call_errors_ws038() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
-            .collect::<Vec<_>>()
-    };
     // Calling a non-callable value (a var / let / array / input) is a hard
     // error, not a silent `_Unsupported` gate reading 0. An index typo is the
     // common trigger.
@@ -900,14 +884,6 @@ fn builtins_and_types_program_compiles() {
 
 #[test]
 fn receiver_call_validates_receiver_type() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
-            .collect::<Vec<_>>()
-    };
     // A receiver whose type doesn't match `self` is a WS003 error — user mod/chip
     // calls coerce each arg (incl. the receiver bound as arg 0) against its
     // parameter, exactly like the wire layer's PortsAreCompatible.

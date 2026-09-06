@@ -359,14 +359,8 @@ pub(in crate::lower) fn lower_builtin_call(
 
     let mut ports = GateIO::default();
     if spec.exec {
-        ports.inputs.push(PortSpec {
-            name: intern(exec_in_port.as_str()),
-            ty: Type::Exec,
-        });
-        ports.outputs.push(PortSpec {
-            name: *sym::EXEC_OUT,
-            ty: Type::Exec,
-        });
+        ports.inputs.push(PortSpec::exec(intern(exec_in_port.as_str())));
+        ports.outputs.push(PortSpec::exec(*sym::EXEC_OUT));
     }
     // A custom-event send declares its eight data params as `any` (the channel
     // accepts anything), but the RECEIVER types its DataOut ports from the
@@ -409,16 +403,10 @@ pub(in crate::lower) fn lower_builtin_call(
                 ty = t;
             }
         }
-        ports.inputs.push(PortSpec {
-            name: intern(p.port.as_str()),
-            ty,
-        });
+        ports.inputs.push(PortSpec::new(intern(p.port.as_str()), ty));
     }
     for out in &spec.outputs {
-        ports.outputs.push(PortSpec {
-            name: intern(out.port.as_str()),
-            ty: out.ty.clone(),
-        });
+        ports.outputs.push(PortSpec::new(intern(out.port.as_str()), out.ty.clone()));
     }
 
     // Ensure all gate ports are present — the catalog may define ports
@@ -430,19 +418,13 @@ pub(in crate::lower) fn lower_builtin_call(
         for p in &gate.component.inputs {
             let sym = intern(&p.name);
             if !existing.contains(&sym) {
-                ports.inputs.push(PortSpec {
-                    name: sym,
-                    ty: Type::Any,
-                });
+                ports.inputs.push(PortSpec::new(sym, Type::Any));
             }
         }
         for p in &gate.component.outputs {
             let sym = intern(&p.name);
             if !existing.contains(&sym) {
-                ports.outputs.push(PortSpec {
-                    name: sym,
-                    ty: Type::Any,
-                });
+                ports.outputs.push(PortSpec::new(sym, Type::Any));
             }
         }
     }

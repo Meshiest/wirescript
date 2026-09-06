@@ -27,13 +27,7 @@ fn lowered(src: &str) -> LowerResult {
         fold_mode: FoldMode::Auto,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     r
 }
 

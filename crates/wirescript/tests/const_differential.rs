@@ -6,12 +6,12 @@
 //! the const path vanished: a `const mod` that silently fell back to emitting
 //! gates would still compute the right answer and still pass. That is what
 //! this test is for.
-use std::sync::Arc;
+
+mod common;
 
 use wirescript::intern::intern;
 use wirescript::ir::{gate_class, Literal, Module};
-use wirescript::lower::{lower, FoldMode, LowerInput};
-use wirescript::template_cache::TemplateCache;
+use wirescript::lower::FoldMode;
 use wirescript::typecheck::typecheck;
 use wirescript::{resolve, FsLoader, Severity};
 
@@ -30,27 +30,15 @@ fn has_gate_class(m: &Module, class: &str) -> bool {
 /// Folding is FORCED OFF, so any gate that disappears did so because const
 /// evaluation removed it, not because the optimizer did.
 fn lower_ok(source: &str, file: &str) -> Module {
-    let resolved = resolve(source, file, &FsLoader);
+    let (resolved, tc, lowered) = common::run_stages(source, file, FoldMode::ForceOff);
     assert!(
         resolved.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "resolve errors in {file}: {:?}", resolved.diagnostics
     );
-    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "typecheck errors in {file}: {:?}", tc.diagnostics
     );
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        file,
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
     assert!(
         lowered.diagnostics.iter().all(|d| d.severity != Severity::Error),
         "lower errors in {file}: {:?}", lowered.diagnostics
@@ -134,19 +122,7 @@ fn every_const_fixture_compiles_without_warnings() {
         }
         let file = path.to_str().unwrap();
         let src = std::fs::read_to_string(&path).unwrap();
-        let resolved = resolve(&src, file, &FsLoader);
-        let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
-        let lowered = lower(LowerInput {
-            ast: &resolved.ast,
-            type_of_expr: &tc.type_of_expr,
-            op_resolutions: &tc.op_resolutions,
-            file,
-            module_name: None,
-            template_cache: Arc::new(TemplateCache::new()),
-            doc_comments: &resolved.doc_comments,
-            fold_mode: FoldMode::ForceOff,
-            ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-        });
+        let (resolved, tc, lowered) = common::run_stages(&src, file, FoldMode::ForceOff);
         let diagnostics: Vec<String> = resolved
             .diagnostics
             .iter()
@@ -767,19 +743,7 @@ fn a_const_mod_conditionally_assembling_an_array_via_push_emits_zero_gates() {
 /// [`lower_ok`] it must not panic on them, since asserting their ABSENCE is
 /// the whole point.
 fn all_error_diags(source: &str, file: &str) -> Vec<String> {
-    let resolved = resolve(source, file, &FsLoader);
-    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        file,
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: FoldMode::ForceOff,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
+    let (resolved, tc, lowered) = common::run_stages(source, file, FoldMode::ForceOff);
     resolved
         .diagnostics
         .iter()
@@ -872,19 +836,7 @@ fn ws044_still_fires_for_a_real_mutation_outside_a_const_mod_body() {
 /// Lower `source` at an explicit fold mode and count gates. Mirrors `lower_ok`
 /// but takes the mode, so a program can be measured under both.
 fn gates_at(source: &str, file: &str, fold_mode: FoldMode) -> usize {
-    let resolved = resolve(source, file, &FsLoader);
-    let tc = typecheck(&resolved.ast, file, &wirescript::typecheck::CeSlotMap::default());
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        file,
-        module_name: None,
-        template_cache: Arc::new(TemplateCache::new()),
-        doc_comments: &resolved.doc_comments,
-        fold_mode,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
-    });
+    let (_resolved, _tc, lowered) = common::run_stages(source, file, fold_mode);
     count(&lowered.module)
 }
 

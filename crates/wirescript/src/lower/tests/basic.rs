@@ -1853,13 +1853,7 @@ fn counter_program_end_to_end() {
 #[test]
 fn if_expr_creates_select_gate() {
     let r = compile("out x = if true then 1 else 0");
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let has_select = r
         .module
         .nodes
@@ -2275,13 +2269,7 @@ fn field_access_vector_component_on_local_creates_split() {
     let r = compile(
         "in p: character\non p {\n  let a = Vec(1.0, 2.0, 3.0) + Vec(4.0, 5.0, 6.0)\n  let cx = a.x\n  p.DisplayText(\"${cx}\")\n}",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let has_split = r
         .module
         .nodes
@@ -2298,13 +2286,7 @@ fn splitvec_record_fields_reuse_single_split() {
     let r = compile(
         "in pl: character\non pl {\n  let v = Vec(11.0, 22.0, 33.0)\n  let p = v.SplitVec()\n  let s = p.x + p.y + p.z\n  pl.DisplayText(\"${s}\")\n}",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let splits = r
         .module
         .nodes

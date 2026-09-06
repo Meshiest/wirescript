@@ -44,6 +44,25 @@ use crate::layout::wall::WallLayout;
 use crate::layout::{BusEnd, BusLayout, LayoutResult, NodeRotation};
 use crate::ir::{Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc};
 
+/// The collision mask of an `@invisible` brick: it stops nothing.
+///
+/// Spelled out field by field on purpose. `Collision::default()` collides with
+/// everything, so `..Default::default()` here would silently make invisible
+/// bricks solid again, and a channel added to brdb's `Collision` has to be
+/// switched off in this ONE place rather than at each `@invisible` site.
+pub(super) fn no_collision() -> Collision {
+    Collision {
+        player: false,
+        player1: Some(false),
+        player2: Some(false),
+        player3: Some(false),
+        weapon: false,
+        interact: false,
+        tool: false,
+        physics: false,
+    }
+}
+
 mod options;
 pub use options::*;
 mod colors;
@@ -99,16 +118,7 @@ pub fn build_world(
     if opts.invisible {
         if let Some(chip_brick) = world.bricks.last_mut() {
             chip_brick.visible = false;
-            chip_brick.collision = Collision {
-                player: false,
-                player1: Some(false),
-                player2: Some(false),
-                player3: Some(false),
-                weapon: false,
-                interact: false,
-                tool: false,
-                physics: false,
-            };
+            chip_brick.collision = no_collision();
         }
     }
 

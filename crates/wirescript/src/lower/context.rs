@@ -475,7 +475,131 @@ pub(super) struct LowerCtx<'a> {
     pub(super) import_behavior_lowered: crate::collections::HashSet<(String, usize)>,
 }
 
+/// Chain an exec-driven `Var_Get` onto the current exec chain: the gate reads
+/// `var_rec` through its ref port, and `ctx.current_exec` advances to the
+/// gate's `ExecOut`. Callers read the value off the returned node's `Value`
+/// port.
+///
+/// `properties` seeds the gate's data struct, which is how a read gets a
+/// sensible value before its var is first written; the deref path
+/// (`*x`) deliberately passes none.
+pub(super) fn chain_var_get(
+    ctx: &mut LowerCtx,
+    var_rec: &VarRecord,
+    exec: PortRef,
+    range: &SourceRange,
+    properties: HashMap<crate::intern::Sym, Literal>,
+    note: Option<&'static str>,
+) -> NodeId {
+    let get_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::VAR_GET,
+        source_range: range.clone(),
+        properties,
+        ports: GateIO::var_read(var_rec.inner_type.clone()),
+        note,
+        ..Default::default()
+    });
+    ctx.connect(exec, get_id.port(WirePort::Exec));
+    ctx.connect(
+        var_rec.node_id.port(WirePort::VarRef),
+        get_id.port(WirePort::VarRef),
+    );
+    ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
+    get_id
+}
+
+/// The `Value` a fresh `Var_Get` carries in its data struct: the type's zero,
+/// so a read that beats its var's first write reads that rather than whatever
+/// the gate was serialized with.
+pub(super) fn var_get_seed_props(inner: &Type) -> HashMap<crate::intern::Sym, Literal> {
+    let mut props = HashMap::default();
+    if let Some(lit) = default_literal_for_var_type(inner) {
+        props.insert(*sym::VALUE, lit);
+    }
+    props
+}
+
 impl<'a> LowerCtx<'a> {
+    /// A context with every accumulator empty and every cursor at its start.
+    /// The three places that build a `LowerCtx` - the whole-module entry, the
+    /// resource-estimation template, and a chip body's child module - fill in
+    /// what they need with struct-update syntax (`..LowerCtx::empty(...)`), so
+    /// a new field gets its zero in ONE place instead of needing all three
+    /// edited in lockstep.
+    ///
+    /// The five arguments are the ones that have no meaningful zero: a
+    /// `LowerCtx` cannot exist without a module to build into or the
+    /// typechecker tables to read.
+    pub(super) fn empty(
+        builder: ModuleBuilder,
+        type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
+        op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+        ce_slots: &'a CeSlotMap,
+        doc_comments: &'a crate::parser::DocComments,
+    ) -> Self {
+        Self {
+            builder,
+            type_of_expr,
+            op_resolutions,
+            ce_slots,
+            doc_comments,
+            ids: IdAllocator::default(),
+            diagnostics: Vec::new(),
+            file: String::new(),
+            scope: crate::scope::Scope::new(),
+            handler_end_execs: Vec::new(),
+            current_exec: None,
+            handler_entry_exec: None,
+            captured_events: HashMap::default(),
+            next_chain_id: 0,
+            next_scope_id: ROOT_SCOPE_ID + 1,
+            current_anon_chip: None,
+            anon_chip_nodes: crate::collections::HashMap::default(),
+            mod_return_exec: None,
+            mod_return_var: None,
+            mod_return_record: None,
+            type_aliases: HashMap::default(),
+            generic_type_aliases: HashMap::default(),
+            enum_defs: Arc::new(HashMap::default()),
+            pending_emits: HashMap::default(),
+            output_backing_vars: HashMap::default(),
+            exec_signal_hubs: HashMap::default(),
+            exec_signal_keys: HashMap::default(),
+            await_armed_port: None,
+            signal_awaits: HashMap::default(),
+            exec_branch_depth: 0,
+            exec_signal_payloads: HashMap::default(),
+            in_handler_body: false,
+            template_cache: Arc::new(crate::template_cache::TemplateCache::new()),
+            pending_inline_record: None,
+            last_value_record_port: None,
+            ns_by_file: HashMap::default(),
+            pending_return_record: None,
+            pending_out_records: HashMap::default(),
+            chip_call_stack: Vec::new(),
+            known_fn_names: Arc::new(crate::collections::HashSet::default()),
+            const_env: Arc::new(super::predeclare::ConstEnv::default()),
+            const_declared: Arc::new(crate::collections::HashSet::default()),
+            immutable_containers: crate::collections::HashSet::default(),
+            is_root_module: false,
+            nofold_depth: 0,
+            mono_stack: Vec::new(),
+            scoped_consts: Vec::new(),
+            scoped_rev: 0,
+            const_lookup_memo: std::cell::RefCell::new(None),
+            scoped_const_declared: Vec::new(),
+            dropped_ranges: Vec::new(),
+            // Base frame: the module's own top-level declarations.
+            pass1_chips: vec![Arc::new(HashMap::default())],
+            // Populated from `scope` right after pass 1 (top-level module only;
+            // stays empty for a chip body, which has no `import * as`).
+            importer_names: crate::collections::HashSet::default(),
+            ns_mod_scopes: HashMap::default(),
+            import_state_dedup: crate::collections::HashMap::default(),
+            import_behavior_lowered: crate::collections::HashSet::default(),
+        }
+    }
+
     pub(super) fn alloc_chain(&mut self) -> u32 {
         let id = self.next_chain_id;
         self.next_chain_id += 1;
@@ -1088,19 +1212,10 @@ impl<'a> LowerCtx<'a> {
             source_range: src_range,
             ports: GateIO {
                 inputs: vec![
-                    PortSpec {
-                        name: *sym::INPUT_A,
-                        ty: Type::String,
-                    },
-                    PortSpec {
-                        name: *sym::INPUT_B,
-                        ty: Type::String,
-                    },
+                    PortSpec::new(*sym::INPUT_A, Type::String),
+                    PortSpec::new(*sym::INPUT_B, Type::String),
                 ],
-                outputs: vec![PortSpec {
-                    name: *sym::B_OUTPUT,
-                    ty: Type::Bool,
-                }],
+                outputs: vec![PortSpec::new(*sym::B_OUTPUT, Type::Bool)],
             },
             properties: props,
             note: Some("string→bool coercion (!= \"\")"),

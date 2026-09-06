@@ -1,6 +1,8 @@
 //! Non-root chips default open (`bCollapsed = false`); `@closed` collapses.
 //! `@label` overrides port and chip display labels.
 
+mod common;
+
 const SRC: &str = "\
 in tick: exec\n\
 @label(\"Do It!\") in go: exec\n\
@@ -12,7 +14,6 @@ out result = f.r\n";
 
 #[test]
 fn label_overrides_reach_the_serialized_labels() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
     use wirescript::{CompileInput, FoldMode};
 
@@ -23,28 +24,10 @@ fn label_overrides_reach_the_serialized_labels() {
         fold_mode: FoldMode::Auto,
     })
     .expect("should compile to brz");
-    let path = std::env::temp_dir().join("ws_open_chips_test.brz");
-    std::fs::write(&path, &cr.brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
     let mut texts: Vec<String> = Vec::new();
-    for gid in 1..32 {
-        let chunks = match reader.brick_chunk_index(gid) {
-            Ok(c) => c,
-            Err(_) => break,
-        };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                if let Some(BrdbValue::String(text)) = c.get("Text") {
-                    texts.push(text.clone());
-                }
-            }
+    for c in common::world_components(&cr.brz) {
+        if let Some(BrdbValue::String(text)) = c.get("Text") {
+            texts.push(text.clone());
         }
     }
     // The @label'd port shows its label, not its identifier.

@@ -78,8 +78,8 @@ impl ModuleBuilder {
                 gate_class: gc::MICROCHIP_INPUT,
                 source_range,
                 ports: GateIO {
-                    inputs: vec![PortSpec { name: *sym::RER_INPUT, ty: ty.clone() }],
-                    outputs: vec![PortSpec { name: *sym::RER_OUTPUT, ty }],
+                    inputs: vec![PortSpec::new(*sym::RER_INPUT, ty.clone())],
+                    outputs: vec![PortSpec::new(*sym::RER_OUTPUT, ty)],
                 },
                 properties: props,
                 chip_id: None,
@@ -107,8 +107,8 @@ impl ModuleBuilder {
                 gate_class: gc::MICROCHIP_OUTPUT,
                 source_range,
                 ports: GateIO {
-                    inputs: vec![PortSpec { name: *sym::RER_INPUT, ty: ty.clone() }],
-                    outputs: vec![PortSpec { name: *sym::RER_OUTPUT, ty }],
+                    inputs: vec![PortSpec::new(*sym::RER_INPUT, ty.clone())],
+                    outputs: vec![PortSpec::new(*sym::RER_OUTPUT, ty)],
                 },
                 properties: props,
                 chip_id: None,

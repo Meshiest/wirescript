@@ -1,6 +1,8 @@
 //! Emitted saves attach a floating `Component_TextDisplay` name label to the
 //! top-level chip, named chips, variables/arrays, and microchip I/O gates.
 
+mod common;
+
 use wirescript::emit::EmitOptions;
 use wirescript::{CompileInput, FoldMode, compile_to_world};
 
@@ -95,7 +97,6 @@ fn labels_attach_to_chip_var_and_io_bricks() {
 /// texts, face (Z_Positive), outline (Outlined, 4px), and offsets.
 #[test]
 fn labels_serialize_with_style() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
     let cr = wirescript::compile::compile(CompileInput {
@@ -105,54 +106,36 @@ fn labels_serialize_with_style() {
         fold_mode: FoldMode::Auto,
     })
     .expect("should compile to brz");
-    let path = std::env::temp_dir().join("ws_text_labels_test.brz");
-    std::fs::write(&path, &cr.brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
     let mut texts: Vec<(String, f32)> = Vec::new();
-    for gid in 1..32 {
-        let chunks = match reader.brick_chunk_index(gid) {
-            Ok(c) => c,
-            Err(_) => break,
+    for c in common::world_components(&cr.brz) {
+        // TextDisplay is the only struct here with a Face field.
+        let (Some(BrdbValue::String(text)), Some(BrdbValue::Enum(face))) =
+            (c.get("Text"), c.get("Face"))
+        else {
+            continue;
         };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                // TextDisplay is the only struct here with a Face field.
-                let (Some(BrdbValue::String(text)), Some(BrdbValue::Enum(face))) =
-                    (c.get("Text"), c.get("Face"))
-                else {
-                    continue;
-                };
-                assert_eq!(
-                    face.get_value_raw(),
-                    4,
-                    "label {text:?} should sit on the +Z face"
-                );
-                match c.get("Outline") {
-                    Some(BrdbValue::Enum(outline)) => assert_eq!(
-                        outline.get_value_raw(),
-                        2,
-                        "label {text:?} should use EBRTextOutline::Outlined"
-                    ),
-                    other => panic!("label {text:?} missing Outline enum, got {other:?}"),
-                }
-                match c.get("OutlineWidth") {
-                    Some(BrdbValue::F32(w)) => assert_eq!(*w, 4.0),
-                    other => panic!("label {text:?} missing OutlineWidth, got {other:?}"),
-                }
-                let line_height = match c.get("LineHeight") {
-                    Some(BrdbValue::F32(h)) => *h,
-                    other => panic!("label {text:?} missing LineHeight, got {other:?}"),
-                };
-                texts.push((text.clone(), line_height));
-            }
+        assert_eq!(
+            face.get_value_raw(),
+            4,
+            "label {text:?} should sit on the +Z face"
+        );
+        match c.get("Outline") {
+            Some(BrdbValue::Enum(outline)) => assert_eq!(
+                outline.get_value_raw(),
+                2,
+                "label {text:?} should use EBRTextOutline::Outlined"
+            ),
+            other => panic!("label {text:?} missing Outline enum, got {other:?}"),
         }
+        match c.get("OutlineWidth") {
+            Some(BrdbValue::F32(w)) => assert_eq!(*w, 4.0),
+            other => panic!("label {text:?} missing OutlineWidth, got {other:?}"),
+        }
+        let line_height = match c.get("LineHeight") {
+            Some(BrdbValue::F32(h)) => *h,
+            other => panic!("label {text:?} missing LineHeight, got {other:?}"),
+        };
+        texts.push((text.clone(), line_height));
     }
 
     texts.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -188,7 +171,6 @@ fn labels_serialize_with_style() {
 /// back to the originating var node instead of stopping at the pin.
 #[test]
 fn var_tag_survives_boundary_pins_inside_named_chip() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
     let src = "var names: string[]\n\
@@ -208,32 +190,14 @@ fn var_tag_survives_boundary_pins_inside_named_chip() {
         fold_mode: FoldMode::Auto,
     })
     .expect("should compile to brz");
-    let path = std::env::temp_dir().join("ws_boundary_var_tag_test.brz");
-    std::fs::write(&path, &cr.brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
     let mut tags: Vec<(String, f32)> = Vec::new();
-    for gid in 1..32 {
-        let chunks = match reader.brick_chunk_index(gid) {
-            Ok(c) => c,
-            Err(_) => break,
+    for c in common::world_components(&cr.brz) {
+        let (Some(BrdbValue::String(text)), Some(BrdbValue::F32(line_height))) =
+            (c.get("Text"), c.get("LineHeight"))
+        else {
+            continue;
         };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                let (Some(BrdbValue::String(text)), Some(BrdbValue::F32(line_height))) =
-                    (c.get("Text"), c.get("LineHeight"))
-                else {
-                    continue;
-                };
-                tags.push((text.clone(), *line_height));
-            }
-        }
+        tags.push((text.clone(), *line_height));
     }
 
     assert!(
@@ -515,7 +479,6 @@ fn module_label_constant_bakes_root_title_without_a_wire() {
 /// title line.
 #[test]
 fn doc_comment_renders_under_the_title() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
     let src = "/// Adds one to x.\n\
@@ -530,29 +493,11 @@ fn doc_comment_renders_under_the_title() {
         fold_mode: FoldMode::Auto,
     })
     .expect("should compile");
-    let path = std::env::temp_dir().join("ws_header_doc_test.brz");
-    std::fs::write(&path, &cr.brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
     let mut found = false;
-    for gid in 1..32 {
-        let chunks = match reader.brick_chunk_index(gid) {
-            Ok(c) => c,
-            Err(_) => break,
-        };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                if let Some(BrdbValue::String(text)) = c.get("Text") {
-                    if text == "<size=\"96\">Foo</>\n\nAdds one to x.\nPure and simple." {
-                        found = true;
-                    }
-                }
+    for c in common::world_components(&cr.brz) {
+        if let Some(BrdbValue::String(text)) = c.get("Text") {
+            if text == "<size=\"96\">Foo</>\n\nAdds one to x.\nPure and simple." {
+                found = true;
             }
         }
     }
@@ -564,7 +509,6 @@ fn doc_comment_renders_under_the_title() {
 /// label match and got nothing.
 #[test]
 fn map_var_gets_a_name_label() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
     let cr = wirescript::compile::compile(CompileInput {
@@ -574,28 +518,10 @@ fn map_var_gets_a_name_label() {
         fold_mode: FoldMode::Auto,
     })
     .expect("should compile to brz");
-    let path = std::env::temp_dir().join("ws_map_label_test.brz");
-    std::fs::write(&path, &cr.brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
     let mut texts: Vec<String> = Vec::new();
-    for gid in 1..32 {
-        let chunks = match reader.brick_chunk_index(gid) {
-            Ok(c) => c,
-            Err(_) => break,
-        };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                if let Some(BrdbValue::String(text)) = c.get("Text") {
-                    texts.push(text.clone());
-                }
-            }
+    for c in common::world_components(&cr.brz) {
+        if let Some(BrdbValue::String(text)) = c.get("Text") {
+            texts.push(text.clone());
         }
     }
     assert!(
@@ -611,7 +537,6 @@ fn map_var_gets_a_name_label() {
 /// bug). The `Key` field of a `Map<string, _>` get must therefore be a String.
 #[test]
 fn map_get_key_data_field_matches_key_type() {
-    use brdb::IntoReader;
     use brdb::schema::BrdbValue;
 
     let cr = wirescript::compile::compile(CompileInput {
@@ -621,33 +546,15 @@ fn map_get_key_data_field_matches_key_type() {
         fold_mode: FoldMode::Auto,
     })
     .expect("should compile to brz");
-    let path = std::env::temp_dir().join("ws_map_key_type_test.brz");
-    std::fs::write(&path, &cr.brz).expect("write brz");
-    let reader = brdb::Brz::open(&path).expect("open brz").into_reader();
-
     let mut checked = false;
-    for gid in 1..32 {
-        let chunks = match reader.brick_chunk_index(gid) {
-            Ok(c) => c,
-            Err(_) => break,
-        };
-        for chunk in chunks {
-            if chunk.num_components == 0 {
-                continue;
-            }
-            let (_soa, comps) = reader
-                .component_chunk_soa(gid, chunk.index)
-                .expect("read components");
-            for c in comps {
-                // The Map_Get component is the one carrying both `Key` and `bFound`.
-                if let (Some(key), Some(_)) = (c.get("Key"), c.get("bFound")) {
-                    checked = true;
-                    assert!(
-                        matches!(key, BrdbValue::String(_)),
-                        "a string-keyed map's Map_Get `Key` data field must be a String, got {key:?}"
-                    );
-                }
-            }
+    for c in common::world_components(&cr.brz) {
+        // The Map_Get component is the one carrying both `Key` and `bFound`.
+        if let (Some(key), Some(_)) = (c.get("Key"), c.get("bFound")) {
+            checked = true;
+            assert!(
+                matches!(key, BrdbValue::String(_)),
+                "a string-keyed map's Map_Get `Key` data field must be a String, got {key:?}"
+            );
         }
     }
     assert!(checked, "expected a Map_Get component carrying a `Key` field");

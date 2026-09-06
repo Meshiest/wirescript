@@ -2068,7 +2068,7 @@
     // ---- string -> bool must NOT chain transitively into numerics ----
     //
     // Every consumer of `coerce()` (infer::coerce_or_emit, sig::check_args,
-    // check_let_type_annotation, unify_glb) applies exactly ONE rule between
+    // check_let_type_annotation) applies exactly ONE rule between
     // a source and a destination type — nothing composes String -> Bool with
     // Bool -> Int — and operator resolution (`resolve_op`) never consults
     // coercions at all. These pins keep it that way.

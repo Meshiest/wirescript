@@ -28,7 +28,7 @@ use crate::intern::{intern_static, resolve, sym};
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{
-    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, ScopeId, Type, Wire,
+    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, ScopeId, Type, Wire,
 };
 use eval::Value;
 use table::{AnnihilatorKind, CertifiedTable, InVariant};
@@ -760,13 +760,7 @@ fn literal_properties_and_ports(
     properties.insert(*sym::VALUE, value.to_literal());
     (
         Arc::new(properties),
-        Arc::new(GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty,
-            }],
-        }),
+        Arc::new(GateIO::source(ty)),
     )
 }
 

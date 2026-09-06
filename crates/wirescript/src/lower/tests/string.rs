@@ -3,13 +3,7 @@ use super::*;
 #[test]
 fn string_literal_emits_concatenate_gate() {
     let r = compile("out x = \"hello\"");
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let has_concat = r.module.nodes.values().any(|n| {
         n.gate_class
             == "BrickComponentType_WireGraph_Expr_String_Concatenate"
@@ -87,13 +81,7 @@ fn string_in_select_inlines_as_variant() {
 #[test]
 fn string_concat_op_works() {
     let r = compile("let a = \"hello\" .. \" \" .. \"world\"\nout x = a");
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let concat_count = r
         .module
         .nodes

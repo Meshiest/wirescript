@@ -44,12 +44,7 @@ fn const_literal_reaches_into_anon_chip() {
     // gate — the case that dangles across the chip boundary.
     let src = "let K: int = 7\nout dummy = K\nin trigger: exec\nchip on trigger { var x: int = 0\n  if x == K { x = 1 } }";
     let r = compile(src);
-    let child = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("the `chip on` block should produce one anon chip module");
+    let child = only_chip(&r, "the `chip on` block should produce one anon chip module");
     // The 7 must reach the chip-side comparison — either as a cloned Literal
     // gate wired in, or (since scalar-to-dataless materialization made the EQ
     // the literal's single consumer) as an inlined InputB data default on the
@@ -114,12 +109,7 @@ fn chip_decl_sets_child_root_scope_to_chip_body() {
     // Standalone chips are instantiated per call, so we need to call it.
     let src = "chip Foo(x: int) -> (r: int) { out r = x }\nlet f = Foo(1)";
     let r = compile(src);
-    let chip_mod = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("expected one chip sub-module from call");
+    let chip_mod = only_chip(&r, "expected one chip sub-module from call");
     let root = chip_mod
         .scopes
         .get(&crate::ir::ROOT_SCOPE_ID)
@@ -179,13 +169,7 @@ fn inline_mod_multi_output_fields_wire_to_sources() {
         mod M(v: float) -> (p: float, q: float) {\n  out p = v + 1.0\n  out q = v + 2.0\n}\n\
         let s = M(a)\nout x = s.p\nout y = s.q";
     let r = compile(src);
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     // No wire may originate from the phantom node 0.
     let phantom = r.module.wires.iter().any(|w| w.source.node_id == NodeId(0));
     assert!(!phantom, "multi-output mod read produced a phantom n0 wire");
@@ -271,14 +255,7 @@ fn chip_call_compiles_to_brz() {
     let src = "chip ALU(a: int, b: int) -> (result: int) { out result = a + b }\nlet r = ALU(1, 2)\nout sum = r.result";
     let r = compile(src);
     let lr = crate::layout::layout(&r.module);
-    let opts = crate::emit::EmitOptions::default();
-    let brz = crate::emit::emit_brz(
-        &r.module,
-        &lr,
-        &opts,
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-    );
-    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+    assert_emits(&r.module, &lr);
 }
 
 #[test]
@@ -1256,12 +1233,7 @@ fn exec_param_handler_drives_chip_body() {
     let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(init: exec, tables: Tables) -> (code: int) {\n  on init {\n    tables.names.push(\"a\")\n    emit code = 5\n  }\n}\nin s: exec\nlet r = Init(s, TB)\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
-    let child = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("chip instance should produce a child module");
+    let child = only_chip(&r, "chip instance should produce a child module");
     let push = child
         .nodes
         .values()
@@ -1287,14 +1259,7 @@ fn entity_setters_compile_to_brz() {
     let r = compile(src);
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
-    let opts = crate::emit::EmitOptions::default();
-    let brz = crate::emit::emit_brz(
-        &r.module,
-        &lr,
-        &opts,
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-    );
-    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+    assert_emits(&r.module, &lr);
 }
 
 #[test]
@@ -1318,14 +1283,7 @@ fn entity_setter_embeds_vector_literal() {
     }
     // and the emit path serializes the embedded f64 struct values
     let lr = crate::layout::layout(&r.module);
-    let opts = crate::emit::EmitOptions::default();
-    let brz = crate::emit::emit_brz(
-        &r.module,
-        &lr,
-        &opts,
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-    );
-    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+    assert_emits(&r.module, &lr);
 }
 
 #[test]
@@ -1339,14 +1297,7 @@ fn spawn_prefab_compiles_to_brz() {
     let r = compile(src);
     assert_no_errors(&r);
     let lr = crate::layout::layout(&r.module);
-    let opts = crate::emit::EmitOptions::default();
-    let brz = crate::emit::emit_brz(
-        &r.module,
-        &lr,
-        &opts,
-        &std::sync::Arc::new(crate::template_cache::TemplateCache::new()),
-    );
-    assert!(brz.is_ok(), "should emit valid brz: {:?}", brz.err());
+    assert_emits(&r.module, &lr);
 }
 
 /// Assert a compiled `SpawnPrefab` call has no `_Unsupported` placeholder
@@ -1445,12 +1396,7 @@ fn exec_named_arg_drives_chip_body_outside_exec_context() {
     let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
-    let child = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("chip instance should produce a child module");
+    let child = only_chip(&r, "chip instance should produce a child module");
     let push = child
         .nodes
         .values()
@@ -1476,12 +1422,7 @@ fn exec_arg_call_exposes_exec_field() {
     let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nlet r = Init(TB, exec = s)\nvar hit: int = 0\non r.exec { hit = hit + 1 }\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
-    let child = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("chip instance should produce a child module");
+    let child = only_chip(&r, "chip instance should produce a child module");
     let exec_out = *child
         .outputs
         .last()
@@ -1502,12 +1443,7 @@ fn named_chip_body_captures_top_level_state() {
     let src = "var names: string[]\nvar count: int = 0\nchip Init() -> (code: int) {\n  names.push(\"a\")\n  count = count + 1\n  emit code = 7\n}\nin s: exec\nlet r = Init(exec = s)\nout v = r.code";
     let r = compile(src);
     assert_no_errors(&r);
-    let child = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("chip instance should produce a child module");
+    let child = only_chip(&r, "chip instance should produce a child module");
     let push = child
         .nodes
         .values()
@@ -2149,12 +2085,7 @@ fn inline_multi_output_chip_field_access_projects_the_named_output() {
     // Not merely "no placeholder": it must pick the SECOND output pin. Falling
     // back to the call's primary value port would also drop the placeholder
     // while silently reading `lo`.
-    let chip = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("the Pair chip instance");
+    let chip = only_chip(&r, "the Pair chip instance");
     let hi_pin = chip.outputs[1];
     let lo_pin = chip.outputs[0];
     let total = *r.module.outputs.first().expect("the `total` output pin");
@@ -2317,12 +2248,7 @@ fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
          out o: int = w\n",
     );
     assert_no_errors(&r);
-    let outer = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("the Outer instance module");
+    let outer = only_chip(&r, "the Outer instance module");
     assert!(
         gate_count_deep(outer, crate::ir::gate_class::PSEUDO_VAR) > 0,
         "the nested anon chip's `var counter` must exist in Outer's module tree"

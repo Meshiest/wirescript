@@ -60,11 +60,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             exec: true,
             // The gate echoes the (resolved) text id, so a later call can update
             // or clear the same on-screen text: `let id = p.DisplayText(...)`.
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::TextIdOut,
-                ty: Type::Int,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::TextIdOut, Type::Int)],
             receiver: Some(Type::Controller),
         },
     );
@@ -78,11 +74,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "ControllerOf",
             gc::PLAYERSTATE_GET_FROM_ENTITY,
             vec![CallParam::req("entity", WirePort::Entity, Type::Entity)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::PlayerState,
-                ty: Type::Controller,
-            }],
+            vec![CallOutput::plain(WirePort::PlayerState, Type::Controller)],
         ),
     );
     // `CharacterOf` uses the `Character_GetFromController` gate; its player
@@ -93,11 +85,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "CharacterOf",
             gc::CHARACTER_GET_FROM_CONTROLLER,
             vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Character,
-                ty: Type::Character,
-            }],
+            vec![CallOutput::plain(WirePort::Character, Type::Character)],
         ),
     );
 
@@ -114,14 +102,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 // Config-only (settings menu, not a wire input).
                 CallParam::opt("localAim", WirePort::BLocalAim, Type::Bool),
             ],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Origin,
-                ty: Type::Record(vec![
+            vec![CallOutput::plain(
+                WirePort::Origin,
+                Type::Record(vec![
                     ("Origin".into(), Type::Vector),
                     ("Direction".into(), Type::Vector),
                 ]),
-            }],
+            )],
         ),
     );
     m.insert(
@@ -131,10 +118,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::INPUT_SPLITTER,
             params: vec![CallParam::req("character", WirePort::Character, Type::Character)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::InputForward,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::InputForward,
+                Type::Record(vec![
                     ("Forward".into(), Type::Float),
                     ("Right".into(), Type::Float),
                     ("Up".into(), Type::Float),
@@ -148,7 +134,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                     ("PressedLeftMouse".into(), Type::Bool),
                     ("PressedRightMouse".into(), Type::Bool),
                 ]),
-            }],
+            )],
             receiver: Some(Type::Character),
         },
     );
@@ -166,10 +152,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetInputs",
             gc::EXEC_GET_INPUTS,
             vec![CallParam::req("player", WirePort::Player, Type::Character)],
-            vec![CallOutput {
-                field: None,
-                port: WirePort::InputForward,
-                ty: Type::Record(vec![
+            vec![CallOutput::plain(
+                WirePort::InputForward,
+                Type::Record(vec![
                     ("Forward".into(), Type::Float),
                     ("Right".into(), Type::Float),
                     ("Up".into(), Type::Float),
@@ -183,7 +168,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                     ("PressedLeftMouse".into(), Type::Bool),
                     ("PressedRightMouse".into(), Type::Bool),
                 ]),
-            }],
+            )],
         ),
     );
 
@@ -198,11 +183,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("target", WirePort::PlayerState, Type::Controller),
                 CallParam::req("role", WirePort::RoleName, Type::String),
             ],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::BHasRole,
-                ty: Type::Bool,
-            }],
+            vec![CallOutput::plain(WirePort::BHasRole, Type::Bool)],
         ),
     );
 
@@ -227,14 +208,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetDamage",
             gc::CHARACTER_GET_DAMAGE,
             vec![CallParam::req("character", WirePort::Character, Type::Character)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::Damage,
-                ty: Type::Record(vec![
+            vec![CallOutput::plain(
+                WirePort::Damage,
+                Type::Record(vec![
                     ("Damage".into(), Type::Float),
                     ("DamageLimit".into(), Type::Float),
                 ]),
-            }],
+            )],
         ),
     );
     m.insert(
@@ -281,11 +261,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetUserName",
             gc::PLAYERSTATE_GET_USER_NAME,
             vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::UserName,
-                ty: Type::String,
-            }],
+            vec![CallOutput::plain(WirePort::UserName, Type::String)],
         ),
     );
     m.insert(
@@ -294,11 +270,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetUserId",
             gc::PLAYERSTATE_GET_USER_ID,
             vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::UserId,
-                ty: Type::String,
-            }],
+            vec![CallOutput::plain(WirePort::UserId, Type::String)],
         ),
     );
     m.insert(
@@ -307,11 +279,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "GetDisplayName",
             gc::PLAYERSTATE_GET_DISPLAY_NAME,
             vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::DisplayName,
-                ty: Type::String,
-            }],
+            vec![CallOutput::plain(WirePort::DisplayName, Type::String)],
         ),
     );
     m.insert(
@@ -320,11 +288,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             "IsTrusted",
             gc::PLAYERSTATE_IS_TRUSTED,
             vec![CallParam::req("controller", WirePort::PlayerState, Type::Controller)],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::BIsTrusted,
-                ty: Type::Bool,
-            }],
+            vec![CallOutput::plain(WirePort::BIsTrusted, Type::Bool)],
         ),
     );
     m.insert(
@@ -359,11 +323,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("controller", WirePort::PlayerState, Type::Controller),
                 CallParam::req("permission", WirePort::PermissionName, Type::String),
             ],
-            vec![CallOutput {
-            field: None,
-                port: WirePort::BHasPermission,
-                ty: Type::Bool,
-            }],
+            vec![CallOutput::plain(WirePort::BHasPermission, Type::Bool)],
         ),
     );
     m.insert(

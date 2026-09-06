@@ -125,46 +125,8 @@ pub(super) fn binding_to_port(
                 if let Some(cached) = var_rec.get_node_for_handler {
                     return Some(cached.port(WirePort::Value));
                 }
-                let inner = var_rec.inner_type.clone();
-                let mut get_props = HashMap::default();
-                if let Some(lit) = default_literal_for_var_type(&inner) {
-                    get_props.insert(*sym::VALUE, lit);
-                }
-                let get_id = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::VAR_GET,
-                    source_range: range.clone(),
-                    properties: get_props,
-                    ports: GateIO {
-                        inputs: vec![
-                            PortSpec {
-                                name: *sym::EXEC,
-                                ty: Type::Exec,
-                            },
-                            PortSpec {
-                                name: *sym::VAR_REF,
-                                ty: Type::Ref(Box::new(inner.clone())),
-                            },
-                        ],
-                        outputs: vec![
-                            PortSpec {
-                                name: *sym::VALUE,
-                                ty: inner.clone(),
-                            },
-                            PortSpec {
-                                name: *sym::EXEC_OUT,
-                                ty: Type::Exec,
-                            },
-                        ],
-                    },
-                    note: Some("get rec_field".into()),
-                    ..Default::default()
-                });
-                ctx.connect(exec, get_id.port(WirePort::Exec));
-                ctx.connect(
-                    var_rec.node_id.port(WirePort::VarRef),
-                    get_id.port(WirePort::VarRef),
-                );
-                ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
+                let props = var_get_seed_props(&var_rec.inner_type);
+                let get_id = chain_var_get(ctx, var_rec, exec, range, props, Some("get rec_field"));
                 return Some(get_id.port(WirePort::Value));
             }
             Some(var_rec.node_id.port(WirePort::Value))
@@ -320,16 +282,10 @@ fn split_quat_component(
         gate_class: gc::SPLIT_QUATERNION,
         source_range: range.clone(),
         ports: GateIO {
-            inputs: vec![PortSpec {
-                name: *sym::INPUT,
-                ty: Type::Quat,
-            }],
+            inputs: vec![PortSpec::new(*sym::INPUT, Type::Quat)],
             outputs: ["X", "Y", "Z", "W"]
                 .into_iter()
-                .map(|n| PortSpec {
-                    name: intern_static(n),
-                    ty: Type::Float,
-                })
+                .map(|n| PortSpec::new(intern_static(n), Type::Float))
                 .collect(),
         },
         ..Default::default()
@@ -602,16 +558,10 @@ pub(super) fn lower_field_access(
                 gate_class: gc::SPLIT_ROTATION,
                 source_range: range.clone(),
                 ports: GateIO {
-                    inputs: vec![PortSpec {
-                        name: *sym::INPUT,
-                        ty: Type::Rotator,
-                    }],
+                    inputs: vec![PortSpec::new(*sym::INPUT, Type::Rotator)],
                     outputs: ["Pitch", "Yaw", "Roll"]
                         .into_iter()
-                        .map(|n| PortSpec {
-                            name: intern_static(n),
-                            ty: Type::Float,
-                        })
+                        .map(|n| PortSpec::new(intern_static(n), Type::Float))
                         .collect(),
                 },
                 ..Default::default()
@@ -627,24 +577,12 @@ pub(super) fn lower_field_access(
                 source_range: range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec {
-                            name: *sym::INPUT,
-                            ty: Type::Vector,
-                        },
+                        PortSpec::new(*sym::INPUT, Type::Vector),
                     ],
                     outputs: vec![
-                        PortSpec {
-                            name: intern_static("X"),
-                            ty: Type::Float,
-                        },
-                        PortSpec {
-                            name: intern_static("Y"),
-                            ty: Type::Float,
-                        },
-                        PortSpec {
-                            name: intern_static("Z"),
-                            ty: Type::Float,
-                        },
+                        PortSpec::new(intern_static("X"), Type::Float),
+                        PortSpec::new(intern_static("Y"), Type::Float),
+                        PortSpec::new(intern_static("Z"), Type::Float),
                     ],
                 },
                 ..Default::default()
@@ -660,28 +598,13 @@ pub(super) fn lower_field_access(
                 source_range: range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec {
-                            name: *sym::INPUT,
-                            ty: Type::Color,
-                        },
+                        PortSpec::new(*sym::INPUT, Type::Color),
                     ],
                     outputs: vec![
-                        PortSpec {
-                            name: intern_static("R"),
-                            ty: Type::Float,
-                        },
-                        PortSpec {
-                            name: intern_static("G"),
-                            ty: Type::Float,
-                        },
-                        PortSpec {
-                            name: intern_static("B"),
-                            ty: Type::Float,
-                        },
-                        PortSpec {
-                            name: intern_static("A"),
-                            ty: Type::Float,
-                        },
+                        PortSpec::new(intern_static("R"), Type::Float),
+                        PortSpec::new(intern_static("G"), Type::Float),
+                        PortSpec::new(intern_static("B"), Type::Float),
+                        PortSpec::new(intern_static("A"), Type::Float),
                     ],
                 },
                 ..Default::default()
@@ -858,19 +781,10 @@ fn lower_string_index(
         properties,
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: *sym::INPUT,
-                    ty: Type::String,
-                },
-                PortSpec {
-                    name: intern_static("Start"),
-                    ty: Type::Int,
-                },
+                PortSpec::new(*sym::INPUT, Type::String),
+                PortSpec::new(intern_static("Start"), Type::Int),
             ],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::String,
-            }],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, Type::String)],
         },
         ..Default::default()
     });
@@ -957,32 +871,14 @@ fn lower_index_access_runtime(
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::ARRAY_VAR_REF,
-                    ty: Type::Ref(Box::new(elem_ty.clone())),
-                },
-                PortSpec {
-                    name: *sym::INDEX,
-                    ty: Type::Int,
-                },
+                PortSpec::exec(*sym::EXEC),
+                PortSpec::new(*sym::ARRAY_VAR_REF, Type::Ref(Box::new(elem_ty.clone()))),
+                PortSpec::new(*sym::INDEX, Type::Int),
             ],
             outputs: vec![
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: elem_ty,
-                },
-                PortSpec {
-                    name: *sym::B_OUT_OF_BOUNDS,
-                    ty: Type::Bool,
-                },
-                PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                },
+                PortSpec::new(*sym::VALUE, elem_ty),
+                PortSpec::new(*sym::B_OUT_OF_BOUNDS, Type::Bool),
+                PortSpec::exec(*sym::EXEC_OUT),
             ],
         },
         note: Some("array get".into()),
@@ -1012,30 +908,15 @@ pub(super) fn array_exec_op(
         None => return array_ref,
     };
     let mut inputs = vec![
-        PortSpec {
-            name: *sym::EXEC,
-            ty: Type::Exec,
-        },
-        PortSpec {
-            name: *sym::ARRAY_VAR_REF,
-            ty: Type::Array(Box::new(Type::Any)),
-        },
+        PortSpec::exec(*sym::EXEC),
+        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
     ];
     for (port, ty, _) in &extra_in {
-        inputs.push(PortSpec {
-            name: port.sym(),
-            ty: ty.clone(),
-        });
+        inputs.push(PortSpec::new(port.sym(), ty.clone()));
     }
-    let mut outputs = vec![PortSpec {
-        name: *sym::EXEC_OUT,
-        ty: Type::Exec,
-    }];
+    let mut outputs = vec![PortSpec::exec(*sym::EXEC_OUT)];
     for (port, ty) in &extra_out {
-        outputs.push(PortSpec {
-            name: port.sym(),
-            ty: ty.clone(),
-        });
+        outputs.push(PortSpec::new(port.sym(), ty.clone()));
     }
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class,
@@ -1161,15 +1042,15 @@ pub(super) fn map_exec_op(
         None => return synthesise_unsupported_range(ctx, range),
     };
     let mut inputs = vec![
-        PortSpec { name: *sym::EXEC, ty: Type::Exec },
-        PortSpec { name: *sym::MAP_VAR_REF, ty: Type::Ref(Box::new(Type::Any)) },
+        PortSpec::exec(*sym::EXEC),
+        PortSpec::new(*sym::MAP_VAR_REF, Type::Ref(Box::new(Type::Any))),
     ];
     for (port, ty, _) in &extra_in {
-        inputs.push(PortSpec { name: port.sym(), ty: ty.clone() });
+        inputs.push(PortSpec::new(port.sym(), ty.clone()));
     }
-    let mut outputs = vec![PortSpec { name: *sym::EXEC_OUT, ty: Type::Exec }];
+    let mut outputs = vec![PortSpec::exec(*sym::EXEC_OUT)];
     for (port, ty) in &extra_out {
-        outputs.push(PortSpec { name: port.sym(), ty: ty.clone() });
+        outputs.push(PortSpec::new(port.sym(), ty.clone()));
     }
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class,
@@ -1258,12 +1139,24 @@ pub(super) fn reject_const_container_mutation(
     true
 }
 
+/// A record binding's field names in a stable order.
+///
+/// Every walk over a `Binding::Record` emits gates, and the map's own iteration
+/// order is a hash order, so walking it directly would let the emitted node ids
+/// (and therefore the output bytes) move between compiles. Sorting by the
+/// interned STRING rather than the `Sym` keeps the order independent of intern
+/// order too.
+fn sorted_field_names(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<crate::intern::Sym> {
+    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
+    names.sort_by_key(|s| crate::intern::resolve(*s));
+    names
+}
+
 /// The leaf map-backed vars of a record MAP's field map, name-sorted, recursing
 /// through nested record fields. Each leaf is one `VarStorage::Map` parallel map
 /// (`Map<K, fieldType>`) — a record map is stored as one map per record field.
 fn leaf_maps(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     let mut out = Vec::new();
     for k in names {
         match fields.get(&k) {
@@ -1339,8 +1232,7 @@ fn record_map_key_read(
     range: &SourceRange,
 ) -> HashMap<crate::intern::Sym, Binding> {
     let mut out = HashMap::default();
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     for k in names {
         match fields.get(&k) {
             Some(Binding::Record(sub)) => {
@@ -1393,8 +1285,7 @@ fn record_map_set_walk(
     key_port: PortRef,
     range: &SourceRange,
 ) {
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     for k in names {
         let Some(sbind) = src.get(&k).cloned() else {
             continue;
@@ -1695,8 +1586,7 @@ pub(super) fn lower_map_method(
 /// one `VarStorage::Array` parallel array — a record ARRAY is stored as one
 /// array per record field.
 fn leaf_arrays(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<VarRecord> {
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     let mut out = Vec::new();
     for k in names {
         match fields.get(&k) {
@@ -1727,8 +1617,7 @@ fn record_array_value_op(
     gate_class: &'static str,
     scalar: Option<(WirePort, PortRef)>,
 ) -> Option<PortRef> {
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     let mut ret = ctx.current_exec;
     for k in names {
         let Some(sbind) = src.get(&k).cloned() else {
@@ -1841,8 +1730,7 @@ fn navigate_record_fields<'a>(
 /// descending through nested records. A record auto-unwraps to this port when
 /// used where a scalar is expected. `None` for an empty record.
 fn first_leaf_port(rec: &HashMap<crate::intern::Sym, Binding>) -> Option<PortRef> {
-    let mut names: Vec<crate::intern::Sym> = rec.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(rec);
     for k in names {
         match rec.get(&k) {
             Some(Binding::Local(l)) => return Some(l.port),
@@ -2158,8 +2046,7 @@ fn record_array_index_read(
     range: &SourceRange,
 ) -> HashMap<crate::intern::Sym, Binding> {
     let mut out = HashMap::default();
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     for k in names {
         match fields.get(&k) {
             Some(Binding::Record(sub)) => {
@@ -2217,8 +2104,7 @@ fn record_array_set_walk(
     index_port: PortRef,
     range: &SourceRange,
 ) {
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     for k in names {
         let Some(sbind) = src.get(&k).cloned() else {
             continue;
@@ -2262,10 +2148,10 @@ fn make_scratch_array(ctx: &mut LowerCtx, elem: &Type, range: &SourceRange) -> P
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::ARRAY_VAR_REF,
-                ty: Type::Ref(Box::new(Type::Array(Box::new(elem.clone())))),
-            }],
+            outputs: vec![PortSpec::new(
+                              *sym::ARRAY_VAR_REF,
+                              Type::Ref(Box::new(Type::Array(Box::new(elem.clone())))),
+                          )],
         },
         note: Some("sort key copy".into()),
         ..Default::default()
@@ -2527,8 +2413,7 @@ fn record_array_pop(
     range: &SourceRange,
 ) -> HashMap<crate::intern::Sym, Binding> {
     let mut out = HashMap::default();
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+    let names = sorted_field_names(fields);
     for k in names {
         match fields.get(&k) {
             Some(Binding::Record(sub)) => {
@@ -2631,24 +2516,12 @@ fn lower_array_method_inner(
                 source_range: range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: *sym::ARRAY_VAR_REF,
-                            ty: Type::Array(Box::new(Type::Any)),
-                        },
-                        PortSpec {
-                            name: *sym::VALUE,
-                            ty: Type::Any,
-                        },
+                        PortSpec::exec(*sym::EXEC),
+                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
+                        PortSpec::new(*sym::VALUE, Type::Any),
                     ],
                     outputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
+                        PortSpec::exec(*sym::EXEC_OUT),
                     ],
                 },
                 ..Default::default()
@@ -2715,20 +2588,11 @@ fn lower_array_method_inner(
                 source_range: range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: *sym::ARRAY_VAR_REF,
-                            ty: Type::Array(Box::new(Type::Any)),
-                        },
+                        PortSpec::exec(*sym::EXEC),
+                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
                     ],
                     outputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
+                        PortSpec::exec(*sym::EXEC_OUT),
                     ],
                 },
                 ..Default::default()
@@ -2749,28 +2613,13 @@ fn lower_array_method_inner(
                 source_range: range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: *sym::ARRAY_VAR_REF,
-                            ty: Type::Array(Box::new(Type::Any)),
-                        },
-                        PortSpec {
-                            name: *sym::INDEX,
-                            ty: Type::Int,
-                        },
+                        PortSpec::exec(*sym::EXEC),
+                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
+                        PortSpec::new(*sym::INDEX, Type::Int),
                     ],
                     outputs: vec![
-                        PortSpec {
-                            name: *sym::B_OUT_OF_BOUNDS,
-                            ty: Type::Bool,
-                        },
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
+                        PortSpec::new(*sym::B_OUT_OF_BOUNDS, Type::Bool),
+                        PortSpec::exec(*sym::EXEC_OUT),
                     ],
                 },
                 ..Default::default()
@@ -2788,24 +2637,12 @@ fn lower_array_method_inner(
                 source_range: range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec {
-                            name: *sym::EXEC,
-                            ty: Type::Exec,
-                        },
-                        PortSpec {
-                            name: *sym::ARRAY_VAR_REF,
-                            ty: Type::Array(Box::new(Type::Any)),
-                        },
+                        PortSpec::exec(*sym::EXEC),
+                        PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
                     ],
                     outputs: vec![
-                        PortSpec {
-                            name: intern_static("Length"),
-                            ty: Type::Int,
-                        },
-                        PortSpec {
-                            name: *sym::EXEC_OUT,
-                            ty: Type::Exec,
-                        },
+                        PortSpec::new(intern_static("Length"), Type::Int),
+                        PortSpec::exec(*sym::EXEC_OUT),
                     ],
                 },
                 ..Default::default()
@@ -3186,28 +3023,13 @@ pub(super) fn lower_array_set(
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: *sym::EXEC,
-                    ty: Type::Exec,
-                },
-                PortSpec {
-                    name: *sym::ARRAY_VAR_REF,
-                    ty: Type::Array(Box::new(Type::Any)),
-                },
-                PortSpec {
-                    name: *sym::INDEX,
-                    ty: Type::Int,
-                },
-                PortSpec {
-                    name: *sym::VALUE,
-                    ty: elem_ty,
-                },
+                PortSpec::exec(*sym::EXEC),
+                PortSpec::new(*sym::ARRAY_VAR_REF, Type::Array(Box::new(Type::Any))),
+                PortSpec::new(*sym::INDEX, Type::Int),
+                PortSpec::new(*sym::VALUE, elem_ty),
             ],
             outputs: vec![
-                PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                },
+                PortSpec::exec(*sym::EXEC_OUT),
             ],
         },
         note: Some("array set".into()),

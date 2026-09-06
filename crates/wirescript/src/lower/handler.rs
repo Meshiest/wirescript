@@ -48,15 +48,9 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
             return;
         }
     };
-    let mut outputs = vec![PortSpec {
-        name: intern(evt.exec_out),
-        ty: Type::Exec,
-    }];
+    let mut outputs = vec![PortSpec::exec(intern(evt.exec_out))];
     for d2 in &evt.data {
-        outputs.push(PortSpec {
-            name: intern(d2.port),
-            ty: d2.ty.clone(),
-        });
+        outputs.push(PortSpec::new(intern(d2.port), d2.ty.clone()));
     }
     let event_node = ctx.add_event(AddNodeOpts {
         gate_class: evt.gate_class,
@@ -100,6 +94,92 @@ fn resolve_captured_source_port(ctx: &mut LowerCtx, name: &str) -> Option<PortRe
     None
 }
 
+/// `on !x`: route the trigger through a LogicalNOT so the handler fires when
+/// the source goes false. The identity when the trigger was not negated.
+fn negate_trigger(ctx: &mut LowerCtx, port: PortRef, negated: bool) -> PortRef {
+    if !negated {
+        return port;
+    }
+    let not_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::LOGICAL_NOT,
+        ports: GateIO::bool_not(),
+        ..Default::default()
+    });
+    ctx.connect(port, not_id.port(WirePort::BInput));
+    not_id.port(WirePort::BOutput)
+}
+
+/// How a handler's trigger reads in the emitted scope label: `name`, or
+/// `name.field` for a field trigger.
+fn trigger_label(name: &str, field: &Option<String>) -> String {
+    match field {
+        Some(f) => format!("{name}.{f}"),
+        None => name.to_string(),
+    }
+}
+
+/// The slice of [`LowerCtx`] a handler body is allowed to clobber, taken once
+/// at the top of [`lower_handler`]. EVERY exit from that function has to put it
+/// back, including the ones that give up without lowering anything:
+/// `handler_ends` holds the exit exec of every PRECEDING handler, and a path
+/// that drops it leaves the next top-level statement with no chain to attach
+/// to, so the statement is silently deleted and blamed with a WS058 on the
+/// user's line.
+struct HandlerSave {
+    chain: Option<u32>,
+    handler_ends: Vec<PortRef>,
+}
+
+impl HandlerSave {
+    /// Take the state, and open a fresh chain for the handler about to be
+    /// lowered.
+    fn take(ctx: &mut LowerCtx) -> Self {
+        let chain = ctx.builder.current_chain_id;
+        let fresh = ctx.alloc_chain();
+        ctx.builder.current_chain_id = Some(fresh);
+        // Taken so an inner block does not flush the outer handler ends.
+        let handler_ends = std::mem::take(&mut ctx.handler_end_execs);
+        Self {
+            chain,
+            handler_ends,
+        }
+    }
+
+    /// Give up on the handler without lowering its body.
+    fn abandon(self, ctx: &mut LowerCtx) {
+        ctx.builder.current_chain_id = self.chain;
+        ctx.handler_end_execs = self.handler_ends;
+    }
+
+    /// Lower a handler body with `trig` as its entry exec, restore, and hand
+    /// this handler's own exit exec to whatever the enclosing block chains next.
+    fn lower_body<R>(
+        self,
+        ctx: &mut LowerCtx,
+        h: &Handler,
+        trig: PortRef,
+        trigger_label: String,
+        body: impl FnOnce(&mut LowerCtx) -> R,
+    ) {
+        let saved = (ctx.current_exec, ctx.handler_entry_exec);
+        ctx.current_exec = Some(trig);
+        ctx.handler_entry_exec = Some(trig);
+        reset_var_get_caches(ctx);
+        ctx.with_scope(
+            ScopeKind::HandlerBody { trigger_label },
+            h.range.clone(),
+            body,
+        );
+        let this_end = ctx.current_exec;
+        ctx.current_exec = saved.0;
+        ctx.handler_entry_exec = saved.1;
+        self.abandon(ctx);
+        if let Some(e) = this_end {
+            ctx.handler_end_execs.push(e);
+        }
+    }
+}
+
 pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     // Union trigger `on a | b { ... }`: run the body when ANY part fires. Lower
     // the body once per part (each part reuses the full single-trigger
@@ -126,12 +206,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         _ => return,
     };
 
-    let saved_chain = ctx.builder.current_chain_id;
-    let chain = ctx.alloc_chain();
-    ctx.builder.current_chain_id = Some(chain);
-
-    // Save handler_end_execs so inner blocks don't flush outer handler ends.
-    let saved_handler_ends = std::mem::take(&mut ctx.handler_end_execs);
+    let save = HandlerSave::take(ctx);
 
     // Try: record-binding field trigger - chip-call results (`on r.exec`,
     // `on r.someExecOutput`) resolve through the result record.
@@ -151,25 +226,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         };
         if let Some(binding) = rec_binding {
             if let Some(trig) = crate::lower::access::binding_to_port(ctx, &binding, &h.range) {
-                let saved = (ctx.current_exec, ctx.handler_entry_exec);
-                ctx.current_exec = Some(trig);
-                ctx.handler_entry_exec = Some(trig);
-                reset_var_get_caches(ctx);
-                ctx.with_scope(
-                    ScopeKind::HandlerBody {
-                        trigger_label: format!("{}.{}", trigger_name, field),
-                    },
-                    h.range.clone(),
-                    |ctx| lower_block(ctx, &h.body),
-                );
-                let this_end = ctx.current_exec;
-                ctx.current_exec = saved.0;
-                ctx.handler_entry_exec = saved.1;
-                ctx.builder.current_chain_id = saved_chain;
-                ctx.handler_end_execs = saved_handler_ends;
-                if let Some(e) = this_end {
-                    ctx.handler_end_execs.push(e);
-                }
+                save.lower_body(ctx, h, trig, format!("{}.{}", trigger_name, field), |ctx| {
+                    lower_block(ctx, &h.body)
+                });
                 return;
             }
         }
@@ -253,46 +312,28 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
                         .filter(|(n, _)| n != &exec_name)
                         .map(|(n, _)| n.as_str())
                         .collect();
-                    let saved = (ctx.current_exec, ctx.handler_entry_exec);
-                    ctx.current_exec = Some(trig);
-                    ctx.handler_entry_exec = Some(trig);
-                    reset_var_get_caches(ctx);
-                    ctx.with_scope(
-                        ScopeKind::HandlerBody {
-                            trigger_label: trigger_name.clone(),
-                        },
-                        h.range.clone(),
-                        |ctx| {
-                            for (i, pname) in h.params.iter().enumerate() {
-                                let field_name: Option<&str> = match &pname.source_field {
-                                    Some(f) => Some(f.as_str()),
-                                    None => data_fields.get(i).copied(),
-                                };
-                                let Some(fname) = field_name else { continue };
-                                let Some(binding) =
-                                    fields_map.get(&crate::intern::intern(fname)).cloned()
-                                else {
-                                    continue;
-                                };
-                                if let Some(port) = crate::lower::access::binding_to_port(
-                                    ctx,
-                                    &binding,
-                                    &pname.range,
-                                ) {
-                                    ctx.scope.insert(&pname.name, Binding::EventParam(port));
-                                }
+                    save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
+                        for (i, pname) in h.params.iter().enumerate() {
+                            let field_name: Option<&str> = match &pname.source_field {
+                                Some(f) => Some(f.as_str()),
+                                None => data_fields.get(i).copied(),
+                            };
+                            let Some(fname) = field_name else { continue };
+                            let Some(binding) =
+                                fields_map.get(&crate::intern::intern(fname)).cloned()
+                            else {
+                                continue;
+                            };
+                            if let Some(port) = crate::lower::access::binding_to_port(
+                                ctx,
+                                &binding,
+                                &pname.range,
+                            ) {
+                                ctx.scope.insert(&pname.name, Binding::EventParam(port));
                             }
-                            lower_block(ctx, &h.body)
-                        },
-                    );
-                    let this_end = ctx.current_exec;
-                    ctx.current_exec = saved.0;
-                    ctx.handler_entry_exec = saved.1;
-                    ctx.builder.current_chain_id = saved_chain;
-                    ctx.handler_end_execs = saved_handler_ends;
-                    if let Some(e) = this_end {
-                        ctx.handler_end_execs.push(e);
-                    }
+                        }
+                        lower_block(ctx, &h.body)
+                    });
                     return;
                 }
                 None => {
@@ -306,8 +347,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
                             .to_string(),
                         h.range.clone(),
                     ));
-                    ctx.builder.current_chain_id = saved_chain;
-                    ctx.handler_end_execs = saved_handler_ends;
+                    save.abandon(ctx);
                     return;
                 }
             }
@@ -323,31 +363,14 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             // capitalisation typo matched no arm and the whole handler was
             // dropped with no diagnostic.
             if !crate::catalog::is_var_pseudo_field(field) {
-                ctx.builder.current_chain_id = saved_chain;
-                ctx.handler_end_execs = saved_handler_ends;
+                save.abandon(ctx);
                 return;
             }
             let port_name = "Value";
             let trig = port_ref(rec.node_id, port_name);
-            let saved = (ctx.current_exec, ctx.handler_entry_exec);
-            ctx.current_exec = Some(trig);
-            ctx.handler_entry_exec = Some(trig);
-            reset_var_get_caches(ctx);
-            ctx.with_scope(
-                ScopeKind::HandlerBody {
-                    trigger_label: format!("{}.{}", trigger_name, field),
-                },
-                h.range.clone(),
-                |ctx| lower_block(ctx, &h.body),
-            );
-            let this_end = ctx.current_exec;
-            ctx.current_exec = saved.0;
-            ctx.handler_entry_exec = saved.1;
-            ctx.builder.current_chain_id = saved_chain;
-            ctx.handler_end_execs = saved_handler_ends;
-            if let Some(e) = this_end {
-                ctx.handler_end_execs.push(e);
-            }
+            save.lower_body(ctx, h, trig, format!("{}.{}", trigger_name, field), |ctx| {
+                lower_block(ctx, &h.body)
+            });
             return;
         }
     }
@@ -355,25 +378,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     // Try: captured event alias
     let captured = ctx.captured_events.get(&trigger_name).cloned();
     if let Some(cap) = captured {
-        let saved = (ctx.current_exec, ctx.handler_entry_exec);
-        ctx.current_exec = Some(cap);
-        ctx.handler_entry_exec = Some(cap);
-        reset_var_get_caches(ctx);
-        ctx.with_scope(
-            ScopeKind::HandlerBody {
-                trigger_label: trigger_name.clone(),
-            },
-            h.range.clone(),
-            |ctx| lower_block(ctx, &h.body),
-        );
-        let this_end = ctx.current_exec;
-        ctx.current_exec = saved.0;
-        ctx.handler_entry_exec = saved.1;
-        ctx.builder.current_chain_id = saved_chain;
-        ctx.handler_end_execs = saved_handler_ends;
-        if let Some(e) = this_end {
-            ctx.handler_end_execs.push(e);
-        }
+        save.lower_body(ctx, h, cap, trigger_name.clone(), |ctx| lower_block(ctx, &h.body));
         return;
     }
 
@@ -381,45 +386,8 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     let in_rec = ctx.lookup_input(&trigger_name).cloned();
     if let Some(rec) = in_rec {
         let trig = rec.node_id.port(WirePort::RerOutput);
-        let trig = if negated {
-            let not_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::LOGICAL_NOT,
-                ports: GateIO {
-                    inputs: vec![PortSpec {
-                        name: *sym::B_INPUT,
-                        ty: Type::Bool,
-                    }],
-                    outputs: vec![PortSpec {
-                        name: *sym::B_OUTPUT,
-                        ty: Type::Bool,
-                    }],
-                },
-                ..Default::default()
-            });
-            ctx.connect(trig, not_id.port(WirePort::BInput));
-            not_id.port(WirePort::BOutput)
-        } else {
-            trig
-        };
-        let saved = (ctx.current_exec, ctx.handler_entry_exec);
-        ctx.current_exec = Some(trig);
-        ctx.handler_entry_exec = Some(trig);
-        reset_var_get_caches(ctx);
-        ctx.with_scope(
-            ScopeKind::HandlerBody {
-                trigger_label: trigger_name.clone(),
-            },
-            h.range.clone(),
-            |ctx| lower_block(ctx, &h.body),
-        );
-        let this_end = ctx.current_exec;
-        ctx.current_exec = saved.0;
-        ctx.handler_entry_exec = saved.1;
-        ctx.builder.current_chain_id = saved_chain;
-        ctx.handler_end_execs = saved_handler_ends;
-        if let Some(e) = this_end {
-            ctx.handler_end_execs.push(e);
-        }
+        let trig = negate_trigger(ctx, trig, negated);
+        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| lower_block(ctx, &h.body));
         return;
     }
 
@@ -427,25 +395,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     let buf_rec = ctx.lookup_buffer(&trigger_name).cloned();
     if let Some(rec) = buf_rec {
         let trig = rec.node_id.port(WirePort::Output);
-        let saved = (ctx.current_exec, ctx.handler_entry_exec);
-        ctx.current_exec = Some(trig);
-        ctx.handler_entry_exec = Some(trig);
-        reset_var_get_caches(ctx);
-        ctx.with_scope(
-            ScopeKind::HandlerBody {
-                trigger_label: trigger_name.clone(),
-            },
-            h.range.clone(),
-            |ctx| lower_block(ctx, &h.body),
-        );
-        let this_end = ctx.current_exec;
-        ctx.current_exec = saved.0;
-        ctx.handler_entry_exec = saved.1;
-        ctx.builder.current_chain_id = saved_chain;
-        ctx.handler_end_execs = saved_handler_ends;
-        if let Some(e) = this_end {
-            ctx.handler_end_execs.push(e);
-        }
+        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| lower_block(ctx, &h.body));
         return;
     }
 
@@ -461,48 +411,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             }
             None => rec.port,
         };
-        let trigger_port = if negated {
-            // `on !x` → add LogicalNOT gate, wire x → NOT, use NOT output as trigger
-            let not_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::LOGICAL_NOT,
-                ports: GateIO {
-                    inputs: vec![PortSpec {
-                        name: *sym::B_INPUT,
-                        ty: Type::Bool,
-                    }],
-                    outputs: vec![PortSpec {
-                        name: *sym::B_OUTPUT,
-                        ty: Type::Bool,
-                    }],
-                },
-                ..Default::default()
-            });
-            ctx.connect(base_port, not_id.port(WirePort::BInput));
-            not_id.port(WirePort::BOutput)
-        } else {
-            base_port
-        };
-        let saved = (ctx.current_exec, ctx.handler_entry_exec);
-        ctx.current_exec = Some(trigger_port);
-        ctx.handler_entry_exec = Some(trigger_port);
-        reset_var_get_caches(ctx);
-        let trigger_label = match &trigger_field {
-            Some(field) => format!("{}.{}", trigger_name, field),
-            None => trigger_name.clone(),
-        };
-        ctx.with_scope(
-            ScopeKind::HandlerBody { trigger_label },
-            h.range.clone(),
-            |ctx| lower_block(ctx, &h.body),
-        );
-        let this_end = ctx.current_exec;
-        ctx.current_exec = saved.0;
-        ctx.handler_entry_exec = saved.1;
-        ctx.builder.current_chain_id = saved_chain;
-        ctx.handler_end_execs = saved_handler_ends;
-        if let Some(e) = this_end {
-            ctx.handler_end_execs.push(e);
-        }
+        let trigger_port = negate_trigger(ctx, base_port, negated);
+        let trigger_label = trigger_label(&trigger_name, &trigger_field);
+        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| lower_block(ctx, &h.body));
         return;
     }
 
@@ -512,45 +423,10 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     if trigger_field.is_none() {
         if let Some(rec) = ctx.lookup_var(&trigger_name).cloned() {
             let base_port = port_ref(rec.node_id, "Value");
-            let trigger_port = if negated {
-                let not_id = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::LOGICAL_NOT,
-                    ports: GateIO {
-                        inputs: vec![PortSpec {
-                            name: *sym::B_INPUT,
-                            ty: Type::Bool,
-                        }],
-                        outputs: vec![PortSpec {
-                            name: *sym::B_OUTPUT,
-                            ty: Type::Bool,
-                        }],
-                    },
-                    ..Default::default()
-                });
-                ctx.connect(base_port, not_id.port(WirePort::BInput));
-                not_id.port(WirePort::BOutput)
-            } else {
-                base_port
-            };
-            let saved = (ctx.current_exec, ctx.handler_entry_exec);
-            ctx.current_exec = Some(trigger_port);
-            ctx.handler_entry_exec = Some(trigger_port);
-            reset_var_get_caches(ctx);
-            ctx.with_scope(
-                ScopeKind::HandlerBody {
-                    trigger_label: trigger_name.clone(),
-                },
-                h.range.clone(),
-                |ctx| lower_block(ctx, &h.body),
-            );
-            let this_end = ctx.current_exec;
-            ctx.current_exec = saved.0;
-            ctx.handler_entry_exec = saved.1;
-            ctx.builder.current_chain_id = saved_chain;
-            ctx.handler_end_execs = saved_handler_ends;
-            if let Some(e) = this_end {
-                ctx.handler_end_execs.push(e);
-            }
+            let trigger_port = negate_trigger(ctx, base_port, negated);
+            save.lower_body(ctx, h, trigger_port, trigger_name.clone(), |ctx| {
+                lower_block(ctx, &h.body)
+            });
             return;
         }
     }
@@ -567,47 +443,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             }
             None => ep_port,
         };
-        let trigger_port = if negated {
-            let not_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::LOGICAL_NOT,
-                ports: GateIO {
-                    inputs: vec![PortSpec {
-                        name: *sym::B_INPUT,
-                        ty: Type::Bool,
-                    }],
-                    outputs: vec![PortSpec {
-                        name: *sym::B_OUTPUT,
-                        ty: Type::Bool,
-                    }],
-                },
-                ..Default::default()
-            });
-            ctx.connect(base_port, not_id.port(WirePort::BInput));
-            not_id.port(WirePort::BOutput)
-        } else {
-            base_port
-        };
-        let saved = (ctx.current_exec, ctx.handler_entry_exec);
-        ctx.current_exec = Some(trigger_port);
-        ctx.handler_entry_exec = Some(trigger_port);
-        reset_var_get_caches(ctx);
-        let trigger_label = match &trigger_field {
-            Some(field) => format!("{}.{}", trigger_name, field),
-            None => trigger_name.clone(),
-        };
-        ctx.with_scope(
-            ScopeKind::HandlerBody { trigger_label },
-            h.range.clone(),
-            |ctx| lower_block(ctx, &h.body),
-        );
-        let this_end = ctx.current_exec;
-        ctx.current_exec = saved.0;
-        ctx.handler_entry_exec = saved.1;
-        ctx.builder.current_chain_id = saved_chain;
-        ctx.handler_end_execs = saved_handler_ends;
-        if let Some(e) = this_end {
-            ctx.handler_end_execs.push(e);
-        }
+        let trigger_port = negate_trigger(ctx, base_port, negated);
+        let trigger_label = trigger_label(&trigger_name, &trigger_field);
+        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| lower_block(ctx, &h.body));
         return;
     }
 
@@ -615,12 +453,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     let evt = match find_event(&trigger_name) {
         Some(e) => e,
         None => {
-            ctx.builder.current_chain_id = saved_chain;
-            // `saved_handler_ends` holds the exit exec of every PRECEDING
-            // handler; every other exit puts it back. Dropping it here left
-            // the next top-level statement with no chain to attach to, so it
-            // was silently deleted and blamed with a WS058 on the user's line.
-            ctx.handler_end_execs = saved_handler_ends;
+            save.abandon(ctx);
             // None of the resolution attempts above found a port, and this is
             // not a built-in event, so the body has nothing to fire on. Say so:
             // typecheck admits ANY `let` as a trigger, so a record-, tuple- or
@@ -656,16 +489,10 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     }
     let event_inputs: Vec<PortSpec> = input_wires
         .iter()
-        .map(|&(port, ty, _)| PortSpec {
-            name: intern(port),
-            ty: ty.clone(),
-        })
+        .map(|&(port, ty, _)| PortSpec::new(intern(port), ty.clone()))
         .collect();
 
-    let mut event_outputs = vec![PortSpec {
-        name: intern(evt.exec_out),
-        ty: Type::Exec,
-    }];
+    let mut event_outputs = vec![PortSpec::exec(intern(evt.exec_out))];
     // Custom Event types its data-output ports from the handler's annotations
     // (`on CustomEvent("x") -> (a: int, b: float)`); a present-but-unannotated
     // param takes the inferred type (typecheck's `CeSlotMap`, resolved from
@@ -692,10 +519,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
             None if is_custom_event => Type::Float,
             None => d.ty.clone(),
         };
-        event_outputs.push(PortSpec {
-            name: intern(d.port),
-            ty,
-        });
+        event_outputs.push(PortSpec::new(intern(d.port), ty));
     }
     let event_node = ctx.add_event(AddNodeOpts {
         gate_class: evt.gate_class,
@@ -716,41 +540,21 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         ctx.connect(src, port_ref(event_node, port));
     }
 
-    let saved_exec = ctx.current_exec;
-    let saved_entry = ctx.handler_entry_exec;
-    ctx.current_exec = Some(port_ref(event_node, evt.exec_out));
-    ctx.handler_entry_exec = Some(port_ref(event_node, evt.exec_out));
-    reset_var_get_caches(ctx);
-
     // Typed event-data params (`on CustomEvent("x") -> (a: int) { ... a ... }`)
     // are bound INSIDE the closure — after `with_scope`'s own push — so they
     // live in the handler-body frame it pushes/pops, not the enclosing one.
-    ctx.with_scope(
-        ScopeKind::HandlerBody {
-            trigger_label: trigger_name.clone(),
-        },
-        h.range.clone(),
-        |ctx| {
-            for (i, pname) in h.params.iter().enumerate() {
-                if let Some(data) = evt.data.get(i) {
-                    ctx.scope.insert(
-                        &pname.name,
-                        Binding::EventParam(port_ref(event_node, data.port)),
-                    );
-                }
+    let trig = port_ref(event_node, evt.exec_out);
+    save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
+        for (i, pname) in h.params.iter().enumerate() {
+            if let Some(data) = evt.data.get(i) {
+                ctx.scope.insert(
+                    &pname.name,
+                    Binding::EventParam(port_ref(event_node, data.port)),
+                );
             }
-            lower_block(ctx, &h.body)
-        },
-    );
-
-    let this_end = ctx.current_exec;
-    ctx.current_exec = saved_exec;
-    ctx.handler_entry_exec = saved_entry;
-    ctx.builder.current_chain_id = saved_chain;
-    ctx.handler_end_execs = saved_handler_ends;
-    if let Some(e) = this_end {
-        ctx.handler_end_execs.push(e);
-    }
+        }
+        lower_block(ctx, &h.body)
+    });
 }
 
 /// Resolve an event handler's config args (e.g. `on ChatCommand("greet",
@@ -884,22 +688,7 @@ pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {
     let mut prev_out = {
         let union_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::UNION,
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_A,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::EXEC_B,
-                        ty: Type::Exec,
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
+            ports: GateIO::exec_join(),
             ..Default::default()
         });
         ctx.connect(first, union_id.port(WirePort::ExecA));
@@ -909,22 +698,7 @@ pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {
     for end in iter {
         let union_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::UNION,
-            ports: GateIO {
-                inputs: vec![
-                    PortSpec {
-                        name: *sym::EXEC_A,
-                        ty: Type::Exec,
-                    },
-                    PortSpec {
-                        name: *sym::EXEC_B,
-                        ty: Type::Exec,
-                    },
-                ],
-                outputs: vec![PortSpec {
-                    name: *sym::EXEC_OUT,
-                    ty: Type::Exec,
-                }],
-            },
+            ports: GateIO::exec_join(),
             ..Default::default()
         });
         ctx.connect(prev_out, union_id.port(WirePort::ExecA));

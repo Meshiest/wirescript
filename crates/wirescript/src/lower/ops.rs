@@ -67,20 +67,11 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: in_a_sym,
-                    ty: left_ty,
-                },
-                PortSpec {
-                    name: in_b_sym,
-                    ty: right_ty,
-                },
+                PortSpec::new(in_a_sym, left_ty),
+                PortSpec::new(in_b_sym, right_ty),
             ],
             outputs: vec![
-                PortSpec {
-                    name: out_sym,
-                    ty: rule.result.clone(),
-                },
+                PortSpec::new(out_sym, rule.result.clone()),
             ],
         },
         note: None,
@@ -119,13 +110,7 @@ fn wrap_object_for_math(
     let false_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::LITERAL,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::Bool,
-            }],
-        },
+        ports: GateIO::source(Type::Bool),
         properties: false_props,
         ..Default::default()
     });
@@ -136,19 +121,10 @@ fn wrap_object_for_math(
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: WirePort::BInputA.sym(),
-                    ty: operand_ty.clone(),
-                },
-                PortSpec {
-                    name: WirePort::BInputB.sym(),
-                    ty: Type::Bool,
-                },
+                PortSpec::new(WirePort::BInputA.sym(), operand_ty.clone()),
+                PortSpec::new(WirePort::BInputB.sym(), Type::Bool),
             ],
-            outputs: vec![PortSpec {
-                name: WirePort::BOutput.sym(),
-                ty: Type::Bool,
-            }],
+            outputs: vec![PortSpec::new(WirePort::BOutput.sym(), Type::Bool)],
         },
         note: None,
         ..Default::default()
@@ -225,20 +201,11 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 source_range: inner_range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec {
-                            name: in_a_sym,
-                            ty: lhs_ty.clone(),
-                        },
-                        PortSpec {
-                            name: in_b_sym,
-                            ty: rhs_ty.clone(),
-                        },
+                        PortSpec::new(in_a_sym, lhs_ty.clone()),
+                        PortSpec::new(in_b_sym, rhs_ty.clone()),
                     ],
                     outputs: vec![
-                        PortSpec {
-                            name: out_sym,
-                            ty: out_ty.clone(),
-                        },
+                        PortSpec::new(out_sym, out_ty.clone()),
                     ],
                 },
                 note: None,
@@ -266,16 +233,10 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: in_a_sym,
-                    ty: rule.operands[0].clone(),
-                },
+                PortSpec::new(in_a_sym, rule.operands[0].clone()),
             ],
             outputs: vec![
-                PortSpec {
-                    name: out_sym,
-                    ty: rule.result.clone(),
-                },
+                PortSpec::new(out_sym, rule.result.clone()),
             ],
         },
         note: None,
@@ -302,7 +263,7 @@ pub(super) fn build_format_text(
     range: &SourceRange,
 ) -> PortRef {
     let inputs = (0..slots.len())
-        .map(|i| PortSpec { name: FORMAT_SLOTS[i].sym(), ty: Type::Any })
+        .map(|i| PortSpec::new(FORMAT_SLOTS[i].sym(), Type::Any))
         .collect();
     let mut props = HashMap::default();
     props.insert(intern_static("FormatString"), Literal::String(format_string));
@@ -311,7 +272,7 @@ pub(super) fn build_format_text(
         source_range: range.clone(),
         ports: GateIO {
             inputs,
-            outputs: vec![PortSpec { name: *sym::OUTPUT, ty: Type::String }],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, Type::String)],
         },
         properties: props,
         ..Default::default()

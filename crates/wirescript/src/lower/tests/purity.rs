@@ -189,13 +189,7 @@ on RoundStart() {
   var x: int = 5
 }",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let set_count = r
         .module
         .nodes
@@ -216,13 +210,7 @@ on RoundStart() {
   static var x: int = 5
 }",
     );
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     let set_count = r
         .module
         .nodes
@@ -246,13 +234,7 @@ fn pure_top_level_let_after_handler_reads_purely() {
     // own input read, corrupting the exec chain into a following gate.
     let src = "var x: int = 0\nin t: exec\non t { x = 1 }\nlet y = x + 1\nout o = y\n";
     let r = compile(src);
-    assert!(
-        r.diagnostics
-            .iter()
-            .all(|d| d.severity != crate::diagnostic::Severity::Error),
-        "unexpected errors: {:?}",
-        r.diagnostics
-    );
+    assert_no_errors(&r);
     assert!(
         !r.module
             .nodes

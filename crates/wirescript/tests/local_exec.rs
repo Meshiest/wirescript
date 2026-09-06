@@ -1,16 +1,6 @@
-use wirescript::resolve::{resolve, FsLoader};
-use wirescript::typecheck::typecheck;
-use wirescript::{compile, CompileInput, FoldMode};
+mod common;
 
-fn diag_codes(src: &str) -> Vec<String> {
-    let resolved = resolve(src, "test", &FsLoader);
-    let tc = typecheck(&resolved.ast, "test", &wirescript::typecheck::CeSlotMap::default());
-    tc.diagnostics.iter().map(|d| d.code.clone()).collect()
-}
-
-fn compiles(src: &str) -> bool {
-    compile(CompileInput { source: src, file: "test", module_name: None, fold_mode: FoldMode::Auto }).is_ok()
-}
+use common::compiles;
 
 #[test]
 fn let_exec_declaration() {

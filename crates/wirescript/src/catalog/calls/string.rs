@@ -22,11 +22,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("g", WirePort::InputG, Type::Any),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::String,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::String)],
             receiver: None,
         },
     );
@@ -39,11 +35,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::STRING_LENGTH,
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Int,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: Some(Type::String),
         },
     );
@@ -58,11 +50,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Bool,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Bool)],
             receiver: Some(Type::String),
         },
     );
@@ -77,11 +65,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Bool,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Bool)],
             receiver: Some(Type::String),
         },
     );
@@ -96,11 +80,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Bool,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Bool)],
             receiver: Some(Type::String),
         },
     );
@@ -115,11 +95,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::req("length", WirePort::Length, Type::Int),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::String,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::String)],
             receiver: Some(Type::String),
         },
     );
@@ -137,11 +113,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("start", WirePort::Start, Type::Int),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::String,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::String)],
             receiver: Some(Type::String),
         },
     );
@@ -157,11 +129,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("start", WirePort::Start, Type::Int),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::Int,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: Some(Type::String),
         },
     );
@@ -177,15 +145,14 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("caseSensitive", WirePort::BCaseSensitive, Type::Bool),
             ],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Left,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Left,
+                Type::Record(vec![
                     ("Left".into(), Type::String),
                     ("Right".into(), Type::String),
                     ("Found".into(), Type::Bool),
                 ]),
-            }],
+            )],
             receiver: Some(Type::String),
         },
     );
@@ -196,11 +163,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::STRING_TO_LOWER,
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::String,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::String)],
             receiver: Some(Type::String),
         },
     );
@@ -211,11 +174,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::STRING_TO_UPPER,
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::String,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::String)],
             receiver: Some(Type::String),
         },
     );
@@ -226,11 +185,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::STRING_TRIM,
             params: vec![CallParam::req("s", WirePort::Input, Type::String)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Output,
-                ty: Type::String,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::String)],
             receiver: Some(Type::String),
         },
     );
@@ -245,14 +200,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             exec: false,
             // `.Value` (auto-unwrapped) is the parsed int; `.Success` is false
             // when the string wasn't a valid integer.
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Value,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Value,
+                Type::Record(vec![
                     ("Value".into(), Type::Int),
                     ("Success".into(), Type::Bool),
                 ]),
-            }],
+            )],
             receiver: Some(Type::String),
         },
     );
@@ -265,14 +219,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             exec: false,
             // `.Value` (auto-unwrapped) is the parsed float; `.Success` is false
             // when the string wasn't a valid number.
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Value,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Value,
+                Type::Record(vec![
                     ("Value".into(), Type::Float),
                     ("Success".into(), Type::Bool),
                 ]),
-            }],
+            )],
             receiver: Some(Type::String),
         },
     );
@@ -285,14 +238,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::STRING_CHAR_TO_CODEPOINT,
             params: vec![CallParam::req("character", WirePort::Character, Type::String)],
             exec: false,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::Codepoint,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Codepoint,
+                Type::Record(vec![
                     ("Codepoint".into(), Type::Int),
                     ("Success".into(), Type::Bool),
                 ]),
-            }],
+            )],
             receiver: Some(Type::String),
         },
     );
@@ -303,14 +255,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::STRING_CODEPOINT_TO_CHAR,
             params: vec![CallParam::req("codepoint", WirePort::Codepoint, Type::Int)],
             exec: false,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::Character,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::Character,
+                Type::Record(vec![
                     ("Character".into(), Type::String),
                     ("Success".into(), Type::Bool),
                 ]),
-            }],
+            )],
             receiver: None,
         },
     );

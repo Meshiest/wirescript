@@ -11,13 +11,7 @@ pub(super) fn wire_chip_args_and_outputs(
     child_outputs: &[NodeId],
     const_folds: &mut Vec<ConstFold>,
 ) -> PortRef {
-    let positional_args: Vec<&Expr> = args
-        .iter()
-        .filter_map(|a| match a {
-            CallArg::Positional(e) => Some(e),
-            CallArg::Named { .. } | CallArg::Spread(_) => None,
-        })
-        .collect();
+    let positional_args = positional_args(args);
     let mut input_idx: usize = 0;
     for (i, param) in chip_decl.inputs.iter().enumerate() {
         // A `const` parameter has no `MicrochipInput` pin: its value is baked

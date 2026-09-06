@@ -1079,12 +1079,7 @@ fn on_arrow_general_chip_call_exec_auto_extracted() {
     let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nvar hit: int = 0\nvar last: int = 0\non Init(TB, exec = s) -> (code) {\n  hit = hit + 1\n  last = code\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
-    let child = r
-        .module
-        .chips
-        .values()
-        .next()
-        .expect("chip instance should produce a child module");
+    let child = only_chip(&r, "chip instance should produce a child module");
     // The handler body must be driven from the chip's `_exec_out` boundary
     // (the call's auto-extracted exec field), exactly like the manual
     // `on r.exec { }` form.
@@ -1721,14 +1716,6 @@ fn any_annotation_warns_on_compound_and_stmt_out() {
 
 #[test]
 fn generic_mod_type_params_resolve_not_ws002() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
-            .collect::<Vec<_>>()
-    };
     // T is a recognized type param -> NO WS002 for T (sig + body annotation)
     let e = errs("mod pick<T>(a: T, b: T) -> T {\n  let x: T = a\n  return x\n}\n");
     assert!(
@@ -1757,14 +1744,6 @@ fn generic_mod_type_params_resolve_not_ws002() {
 
 #[test]
 fn generic_mod_call_inference() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
-            .collect::<Vec<_>>()
-    };
     // Error diagnostics as (code, message) pairs — used where the message text
     // itself is load-bearing (proving the *concrete* substituted type).
     let err_msgs = |s: &str| {
@@ -1853,14 +1832,6 @@ fn generic_mod_call_inference() {
 
 #[test]
 fn generic_widening_inference() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
-            .collect::<Vec<_>>()
-    };
     let pick = "in flag: bool\nmod pick<T>(c: bool, a: T, b: T) -> T { return a }\n";
     // int + float widens to float -> clean
     assert!(
@@ -1885,14 +1856,6 @@ fn generic_widening_inference() {
 
 #[test]
 fn generic_body_checked_per_mask_member() {
-    let errs = |s: &str| {
-        crate::typecheck::typecheck(&crate::parser::parse(s, "t").ast, "t", &crate::typecheck::CeSlotMap::default())
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
-            .collect::<Vec<_>>()
-    };
     // `a + 1` is valid for every Scalar member (int + 1 -> int, float + 1 -> float),
     // so the generic body checks CLEAN once we check per concrete member.
     let ok = "mod addOne<T: Scalar>(a: T) -> T { return a + 1 }\n";

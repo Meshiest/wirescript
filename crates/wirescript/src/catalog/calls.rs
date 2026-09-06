@@ -75,6 +75,27 @@ pub struct CallOutput {
     pub field: Option<&'static str>,
 }
 
+impl CallOutput {
+    /// A single-value output: the call's result IS this port, so it binds no
+    /// record field.
+    pub const fn plain(port: WirePort, ty: Type) -> Self {
+        Self {
+            port,
+            ty,
+            field: None,
+        }
+    }
+
+    /// One field of a record-returning call's result (`Edge`'s `rising`).
+    pub const fn field(field: &'static str, port: WirePort, ty: Type) -> Self {
+        Self {
+            port,
+            ty,
+            field: Some(field),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CallSpec {
     pub name: &'static str,
@@ -112,11 +133,7 @@ fn math_unary(name: &'static str, gate_class: &'static str) -> CallSpec {
         gate_class,
         params: vec![CallParam::req("x", WirePort::Input, Type::Float)],
         exec: false,
-        outputs: vec![CallOutput {
-            field: None,
-            port: WirePort::Output,
-            ty: Type::Float,
-        }],
+        outputs: vec![CallOutput::plain(WirePort::Output, Type::Float)],
         receiver: None,
     }
 }
@@ -133,11 +150,7 @@ fn vec_expr(
         gate_class,
         params,
         exec: false,
-        outputs: vec![CallOutput {
-            field: None,
-            port: out_port,
-            ty: out_ty,
-        }],
+        outputs: vec![CallOutput::plain(out_port, out_ty)],
         receiver: None,
     }
 }
@@ -192,11 +205,7 @@ fn vec_recv(
         gate_class,
         params,
         exec: false,
-        outputs: vec![CallOutput {
-            field: None,
-            port: out_port,
-            ty: out_ty,
-        }],
+        outputs: vec![CallOutput::plain(out_port, out_ty)],
         receiver: Some(Type::Vector),
     }
 }
@@ -229,11 +238,7 @@ fn expr_recv(
         gate_class,
         params,
         exec: false,
-        outputs: vec![CallOutput {
-            field: None,
-            port: out_port,
-            ty: out_ty,
-        }],
+        outputs: vec![CallOutput::plain(out_port, out_ty)],
         receiver: Some(receiver),
     }
 }

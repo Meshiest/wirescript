@@ -78,10 +78,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 source_range: range.clone(),
                 ports: GateIO {
                     inputs: vec![],
-                    outputs: vec![PortSpec {
-                        name: *sym::VALUE,
-                        ty: Type::Entity,
-                    }],
+                    outputs: vec![PortSpec::new(*sym::VALUE, Type::Entity)],
                 },
                 properties: props,
                 ..Default::default()
@@ -102,42 +99,9 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             if let Expr::Ident { name, .. } = operand.as_ref()
                 && let Some(var_rec) = ctx.lookup_var(name).cloned()
             {
-                let inner = var_rec.inner_type.clone();
                 if let Some(exec) = ctx.current_exec {
-                    let get_id = ctx.add_gate(AddNodeOpts {
-                        gate_class: gc::VAR_GET,
-                        source_range: range.clone(),
-                        ports: GateIO {
-                            inputs: vec![
-                                PortSpec {
-                                    name: *sym::EXEC,
-                                    ty: Type::Exec,
-                                },
-                                PortSpec {
-                                    name: *sym::VAR_REF,
-                                    ty: Type::Ref(Box::new(inner.clone())),
-                                },
-                            ],
-                            outputs: vec![
-                                PortSpec {
-                                    name: *sym::VALUE,
-                                    ty: inner.clone(),
-                                },
-                                PortSpec {
-                                    name: *sym::EXEC_OUT,
-                                    ty: Type::Exec,
-                                },
-                            ],
-                        },
-                        note: None,
-                        ..Default::default()
-                    });
-                    ctx.connect(exec, get_id.port(WirePort::Exec));
-                    ctx.connect(
-                        var_rec.node_id.port(WirePort::VarRef),
-                        get_id.port(WirePort::VarRef),
-                    );
-                    ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
+                    let get_id =
+                        chain_var_get(ctx, &var_rec, exec, range, HashMap::default(), None);
                     return get_id.port(WirePort::Value);
                 }
                 ctx.warn(
@@ -564,14 +528,8 @@ fn try_lower_enum_to_integer(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
         gate_class: gc::EXPR_ENUM_TO_INTEGER,
         source_range: e.range().clone(),
         ports: GateIO {
-            inputs: vec![PortSpec {
-                name: WirePort::Input.sym(),
-                ty: Type::Any,
-            }],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::Int,
-            }],
+            inputs: vec![PortSpec::new(WirePort::Input.sym(), Type::Any)],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, Type::Int)],
         },
         ..Default::default()
     });
@@ -652,25 +610,16 @@ fn try_lower_integer_to_enum(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
                 CallArg::Positional(v) if i >= 1 => Some(lower_expr(ctx, v)),
                 _ => None,
             });
-        let mut inputs = vec![PortSpec {
-            name: WirePort::Input.sym(),
-            ty: Type::Int,
-        }];
+        let mut inputs = vec![PortSpec::new(WirePort::Input.sym(), Type::Int)];
         if wrap_port.is_some() {
-            inputs.push(PortSpec {
-                name: WirePort::BWrap.sym(),
-                ty: Type::Bool,
-            });
+            inputs.push(PortSpec::new(WirePort::BWrap.sym(), Type::Bool));
         }
         let node_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::EXPR_INTEGER_TO_ENUM,
             source_range: e.range().clone(),
             ports: GateIO {
                 inputs,
-                outputs: vec![PortSpec {
-                    name: *sym::OUTPUT,
-                    ty: Type::Int,
-                }],
+                outputs: vec![PortSpec::new(*sym::OUTPUT, Type::Int)],
             },
             ..Default::default()
         });
@@ -863,13 +812,7 @@ pub(super) fn literal_node_range(
         let node_id = ctx.add_gate(AddNodeOpts {
             gate_class: gc::STRING_CONCATENATE,
             source_range: range.clone(),
-            ports: GateIO {
-                inputs: vec![],
-                outputs: vec![PortSpec {
-                    name: *sym::OUTPUT,
-                    ty: Type::String,
-                }],
-            },
+            ports: GateIO::source(Type::String),
             properties: props,
             ..Default::default()
         });
@@ -880,13 +823,7 @@ pub(super) fn literal_node_range(
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::LITERAL,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty,
-            }],
-        },
+        ports: GateIO::source(ty),
         properties: props,
         ..Default::default()
     });
@@ -910,46 +847,8 @@ pub(super) fn lower_ident(ctx: &mut LowerCtx, name: &str, range: &SourceRange) -
                 if let Some(cached) = var_rec.get_node_for_handler {
                     return cached.port(WirePort::Value);
                 }
-                let inner = var_rec.inner_type.clone();
-                let mut get_props = HashMap::default();
-                if let Some(lit) = default_literal_for_var_type(&inner) {
-                    get_props.insert(*sym::VALUE, lit);
-                }
-                let get_id = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::VAR_GET,
-                    source_range: range.clone(),
-                    properties: get_props,
-                    ports: GateIO {
-                        inputs: vec![
-                            PortSpec {
-                                name: *sym::EXEC,
-                                ty: Type::Exec,
-                            },
-                            PortSpec {
-                                name: *sym::VAR_REF,
-                                ty: Type::Ref(Box::new(inner.clone())),
-                            },
-                        ],
-                        outputs: vec![
-                            PortSpec {
-                                name: *sym::VALUE,
-                                ty: inner.clone(),
-                            },
-                            PortSpec {
-                                name: *sym::EXEC_OUT,
-                                ty: Type::Exec,
-                            },
-                        ],
-                    },
-                    note: None,
-                    ..Default::default()
-                });
-                ctx.connect(exec, get_id.port(WirePort::Exec));
-                ctx.connect(
-                    var_rec.node_id.port(WirePort::VarRef),
-                    get_id.port(WirePort::VarRef),
-                );
-                ctx.current_exec = Some(get_id.port(WirePort::ExecOut));
+                let props = var_get_seed_props(&var_rec.inner_type);
+                let get_id = chain_var_get(ctx, &var_rec, exec, range, props, None);
                 if let Some(Binding::Var(v)) = ctx.scope.get_mut(name) {
                     v.get_node_for_handler = Some(get_id);
                 }
@@ -1086,23 +985,11 @@ pub(super) fn lower_if_expr(
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: *sym::INPUT_A,
-                    ty: result_ty.clone(),
-                },
-                PortSpec {
-                    name: *sym::INPUT_B,
-                    ty: result_ty.clone(),
-                },
-                PortSpec {
-                    name: *sym::B_SELECT_B,
-                    ty: Type::Bool,
-                },
+                PortSpec::new(*sym::INPUT_A, result_ty.clone()),
+                PortSpec::new(*sym::INPUT_B, result_ty.clone()),
+                PortSpec::new(*sym::B_SELECT_B, Type::Bool),
             ],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: result_ty.clone(),
-            }],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, result_ty.clone())],
         },
         note: Some("if-expr select".into()),
         ..Default::default()
@@ -1272,17 +1159,9 @@ fn lower_match_arm_record(
     let MatchBody::Expr(expr) = &arm.body else {
         return None;
     };
-    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
-    let mut captures = Vec::new();
-    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
-    for (name, slot_path) in captures {
-        if let Some(binding) = navigate_capture(root, &slot_path) {
-            ctx.scope.insert(&name, binding);
-        }
-    }
-    let fields = crate::lower::stmt::branch_record_fields(ctx, expr);
-    ctx.pop_scope();
-    fields
+    with_arm_captures(ctx, arm, root, |ctx| {
+        crate::lower::stmt::branch_record_fields(ctx, expr)
+    })
 }
 
 /// The scrutinee's `__disc` + payload-slot `Binding::Record`, shared by
@@ -1377,15 +1256,7 @@ fn lower_match_arm(
     result_ty: &Type,
     range: &SourceRange,
 ) -> PortRef {
-    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
-    let mut captures = Vec::new();
-    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
-    for (name, slot_path) in captures {
-        if let Some(binding) = navigate_capture(root, &slot_path) {
-            ctx.scope.insert(&name, binding);
-        }
-    }
-    let port = match &arm.body {
+    with_arm_captures(ctx, arm, root, |ctx| match &arm.body {
         MatchBody::Expr(expr) => lower_expr(ctx, expr),
         // A block-bodied arm carries no value in expression position (typecheck
         // omits it from the arm-type join): yield the result type's zero rather
@@ -1394,9 +1265,30 @@ fn lower_match_arm(
             let lit = default_literal_for_var_type(result_ty).unwrap_or(Literal::Float(0.0));
             literal_node_range(ctx, range, result_ty.clone(), lit)
         }
-    };
+    })
+}
+
+/// Run `f` in a block scope with the arm's payload captures bound as
+/// compile-time moves of the scrutinee's matching slots (a scoped bind, no
+/// gate). The scope is popped on the way out, so no arm can leak its captures
+/// into the next one.
+pub(super) fn with_arm_captures<R>(
+    ctx: &mut LowerCtx,
+    arm: &MatchArm,
+    root: &HashMap<crate::intern::Sym, Binding>,
+    f: impl FnOnce(&mut LowerCtx) -> R,
+) -> R {
+    ctx.push_scope(crate::scope::ScopeTag::BLOCK);
+    let mut captures = Vec::new();
+    collect_pattern_captures(&arm.pattern, &mut Vec::new(), &mut captures);
+    for (name, slot_path) in captures {
+        if let Some(binding) = navigate_capture(root, &slot_path) {
+            ctx.scope.insert(&name, binding);
+        }
+    }
+    let out = f(ctx);
     ctx.pop_scope();
-    port
+    out
 }
 
 /// Collect `(capture name, slot path)` for every binding in `pattern`. Each path
@@ -1482,19 +1374,10 @@ pub(super) fn emit_disc_eq(ctx: &mut LowerCtx, disc_port: PortRef, k: i64, range
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: *sym::INPUT_A,
-                    ty: Type::Int,
-                },
-                PortSpec {
-                    name: *sym::INPUT_B,
-                    ty: Type::Int,
-                },
+                PortSpec::new(*sym::INPUT_A, Type::Int),
+                PortSpec::new(*sym::INPUT_B, Type::Int),
             ],
-            outputs: vec![PortSpec {
-                name: *sym::B_OUTPUT,
-                ty: Type::Bool,
-            }],
+            outputs: vec![PortSpec::new(*sym::B_OUTPUT, Type::Bool)],
         },
         note: Some("match disc compare".into()),
         ..Default::default()
@@ -1519,23 +1402,11 @@ fn emit_select(
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
-                PortSpec {
-                    name: *sym::INPUT_A,
-                    ty: result_ty.clone(),
-                },
-                PortSpec {
-                    name: *sym::INPUT_B,
-                    ty: result_ty.clone(),
-                },
-                PortSpec {
-                    name: *sym::B_SELECT_B,
-                    ty: Type::Bool,
-                },
+                PortSpec::new(*sym::INPUT_A, result_ty.clone()),
+                PortSpec::new(*sym::INPUT_B, result_ty.clone()),
+                PortSpec::new(*sym::B_SELECT_B, Type::Bool),
             ],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: result_ty.clone(),
-            }],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, result_ty.clone())],
         },
         note: Some("match-expr select".into()),
         ..Default::default()
@@ -1697,13 +1568,7 @@ pub(super) fn synthesise_unsupported_no_warn(
     let node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::UNSUPPORTED,
         source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![],
-            outputs: vec![PortSpec {
-                name: *sym::OUTPUT,
-                ty: Type::Any,
-            }],
-        },
+        ports: GateIO::source(Type::Any),
         note: Some("unsupported expression".into()),
         ..Default::default()
     });

@@ -120,16 +120,15 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::SPLIT_COLOR,
             params: vec![CallParam::req("c", WirePort::Input, Type::Color)],
             exec: false,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::R,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::R,
+                Type::Record(vec![
                     ("r".into(), Type::Float),
                     ("g".into(), Type::Float),
                     ("b".into(), Type::Float),
                     ("a".into(), Type::Float),
                 ]),
-            }],
+            )],
             receiver: Some(Type::Color),
         },
     );
@@ -147,7 +146,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("toSpace", WirePort::ToSpace, Type::Int),
             ],
             exec: false,
-            outputs: vec![CallOutput { field: None, port: WirePort::Output, ty: Type::Color }],
+            outputs: vec![CallOutput::plain(WirePort::Output, Type::Color)],
             receiver: Some(Type::Color),
         },
     );

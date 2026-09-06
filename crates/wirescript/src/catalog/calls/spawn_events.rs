@@ -25,11 +25,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("destroyAll", WirePort::DestroyAll, Type::Exec),
             ],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::Entity,
-                ty: Type::Entity,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Entity, Type::Entity)],
             receiver: None,
         },
     );
@@ -175,10 +171,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("bodyPartsOnly", WirePort::BOnlyHitPlayerBodyParts, Type::Bool),
             ],
             exec: true,
-            outputs: vec![CallOutput {
-            field: None,
-                port: WirePort::HitDistance,
-                ty: Type::Record(vec![
+            outputs: vec![CallOutput::plain(
+                WirePort::HitDistance,
+                Type::Record(vec![
                     ("HitDistance".into(), Type::Float),
                     ("HitEntity".into(), Type::Entity),
                     ("HitLocation".into(), Type::Vector),
@@ -187,7 +182,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                     ("Hit".into(), Type::Exec),
                     ("Miss".into(), Type::Exec),
                 ]),
-            }],
+            )],
             receiver: None,
         },
     );
@@ -204,11 +199,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::FIND_PLAYER,
             params: vec![CallParam::req("query", WirePort::Query, Type::Any)],
             exec: true,
-            outputs: vec![CallOutput {
-                field: None,
-                port: WirePort::Player,
-                ty: Type::Controller,
-            }],
+            outputs: vec![CallOutput::plain(WirePort::Player, Type::Controller)],
             receiver: None,
         },
     );

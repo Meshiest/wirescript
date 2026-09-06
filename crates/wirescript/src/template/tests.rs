@@ -3,6 +3,24 @@
     use super::*;
     use crate::ir::{GateIO, NodeKind, PortRef, PortSpec, Type, Wire};
 
+    /// A `Node` for a hand-built test module: no properties, no chain, root
+    /// scope, default ports. Anything a test actually varies is written as a
+    /// struct update over this, so a new `Node` field lands here once.
+    fn test_node(id: NodeId, kind: NodeKind, gate_class: &'static str) -> Node {
+        Node {
+            id,
+            kind,
+            gate_class,
+            properties: Arc::new(HashMap::default()),
+            ports: Arc::new(GateIO::default()),
+            source_range: Default::default(),
+            chip_id: None,
+            chain_id: None,
+            scope_id: 0,
+            note: None,
+        }
+    }
+
     /// Build a minimal module:
     ///
     /// ```text
@@ -38,70 +56,38 @@
         let output_pi = WirePort::Output;
 
         let in_a = Node {
-            id: in_a_id,
-            kind: NodeKind::Input,
-            gate_class: mc_input,
-            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
-                inputs: vec![PortSpec { name: rer_in_sym, ty: Type::Int }],
-                outputs: vec![PortSpec { name: rer_out_sym, ty: Type::Int }],
+                inputs: vec![PortSpec::new(rer_in_sym, Type::Int)],
+                outputs: vec![PortSpec::new(rer_out_sym, Type::Int)],
             }),
-            source_range: Default::default(),
-            chip_id: None,
-            chain_id: None,
-            scope_id: 0,
-            note: None,
+            ..test_node(in_a_id, NodeKind::Input, mc_input)
         };
 
         let in_b = Node {
-            id: in_b_id,
-            kind: NodeKind::Input,
-            gate_class: mc_input,
-            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
-                inputs: vec![PortSpec { name: rer_in_sym, ty: Type::Int }],
-                outputs: vec![PortSpec { name: rer_out_sym, ty: Type::Int }],
+                inputs: vec![PortSpec::new(rer_in_sym, Type::Int)],
+                outputs: vec![PortSpec::new(rer_out_sym, Type::Int)],
             }),
-            source_range: Default::default(),
-            chip_id: None,
-            chain_id: None,
-            scope_id: 0,
-            note: None,
+            ..test_node(in_b_id, NodeKind::Input, mc_input)
         };
 
         let add = Node {
-            id: add_id,
-            kind: NodeKind::Gate,
-            gate_class: add_gate,
-            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
-                inputs: vec![PortSpec { name: input_a_sym, ty: Type::Int }],
+                inputs: vec![PortSpec::new(input_a_sym, Type::Int)],
                 outputs: vec![
-                    PortSpec { name: input_b_sym, ty: Type::Int },
-                    PortSpec { name: output_sym, ty: Type::Int },
+                    PortSpec::new(input_b_sym, Type::Int),
+                    PortSpec::new(output_sym, Type::Int),
                 ],
             }),
-            source_range: Default::default(),
-            chip_id: None,
-            chain_id: None,
-            scope_id: 0,
-            note: None,
+            ..test_node(add_id, NodeKind::Gate, add_gate)
         };
 
         let out_r = Node {
-            id: out_r_id,
-            kind: NodeKind::Output,
-            gate_class: mc_output,
-            properties: Arc::new(HashMap::default()),
             ports: Arc::new(GateIO {
-                inputs: vec![PortSpec { name: rer_in_sym, ty: Type::Int }],
-                outputs: vec![PortSpec { name: rer_out_sym, ty: Type::Int }],
+                inputs: vec![PortSpec::new(rer_in_sym, Type::Int)],
+                outputs: vec![PortSpec::new(rer_out_sym, Type::Int)],
             }),
-            source_range: Default::default(),
-            chip_id: None,
-            chain_id: None,
-            scope_id: 0,
-            note: None,
+            ..test_node(out_r_id, NodeKind::Output, mc_output)
         };
 
         m.nodes.insert(in_a_id, in_a);
@@ -330,33 +316,11 @@
         let mut mid = Module::new("mid");
         mid.nodes.insert(
             mid_gate_id,
-            Node {
-                id: mid_gate_id,
-                kind: NodeKind::Gate,
-                gate_class: add_gate,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(mid_gate_id, NodeKind::Gate, add_gate),
         );
         mid.nodes.insert(
             leaf_chip_key,
-            Node {
-                id: leaf_chip_key,
-                kind: NodeKind::Chip,
-                gate_class: mc_chip,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(leaf_chip_key, NodeKind::Chip, mc_chip),
         );
         mid.chips.insert(leaf_chip_key, leaf);
 
@@ -367,33 +331,11 @@
         let mut top = Module::new("top");
         top.nodes.insert(
             top_gate_id,
-            Node {
-                id: top_gate_id,
-                kind: NodeKind::Gate,
-                gate_class: add_gate,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(top_gate_id, NodeKind::Gate, add_gate),
         );
         top.nodes.insert(
             mid_chip_key,
-            Node {
-                id: mid_chip_key,
-                kind: NodeKind::Chip,
-                gate_class: mc_chip,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(mid_chip_key, NodeKind::Chip, mc_chip),
         );
         top.chips.insert(mid_chip_key, mid);
 
@@ -437,18 +379,7 @@
         let mut m = Module::new("solo");
         m.nodes.insert(
             gate_id,
-            Node {
-                id: gate_id,
-                kind: NodeKind::Gate,
-                gate_class: add_gate,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(gate_id, NodeKind::Gate, add_gate),
         );
 
         let t = CompiledTemplate::from_module(m);
@@ -490,22 +421,14 @@
         m.nodes.insert(
             gate_id,
             Node {
-                id: gate_id,
-                kind: NodeKind::Gate,
-                gate_class: add_gate_class,
-                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO {
                     inputs: vec![
-                        PortSpec { name: input_a_sym, ty: Type::Int },
-                        PortSpec { name: input_b_sym, ty: Type::Int },
+                        PortSpec::new(input_a_sym, Type::Int),
+                        PortSpec::new(input_b_sym, Type::Int),
                     ],
-                    outputs: vec![PortSpec { name: output_sym, ty: Type::Int }],
+                    outputs: vec![PortSpec::new(output_sym, Type::Int)],
                 }),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
+                ..test_node(gate_id, NodeKind::Gate, add_gate_class)
             },
         );
 
@@ -601,18 +524,7 @@
         let mc_chip = "Component_Internal_Microchip";
         m.nodes.insert(
             chip_key_id,
-            Node {
-                id: chip_key_id,
-                kind: NodeKind::Chip,
-                gate_class: mc_chip,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(chip_key_id, NodeKind::Chip, mc_chip),
         );
 
         let t = CompiledTemplate::from_module(m);
@@ -667,19 +579,11 @@
         child.nodes.insert(
             child_input_id,
             Node {
-                id: child_input_id,
-                kind: NodeKind::Input,
-                gate_class: mc_input,
-                properties: Arc::new(HashMap::default()),
                 ports: Arc::new(GateIO {
-                    inputs: vec![PortSpec { name: *sym::RER_INPUT, ty: Type::Int }],
-                    outputs: vec![PortSpec { name: *sym::RER_OUTPUT, ty: Type::Int }],
+                    inputs: vec![PortSpec::new(*sym::RER_INPUT, Type::Int)],
+                    outputs: vec![PortSpec::new(*sym::RER_OUTPUT, Type::Int)],
                 }),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
+                ..test_node(child_input_id, NodeKind::Input, mc_input)
             },
         );
         child.inputs.push(child_input_id);
@@ -689,33 +593,11 @@
         let mut parent = Module::new("parent");
         parent.nodes.insert(
             gate_id,
-            Node {
-                id: gate_id,
-                kind: NodeKind::Gate,
-                gate_class: add_gate,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(gate_id, NodeKind::Gate, add_gate),
         );
         parent.nodes.insert(
             chip_key,
-            Node {
-                id: chip_key,
-                kind: NodeKind::Chip,
-                gate_class: mc_chip,
-                properties: Arc::new(HashMap::default()),
-                ports: Arc::new(GateIO::default()),
-                source_range: Default::default(),
-                chip_id: None,
-                chain_id: None,
-                scope_id: 0,
-                note: None,
-            },
+            test_node(chip_key, NodeKind::Chip, mc_chip),
         );
         parent.chips.insert(chip_key, child);
         parent.wires.push(Wire {

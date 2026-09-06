@@ -340,14 +340,8 @@ fn pin_for(
         gate_class,
         properties: Arc::new(props),
         ports: Arc::new(GateIO {
-            inputs: vec![PortSpec {
-                name: *sym::RER_INPUT,
-                ty: ty.clone(),
-            }],
-            outputs: vec![PortSpec {
-                name: *sym::RER_OUTPUT,
-                ty: ty.clone(),
-            }],
+            inputs: vec![PortSpec::new(*sym::RER_INPUT, ty.clone())],
+            outputs: vec![PortSpec::new(*sym::RER_OUTPUT, ty.clone())],
         }),
         source_range: Default::default(),
         chip_id: None,
