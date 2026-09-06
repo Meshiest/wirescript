@@ -48,6 +48,34 @@
         assert_no_diags(&tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0, 9) }"));
     }
 
+    /// The same rule for a VOID BUILTIN and for a namespaced `mod`. Three
+    /// sites typed these `Any` instead of `Never`, so nothing checked them and
+    /// lowering wired the gate's EXEC pin into a data port with no diagnostic
+    /// at any level, while the identical mistake against a plain user `mod`
+    /// already reported.
+    #[test]
+    fn void_builtin_and_namespaced_mod_used_as_value_error() {
+        let no_value = |r: &TypeCheckResult| {
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS072" && d.message.contains("no value"))
+        };
+        // A void exec builtin, called plainly and as a receiver method.
+        assert!(
+            no_value(&tc("static var v: int = 0\non RoundStart() { v = PrintToConsole(\"x\") }")),
+            "void builtin as a value"
+        );
+        assert!(
+            no_value(&tc(
+                "var a: int[]\nstatic var v: int = 0\nin go: exec\non go { v = a.push(1) }"
+            )),
+            "void receiver method as a value"
+        );
+        // Both stay legal in statement position, which is the whole point.
+        assert_no_diags(&tc("on RoundStart() { PrintToConsole(\"ok\") }"));
+        assert_no_diags(&tc("var a: int[]\nin go: exec\non go { a.push(1) }"));
+    }
+
     /// A `mod`/`chip` with no output has no value to give, so reading its call
     /// as one is a WS072 error. It used to type as `any`, which accepted every
     /// consumer; lowering then handed the caller its EXEC CONTINUATION, so the
@@ -5448,6 +5476,30 @@
              WS003; diagnostics: {:?}",
             r.diagnostics
         );
+    }
+
+    /// Two ALWAYS-LIVE sites with values drive one port at once, so the value
+    /// it reads is undefined whenever they disagree, and a pure read
+    /// (`uptime % 2 > 1`) disagrees on its own schedule. Emit produced two
+    /// output bricks carrying the same `PortLabel`, one wired to nothing.
+    /// Exec-derived sites are unaffected: only one fires per tick.
+    #[test]
+    fn two_always_live_out_sites_with_values_conflict() {
+        let dup = |r: &TypeCheckResult| {
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "WS013" && d.message.contains("drive it continuously"))
+        };
+        assert!(
+            dup(&tc("var v: float = 1.0\nout v6: float = v\nout v6: float = v")),
+            "two top-level initializers must conflict"
+        );
+        // Every exec-derived or single-driver shape stays legal.
+        assert_no_diags(&tc("in go: exec\nout r: int = 0\non go { emit r = 5 }"));
+        assert_no_diags(&tc(
+            "in a: exec\nin b: exec\non a { out s: int = 1 }\non b { out s: int = 2 }",
+        ));
+        assert_no_diags(&tc("var v: float = 1.0\nout v6: float = v\nout v6: float"));
     }
 
     #[test]

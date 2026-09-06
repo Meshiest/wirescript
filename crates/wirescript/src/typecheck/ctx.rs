@@ -226,6 +226,12 @@ pub struct TypeCheckCtx<'a> {
     /// Ferried payload type per local exec signal, recorded from
     /// `emit sig = <value>` so `let { a, b } = await sig` can type its fields.
     pub signal_payload_types: HashMap<String, Type>,
+    /// Top-level `out` ports that already registered a site carrying an
+    /// initializer, keyed by scope key. A port may legitimately have several
+    /// sites when they are exec-derived (`out r = 0` plus `emit r = ...`,
+    /// or branches only one of which fires), but two TOP-LEVEL initializers
+    /// are both continuously live, so the emitted port has two racing drivers.
+    pub(super) out_ports_with_initializer: crate::collections::HashSet<String>,
     /// Generic type aliases (`type Pair<T> = { a: T, b: T }`) in scope, keyed
     /// by name (namespaced ones by their qualified `Ns.Name`). Populated by a
     /// pre-pass over `script.decls` — BEFORE the two-pass decl
@@ -410,6 +416,7 @@ impl<'a> TypeCheckCtx<'a> {
             type_of_expr: HashMap::default(),
             op_resolutions: HashMap::default(),
             signal_payload_types: HashMap::default(),
+            out_ports_with_initializer: Default::default(),
             generic_type_aliases: HashMap::default(),
             enum_defs: Arc::new(crate::collections::HashMap::default()),
             const_env: Arc::new(crate::lower::ConstEnv::default()),

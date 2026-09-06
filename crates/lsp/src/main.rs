@@ -72,6 +72,24 @@ fn byte_off_to_lsp(source: &str, line: usize, byte: usize) -> u32 {
     char_col_to_utf16_col(l, byte_to_char_col(l, byte)) as u32
 }
 
+/// [`byte_off_to_lsp`] against a prebuilt [`LineIndex`].
+///
+/// Identical arithmetic; only the line lookup differs. Worth building the
+/// index whenever one request converts more than a handful of ranges, because
+/// the plain version rescans from the top of the file every call.
+fn byte_off_to_lsp_indexed(
+    idx: &wirescript::analysis::text::LineIndex,
+    source: &str,
+    line: usize,
+    byte: usize,
+) -> u32 {
+    let l = idx.line_text(source, line);
+    if l.len() < byte {
+        return byte as u32;
+    }
+    char_col_to_utf16_col(l, byte_to_char_col(l, byte)) as u32
+}
+
 /// Source text for `uri`, preferring the open document and falling back to
 /// disk. Needed only to convert one result's columns for the editor.
 fn source_for<'a>(docs: &'a HashMap<Url, DocState>, uri: &Url) -> std::borrow::Cow<'a, str> {
@@ -1581,6 +1599,9 @@ impl LanguageServer for Backend {
         }
 
         let spans = semantic_tokens(&doc.pre_resolve_ast);
+        // One index for the whole pass: this loop converts two columns per
+        // token, and the scanning conversion is O(offset) each time.
+        let idx = wirescript::analysis::text::LineIndex::new(&doc.source);
         let mut toks: Vec<Tok> = Vec::with_capacity(spans.len());
         for span in &spans {
             // A coarse span (a whole-declaration/whole-type-expr range) must
@@ -1606,11 +1627,20 @@ impl LanguageServer for Backend {
             // before. A span crossing lines has no single line to measure in;
             // no name token does, so the byte width stands in.
             let line = range.start.line.saturating_sub(1);
-            let start_char =
-                byte_off_to_lsp(&doc.source, line as usize, range.start.col.saturating_sub(1) as usize);
+            let start_char = byte_off_to_lsp_indexed(
+                &idx,
+                &doc.source,
+                line as usize,
+                range.start.col.saturating_sub(1) as usize,
+            );
             let length = if range.start.line == range.end.line {
-                byte_off_to_lsp(&doc.source, line as usize, range.end.col.saturating_sub(1) as usize)
-                    .saturating_sub(start_char)
+                byte_off_to_lsp_indexed(
+                    &idx,
+                    &doc.source,
+                    line as usize,
+                    range.end.col.saturating_sub(1) as usize,
+                )
+                .saturating_sub(start_char)
             } else {
                 range.end.col.saturating_sub(range.start.col)
             };
@@ -2146,10 +2176,7 @@ fn member_completions(
     // method/swizzle valid for the var's element type (`pos.Normalize()`,
     // `pos.x`).
     if sym.is_some_and(|s| matches!(s.kind, "var" | "static var")) {
-        for (name, detail) in &[
-            ("Value", "Read current value (pure)"),
-            ("prev", "Read previous tick's value"),
-        ] {
+        for (name, detail) in &wirescript::catalog::VAR_PSEUDO_FIELDS {
             items.push(CompletionItem {
                 label: name.to_string(),
                 kind: Some(CompletionItemKind::FIELD),

@@ -570,3 +570,23 @@ pub fn default_catalog() -> &'static Catalog {
 
 #[cfg(test)]
 mod tests;
+
+/// The pseudo-fields every `var` exposes, in the spelling the editor offers.
+/// Both read the storage gate's `Value` port; `prev` reads it as it stood at
+/// the start of the tick.
+pub const VAR_PSEUDO_FIELDS: [(&str, &str); 2] = [
+    ("Value", "Read current value (pure)"),
+    ("prev", "Read previous tick's value"),
+];
+
+/// Whether `field` names one of [`VAR_PSEUDO_FIELDS`].
+///
+/// Case-insensitive, because typecheck accepts every capitalisation and the
+/// docs teach `.Value` capitalised while `.prev` is lowercase. A spelling this
+/// misses does not degrade gracefully: `on v.Prev { … }` matched no arm and
+/// the whole handler was dropped with no diagnostic at all.
+pub fn is_var_pseudo_field(field: &str) -> bool {
+    VAR_PSEUDO_FIELDS
+        .iter()
+        .any(|(name, _)| field.eq_ignore_ascii_case(name))
+}

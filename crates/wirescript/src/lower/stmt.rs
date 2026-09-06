@@ -565,7 +565,7 @@ pub(super) fn value_record_fields(
     // worst kind: `WS066` on `m.get(k)` names `.Value` as the fix, and `.Value`
     // then failed too.
     if let Expr::FieldAccess { obj, field, .. } = value
-        && matches!(field.as_str(), "Value" | "prev")
+        && crate::catalog::is_var_pseudo_field(field)
         && matches!(
             obj.as_ref(),
             Expr::Call { .. } | Expr::IndexAccess { .. }

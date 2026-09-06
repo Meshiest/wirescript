@@ -47,13 +47,34 @@
 - A chip's array, map or `ref` parameter wires the rerouter's own port. Its pin was bound as storage, so every read named `ArrayVarRef` on a `MicrochipInput`, a port the game does not have.
 - An anonymous `chip { }` inside a named chip keeps its body. The chip-body pre-declare pass never descended into it, so its vars, handlers and `out` bindings were dropped and the chip emitted no gates.
 - A handler whose trigger cannot resolve is a `WS001` and takes nothing with it. It was deleted in silence, and the exec exits it dropped left the following statement with no chain to run on.
-- `on go { let y = { 1, 2 } }` is a parse error rather than a hang. The block-expression loop was the one statement loop without a no-progress backstop, so it allocated a statement per iteration until memory ran out.
-- `m[k].Found` reads the map lookup's found flag, as `m[k].bFound` already did. The name was missing from the index-result field list, so it lowered to an `_Unsupported` placeholder and the read was deleted.
-- An anonymous `chip { }` inside a named chip emits onto its own sub-grid. The partition pass walked only the root module, so the labelled box was dropped and its gates went flat onto the enclosing chip's grid.
-- `static var x: int = 1 + true` bakes the value the gate returns. The constant evaluator never consulted the certified table, so mixed-operand arithmetic dropped the initializer and the var started at its default.
+- `on go { let y = { 1, 2 } }` is a parse error rather than a hang. Braces where the language wants brackets allocated until memory ran out, taking the language server with it.
+- `m[k].Found` reads the map lookup's found flag, as `m[k].bFound` already did. That spelling compiled clean and produced a dead circuit.
+- An anonymous `chip { }` inside a named chip emits onto its own sub-grid. The labelled box was dropped and its gates went flat onto the enclosing chip's grid.
+- `static var x: int = 1 + true` bakes the value the gate returns. Mixed-operand arithmetic dropped the initializer and the var started at its type default.
+- Two modules that each contain an `on <call>() { }` handler can be imported together. The duplicate-declaration check fired on a name the compiler generated, and told the user to rename it.
+- `on v.Prev { ... }` runs, as `on v.prev` already did. That capitalisation dropped the whole handler with no diagnostic.
+- A void builtin used as a value is a `WS072`, as a no-output `mod` already was. `v = PrintToConsole("x")` compiled clean and produced a dead circuit.
+- Two always-live `out` sites that each carry a value are a `WS013`. Both drive the port at once, so the value it reads is undefined.
+
+### Migration
+
+Two new errors reject code that used to compile. Neither fires on any program
+in `wirescript-misc/projects`.
+
+- **`WS072`: a void call used as a value.** `v = PrintToConsole("x")`,
+  `v = arr.push(1)`, `v = Ns.voidMod(1)`. Call it as a statement, or give the
+  `mod` an output (`-> (r: int)`).
+- **`WS013`: two always-live `out` sites that both carry a value.**
+  `out o = x + 1` then `out o = x + 2`. Give the port one value, or write it
+  with `emit o = ...` from a handler. Handler-body sites are unaffected.
 
 ### Editor
 
+- The playground reports `WSP001` placeholder warnings. A program that lowers to a dead gate looked clean and still offered its `.brz` for download.
+- The playground compiles the same source to the same bytes every time. Every compile after the first in a page session produced a different circuit.
+- An unbarriered wire-graph cycle is a `WS005` in the playground, as it already was everywhere else.
+- Top-of-file `@invisible` and `@layout("cube")` apply in the playground, and a chip keeps its header text.
+- Semantic highlighting on a large file is 26x faster: 1,257 ms to 48 ms on a 257 KB program, with identical output.
 - A cursor past a non-ASCII character no longer kills the language server or traps the playground. Nothing converted between byte, char and UTF-16 columns at the protocol boundary.
 - Hover, completion and go-to-definition work in a CRLF file. Line offsets summed `len + 1`, which drops the `\r`, so every position past line 1 drifted.
 - The language server runs parse, resolve, typecheck and hover on the big stack `compile` reserves rather than the ~2 MiB editor worker thread.

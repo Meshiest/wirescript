@@ -219,10 +219,16 @@ fn assigning_to_a_var_field_or_element_stays_clean() {
     assert!(!has(src, "WS007"), "{:?}", diags(src));
 }
 
-// --- Two sources into one input port (here a duplicate `out o`) is an emit
-//     fan-in error, not a format-valid `.brz` the game rejects at load.
+// --- Two sources into one input port (here a duplicate `out o`) is rejected,
+//     not a format-valid `.brz` the game rejects at load.
+//
+//     Typecheck now catches it as WS013 at the second `out`, naming the port
+//     and the line. It used to reach emit and surface as a `FanIn` naming
+//     brick ids the user cannot see, so this asserts the earlier, nameable
+//     diagnostic and keeps the emit check as the backstop it was always meant
+//     to be.
 #[test]
-fn two_drivers_on_one_out_port_is_an_emit_fan_in_error() {
+fn two_drivers_on_one_out_port_is_rejected() {
     let input = CompileInput {
         source: "in x: int\nout o = x + 1\nout o = x + 2\n",
         file: "fan_in.ws",
@@ -230,11 +236,14 @@ fn two_drivers_on_one_out_port_is_an_emit_fan_in_error() {
         fold_mode: FoldMode::Auto,
     };
     match compile(input) {
+        Err(CompileError::HasErrors(ds)) => assert!(
+            ds.iter().any(|d| d.code == "WS013"),
+            "expected WS013 for two always-live drivers, got {ds:?}"
+        ),
         Err(CompileError::Emit(e)) => {
             assert!(format!("{e:?}").contains("FanIn"), "expected FanIn, got {e:?}")
         }
         Ok(_) => panic!("fan-in must be rejected, not compiled to a broken .brz"),
-        Err(other) => panic!("expected an emit fan-in error, got {other:?}"),
     }
 }
 

@@ -318,15 +318,16 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     if let Some(ref field) = trigger_field {
         let var_rec = ctx.lookup_var(&trigger_name).cloned();
         if let Some(rec) = var_rec {
-            let port_name = match field.as_str() {
-                "Value" | "value" => "Value",
-                "prev" => "Value",
-                _ => {
-                    ctx.builder.current_chain_id = saved_chain;
-                    ctx.handler_end_execs = saved_handler_ends;
-                    return;
-                }
-            };
+            // Both pseudo-fields read the storage gate's `Value` port. The
+            // list used to be spelled out here and missed `Prev`, so a
+            // capitalisation typo matched no arm and the whole handler was
+            // dropped with no diagnostic.
+            if !crate::catalog::is_var_pseudo_field(field) {
+                ctx.builder.current_chain_id = saved_chain;
+                ctx.handler_end_execs = saved_handler_ends;
+                return;
+            }
+            let port_name = "Value";
             let trig = port_ref(rec.node_id, port_name);
             let saved = (ctx.current_exec, ctx.handler_entry_exec);
             ctx.current_exec = Some(trig);

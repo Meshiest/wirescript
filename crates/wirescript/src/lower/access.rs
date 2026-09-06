@@ -59,7 +59,7 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
                     // `Binding::Var`. After the field lookup, so a real `Value`
                     // field (`a.pop()`) still wins.
                     .or_else(|| {
-                        (matches!(field.as_str(), "Value" | "prev")
+                        (crate::catalog::is_var_pseudo_field(field)
                             && record_is_variable_backed(fields))
                         .then_some(parent)
                     }),

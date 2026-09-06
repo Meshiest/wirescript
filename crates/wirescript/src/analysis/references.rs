@@ -45,12 +45,17 @@ pub fn find_name_range(source: &str, decl_range: &SourceRange, name: &str) -> Op
     if name.is_empty() {
         return None;
     }
-    let lines: Vec<&str> = source.lines().collect();
     let start_line = decl_range.start.line as usize;
     let end_line = decl_range.end.line as usize;
+    // Walk the range's own lines rather than collecting the whole file: a
+    // decl range is one line in the common case, and this is called once per
+    // coarse span, so collecting cost 167 MB on a large file's semantic-token
+    // request. `lines()` is resumed from the previous line rather than
+    // re-scanned per line, so the whole loop stays one pass.
+    let mut lines = source.lines().skip(start_line.saturating_sub(1));
     for line_no in start_line..=end_line {
-        let Some(line) = lines.get(line_no.saturating_sub(1)) else {
-            continue;
+        let Some(line) = lines.next() else {
+            break;
         };
         let col_start = if line_no == start_line {
             decl_range.start.col.saturating_sub(1) as usize

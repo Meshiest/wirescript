@@ -241,7 +241,12 @@ fn port_dissolves_into_field_pins(t: &Type) -> bool {
 ///
 /// This compares two DECLARATIONS, before any value is inferred. Checking a
 /// VALUE against the port is `check_port_write`'s job.
-fn register_port_site(ctx: &mut TypeCheckCtx, o: &OutBinding) {
+///
+/// `always_live` says whether this site drives the port continuously (a
+/// top-level or anon-chip-body `out`) rather than only when its handler runs.
+/// Two always-live sites with values are the one combination that is not
+/// legal: see the check below.
+fn register_port_site(ctx: &mut TypeCheckCtx, o: &OutBinding, always_live: bool) {
     let name = o.name.as_str();
     let annotated = o.typ.as_ref();
     let decl_range = &o.range;
@@ -263,6 +268,32 @@ fn register_port_site(ctx: &mut TypeCheckCtx, o: &OutBinding) {
         return;
     }
     let key = out_scope_key(name);
+    // Several sites may drive one port when they are exec-derived: only one
+    // fires per tick, so the port has one value at a time. Two TOP-LEVEL
+    // initializers are different -- both are pure and continuously live, so
+    // the emitted port ends up with two racing drivers and the value the game
+    // reads is undefined whenever they disagree (a pure read such as
+    // `uptime % 2 > 1` alternates on its own). Emit showed this as two output
+    // bricks carrying the same `PortLabel`, one of them wired to nothing.
+    // Several sites driving one port is legal when they are exec-derived:
+    // only one fires per tick, so the port carries one value at a time and
+    // the branches could be merged behind a select. Two ALWAYS-LIVE sites are
+    // different -- both drive continuously, so whenever they disagree the
+    // value the port reads is undefined, and a pure read such as
+    // `uptime % 2 > 1` disagrees on its own schedule. Emit showed this as two
+    // output bricks carrying the same `PortLabel`, one wired to nothing.
+    if always_live && o.value.is_some() && !ctx.out_ports_with_initializer.insert(key.clone()) {
+        ctx.emit(
+            "WS013",
+            format!(
+                "output port '{name}' already has a value at another always-live \
+                 site, and both drive it continuously, so which value the port reads \
+                 is undefined. Give it one value, or write it from a handler \
+                 (`emit {name} = ...`) so only one site fires per tick"
+            ),
+            decl_range.clone(),
+        );
+    }
     if let Some(existing) = ctx.scope.lookup(&key) {
         let existing_ty = existing.ty.clone();
         // `Type::Any` is what an unannotated site registers, and it states
@@ -315,7 +346,7 @@ fn register_port_site(ctx: &mut TypeCheckCtx, o: &OutBinding) {
 /// only from inside the declaring handler.
 fn register_handler_outputs(ctx: &mut TypeCheckCtx, block: &Block) {
     for o in crate::ast::handler_port_sites(block) {
-        register_port_site(ctx, o);
+        register_port_site(ctx, o, false);
     }
 }
 
@@ -330,7 +361,7 @@ fn register_handler_outputs(ctx: &mut TypeCheckCtx, block: &Block) {
 /// resolve through the port registry.
 pub(super) fn register_anon_chip_outputs(ctx: &mut TypeCheckCtx, stmts: &[Stmt]) {
     for o in crate::ast::anon_chip_port_sites(stmts) {
-        register_port_site(ctx, o);
+        register_port_site(ctx, o, true);
     }
 }
 
@@ -761,7 +792,7 @@ pub(super) fn register_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
         // are subject to the identical first-wins/conflict rule -
         // see that function's doc comment.
         TopDecl::Out(o) => {
-            register_port_site(ctx, o);
+            register_port_site(ctx, o, true);
         }
         // A handler-body `out` becomes a module-boundary port exactly the way
         // `pre_declare_handler_outputs` (`lower/predeclare.rs`) hoists it for

@@ -128,11 +128,31 @@ fn make_loader(files_json: &str) -> MemLoader {
 pub fn diagnostics(source: &str, files_json: &str) -> String {
     let loader = make_loader(files_json);
     let resolved = resolve(source, "editor", &loader);
-    let tc = typecheck_with_inference(&resolved.ast, "editor").0;
+    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, "editor");
+    // Lowering runs so the editor sees `WSP001`: a program that type-checks
+    // clean and lowers to an `_Unsupported` placeholder is a dead circuit, and
+    // stopping at typecheck hid every one of them while `wirescript_compile`
+    // went on to succeed and hand the user the `.brz`. This is the same defect
+    // that was fixed on the language server; it had landed on one of the two
+    // copies. Mirrors `wirescript::diagnostics_only`.
+    let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
+        ast: &resolved.ast,
+        type_of_expr: &tc.type_of_expr,
+        op_resolutions: &tc.op_resolutions,
+        file: "editor",
+        module_name: None,
+        template_cache: std::sync::Arc::new(wirescript::template_cache::TemplateCache::new()),
+        doc_comments: &resolved.doc_comments,
+        fold_mode: wirescript::FoldMode::Auto,
+        ce_slots: &ce_slots,
+    });
+    let cycles = wirescript::analyze::analyze_cycles(&lowered.module);
     let diags: Vec<DiagnosticOut> = resolved
         .diagnostics
         .iter()
         .chain(tc.diagnostics.iter())
+        .chain(lowered.diagnostics.iter())
+        .chain(cycles.diagnostics.iter())
         .filter(|d| &*d.range.file == "editor" || d.range.file.is_empty())
         .map(|d| DiagnosticOut {
             severity: match d.severity {
@@ -350,18 +370,14 @@ pub fn completions(
         // Vars (`var`/`static var`): `.Value`/`.prev` plus the element type's
         // methods/swizzle (`pos.Normalize()`, `pos.x`).
         if sym.is_some_and(|s| matches!(s.kind, "var" | "static var")) {
-            items.push(CompletionOut {
-                label: "Value".to_string(),
-                kind: "field",
-                detail: Some("Read current value (pure)".to_string()),
-                insert_text: Some("Value".to_string()),
-            });
-            items.push(CompletionOut {
-                label: "prev".to_string(),
-                kind: "field",
-                detail: Some("Read previous tick's value".to_string()),
-                insert_text: Some("prev".to_string()),
-            });
+            for (name, detail) in &wirescript::catalog::VAR_PSEUDO_FIELDS {
+                items.push(CompletionOut {
+                    label: name.to_string(),
+                    kind: "field",
+                    detail: Some(detail.to_string()),
+                    insert_text: Some(name.to_string()),
+                });
+            }
             if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
                 push_type_members(ty, &symbols, &mut items);
             }

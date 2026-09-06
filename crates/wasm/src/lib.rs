@@ -110,6 +110,15 @@ fn compile_source_to_brz(
     registry: HashMap<String, Vec<u8>>,
     depth: usize,
 ) -> Result<Vec<u8>, String> {
+    // Node ids are minted from a per-thread counter that `compile_scope`
+    // resets. wasm has no threads and this entry point does not go through
+    // `wirescript::compile`, so without this the counter carries over from the
+    // previous compile in the same page session and the SAME source emits a
+    // different circuit every time (measured: five compiles of one program,
+    // five different outputs). The guard nests, so the `$```...``` recursion
+    // below is covered by this one line.
+    let _ids = wirescript::ir::NodeId::compile_scope();
+
     let loader = make_loader(files_json);
     let resolved = resolve(source, file, &loader);
     let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
@@ -126,11 +135,17 @@ fn compile_source_to_brz(
         ce_slots: &ce_slots,
     });
 
+    // An unbarriered wire-graph cycle is a hard WS005 in the CLI. Skipping the
+    // analysis here meant `out y: int = y + 1` compiled and downloaded from
+    // the playground while the same source was refused everywhere else.
+    let cycles = wirescript::analyze::analyze_cycles(&lowered.module);
+
     let errors: Vec<String> = resolved
         .diagnostics
         .iter()
         .chain(tc.diagnostics.iter())
         .chain(lowered.diagnostics.iter())
+        .chain(cycles.diagnostics.iter())
         .filter(|d| matches!(d.severity, wirescript::diagnostic::Severity::Error))
         .map(|d| format!("[{}] {} ({}:{}:{})", d.code, d.message, d.range.file, d.range.start.line, d.range.start.col))
         .collect();
@@ -148,6 +163,19 @@ fn compile_source_to_brz(
             registry,
             depth + 1,
         )),
+        // Read from the AST exactly as `compile_with_opts` does. Without
+        // these three, top-of-file `@invisible` and `@layout("cube")` were
+        // silently ignored in the browser and the chip carried no header.
+        module_doc: resolved.ast.module_doc.clone().or_else(|| {
+            resolved
+                .ast
+                .decls
+                .first()
+                .and_then(|d| resolved.doc_comments.get(&wirescript::parser::doc_key(d.range())))
+                .cloned()
+        }),
+        invisible: resolved.ast.invisible,
+        no_gate_labels: resolved.ast.layout == Some(wirescript::ast::LayoutName::Cube),
         ..Default::default()
     };
     emit_brz(&lowered.module, &lr, &opts, &template_cache).map_err(|e| e.to_string())
@@ -208,6 +236,55 @@ mod tests {
         assert!(!err.is_empty(), "error message should be non-empty");
     }
 
+    /// The same source compiled twice in one process must produce the same
+    /// bytes. Node ids come from a per-thread counter, so without a
+    /// `compile_scope` guard at the head of this entry point the second
+    /// compile started numbering where the first stopped, changing brick
+    /// order and the emitted bytes. wasm has no threads, so in a browser
+    /// every compile after the first in a page session differed.
+    #[test]
+    fn compiling_twice_in_one_process_is_byte_identical() {
+        // The shape matters more than the size. Plain vars, records and named
+        // chips emit in the same order whatever they are numbered, so they
+        // pass with the bug present; CONTAINERS are what makes the emitted
+        // order depend on the absolute ids. Found by bisecting shapes against
+        // a real program that did diverge.
+        let mut src = String::from("in go: exec\n");
+        for i in 0..8 {
+            src.push_str(&format!("var m{i}: Map<int, int> = {{{i} => {i}}}\n"));
+            src.push_str(&format!("var a{i}: int[] = [{i}]\n"));
+        }
+        src.push_str("on go {\n");
+        for i in 0..8 {
+            src.push_str(&format!("  m{i}[{i}] = {i}\n  a{i}.push({i})\n"));
+        }
+        src.push_str("}\n");
+
+        // Burn ids the way an earlier compile in the same page session does.
+        // Without the guard the second compile numbers its nodes from here.
+        let first = compile_source_to_brz(&src, "t.ws", None, "{}", HashMap::new(), 0)
+            .expect("first compile");
+        for _ in 0..37 {
+            let _ = wirescript::ir::NodeId::fresh();
+        }
+        let second = compile_source_to_brz(&src, "t.ws", None, "{}", HashMap::new(), 0)
+            .expect("second compile");
+        assert_eq!(
+            first, second,
+            "the same source emitted different bytes once the node counter had moved"
+        );
+    }
+
+    /// An unbarriered wire-graph cycle is a WS005 error in the CLI. The
+    /// browser path skipped `analyze_cycles` entirely, so it compiled and
+    /// handed the user a `.brz` for a program every other entry point refuses.
+    #[test]
+    fn an_unbarriered_cycle_is_refused_here_too() {
+        let err = compile_source_to_brz("out y: int = y + 1\n", "t.ws", None, "{}", HashMap::new(), 0)
+            .expect_err("an unbarriered cycle must not compile");
+        assert!(err.contains("WS005"), "expected WS005, got: {err}");
+    }
+
     /// Blocks nested past the runaway cap fail with a clear error, not a hang
     /// or stack overflow — the same guard the native CLI enforces.
     #[test]
@@ -226,3 +303,4 @@ mod tests {
         );
     }
 }
+

@@ -2876,7 +2876,7 @@ fn resolve_field_in_type(ty: &Type, field: &str) -> Option<Type> {
             fields.iter().find(|(k, _)| k == field).map(|(_, t)| t.clone())
         }
         Type::Ref(inner) => {
-            if field == "Value" || field == "prev" || field == "VarRef" {
+            if crate::catalog::is_var_pseudo_field(field) || field.eq_ignore_ascii_case("VarRef") {
                 return Some(inner.as_ref().clone());
             }
             resolve_field_in_type(inner, field)

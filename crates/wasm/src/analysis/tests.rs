@@ -361,6 +361,22 @@
         assert!(items.is_empty());
     }
 
+    /// A misspelled receiver method type-checks clean and lowers to an
+    /// `_Unsupported` placeholder, which emit drops. This path stopped at
+    /// typecheck, so the editor showed nothing for a dead circuit while
+    /// `wirescript_compile` went on to succeed.
+    #[test]
+    fn diagnostics_report_an_unsupported_placeholder() {
+        let out = diagnostics(
+            "var m: Map<int, int>\nvar n: int = 0\non RoundStart() { n = m.size() }\n",
+            "{}",
+        );
+        assert!(
+            out.contains("WSP001"),
+            "expected a WSP001 placeholder warning, got: {out}"
+        );
+    }
+
     #[test]
     fn diagnostics_unknown_ident() {
         let items = parse_diags(&diagnostics("on RoundStart() { x = 1 }", "{}"));

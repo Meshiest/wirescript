@@ -18,7 +18,7 @@
 // without cluttering the shown example. Multiple preludes accumulate until a
 // fenced block consumes them.
 
-import { readFileSync, writeFileSync, mkdtempSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -32,6 +32,13 @@ const checkBin = join(
   "release",
   process.platform === "win32" ? "wirescript-check.exe" : "wirescript-check",
 );
+
+// Without this the gate reports "N checked, 0 failed" and exits 0 when the
+// checker was never built, which reads exactly like a pass.
+if (!existsSync(checkBin)) {
+  console.error(`doc-check: ${checkBin} does not exist -- run \`just check-bin\` first`);
+  process.exit(1);
+}
 
 const scratch = mkdtempSync(join(tmpdir(), "ws-doccheck-"));
 
@@ -59,14 +66,19 @@ function extractBlocks(text) {
       pendingPrelude += buf.join("\n") + "\n";
       continue;
     }
-    const fence = line.match(/^```wirescript(.*)$/);
+    // The indent is captured, not just tolerated: a block inside a list item
+    // is indented, and both the closing fence and the body carry that indent.
+    // Anchoring at column 0 skipped those blocks entirely rather than failing
+    // them, so they were never checked at all.
+    const fence = line.match(/^(\s*)```wirescript(.*)$/);
     if (fence) {
-      const info = fence[1].trim();
+      const indent = fence[1];
+      const info = fence[2].trim();
       const startLine = i + 1; // 1-based line of the ``` fence
       const body = [];
       i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
-        body.push(lines[i]);
+      while (i < lines.length && !new RegExp(`^${indent}\`\`\`\\s*$`).test(lines[i])) {
+        body.push(indent ? lines[i].slice(indent.length) : lines[i]);
         i++;
       }
       i++; // consume closing ```
@@ -105,7 +117,14 @@ for (const md of mdFiles) {
     try {
       execFileSync(checkBin, [file], { stdio: "pipe" });
     } catch (e) {
-      const out = `${e.stdout ?? ""}${e.stderr ?? ""}`.toString();
+      // `wirescript-check` writes a raw colour escape before the label, so
+      // `\bERROR\b` can never match: the character before `E` is the `m` that
+      // ends the escape, which is a word character, so there is no boundary.
+      // Strip colour before any of these tests, or the gate below silently
+      // passes every block.
+      const out = `${e.stdout ?? ""}${e.stderr ?? ""}`
+        .toString()
+        .replace(/\x1b\[[0-9;]*m/g, "");
       const errLines = out.split("\n").filter((l) => /ERROR|WS\d|WSP\d/.test(l));
       // Parse-focused gate: a block fails ONLY on a real PARSE error (WSP*) —
       // that catches syntax rot (old handler forms, no-parens events, removed

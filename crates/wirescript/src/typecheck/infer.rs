@@ -3080,7 +3080,15 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         return output_record_type(ctx, c, args, range);
                     }
                     if c.exec {
-                        return Type::Any;
+                        // `Never`, not `Any`: a void exec builtin has no
+                        // result, so using its "result" as a value must be a
+                        // type mismatch rather than silently accepted. `Any`
+                        // let `v = PrintToConsole("x")` type-check clean and
+                        // then wire the gate's EXEC pin into a data port. The
+                        // array/map catalog states this rule at
+                        // `catalog/arrays.rs:198`; three call sites here did
+                        // not follow it.
+                        return Type::Never;
                     }
                     return c.params.first().map(|p| p.ty.clone()).unwrap_or(Type::Any);
                 }
@@ -3316,7 +3324,11 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                         }
                         match ret {
                             Some(ret) => return resolve_type_expr(ctx, &ret),
-                            None => return Type::Any,
+                            // A `mod` with no output has no result, and the
+                            // un-namespaced path already says so. `Any` here
+                            // meant `N.noret(1)` as a value type-checked
+                            // clean while the identical `noret(1)` was WS072.
+                            None => return Type::Never,
                         }
                     }
                     None => {
@@ -3471,7 +3483,10 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                 if !c.outputs.is_empty() {
                     return output_record_type(ctx, c, &recv_args, fa_range);
                 }
-                return Type::Any;
+                // Void receiver method (`a.push(x)`): `Never`, so using its
+                // "result" as a value is a mismatch rather than silently
+                // accepted. Same rule as the plain-call site above.
+                return Type::Never;
             }
             // User `self`-receiver method call: `v.dist(o)` where `dist` is a
             // user mod/chip whose first parameter is named `self`. Desugars to

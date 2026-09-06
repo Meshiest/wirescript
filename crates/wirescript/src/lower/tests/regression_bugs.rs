@@ -62,6 +62,12 @@ fn imported_on_handler_generates() {
         "import \"lib\"\non ReadBrickGrid() { BroadcastChatMessage(\"main\") }",
         &[("lib", "on ReadBrickGrid() { BroadcastChatMessage(\"lib\") }")],
     );
+    // Both files desugar their non-event `on Foo()` to `let _on_expr_0`, and
+    // the counter restarts per file, so the cross-file WS013 fired on a name
+    // the compiler generated. Nothing here asserted on diagnostics, so two
+    // libraries that each used an `on <call>()` handler could not be compiled
+    // together and this test stayed green.
+    assert_no_errors(&r);
     assert_eq!(
         count_class(
             &r.module,
@@ -602,6 +608,28 @@ fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
                 WirePort::Value,
             ),
             "regs[15].{field} must read the gate's bOutOfBounds port"
+        );
+    }
+}
+
+/// A capitalisation the pseudo-field list missed did not degrade: the trigger
+/// arm matched nothing and returned, deleting the whole handler with no
+/// diagnostic, while the same field in expression position reported WS010.
+#[test]
+fn a_var_field_trigger_accepts_every_capitalisation() {
+    for field in ["Value", "value", "prev", "Prev", "PREV"] {
+        let src = format!(
+            "var v: int = 0\n\
+             var hit: int = 0\n\
+             on v.{field} {{ hit = 1 }}"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert_eq!(
+            count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+            1,
+            "on v.{field} produced no handler body at all: {:?}",
+            r.diagnostics
         );
     }
 }

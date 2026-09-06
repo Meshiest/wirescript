@@ -438,3 +438,82 @@ pub fn named_arg_value(source: &str, line: usize, col: usize) -> Option<(String,
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod line_index_tests {
+    use super::*;
+
+    /// The index must agree with the scanning functions it replaces on every
+    /// line of both line-ending styles, or a request that uses one and a
+    /// request that uses the other disagree about where a token is.
+    #[test]
+    fn line_index_agrees_with_the_scanning_functions() {
+        for src in [
+            "a\nbb\nccc\n",
+            "a\r\nbb\r\nccc\r\n",
+            "no trailing newline",
+            "",
+            "\n\n\n",
+            "unicode \u{e9}\u{1f600}\nsecond \u{4e16}\u{754c}\n",
+        ] {
+            let idx = LineIndex::new(src);
+            for line in 0..6 {
+                assert_eq!(
+                    idx.line_text(src, line),
+                    line_text(src, line),
+                    "line_text disagreed at line {line} of {src:?}"
+                );
+                assert_eq!(
+                    idx.line_start_byte(line),
+                    line_start_byte(src, line),
+                    "line_start_byte disagreed at line {line} of {src:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Byte offset of the start of every line, computed once.
+///
+/// The free functions above each scan from the start of the source, which is
+/// fine for the one lookup a hover does and quadratic for a request that
+/// converts thousands of ranges: a semantic-token pass over a 257 KB file
+/// rescanned 2.3 billion source bytes. Build one of these per request and the
+/// scans become a binary search.
+pub struct LineIndex {
+    starts: Vec<u32>,
+    len: u32,
+}
+
+impl LineIndex {
+    pub fn new(source: &str) -> Self {
+        let mut starts = vec![0u32];
+        starts.extend(
+            source
+                .bytes()
+                .enumerate()
+                .filter(|(_, b)| *b == b'\n')
+                .map(|(i, _)| i as u32 + 1),
+        );
+        Self { starts, len: source.len() as u32 }
+    }
+
+    /// Byte offset where 0-based `line` starts, or the source length past the
+    /// end. Matches [`line_start_byte`] exactly, including its CRLF handling:
+    /// both count the bytes as they appear.
+    pub fn line_start_byte(&self, line: usize) -> usize {
+        self.starts.get(line).copied().unwrap_or(self.len) as usize
+    }
+
+    /// The text of 0-based `line` without its terminator, matching
+    /// [`line_text`]: a CRLF file yields the same string as an LF one.
+    pub fn line_text<'a>(&self, source: &'a str, line: usize) -> &'a str {
+        let Some(&start) = self.starts.get(line) else {
+            return "";
+        };
+        let end = self.starts.get(line + 1).copied().unwrap_or(self.len);
+        let mut slice = &source[start as usize..end as usize];
+        slice = slice.strip_suffix('\n').unwrap_or(slice);
+        slice.strip_suffix('\r').unwrap_or(slice)
+    }
+}

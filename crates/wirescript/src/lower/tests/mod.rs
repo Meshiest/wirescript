@@ -135,7 +135,7 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
     };
     let resolved = resolve(entry_src, "main", &loader);
     let tc = typecheck(&resolved.ast, "main", &crate::typecheck::CeSlotMap::default());
-    lower(LowerInput {
+    let mut r = lower(LowerInput {
         ast: &resolved.ast,
         type_of_expr: &tc.type_of_expr,
         op_resolutions: &tc.op_resolutions,
@@ -145,7 +145,15 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
-    })
+    });
+    // Merge resolve's and typecheck's diagnostics, as the single-file helper
+    // does. Without this every `assert_no_errors` on a multi-file program was
+    // blind to a resolve or typecheck error: a cross-file WS013 that made a
+    // real two-library program uncompilable sat green in this suite because
+    // the one test covering that shape could not see it.
+    r.diagnostics.extend(resolved.diagnostics);
+    r.diagnostics.extend(tc.diagnostics);
+    r
 }
 
 /// Asserts a program lowered with no ERROR-severity diagnostic, typecheck's
