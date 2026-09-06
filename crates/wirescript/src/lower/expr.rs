@@ -151,6 +151,15 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             lower_expr(ctx, operand)
         }
+        // `ref x` / `&x` in a VALUE position, which is the documented way to
+        // write `let r = ref someVar`. An argument bound to a `*T` parameter
+        // never gets here (`call::binding` strips the sigil to name the
+        // caller's storage), so the arm only sees the positions that would
+        // otherwise fall to the `_Unsupported` catch-all below: a gate emit
+        // refuses to spawn, taking the binding and every wire through it with
+        // no error. The operand's own wire is what a reference reads through, a
+        // scalar var's live `Value` output, a container's reference port.
+        Expr::RefOf { operand, .. } => lower_expr(ctx, operand),
         Expr::TuplePick { range, .. } => {
             if let Some(binding) = resolve_field_chain(ctx, e).cloned()
                 && let Some(port) = binding_to_port(ctx, &binding, range)

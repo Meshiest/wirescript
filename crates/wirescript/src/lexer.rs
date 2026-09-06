@@ -325,7 +325,12 @@ impl<'a> Lexer<'a> {
             );
         }
 
-        let p = self.snapshot();
+        // `abs` by hand: this is the one token that does not go through
+        // `emit`, and leaving it fragment-local put every "expected an
+        // expression, got nothing" inside a `${...}` slot on line 1 of the
+        // containing file. Whole-file lexing has the identity origin, so
+        // nothing else moves.
+        let p = self.abs(self.snapshot());
         self.tokens.push(Token {
             kind: TokenKind::Eof,
             text: String::new(),
@@ -930,9 +935,12 @@ impl<'a> Lexer<'a> {
                     text.push(self.bytes[self.pos] as char);
                     self.advance();
                 }
+                // `_` is a digit separator in the exponent too. Without this
+                // `2.5e1_0` lexed as `2.5e1` followed by the identifier `_0`,
+                // silently changing the value by nine orders of magnitude.
                 while self.pos < self.bytes.len() {
                     let c = self.bytes[self.pos] as char;
-                    if c.is_ascii_digit() {
+                    if c.is_ascii_digit() || c == '_' {
                         text.push(c);
                         self.advance();
                     } else {

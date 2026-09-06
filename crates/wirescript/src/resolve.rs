@@ -217,14 +217,28 @@ impl DeclAccum {
         self.index(&d);
         self.decls.insert(0, d);
     }
-    /// `decls.iter().any(|e| decl_binds(e, name))`.
-    fn binds(&self, name: &str) -> bool {
-        self.bound.contains_key(name)
-    }
     /// `decls.iter().any(|e| decl_binds(e, name) && e.range().file == file)`.
     fn binds_in_file(&self, name: &str, file: &Arc<str>) -> bool {
         self.bound.get(name).is_some_and(|files| files.iter().any(|f| f == file))
     }
+}
+
+/// The canonical module an `import * as` alias names.
+///
+/// Resolved against the file the alias was WRITTEN in, not the file being
+/// imported into: a namespace that travelled here with a pulled-in declaration
+/// carries its own module's spelling of the path, which says nothing about
+/// where the importing file sits on disk.
+fn namespace_target(n: &NamespaceDecl, loader: &dyn FileLoader) -> String {
+    loader.canonical_path(&n.source_path, &n.range.file)
+}
+
+/// The namespace alias already merged under `name`, from any file.
+fn bound_namespace<'a>(decls: &'a [TopDecl], name: &str) -> Option<&'a NamespaceDecl> {
+    decls.iter().find_map(|d| match d {
+        TopDecl::Namespace(n) if n.name == name => Some(n),
+        _ => None,
+    })
 }
 
 fn resolve_file(
@@ -377,7 +391,17 @@ fn resolve_import(
             }
         }
         ImportKind::Named(bindings) => {
-            let binding_names: HashSet<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+            // The names this import has ALREADY contributed, so the closure
+            // pass below does not push a second declaration for one of them.
+            // Keyed on the effective (post-`as`) name, because that is what
+            // was pushed: keyed on the pre-alias name, `import { addK, K as
+            // KK }` would block the closure from restoring `klib`'s own `K`,
+            // leaving the module's `x + K` to bind to whatever the IMPORTER
+            // called `K`.
+            let binding_names: HashSet<&str> = bindings
+                .iter()
+                .map(|b| b.alias.as_deref().unwrap_or(b.name.as_str()))
+                .collect();
             // Everything this import contributes goes after here; the closure
             // pass below pulls dependencies in discovery order, which is not
             // declaration order, so the block is re-sorted at the end.
@@ -455,10 +479,18 @@ fn resolve_import(
                 for d in &importable {
                     if matches!(d, TopDecl::TypeAlias(_)) { continue; }
                     let names = decl_names(d);
+                    // Same diamond-dedup rule as the two paths above, and for
+                    // the same reason: a name already bound FROM ANOTHER FILE
+                    // is a different declaration that happens to share a
+                    // spelling, so skipping on it would wire this module's
+                    // private `helper` to the other module's `helper` with no
+                    // diagnostic at all. Comparing the file keeps the pull, and
+                    // WS013 then reports the collision.
+                    let d_file = d.range().file.clone();
                     if !names.is_empty()
                         && names.iter().any(|n| target.used.contains(n.as_str()))
                         && !names.iter().any(|n| binding_names.contains(n.as_str()))
-                        && !names.iter().any(|n| target.binds(n))
+                        && !names.iter().any(|n| target.binds_in_file(n, &d_file))
                     {
                         target.push((*d).clone());
                         added = true;
@@ -532,34 +564,51 @@ fn resolve_import(
                 }
             }
 
-            // Only a duplicate alias written in the SAME file is a conflict; an
-            // `import * as` name is file-local, so a same-named alias from
-            // another file coexists with it (see the travelling-namespace loop
-            // below). One module reached twice under one alias is a redundant
-            // import rather than a collision, so compare canonical targets:
-            // `"utils"` and `"./utils"` name one file and must not report.
-            let prior = target.decls.iter().find_map(|d| match d {
-                TopDecl::Namespace(n) if n.name == *ns_name && n.range.file == imp.range.file => {
-                    Some(n.source_path.clone())
-                }
-                _ => None,
+            // An alias is WRITTEN per file, but the namespace it binds is
+            // merged into one flat program-wide list keyed by name, and
+            // lowering resolves by that name alone outside a namespaced mod's
+            // own body. So a second alias under this name is reported wherever
+            // it was written, not only when it was written here. Compare
+            // canonical targets, not spellings: one module reached twice under
+            // one alias (`"utils"` and `"./utils"`) is a redundant import, not
+            // a collision.
+            let prior = bound_namespace(&target.decls, ns_name).map(|n| {
+                (
+                    namespace_target(n, loader),
+                    n.source_path.clone(),
+                    n.range.file.clone(),
+                )
             });
-            if let Some(prior_path) = prior {
-                if loader.canonical_path(&prior_path, relative_to) != canon {
-                    diagnostics.push(Diagnostic::error(
-                        "WS012",
+            if let Some((prior_canon, prior_path, prior_file)) = prior {
+                let same_file = prior_file == imp.range.file;
+                if prior_canon != canon {
+                    let message = if same_file {
                         format!(
                             "namespace alias '{ns_name}' is already bound in this file to \
                              '{prior_path}', so this import would silently replace it and every \
                              reference through '{ns_name}' would read the wrong module. Rename \
                              one of the two aliases"
-                        ),
-                        imp.range.clone(),
-                    ));
+                        )
+                    } else {
+                        format!(
+                            "namespace alias '{ns_name}' is already bound to '{prior_path}' by an \
+                             `import * as` in '{prior_file}', which travelled here with an import \
+                             of that module. Both merge into one flat scope, so a call through \
+                             '{ns_name}' in either file reads whichever module lowering \
+                             registered last. Rename one of the two aliases"
+                        )
+                    };
+                    diagnostics.push(Diagnostic::error("WS012", message, imp.range.clone()));
                 }
-                // The alias is already bound in this file either way; a second
-                // namespace under it would shadow the first.
-                return;
+                if same_file {
+                    // The alias is already bound in this file; a second
+                    // namespace under it would shadow the first.
+                    return;
+                }
+                // A prior from ANOTHER file is still pushed: typecheck resolves
+                // a namespaced call against the alias declared in the caller's
+                // own file, so dropping this one would bury the reported
+                // collision under a WS002 for every use site in THIS file.
             }
 
             target.push(TopDecl::Namespace(NamespaceDecl {
@@ -578,22 +627,52 @@ fn resolve_import(
     // `_Unsupported` placeholder that does nothing at runtime. Only referenced
     // namespaces travel, so importing a file does not leak its every import.
     if !source_namespaces.is_empty() {
+        // One report per colliding alias, however many fixpoint sweeps the
+        // loop below takes to settle.
+        let mut reported: HashSet<&str> = HashSet::default();
         loop {
             let mut added = false;
             for ns in &source_namespaces {
-                let Some(name) = decl_name(ns) else { continue };
+                let TopDecl::Namespace(nsd) = ns else { continue };
+                let name = nsd.name.as_str();
                 if !target.used.contains(name) {
                     continue;
                 }
-                let ns_file = ns.range().file.clone();
                 // Already travelled (the same module reached twice).
-                if target.binds_in_file(name, &ns_file) {
+                if target.binds_in_file(name, &nsd.range.file) {
                     continue;
                 }
-                // A same-named alias from ANOTHER file is not a conflict: an
-                // `import * as` name is file-local, so the importer's `Other`
-                // and the imported module's own `Other` coexist. Typecheck and
-                // lowering keep them apart by the file each was written in.
+                // Whether a same-named alias from ANOTHER file really coexists
+                // depends on how this import spells itself. `import * as`
+                // wraps what it pulls in a `NamespaceDecl`, and lowering
+                // scopes a namespaced mod's body against its own module's
+                // aliases first (`ns_mod_scopes` / `ns_by_file` in
+                // `lower/decl.rs`), so those two are independent. A bare or
+                // named import pushes the same declarations FLAT, where there
+                // is no per-body scope: typecheck still resolves each `U.f` by
+                // the file it was written in, but lowering has one binding per
+                // name for the whole program, so two libraries that each
+                // privately wrote `import * as U` type-check clean and then
+                // both call whichever module registered last. Report that; the
+                // namespace is still pushed, so the WS012 is the only thing
+                // the user has to read.
+                if !matches!(imp.kind, ImportKind::Namespace(_))
+                    && let Some(prior) = bound_namespace(&target.decls, name)
+                    && namespace_target(prior, loader) != namespace_target(nsd, loader)
+                    && reported.insert(name)
+                {
+                    diagnostics.push(Diagnostic::error(
+                        "WS012",
+                        format!(
+                            "namespace alias '{name}' is bound to '{}' in '{}' and to '{}' in \
+                             '{}'. A bare or named import merges both into one flat scope, so a \
+                             call through '{name}' in either file reads whichever module lowering \
+                             registered last. Rename one of the two aliases",
+                            prior.source_path, prior.range.file, nsd.source_path, nsd.range.file
+                        ),
+                        imp.range.clone(),
+                    ));
+                }
                 // Prepend: lowering registers declarations in source order,
                 // so a namespace appended after its caller would read as a
                 // use before declaration and resolve to nothing.

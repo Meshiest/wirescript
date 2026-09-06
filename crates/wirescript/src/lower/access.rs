@@ -259,6 +259,26 @@ pub(super) fn resolve_output_field_port(
     Some(port_ref(node_id, pname))
 }
 
+/// The result port a subscript's field names (`arr[i].value`,
+/// `arr[i].bOutOfBounds`), or `None` for a field that names neither.
+///
+/// Matched case-insensitively, with the `b` bool prefix optional, because
+/// typecheck accepts every capitalisation as a permissive escape hatch. A
+/// spelling this misses (`arr[i].Value`, the capitalisation the docs teach)
+/// type-checks and then lowers to an `_Unsupported` placeholder that emit
+/// refuses to spawn, deleting the read and every wire through it with no
+/// error.
+fn index_result_port(field: &str) -> Option<WirePort> {
+    if field.eq_ignore_ascii_case("value") {
+        Some(WirePort::Value)
+    } else if field.eq_ignore_ascii_case("bOutOfBounds") || field.eq_ignore_ascii_case("OutOfBounds")
+    {
+        Some(WirePort::BOutOfBounds)
+    } else {
+        None
+    }
+}
+
 /// A vector (`x`/`y`/`z`) or color (`r`/`g`/`b`/`a`) component name, in either
 /// case. These don't name gate ports — they desugar to a SplitVector /
 /// SplitColor gate, so access through a local must fall through to that logic.
@@ -668,14 +688,17 @@ pub(super) fn lower_field_access(
             port_ref(node_id, &out_name)
         }
         // Array index result fields: arr[i].value / arr[i].bOutOfBounds
-        "value" | "bOutOfBounds" | "OutOfBounds" => {
+        f if index_result_port(f).is_some() => {
+            let port_id = index_result_port(f).expect("guarded by the arm");
             let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
-            let port_id = if field == "value" {
-                WirePort::Value
-            } else {
-                WirePort::BOutOfBounds
-            };
-            obj_port.node_id.port(port_id)
+            // The name alone doesn't prove the object's gate carries the port:
+            // `x.Value` on an arbitrary call result reaches here too, and a wire
+            // to a port the node never declared is dropped at emit as silently
+            // as the placeholder was.
+            match resolve_output_field_port(ctx, obj_port.node_id, port_id.as_str()) {
+                Some(port) => port,
+                None => synthesise_unsupported(ctx, e),
+            }
         }
         // A field naming neither an inline-record entry nor a sibling output
         // port (both resolved above, for a call object) has nothing to read:
@@ -2830,8 +2853,20 @@ fn lower_array_method_inner(
             )
         }
         "sort" => {
+            // `descending` is the parameter's declared name, so typecheck
+            // accepts the named form; reading only `args.first()` as a
+            // positional dropped it, and an optional argument that goes missing
+            // is not an arity error, so `xs.sort(descending = true)` sorted
+            // ascending with no diagnostic at all. Scanned (rather than indexed)
+            // so an `exec =` ahead of the flag doesn't hide it either, the same
+            // treatment `sortMultiple` below already gives its own copy.
+            let descending = args.iter().find_map(|a| match a {
+                CallArg::Named { name, value, .. } if name == "descending" => Some(value),
+                CallArg::Positional(d) => Some(d),
+                _ => None,
+            });
             let mut extra = vec![];
-            if let Some(CallArg::Positional(d)) = args.first() {
+            if let Some(d) = descending {
                 extra.push((WirePort::BDescending, Type::Bool, lower_expr(ctx, d)));
             }
             array_exec_op(ctx, range, array_ref, gc::ARRAY_SORT, extra, vec![], WirePort::ExecOut)

@@ -930,3 +930,63 @@ fn atom_hash_is_a_64_bit_i64() {
         assert_eq!(v, (v as u64) as i64);
     }
 }
+
+// --- column conventions: char column in, byte columns out ---------
+
+/// 0-based CHAR column of `needle` on 0-based `line`: the coordinate every
+/// `analysis` entry point takes, which is NOT `str::find`'s byte offset once
+/// the line holds a non-ASCII character.
+fn char_col_of(src: &str, line: usize, needle: &str) -> usize {
+    let l = src.lines().nth(line).unwrap();
+    l[..l.find(needle).unwrap()].chars().count()
+}
+
+#[test]
+fn a_non_ascii_character_earlier_on_the_line_does_not_shift_the_cursor() {
+    // `Pos::col` counts bytes and the cursor arrives as a char column, so
+    // without the conversion the two emoji slid the cursor 6 columns left
+    // onto `abc`, and rename rewrote that declaration instead of `xyz`'s.
+    let src = "\
+var abc: int = 0
+var xyz: int = 0
+in go: exec
+on go {
+  Log(\"\u{1F389}\u{1F389}\" .. abc .. xyz)
+}";
+    let ast = parse(src, "t.ws").ast;
+    let col = char_col_of(src, 4, "xyz");
+    let (target, _) = references_at(&ast, src, "t.ws", 4, col).expect("target under cursor");
+    assert_eq!(target.name, "xyz");
+    let (_, name) = prepare_rename_at(&ast, src, "t.ws", 4, col).expect("renameable");
+    assert_eq!(name, "xyz");
+
+    // Two plain BMP accents are enough as well (one extra byte each); there
+    // the old behaviour was a silent no-op rather than a wrong answer.
+    let src = "\
+var xyz: int = 0
+in go: exec
+on go {
+  BroadcastChatMessage(\"h\u{e9}llo w\u{f6}rld\" .. xyz)
+}";
+    let ast = parse(src, "t.ws").ast;
+    let col = char_col_of(src, 3, "xyz");
+    let (target, _) = references_at(&ast, src, "t.ws", 3, col).expect("target under cursor");
+    assert_eq!(target.name, "xyz");
+}
+
+#[test]
+fn field_name_at_reads_a_char_column() {
+    let src = "\
+type R = {hp: int}
+let r: R = {hp: 1}
+in go: exec
+on go {
+  BroadcastChatMessage(\"\u{e9}${r.hp}\")
+}";
+    let ast = parse(src, "t.ws").ast;
+    let col = char_col_of(src, 4, "hp}");
+    assert!(field_name_at(&ast, src, 4, col), "the cursor is on the `hp` field name");
+    // The receiver right before it is not a field name.
+    let recv = char_col_of(src, 4, "r.hp");
+    assert!(!field_name_at(&ast, src, 4, recv));
+}

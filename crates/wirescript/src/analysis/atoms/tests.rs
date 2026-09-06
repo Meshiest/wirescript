@@ -34,3 +34,33 @@ fn atom_references_finds_values_and_map_keys_by_name() {
     assert_eq!(atom_references(src, "t.ws", "seer").len(), 1);
     assert!(atom_references(src, "t.ws", "missing").is_empty());
 }
+
+#[test]
+fn atom_at_finds_an_atom_sharing_a_line_with_a_plain_colon() {
+    // `atom_at` skips the document lex when the cursor's line holds no `:`
+    // that could open an atom token. That guard has to survive a line whose
+    // FIRST colon is an ordinary annotation separator.
+    let src = "in go: exec\non go { let r: int = :bomber }";
+    let a = atom_at(src, "t.ws", 1, col_of(src, 1, ":bomber")).expect("atom under cursor");
+    assert_eq!(a.name, "bomber");
+}
+
+#[test]
+fn atom_at_reads_a_char_column_not_a_byte_one() {
+    // Token spans carry byte columns and the cursor arrives as a char column.
+    // Without the conversion the accented `e` slid the cursor off the atom, so
+    // hover and find-references on `:alpha` silently returned nothing.
+    let src = "\
+var v: int = 0
+var s: string = \"x\"
+in go: exec
+on go {
+  v = if s == \"\u{e9}\" then :alpha else :beta
+}";
+    let l = src.lines().nth(4).unwrap();
+    let char_col = |needle: &str| l[..l.find(needle).unwrap()].chars().count();
+    let a = atom_at(src, "t.ws", 4, char_col(":alpha")).expect("atom under cursor");
+    assert_eq!(a.name, "alpha");
+    let b = atom_at(src, "t.ws", 4, char_col(":beta")).expect("atom under cursor");
+    assert_eq!(b.name, "beta");
+}

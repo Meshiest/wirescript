@@ -111,3 +111,33 @@
             syms.iter().map(|s| (&s.name, s.kind)).collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn resolve_symbol_reads_a_char_column_against_byte_ranges() {
+        // Symbol ranges carry the lexer's BYTE columns and the cursor arrives
+        // as a char column, so enough non-ASCII text before a declaration on
+        // its own line made that declaration look like it came AFTER the
+        // cursor: hover on the local `v` fell back to the file-scope one and
+        // reported `string` for an `int`.
+        let src = "\
+let v: string = \"s\"
+in go: exec
+on go {
+  /* \u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9} */ let v: int = 1
+}";
+        let resolved = crate::resolve::resolve(src, "test", &crate::resolve::FsLoader);
+        let tc = crate::typecheck::typecheck(
+            &resolved.ast,
+            "test",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        let syms = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
+        let l = src.lines().nth(3).unwrap();
+        let col = l[..l.rfind('v').unwrap()].chars().count();
+        let sym = resolve_symbol(&syms, src, "v", 3, col).expect("a `v` is in scope");
+        assert_eq!(
+            sym.ty.as_deref(),
+            Some("int"),
+            "the declaration under the cursor, not the file-scope one"
+        );
+    }

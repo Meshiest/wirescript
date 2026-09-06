@@ -10,7 +10,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use wirescript::analysis::{
     asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file, definition_at,
-    collection_kind, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs, find_enclosing_call, find_name_range,
+    collection_kind, cursor_byte_offset, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs, find_enclosing_call, find_name_range,
     format_wirescript, hover_at, member_receiver_at, named_arg_value, param_names,
     prepare_rename_at, receiver_methods, record_field_names, references_at, references_to_export,
     rename_edit_text, resolve_symbol, semantic_tokens, swizzle_fields, type_str,
@@ -151,7 +151,7 @@ fn is_field_or_keyword(ast: &Script, source: &str, line: usize, col: usize) -> b
             return true;
         }
     }
-    field_name_at(ast, line, col)
+    field_name_at(ast, source, line, col)
 }
 
 /// Deterministic order + belt-and-braces dedup: rename must never hand the
@@ -566,9 +566,110 @@ struct DocState {
     imported_files: Vec<String>,
 }
 
+/// One analysis' diagnostics, split by the file each actually names.
+///
+/// `resolve` inlines every import into the entry file's AST, so analysing
+/// `main.ws` routinely raises diagnostics whose range names `util.ws`. A
+/// publish is per-URI, so those have to be sent to the file they came from.
+/// Keeping only the entry's share strands the rest in no buffer at all, and
+/// the editor shows a clean file for a program the compiler rejects.
+#[derive(Default)]
+struct SplitDiagnostics {
+    /// The analysed document's own share, plus range-less diagnostics.
+    own: Vec<Diagnostic>,
+    /// An imported file's share, keyed by that file's URI.
+    foreign: HashMap<Url, Vec<Diagnostic>>,
+}
+
+impl SplitDiagnostics {
+    /// Append `other`, skipping anything already reported for the same file.
+    /// `compile` re-runs parse and typecheck, so the on-save lowering set
+    /// overlaps the live one.
+    fn extend_deduped(&mut self, other: SplitDiagnostics) {
+        fn push_new(into: &mut Vec<Diagnostic>, from: Vec<Diagnostic>) {
+            for d in from {
+                if !into.iter().any(|e| e.range == d.range && e.message == d.message) {
+                    into.push(d);
+                }
+            }
+        }
+        push_new(&mut self.own, other.own);
+        for (uri, diags) in other.foreign {
+            push_new(self.foreign.entry(uri).or_default(), diags);
+        }
+    }
+}
+
+fn to_lsp_diagnostic(source: &str, d: &wirescript::diagnostic::Diagnostic) -> Diagnostic {
+    Diagnostic {
+        range: range_to_lsp(source, &d.range),
+        severity: Some(match d.severity {
+            wirescript::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
+            wirescript::diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
+            _ => DiagnosticSeverity::INFORMATION,
+        }),
+        code: Some(NumberOrString::String(d.code.clone())),
+        source: Some("wirescript".into()),
+        message: d.message.clone(),
+        ..Default::default()
+    }
+}
+
+/// Split compiler diagnostics by the file each names, converting every range
+/// against the text of THAT file. `Pos::col` is a byte column into the file
+/// the range names, so the entry document's text is the wrong ruler for an
+/// imported one.
+///
+/// A diagnostic for a file that is currently `open` is dropped: that document
+/// analyses itself and publishes its own set, and a second copy from its
+/// importer would double every marker.
+fn split_by_file<'a>(
+    diags: impl Iterator<Item = &'a wirescript::diagnostic::Diagnostic>,
+    file: &str,
+    source: &str,
+    open: &HashMap<Url, DocState>,
+) -> SplitDiagnostics {
+    // Clients respell file URIs (VS Code sends `file:///c%3A/...`), so an open
+    // document is recognized by its canonical PATH and not by `Url` equality,
+    // the same reason `collect_references_across_files` dedups that way.
+    let open_paths: std::collections::HashSet<String> = open
+        .keys()
+        .map(|u| FsLoader.canonical_path(&uri_to_file_string(u), "."))
+        .collect();
+    let mut split = SplitDiagnostics::default();
+    let mut foreign_src: HashMap<Url, Option<String>> = HashMap::new();
+    for d in diags {
+        if &*d.range.file == file || d.range.file.is_empty() {
+            split.own.push(to_lsp_diagnostic(source, d));
+            continue;
+        }
+        let Ok(other) = Url::from_file_path(&*d.range.file) else {
+            continue;
+        };
+        if open_paths.contains(&FsLoader.canonical_path(&d.range.file, ".")) {
+            continue;
+        }
+        let text = foreign_src
+            .entry(other.clone())
+            .or_insert_with(|| std::fs::read_to_string(&*d.range.file).ok());
+        let Some(text) = text.as_deref() else { continue };
+        split
+            .foreign
+            .entry(other)
+            .or_default()
+            .push(to_lsp_diagnostic(text, d));
+    }
+    split
+}
+
 struct Backend {
     client: Client,
     docs: Mutex<HashMap<Url, DocState>>,
+    /// Which imported files each open document has published diagnostics to,
+    /// so they can be cleared when that document stops reporting them (or is
+    /// closed). Diagnostics belong to the server until it says otherwise, and
+    /// nothing else would ever retract a marker in a file nobody has open.
+    foreign_diags: Mutex<HashMap<Url, std::collections::HashSet<Url>>>,
     /// Whether the client accepts a dynamic `workspace/didChangeWatchedFiles`
     /// registration, read from its initialize capabilities. Set once in
     /// `initialize`, read once in `initialized`.
@@ -629,7 +730,7 @@ impl Backend {
     /// to hand: ~4ms of a ~39ms analyze, and well under 1ms on smaller files),
     /// which the template cache keeps flat. That is worth paying for a hover
     /// that matches the buffer.
-    fn analyze(&self, uri: &Url, source: &str) -> Vec<Diagnostic> {
+    fn analyze(&self, uri: &Url, source: &str) -> SplitDiagnostics {
         let file = uri_to_file_string(uri);
 
         // Parse ONCE and hand the result to resolve, avoiding a second parse of
@@ -686,29 +787,17 @@ impl Backend {
             );
         }
 
-        let mut diags: Vec<Diagnostic> = resolved
-            .diagnostics
-            .iter()
-            .chain(tc.diagnostics.iter())
-            .filter(|d| &*d.range.file == file || d.range.file.is_empty())
-            .map(|d| {
-                let severity = match d.severity {
-                    wirescript::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
-                    wirescript::diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
-                    _ => DiagnosticSeverity::INFORMATION,
-                };
-                Diagnostic {
-                    range: range_to_lsp(source, &d.range),
-                    severity: Some(severity),
-                    code: Some(NumberOrString::String(d.code.clone())),
-                    source: Some("wirescript".into()),
-                    message: d.message.clone(),
-                    ..Default::default()
-                }
-            })
-            .collect();
-        diags.extend(prefab_ref_diagnostics(source, &file));
-        diags
+        let mut split = match self.docs.lock() {
+            Ok(docs) => split_by_file(
+                resolved.diagnostics.iter().chain(tc.diagnostics.iter()),
+                &file,
+                source,
+                &docs,
+            ),
+            Err(_) => SplitDiagnostics::default(),
+        };
+        split.own.extend(prefab_ref_diagnostics(source, &file));
+        split
     }
 
     /// Lowering and emit diagnostics for one document.
@@ -722,7 +811,7 @@ impl Backend {
     ///
     /// Runs on a blocking task: `compile` reserves its own big stack, and the
     /// server must stay responsive while it works.
-    async fn lowering_diagnostics(&self, uri: &Url, source: &str) -> Vec<Diagnostic> {
+    async fn lowering_diagnostics(&self, uri: &Url, source: &str) -> SplitDiagnostics {
         let file = uri_to_file_string(uri);
         let src_owned = source.to_string();
         let file_owned = file.clone();
@@ -739,38 +828,46 @@ impl Backend {
         // A panic in the compile must not take diagnostics (or the server) down.
         let result = match result {
             Ok(r) => r,
-            Err(_) => return Vec::new(),
+            Err(_) => return SplitDiagnostics::default(),
         };
 
         let (diags, emit_error) = match result {
             Ok(r) => (r.diagnostics, None),
-            Err(wirescript::CompileError::HasErrors(d)) => (d, None),
+            // `compile` stops at the first stage that reports an error, so a
+            // file with a type error never reaches lowering and its WSP001
+            // "no lowering for this expression" warnings are never produced.
+            // `wirescript-check` runs the same front end past typecheck for
+            // exactly that reason (`bin/check.rs`), and the two disagreed on
+            // every file with both. Re-run for the full set; this second pass
+            // only happens on a save of a file that already has errors.
+            Err(wirescript::CompileError::HasErrors(_)) => {
+                let src_owned = source.to_string();
+                let file_owned = file.clone();
+                let full = tokio::task::spawn_blocking(move || {
+                    wirescript::diagnostics_only(wirescript::CompileInput {
+                        source: &src_owned,
+                        file: &file_owned,
+                        module_name: None,
+                        fold_mode: FoldMode::Auto,
+                    })
+                })
+                .await;
+                (full.unwrap_or_default(), None)
+            }
             Err(wirescript::CompileError::Emit(e)) => (Vec::new(), Some(format!("{e:?}"))),
         };
 
-        let mut out: Vec<Diagnostic> = diags
-            .iter()
-            .filter(|d| &*d.range.file == file.as_str() || d.range.file.is_empty())
-            .map(|d| Diagnostic {
-                range: range_to_lsp(source, &d.range),
-                severity: Some(match d.severity {
-                    wirescript::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
-                    wirescript::diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
-                    _ => DiagnosticSeverity::INFORMATION,
-                }),
-                code: Some(NumberOrString::String(d.code.clone())),
-                source: Some("wirescript".into()),
-                message: d.message.clone(),
-                ..Default::default()
-            })
-            .collect();
+        let mut out = match self.docs.lock() {
+            Ok(docs) => split_by_file(diags.iter(), &file, source, &docs),
+            Err(_) => SplitDiagnostics::default(),
+        };
 
         // Emit failures carry no source range (they name a wire and a brick, not
         // a line). Surface one at the top of the file rather than dropping it —
         // it is the difference between a build that fails and a build that fails
         // for no visible reason.
         if let Some(msg) = emit_error {
-            out.push(Diagnostic {
+            out.own.push(Diagnostic {
                 range: tower_lsp::lsp_types::Range::default(),
                 severity: Some(DiagnosticSeverity::ERROR),
                 code: Some(NumberOrString::String("WS-EMIT".into())),
@@ -800,8 +897,55 @@ impl Backend {
                 .collect()
         };
         for (uri, source) in others {
-            let diags = self.analyze(&uri, &source);
-            self.client.publish_diagnostics(uri, diags, None).await;
+            let split = self.analyze(&uri, &source);
+            self.publish_split(&uri, split).await;
+        }
+    }
+
+    /// Publish one analysis: the document's own diagnostics to `uri`, and each
+    /// imported file's to that file. A file this document published to last
+    /// time and no longer does is cleared, so a fixed error in an imported
+    /// file doesn't leave a marker in a buffer nobody has open.
+    async fn publish_split(&self, uri: &Url, split: SplitDiagnostics) {
+        let SplitDiagnostics { own, foreign } = split;
+        let stale: Vec<Url> = match self.foreign_diags.lock() {
+            Ok(mut owned) => {
+                let previous = owned
+                    .insert(uri.clone(), foreign.keys().cloned().collect())
+                    .unwrap_or_default();
+                // The new set is already in `owned`, so this one test covers
+                // both "this document still reports it" and "another open
+                // document does".
+                previous
+                    .into_iter()
+                    .filter(|u| !owned.values().any(|set| set.contains(u)))
+                    .collect()
+            }
+            Err(_) => Vec::new(),
+        };
+        for (u, diags) in foreign {
+            self.client.publish_diagnostics(u, diags, None).await;
+        }
+        for u in stale {
+            self.client.publish_diagnostics(u, Vec::new(), None).await;
+        }
+        self.client.publish_diagnostics(uri.clone(), own, None).await;
+    }
+
+    /// Drop `uri`'s claim on the imported files it published to, clearing any
+    /// no other open document still reports.
+    async fn release_foreign_diags(&self, uri: &Url) {
+        let stale: Vec<Url> = match self.foreign_diags.lock() {
+            Ok(mut owned) => owned
+                .remove(uri)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|u| !owned.values().any(|set| set.contains(u)))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        for u in stale {
+            self.client.publish_diagnostics(u, Vec::new(), None).await;
         }
     }
 }
@@ -969,11 +1113,12 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let diags =
-            self.analyze(&params.text_document.uri, &params.text_document.text);
-        self.client
-            .publish_diagnostics(params.text_document.uri, diags, None)
-            .await;
+        let split = self.analyze(&params.text_document.uri, &params.text_document.text);
+        self.publish_split(&params.text_document.uri, split).await;
+        // The file just opened may be one an already-open importer had been
+        // publishing diagnostics INTO; that importer must drop them now the
+        // file reports for itself, or every marker in it shows twice.
+        self.reanalyze_other_docs(&params.text_document.uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -992,10 +1137,8 @@ impl LanguageServer for Backend {
         if self.change_gen.load(std::sync::atomic::Ordering::SeqCst) != generation {
             return;
         }
-        let diags = self.analyze(&uri, &change.text);
-        self.client
-            .publish_diagnostics(uri.clone(), diags, None)
-            .await;
+        let split = self.analyze(&uri, &change.text);
+        self.publish_split(&uri, split).await;
         self.reanalyze_other_docs(&uri).await;
     }
 
@@ -1014,17 +1157,9 @@ impl LanguageServer for Backend {
         // Republish the typecheck set together with the lowering set, so the
         // save-only diagnostics do not wipe the live ones (a publish replaces
         // everything for the file).
-        let mut diags = self.analyze(&uri, &source);
-        for d in self.lowering_diagnostics(&uri, &source).await {
-            // compile re-runs parse/typecheck, so its output overlaps analyze's.
-            let dup = diags
-                .iter()
-                .any(|e| e.range == d.range && e.message == d.message);
-            if !dup {
-                diags.push(d);
-            }
-        }
-        self.client.publish_diagnostics(uri, diags, None).await;
+        let mut split = self.analyze(&uri, &source);
+        split.extend_deduped(self.lowering_diagnostics(&uri, &source).await);
+        self.publish_split(&uri, split).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -1035,7 +1170,14 @@ impl LanguageServer for Backend {
         // Clear what this file was showing. Diagnostics belong to the server
         // until it says otherwise, so dropping the document without publishing
         // an empty set left every marker on screen for the rest of the session.
-        self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        self.client
+            .publish_diagnostics(uri.clone(), Vec::new(), None)
+            .await;
+        self.release_foreign_diags(&uri).await;
+        // It may itself be imported by a document still open, which stopped
+        // reporting for it while it was open; that importer now owns its
+        // diagnostics again.
+        self.reanalyze_other_docs(&uri).await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -1246,7 +1388,7 @@ impl LanguageServer for Backend {
                         && s.range.start.line.saturating_sub(1) as usize <= line
                         && s.range.end.line.saturating_sub(1) as usize >= line
                 });
-                if in_type_def && !field_name_at(&doc.pre_resolve_ast, line, col) {
+                if in_type_def && !field_name_at(&doc.pre_resolve_ast, &doc.source, line, col) {
                     let file = uri_to_file_string(uri);
                     if let Some((target, current_sites)) =
                         references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
@@ -1611,26 +1753,28 @@ impl LanguageServer for Backend {
             // never in live analyze(), so it can't reintroduce the lowering-on-every-
             // keystroke blowup that keeps analyze() typecheck-only.
             Err(wirescript::CompileError::HasErrors(diags)) => {
-                let items: Vec<serde_json::Value> = diags
-                    .iter()
-                    .map(|d| {
-                        let severity = match d.severity {
-                            wirescript::diagnostic::Severity::Error => "error",
-                            wirescript::diagnostic::Severity::Warning => "warning",
-                            _ => "info",
-                        };
-                        serde_json::json!({
-                            "file": &*d.range.file,
-                            "startLine": d.range.start.line.saturating_sub(1),
-                            "startChar": d.range.start.col.saturating_sub(1),
-                            "endLine": d.range.end.line.saturating_sub(1),
-                            "endChar": d.range.end.col.saturating_sub(1),
-                            "severity": severity,
-                            "code": d.code,
-                            "message": d.message,
+                let sources: HashMap<String, String> = {
+                    let docs = self.docs.lock().ok();
+                    diags
+                        .iter()
+                        .map(|d| d.range.file.to_string())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .map(|f| {
+                            let text = Url::from_file_path(&f)
+                                .ok()
+                                .and_then(|u| {
+                                    docs.as_ref().and_then(|docs| {
+                                        docs.get(&u).map(|s| s.source.clone())
+                                    })
+                                })
+                                .or_else(|| std::fs::read_to_string(&f).ok())
+                                .unwrap_or_default();
+                            (f, text)
                         })
-                    })
-                    .collect();
+                        .collect()
+                };
+                let items = compile_diagnostic_items(&diags, &sources);
                 self.client
                     .log_message(
                         MessageType::ERROR,
@@ -1770,18 +1914,27 @@ impl LanguageServer for Backend {
                 if formatted == doc.source {
                     return Ok(None);
                 }
-                let lines = doc.source.lines().count();
-                let last_line = doc.source.lines().last().unwrap_or("");
+                // The document's real end. `str::lines` drops a trailing
+                // newline, so pairing its count with the last line's length
+                // named a position one past the end of the document; clients
+                // clamp it, but a full-document edit should not need them to.
+                let newlines = doc.source.matches('\n').count() as u32;
+                let end = if doc.source.ends_with('\n') {
+                    Position { line: newlines, character: 0 }
+                } else {
+                    let last_line = doc.source.lines().last().unwrap_or("");
+                    Position {
+                        line: newlines,
+                        character: last_line.chars().map(char::len_utf16).sum::<usize>() as u32,
+                    }
+                };
                 return Ok(Some(vec![TextEdit {
                     range: Range {
                         start: Position {
                             line: 0,
                             character: 0,
                         },
-                        end: Position {
-                            line: lines as u32,
-                            character: last_line.chars().map(char::len_utf16).sum::<usize>() as u32,
-                        },
+                        end,
                     },
                     new_text: formatted,
                 }]));
@@ -1799,6 +1952,7 @@ async fn main() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         docs: Mutex::new(HashMap::new()),
+        foreign_diags: Mutex::new(HashMap::new()),
         watch_files: std::sync::atomic::AtomicBool::new(false),
         change_gen: std::sync::atomic::AtomicU64::new(0),
     });
@@ -1831,7 +1985,7 @@ fn member_completions(
     // array-get gate's outputs (the element `Value` and the `OutOfBounds`
     // flag), never the array's methods.
     if let Some(base) = var_name.strip_suffix("[]") {
-        let sym = resolve_symbol(symbols, base, line, col);
+        let sym = resolve_symbol(symbols, source, base, line, col);
         let elem = sym
             .and_then(|s| s.ty.as_deref())
             .and_then(|t| t.strip_suffix("[]"))
@@ -1852,7 +2006,7 @@ fn member_completions(
         return items;
     }
 
-    let sym = resolve_symbol(symbols, var_name, line, col);
+    let sym = resolve_symbol(symbols, source, var_name, line, col);
 
     // Field name (record field / swizzle component) completion item. Declared
     // ahead of the bare enum-type receiver check below so that check's bare-
@@ -2053,37 +2207,70 @@ fn namespace_member_kind(kind: &str) -> CompletionItemKind {
     }
 }
 
-/// Byte offset of a zero-based `(line, col)` position in `source`. `col` is a
-/// byte offset within the line (the convention the rest of this file uses),
-/// clamped to the line's length.
-fn line_col_to_offset(source: &str, line: usize, col: usize) -> usize {
-    let mut off = 0usize;
-    for (i, l) in source.split_inclusive('\n').enumerate() {
-        if i == line {
-            let line_len = l.len() - usize::from(l.ends_with('\n'));
-            return off + col.min(line_len);
-        }
-        off += l.len();
-    }
-    source.len()
+/// The Compile command's diagnostic payload. `sources` maps a diagnostic's
+/// `range.file` to that file's text.
+///
+/// `Pos::col` is a BYTE column and the extension feeds `startChar`/`endChar`
+/// straight to a `vscode.Range`, whose characters are UTF-16 code units, so
+/// every column is converted here, against the text of the file the range
+/// names, since a build error can name an imported file. Handing the editor a
+/// raw byte column puts the squiggle right of the token on any line holding
+/// non-ASCII text, and disagreeing with the live diagnostics for that same
+/// file is how it shows up.
+fn compile_diagnostic_items(
+    diags: &[wirescript::diagnostic::Diagnostic],
+    sources: &HashMap<String, String>,
+) -> Vec<serde_json::Value> {
+    diags
+        .iter()
+        .map(|d| {
+            let severity = match d.severity {
+                wirescript::diagnostic::Severity::Error => "error",
+                wirescript::diagnostic::Severity::Warning => "warning",
+                _ => "info",
+            };
+            let text = sources.get(&*d.range.file).map_or("", String::as_str);
+            let start_line = d.range.start.line.saturating_sub(1) as usize;
+            let end_line = d.range.end.line.saturating_sub(1) as usize;
+            serde_json::json!({
+                "file": &*d.range.file,
+                "startLine": start_line,
+                "startChar": byte_off_to_lsp(
+                    text,
+                    start_line,
+                    d.range.start.col.saturating_sub(1) as usize,
+                ),
+                "endLine": end_line,
+                "endChar": byte_off_to_lsp(
+                    text,
+                    end_line,
+                    d.range.end.col.saturating_sub(1) as usize,
+                ),
+                "severity": severity,
+                "code": d.code,
+                "message": d.message,
+            })
+        })
+        .collect()
 }
 
-/// Inverse of [`line_col_to_offset`]: a byte `offset` back to a zero-based
-/// `(line, col)`.
+/// Inverse of [`cursor_byte_offset`]: a byte `offset` back to a zero-based
+/// `(line, CHAR col)`, the coordinates the completion entry points take.
 fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
-    let clamped = offset.min(source.len());
     let mut line = 0usize;
-    let mut line_start = 0usize;
-    for (i, b) in source.bytes().enumerate() {
-        if i >= clamped {
-            break;
+    let mut col = 0usize;
+    for (i, c) in source.char_indices() {
+        if i >= offset {
+            return (line, col);
         }
-        if b == b'\n' {
+        if c == '\n' {
             line += 1;
-            line_start = i + 1;
+            col = 0;
+        } else {
+            col += 1;
         }
     }
-    (line, clamped - line_start)
+    (line, col)
 }
 
 /// If `(line, col)` sits inside a `$```…``` ` nested-prefab block, return the
@@ -2102,7 +2289,7 @@ fn nested_block_at(
     if !source.contains("$```") {
         return None;
     }
-    let cursor = line_col_to_offset(source, line, col);
+    let cursor = cursor_byte_offset(source, line, col);
     let lexed = wirescript::lex(source, file);
     for t in &lexed.tokens {
         if t.kind != wirescript::TokenKind::NestedPrefab {
@@ -2177,7 +2364,7 @@ fn push_variant_completions(items: &mut Vec<CompletionItem>, def: &wirescript::t
 /// `{` would be mistaken for the arms brace - but that shape is rare enough
 /// not to be worth the extra bookkeeping here.
 fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Option<String> {
-    let offset = line_col_to_offset(source, line, col);
+    let offset = cursor_byte_offset(source, line, col);
     let prefix = &source[..offset];
     let bytes = prefix.as_bytes();
 
@@ -2483,7 +2670,7 @@ fn build_completions(
     // isn't itself a call, but its arm head can sit inside one lexically
     // (`foo(x = match s { <here> })`), and the arm-head reading must win.
     if let Some(scrutinee) = match_arm_head_scrutinee_at(source, line, col) {
-        if let Some(ty) = resolve_symbol(symbols, &scrutinee, line, col).and_then(|s| s.ty.as_deref()) {
+        if let Some(ty) = resolve_symbol(symbols, source, &scrutinee, line, col).and_then(|s| s.ty.as_deref()) {
             let registry = enum_registry_from_source(source);
             if let Some(def) = registry.get(ty) {
                 push_variant_completions(&mut items, def);

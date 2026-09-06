@@ -36,9 +36,27 @@ fn all_atoms(source: &str, file: &str) -> Vec<AtomRef> {
         .collect()
 }
 
-/// The atom under the cursor (`line`/`col` are 0-based, LSP convention), if any.
+/// The atom under the cursor (`line`/`col` are 0-based, `col` a CHAR column),
+/// if any.
 pub fn atom_at(source: &str, file: &str, line: usize, col: usize) -> Option<AtomRef> {
-    let (cl, cc) = ((line + 1) as u32, (col + 1) as u32);
+    let line_str = super::text::line_text(source, line);
+    // An atom token is single-line, so one containing the cursor must start on
+    // the cursor's own line, and the lexer only opens one at a `:` followed by
+    // an ASCII ident-start byte (`is_ident_start`). Checking that here skips a
+    // full lex of the document, which every hover and find-references paid
+    // whether or not the file contained an atom at all.
+    if !line_str
+        .as_bytes()
+        .windows(2)
+        .any(|w| w[0] == b':' && (w[1].is_ascii_alphabetic() || w[1] == b'_'))
+    {
+        return None;
+    }
+    // Token `Pos::col` is a 1-based BYTE column, so the char column has to be
+    // converted: otherwise any non-ASCII text earlier on the line slides the
+    // cursor left and the atom under it is not found.
+    let byte_col = super::text::char_col_to_byte(line_str, col);
+    let (cl, cc) = ((line + 1) as u32, (byte_col + 1) as u32);
     all_atoms(source, file).into_iter().find(|a| {
         let (s, e) = (&a.range.start, &a.range.end);
         // The token span is single-line and half-open `[start, end)`.

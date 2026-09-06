@@ -432,7 +432,13 @@ pub fn build_const_env(
     // Flattened via `scope_lets`, so an anonymous chip's body constants join
     // the same fixpoint as the top-level ones — see that function's comment.
     let lets = scope_lets(decls);
-    let mut env = ConstEnv::default();
+    // `Arc`-wrapped because the fixpoint hands the env to `ConstCtx` twice per
+    // `let` per pass, and `ConstCtx` owns its tables. Every `ConstCtx` built
+    // here is dropped before the next `make_mut`, so the refcount is back to 1
+    // and no copy is made: the whole loop clones the table zero times, where
+    // deep-copying it per attempt dominated `typecheck` on a const-heavy
+    // program (2raab: 495k allocations down to 344k).
+    let mut env = std::sync::Arc::new(ConstEnv::default());
     // Namespaced constants: an `import * as Ns` module's top-level `let`/`const`
     // values are reachable as `Ns.name`. Evaluate each namespace's env in
     // ISOLATION (its lets see only its own module's consts, not the importer's),
@@ -442,7 +448,9 @@ pub fn build_const_env(
     for d in decls {
         if let TopDecl::Namespace(ns) = d {
             for (name, value) in build_const_env(&ns.decls, enum_defs) {
-                env.entry(format!("{}.{}", ns.name, name)).or_insert(value);
+                std::sync::Arc::make_mut(&mut env)
+                    .entry(format!("{}.{}", ns.name, name))
+                    .or_insert(value);
             }
         }
     }
@@ -469,17 +477,21 @@ pub fn build_const_env(
                 settled[i] = true;
                 continue;
             }
-            // `enum_defs` is the `Arc`-backed registry both callers already hold,
-            // so this per-fixpoint-iteration hand-off is a refcount bump, not a
-            // deep clone of the whole (game-derived, growing) registry.
-            let cx = crate::const_eval::ConstCtx {
-                consts: std::sync::Arc::new(env.clone()),
-                module_consts: std::sync::Arc::new(env.clone()),
-                enum_defs: enum_defs.clone(),
-                lookup_mod: Some(&lookup_mod),
+            // Both tables are `Arc`-backed, so this per-attempt hand-off is
+            // three refcount bumps rather than deep clones of the env and of
+            // the whole (game-derived, growing) enum registry. Scoped so the
+            // `ConstCtx` is dropped before `make_mut` runs below.
+            let evaluated = {
+                let cx = crate::const_eval::ConstCtx {
+                    consts: env.clone(),
+                    module_consts: env.clone(),
+                    enum_defs: enum_defs.clone(),
+                    lookup_mod: Some(&lookup_mod),
+                };
+                let mut budget = crate::const_eval::Budget::default();
+                crate::const_eval::eval_expr(&l.value, &cx, &mut budget)
             };
-            let mut budget = crate::const_eval::Budget::default();
-            let Ok(lit) = crate::const_eval::eval_expr(&l.value, &cx, &mut budget) else {
+            let Ok(lit) = evaluated else {
                 continue; // not constant YET — retry on a later pass
             };
             settled[i] = true;
@@ -501,12 +513,13 @@ pub fn build_const_env(
                 if env.contains_key(&name) {
                     continue;
                 }
-                env.insert(name, value);
+                std::sync::Arc::make_mut(&mut env).insert(name, value);
                 changed = true;
             }
         }
         if !changed {
-            return env;
+            // Sole owner here, so this hands back the table itself.
+            return std::sync::Arc::try_unwrap(env).unwrap_or_else(|env| (*env).clone());
         }
     }
 }

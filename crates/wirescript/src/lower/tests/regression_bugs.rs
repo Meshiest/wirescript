@@ -510,3 +510,249 @@ fn a_branching_return_called_purely_reports_at_the_call_site() {
     );
     assert_no_errors(&ok);
 }
+/// Is some `source_port` of a `source_class` node wired to some `target_port`
+/// of a `target_class` node? Proves the read reaches its consumer, which a gate
+/// count cannot: an `_Unsupported` object leaves the consumer in place with its
+/// input pin unwired, and emit drops the wires rather than the node.
+fn wired_between(
+    r: &LowerResult,
+    source_class: &str,
+    source_port: WirePort,
+    target_class: &str,
+    target_port: WirePort,
+) -> bool {
+    r.module.wires.iter().any(|w| {
+        w.source.port == source_port
+            && w.target.port == target_port
+            && r.module
+                .nodes
+                .get(&w.source.node_id)
+                .is_some_and(|n| n.gate_class == source_class)
+            && r.module
+                .nodes
+                .get(&w.target.node_id)
+                .is_some_and(|n| n.gate_class == target_class)
+    })
+}
+
+/// `arr[i].Value` is the capitalisation the docs teach, and the hand-written
+/// field list matched only the lowercase `value`, so it type-checked and then
+/// lowered to an `_Unsupported` placeholder: emit refuses to spawn that gate
+/// and drops every wire touching it, deleting the read with no diagnostic.
+/// Asserts the real gate AND the wire into the consumer, because the whole
+/// suite stayed green while this behaviour changed.
+#[test]
+fn array_index_capital_value_reads_the_array_get() {
+    for field in ["value", "Value"] {
+        let src = format!(
+            "var regs: int[]\n\
+             var g: int = 0\n\
+             in go: exec\n\
+             on go {{ let pc = regs[15].{field}\n g = pc }}"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(
+            !has_unsupported(&r),
+            "regs[15].{field} lowered to _Unsupported: {:?}",
+            r.diagnostics
+        );
+        assert_eq!(
+            count_class(&r.module, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+            1,
+            "regs[15].{field} must lower to one ArrayVar_Get"
+        );
+        assert!(
+            wired_between(
+                &r,
+                "BrickComponentType_WireGraph_Exec_ArrayVar_Get",
+                WirePort::Value,
+                "BrickComponentType_WireGraph_Exec_Var_Set",
+                WirePort::Value,
+            ),
+            "regs[15].{field} must drive `g`'s Value pin, not be left dangling"
+        );
+    }
+}
+
+/// The out-of-bounds flag reached the same hand-written list, so every
+/// capitalisation of it is pinned alongside `Value`.
+#[test]
+fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
+    for field in ["bOutOfBounds", "OutOfBounds", "BOutOfBounds", "outOfBounds"] {
+        let src = format!(
+            "var regs: int[]\n\
+             var oob: bool = false\n\
+             in go: exec\n\
+             on go {{ let f = regs[15].{field}\n oob = f }}"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(
+            !has_unsupported(&r),
+            "regs[15].{field} lowered to _Unsupported: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            wired_between(
+                &r,
+                "BrickComponentType_WireGraph_Exec_ArrayVar_Get",
+                WirePort::BOutOfBounds,
+                "BrickComponentType_WireGraph_Exec_Var_Set",
+                WirePort::Value,
+            ),
+            "regs[15].{field} must read the gate's bOutOfBounds port"
+        );
+    }
+}
+
+/// A field naming no port on the object's gate still degrades to a placeholder
+/// rather than wiring a port the node never declared: the case-insensitive
+/// match widens which SPELLINGS resolve, not which objects carry the port.
+#[test]
+fn value_on_a_gate_without_that_port_stays_unsupported() {
+    let r = compile("in v: vector\nout o: float = v.MagnitudeSq().Value");
+    assert!(
+        has_unsupported(&r),
+        "a `.Value` read of a gate with no Value port must not fabricate a wire"
+    );
+}
+
+/// `xs.sort(descending = true)` type-checks (`descending` is the parameter's
+/// real name) but lowering read only `args.first()` as a POSITIONAL, so the
+/// flag was dropped and the array sorted ascending with no diagnostic at all.
+/// Provable only through the gate's properties: `--dump-ir` renders the named
+/// and positional forms identically.
+#[test]
+fn sort_named_descending_reaches_the_gate() {
+    for call in ["xs.sort(descending = true)", "xs.sort(true)"] {
+        let r = compile(&format!(
+            "var xs: int[] = [1, 2, 3]\nin go: exec\non go {{ {call} }}"
+        ));
+        assert_no_errors(&r);
+        let node = find_gate(&r, crate::ir::gate_class::ARRAY_SORT);
+        let n = &r.module.nodes[&node];
+        let baked = n.properties.get(&WirePort::BDescending.sym());
+        let wired = r
+            .module
+            .wires
+            .iter()
+            .any(|w| w.target == node.port(WirePort::BDescending));
+        assert!(
+            matches!(baked, Some(Literal::Bool(true))) || wired,
+            "`{call}` left bDescending unset (props {:?})",
+            n.properties
+        );
+    }
+}
+
+/// `xs.sort()` takes no flag, so the arm above cannot have started setting one
+/// unconditionally.
+#[test]
+fn sort_without_an_argument_leaves_descending_unset() {
+    let r = compile("var xs: int[] = [1, 2, 3]\nin go: exec\non go { xs.sort() }");
+    assert_no_errors(&r);
+    let node = find_gate(&r, crate::ir::gate_class::ARRAY_SORT);
+    assert!(
+        r.module.nodes[&node]
+            .properties
+            .get(&WirePort::BDescending.sym())
+            .is_none(),
+        "a bare sort() must not bake a descending flag"
+    );
+    assert!(
+        !r.module
+            .wires
+            .iter()
+            .any(|w| w.target == node.port(WirePort::BDescending)),
+        "a bare sort() must not wire the descending pin"
+    );
+}
+
+/// `let r = ref someVar` is the documented way to name a reference
+/// (`docs/src/expressions.md`). It type-checked and lowered to an
+/// `_Unsupported` gate, which emit refuses to spawn: the binding and every read
+/// through it were deleted with no error.
+#[test]
+fn let_of_a_ref_binds_the_variable() {
+    for sigil in ["ref ", "&"] {
+        let src = format!(
+            "var someVar: int = 0\n\
+             let r = {sigil}someVar\n\
+             in go: exec\n\
+             var v: int = 0\n\
+             on go {{ v = *r }}\n\
+             out o: int = v"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(
+            !has_unsupported(&r),
+            "`let r = {sigil}someVar` lowered to _Unsupported: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            wired_between(
+                &r,
+                "BrickComponentType_WireGraphPseudo_Var",
+                WirePort::Value,
+                "BrickComponentType_WireGraph_Exec_Var_Set",
+                WirePort::Value,
+            ),
+            "`v = *r` must read someVar's value, not a placeholder"
+        );
+    }
+}
+
+/// A handler whose trigger lowering cannot resolve takes nothing with it but
+/// itself. `lower_handler` takes `handler_end_execs` on entry and every exit
+/// puts it back, except the unresolved-trigger one, which dropped the exit
+/// exec of every PRECEDING handler. The statement after the dead handler then
+/// had no chain to attach to, so it was deleted as well, and the only
+/// diagnostic (WS058) pointed at the user's line instead of the dead trigger.
+#[test]
+fn an_unresolvable_trigger_does_not_orphan_the_next_statement() {
+    let r = compile(
+        "var g: int = 0\n\
+         on RoundStart() { g = 1 }\n\
+         on notAnEvent { g = 2 }\n\
+         g = 3\n",
+    );
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS058"),
+        "`g = 3` must still chain onto RoundStart's exit: {:?}",
+        r.diagnostics
+    );
+    // `g = 1` and `g = 3`; `g = 2` belongs to the dead handler.
+    assert_eq!(
+        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        2,
+        "the surviving handler and the trailing assignment must both lower"
+    );
+}
+
+/// Typecheck admits ANY `let` binding as a trigger name, so a record-valued
+/// one reaches lowering, resolves to no port, and used to delete the whole
+/// handler with no diagnostic from either stage.
+#[test]
+fn a_record_valued_let_used_as_a_trigger_is_reported() {
+    let r = compile(
+        "var g: int = 0\n\
+         let t = { a: 1 }\n\
+         on RoundStart() { g = 1 }\n\
+         on t { g = 2 }\n\
+         g = 3\n",
+    );
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS001" && d.severity == crate::diagnostic::Severity::Error),
+        "dropping a handler must be reported, not silent: {:?}",
+        r.diagnostics
+    );
+    assert!(
+        !r.diagnostics.iter().any(|d| d.code == "WS058"),
+        "`g = 3` must still chain onto RoundStart's exit: {:?}",
+        r.diagnostics
+    );
+}

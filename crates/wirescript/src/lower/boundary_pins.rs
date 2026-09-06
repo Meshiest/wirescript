@@ -11,10 +11,12 @@
 //! - `WirePort::Layout` synthetic edges.
 //!
 //! `VarRef`/`ArrayVarRef` crossings ARE rewired — emit traces variable
-//! bindings through rerouter pins (declared ref/array chip params already
-//! route this way, see call.rs build_chip_module's non-captured ref/array
-//! handling). Rewiring changes which external node ids each module's wires
-//! reference, so scope_captures is recomputed bottom-up at the end.
+//! bindings through rerouter pins, so a ref reaches a chip body the same way
+//! a value does. What crosses is the wire, never the port name: a ref LEAVES
+//! a pin on `RER_Output` and ENTERS one on `RER_Input`, because those are the
+//! only two ports a rerouter has (`normalize_pin_ports` below). Rewiring
+//! changes which external node ids each module's wires reference, so
+//! scope_captures is recomputed bottom-up at the end.
 //!
 //! A crossing whose deep endpoint is ALREADY a MicrochipInput/Output pin at
 //! its own wall (a declared chip param/output from ordinary lowering, or a
@@ -42,6 +44,11 @@ use crate::ir::{
 type ModPath = Vec<NodeId>;
 
 pub fn synthesize_boundary_pins(root: &mut Module) {
+    // Before anything is rewired: a crossing that already lands on a pin is
+    // reused as-is by `rewire`, so a wrong port on one would be carried into
+    // the new wiring instead of being corrected.
+    normalize_pin_ports(root);
+
     let mut owner: HashMap<NodeId, ModPath> = HashMap::default();
     index_owners(root, &mut Vec::new(), &mut owner);
 
@@ -60,6 +67,58 @@ pub fn synthesize_boundary_pins(root: &mut Module) {
 
     assign_pin_labels(root);
     refresh_scope_captures(root);
+}
+
+/// Put every wire endpoint that lands on a boundary pin onto that pin's own
+/// rerouter port: a value LEAVES a pin on `RER_Output` and ENTERS one on
+/// `RER_Input`.
+///
+/// A `MicrochipInput`/`MicrochipOutput` component has exactly those two ports
+/// (`data/logic_gate_inventory.simple.json`), so a wire naming any other port
+/// on one names a port the game does not have. Lowering produces exactly that
+/// whenever a pin stands in for a storage gate: a chip's array/Map/ref
+/// parameter is bound to its `MicrochipInput` pin, and every read of that
+/// binding asks for the storage gate's ref port (`ArrayVarRef`, `MapVarRef`,
+/// `VarRef`). Stating the rule once here rather than at each of the ~85 sites
+/// that spell a ref port also covers whatever produces such a wire next; it is
+/// the same remap `flatten::merge_child` and `emit::build_port_index` already
+/// apply to a wire that addresses a pin by its chip-side label.
+///
+/// `WirePort::Layout` edges are synthetic and never reach a brick port, so
+/// they keep their port. Idempotent: an endpoint already on the right
+/// rerouter port is rewritten to itself.
+fn normalize_pin_ports(root: &mut Module) {
+    // Tree-wide, because a parent's wire legitimately names a pin owned by a
+    // child chip (that is the shape a declared chip param has all along).
+    fn collect_pins(m: &Module, out: &mut HashSet<NodeId>) {
+        for (id, n) in &m.nodes {
+            if matches!(n.kind, NodeKind::Input | NodeKind::Output) {
+                out.insert(*id);
+            }
+        }
+        for c in m.chips.values() {
+            collect_pins(c, out);
+        }
+    }
+    fn rewrite(m: &mut Module, pins: &HashSet<NodeId>) {
+        for w in &mut m.wires {
+            if w.source.port != WirePort::Layout && pins.contains(&w.source.node_id) {
+                w.source.port = WirePort::RerOutput;
+            }
+            if w.target.port != WirePort::Layout && pins.contains(&w.target.node_id) {
+                w.target.port = WirePort::RerInput;
+            }
+        }
+        for c in m.chips.values_mut() {
+            rewrite(c, pins);
+        }
+    }
+    let mut pins: HashSet<NodeId> = HashSet::default();
+    collect_pins(root, &mut pins);
+    if pins.is_empty() {
+        return;
+    }
+    rewrite(root, &pins);
 }
 
 /// Rewiring changes which external node ids each module's wires reference;

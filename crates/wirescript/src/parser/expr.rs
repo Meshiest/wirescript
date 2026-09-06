@@ -290,7 +290,7 @@ impl<'a> Parser<'a> {
                 } else if next.kind == TokenKind::Float {
                     self.advance();
                     let num = self.advance();
-                    let val: f64 = num.text.parse().unwrap_or(0.0);
+                    let val = self.float_literal_value(&num.text, t.start, num.end);
                     return Expr::FloatLit {
                         value: -val,
                         text: format!("-{}", num.text),
@@ -357,7 +357,22 @@ impl<'a> Parser<'a> {
                 let peek_kind = self.peek().kind;
                 if peek_kind == TokenKind::Int {
                     let idx_tok = self.advance();
-                    let idx: usize = idx_tok.text.parse().unwrap_or(0);
+                    // Same reason as `float_literal_value`: the token text can
+                    // carry `_` separators or a `0x`/`0b`/`0o` prefix, and
+                    // `unwrap_or(0)` turned every one of those into a silent
+                    // pick of slot 0.
+                    let cleaned: String = idx_tok.text.chars().filter(|c| *c != '_').collect();
+                    let idx: usize = match cleaned.parse() {
+                        Ok(i) => i,
+                        Err(_) => {
+                            self.error(
+                                format!("'{}' is not a valid tuple index", idx_tok.text),
+                                idx_tok.start,
+                                idx_tok.end,
+                            );
+                            0
+                        }
+                    };
                     let start = e.range().start;
                     e = Expr::TuplePick {
                         obj: Box::new(e),
@@ -554,6 +569,33 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The value of a float literal's token text, with `_` digit separators
+    /// removed (`f64`'s parser rejects them) and every failure reported.
+    ///
+    /// Baking `0.0` for the unparseable (`1e`) or `inf` for the overflowing
+    /// (`1e999`) in silence is the same class of bug the integer arm reports
+    /// on: an out-of-range user constant that reads as a plausible number is
+    /// unfindable in a language with no runtime errors.
+    /// `text` is the magnitude only, so a leading `-` is applied by the caller.
+    fn float_literal_value(&mut self, text: &str, start: Pos, end: Pos) -> f64 {
+        let cleaned: String = text.chars().filter(|c| *c != '_').collect();
+        match cleaned.parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            Ok(_) => {
+                self.error(
+                    format!("float literal '{text}' is out of range for a 64-bit float"),
+                    start,
+                    end,
+                );
+                0.0
+            }
+            Err(_) => {
+                self.error(format!("'{text}' is not a valid float literal"), start, end);
+                0.0
+            }
+        }
+    }
+
     fn parse_primary(&mut self) -> Expr {
         let t = self.peek().clone();
         match t.kind {
@@ -581,8 +623,7 @@ impl<'a> Parser<'a> {
             TokenKind::Float => {
                 self.advance();
                 let text = t.text.clone();
-                let cleaned: String = text.chars().filter(|c| *c != '_').collect();
-                let value: f64 = cleaned.parse().unwrap_or(0.0);
+                let value = self.float_literal_value(&text, t.start, t.end);
                 Expr::FloatLit {
                     value,
                     text,

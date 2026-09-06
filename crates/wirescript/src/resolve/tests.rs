@@ -749,3 +749,267 @@ out hit = o is Option.Some",
             }
         }
     }
+
+    /// Two independently-authored modules that each define a private helper
+    /// under one name are a genuine collision, not a diamond. The dependency
+    /// closure used to skip the second module's helper because the FIRST
+    /// module's was already bound under that name, so `useB` silently called
+    /// `ma`'s `helper` and the answer depended on import order.
+    #[test]
+    fn dependency_closure_keeps_two_modules_same_named_helpers_apart() {
+        let loader = mem(&[
+            (
+                "ma.ws",
+                "mod helper(x: int) -> int { return x + 100 }\n\
+                 mod useA(x: int) -> int { return helper(x) }",
+            ),
+            (
+                "mb.ws",
+                "mod helper(x: int) -> int { return x * 2 }\n\
+                 mod useB(x: int) -> int { return helper(x) }",
+            ),
+        ]);
+        let r = resolve(
+            "import { useA } from \"ma\"\n\
+             import { useB } from \"mb\"\n\
+             out ra: int = useA(3)\n\
+             out rb: int = useB(3)",
+            "main.ws",
+            &loader,
+        );
+        let mut helper_files: Vec<String> = r
+            .ast
+            .decls
+            .iter()
+            .filter(|d| decl_binds(d, "helper"))
+            .map(|d| d.range().file.to_string())
+            .collect();
+        helper_files.sort();
+        assert_eq!(
+            helper_files,
+            vec!["ma.ws".to_string(), "mb.ws".to_string()],
+            "each module's own private helper must travel with it"
+        );
+        let tc = crate::typecheck::typecheck(
+            &r.ast,
+            "main.ws",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        assert!(
+            tc.diagnostics
+                .iter()
+                .any(|d| d.code == "WS013" && d.message.contains("helper")),
+            "two modules' helpers collide in the flat merged scope, which must \
+             be a loud WS013 rather than a silent alias: {:?}",
+            tc.diagnostics
+        );
+    }
+
+    /// Two libraries that each privately wrote `import * as U` cannot both be
+    /// pulled in flat: every `NamespaceDecl` shares one merged list keyed by
+    /// name, so lowering binds `U` once for the whole program and one
+    /// library's internal `U.f()` silently calls the other library's module.
+    #[test]
+    fn two_libraries_private_namespace_aliases_collide_and_report() {
+        let loader = mem(&[
+            ("u2.ws", "mod f(x: int) -> int { return x * 3 }"),
+            ("u3.ws", "mod f(x: int) -> int { return x - 7 }"),
+            (
+                "mid.ws",
+                "import * as U from \"u2\"\n\
+                 mod g(x: int) -> int { return U.f(x) }",
+            ),
+            (
+                "mid3.ws",
+                "import * as U from \"u3\"\n\
+                 mod h(x: int) -> int { return U.f(x) }",
+            ),
+        ]);
+        let r = resolve(
+            "import { g } from \"mid\"\n\
+             import { h } from \"mid3\"\n\
+             out a: int = g(1)\n\
+             out b: int = h(1)",
+            "main.ws",
+            &loader,
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "WS012"
+                && d.message.contains("namespace alias 'U'")
+                && d.message.contains("u2")
+                && d.message.contains("u3")),
+            "expected one WS012 naming both modules, got {:?}",
+            r.diagnostics
+        );
+        assert_eq!(
+            r.diagnostics.iter().filter(|d| d.code == "WS012").count(),
+            1,
+            "one report per colliding alias, not one per fixpoint sweep: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// The same collision reached the other way round: the importer writes the
+    /// alias itself and a library it imports privately uses the same one.
+    /// Reported in either import order, because neither ordering makes the two
+    /// coexist.
+    #[test]
+    fn a_travelled_namespace_alias_collides_with_the_importers_own() {
+        let files = &[
+            ("u1.ws", "mod f(x: int) -> int { return x + 1000 }"),
+            ("u2.ws", "mod f(x: int) -> int { return x * 3 }"),
+            (
+                "mid.ws",
+                "import * as U from \"u2\"\n\
+                 mod g(x: int) -> int { return U.f(x) }",
+            ),
+        ];
+        for src in [
+            "import * as U from \"u1\"\n\
+             import { g } from \"mid\"\n\
+             out a: int = U.f(1)\n\
+             out b: int = g(1)",
+            "import { g } from \"mid\"\n\
+             import * as U from \"u1\"\n\
+             out a: int = U.f(1)\n\
+             out b: int = g(1)",
+        ] {
+            let loader = mem(files);
+            let r = resolve(src, "main.ws", &loader);
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "WS012" && d.message.contains("'U'")),
+                "expected a WS012 for the alias collision in:\n{src}\ngot {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    /// The boundary of the check above: `import * as` wraps what it pulls in a
+    /// `NamespaceDecl`, and lowering scopes a namespaced mod's body against its
+    /// own module's aliases first, so the importer and the module it imports
+    /// genuinely may spell their alias the same. Reporting that would be a
+    /// false error on a program that works today.
+    #[test]
+    fn a_namespace_import_may_reuse_the_alias_its_own_module_uses() {
+        let loader = mem(&[
+            ("leaf.ws", "let value = 10"),
+            (
+                "mid.ws",
+                "import * as Other from \"leaf\"\n\
+                 let value = Other.value",
+            ),
+        ]);
+        let r = resolve(
+            "import * as Other from \"mid\"\n\
+             out z: int = Other.value",
+            "main.ws",
+            &loader,
+        );
+        assert!(
+            r.diagnostics.is_empty(),
+            "a namespaced module's own alias is scoped to its bodies: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// One module reached under one alias from two different files is a
+    /// redundancy, not a collision: both aliases name the same module, so
+    /// nothing can retarget.
+    #[test]
+    fn one_module_under_one_alias_from_two_files_is_not_a_conflict() {
+        let loader = mem(&[
+            ("u2.ws", "mod f(x: int) -> int { return x * 3 }"),
+            (
+                "mid.ws",
+                "import * as U from \"u2\"\n\
+                 mod g(x: int) -> int { return U.f(x) }",
+            ),
+        ]);
+        let r = resolve(
+            "import * as U from \"u2\"\n\
+             import { g } from \"mid\"\n\
+             out a: int = U.f(1)\n\
+             out b: int = g(1)",
+            "main.ws",
+            &loader,
+        );
+        assert!(
+            !r.diagnostics.iter().any(|d| d.code == "WS012"),
+            "one module under one alias is redundant, not a collision: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// `import { addK, K as KK }` must not unbind the module's own `K`. The
+    /// alias renames the single clone that gets pushed, so the exporting
+    /// module's `x + K` has nothing left to resolve against unless the closure
+    /// pass also pulls the original, which it can only do when the "already
+    /// contributed" set is keyed on the post-alias name.
+    #[test]
+    fn aliasing_an_imported_constant_keeps_the_modules_own_binding() {
+        let loader = mem(&[(
+            "klib.ws",
+            "let K = 5\n\
+             mod addK(x: int) -> int { return x + K }",
+        )]);
+        let r = resolve(
+            "import { addK, K as KK } from \"klib\"\n\
+             out r: int = addK(1)\n\
+             out kk: int = KK",
+            "main.ws",
+            &loader,
+        );
+        assert!(
+            r.ast.decls.iter().any(|d| decl_binds(d, "K")),
+            "the module's own `K` must stay bound for its `x + K`"
+        );
+        assert!(
+            r.ast.decls.iter().any(|d| decl_binds(d, "KK")),
+            "the aliased view must be bound too"
+        );
+        let tc = crate::typecheck::typecheck(
+            &r.ast,
+            "main.ws",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        let errors: Vec<_> = tc
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::diagnostic::Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "typecheck errors: {errors:?}");
+    }
+
+    /// The silent half of the same bug: with the module's `K` unbound, an
+    /// importer that happens to declare its own `K` captured the library's
+    /// internals and the program compiled clean with the wrong wiring. Pulling
+    /// the module's `K` back in makes the real collision visible instead.
+    #[test]
+    fn aliasing_an_imported_constant_does_not_capture_the_importers_name() {
+        let loader = mem(&[(
+            "klib.ws",
+            "let K = 5\n\
+             mod addK(x: int) -> int { return x + K }",
+        )]);
+        let r = resolve(
+            "import { addK, K as KK } from \"klib\"\n\
+             in K: int\n\
+             out r: int = addK(1)\n\
+             out kk: int = KK",
+            "main.ws",
+            &loader,
+        );
+        let tc = crate::typecheck::typecheck(
+            &r.ast,
+            "main.ws",
+            &crate::typecheck::CeSlotMap::default(),
+        );
+        assert!(
+            tc.diagnostics.iter().any(|d| d.code == "WS013"),
+            "the importer's `K` and the module's `K` collide and must be \
+             reported, not silently wired together: {:?}",
+            tc.diagnostics
+        );
+    }

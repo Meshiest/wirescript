@@ -12,6 +12,7 @@
 
 use super::compile;
 use crate::diagnostic::Severity;
+use crate::ir::port_registry::WirePort;
 use crate::ir::{Module, NodeId, NodeKind};
 
 /// Recursively collect declared outputs (MicrochipOutput nodes) that have no
@@ -452,5 +453,108 @@ fn exec_signal_consumed_inside_a_chip_survives_the_hub_splice() {
         let mut acc = Vec::new();
         wires_to_deleted_nodes(&r.module, "root", &live, &mut acc);
         assert!(acc.is_empty(), "for:\n{src}\n{}", acc.join("\n"));
+    }
+}
+
+/// Every wire endpoint that lands on a boundary pin, anywhere in the tree. A
+/// `MicrochipInput`/`MicrochipOutput` component carries exactly two ports,
+/// `RER_Input` and `RER_Output` (`data/logic_gate_inventory.simple.json`), so a
+/// wire naming any other port on one names a port the game does not have.
+/// `WirePort::Layout` is a synthetic layout-only edge that never reaches a
+/// brick port, so it is exempt.
+///
+/// Pins are collected tree-wide before the walk because a parent's wire
+/// legitimately names a pin node owned by a child chip.
+pub(super) fn pin_port_violations(root: &Module) -> Vec<String> {
+    fn collect_pins(m: &Module, acc: &mut std::collections::HashMap<NodeId, NodeKind>) {
+        for (id, n) in &m.nodes {
+            if matches!(n.kind, NodeKind::Input | NodeKind::Output) {
+                acc.insert(*id, n.kind);
+            }
+        }
+        for c in m.chips.values() {
+            collect_pins(c, acc);
+        }
+    }
+    fn walk(
+        m: &Module,
+        path: &str,
+        pins: &std::collections::HashMap<NodeId, NodeKind>,
+        acc: &mut Vec<String>,
+    ) {
+        for w in &m.wires {
+            for (end, role) in [(w.source, "SOURCE"), (w.target, "TARGET")] {
+                if end.port == WirePort::Layout {
+                    continue;
+                }
+                let Some(kind) = pins.get(&end.node_id) else {
+                    continue;
+                };
+                if !matches!(end.port, WirePort::RerInput | WirePort::RerOutput) {
+                    acc.push(format!(
+                        "{path}: wire {role} on {kind:?} pin {} uses port {}, \
+                         but a microchip pin has only RER_Input/RER_Output",
+                        end.node_id,
+                        end.port.as_str()
+                    ));
+                }
+            }
+        }
+        for (chip_key, child) in &m.chips {
+            let name = crate::intern::resolve(child.name);
+            walk(child, &format!("{path} > chip {name}#{chip_key}"), pins, acc);
+        }
+    }
+    let mut pins = std::collections::HashMap::new();
+    collect_pins(root, &mut pins);
+    let mut acc = Vec::new();
+    walk(root, "root", &pins, &mut acc);
+    acc
+}
+
+/// A chip parameter of array/Map/record-of-array type is bound to the chip's
+/// own `MicrochipInput` pin, and every read of it in the body asks that binding
+/// for a storage-gate ref port (`ArrayVarRef`, `MapVarRef`, `VarRef`). A pin has
+/// no such port, so those reads emitted a wire the game cannot load, silently:
+/// all four programs below type-check and compile with no diagnostic.
+/// `gba/src/main.ws` shipped 620 such wires.
+#[test]
+fn chip_container_params_wire_only_rerouter_ports() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "array param",
+            "in rom: int[]\n\
+             chip Reader(xs: int[]) -> (v: int) {\n  out v = xs[0]\n}\n\
+             on Clock() {\n  let r = Reader(rom)\n}\n",
+        ),
+        (
+            "map param",
+            "in m: Map<int, int>\n\
+             chip Reader(xs: Map<int, int>) -> (v: int) {\n  out v = xs[0]\n}\n\
+             on Clock() {\n  let r = Reader(m)\n}\n",
+        ),
+        (
+            "array field of a record param",
+            "type Mem = { rom: int[] }\n\
+             var storage: int[]\n\
+             chip Reader(m: Mem) -> (v: int) {\n  out v = m.rom[0]\n}\n\
+             on Clock() {\n  storage.push(1)\n  let r = Reader({ rom: storage })\n}\n",
+        ),
+        (
+            "array param written through",
+            "var storage: int[]\n\
+             chip Writer(xs: int[]) {\n  xs.push(7)\n}\n\
+             on Clock() {\n  Writer(storage)\n}\n",
+        ),
+    ];
+    for (label, src) in cases {
+        let r = compile(src);
+        assert!(
+            !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "{label}: unexpected errors for:\n{src}\n{:?}",
+            r.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+        );
+        let acc = pin_port_violations(&r.module);
+        assert!(acc.is_empty(), "{label}:\n{src}\n{}", acc.join("\n"));
     }
 }

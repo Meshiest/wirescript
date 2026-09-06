@@ -2191,3 +2191,121 @@ fn let_bound_multi_output_chip_field_access_matches_the_inline_form() {
     assert!(wired_reachable(&r, chip.outputs[1], total));
     assert!(!wired_reachable(&r, chip.outputs[0], total));
 }
+
+/// Count nodes whose gate class contains `needle`, anywhere in the chip tree.
+fn gate_count_deep(module: &crate::ir::Module, needle: &str) -> usize {
+    module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class.contains(needle))
+        .count()
+        + module
+            .chips
+            .values()
+            .map(|c| gate_count_deep(c, needle))
+            .sum::<usize>()
+}
+
+/// An anonymous `chip { }` writes its body wherever it is placed. The one
+/// placement that used to drop it on the floor is directly inside a NAMED
+/// chip's body: `build_chip_module`'s pre-declare loop never created the
+/// anon chip's `NodeKind::Chip` node, so `lower_anon_chip` found nothing to
+/// attach to and returned, discarding the whole body with no diagnostic.
+/// The other rows are the controls that always worked; they are here so a
+/// future change cannot fix one placement by breaking another.
+#[test]
+fn an_anon_chip_body_lowers_in_every_placement() {
+    // One body text in every row, so a row can only differ by where the
+    // `chip { }` sits. It carries its own handler because an anon chip in a
+    // pure position has no ambient exec to fire a call on.
+    let body = "on go { BroadcastChatMessage(\"x\") }";
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "top level",
+            format!("in go: exec\nchip {{ {body} }}\n"),
+        ),
+        (
+            "in a top-level handler",
+            format!("in go: exec\nin go2: exec\non go2 {{ chip {{ {body} }} }}\n"),
+        ),
+        (
+            "in a top-level anon chip",
+            format!("in go: exec\nchip {{ chip {{ {body} }} }}\n"),
+        ),
+        (
+            "in a handler inside a named chip",
+            format!(
+                "in go: exec\n\
+                 in t0: exec\n\
+                 chip Outer(t: exec) {{ on t {{ chip {{ {body} }} }} }}\n\
+                 let w = Outer(t0)\n"
+            ),
+        ),
+        (
+            "directly in a named chip's body",
+            format!(
+                "in go: exec\n\
+                 in t0: exec\n\
+                 chip Outer(t: exec) {{ chip {{ {body} }} }}\n\
+                 let w = Outer(t0)\n"
+            ),
+        ),
+    ];
+    for (label, src) in &cases {
+        let r = compile(src);
+        assert_no_errors(&r);
+        assert!(
+            gate_count_deep(&r.module, "BroadcastChatMessage") > 0,
+            "{label}: the anon chip's body vanished:\n{src}"
+        );
+    }
+}
+
+/// The same drop, seen through what the enclosing chip promised: a `var`, a
+/// `let` and the named chip's own declared `out` all live inside the nested
+/// anon chip, so losing the body left `Outer_0` with three boundary pins and
+/// no gates at all, its declared output wired straight from the input
+/// rerouter. Documented as supported at `docs/src/chips.md:697,714`.
+#[test]
+fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
+    let r = compile(
+        "in go: exec\n\
+         chip Outer(t: exec) -> (rr: int) {\n\
+           chip {\n\
+             var counter: int = 0\n\
+             let doubled = 21 * 2\n\
+             on t { counter = counter + 1 }\n\
+             out rr = doubled\n\
+           }\n\
+         }\n\
+         let w = Outer(go)\n\
+         out o: int = w\n",
+    );
+    assert_no_errors(&r);
+    let outer = r
+        .module
+        .chips
+        .values()
+        .next()
+        .expect("the Outer instance module");
+    assert!(
+        gate_count_deep(outer, crate::ir::gate_class::PSEUDO_VAR) > 0,
+        "the nested anon chip's `var counter` must exist in Outer's module tree"
+    );
+    // `doubled` reaches the declared `rr` pin: unfolded that is a real
+    // multiply, so the output is driven by a gate rather than by the chip's
+    // own input rerouter.
+    let rr = *outer.outputs.last().expect("Outer's declared `rr` pin");
+    let driver = outer
+        .wires
+        .iter()
+        .chain(outer.chips.values().flat_map(|c| c.wires.iter()))
+        .find(|w| w.target.node_id == rr)
+        .map(|w| w.source.node_id)
+        .expect("`out rr = doubled` must drive the declared output pin");
+    assert_ne!(
+        Some(&NodeKind::Input),
+        outer.nodes.get(&driver).map(|n| &n.kind),
+        "the declared output must not be fed straight from the chip's input rerouter"
+    );
+}

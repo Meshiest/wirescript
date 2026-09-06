@@ -246,8 +246,12 @@ pub fn find_asset_refs(source: &str) -> Vec<AssetRef> {
     let mut out = Vec::new();
     let mut in_string: Option<char> = None;
     let mut in_block_comment = false;
+    // Reused across lines: this scan runs on every hover, and a fresh `Vec`
+    // per line was one heap allocation per line of the document per request.
+    let mut chars: Vec<char> = Vec::new();
     for (line_no, line) in source.lines().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
+        chars.clear();
+        chars.extend(line.chars());
         let mut i = 0;
         while i < chars.len() {
             let c = chars[i];

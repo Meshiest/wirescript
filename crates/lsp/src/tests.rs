@@ -632,6 +632,7 @@
             LspService::new(|client| Backend {
                 client,
                 docs: Mutex::new(HashMap::new()),
+                foreign_diags: Mutex::new(HashMap::new()),
                 watch_files: std::sync::atomic::AtomicBool::new(false),
                 change_gen: std::sync::atomic::AtomicU64::new(0),
             });
@@ -1413,5 +1414,178 @@ on CharacterSpawned() -> (character) {
         assert!(
             !actions.iter().any(|a| a.title.contains("Fill missing match arms")),
             "an exhaustive match must not offer a fill action: {actions:?}"
+        );
+    }
+
+    /// A diagnostic raised inside an imported file must be published against
+    /// THAT file. The importer's analysis used to keep only the entry file's
+    /// share, so these reached no buffer at all and the editor showed a clean
+    /// file for a program the compiler rejects.
+    #[tokio::test]
+    async fn imported_file_diagnostics_go_to_the_imported_file() {
+        let dir = scratch_dir("import-diags");
+        let util = dir.join("util.ws");
+        // The non-ASCII string puts the error's byte column and its UTF-16
+        // column one apart, so the assertion below also pins that the range
+        // was converted against util.ws's own text and not the importer's.
+        std::fs::write(
+            &util,
+            "mod helper() {\n  let x = \"h\u{e9}llo\" .. undefinedThing\n}\n",
+        )
+        .unwrap();
+        let main = dir.join("main.ws");
+        let main_source = "import \"./util.ws\"\nin go: exec\non go { helper() }\n";
+        std::fs::write(&main, main_source).unwrap();
+
+        let service = build_backend();
+        let split = service
+            .inner()
+            .analyze(&Url::from_file_path(&main).unwrap(), main_source);
+        let util_uri = Url::from_file_path(&util).unwrap();
+        let for_util = split.foreign.get(&util_uri).cloned().unwrap_or_default();
+        let own = split.own.clone();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            for_util.iter().any(|d| d.message.contains("undefinedThing")),
+            "the unknown-identifier error must be published against util.ws, got {for_util:?} / own {own:?}"
+        );
+        assert!(
+            own.iter().all(|d| !d.message.contains("undefinedThing")),
+            "and must not also be reported against main.ws: {own:?}"
+        );
+        let d = for_util
+            .iter()
+            .find(|d| d.message.contains("undefinedThing"))
+            .unwrap();
+        assert_eq!(
+            (d.range.start.line, d.range.start.character),
+            (1, 21),
+            "line 2 of util.ws, at the UTF-16 column of `undefinedThing` in ITS text"
+        );
+    }
+
+    /// The on-save lowering pass must reach lowering even when the entry file
+    /// has a type error, and its diagnostics must land on the imported file
+    /// they name. `compile` stops at the first stage that reports an error, so
+    /// a file with one never lowered at all and the whole WSP001 class went
+    /// missing from the editor while `wirescript-check` still reported it.
+    #[tokio::test]
+    async fn lowering_diagnostics_survive_a_type_error_and_reach_the_import() {
+        let dir = scratch_dir("lowering-import-diags");
+        let util = dir.join("util.ws");
+        // A non-constant `var` initializer is dropped by lowering with a
+        // WSP001 warning; nothing before lowering says a word about it.
+        std::fs::write(&util, "in a: int\nvar x: int = a + 1\nout r = x\n").unwrap();
+        let main = dir.join("main.ws");
+        let main_source = "import \"./util.ws\"\nin go: exec\non go { let y = undefinedThing }\n";
+        std::fs::write(&main, main_source).unwrap();
+        let uri = Url::from_file_path(&main).unwrap();
+
+        let service = build_backend();
+        let mut split = service.inner().analyze(&uri, main_source);
+        split.extend_deduped(service.inner().lowering_diagnostics(&uri, main_source).await);
+        let for_util = split
+            .foreign
+            .get(&Url::from_file_path(&util).unwrap())
+            .cloned()
+            .unwrap_or_default();
+        let own = split.own.clone();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            own.iter().any(|d| d.message.contains("undefinedThing")),
+            "the entry file keeps its own error: {own:?}"
+        );
+        assert!(
+            for_util
+                .iter()
+                .any(|d| d.code == Some(NumberOrString::String("WSP001".into()))),
+            "util.ws's lowering warning must reach util.ws: {for_util:?}"
+        );
+    }
+
+    /// The Compile command is the only diagnostic channel that used to hand
+    /// the editor `Pos::col` unconverted, so its squiggle sat right of the
+    /// token on any line containing non-ASCII text, and disagreed with the
+    /// live diagnostics for the same file.
+    #[test]
+    fn compile_command_diagnostics_carry_utf16_columns() {
+        let source = "let s = \"h\u{e9}llo\" .. undefined\n";
+        // `undefined` starts at byte 20 of that line and UTF-16 column 19.
+        let byte_col = source.find("undefined").unwrap();
+        assert_eq!(byte_col, 20);
+        let range = wirescript::diagnostic::SourceRange {
+            file: "main.ws".into(),
+            start: wirescript::diagnostic::Pos {
+                line: 1,
+                col: byte_col as u32 + 1,
+                offset: byte_col,
+            },
+            end: wirescript::diagnostic::Pos {
+                line: 1,
+                col: byte_col as u32 + 10,
+                offset: byte_col + 9,
+            },
+        };
+        let diags = vec![wirescript::diagnostic::Diagnostic {
+            code: "WS002".into(),
+            message: "unknown identifier 'undefined'".into(),
+            severity: wirescript::diagnostic::Severity::Error,
+            range,
+        }];
+        let mut sources = HashMap::new();
+        sources.insert("main.ws".to_string(), source.to_string());
+
+        let items = compile_diagnostic_items(&diags, &sources);
+        assert_eq!(items[0]["startChar"], 19);
+        assert_eq!(items[0]["endChar"], 28);
+    }
+
+    /// A whole-document format edit must name a position the document actually
+    /// has. `str::lines` drops a trailing newline, so pairing its count with
+    /// the last line's length pointed one line past the end.
+    #[tokio::test]
+    async fn formatting_edit_ends_at_the_document_end() {
+        let uri = Url::parse("file:///fmt.ws").unwrap();
+        let service = build_backend();
+        // Badly indented so the formatter actually returns an edit.
+        open_doc(&service, &uri, "in go: exec\non go {\nlet v: int = 1\n}\n");
+
+        let edits = service
+            .inner()
+            .formatting(DocumentFormattingParams {
+                text_document: TextDocumentIdentifier { uri },
+                options: FormattingOptions {
+                    tab_size: 2,
+                    insert_spaces: true,
+                    ..Default::default()
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .unwrap()
+            .expect("the buffer is not formatted, so there is an edit");
+        assert_eq!(
+            (edits[0].range.end.line, edits[0].range.end.character),
+            (4, 0),
+            "four newlines, so the document ends at the start of line 4"
+        );
+    }
+
+    /// The match-arm completion scanner takes the cursor's char column and
+    /// slices `source` at it. It used to convert that column with a
+    /// byte-indexed helper, so with the cursor just past a multi-byte
+    /// character the slice landed mid-character and the completion request
+    /// panicked instead of answering.
+    #[test]
+    fn match_arm_scrutinee_scan_survives_a_cursor_after_a_multibyte_char() {
+        let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => \"\u{e9}\n}\n";
+        let line = 3;
+        // Cursor at the end of the line, i.e. immediately after the `é`.
+        let col = src.lines().nth(line).unwrap().chars().count();
+        assert!(
+            match_arm_head_scrutinee_at(src, line, col).is_none(),
+            "the cursor is in an arm BODY, not a pattern head"
         );
     }

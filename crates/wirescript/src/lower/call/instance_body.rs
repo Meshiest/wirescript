@@ -375,6 +375,15 @@ pub(super) fn build_chip_module(
             // bake path exactly as it does in every other path. Must stay in
             // this source-ordered loop — see `pre_declare_chip_name`.
             Stmt::ChipDecl(c) => pre_declare_chip_name(&mut child_ctx, c),
+            // An anonymous `chip { }` written straight into this chip's body.
+            // `lower_anon_chip` finds the shell by (range, enclosing chip) and
+            // returns silently when there is none, so without this the whole
+            // nested body (vars, handlers, even `out` bindings for this chip's
+            // own declared outputs) was discarded with no diagnostic.
+            // The top-level walk (`predeclare::pre_declare_decl`) and the
+            // handler-body walk (`handler::lower_block`) both do this already;
+            // this walk was the one that did not.
+            Stmt::AnonChip(ac) => pre_declare_anon_chip(&mut child_ctx, ac),
             Stmt::In(i) => pre_declare_input(&mut child_ctx, i),
             Stmt::Var(v) => child_ctx.with_nofold(v.no_fold, |ctx| pre_declare_var(ctx, v)),
             Stmt::Buffer(b) => pre_declare_buffer(&mut child_ctx, b),

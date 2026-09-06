@@ -1271,6 +1271,17 @@ fn range_contains_cursor(r: &SourceRange, line: u32, col: u32) -> bool {
     pos_key(&r.start) <= p && p < pos_key(&r.end)
 }
 
+/// A 0-based LSP cursor as the 1-based BYTE `(line, col)` every `SourceRange`
+/// in this module carries. `col` arrives as a char column (the convention all
+/// of `analysis` takes) and `Pos::col` counts bytes, so the two agree only
+/// while the line is pure ASCII. Without the conversion one accented letter
+/// earlier on the line slides the cursor left onto a different identifier,
+/// and rename rewrites that one instead.
+fn cursor_key(source: &str, line: usize, col: usize) -> (u32, u32) {
+    let byte_col = super::text::char_col_to_byte(super::text::line_text(source, line), col);
+    ((line + 1) as u32, (byte_col + 1) as u32)
+}
+
 /// A range's span in source bytes — used only to compare two AST-derived
 /// ranges' sizes (never a cursor, which has no byte offset), so
 /// `Pos::offset` is fine here even though containment checks above use
@@ -1334,8 +1345,10 @@ fn resolve_uses(model: &mut ScopeModel) {
 
 /// Resolve the binding under the cursor and return every same-file site
 /// bound to it (including the declaration name). `line`/`col` are 0-based
-/// (LSP); converted to the 1-based coordinates AST ranges carry. `source` is
-/// the same file's text, used only to break a same-range tie (below).
+/// with `col` a CHAR column, the convention every `analysis` entry point
+/// takes; `source` is the same file's text, needed both to convert that
+/// column to the byte one AST ranges carry and to break a same-range tie
+/// (below).
 ///
 /// Cursor dispatch: among every [`Use`] and every [`Binding::name_range`]
 /// whose range contains the cursor, the innermost (smallest) one wins — so a
@@ -1361,8 +1374,7 @@ pub fn references_at(
     // parity with `references_to_export`'s cross-file callers.
     let _ = file;
     let model = build_scope_model(script);
-    let cursor_line = (line + 1) as u32;
-    let cursor_col = (col + 1) as u32;
+    let (cursor_line, cursor_col) = cursor_key(source, line, col);
 
     enum Cand {
         Use(usize),
@@ -1490,8 +1502,7 @@ pub fn prepare_rename_at(
         }
     }
 
-    let cursor_line = (line + 1) as u32;
-    let cursor_col = (col + 1) as u32;
+    let (cursor_line, cursor_col) = cursor_key(source, line, col);
     let model = build_scope_model(script);
     if model
         .field_name_spans
@@ -1524,7 +1535,7 @@ pub fn prepare_rename_at(
     Some((span, target.name))
 }
 
-/// True if the 0-based `(line, col)` cursor sits on a record FIELD name — a
+/// True if the 0-based `(line, char col)` cursor sits on a record FIELD name — a
 /// `FieldAccess.field` (`obj.field`), a `RecordLitField::Named` KEY
 /// (`{ name: value }`), or a record-TYPE field's own name — exactly the
 /// positions [`prepare_rename_at`] refuses (field rename is deferred per the
@@ -1532,9 +1543,9 @@ pub fn prepare_rename_at(
 /// its type-directed goto-definition path instead of the scope-aware
 /// reference set (a coarse enclosing `type X = {…}` binding would otherwise
 /// swallow the field cursor and surface the whole type's references).
-pub fn field_name_at(script: &Script, line: usize, col: usize) -> bool {
-    let cursor_line = (line + 1) as u32;
-    let cursor_col = (col + 1) as u32;
+/// `source` is the same file's text, used only for the column conversion.
+pub fn field_name_at(script: &Script, source: &str, line: usize, col: usize) -> bool {
+    let (cursor_line, cursor_col) = cursor_key(source, line, col);
     let model = build_scope_model(script);
     model
         .field_name_spans

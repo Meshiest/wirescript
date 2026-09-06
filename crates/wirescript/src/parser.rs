@@ -372,17 +372,31 @@ impl<'a> Parser<'a> {
                     self.doc_comments.insert(doc_key(d.range()), doc);
                 }
                 decls.push(d);
-            } else if self.pos == before {
-                // No progress → emit a diag and skip a token to avoid a loop.
+            } else {
+                // `parse_top_decl` only returns `None` after reporting, so
+                // recovery here stays silent and the backstop below covers it.
+                self.synchronize();
+            }
+            self.eat_newlines();
+            // Neither arm guarantees progress. Recovery paths deliberately
+            // leave a closing token in place (see `parse_primary`'s error
+            // arm), so `parse_top_decl` can return a decl built entirely from
+            // lookahead, and `synchronize` stops without consuming when it is
+            // already sitting on a resync token. Either way the loop would
+            // append one decl per iteration until memory ran out. `parse_block`
+            // has the same backstop, but it can break out and let
+            // `expect(RBrace)` report; the top level has no closing token, so
+            // it reports here and skips the token to keep parsing the rest of
+            // the file.
+            if self.pos == before {
                 let t = self.peek().clone();
                 self.error(
                     format!("unexpected token '{}' at top level", t.text),
                     t.start,
                     t.end,
                 );
-                self.synchronize();
+                self.advance();
             }
-            self.eat_newlines();
         }
         let end = self.peek().start;
         Script {

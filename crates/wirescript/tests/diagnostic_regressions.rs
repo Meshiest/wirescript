@@ -44,63 +44,63 @@ fn diag_msgs(src: &str) -> Vec<(String, String)> {
     }
 }
 
-// --- R3: assigning a `let`/input-backed record field is WS007, not a silent drop.
+// --- Assigning a `let`/input-backed record field is WS007, not a silent drop.
 #[test]
-fn r3_let_record_field_assign_is_ws007() {
+fn assigning_a_let_backed_record_field_is_ws007() {
     let src = "type P = { x: int, y: int }\nin go: exec\non go {\n  let p = { x: 1, y: 2 }\n  p.x = 5\n}\n";
     assert!(has(src, "WS007"), "{:?}", diags(src));
 }
 
 #[test]
-fn r3_var_backed_record_field_assign_is_clean() {
+fn assigning_a_var_backed_record_field_stays_clean() {
     let src = "type P = { x: int, y: int }\nin go: exec\nvar xa: int = 0\nvar yb: int = 0\non go {\n  let p = { x: xa, y: yb }\n  p.x = 5\n}\n";
     assert!(!has(src, "WS007"), "{:?}", diags(src));
 }
 
-// --- R7: `==` on two record values is WS004, not a clean typecheck + placeholder.
+// --- `==` on two record values is WS004, not a clean typecheck + placeholder.
 #[test]
-fn r7_record_equality_is_ws004() {
+fn comparing_two_records_with_eq_is_ws004() {
     let src = "type P = { x: int, y: int }\nin go: exec\non go {\n  let p = { x: 1, y: 2 }\n  let q = { x: 1, y: 2 }\n  let eq = p == q\n}\n";
     assert!(has(src, "WS004"), "{:?}", diags(src));
 }
 
 #[test]
-fn r7_record_vs_scalar_multioutput_unwrap_stays_clean() {
+fn a_multi_output_result_compared_to_a_scalar_stays_clean() {
     // A multi-output result (a record) compared to a scalar auto-unwraps to its
     // first output, so the record-vs-record guard must NOT sweep it up.
     let src = "in go: exec\non go {\n  var arr: int[]\n  arr.push(5)\n  let z = arr.pop()\n  let ok = z == 5\n}\n";
     assert!(!has(src, "WS004"), "{:?}", diags(src));
 }
 
-// --- R8: a `...rest` destructured mod param types the rest as a record (not `any`).
+// --- A `...rest` destructured mod param types the rest as a record (not `any`).
 #[test]
-fn r8_rest_param_typed_as_record_no_ws004() {
+fn a_rest_destructured_param_types_as_a_record() {
     let src = "type Config = { data: int, alpha: int, beta: int }\nmod f({ data, ...opts }: Config) -> int {\n  return opts.alpha + opts.beta\n}\nin go: exec\non go {\n  let cfg: Config = { data: 1, alpha: 2, beta: 3 }\n  let r = f(cfg)\n}\n";
     assert!(!has(src, "WS004"), "{:?}", diags(src));
 }
 
-// --- R9: a tuple-typed field inside a record annotation coerces (no bogus WS003).
+// --- A tuple-typed field inside a record annotation coerces (no bogus WS003).
 #[test]
-fn r9_tuple_field_in_record_annotation_is_clean() {
+fn a_tuple_typed_field_in_a_record_annotation_stays_clean() {
     let src = "type T = { pair: (int, int), n: int }\nin go: exec\non go {\n  let t: T = { pair: (1, 2), n: 3 }\n  let s = t.n + t.pair.0\n}\n";
     assert!(!has(src, "WS003"), "{:?}", diags(src));
 }
 
-// --- S1: a non-lvalue arg to a `*T` ref param is WS008, not a silent drop.
+// --- A non-lvalue arg to a `*T` ref param is WS008, not a silent drop.
 #[test]
-fn s1_literal_to_ref_param_is_ws008() {
+fn a_literal_passed_to_a_ref_param_is_ws008() {
     let src = "mod inc(v: *int) { v = v + 1 }\nin go: exec\non go { inc(5) }\n";
     assert!(has(src, "WS008"), "{:?}", diags(src));
 }
 
 #[test]
-fn s1_arr_element_to_scalar_ref_param_is_ws008() {
+fn an_array_element_passed_to_a_scalar_ref_param_is_ws008() {
     let src = "mod inc(v: *int) { v = v + 1 }\nin go: exec\non go {\n  var arr: int[]\n  arr.push(3)\n  inc(arr[0])\n}\n";
     assert!(has(src, "WS008"), "{:?}", diags(src));
 }
 
 #[test]
-fn s1_var_to_ref_param_is_clean() {
+fn a_var_passed_to_a_ref_param_stays_clean() {
     let src = "mod inc(v: *int) { v = v + 1 }\nin go: exec\nvar a: int = 0\non go { inc(a) }\n";
     assert!(!has(src, "WS008"), "{:?}", diags(src));
 }
@@ -147,16 +147,16 @@ on go {
     assert!(has(src, "WS008"), "{:?}", diags(src));
 }
 
-// --- S3/S4: an `emit` to a non-emittable target is WS057, not a silent no-op.
+// --- An `emit` to a non-emittable target is WS057, not a silent no-op.
 #[test]
-fn s4_emit_to_input_port_is_ws057() {
+fn emitting_to_an_input_port_is_ws057() {
     let src = "in go: exec\non go { emit go }\n";
     assert!(has(src, "WS057"), "{:?}", diags(src));
 }
 
-// --- S6: `let v = await sig` on a valueless signal is WS056, not a garbage wire.
+// --- `let v = await sig` on a valueless signal is WS056, not a garbage wire.
 #[test]
-fn s6_await_valueless_signal_is_ws056() {
+fn awaiting_a_value_from_a_valueless_signal_is_ws056() {
     let src = "let sig: exec\nstatic var captured: int = 0\non start { emit sig }\non go {\n  let v = await sig\n  captured = v\n}\nin start: exec\nin go: exec\n";
     assert!(has(src, "WS056"), "{:?}", diags(src));
 }
@@ -170,10 +170,10 @@ fn tuple_return_named_outputs_no_placeholder() {
     assert!(!has(src, "WSP001"), "{:?}", diags(src));
 }
 
-// --- C1: a component field borrowed from another component type (or a typo)
+// --- A component field borrowed from another component type (or a typo)
 //     is WS010, not a silent SplitColor/SplitVector fed the wrong-typed value.
 #[test]
-fn c1_cross_type_component_access_is_ws010() {
+fn a_component_field_borrowed_from_another_type_is_ws010() {
     // `v.r` on a vector previously compiled clean and emitted a SplitColor.
     let vr = "in go: exec\nvar v: vector = Vec(1.0,2.0,3.0)\nvar f: float = 0.0\non go { f = v.r }\n";
     assert!(has(vr, "WS010"), "{:?}", diags(vr));
@@ -182,16 +182,16 @@ fn c1_cross_type_component_access_is_ws010() {
 }
 
 #[test]
-fn c1_valid_component_access_stays_clean() {
+fn a_valid_component_field_access_stays_clean() {
     let src = "in go: exec\nvar v: vector = Vec(1.0,2.0,3.0)\nvar c: color = Color(1.0,0.0,0.0)\n\
                var f: float = 0.0\non go { f = v.x }\non go { f = c.g }\n";
     assert!(!has(src, "WS010"), "{:?}", diags(src));
 }
 
-// --- C2: a negated union / double negation trigger is WS001, not a silently
+// --- A negated union / double negation trigger is WS001, not a silently
 //     dropped handler.
 #[test]
-fn c2_negated_union_trigger_is_ws001() {
+fn a_negated_union_trigger_is_ws001() {
     let un = "in a: exec\nin b: exec\nstatic var f: int = 0\non !(a | b) { f = 1 }\n";
     assert!(has(un, "WS001"), "{:?}", diags(un));
     let dbl = "in a: exec\nstatic var f: int = 0\non !!a { f = 1 }\n";
@@ -199,33 +199,33 @@ fn c2_negated_union_trigger_is_ws001() {
 }
 
 #[test]
-fn c2_valid_negated_and_union_triggers_stay_clean() {
+fn plain_negated_and_union_triggers_stay_clean() {
     let src = "in a: exec\nin b: exec\nstatic var f: int = 0\non !a { f = 1 }\non (a | b) { f = 2 }\n";
     assert!(!has(src, "WS001"), "{:?}", diags(src));
 }
 
-// --- C3: assigning to a non-lvalue (a call result, a literal) is WS007, not a
+// --- Assigning to a non-lvalue (a call result, a literal) is WS007, not a
 //     silently dropped assignment.
 #[test]
-fn c3_assign_to_call_result_is_ws007() {
+fn assigning_to_a_call_result_is_ws007() {
     let src = "mod f() -> int { return 1 }\nin go: exec\non go { f() = 5 }\n";
     assert!(has(src, "WS007"), "{:?}", diags(src));
 }
 
 #[test]
-fn c3_assign_to_var_field_element_stays_clean() {
+fn assigning_to_a_var_field_or_element_stays_clean() {
     let src = "type P = { x: int, y: int }\nin go: exec\nstatic var p: P = { x: 0, y: 0 }\n\
                static var arr: int[]\non go {\n  p.x = 5\n  arr.push(0)\n  arr[0] = 9\n}\n";
     assert!(!has(src, "WS007"), "{:?}", diags(src));
 }
 
-// --- C4: two sources into one input port (here a duplicate `out o`) is an emit
+// --- Two sources into one input port (here a duplicate `out o`) is an emit
 //     fan-in error, not a format-valid `.brz` the game rejects at load.
 #[test]
-fn c4_fan_in_is_an_emit_error() {
+fn two_drivers_on_one_out_port_is_an_emit_fan_in_error() {
     let input = CompileInput {
         source: "in x: int\nout o = x + 1\nout o = x + 2\n",
-        file: "c4.ws",
+        file: "fan_in.ws",
         module_name: None,
         fold_mode: FoldMode::Auto,
     };
@@ -257,10 +257,10 @@ fn change_on_a_scalar_stays_clean() {
     assert!(!has(src, "WS059"), "{:?}", diags(src));
 }
 
-// --- C6: `Substring` with a near-i64::MAX length must clamp to the string end
+// --- `Substring` with a near-i64::MAX length must clamp to the string end
 //     (a constant-folded fold path), not overflow into a slice-range panic.
 #[test]
-fn c6_substring_huge_length_does_not_panic() {
+fn substring_with_a_huge_length_clamps_instead_of_panicking() {
     // If the fold overflowed, `diags` would panic (the test process would crash)
     // rather than return; reaching the assert at all proves it clamped.
     let src = "out r = \"hello\".Substring(1, 9223372036854775807)\n";
@@ -514,4 +514,97 @@ fn ws065_unit_variant_suggests_bare_form() {
             "unit-variant WS065 must not suggest a payload bracket form, got: {msg:?}"
         );
     }
+}
+
+/// Whether the compile stopped with hard ERRORS, as opposed to producing only
+/// warnings - `diags` flattens both paths, so a severity assertion needs this.
+fn has_errors(src: &str) -> bool {
+    let input = CompileInput {
+        source: src,
+        file: "diagnostic_regressions.ws",
+        module_name: None,
+        fold_mode: FoldMode::Auto,
+    };
+    matches!(compile(input), Err(CompileError::HasErrors(_)))
+}
+
+// --- A bare CAPITALISED pattern that names no variant of the scrutinee's enum
+//     is an irrefutable binding, not a variant test, so the typo arm swallows
+//     every later arm (the IR shows `Select InputA=200 InputB=200` - the 300 is
+//     gone) and the `if let` spelling deletes the whole discriminant test with
+//     no diagnostic at all. WS067 covers it, as an error.
+#[test]
+fn mistyped_bare_variant_in_match_is_a_ws067_error() {
+    let src = "enum Color { Red, Green, Blue }\n\
+               static var c: Color = Color.Blue\n\
+               out v = match c { Red => 100, Gren => 200, Blue => 300 }\n";
+    let msg = diag_msgs(src)
+        .into_iter()
+        .find(|(code, _)| code == "WS067")
+        .unwrap_or_else(|| panic!("expected WS067: {:?}", diags(src)))
+        .1;
+    assert!(
+        msg.contains("Color") && msg.contains("Gren"),
+        "WS067 should name the enum and the misspelled variant, got: {msg:?}"
+    );
+    assert!(has_errors(src), "WS067 for a non-variant must be an error");
+}
+
+#[test]
+fn mistyped_bare_variant_in_if_let_is_a_ws067_error() {
+    // The `if let` form loses its `Var_Get` + `CompareEqual` + `Branch` triple
+    // entirely, so the body runs unconditionally.
+    let src = "enum Color { Red, Green, Blue }\n\
+               static var c: Color = Color.Blue\n\
+               in go: exec\nstatic var hit: int = 0\n\
+               on go {\n  if let Gren = c {\n    hit = 1\n  }\n}\n";
+    assert!(has(src, "WS067"), "{:?}", diags(src));
+    assert!(has_errors(src), "WS067 for a non-variant must be an error");
+}
+
+#[test]
+fn bare_unit_variant_and_lowercase_catch_all_are_not_ws067() {
+    // A bare unit variant is the correct spelling of a variant test, and a
+    // lowercase name is how a deliberate named catch-all is written.
+    let unit = "enum Dir { N, E, S, W }\nstatic var d: Dir = Dir.E\n\
+                out b = match d { N => 10, E => 20, S => 30, W => 40 }\n";
+    assert!(!has(unit, "WS067"), "{:?}", diags(unit));
+    let catch_all = "enum Dir { N, E, S, W }\nstatic var d: Dir = Dir.E\n\
+                     out b = match d { N => 10, other => 20 }\n";
+    assert!(!has(catch_all, "WS067"), "{:?}", diags(catch_all));
+}
+
+// --- An array literal element is BAKED as a constant, so a `ViaString`
+//     coercion has no `FormatText` gate to run through and emit renders the
+//     value as `""`. `var s: string[] = [1, 2]` type-checks clean and ships two
+//     empty strings; the map path already had this rule.
+#[test]
+fn string_array_initializer_with_int_elements_is_ws003() {
+    let src = "static var s: string[] = [1, 2]\non RoundStart() { PrintToConsole(s[0]) }\n";
+    let msg = diag_msgs(src)
+        .into_iter()
+        .find(|(code, _)| code == "WS003")
+        .unwrap_or_else(|| panic!("expected WS003: {:?}", diags(src)))
+        .1;
+    assert!(
+        msg.contains("string-formatted"),
+        "the element WS003 should say why the coercion can't happen, got: {msg:?}"
+    );
+}
+
+#[test]
+fn string_array_literal_with_a_non_string_element_is_ws003_in_exec_context() {
+    // The whole-array coerce only inspects element 0, so a `string`-typed first
+    // element used to carry the rest of the literal through unchecked.
+    let src = "static var s: string[] = []\nin go: exec\non go {\n  s = [\"a\", 2]\n}\n";
+    assert!(has(src, "WS003"), "{:?}", diags(src));
+}
+
+#[test]
+fn numeric_array_initializers_still_coerce() {
+    // `Coerce` (int -> float) holds at the literal itself, so it stays legal.
+    let ok = "static var f: float[] = [1, 2.5]\non RoundStart() { PrintToConsole(f[0]) }\n";
+    assert!(!has(ok, "WS003"), "{:?}", diags(ok));
+    let same = "static var i: int[] = [1, 2]\non RoundStart() { PrintToConsole(i[0]) }\n";
+    assert!(!has(same, "WS003"), "{:?}", diags(same));
 }

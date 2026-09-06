@@ -1451,7 +1451,7 @@ fn hover_enum_variant_path(
     let obj_end = start - 1;
     let obj_start = word_start_at_byte(l, obj_end);
     let enum_name = &l[obj_start..obj_end];
-    if enum_name.is_empty() || super::resolve_symbol(symbols, enum_name, line, col).is_some() {
+    if enum_name.is_empty() || super::resolve_symbol(symbols, source, enum_name, line, col).is_some() {
         return None;
     }
 
@@ -1942,7 +1942,7 @@ fn hover_generic_call(
 
     // The declaration symbol carries the kind/exec/const flags and the offsets
     // the doc-comment and estimate lookups key on; only its `ty` changes.
-    let sym = super::resolve_symbol(symbols, word, line, col)?;
+    let sym = super::resolve_symbol(symbols, source, word, line, col)?;
     if sym.kind != "mod" && sym.kind != "chip" {
         return None;
     }
@@ -2057,7 +2057,7 @@ fn hover_user_symbol(
     // a name reused across scopes shows the one actually visible here — e.g.
     // hovering `players` in `var players: character[]` resolves to that array,
     // not a file-scope `players: string`.
-    let sym = super::resolve_symbol(symbols, word, line, col)?;
+    let sym = super::resolve_symbol(symbols, source, word, line, col)?;
 
     // Namespace alias (`import * as card`): it has no type — show it as a
     // namespace and list the members it brings in (its qualified `card.*`

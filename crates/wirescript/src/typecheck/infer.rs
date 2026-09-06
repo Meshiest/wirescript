@@ -17,10 +17,10 @@ use crate::types::coerce::{coerce, widening_join, CoerceRule};
 use crate::types::mono::unwrap_ref;
 
 use super::{
-    call_param_config_enum, check_args, check_stmt, is_reference_type, op_operand_type,
-    out_scope_key, output_record_type, resolve_op, resolve_type_expr, sig_of_callspec,
-    target_name, type_param_mask, type_user_symbol_call, CallSignature, ExecMode, Param,
-    ParamKind, SymbolInfo, SymbolKind, TypeCheckCtx,
+    call_param_config_enum, check_args, check_stmt, coerces_at_a_baked_literal,
+    is_reference_type, op_operand_type, out_scope_key, output_record_type, resolve_op,
+    resolve_type_expr, sig_of_callspec, target_name, type_param_mask, type_user_symbol_call,
+    CallSignature, ExecMode, Param, ParamKind, SymbolInfo, SymbolKind, TypeCheckCtx,
 };
 
 /// Bound on how deep `$./….ws` source-prefab references are followed while
@@ -1313,13 +1313,24 @@ fn bind_sub_as_any(ctx: &mut TypeCheckCtx, sub: &VariantPattern, mutable: bool) 
     }
 }
 
+/// How a bare identifier pattern reads against an enum scrutinee.
+enum BarePattern {
+    /// Names a unit variant of the enum: a variant test that binds nothing.
+    UnitVariant,
+    /// Names a variant that HAS a payload: `Circle` where `Circle(_)` was meant.
+    PayloadVariant,
+    /// Names no variant of the enum: a typo, or a deliberate named catch-all.
+    Unknown,
+}
+
 /// Validate an arm pattern against the type it matches and bind its captures
 /// into the current scope. Keeps the SAME unit-variant reinterpretation the
 /// usefulness engine (`patterns::head_variant_name`) uses: a bare identifier
 /// naming a unit variant is a variant test that binds nothing, while any
 /// other bare identifier captures the whole matched value. Emits WS060 for an
-/// unknown variant and WS065 for a payload whose bracket form or arity does
-/// not match the variant.
+/// unknown variant, WS065 for a payload whose bracket form or arity does not
+/// match the variant, and WS067 for a bare capitalised name that is no unit
+/// variant of the scrutinee's enum.
 ///
 /// `mutable` says whether the SCRUTINEE is writable storage
 /// (`scrutinee_is_mutable`). Lowering binds each capture as a compile-time move
@@ -1339,14 +1350,49 @@ pub(super) fn check_match_pattern(
     match pat {
         Pattern::Wildcard(_) => {}
         Pattern::Binding { name, range } => {
-            if let Type::Enum { name: en, .. } = matched
-                && ctx.enum_defs.get(en).is_some_and(|edef| {
-                    edef.variants
-                        .iter()
-                        .any(|v| &v.name == name && matches!(v.payload, Payload::Unit))
-                })
-            {
-                return;
+            // Classified under the `enum_defs` borrow because the diagnostics
+            // below need `ctx` mutably.
+            let bare = match matched {
+                Type::Enum { name: en, .. } => ctx.enum_defs.get(en).map(|edef| {
+                    let kind = match edef.variants.iter().find(|v| &v.name == name) {
+                        Some(v) if matches!(v.payload, Payload::Unit) => BarePattern::UnitVariant,
+                        Some(_) => BarePattern::PayloadVariant,
+                        None => BarePattern::Unknown,
+                    };
+                    (en.clone(), kind)
+                }),
+                _ => None,
+            };
+            match bare {
+                Some((_, BarePattern::UnitVariant)) => return,
+                Some((_, BarePattern::PayloadVariant)) => ctx.warn(
+                    "WS067",
+                    format!(
+                        "`{name}` names a variant that has a payload, but written bare it binds \
+                         the whole value like a catch-all (which can leave later arms \
+                         unreachable). Did you mean `{name}(_)`?"
+                    ),
+                    range.clone(),
+                ),
+                // A capitalised name that is no variant at all is a typo, and
+                // the capture reading is irrefutable: the arm swallows every
+                // value, so later arms are deleted and an `if let` loses its
+                // discriminant test entirely, with no wrong-looking IR to find
+                // it by. The qualified spelling of the same typo is WS060, so
+                // this is an error too. Lowercase stays legal - that is how a
+                // deliberate named catch-all (`other => ...`) is spelled.
+                Some((en, BarePattern::Unknown)) if name.starts_with(char::is_uppercase) => {
+                    ctx.emit(
+                        "WS067",
+                        format!(
+                            "enum `{en}` has no variant `{name}`, and a bare name that is not a \
+                             variant binds the whole value like a catch-all instead of testing \
+                             for one - every later arm becomes unreachable"
+                        ),
+                        range.clone(),
+                    )
+                }
+                _ => {}
             }
             if !mutable {
                 // Remember this as a capture, so a later write to it is
@@ -2503,41 +2549,6 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     "unreachable match arm - an earlier arm already covers every value it matches"
                         .to_string(),
                     arms[idx].range.clone(),
-                );
-            }
-            // Lint (WS067): a bare variant name for a variant that HAS a payload
-            // (`Circle` instead of `Circle(_)`) parses as a catch-all capture, so
-            // it silently swallows every value and can make later arms dead. A
-            // unit variant is correctly written bare, so only a payload variant of
-            // the scrutinee's own enum is flagged. Suspects are collected under the
-            // `enum_defs` borrow, then warned after it drops.
-            let mut bare_payload_variants: Vec<(String, SourceRange)> = Vec::new();
-            if let Type::Enum { name: enum_name, .. } = &scrut_ty
-                && let Some(edef) = ctx.enum_defs.get(enum_name)
-            {
-                for arm in arms {
-                    if let Pattern::Binding {
-                        name: bname,
-                        range: brange,
-                    } = &arm.pattern
-                        && edef.variants.iter().any(|v| {
-                            &v.name == bname
-                                && !matches!(v.payload, crate::typecheck::enums::Payload::Unit)
-                        })
-                    {
-                        bare_payload_variants.push((bname.clone(), brange.clone()));
-                    }
-                }
-            }
-            for (bname, brange) in bare_payload_variants {
-                ctx.warn(
-                    "WS067",
-                    format!(
-                        "`{bname}` names a variant that has a payload, but written bare it binds \
-                         the whole value like a catch-all (which can leave later arms \
-                         unreachable). Did you mean `{bname}(_)`?"
-                    ),
-                    brange,
                 );
             }
             result
@@ -3699,7 +3710,31 @@ pub(crate) fn check(ctx: &mut TypeCheckCtx, e: &Expr, expected: &Type) -> Type {
     {
         for el in elements {
             match el {
-                ArrayElem::Item(v) => { check(ctx, v, &want); }
+                ArrayElem::Item(v) => {
+                    let got = check(ctx, v, &want);
+                    // `check` applies the ASSIGNMENT rule, which allows
+                    // `ViaString` because an assignment has a wire for the
+                    // `FormatText` gate to sit on. An array element is baked
+                    // into the array's constant list instead of wired, so there
+                    // is no such gate and emit renders the value as `""` - the
+                    // same reason a map literal entry rejects it. Only the
+                    // EXTRA rejection is emitted here; `check` already reported
+                    // an outright mismatch.
+                    if !coerces_at_a_baked_literal(&got, &want)
+                        && coerce(&got, &want) != CoerceRule::Mismatch
+                    {
+                        ctx.emit(
+                            "WS003",
+                            format!(
+                                "array element: expected {}, got {}; an array element can't \
+                                 be string-formatted, so write a matching-type value",
+                                crate::analysis::types::type_str(&want),
+                                crate::analysis::types::type_str(&got),
+                            ),
+                            v.range().clone(),
+                        );
+                    }
+                }
                 ArrayElem::Spread(v) => { check(ctx, v, &Type::Array(want.clone())); }
             }
         }

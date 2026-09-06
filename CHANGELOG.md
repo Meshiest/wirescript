@@ -33,6 +33,20 @@
 - A `mod` returning from inside a branch, called purely, reports at the call site. It handed back the never-allocated node as a port, so the program lowered clean and failed at emit naming `n0`.
 - A doc comment in a CRLF file does not keep its `\r`. The text ran one byte past its end, and a doc comment is baked into the world as a chip's header.
 - Two sources into one brick port is caught wherever the wire is drawn. The check was keyed on the IR node and local to one module, so the bus lanes, `@side` rerouters and `@label` wires bypassed it.
+- A file starting with a stray `)`, `}`, `]` or `,` is a parse error rather than a hang. Recovery leaves a closing token in place, and the top-level loop had no no-progress backstop, so the compiler spun until it ran out of memory.
+- `-1_000.5` reads as `-1000.5`. The negative path skipped the digit-separator strip and swallowed the failure as `0.0`, and `1e` and `1e999` baked `0.0` and `inf` in silence.
+- A parse error at the end of a `${...}` slot reports where it sits. The `Eof` token bypassed the offset shift, so a line-6 error landed at `1:6`.
+- A `match` or `if let` pattern naming no variant of the scrutinee is a `WS067` error. It read as an irrefutable binding, so a typo swallowed every later arm and `if let` dropped the test entirely.
+- `var s: string[] = [1, 2]` is a `WS003`. An array element is baked as a constant with no `FormatText` gate to run through, so a string coercion shipped empty strings; the map path already refused this.
+- Two modules with a same-named private helper stay apart. The named-import closure matched on the name alone, so an importer silently called the other module's `helper` with no diagnostic.
+- Two modules that each privately write `import * as U` is a `WS012`. Both flattened to one program-wide binding, so they type-checked clean and then both called whichever registered last.
+- `import { addK, K as KK }` leaves the library's own `K` bound. The closure was keyed on the pre-alias name, so the module's own `x + K` bound to whatever the importer called `K`.
+- `arr[i].Value` reads the element, as `arr[i].value` already did. The field list was case-sensitive and omitted the capitalisation the docs teach, so it lowered to an `_Unsupported` placeholder.
+- `xs.sort(descending = true)` sorts descending. Only the first positional argument was read, so the named form was dropped and the sort silently ran ascending.
+- `let r = ref someVar` binds the variable, as the expression reference documents. A `ref` in a value position fell to the `_Unsupported` catch-all and the binding was dropped.
+- A chip's array, map or `ref` parameter wires the rerouter's own port. Its pin was bound as storage, so every read named `ArrayVarRef` on a `MicrochipInput`, a port the game does not have.
+- An anonymous `chip { }` inside a named chip keeps its body. The chip-body pre-declare pass never descended into it, so its vars, handlers and `out` bindings were dropped and the chip emitted no gates.
+- A handler whose trigger cannot resolve is a `WS001` and takes nothing with it. It was deleted in silence, and the exec exits it dropped left the following statement with no chain to run on.
 
 ### Editor
 
@@ -40,6 +54,10 @@
 - Hover, completion and go-to-definition work in a CRLF file. Line offsets summed `len + 1`, which drops the `\r`, so every position past line 1 drifted.
 - The language server runs parse, resolve, typecheck and hover on the big stack `compile` reserves rather than the ~2 MiB editor worker thread.
 - Closing a file clears its diagnostics. They belong to the server until it says otherwise, so every marker stayed on screen for the rest of the session.
+- Rename and find-references resolve the symbol under the cursor on a line holding non-ASCII text. They took a char column and compared it against byte columns, so the cursor shifted left and rewrote a different identifier.
+- Diagnostics from an imported file publish to that file. The server kept only the entry file's share, so a marker for `util.ws` reached no buffer and the editor showed a clean file for a rejected program.
+- The Compile command's diagnostics land on the right column. It handed the editor raw byte columns, which put the squiggle right of the token on any line holding non-ASCII text.
+- Completion inside a `match` arm no longer panics with the cursor just past an accented character, and a whole-document format edit no longer names a position one line past the end.
 
 ### Performance
 
@@ -51,6 +69,8 @@
 - Code layout sorts its adjacency once when building it rather than per node visited, so adopting unplaced nodes no longer re-sorts the same neighbour lists thousands of times.
 - Constant-literal inlining indexes the surviving wire sources once instead of rescanning every wire per candidate, and interns its port names once rather than per wire.
 - The type checker shares the module constant table rather than deep-copying it on every constant evaluation.
+- One hover allocates 89 times rather than 54,248 on a 257 KB program. `atom_at` re-lexed the whole file at every cursor position, including inside comments.
+- The constant-environment fixpoint shares its table rather than deep-copying it twice per binding per pass, cutting typecheck allocations 31% on a large const-heavy program.
 - Debug and test builds compile with `opt-level = 1`, so the integration suite exercises an optimized compiler: `cargo test -p wirescript` runs in 4.4s where it took 17.1s.
 
 ## 1.11.0

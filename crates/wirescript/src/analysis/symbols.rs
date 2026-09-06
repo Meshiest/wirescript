@@ -30,15 +30,18 @@ pub struct SymbolDef {
 /// Approximate lexical scope by the nearest declaration at or before the cursor
 /// (shadowing — the innermost / most-recent declaration wins, and hovering a
 /// declaration resolves to itself), falling back to the first declaration for a
-/// use-before-declaration reference. `line`/`col` are 0-based (LSP cursor);
-/// symbol ranges are 1-based (parser `Pos`).
+/// use-before-declaration reference. `line`/`col` are 0-based (LSP cursor)
+/// with `col` a CHAR column; symbol ranges are 1-based with a BYTE column
+/// (parser `Pos`), so `source` is needed to compare the two at all.
 pub fn resolve_symbol<'a>(
     symbols: &'a [SymbolDef],
+    source: &str,
     name: &str,
     line: usize,
     col: usize,
 ) -> Option<&'a SymbolDef> {
-    let (cl, cc) = ((line + 1) as u32, (col + 1) as u32);
+    let byte_col = super::text::char_col_to_byte(super::text::line_text(source, line), col);
+    let (cl, cc) = ((line + 1) as u32, (byte_col + 1) as u32);
     let mut first: Option<&SymbolDef> = None;
     let mut best: Option<(&SymbolDef, (u32, u32))> = None;
     for s in symbols.iter().filter(|s| s.name == name) {

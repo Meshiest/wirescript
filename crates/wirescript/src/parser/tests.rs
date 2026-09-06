@@ -351,6 +351,74 @@
         }
     }
 
+    fn float_init(src: &str) -> f64 {
+        let s = parse_ok(src);
+        match &s.decls[0] {
+            TopDecl::Var(v) => match v.init.as_ref().unwrap() {
+                Expr::FloatLit { value, .. } => *value,
+                other => panic!("expected FloatLit, got {other:?}"),
+            },
+            _ => panic!("expected Var"),
+        }
+    }
+
+    #[test]
+    fn an_error_at_the_end_of_an_interpolation_slot_reports_in_file_coordinates() {
+        // "unexpected token '' in expression" is reported against the slot's
+        // Eof token, which was the one token the lexer pushed without mapping
+        // fragment coordinates back into the containing file, so a line-6
+        // error landed on line 1.
+        let src = "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\nlet e = 5\nlet f = \"v: ${ a + }\"\n";
+        let r = parse(src, "test");
+        let d = r
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("in expression"))
+            .unwrap_or_else(|| panic!("expected a slot diagnostic: {:?}", r.diagnostics));
+        assert_eq!(d.range.start.line, 6, "{d:?}");
+    }
+
+    #[test]
+    fn float_literals_keep_their_digit_separators() {
+        assert_eq!(float_init("var x = 1_000.5"), 1000.5);
+        // The negative arm parsed the raw token text, so `_` made `f64`'s
+        // parser fail and `unwrap_or(0.0)` baked `-0.0` with no diagnostic.
+        assert_eq!(float_init("var x = -1_000.5"), -1000.5);
+        // The lexer stopped the exponent at the first `_`, splitting this into
+        // `2.5e1` and an identifier `_0`.
+        assert_eq!(float_init("var x = 2.5e1_0"), 2.5e10);
+        assert_eq!(float_init("var x = -2.5e1_0"), -2.5e10);
+    }
+
+    #[test]
+    fn unrepresentable_float_literals_report_instead_of_baking_a_value() {
+        for src in [
+            "var x = 1e",
+            "var x = -1e",
+            "var x = 1e999",
+            "var x = -1e999",
+        ] {
+            let r = parse(src, "test");
+            assert!(
+                r.diagnostics.iter().any(|d| d.message.contains("float")),
+                "{src} produced no float diagnostic: {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn tuple_index_reports_instead_of_silently_picking_slot_zero() {
+        let r = parse("let t = (1, 2)\nlet a = t.0x1", "test");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("tuple index")),
+            "expected a tuple-index diagnostic: {:?}",
+            r.diagnostics
+        );
+    }
+
     #[test]
     fn array_and_map_decl_keywords_are_rejected() {
         // The `array`/`map` declaration keywords were removed in favor of
@@ -2163,25 +2231,57 @@ on go {
 
     /// Leaving a closing token in place must not let any recovery loop spin.
     ///
-    /// Every prefix of a program with a dangling operator before each bracket
-    /// kind is parsed; a hang here fails as a test timeout rather than a
-    /// wrong answer, which is why the shapes are swept rather than sampled.
+    /// Every prefix AND every suffix of a program with a dangling operator
+    /// before each bracket kind is parsed. The suffixes are the half that can
+    /// reach the top-level loop: a prefix of a valid program always begins
+    /// with a well-formed declaration, so `parse_script` is never handed a
+    /// stray closing token in first position, and a prefix-only sweep stayed
+    /// green while 139 of these suffixes spun.
+    ///
+    /// The sweep runs on its own thread with a deadline because the failure
+    /// mode is a loop that allocates a declaration per iteration: without one
+    /// this reports as a CI job that never finishes and names no test.
     #[test]
-    fn recovery_terminates_on_every_truncated_prefix() {
-        let programs = [
-            "in go: exec\nvar n: int\non go {\n  n = 1 +\n}\nmod m() -> (r: int) { return 1 }\n",
-            "in a: int\nout r = f(a +\n)\n",
-            "var xs: int[] = [1, 2 +\n]\n",
-            "type P = { x: int }\nvar p: P\nin go: exec\non go { p = { x: 1 + } }\n",
-            "in go: exec\non go { let m = { 1 => 2 + } }\n",
-            "enum E { A }\nin go: exec\nvar s: E\nvar n: int\non go { n = match s { E.A => 1 + } }\n",
-        ];
-        for src in programs {
-            for end in 0..=src.len() {
-                if !src.is_char_boundary(end) {
-                    continue;
+    fn recovery_terminates_on_every_truncated_prefix_and_suffix() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let sweep = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let programs = [
+                    "in go: exec\nvar n: int\non go {\n  n = 1 +\n}\nmod m() -> (r: int) { return 1 }\n",
+                    "in a: int\nout r = f(a +\n)\n",
+                    "var xs: int[] = [1, 2 +\n]\n",
+                    "type P = { x: int }\nvar p: P\nin go: exec\non go { p = { x: 1 + } }\n",
+                    "in go: exec\non go { let m = { 1 => 2 + } }\n",
+                    "enum E { A }\nin go: exec\nvar s: E\nvar n: int\non go { n = match s { E.A => 1 + } }\n",
+                    // Shapes a user types by accident, each of which spun the
+                    // top-level loop: a lone closer, one brace too many, a
+                    // match in a top-level `out`, and a typed parameter on a
+                    // name that is not a catalog event (which parses as a call
+                    // expression and leaves the `)` in place).
+                    ")\n",
+                    "on Clock() {}\n}\n",
+                    "out y = match 1 { 1 => 2 }\n",
+                    "on Foo(x: int) {}\n",
+                ];
+                for src in programs {
+                    for cut in 0..=src.len() {
+                        if !src.is_char_boundary(cut) {
+                            continue;
+                        }
+                        let _ = parse(&src[..cut], "t");
+                        let _ = parse(&src[cut..], "t");
+                    }
                 }
-                let _ = parse(&src[..end], "t");
-            }
-        }
+                let _ = done_tx.send(());
+            })
+            .expect("spawn sweep thread");
+        let finished = done_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .is_ok();
+        assert!(
+            finished,
+            "a parser recovery loop did not terminate within 20s"
+        );
+        sweep.join().expect("sweep thread panicked");
     }

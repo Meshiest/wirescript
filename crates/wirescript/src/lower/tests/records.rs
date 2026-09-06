@@ -419,17 +419,27 @@ fn const_inlines_into_chip_gate_no_boundary_wire() {
             Some(&crate::ir::Literal::Int(2)),
             "const should inline into the push's Value data as 2"
         );
-        // No VALUE wire crosses the boundary: the push's `Value` input must not
-        // be fed by a wire from outside the chip (ref ports like ArrayVarRef may
-        // legitimately cross; value ports may not).
-        let value_sym = crate::intern::intern("Value");
+        // Nothing the push reads crosses the boundary as a raw wire. `teams`
+        // lives outside the chip, and its ref arrives through a boundary pin
+        // whose own port is `RER_Output`: a rerouter has only RER_Input and
+        // RER_Output, so a ref port never appears on the pin side of the wire
+        // (see `boundary_pins::normalize_pin_ports`).
         for w in &chip.wires {
-            if w.target.node_id == push.id
-                && crate::intern::intern(w.target.port.as_str()) == value_sym
-            {
-                assert!(
-                    chip.nodes.contains_key(&w.source.node_id),
-                    "the push Value is fed by a cross-boundary wire"
+            if w.target.node_id != push.id {
+                continue;
+            }
+            let src = chip.nodes.get(&w.source.node_id).unwrap_or_else(|| {
+                panic!(
+                    "the push's {} input is fed by a cross-boundary wire",
+                    w.target.port.as_str()
+                )
+            });
+            if matches!(src.kind, crate::ir::NodeKind::Input | crate::ir::NodeKind::Output) {
+                assert_eq!(
+                    w.source.port,
+                    WirePort::RerOutput,
+                    "a boundary pin feeds the push from RER_Output, not {}",
+                    w.source.port.as_str()
                 );
             }
         }

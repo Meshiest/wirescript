@@ -60,11 +60,20 @@ fn check_top_level_array_init(
                         .into(),
                     range: e.range().clone(),
                 });
-            } else if !matches!(elem_ty, Type::Any) && coerce(&t, elem_ty) == CoerceRule::Mismatch {
+            } else if !matches!(elem_ty, Type::Any) && !coerces_at_a_baked_literal(&t, elem_ty) {
+                // A string-format coercion is the case worth naming: it reads
+                // as a legal conversion everywhere else in the language, and
+                // the reason it isn't one here is invisible from the source.
+                let why = if coerce(&t, elem_ty) == CoerceRule::ViaString {
+                    "; an array initializer element can't be string-formatted, \
+                     so write a matching-type literal"
+                } else {
+                    ""
+                };
                 ctx.emit(
                     "WS003",
                     format!(
-                        "var element: expected {}, got {}",
+                        "var element: expected {}, got {}{why}",
                         crate::analysis::type_str(elem_ty),
                         crate::analysis::type_str(&t)
                     ),
@@ -164,13 +173,27 @@ pub(super) fn map_init_entries(init: &Expr) -> Option<&[MapLitEntry]> {
     }
 }
 
+/// Whether `got` reaches `want` at a BAKED literal, where there is no gate to
+/// run a coercion through.
+///
+/// Map literal entries and array literal elements are both written into their
+/// storage gate's `InitialValue` as constants, so a `ViaString` coercion has
+/// nowhere to put its `FormatText` gate: only the coercions that hold at the
+/// literal itself (`Same`/`Coerce`) are valid. `Coerce` holds because lowering
+/// rewrites the literal in the declared type's shape as it bakes
+/// (`bake_string_bool`, `bake_literal_for_type`); `ViaString` has no such
+/// rewrite, so it is baked raw and then destroyed at emit -
+/// `emit::variants` renders a non-`String` literal in a `string[]` as `""`,
+/// which is how `var s: string[] = [1, 2]` shipped two empty strings.
+///
+/// Deliberately STRICTER than the `coerce_or_emit` sink assignment checking
+/// uses, where a real wire exists for the gate to sit on.
+pub(super) fn coerces_at_a_baked_literal(got: &Type, want: &Type) -> bool {
+    matches!(coerce(got, want), CoerceRule::Same | CoerceRule::Coerce)
+}
+
 /// One side (key or value) of a map literal entry, checked against the map's
 /// declared type for that side.
-///
-/// A map literal entry has no gate to run a coercion through (e.g.
-/// `ViaString`'s `FormatText` gate) — only coercions that hold at the literal
-/// itself (`Same`/`Coerce`) are valid; anything else (notably `ViaString`) would
-/// silently corrupt every non-matching entry at emit.
 fn check_map_entry_side(
     ctx: &mut TypeCheckCtx,
     got: &Type,
@@ -178,7 +201,7 @@ fn check_map_entry_side(
     side: &str,
     at: &Expr,
 ) {
-    if matches!(coerce(got, want), CoerceRule::Same | CoerceRule::Coerce) {
+    if coerces_at_a_baked_literal(got, want) {
         return;
     }
     ctx.emit(

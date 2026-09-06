@@ -615,6 +615,24 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         Some(e) => e,
         None => {
             ctx.builder.current_chain_id = saved_chain;
+            // `saved_handler_ends` holds the exit exec of every PRECEDING
+            // handler; every other exit puts it back. Dropping it here left
+            // the next top-level statement with no chain to attach to, so it
+            // was silently deleted and blamed with a WS058 on the user's line.
+            ctx.handler_end_execs = saved_handler_ends;
+            // None of the resolution attempts above found a port, and this is
+            // not a built-in event, so the body has nothing to fire on. Say so:
+            // typecheck admits ANY `let` as a trigger, so a record-, tuple- or
+            // multi-output-valued one lands here, and dropping it quietly takes
+            // the whole handler with it without a single diagnostic.
+            ctx.error(
+                "WS001",
+                format!(
+                    "'{trigger_name}' is not an event and has no exec or value port to \
+                     trigger on, so this handler would never run"
+                ),
+                &h.range,
+            );
             return;
         }
     };
