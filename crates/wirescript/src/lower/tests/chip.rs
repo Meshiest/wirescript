@@ -2262,6 +2262,41 @@ fn an_anon_chip_body_lowers_in_every_placement() {
 }
 
 /// The same drop, seen through what the enclosing chip promised: a `var`, a
+/// `partition_anon_chips` walked only the root, so an anon `chip { }` written
+/// inside a NAMED chip kept its `chip_id` tags and never became a child
+/// module. Emit skips a `Chip` node with no `chips` entry, so the box the
+/// author labelled was silently dropped and its gates were emitted flat onto
+/// the enclosing chip's grid. Live in `secret-hitler/src/main.ws`, where 259
+/// nodes were affected.
+#[test]
+fn an_anon_chip_in_a_named_chip_gets_its_own_sub_grid() {
+    let r = compile(
+        "in go: exec\n\
+         chip Outer(t: exec) -> (rr: int) {\n\
+           chip {\n\
+             var counter: int = 0\n\
+             on t { counter = counter + 1 }\n\
+             out rr = counter\n\
+           }\n\
+         }\n\
+         let w = Outer(go)\n\
+         out o: int = w\n",
+    );
+    assert_no_errors(&r);
+    let outer = r.module.chips.values().next().expect("the Outer instance module");
+    assert!(
+        !outer.chips.is_empty(),
+        "the nested anon chip must become a child module of Outer, not stay tagged on its grid"
+    );
+    // The tags are consumed by the partition, not merely duplicated: a node
+    // still carrying `chip_id` at Outer's level is one emit would place on
+    // the wrong grid.
+    assert!(
+        outer.nodes.values().all(|n| n.chip_id.is_none()),
+        "no node may keep a `chip_id` tag once its anon chip has a module"
+    );
+}
+
 /// `let` and the named chip's own declared `out` all live inside the nested
 /// anon chip, so losing the body left `Outer_0` with three boundary pins and
 /// no gates at all, its declared output wired straight from the input

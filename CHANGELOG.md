@@ -47,6 +47,10 @@
 - A chip's array, map or `ref` parameter wires the rerouter's own port. Its pin was bound as storage, so every read named `ArrayVarRef` on a `MicrochipInput`, a port the game does not have.
 - An anonymous `chip { }` inside a named chip keeps its body. The chip-body pre-declare pass never descended into it, so its vars, handlers and `out` bindings were dropped and the chip emitted no gates.
 - A handler whose trigger cannot resolve is a `WS001` and takes nothing with it. It was deleted in silence, and the exec exits it dropped left the following statement with no chain to run on.
+- `on go { let y = { 1, 2 } }` is a parse error rather than a hang. The block-expression loop was the one statement loop without a no-progress backstop, so it allocated a statement per iteration until memory ran out.
+- `m[k].Found` reads the map lookup's found flag, as `m[k].bFound` already did. The name was missing from the index-result field list, so it lowered to an `_Unsupported` placeholder and the read was deleted.
+- An anonymous `chip { }` inside a named chip emits onto its own sub-grid. The partition pass walked only the root module, so the labelled box was dropped and its gates went flat onto the enclosing chip's grid.
+- `static var x: int = 1 + true` bakes the value the gate returns. The constant evaluator never consulted the certified table, so mixed-operand arithmetic dropped the initializer and the var started at its default.
 
 ### Editor
 

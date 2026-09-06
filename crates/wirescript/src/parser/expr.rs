@@ -1150,11 +1150,24 @@ impl<'a> Parser<'a> {
         let mut stmts = Vec::new();
         self.eat_newlines();
 
+        // Position at the top of the previous iteration. Every path back to
+        // the top of this loop has to make progress; recovery paths
+        // deliberately leave a closing token in place (see `parse_primary`'s
+        // error arm) and `eat_stmt_end` eats only `Newline`/`Semi`, so a `,`,
+        // `)` or `]` here consumes nothing and appends one statement and one
+        // diagnostic per iteration until memory runs out. Checked at the top
+        // rather than the bottom because two arms `continue` past it.
+        // `parse_block` and `parse_script` carry the same backstop.
+        let mut before = usize::MAX;
         loop {
             self.eat_newlines();
             if self.check(TokenKind::RBrace, None) || self.peek().kind == TokenKind::Eof {
                 break;
             }
+            if self.pos == before {
+                break;
+            }
+            before = self.pos;
             // `let`/`var`/`static` parse as statements; everything else falls
             // through as an expression below. `emit` is a statement leader only
             // when a target name follows it. A bare `emit` is the current-exec

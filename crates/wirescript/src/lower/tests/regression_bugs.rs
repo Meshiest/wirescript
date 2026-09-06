@@ -606,6 +606,51 @@ fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
     }
 }
 
+/// The map-index found flag reached the same hand-written list, and `.Found`
+/// (the spelling the docs teach) was the one missing name, so it lowered
+/// to an `_Unsupported` placeholder that emit deletes, silently.
+#[test]
+fn map_index_found_flag_accepts_every_capitalisation() {
+    for field in ["bFound", "Found", "BFound", "found"] {
+        let src = format!(
+            "var m: Map<int, int>\n\
+             var hit: bool = false\n\
+             in go: exec\n\
+             on go {{ let f = m[1].{field}\n hit = f }}"
+        );
+        let r = compile(&src);
+        assert_no_errors(&r);
+        assert!(
+            !has_unsupported(&r),
+            "m[1].{field} lowered to _Unsupported: {:?}",
+            r.diagnostics
+        );
+        assert!(
+            wired_between(
+                &r,
+                "BrickComponentType_WireGraph_Exec_MapVar_Get",
+                WirePort::BFound,
+                "BrickComponentType_WireGraph_Exec_Var_Set",
+                WirePort::Value,
+            ),
+            "m[1].{field} must read the gate's bFound port"
+        );
+    }
+}
+
+/// An ARRAY has no `bFound` port, so widening which spellings resolve must not
+/// widen which objects carry the port: `arr[i].Found` still degrades.
+#[test]
+fn found_on_an_array_index_stays_unsupported() {
+    let r = compile(
+        "var regs: int[]\n\
+         var hit: bool = false\n\
+         in go: exec\n\
+         on go { let f = regs[0].Found\n hit = f }",
+    );
+    assert!(has_unsupported(&r), "arr[i].Found must not resolve to a port the gate lacks");
+}
+
 /// A field naming no port on the object's gate still degrades to a placeholder
 /// rather than wiring a port the node never declared: the case-insensitive
 /// match widens which SPELLINGS resolve, not which objects carry the port.

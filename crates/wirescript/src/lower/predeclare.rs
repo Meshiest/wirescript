@@ -608,6 +608,30 @@ pub(crate) fn eval_const_unop(operator: &str, v: Literal) -> Option<Literal> {
     }
 }
 
+/// Ask the certified fold table what the gate returns for these operands.
+///
+/// Every `OpRule` for one operator names the same gate class, so the operand
+/// types are not needed to find it. A non-finite float is refused rather than
+/// baked, mirroring the driver guard at `fold/mod.rs`: that keeps float
+/// `x / 0.0` on the `0.0` law below instead of baking `inf`.
+fn certified_binop(operator: &str, l: &Literal, r: &Literal) -> Option<Literal> {
+    let class = crate::catalog::operators::operators()
+        .iter()
+        .find(|s| s.op == operator)?
+        .rules
+        .first()?
+        .gate_class;
+    let (a, b) = (
+        crate::lower::fold::eval::Value::from_literal(l)?,
+        crate::lower::fold::eval::Value::from_literal(r)?,
+    );
+    let v = crate::lower::fold::eval::eval(class, &[Some(a), Some(b)])?;
+    if matches!(&v, crate::lower::fold::eval::Value::Float(f) if !f.is_finite()) {
+        return None;
+    }
+    Some(v.to_literal())
+}
+
 /// Evaluate a constant binary operator, matching the gates' certified
 /// semantics: 64-bit integer maths, and division / modulo by zero yielding 0
 /// rather than trapping. Anything outside this set — or any operand pair whose
@@ -621,6 +645,17 @@ pub(crate) fn eval_const_unop(operator: &str, v: Literal) -> Option<Literal> {
 pub(crate) fn eval_const_binop(operator: &str, l: Literal, r: Literal) -> Option<Literal> {
     use crate::catalog::operators::op;
     use Literal::{Bool, Float, Int, String as Str};
+
+    // The certified table first: it is the probed record of what the GAME's
+    // gate returns, so where it has an answer this law has no business
+    // guessing a different one. It is purely additive (it can only turn a
+    // refusal into an answer, never change a pair that folds today), which is
+    // what makes it safe to ship ahead of the `-7 / 2` question the two
+    // evaluators are still blocked on. Without it, `static var x: int = 1 + true` warned
+    // and dropped its initializer while `out x: int = 1 + true` baked `2`.
+    if let Some(v) = certified_binop(operator, &l, &r) {
+        return Some(v);
+    }
 
     // String concatenation is the one non-numeric binary fold.
     if let (Str(a), Str(b)) = (&l, &r) {

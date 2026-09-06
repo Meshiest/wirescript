@@ -378,6 +378,12 @@ fn both_evaluators_agree_where_both_are_defined() {
         ("2 + 3", "BrickComponentType_WireGraph_Expr_MathAdd"),
         ("7 - 2", "BrickComponentType_WireGraph_Expr_MathSubtract"),
         ("\"a\" .. \"b\"", crate::ir::gate_class::STRING_CONCATENATE),
+        // Mixed operands: the certified table answers these and the AST law
+        // did not, so `static var x: int = 1 + true` dropped its initializer
+        // while the same expression in a wired position baked `2`.
+        ("1 + true", "BrickComponentType_WireGraph_Expr_MathAdd"),
+        ("1 == true", "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        ("10 > \"9\"", "BrickComponentType_WireGraph_Expr_CompareGreater"),
     ] {
         let ours = eval_str(src).unwrap();
         let theirs = eval_via_fold(src, gate_class).expect("fold must evaluate this too");

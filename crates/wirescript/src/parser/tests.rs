@@ -2263,6 +2263,15 @@ on go {
                     "on Clock() {}\n}\n",
                     "out y = match 1 { 1 => 2 }\n",
                     "on Foo(x: int) {}\n",
+                    // `{` in VALUE position reaches `parse_block_expr`, a
+                    // third loop in this family that none of the programs
+                    // above touch: every `{` in them opens a block, record,
+                    // map or match. Each of these is balanced, so no
+                    // truncation is needed to spin it: a `,` where the
+                    // block expression wants `}` consumes nothing.
+                    "{,",
+                    "in go: exec\non go { let y = { 1, 2 } }\n",
+                    "mod m() -> (r: int) { enum E { A { f: bool }, B(bool) } }\n",
                 ];
                 for src in programs {
                     for cut in 0..=src.len() {

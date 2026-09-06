@@ -274,6 +274,8 @@ fn index_result_port(field: &str) -> Option<WirePort> {
     } else if field.eq_ignore_ascii_case("bOutOfBounds") || field.eq_ignore_ascii_case("OutOfBounds")
     {
         Some(WirePort::BOutOfBounds)
+    } else if field.eq_ignore_ascii_case("bFound") || field.eq_ignore_ascii_case("Found") {
+        Some(WirePort::BFound)
     } else {
         None
     }

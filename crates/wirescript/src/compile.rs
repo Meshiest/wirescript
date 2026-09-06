@@ -2,7 +2,7 @@ use crate::collections::HashMap;
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::emit::Placement;
-use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world, emit_brz};
+use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world};
 use crate::ir::NodeId;
 use crate::layout::{layout_options_for, layout_with_opts};
 use crate::lower::{LowerInput, lower};
@@ -276,11 +276,17 @@ pub fn diagnostics_only(input: CompileInput<'_>) -> Vec<Diagnostic> {
     })
 }
 
-fn compile_with_opts_inner(
+/// Front end through emit, shared by every entry point that produces output.
+///
+/// `progress` is `None` for a plain compile; when it is `Some`, the phase
+/// callbacks fire and the prefab resolvers are wrapped so each embedded prefab
+/// advances the bar. The terminal `done` event is NOT sent here: `compile`
+/// sends it after the `.brz` encode, which is work this function does not do.
+fn compile_to_world_inner(
     input: CompileInput<'_>,
     mut opts: EmitOptions,
     progress: Option<ProgressCallback>,
-) -> Result<CompileResult, CompileError> {
+) -> Result<CompileWorldResult, CompileError> {
     use std::sync::atomic::{AtomicU32, Ordering};
     // Four fixed phases (resolve, lower, layout, emit), plus one step per embedded
     // prefab — each is its own sub-compile during emit, so the total grows to
@@ -323,8 +329,10 @@ fn compile_with_opts_inner(
     let resolved = resolve(source, file, &FsLoader);
     // Grow the progress total by the number of embedded prefabs (each `$./file`
     // reference and each inline `$```…``` ` block is a sub-compile the emit step
-    // does), so the bar advances through them instead of stalling on emit.
-    {
+    // does), so the bar advances through them instead of stalling on emit. Only
+    // `total`, which nothing reads unless a callback is running, so the walk is
+    // skipped entirely when it is.
+    if progress.is_some() {
         let mut n_prefabs = 0u32;
         crate::analysis::visit_program(&resolved.ast, &mut |_| {}, &mut |e| {
             if matches!(
@@ -354,10 +362,7 @@ fn compile_with_opts_inner(
     opts.no_gate_labels = resolved.ast.layout == Some(crate::ast::LayoutName::Cube);
     let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
 
-    let template_cache = {
-        let cache = TemplateCache::new();
-        std::sync::Arc::new(cache)
-    };
+    let template_cache = std::sync::Arc::new(TemplateCache::new());
 
     report("lower");
     let lowered = lower(LowerInput {
@@ -442,114 +447,6 @@ fn compile_with_opts_inner(
     }
 
     report("emit");
-    let brz = emit_brz(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
-
-    if let Some(ref cb) = progress {
-        let tot = total.load(Ordering::Relaxed);
-        cb(CompileProgress {
-            step: tot,
-            total: tot,
-            done: true,
-            label: "done",
-        });
-    }
-
-    Ok(CompileResult {
-        brz,
-        diagnostics: all_diags,
-        placements: lr.placements,
-    })
-}
-
-pub struct CompileWorldResult {
-    pub world: brdb::World,
-    pub diagnostics: Vec<Diagnostic>,
-    pub placements: HashMap<NodeId, Placement>,
-}
-
-pub fn compile_to_world(
-    input: CompileInput<'_>,
-    opts: EmitOptions,
-) -> Result<CompileWorldResult, CompileError> {
-    on_compile_stack(move || compile_to_world_inner(input, opts))
-}
-
-fn compile_to_world_inner(
-    input: CompileInput<'_>,
-    mut opts: EmitOptions,
-) -> Result<CompileWorldResult, CompileError> {
-    let source = input.source;
-    let file = input.file;
-    let module_name = input.module_name;
-    if opts.prefab_resolver.is_none() {
-        opts.prefab_resolver = Some(disk_prefab_resolver(file, input.fold_mode));
-    }
-    if opts.nested_compiler.is_none() {
-        opts.nested_compiler = Some(default_nested_compiler(1, file.to_string(), input.fold_mode));
-    }
-    let resolved = resolve(source, file, &FsLoader);
-    opts.module_doc = resolved.ast.module_doc.clone().or_else(|| {
-        resolved
-            .ast
-            .decls
-            .first()
-            .and_then(|d| resolved.doc_comments.get(&crate::parser::doc_key(d.range())))
-            .cloned()
-    });
-    // Top-of-file `@invisible` hides the emitted shell — see `EmitOptions::invisible`.
-    opts.invisible = resolved.ast.invisible;
-    // `@layout("cube")` packs gates into an unreadable block, so the per-gate
-    // labels are dropped there as pure payload. See `EmitOptions::no_gate_labels`.
-    opts.no_gate_labels = resolved.ast.layout == Some(crate::ast::LayoutName::Cube);
-    let (tc, ce_slots) = typecheck_with_inference(&resolved.ast, file);
-
-    let template_cache = std::sync::Arc::new(TemplateCache::new());
-
-    let lowered = lower(LowerInput {
-        ast: &resolved.ast,
-        type_of_expr: &tc.type_of_expr,
-        op_resolutions: &tc.op_resolutions,
-        file,
-        module_name,
-        template_cache: template_cache.clone(),
-        doc_comments: &resolved.doc_comments,
-        fold_mode: input.fold_mode,
-        ce_slots: &ce_slots,
-    });
-
-    // Unbarriered wire-graph cycles error (WS005) — see compile_with_opts.
-    let cycles = crate::analyze::analyze_cycles(&lowered.module);
-
-    let all_diags: Vec<_> = resolved
-        .diagnostics
-        .into_iter()
-        .chain(tc.diagnostics)
-        .chain(lowered.diagnostics)
-        .chain(cycles.diagnostics)
-        .collect();
-
-    let errors: Vec<_> = all_diags
-        .iter()
-        .filter(|d| matches!(d.severity, Severity::Error))
-        .cloned()
-        .collect();
-    if !errors.is_empty() {
-        return Err(CompileError::HasErrors(errors));
-    }
-
-    let lopts = layout_options_for(&resolved.ast, Some(resolved.source_map.clone()));
-    let lr = layout_with_opts(&lowered.module, &lopts);
-
-    if opts.description.is_empty() {
-        opts.description = format!(
-            "wirescript compile: {}",
-            std::path::Path::new(file)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-        );
-    }
-
     let world =
         build_world(&lowered.module, &lr, &opts, &template_cache).map_err(CompileError::Emit)?;
 
@@ -557,7 +454,48 @@ fn compile_to_world_inner(
         world,
         diagnostics: all_diags,
         placements: lr.placements,
+        progress: progress.map(|cb| (cb, total)),
     })
+}
+
+fn compile_with_opts_inner(
+    input: CompileInput<'_>,
+    opts: EmitOptions,
+    progress: Option<ProgressCallback>,
+) -> Result<CompileResult, CompileError> {
+    let built = compile_to_world_inner(input, opts, progress)?;
+    let brz = built
+        .world
+        .to_brz_vec()
+        .map_err(|e| CompileError::Emit(EmitError::Brdb(e)))?;
+
+    if let Some((cb, total)) = built.progress {
+        let tot = total.load(std::sync::atomic::Ordering::Relaxed);
+        cb(CompileProgress { step: tot, total: tot, done: true, label: "done" });
+    }
+
+    Ok(CompileResult {
+        brz,
+        diagnostics: built.diagnostics,
+        placements: built.placements,
+    })
+}
+
+pub struct CompileWorldResult {
+    pub world: brdb::World,
+    pub diagnostics: Vec<Diagnostic>,
+    pub placements: HashMap<NodeId, Placement>,
+    /// Set only when the caller asked for progress, carrying the callback and
+    /// the final step total so `compile` can send the terminal `done` event
+    /// after the `.brz` encode rather than before it.
+    progress: Option<(ProgressCallback, std::sync::Arc<std::sync::atomic::AtomicU32>)>,
+}
+
+pub fn compile_to_world(
+    input: CompileInput<'_>,
+    opts: EmitOptions,
+) -> Result<CompileWorldResult, CompileError> {
+    on_compile_stack(move || compile_to_world_inner(input, opts, None))
 }
 
 #[cfg(test)]

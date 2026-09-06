@@ -7,6 +7,24 @@ use super::*;
 /// the parent module — the brdb writer's `add_wire` automatically creates
 /// remote wire sources when source and target are on different grids.
 pub fn partition_anon_chips(module: &mut Module) {
+    partition_one(module);
+    // A named chip's instance module is partitioned too: an anon `chip { }`
+    // written inside one tags its nodes there, not at the root, so a
+    // root-only pass left them tagged and emit skipped the `Chip` node for
+    // want of a `chips` entry, dropping the box and emitting its contents
+    // flat onto the enclosing chip's grid. Sorted, for the same reason
+    // `chip_ids` below is sorted: the intern order of `_anon_{id}` names
+    // decides emitted wire counts and Sym numbering.
+    let mut nested: Vec<NodeId> = module.chips.keys().copied().collect();
+    nested.sort_unstable();
+    for id in nested {
+        if let Some(child) = module.chips.get_mut(&id) {
+            partition_anon_chips(child);
+        }
+    }
+}
+
+fn partition_one(module: &mut Module) {
     use std::collections::HashSet;
 
     let layout_port = WirePort::Layout;
