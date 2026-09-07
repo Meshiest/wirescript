@@ -39,10 +39,14 @@ pub struct RegionLayout {
     pub bbox: (i32, i32),
     /// Edges dropped from the DAG for ordering purposes. Still emitted by
     /// the brick emitter — these are just *not* used when assigning
-    /// longest-path levels.
+    /// longest-path levels. Reported for the cycle-breaking tests only;
+    /// `LayoutResult` has no diagnostics channel to carry it further.
+    #[cfg(test)]
     pub feedback_edges: Vec<(NodeId, NodeId)>,
     /// Non-fatal warnings raised during layout (e.g., a non-trivial SCC
-    /// with no `is_buffer()` target — likely a typecheck bug).
+    /// with no `is_buffer()` target — likely a typecheck bug). Asserted by
+    /// the cycle-breaking tests; nothing surfaces them to the user yet.
+    #[cfg(test)]
     pub warnings: Vec<String>,
 }
 
@@ -288,7 +292,9 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
     RegionLayout {
         local,
         bbox,
+        #[cfg(test)]
         feedback_edges,
+        #[cfg(test)]
         warnings,
     }
 }

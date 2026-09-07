@@ -7,17 +7,24 @@
 //!
 //! Consumed by [`crate::layout::compose`] in Phase 5.
 
-use crate::ir::{Node, ScopeId, ScopeInfo};
+use crate::ir::{Node, ScopeId};
+#[cfg(test)]
+use crate::ir::ScopeInfo;
 
 /// Pure view over a single scope's contents in a `Module`.
 #[derive(Debug)]
 pub struct Region<'a> {
     pub id: ScopeId,
+    /// The scope this region came from. Only [`build_region_tree`] and its
+    /// tests inspect it — the production layout path builds one flat region.
+    #[cfg(test)]
     pub info: &'a ScopeInfo,
     /// Nodes whose `scope_id` is exactly this region's id. Sorted by
     /// `(source_range.start, node_id)` for determinism.
     pub own_nodes: Vec<&'a Node>,
-    /// Child regions, sorted by `(source_range.start, ScopeId)`.
+    /// Child regions, sorted by `(source_range.start, ScopeId)`. Only
+    /// [`build_region_tree`] nests regions; production layout stays flat.
+    #[cfg(test)]
     pub children: Vec<Region<'a>>,
 }
 

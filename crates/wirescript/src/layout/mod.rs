@@ -356,14 +356,16 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
 
     // Flat DAG layout over the whole module — block structure is
     // ignored for placement purposes in this pass.
-    let root_info = module
-        .scopes
-        .get(&ROOT_SCOPE_ID)
-        .expect("module must have a root scope");
+    assert!(
+        module.scopes.contains_key(&ROOT_SCOPE_ID),
+        "module must have a root scope"
+    );
     let whole_module = Region {
         id: ROOT_SCOPE_ID,
-        info: root_info,
+        #[cfg(test)]
+        info: &module.scopes[&ROOT_SCOPE_ID],
         own_nodes: module.nodes.values().collect(),
+        #[cfg(test)]
         children: Vec::new(),
     };
     let mut laid = layout_leaf(&whole_module, &module.wires);
