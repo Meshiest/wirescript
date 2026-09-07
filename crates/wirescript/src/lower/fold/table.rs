@@ -54,7 +54,6 @@ pub(crate) enum CaseValue {
 }
 
 #[allow(dead_code)] // read by the certified-semantics replay tests
-#[allow(dead_code)] // read by the certified-semantics replay tests
 #[derive(Clone, Debug)]
 pub(crate) struct CaseInput {
     pub variant: InVariant,

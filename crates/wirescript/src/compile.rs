@@ -6,7 +6,7 @@ use crate::emit::{EmitError, EmitOptions, PrefabResolver, build_world};
 use crate::ir::NodeId;
 use crate::layout::{layout_options_for, layout_with_opts};
 use crate::lower::{LowerInput, lower};
-use crate::resolve::{FsLoader, resolve};
+use crate::resolve::{FileLoader, FsLoader, resolve};
 use crate::template_cache::TemplateCache;
 use crate::typecheck::typecheck_with_inference;
 
@@ -41,7 +41,7 @@ impl std::fmt::Display for CompileError {
                 }
                 Ok(())
             }
-            CompileError::Emit(e) => write!(f, "emit: {:?}", e),
+            CompileError::Emit(e) => write!(f, "emit: {}", e),
         }
     }
 }
@@ -232,14 +232,26 @@ pub fn compile_with_progress(
     opts: EmitOptions,
     progress: ProgressCallback,
 ) -> Result<CompileResult, CompileError> {
-    on_compile_stack(move || compile_with_opts_inner(input, opts, Some(progress)))
+    on_compile_stack(move || compile_with_opts_inner(input, opts, Some(progress), &FsLoader))
 }
 
 pub fn compile_with_opts(
     input: CompileInput<'_>,
     opts: EmitOptions,
 ) -> Result<CompileResult, CompileError> {
-    on_compile_stack(move || compile_with_opts_inner(input, opts, None))
+    compile_with_loader(input, opts, &FsLoader)
+}
+
+/// [`compile_with_opts`] against a caller-supplied import loader. The browser
+/// serves imports from an in-memory file map and the editor from unsaved
+/// buffers; without this they had to rebuild the whole pipeline to swap the
+/// loader, and each copy drifted.
+pub fn compile_with_loader(
+    input: CompileInput<'_>,
+    opts: EmitOptions,
+    loader: &(dyn FileLoader + Sync),
+) -> Result<CompileResult, CompileError> {
+    on_compile_stack(move || compile_with_opts_inner(input, opts, None, loader))
 }
 
 /// Run the front-end through lowering (resolve -> typecheck -> lower -> cycle
@@ -286,6 +298,7 @@ fn compile_to_world_inner(
     input: CompileInput<'_>,
     mut opts: EmitOptions,
     progress: Option<ProgressCallback>,
+    loader: &dyn FileLoader,
 ) -> Result<CompileWorldResult, CompileError> {
     use std::sync::atomic::{AtomicU32, Ordering};
     // Four fixed phases (resolve, lower, layout, emit), plus one step per embedded
@@ -326,7 +339,7 @@ fn compile_to_world_inner(
     }
 
     report("resolve");
-    let resolved = resolve(source, file, &FsLoader);
+    let resolved = resolve(source, file, loader);
     // Grow the progress total by the number of embedded prefabs (each `$./file`
     // reference and each inline `$```…``` ` block is a sub-compile the emit step
     // does), so the bar advances through them instead of stalling on emit. Only
@@ -462,8 +475,9 @@ fn compile_with_opts_inner(
     input: CompileInput<'_>,
     opts: EmitOptions,
     progress: Option<ProgressCallback>,
+    loader: &dyn FileLoader,
 ) -> Result<CompileResult, CompileError> {
-    let built = compile_to_world_inner(input, opts, progress)?;
+    let built = compile_to_world_inner(input, opts, progress, loader)?;
     let brz = built
         .world
         .to_brz_vec()
@@ -495,7 +509,7 @@ pub fn compile_to_world(
     input: CompileInput<'_>,
     opts: EmitOptions,
 ) -> Result<CompileWorldResult, CompileError> {
-    on_compile_stack(move || compile_to_world_inner(input, opts, None))
+    on_compile_stack(move || compile_to_world_inner(input, opts, None, &FsLoader))
 }
 
 #[cfg(test)]

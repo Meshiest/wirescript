@@ -2497,6 +2497,13 @@ fn lower_array_method_inner(
         let src = lower_expr(ctx, exec_expr);
         ctx.current_exec = Some(src);
     }
+    // Positional args only, mirroring `lower_map_method`: the `exec =` named
+    // arg is consumed above, so an `exec =` written BEFORE the value must not
+    // shift every index that follows it.
+    let pos_args: Vec<&CallArg> = args
+        .iter()
+        .filter(|a| matches!(a, CallArg::Positional(_)))
+        .collect();
     let current_exec = match ctx.current_exec {
         Some(e) => e,
         None => return synthesise_unsupported(ctx, e),
@@ -2506,7 +2513,7 @@ fn lower_array_method_inner(
     // hover); the `every_canonical_array_method_lowers` test enforces it.
     let method_result = match method {
         "push" => {
-            let val = match args.first() {
+            let val = match pos_args.first().copied() {
                 Some(CallArg::Positional(v)) => lower_expr(ctx, v),
                 _ => return synthesise_unsupported(ctx, e),
             };
@@ -2554,7 +2561,7 @@ fn lower_array_method_inner(
         // rather than silently reading 0 past the end. Bare use is the element,
         // matching `pop`.
         "get" => {
-            let index = match args.first() {
+            let index = match pos_args.first().copied() {
                 Some(CallArg::Positional(v)) => lower_expr(ctx, v),
                 _ => return synthesise_unsupported(ctx, e),
             };
@@ -2603,7 +2610,7 @@ fn lower_array_method_inner(
             node_id.port(WirePort::ExecOut)
         }
         "remove" => {
-            let idx = match args.first() {
+            let idx = match pos_args.first().copied() {
                 Some(CallArg::Positional(v)) => lower_expr(ctx, v),
                 _ => return synthesise_unsupported(ctx, e),
             };
@@ -2653,7 +2660,7 @@ fn lower_array_method_inner(
             node_id.port(WirePort::Length)
         }
         "insert" => {
-            let (idx, val) = match (args.first(), args.get(1)) {
+            let (idx, val) = match (pos_args.first().copied(), pos_args.get(1).copied()) {
                 (Some(CallArg::Positional(i)), Some(CallArg::Positional(v))) => {
                     (lower_expr(ctx, i), lower_expr(ctx, v))
                 }
@@ -2673,7 +2680,7 @@ fn lower_array_method_inner(
             )
         }
         "find" => {
-            let val = match args.first() {
+            let val = match pos_args.first().copied() {
                 Some(CallArg::Positional(v)) => lower_expr(ctx, v),
                 _ => return synthesise_unsupported(ctx, e),
             };
@@ -2744,7 +2751,7 @@ fn lower_array_method_inner(
             WirePort::Value,
         ),
         "swap" => {
-            let (a, b) = match (args.first(), args.get(1)) {
+            let (a, b) = match (pos_args.first().copied(), pos_args.get(1).copied()) {
                 (Some(CallArg::Positional(a)), Some(CallArg::Positional(b))) => {
                     (lower_expr(ctx, a), lower_expr(ctx, b))
                 }
@@ -2764,7 +2771,7 @@ fn lower_array_method_inner(
             )
         }
         "fill" => {
-            let val = match args.first() {
+            let val = match pos_args.first().copied() {
                 Some(CallArg::Positional(v)) => lower_expr(ctx, v),
                 _ => return synthesise_unsupported(ctx, e),
             };
@@ -2779,7 +2786,7 @@ fn lower_array_method_inner(
             )
         }
         "resize" => {
-            let (size, val) = match (args.first(), args.get(1)) {
+            let (size, val) = match (pos_args.first().copied(), pos_args.get(1).copied()) {
                 (Some(CallArg::Positional(s)), Some(CallArg::Positional(v))) => {
                     (lower_expr(ctx, s), lower_expr(ctx, v))
                 }
@@ -2799,7 +2806,7 @@ fn lower_array_method_inner(
             )
         }
         "append" | "copyFrom" => {
-            let Some(src) = resolve_array_ref_arg(ctx, args.first()) else {
+            let Some(src) = resolve_array_ref_arg(ctx, pos_args.first().copied()) else {
                 return synthesise_unsupported(ctx, e);
             };
             let gate = if method == "append" { gc::ARRAY_APPEND } else { gc::ARRAY_COPY_FROM };
@@ -2823,7 +2830,7 @@ fn lower_array_method_inner(
             WirePort::ExecOut,
         ),
         "fillFromTeam" => {
-            let team = match args.first() {
+            let team = match pos_args.first().copied() {
                 Some(CallArg::Positional(t)) => lower_expr(ctx, t),
                 _ => return synthesise_unsupported(ctx, e),
             };
@@ -2840,10 +2847,10 @@ fn lower_array_method_inner(
         "slice" => {
             // dest.slice(source, start, count): copy source[start..start+count]
             // into this array.
-            let Some(src) = resolve_array_ref_arg(ctx, args.first()) else {
+            let Some(src) = resolve_array_ref_arg(ctx, pos_args.first().copied()) else {
                 return synthesise_unsupported(ctx, e);
             };
-            let (start, count) = match (args.get(1), args.get(2)) {
+            let (start, count) = match (pos_args.get(1).copied(), pos_args.get(2).copied()) {
                 (Some(CallArg::Positional(s)), Some(CallArg::Positional(c))) => {
                     (lower_expr(ctx, s), lower_expr(ctx, c))
                 }
@@ -2869,7 +2876,7 @@ fn lower_array_method_inner(
             } else {
                 gc::ZONE_GET_PLAYERS
             };
-            let zone = match args.first() {
+            let zone = match pos_args.first().copied() {
                 Some(CallArg::Positional(z)) => lower_expr(ctx, z),
                 _ => return synthesise_unsupported(ctx, e),
             };
@@ -2881,7 +2888,7 @@ fn lower_array_method_inner(
                     CallArg::Named { name, value, .. } if name == "tagFilter" => Some(value),
                     _ => None,
                 })
-                .or_else(|| match args.get(1) {
+                .or_else(|| match pos_args.get(1).copied() {
                     Some(CallArg::Positional(t)) => Some(t),
                     _ => None,
                 });

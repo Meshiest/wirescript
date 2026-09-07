@@ -104,7 +104,6 @@ pub struct CallSignature {
 /// `g(1, bogus = 5)`) even though `check_arity` is `false`. Only true variadics
 /// whose fixed `Param` list can't enumerate their legal names (e.g.
 /// `arr.sortMultiple(other, descending = true)`) pass `false` for both.
-#[allow(clippy::too_many_arguments)]
 /// One positional argument slot: a real argument expression, or a single element
 /// spliced in from a `...tuple` spread (which carries only its type).
 enum PosSlot<'a> {

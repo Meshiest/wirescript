@@ -94,7 +94,6 @@ pub(super) fn container_binding(
 #[derive(Clone, Debug)]
 pub(super) struct NodeRecord {
     pub(super) node_id: NodeId,
-    #[allow(dead_code)]
     pub(super) ty: Type,
 }
 

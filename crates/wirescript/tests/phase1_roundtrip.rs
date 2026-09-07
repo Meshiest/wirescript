@@ -11,6 +11,7 @@ use wirescript::{
     emit::{EmitOptions, Placement},
     emit_brz,
     ir::{GateIO, Module, Node, NodeId, NodeKind, PortRef, PortSpec, SourceRange, Type, Wire},
+    layout::IntVec3,
     template_cache::TemplateCache,
 };
 
@@ -101,11 +102,18 @@ fn wire_between_two_gates_produces_connection() {
         },
     });
 
+    // Centred on the origin with matching bounds, because `plane_extent`
+    // derives the plane half-span from `bounds_*` and the header brick is
+    // placed at `extent.x + 5` on the assumption that occupants reach only
+    // `extent.x - 5` (see `emit/labels.rs:137-144`). A hand-built result that
+    // leaves bounds at zero puts the header on top of a node.
     let mut placements = HashMap::default();
-    placements.insert(id_a, Placement { x: 0, y: 0, z: 2 });
-    placements.insert(id_b, Placement { x: 8, y: 0, z: 2 });
+    placements.insert(id_a, Placement { x: -4, y: 0, z: 2 });
+    placements.insert(id_b, Placement { x: 4, y: 0, z: 2 });
     let lr = wirescript::layout::LayoutResult {
         placements,
+        bounds_min: IntVec3 { x: -4, y: 0, z: 2 },
+        bounds_max: IntVec3 { x: 4, y: 0, z: 2 },
         ..Default::default()
     };
 

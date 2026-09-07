@@ -147,60 +147,7 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
             // previous symbol only when it was in the SAME frame (child-scope
             // shadowing stays legal), so gating on a port kind flags exactly the
             // collision without touching value shadowing.
-            let prev = ctx.scope.declare(
-                name,
-                SymbolInfo {
-                    kind: SymbolKind::LetBinding,
-                    name: name.clone(),
-                    ty: t.clone(),
-                    decl_range: range.clone(),
-                    signature: None,
-                    event_data: None,
-                },
-            );
-            match &prev {
-                Some(p) if matches!(p.kind, SymbolKind::In | SymbolKind::Out) => {
-                    ctx.emit(
-                        "WS013",
-                        format!("'{name}' shadows the in/out port of the same name; rename one"),
-                        range.clone(),
-                    );
-                }
-                // Shadowing is a same-file idiom, deliberately allowed above.
-                // Two DIFFERENT files each binding `name` at top level is not
-                // shadowing at all: imports merge into one flat scope, so one
-                // module's constant replaces the other's and every reference in
-                // both reads whichever came last. `mod`/`chip` report the same
-                // collision.
-                // ...but NOT for a name the compiler generated. `on Foo(...)`
-                // over a non-event desugars to `let _on_expr_N = Foo(...)` +
-                // `on _on_expr_N`, and the counter restarts per file, so two
-                // modules that each write one both get `_on_expr_0`. Lowering
-                // pairs each `on` with the `let` from its own file
-                // structurally, so the shared name resolves correctly and this
-                // is purely nominal: verified by building the commit before
-                // this check and confirming both handlers lower independently,
-                // each driving its own gate. Reporting it told the user to
-                // rename an identifier they never wrote, and bare `import`
-                // takes no `as`, so neither half of the advice was followable.
-                Some(p)
-                    if !p.decl_range.file.is_empty()
-                        && !range.file.is_empty()
-                        && p.decl_range.file != range.file
-                        && !name.starts_with("_on_expr_") =>
-                {
-                    ctx.emit(
-                        "WS013",
-                        format!(
-                            "duplicate declaration of '{name}': also declared in '{}'. Imports \
-                             merge into one flat scope, so rename one or import it with `as`",
-                            p.decl_range.file
-                        ),
-                        range.clone(),
-                    );
-                }
-                _ => {}
-            }
+            declare_let(ctx, name, t.clone(), range);
         }
         LetBinding::Tuple { names, rest, range } => {
             // `rest` takes everything past `names`, so the source only has to
@@ -215,30 +162,10 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                         .enumerate()
                         .map(|(i, ft)| (i.to_string(), ft.clone()))
                         .collect();
-                    ctx.scope.declare(
-                        rest_name,
-                        SymbolInfo {
-                            kind: SymbolKind::LetBinding,
-                            name: rest_name.clone(),
-                            ty: Type::Record(tail),
-                            decl_range: range.clone(),
-                            signature: None,
-                            event_data: None,
-                        },
-                    );
+                    declare_let(ctx, rest_name, Type::Record(tail), range);
                 }
                 for (n, ft) in names.iter().zip(fields.iter()) {
-                    ctx.scope.declare(
-                        n,
-                        SymbolInfo {
-                            kind: SymbolKind::LetBinding,
-                            name: n.clone(),
-                            ty: ft.clone(),
-                            decl_range: range.clone(),
-                            signature: None,
-                            event_data: None,
-                        },
-                    );
+                    declare_let(ctx, n, ft.clone(), range);
                 }
                 return;
             }
@@ -256,17 +183,7 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                 range.clone(),
             );
             for n in names.iter().chain(rest.iter()) {
-                ctx.scope.declare(
-                    n,
-                    SymbolInfo {
-                        kind: SymbolKind::LetBinding,
-                        name: n.clone(),
-                        ty: Type::Any,
-                        decl_range: range.clone(),
-                        signature: None,
-                        event_data: None,
-                    },
-                );
+                declare_let(ctx, n, Type::Any, range);
             }
         }
         LetBinding::Record { names, range } => {
@@ -280,17 +197,7 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                 } else {
                     Type::Any
                 };
-                ctx.scope.declare(
-                    n,
-                    SymbolInfo {
-                        kind: SymbolKind::LetBinding,
-                        name: n.clone(),
-                        ty,
-                        decl_range: range.clone(),
-                        signature: None,
-                        event_data: None,
-                    },
-                );
+                declare_let(ctx, n, ty, range);
             }
         }
         LetBinding::RecordDestruct { fields, range } => {
@@ -348,19 +255,71 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type) {
                         (name.clone(), rest_ty)
                     }
                 };
-                ctx.scope.declare(
-                    &name,
-                    SymbolInfo {
-                        kind: SymbolKind::LetBinding,
-                        name: name.clone(),
-                        ty,
-                        decl_range: range.clone(),
-                        signature: None,
-                        event_data: None,
-                    },
-                );
+                declare_let(ctx, &name, ty, range);
             }
         }
+    }
+}
+
+
+/// Bind one `let` name and report the collisions the plain `let x = …` arm has
+/// always reported. Every `LetBinding` shape reaches this, so a destructuring
+/// pattern cannot hijack an in/out port or silently replace another file's
+/// top-level binding the way `let (go, r) = …` did while `let go = …` errored.
+fn declare_let(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange) {
+    let prev = ctx.scope.declare(
+        name,
+        SymbolInfo {
+            kind: SymbolKind::LetBinding,
+            name: name.to_string(),
+            ty,
+            decl_range: range.clone(),
+            signature: None,
+            event_data: None,
+        },
+    );
+            match &prev {
+        Some(p) if matches!(p.kind, SymbolKind::In | SymbolKind::Out) => {
+            ctx.emit(
+                "WS013",
+                format!("'{name}' shadows the in/out port of the same name; rename one"),
+                range.clone(),
+            );
+}
+        // Shadowing is a same-file idiom, deliberately allowed above.
+        // Two DIFFERENT files each binding `name` at top level is not
+        // shadowing at all: imports merge into one flat scope, so one
+        // module's constant replaces the other's and every reference in
+        // both reads whichever came last. `mod`/`chip` report the same
+        // collision.
+        // ...but NOT for a name the compiler generated. `on Foo(...)`
+        // over a non-event desugars to `let _on_expr_N = Foo(...)` +
+        // `on _on_expr_N`, and the counter restarts per file, so two
+        // modules that each write one both get `_on_expr_0`. Lowering
+        // pairs each `on` with the `let` from its own file
+        // structurally, so the shared name resolves correctly and this
+        // is purely nominal: verified by building the commit before
+        // this check and confirming both handlers lower independently,
+        // each driving its own gate. Reporting it told the user to
+        // rename an identifier they never wrote, and bare `import`
+        // takes no `as`, so neither half of the advice was followable.
+        Some(p)
+            if !p.decl_range.file.is_empty()
+                && !range.file.is_empty()
+                && p.decl_range.file != range.file
+                && !name.starts_with("_on_expr_") =>
+        {
+            ctx.emit(
+                "WS013",
+                format!(
+                    "duplicate declaration of '{name}': also declared in '{}'. Imports \
+                     merge into one flat scope, so rename one or import it with `as`",
+                    p.decl_range.file
+                ),
+                range.clone(),
+            );
+}
+        _ => {}
     }
 }
 

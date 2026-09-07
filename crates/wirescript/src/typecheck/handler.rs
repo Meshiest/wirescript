@@ -35,13 +35,13 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
         let known_capture = matches!(&sym, Some(s) if s.kind == SymbolKind::Event);
         let known_input_trigger = matches!(
             &sym,
-            Some(s) if s.kind == SymbolKind::In && matches!(s.ty, Type::Exec | Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
+            Some(s) if s.kind == SymbolKind::In && (matches!(s.ty, Type::Exec) || crate::types::coerce::is_pulsing(&s.ty))
         );
         let known_buffer_trigger = matches!(
             &sym,
             Some(s)
                 if s.kind == SymbolKind::Buffer
-                    && matches!(s.ty, Type::Exec | Type::Bool | Type::Int | Type::Float | Type::Any)
+                    && (matches!(s.ty, Type::Exec | Type::Any) || crate::types::coerce::is_pulsing(&s.ty))
         );
         let known_let_trigger = matches!(
             &sym,
@@ -58,13 +58,13 @@ pub(super) fn bind_handler_trigger_params(ctx: &mut TypeCheckCtx, h: &Handler) {
         let known_param_trigger = matches!(
             &sym,
             Some(s) if matches!(s.kind, SymbolKind::Param | SymbolKind::EventParam)
-                && matches!(unwrap_ref(&s.ty), Type::Exec | Type::Bool | Type::Int | Type::Float | Type::Character | Type::Controller | Type::Entity)
+                && (matches!(unwrap_ref(&s.ty), Type::Exec) || crate::types::coerce::is_pulsing(&unwrap_ref(&s.ty)))
         );
         // A `var` can trigger a handler on its value change — `on x` / `on !x`.
         let known_var_trigger = matches!(
             &sym,
             Some(s) if s.kind == SymbolKind::Var
-                && matches!(unwrap_ref(&s.ty), Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
+                && crate::types::coerce::is_pulsing(&unwrap_ref(&s.ty))
         );
         if !known_event
             && !known_capture

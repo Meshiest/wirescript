@@ -889,7 +889,25 @@ impl Backend {
                 .await;
                 (full.unwrap_or_default(), None)
             }
-            Err(wirescript::CompileError::Emit(e)) => (Vec::new(), Some(format!("{e:?}"))),
+            // An emit failure is reported the same way, and for the same reason:
+            // it says nothing about the type errors that are also in the file,
+            // and returning it alone dropped every real diagnostic the user
+            // could act on. `EmitError` carries a written message, so render it
+            // rather than its `Debug` shape.
+            Err(wirescript::CompileError::Emit(e)) => {
+                let src_owned = source.to_string();
+                let file_owned = file.clone();
+                let full = tokio::task::spawn_blocking(move || {
+                    wirescript::diagnostics_only(wirescript::CompileInput {
+                        source: &src_owned,
+                        file: &file_owned,
+                        module_name: None,
+                        fold_mode: FoldMode::Auto,
+                    })
+                })
+                .await;
+                (full.unwrap_or_default(), Some(e.to_string()))
+            }
         };
 
         let mut out = match self.docs.lock() {

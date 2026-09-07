@@ -85,6 +85,8 @@ mod wires;
 use wires::*;
 mod module;
 use module::*;
+mod overlap;
+use overlap::check_no_overlap;
 
 /// IR + placements → in-memory `brdb::World`. The core build step; the two
 /// public `emit_*` functions wrap this and serialise to their respective
@@ -227,6 +229,7 @@ pub fn build_world(
     // native copied selection, with bounds computed from the microchip shell.
     world.make_prefab();
 
+    check_no_overlap(&world)?;
     Ok(world)
 }
 

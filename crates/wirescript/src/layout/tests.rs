@@ -279,20 +279,3 @@
         );
     }
 
-    #[test]
-    fn layout_options_passed_through_to_chip_recursion() {
-        // Smoke test: different options don't alter the collapsed-mode
-        // output (the only mode we currently implement). AdjacentInline
-        // is a no-op placeholder today.
-        let mut parent = Module::new("parent");
-        parent.add_node(gate("a"));
-        let default_out = layout(&parent);
-        let inline_out = layout_with_opts(
-            &parent,
-            &LayoutOptions {
-                chips: ChipLayoutMode::AdjacentInline,
-                ..Default::default()
-            },
-        );
-        assert_eq!(default_out.placements, inline_out.placements);
-    }

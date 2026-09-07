@@ -55,6 +55,11 @@
 - `on v.Prev { ... }` runs, as `on v.prev` already did. That capitalisation dropped the whole handler with no diagnostic.
 - A void builtin used as a value is a `WS072`, as a no-output `mod` already was. `v = PrintToConsole("x")` compiled clean and produced a dead circuit.
 - Two always-live `out` sites that each carry a value are a `WS013`. Both drive the port at once, so the value it reads is undefined.
+- `GlobalCustomEvent(CH)` inside a larger expression bakes its channel when `CH` is a `const`, as it already did as a trigger. That path folded no constants, so the receiver listened on no channel.
+- `a.get(exec = t, 0)` reads its positional argument, as `a.get(0, exec = t)` already did. Eleven array methods indexed the raw argument list, so a leading named argument shifted every position.
+- `mod m(p: vector) { on p { } }` compiles, as `in p: vector` and `var p: vector` already did. The handler check spelled the trigger-type list by hand and one copy omitted `vector`.
+- The language server reports an import error against the buffer being edited. Diagnostics re-read the file from disk while the rest of the analysis used the open document, so a fixed import still showed `WS002`.
+- Two bricks that would overlap in the emitted world, or a wire naming a port its component lacks, are errors. The game drops an overlapping brick at load, orphaning its components and dangling its wires.
 
 ### Migration
 

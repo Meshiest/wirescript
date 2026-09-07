@@ -171,4 +171,13 @@ pub enum EmitError {
     /// diagnosable compile failure.
     #[error("fan-in: {0}")]
     FanIn(String),
+    /// Two bricks in one grid intersect. The game DROPS one of them at load,
+    /// silently, so the save pastes with a gate missing and every wire into it
+    /// dangling. Same load-failure class as `FanIn`, and always a layout bug.
+    #[error("overlapping bricks: {0}")]
+    BrickOverlap(String),
+    /// A wire end names a port its gate class does not have, or names one on
+    /// the wrong side. The game refuses the whole save at load.
+    #[error("bad wire port: {0}")]
+    UnknownPort(String),
 }

@@ -15,8 +15,6 @@
 //! for future block-aware layouts but currently unused.
 
 pub mod bus;
-#[allow(dead_code)]
-mod compose;
 pub mod code;
 mod dag;
 mod region;
@@ -37,12 +35,10 @@ use self::region::Region;
 /// Standard 1×1 gate bricks have half-size 5 (10×10 full).
 const DEFAULT_HALF_SIZE: i32 = 5;
 
-/// Legacy cell stride exposed for tests + the `placements_overlap`
-/// helper. The real layout uses per-node sizes from the catalog.
+/// Legacy cell stride exposed for tests. The real layout uses per-node
+/// sizes from the catalog.
 pub const CELL_W: i32 = 10;
 pub const CELL_H: i32 = 10;
-pub const CELL_HALF_W: i32 = CELL_W / 2;
-pub const CELL_HALF_H: i32 = CELL_H / 2;
 /// Fixed Z plane for inner-chip bricks.
 pub const Z_PLANE: i32 = 2;
 
@@ -171,22 +167,6 @@ impl LayoutResult {
     }
 }
 
-/// How to render a nested chip's interior. Mirrors builder crate's
-/// `flat` flag.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum ChipLayoutMode {
-    /// Chip renders as a single microchip brick on the parent grid; its
-    /// internal gates are placed on a separate baseplate keyed by the
-    /// chip node's id. This is the Brickadia-native representation.
-    #[default]
-    Collapsed,
-    /// Chip's internal gates are placed next to the chip node on the
-    /// *parent* grid, sharing its coordinate space. Useful for debugging
-    /// and small chips where you want to see everything at once. Requires
-    /// emit cooperation to honor.
-    AdjacentInline,
-}
-
 /// Which placement engine lays out module interiors.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum LayoutMode {
@@ -204,7 +184,6 @@ pub enum LayoutMode {
 
 #[derive(Clone, Debug, Default)]
 pub struct LayoutOptions {
-    pub chips: ChipLayoutMode,
     pub mode: LayoutMode,
     /// The entry file's source map, when the caller has one. Only
     /// [`LayoutMode::Code`] reads it — for a line's true indentation.
@@ -253,22 +232,10 @@ pub fn layout(module: &Module) -> LayoutResult {
     layout_with_opts(module, &LayoutOptions::default())
 }
 
-/// Like [`layout`] but does NOT recurse into child chips
-/// (`chip_layouts` is left empty). The emit pipeline lays out each chip
-/// exactly once at the level that emits it, so eager recursion here
-/// would redo every descendant's layout only to throw it away.
-pub fn layout_root(module: &Module) -> LayoutResult {
-    layout_impl(module, &LayoutOptions::default(), false)
-}
-
 /// Fast 3D grid layout for large modules — places nodes in a cube arrangement
 /// using actual brick sizes from the inventory, skipping expensive DAG analysis.
 /// The resulting brick mass is centered around the origin so it sits in the
 /// middle of the microchip plane, not offset to a corner.
-pub fn layout_grid(module: &Module, opts: &LayoutOptions) -> LayoutResult {
-    layout_grid_impl(module, opts, true)
-}
-
 fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutResult {
     let spawnable: Vec<(&NodeId, &Node)> = module
         .nodes
@@ -811,14 +778,6 @@ fn recurse_chips(module: &Module, opts: &LayoutOptions) -> HashMap<NodeId, Layou
         chip_layouts.insert(*chip_id, layout_with_opts(child_module, &child_opts));
     }
     chip_layouts
-}
-
-/// True if two placements' AABBs (with `CELL_W`/`CELL_H` footprint) overlap.
-/// Used by tests to guard against regressions.
-pub fn placements_overlap(a: Placement, b: Placement) -> bool {
-    let half_x = CELL_W / 2;
-    let half_y = CELL_H / 2;
-    (a.x - b.x).abs() < 2 * half_x && (a.y - b.y).abs() < 2 * half_y && a.z == b.z
 }
 
 #[cfg(test)]

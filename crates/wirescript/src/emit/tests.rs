@@ -892,13 +892,20 @@
             "expected a fan-in, got {err:?}"
         );
 
-        // A different port on the same brick is untouched.
+        // A different port on the same brick is untouched. Spelled on a gate
+        // with two real inputs: a rerouter has only `RER_Input`, so the old
+        // `RER_Other` fixture named a port the catalog does not have.
+        let math = |brick: usize, name: &'static str| brdb::WirePort {
+            brick_id: brick,
+            component_type: BString::Static("BrickComponentType_WireGraph_Expr_MathAdd"),
+            port_name: BString::Static(name),
+        };
         assert!(
             ctx.add_wire(
                 &mut world,
                 WireConnection {
                     source: port(2, "RER_Output"),
-                    target: port(99, "RER_Other"),
+                    target: math(99, "InputB"),
                 },
             )
             .is_ok()

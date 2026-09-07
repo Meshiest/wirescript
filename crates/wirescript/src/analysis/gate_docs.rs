@@ -15,7 +15,6 @@ pub struct GateDoc {
     pub display_name: String,
     pub description: String,
     pub inputs: HashMap<String, GatePortDoc>,
-    #[allow(dead_code)]
     pub outputs: HashMap<String, GatePortDoc>,
 }
 

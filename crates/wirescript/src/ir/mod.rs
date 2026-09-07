@@ -99,8 +99,6 @@ pub enum ScopeKind {
     ChipBody { name: String },
     /// Body of a `handler Trigger { ... }` declaration.
     HandlerBody { trigger_label: String },
-    /// Body of a `fn name(...) { ... }` declaration.
-    FnBody { name: String },
     /// Synthetic wrapper around the three sub-scopes of an `if` so compose
     /// sees branches as a unit. Exactly one of `IfCond`/`IfThen`/`IfElse`
     /// children may lack a paired sibling, but they are always wrapped.
@@ -111,8 +109,6 @@ pub enum ScopeKind {
     IfThen,
     /// `else { ... }` block.
     IfElse,
-    /// Body of a loop (for/while/etc. — placeholder for future loop forms).
-    LoopBody,
     /// A generic `{ ... }` block with no special semantics.
     Block,
 }

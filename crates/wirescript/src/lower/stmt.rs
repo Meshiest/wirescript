@@ -1420,7 +1420,6 @@ pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
 /// Walk one `Decision` node for a `let ... else`, entering on `entry_exec`.
 /// Returns the exec on which the FULLY-matched path continues (there is exactly
 /// one such leaf), or `None` for a path that reaches the diverging `else`.
-#[allow(clippy::too_many_arguments)]
 fn lower_let_else_decision(
     ctx: &mut LowerCtx,
     decision: &crate::lower::matchtree::Decision,

@@ -143,13 +143,10 @@ struct RawInventory {
 }
 
 /// Read-only catalog view. Built once at startup; the compiler queries by
-/// display-name / class / family / kind.
+/// gate class.
 pub struct Catalog {
     entries: Vec<GateSpec>,
-    by_display: HashMap<String, usize>,
     by_class: HashMap<String, usize>,
-    by_family: HashMap<String, Vec<usize>>,
-    by_kind: HashMap<ComponentKind, Vec<usize>>,
     type_glossary: HashMap<String, String>,
 }
 
@@ -160,46 +157,19 @@ impl Catalog {
     }
 
     fn from_raw(raw: RawInventory) -> Self {
-        let mut by_display = HashMap::default();
         let mut by_class = HashMap::default();
-        let mut by_family: HashMap<String, Vec<usize>> = HashMap::default();
-        let mut by_kind: HashMap<ComponentKind, Vec<usize>> = HashMap::default();
         for (i, g) in raw.entries.iter().enumerate() {
-            by_display.insert(g.brick_display_name.clone(), i);
             by_class.insert(g.component.class.clone(), i);
-            by_family
-                .entry(g.component.family.clone())
-                .or_default()
-                .push(i);
-            by_kind.entry(g.component.kind).or_default().push(i);
         }
         Self {
             entries: raw.entries,
-            by_display,
             by_class,
-            by_family,
-            by_kind,
             type_glossary: raw.type_glossary.unwrap_or_default(),
         }
     }
 
-    pub fn find_by_display_name(&self, name: &str) -> Option<&GateSpec> {
-        self.by_display.get(name).map(|&i| &self.entries[i])
-    }
     pub fn find_by_class(&self, class: &str) -> Option<&GateSpec> {
         self.by_class.get(class).map(|&i| &self.entries[i])
-    }
-    pub fn all_of_family(&self, family: &str) -> impl Iterator<Item = &GateSpec> {
-        self.by_family
-            .get(family)
-            .into_iter()
-            .flat_map(|ixs| ixs.iter().map(|&i| &self.entries[i]))
-    }
-    pub fn all_of_kind(&self, kind: ComponentKind) -> impl Iterator<Item = &GateSpec> {
-        self.by_kind
-            .get(&kind)
-            .into_iter()
-            .flat_map(|ixs| ixs.iter().map(|&i| &self.entries[i]))
     }
     pub fn len(&self) -> usize {
         self.entries.len()

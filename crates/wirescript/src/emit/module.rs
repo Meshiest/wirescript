@@ -55,6 +55,7 @@ impl EmitContext {
             conn.source.component_type.clone(),
             conn.source.port_name.clone(),
         );
+        check_ends(&conn)?;
         match self.drivers.get(&key) {
             Some(existing) if *existing != src => {
                 return Err(EmitError::FanIn(format!(
@@ -71,6 +72,50 @@ impl EmitContext {
         world.add_wire(conn);
         Ok(())
     }
+}
+
+/// Both ends of a wire must name a port the gate class actually has, on the
+/// right side of it. The catalog (`data/logic_gate_inventory.simple.json`) is
+/// the authority: it is the game's own dump. A class the catalog does not know
+/// answers OK, matching `Catalog::is_wire_input`'s fail-open default.
+///
+/// This sits with the fan-in check because it is the same load-failure class
+/// and the same choke point: a wire naming a port the game does not have is
+/// refused at load ("Failed to connect wire"), and `resolve_wire_end`
+/// (`emit/wires.rs:147`) copies the IR port name through verbatim, so this is
+/// the last place it can be caught.
+fn check_ends(conn: &WireConnection) -> Result<(), EmitError> {
+    let cat = crate::catalog::default_catalog();
+    for (is_src, ep) in [(true, &conn.source), (false, &conn.target)] {
+        let class = ep.component_type.as_ref();
+        let Some(spec) = cat.find_by_class(class) else {
+            continue;
+        };
+        let port = ep.port_name.as_ref();
+        // A composite sub-port (`Position.X`) is named by its parent in the
+        // inventory.
+        let base = port.split('.').next().unwrap_or(port);
+        let is_in = spec.component.inputs.iter().any(|p| p.name == port || p.name == base);
+        let is_out = spec.component.outputs.iter().any(|p| p.name == port || p.name == base);
+        if !is_in && !is_out {
+            return Err(EmitError::UnknownPort(format!(
+                "{class} has no port `{port}` (catalog inputs {:?}, outputs {:?})",
+                spec.component.inputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
+                spec.component.outputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
+            )));
+        }
+        if is_src && !is_out {
+            return Err(EmitError::UnknownPort(format!(
+                "{class}.{port} drives a wire but is an INPUT port"
+            )));
+        }
+        if !is_src && !is_in {
+            return Err(EmitError::UnknownPort(format!(
+                "{class}.{port} is wired into but is an OUTPUT port"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve a wire source to its var/array-var label, following the source

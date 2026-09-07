@@ -81,7 +81,7 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 gate_class: evt.gate_class,
                 source_range: range.clone(),
                 ports: GateIO { inputs, outputs },
-                properties: event_config_props_from_call_args(evt, args),
+                properties: event_config_props_from_call_args(evt, args, &ctx.const_lookup()),
                 ..Default::default()
             });
             for &(port, _ty, value_expr) in &input_wires {
@@ -341,6 +341,7 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
 fn event_config_props_from_call_args(
     evt: &crate::catalog::events::EventSpec,
     args: &[CallArg],
+    consts: &ConstEnv,
 ) -> HashMap<crate::intern::Sym, Literal> {
     let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
     let mut positional = 0;
@@ -352,17 +353,16 @@ fn event_config_props_from_call_args(
                 (field, value)
             }
             CallArg::Named { name, value, .. } => {
-                let key = name.to_ascii_lowercase();
                 let field = evt
                     .config_named
                     .iter()
-                    .find(|(k, _)| *k == key)
+                    .find(|(k, _)| k.eq_ignore_ascii_case(name))
                     .map(|(_, f)| *f);
                 (field, value)
             }
             CallArg::Spread(_) => continue,
         };
-        if let (Some(field), Some(lit)) = (field, expr_to_literal(value)) {
+        if let (Some(field), Some(lit)) = (field, expr_to_literal_in(value, consts)) {
             props.insert(intern(field), lit);
         }
     }

@@ -102,7 +102,7 @@ fn type_eq(a: &Type, b: &Type) -> bool {
 
 /// Is `from` pulsing — i.e. does a value-changed edge on this wire trip
 /// downstream execs?
-fn is_pulsing(t: &Type) -> bool {
+pub(crate) fn is_pulsing(t: &Type) -> bool {
     matches!(t, Type::Bool | Type::Int | Type::Float | Type::Vector | Type::Character | Type::Controller | Type::Entity)
 }
 
