@@ -176,7 +176,7 @@
         // be boxed/serialized (the `min/max` and Vector→0i64 bug class) for
         // every component in the game, present and future.
         use crate::ir::Literal;
-        use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder};
+        use crate::ir::build::{AddNodeOpts, ModuleBuilder};
 
         let schema = brdb::schemas::bricks_components_schema_max();
         let mut builder = ModuleBuilder::new("audit");
@@ -188,7 +188,6 @@
                 parent: None,
             },
         );
-        let mut ids = IdAllocator::default();
         let mut filled = 0usize;
         let mut gates = 0usize;
 
@@ -254,7 +253,6 @@
                 }
             }
             builder.add_gate(
-                &mut ids,
                 AddNodeOpts {
                     gate_class: class,
                     properties: props,
@@ -687,7 +685,7 @@
     /// untouched: this is a payload cut, not a lowering change.
     #[test]
     fn no_gate_labels_drops_the_var_name_label_but_keeps_the_gate() {
-        use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder};
+        use crate::ir::build::{AddNodeOpts, ModuleBuilder};
 
         fn text_components(world: &brdb::World) -> usize {
             let in_grids = world.grids.iter().flat_map(|(_, bricks)| bricks.iter());
@@ -704,11 +702,9 @@
         }
 
         let mut builder = ModuleBuilder::new("labelled");
-        let mut ids = IdAllocator::default();
         let mut properties = HashMap::default();
         properties.insert(*sym::NAME_LABEL, Literal::String("counter".into()));
         builder.add_gate(
-            &mut ids,
             AddNodeOpts {
                 gate_class: "BrickComponentType_WireGraphPseudo_Var",
                 properties,
@@ -755,13 +751,11 @@
         // Synthetic on purpose: it guards the emit backstop itself, so it stays
         // valid even after the lowering bugs that produce such wires are fixed.
         use crate::ir::Wire;
-        use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder, port_ref};
+        use crate::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
 
         let mut builder = ModuleBuilder::new("drop_guard");
-        let mut ids = IdAllocator::default();
         // One real gate so the build proceeds normally up to the wire pass.
         builder.add_gate(
-            &mut ids,
             AddNodeOpts {
                 gate_class: "BrickComponentType_WireGraph_Expr_MathAdd",
                 ..Default::default()

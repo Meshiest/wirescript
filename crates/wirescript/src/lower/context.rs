@@ -147,7 +147,6 @@ pub(super) fn output_scope_key(name: &str) -> String {
 
 pub(super) struct LowerCtx<'a> {
     pub(super) builder: ModuleBuilder,
-    pub(super) ids: IdAllocator,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
     pub(super) op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
@@ -339,10 +338,9 @@ pub(super) struct LowerCtx<'a> {
     /// `ys` and let the mutation through.
     ///
     /// Not shared with a child context: a microchip body gets a fresh `Scope`,
-    /// so its materializations are its own. (Node ids are unique because they
-    /// come from `NodeId`'s per-compile counter, not from the `IdAllocator`
-    /// threaded alongside them, which is a unit struct that forwards to
-    /// `NodeId::fresh`.)
+    /// so its materializations are its own. Node ids need no such care -- they
+    /// come from `NodeId`'s per-compile counter, which is unique across the
+    /// whole compile.
     pub(super) immutable_containers: crate::collections::HashSet<NodeId>,
     /// True only for the compiled entry file's root LowerCtx. `@side` port
     /// annotations are legal only there (WS023 elsewhere).
@@ -544,7 +542,6 @@ impl<'a> LowerCtx<'a> {
             op_resolutions,
             ce_slots,
             doc_comments,
-            ids: IdAllocator::default(),
             diagnostics: Vec::new(),
             file: String::new(),
             scope: crate::scope::Scope::new(),
@@ -1113,7 +1110,7 @@ impl<'a> LowerCtx<'a> {
         if self.nofold_depth > 0 {
             opts.properties.insert(*sym::NO_FOLD, Literal::Bool(true));
         }
-        self.builder.add_gate(&mut self.ids, opts)
+        self.builder.add_gate(opts)
     }
 
     pub(super) fn add_event(&mut self, mut opts: AddNodeOpts) -> NodeId {
@@ -1123,7 +1120,7 @@ impl<'a> LowerCtx<'a> {
         if self.nofold_depth > 0 {
             opts.properties.insert(*sym::NO_FOLD, Literal::Bool(true));
         }
-        self.builder.add_event(&mut self.ids, opts)
+        self.builder.add_event(opts)
     }
 
     /// Wraps `ModuleBuilder::add_input` so a chip's boundary `MicrochipInput`
@@ -1132,7 +1129,7 @@ impl<'a> LowerCtx<'a> {
     /// `ModuleBuilder`, not `LowerCtx`, so they don't see `nofold_depth`
     /// unless called through here.
     pub(super) fn add_input(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
-        let id = self.builder.add_input(&mut self.ids, port_name, ty, source_range);
+        let id = self.builder.add_input(port_name, ty, source_range);
         if self.nofold_depth > 0
             && let Some(node) = self.builder.module.nodes.get_mut(&id)
         {
@@ -1143,7 +1140,7 @@ impl<'a> LowerCtx<'a> {
 
     /// Wraps `ModuleBuilder::add_output` — see `add_input` above.
     pub(super) fn add_output(&mut self, port_name: &str, ty: Type, source_range: SourceRange) -> NodeId {
-        let id = self.builder.add_output(&mut self.ids, port_name, ty, source_range);
+        let id = self.builder.add_output(port_name, ty, source_range);
         if self.nofold_depth > 0
             && let Some(node) = self.builder.module.nodes.get_mut(&id)
         {

@@ -15,7 +15,7 @@ use crate::catalog::events::find_event;
 use crate::catalog::operators::OpRule;
 use crate::diagnostic::{Diagnostic, SourceRange};
 use crate::intern::{intern, intern_static, sym};
-use crate::ir::build::{AddNodeOpts, IdAllocator, ModuleBuilder, port_ref};
+use crate::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
 use crate::ir::gate_class as gc;
 use crate::ir::{
     GateIO, Literal, Module, NodeId, NodeKind, PortRef, PortSpec, ROOT_SCOPE_ID, ScopeId,
@@ -447,8 +447,6 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
 
     flush_pending_emits(&mut ctx);
 
-    let ids_unused = ctx.ids;
-    let _ = ids_unused;
     let mut module = ctx.builder.module;
     prune_dead_exec_unions(&mut module);
     // Before literal-inlining/materialization: a real computation still has its

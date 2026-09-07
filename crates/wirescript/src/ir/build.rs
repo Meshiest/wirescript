@@ -10,15 +10,6 @@ use crate::ir::{
 };
 use super::gate_class as gc;
 
-#[derive(Default)]
-pub struct IdAllocator;
-
-impl IdAllocator {
-    pub fn fresh(&mut self, _base_path: &str) -> NodeId {
-        NodeId::fresh()
-    }
-}
-
 pub struct ModuleBuilder {
     pub module: Module,
     pub current_chain_id: Option<u32>,
@@ -36,15 +27,14 @@ impl ModuleBuilder {
         }
     }
 
-    pub fn add_gate(&mut self, ids: &mut IdAllocator, opts: AddNodeOpts) -> NodeId {
-        self.add_node(ids, NodeKind::Gate, opts)
+    pub fn add_gate(&mut self, opts: AddNodeOpts) -> NodeId {
+        self.add_node(NodeKind::Gate, opts)
     }
-    pub fn add_event(&mut self, ids: &mut IdAllocator, opts: AddNodeOpts) -> NodeId {
-        self.add_node(ids, NodeKind::Event, opts)
+    pub fn add_event(&mut self, opts: AddNodeOpts) -> NodeId {
+        self.add_node(NodeKind::Event, opts)
     }
     pub fn add_input(
         &mut self,
-        ids: &mut IdAllocator,
         port_name: &str,
         ty: Type,
         source_range: SourceRange,
@@ -52,7 +42,6 @@ impl ModuleBuilder {
         let mut props = HashMap::default();
         props.insert(*sym::PORT_LABEL, Literal::String(port_name.into()));
         let id = self.add_node(
-            ids,
             NodeKind::Input,
             AddNodeOpts {
                 gate_class: gc::MICROCHIP_INPUT,
@@ -73,7 +62,6 @@ impl ModuleBuilder {
     }
     pub fn add_output(
         &mut self,
-        ids: &mut IdAllocator,
         port_name: &str,
         ty: Type,
         source_range: SourceRange,
@@ -81,7 +69,6 @@ impl ModuleBuilder {
         let mut props = HashMap::default();
         props.insert(*sym::PORT_LABEL, Literal::String(port_name.into()));
         let id = self.add_node(
-            ids,
             NodeKind::Output,
             AddNodeOpts {
                 gate_class: gc::MICROCHIP_OUTPUT,
@@ -105,7 +92,7 @@ impl ModuleBuilder {
         self.module.wires.push(Wire { source, target });
     }
 
-    fn add_node(&mut self, _ids: &mut IdAllocator, kind: NodeKind, opts: AddNodeOpts) -> NodeId {
+    fn add_node(&mut self, kind: NodeKind, opts: AddNodeOpts) -> NodeId {
         let id = NodeId::fresh();
         let chain_id = opts.chain_id.or(self.current_chain_id);
         let scope_id = opts.scope_id.unwrap_or(self.current_scope_id);
