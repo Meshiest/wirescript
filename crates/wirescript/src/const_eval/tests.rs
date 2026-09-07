@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use super::*;
+use super::error::ConstError;
+use super::interp::eval_call;
 use crate::ir::Literal;
 
 fn empty_ctx() -> ConstCtx<'static> {

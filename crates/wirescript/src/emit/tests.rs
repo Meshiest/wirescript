@@ -678,7 +678,6 @@
         );
     }
 
-    #[test]
     /// `@layout("cube")` (via `EmitOptions::no_gate_labels`) must drop the
     /// per-gate name label, which is unreadable inside a packed block and costs
     /// one text component per labelled gate. The gate brick itself must survive

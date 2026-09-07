@@ -10,9 +10,9 @@ mod expr;
 mod interp;
 
 pub(crate) use destructure::{bind_destructured, bound_names};
-pub use error::{ConstError, ConstReason};
+pub use error::ConstReason;
 pub use expr::{eval_expr, ConstCtx};
-pub use interp::{eval_call, Budget};
+pub use interp::Budget;
 
 #[cfg(test)]
 mod tests;

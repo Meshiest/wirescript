@@ -1,12 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use wirescript::{
-    lower::{lower, LowerInput},
-    resolve::{resolve, MemLoader},
-    template_cache::TemplateCache,
-    typecheck::typecheck_with_inference,
-    emit::{emit_brz, EmitOptions, NestedCompiler, PrefabResolver},
+    resolve::MemLoader,
+    emit::{EmitOptions, NestedCompiler, PrefabResolver},
 };
 
 mod analysis;

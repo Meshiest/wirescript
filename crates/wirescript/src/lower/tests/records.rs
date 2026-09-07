@@ -1994,7 +1994,7 @@ fn whole_record_copy_carries_an_array_field() {
         r.module
             .nodes
             .values()
-            .map(|n| n.gate_class.clone())
+            .map(|n| n.gate_class)
             .collect::<Vec<_>>()
     );
 }

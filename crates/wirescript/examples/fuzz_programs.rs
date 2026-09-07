@@ -1152,7 +1152,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
     let is_bundle = !bundle.files.is_empty();
     let file = if is_bundle { "main" } else { "fuzz.ws" };
 
-    let mut record_diags = |out: &mut Outcome, diags: &[wirescript::diagnostic::Diagnostic]| {
+    let record_diags = |out: &mut Outcome, diags: &[wirescript::diagnostic::Diagnostic]| {
         for d in diags {
             let line = format!("[{}] {}", d.code, d.message);
             match d.severity {
@@ -1455,7 +1455,6 @@ enum PTy {
 enum RetTy {
     Val(Ty),
     Rec(usize),
-    Multi(Vec<(String, Ty)>),
 }
 
 #[derive(Clone)]
@@ -3493,7 +3492,7 @@ impl Gen {
             mods: self
                 .mods
                 .iter()
-                .filter(|m| scalar_sig(&m.params) && !matches!(m.ret, Some(RetTy::Rec(_) | RetTy::Multi(_))))
+                .filter(|m| scalar_sig(&m.params) && !matches!(m.ret, Some(RetTy::Rec(_))))
                 .cloned()
                 .collect(),
             chips: self
