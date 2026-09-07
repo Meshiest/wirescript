@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::diagnostic::{Diagnostic, SourceRange};
+use crate::diagnostic::{Diagnostic, SourceRange, Suppressions};
 use crate::parser::{ParseResult, parse};
 
 pub trait FileLoader {
@@ -83,6 +83,21 @@ pub struct ResolveResult {
     /// re-analyzes only the open documents a changed file actually reaches
     /// instead of every open document on every keystroke.
     pub imported_files: Vec<String>,
+    /// `// ws-ignore-line` / `// ws-ignore-file` directives from EVERY file
+    /// this resolve read, the entry file included. `diagnostics` below is
+    /// already filtered through them; the later stages (typecheck, lowering,
+    /// cycle analysis) report against the same files, so their diagnostics go
+    /// through [`Suppressions::apply`] at whichever point a caller aggregates
+    /// them.
+    pub suppressions: Suppressions,
+}
+
+/// Collect one file's `ws-ignore` directives off the comments its lex already
+/// recorded.
+fn collect_suppressions(into: &mut Suppressions, sm: &SourceMap) {
+    for c in &sm.comments {
+        into.add_comment(&sm.file, c.line, c.own_line, &c.text);
+    }
 }
 
 fn is_importable(d: &TopDecl) -> bool {
@@ -806,6 +821,17 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
             }
     }
 
+    // `ws-ignore` directives from the entry file and every file it pulled in.
+    // Applied here so `diagnostics` is already clean for any caller that reads
+    // it directly; the map travels on so the stages after resolve can filter
+    // their own diagnostics through the same directives.
+    let mut suppressions = Suppressions::default();
+    collect_suppressions(&mut suppressions, &parsed.source_map);
+    for p in cache.values() {
+        collect_suppressions(&mut suppressions, &p.source_map);
+    }
+    suppressions.apply(&mut diagnostics);
+
     // Imported declarations come first, then main file declarations
     let mut decls = merged.decls;
     decls.extend(main_decls);
@@ -841,6 +867,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
         // it walks imports depth-first, so its keys are exactly the transitive
         // import set.
         imported_files: cache.into_keys().collect(),
+        suppressions,
     }
 }
 

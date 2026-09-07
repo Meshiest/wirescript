@@ -822,9 +822,15 @@ impl Backend {
             );
         }
 
+        // `resolved.diagnostics` arrives already filtered; typecheck's are not,
+        // and a `// ws-ignore-line:WS0xx` on a type-level warning has to hold on
+        // this path too or the editor would keep underlining what the compiler
+        // has been told to drop.
+        let mut tc_diagnostics = tc.diagnostics;
+        resolved.suppressions.apply(&mut tc_diagnostics);
         let mut split = match self.docs.lock() {
             Ok(docs) => split_by_file(
-                resolved.diagnostics.iter().chain(tc.diagnostics.iter()),
+                resolved.diagnostics.iter().chain(tc_diagnostics.iter()),
                 &file,
                 source,
                 &docs,
@@ -1321,6 +1327,51 @@ impl LanguageServer for Backend {
             actions.push(insert_quickfix(
                 uri, &source, "Fill missing match arms", fill.line, fill.col, fill.text,
             ));
+        }
+
+        // "Ignore this warning": write the `// ws-ignore-line:CODE` (or
+        // `// ws-ignore-file:CODE`) directive the compiler reads, rather than
+        // leaving the author to remember the spelling. Offered per distinct
+        // code under the cursor, and only for warnings. The compiler never
+        // suppresses an error, so an action that inserted one would sit in the
+        // file doing nothing with no way to tell.
+        if !source.is_empty() {
+            let mut seen: Vec<&String> = Vec::new();
+            for d in &params.context.diagnostics {
+                if matches!(d.severity, Some(DiagnosticSeverity::ERROR)) {
+                    continue;
+                }
+                let Some(NumberOrString::String(code)) = &d.code else {
+                    continue;
+                };
+                if seen.contains(&code) {
+                    continue;
+                }
+                seen.push(code);
+                let dline = d.range.start.line as usize;
+                let line_text = source.lines().nth(dline).unwrap_or("");
+                if !line_text.contains(&format!("ws-ignore-line:{code}")) {
+                    actions.push(insert_quickfix(
+                        uri,
+                        &source,
+                        &format!("Ignore {code} on this line"),
+                        dline,
+                        line_text.chars().count(),
+                        format!(" // ws-ignore-line:{code}"),
+                    ));
+                }
+                if !source.contains(&format!("ws-ignore-file:{code}")) {
+                    actions.push(insert_quickfix(
+                        uri,
+                        &source,
+                        &format!("Ignore {code} in this file"),
+                        0,
+                        0,
+                        format!("// ws-ignore-file:{code}
+"),
+                    ));
+                }
+            }
         }
 
         if actions.is_empty() {

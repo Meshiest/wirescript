@@ -74,3 +74,67 @@
             .unwrap();
         assert!(max_step > 4, "per-prefab steps must advance past 4; events: {events:?}");
     }
+
+    /// `// ws-ignore-line` / `// ws-ignore-file` have to hold on the pipeline
+    /// the tools actually run, not just inside `resolve`: `wirescript-check`
+    /// and the editor's on-save pass both report through `diagnostics_only`,
+    /// which chains typecheck, lowering and cycle analysis onto resolve's own
+    /// diagnostics.
+    ///
+    /// An ERROR is never suppressed. Hiding one would leave a build that fails
+    /// with nothing on screen explaining why, so the directive stops at
+    /// warnings.
+    #[test]
+    fn ws_ignore_applies_through_diagnostics_only_but_never_to_errors() {
+        let dir = std::env::temp_dir().join(format!("ws_ignore_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = dir.join("ignore_lib.ws");
+        std::fs::write(
+            &lib,
+            "mod helper(x: *int) { x = x + 1 }\non ReadBrickGrid() { }\n",
+        )
+        .unwrap();
+
+        let main = dir.join("ignore_main.ws");
+        let file = main.to_string_lossy().to_string();
+        let run = |src: &str| {
+            std::fs::write(&main, src).unwrap();
+            diagnostics_only(CompileInput {
+                source: src,
+                file: &file,
+                module_name: None,
+                fold_mode: FoldMode::Auto,
+            })
+        };
+
+        // A named import leaves the module's `on` handler behind, which is WS014.
+        let program = "import { helper } from \"ignore_lib\"\nvar n: int = 0\non ReadBrickGrid() { helper(n) }\n";
+        let before = run(program);
+        assert!(
+            before.iter().any(|d| d.code == "WS014"),
+            "control: the warning this test suppresses must be there first: {before:?}"
+        );
+
+        let annotated = "import { helper } from \"ignore_lib\" // ws-ignore-line:WS014\nvar n: int = 0\non ReadBrickGrid() { helper(n) }\n";
+        let after = run(annotated);
+        assert!(
+            !after.iter().any(|d| d.code == "WS014"),
+            "ws-ignore-line must reach the check pipeline: {after:?}"
+        );
+
+        // Same directive, whole file, over a program that also fails to type
+        // check: the error survives.
+        let with_error = "// ws-ignore-file\nimport { helper } from \"ignore_lib\"\nvar n: int = 0\nvar bad: int = \"not an int\"\non ReadBrickGrid() { helper(n) }\n";
+        let errs = run(with_error);
+        assert!(
+            errs.iter().any(|d| matches!(d.severity, Severity::Error)),
+            "ws-ignore-file must not swallow an error: {errs:?}"
+        );
+        assert!(
+            !errs.iter().any(|d| matches!(d.severity, Severity::Warning)),
+            "ws-ignore-file must still silence the warnings: {errs:?}"
+        );
+
+        let _ = std::fs::remove_file(&main);
+        let _ = std::fs::remove_file(&lib);
+    }

@@ -26,6 +26,7 @@ construct.
 - [Compile-time constants (`const`)](#compile-time-constants-const)
 - [Gate & event config](#gate--event-config)
 - [`any`](#any)
+- [Silencing a warning](#silencing-a-warning)
 <!-- /toc -->
 
 ## Execution context
@@ -160,6 +161,49 @@ wiring in as ports — see [Built-in Events](statements.md#built-in-events) and
 | Code | Meaning | Trigger |
 |------|---------|---------|
 | `WS032` | *(warning)* An `any` annotation on a non-storage position (port, param, `let`, output) — prefer a [generic type parameter](types.md#any-vs-a-generic-parameter), which keeps the type. | `mod f(a: any) -> any { return a }` |
+
+## Silencing a warning
+
+A warning is sometimes reporting the exact thing the program means to do. Two
+comment directives turn one off by code:
+
+```wirescript
+import { helper } from "utils" // ws-ignore-line:WS014
+```
+
+`ws-ignore-line` covers the line the comment sits on. Written on its own line it
+covers the line below instead, so a long statement can carry the note above it
+rather than past its right edge:
+
+```wirescript
+// ws-ignore-line:WS014
+import { helper } from "utils"
+```
+
+`ws-ignore-file` covers the whole file no matter where it sits, and by
+convention goes at the top:
+
+```wirescript
+// ws-ignore-file:WS014
+import { helper } from "utils"
+```
+
+Both forms take a comma-separated list (`ws-ignore-line:WS014,WS032`), and both
+silence every warning on their line or in their file when written bare
+(`// ws-ignore-file`). The directive is recognised as any whitespace-separated
+word of the comment, so prose saying why it is there can sit on either side of
+it, and appending one to a line that already ends in a comment works. A trailing
+`:` with no code after it is read as a typo, not as the bare form.
+
+A directive travels with the file it is written in. A warning reported against
+an imported module is silenced by a directive in *that* module, not by one in
+the file that imported it.
+
+**Errors are never silenced.** A directive naming one is inert: the program
+still does not compile, and hiding the reason would only move the failure
+somewhere less legible. The same goes for the editor, whose "Ignore WSxxx on
+this line" and "Ignore WSxxx in this file" quick fixes write these directives
+for you, and are offered on warnings only.
 
 ---
 

@@ -154,6 +154,8 @@ pub fn diagnostics(source: &str, files_json: &str) -> String {
         .chain(lowered.diagnostics.iter())
         .chain(cycles.diagnostics.iter())
         .filter(|d| &*d.range.file == "editor" || d.range.file.is_empty())
+        // `// ws-ignore-line` / `// ws-ignore-file` hold in the playground too.
+        .filter(|d| !resolved.suppressions.suppresses(d))
         .map(|d| DiagnosticOut {
             severity: match d.severity {
                 wirescript::diagnostic::Severity::Error => "error",

@@ -2,6 +2,8 @@
 
 ## 1.11.1
 
+- `// ws-ignore-line:WS014` silences that warning on its own line, or on the line below when the comment stands alone; `// ws-ignore-file:WS014` silences it for the whole file. Both take a comma-separated list of codes, both cover every warning when written bare, and neither silences an error.
+
 ### Fixes
 
 - `var a: int[] = []` and `var a: float[] = [1, 2]` keep their declared element type inside a handler, as they already did at top level. A local array literal fell to a whole-array coerce that refused `any[]` into `int[]`.
@@ -75,6 +77,7 @@ in `wirescript-misc/projects`.
 
 ### Editor
 
+- A warning offers "Ignore WSxxx on this line" and "Ignore WSxxx in this file" quick fixes, which write the matching `ws-ignore` comment.
 - The playground reports `WSP001` placeholder warnings. A program that lowers to a dead gate looked clean and still offered its `.brz` for download.
 - The playground compiles the same source to the same bytes every time. Every compile after the first in a page session produced a different circuit.
 - An unbarriered wire-graph cycle is a `WS005` in the playground, as it already was everywhere else.

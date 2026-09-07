@@ -709,6 +709,47 @@
             .collect()
     }
 
+    /// `code_action_at`, but with the diagnostics the editor would attach to
+    /// the request, since the "ignore this warning" actions are driven by them.
+    async fn code_action_with_diagnostic(
+        service: &LspService<Backend>,
+        uri: &Url,
+        line: u32,
+        code: &str,
+        severity: DiagnosticSeverity,
+    ) -> Vec<CodeAction> {
+        let pos = Position { line, character: 0 };
+        let resp = service
+            .inner()
+            .code_action(CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: Range { start: pos, end: pos },
+                context: CodeActionContext {
+                    diagnostics: vec![Diagnostic {
+                        range: Range { start: pos, end: pos },
+                        severity: Some(severity),
+                        code: Some(NumberOrString::String(code.into())),
+                        source: Some("wirescript".into()),
+                        message: "test".into(),
+                        ..Default::default()
+                    }],
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        resp.into_iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => Some(ca),
+                CodeActionOrCommand::Command(_) => None,
+            })
+            .collect()
+    }
+
     /// The `new_text` of a code action's first `TextEdit`.
     fn first_edit_text(action: &CodeAction) -> String {
         action
@@ -1586,5 +1627,63 @@ on CharacterSpawned() -> (character) {
         assert!(
             match_arm_head_scrutinee_at(src, line, col).is_none(),
             "the cursor is in an arm BODY, not a pattern head"
+        );
+    }
+
+    #[tokio::test]
+    async fn code_action_offers_the_ws_ignore_directives_for_a_warning() {
+        // The suppression comment has an exact spelling the compiler reads; the
+        // quick fix is what saves the author from remembering it.
+        let dir = scratch_dir("ws-ignore-action");
+        let path = dir.join("main.ws");
+        let source = "in go: exec
+out r: int = 1
+";
+        std::fs::write(&path, source).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let service = build_backend();
+        open_doc(&service, &uri, source);
+
+        let actions =
+            code_action_with_diagnostic(&service, &uri, 0, "WS014", DiagnosticSeverity::WARNING)
+                .await;
+        std::fs::remove_dir_all(&dir).ok();
+
+        let line_fix = actions
+            .iter()
+            .find(|a| a.title == "Ignore WS014 on this line")
+            .expect(&format!("expected a line-ignore action: {actions:?}"));
+        assert_eq!(first_edit_text(line_fix), " // ws-ignore-line:WS014");
+
+        let file_fix = actions
+            .iter()
+            .find(|a| a.title == "Ignore WS014 in this file")
+            .expect(&format!("expected a file-ignore action: {actions:?}"));
+        assert_eq!(first_edit_text(file_fix), "// ws-ignore-file:WS014
+");
+    }
+
+    #[tokio::test]
+    async fn code_action_does_not_offer_to_ignore_an_error() {
+        // The compiler never suppresses an error, so offering the action would
+        // hand the author an edit that silently does nothing.
+        let dir = scratch_dir("ws-ignore-action-error");
+        let path = dir.join("main.ws");
+        let source = "in go: exec
+out r: int = 1
+";
+        std::fs::write(&path, source).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let service = build_backend();
+        open_doc(&service, &uri, source);
+
+        let actions =
+            code_action_with_diagnostic(&service, &uri, 0, "WS002", DiagnosticSeverity::ERROR)
+                .await;
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            !actions.iter().any(|a| a.title.starts_with("Ignore ")),
+            "an error must not offer a ws-ignore quick fix: {actions:?}"
         );
     }

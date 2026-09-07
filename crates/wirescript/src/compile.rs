@@ -278,13 +278,18 @@ pub fn diagnostics_only(input: CompileInput<'_>) -> Vec<Diagnostic> {
             ce_slots: &ce_slots,
         });
         let cycles = crate::analyze::analyze_cycles(&lowered.module);
-        resolved
+        let mut all: Vec<_> = resolved
             .diagnostics
             .into_iter()
             .chain(tc.diagnostics)
             .chain(lowered.diagnostics)
             .chain(cycles.diagnostics)
-            .collect()
+            .collect();
+        // `// ws-ignore-line` / `// ws-ignore-file` cover the stages after
+        // resolve too, so they are applied to the whole set rather than to
+        // resolve's own diagnostics alone. Errors survive either way.
+        resolved.suppressions.apply(&mut all);
+        all
     })
 }
 
@@ -395,13 +400,15 @@ fn compile_to_world_inner(
     // would retrigger within a single tick (WS005).
     let cycles = crate::analyze::analyze_cycles(&lowered.module);
 
-    let all_diags: Vec<_> = resolved
+    let mut all_diags: Vec<_> = resolved
         .diagnostics
         .into_iter()
         .chain(tc.diagnostics)
         .chain(lowered.diagnostics)
         .chain(cycles.diagnostics)
         .collect();
+    // Same as `diagnostics_only`: the `ws-ignore` directives cover every stage.
+    resolved.suppressions.apply(&mut all_diags);
 
     let errors: Vec<_> = all_diags
         .iter()

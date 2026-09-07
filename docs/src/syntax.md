@@ -117,6 +117,12 @@ var score: int = 0
 
 Multiple consecutive doc comment lines are joined together. A single space after `///` is consumed automatically.
 
+### Diagnostic Directives
+
+A `//` comment containing `ws-ignore-line:WS014` or `ws-ignore-file:WS014` turns
+that warning off for the line or the file. See
+[Silencing a warning](diagnostics.md#silencing-a-warning).
+
 ## Statement Terminators
 
 Statements are terminated by **newlines** or **semicolons**. Both are interchangeable -- you can use whichever style you prefer.

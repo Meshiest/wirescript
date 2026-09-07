@@ -983,3 +983,137 @@ out hit = o is Option.Some",
             tc.diagnostics
         );
     }
+
+    // `ws-ignore` suppression directives
+
+    /// A named import that leaves a module's `on` handler behind warns WS014.
+    /// That is the intended spelling for a test harness, so the warning has to
+    /// be silenceable per line.
+    fn ws014_count(r: &ResolveResult) -> usize {
+        r.diagnostics.iter().filter(|d| d.code == "WS014").count()
+    }
+
+    fn lib_with_handler() -> MemLoader {
+        mem(&[(
+            "lib.ws",
+            "mod helper(x: *int) { x = x + 1 }\non ReadBrickGrid() { }",
+        )])
+    }
+
+    #[test]
+    fn ws_ignore_line_trailing_suppresses_that_line() {
+        let loader = lib_with_handler();
+        let r = resolve(
+            "import { helper } from \"lib\" // ws-ignore-line:WS014\nvar n: int = 0\non ReadBrickGrid() { helper(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 0, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn ws_ignore_line_on_its_own_line_covers_the_line_below() {
+        let loader = lib_with_handler();
+        let r = resolve(
+            "// ws-ignore-line:WS014\nimport { helper } from \"lib\"\nvar n: int = 0\non ReadBrickGrid() { helper(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 0, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn ws_ignore_line_does_not_reach_other_lines() {
+        // Two imports, one annotated: the other's warning must survive.
+        let loader = mem(&[
+            ("a.ws", "mod ha(x: *int) { x = x + 1 }\non ReadBrickGrid() { }"),
+            ("b.ws", "mod hb(x: *int) { x = x + 2 }\non ReadBrickGrid() { }"),
+        ]);
+        let r = resolve(
+            "import { ha } from \"a\" // ws-ignore-line:WS014\nimport { hb } from \"b\"\nvar n: int = 0\non ReadBrickGrid() { ha(n) hb(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 1, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn ws_ignore_file_covers_every_line() {
+        let loader = mem(&[
+            ("a.ws", "mod ha(x: *int) { x = x + 1 }\non ReadBrickGrid() { }"),
+            ("b.ws", "mod hb(x: *int) { x = x + 2 }\non ReadBrickGrid() { }"),
+        ]);
+        let r = resolve(
+            "// ws-ignore-file:WS014\nimport { ha } from \"a\"\nimport { hb } from \"b\"\nvar n: int = 0\non ReadBrickGrid() { ha(n) hb(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 0, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn bare_ws_ignore_file_covers_every_code() {
+        let loader = lib_with_handler();
+        let r = resolve(
+            "// ws-ignore-file\nimport { helper } from \"lib\"\n",
+            "main.ws",
+            &loader,
+        );
+        // Both the "handlers not included" warning and the "unused import" one.
+        assert!(
+            r.diagnostics.is_empty(),
+            "bare ws-ignore-file must silence every warning: {:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn ws_ignore_line_only_covers_the_codes_it_names() {
+        let loader = lib_with_handler();
+        let r = resolve(
+            "import { helper } from \"lib\" // ws-ignore-line:WSP001\nvar n: int = 0\non ReadBrickGrid() { helper(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 1, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn ws_ignore_accepts_a_code_list_and_trailing_prose() {
+        let loader = lib_with_handler();
+        let r = resolve(
+            "import { helper } from \"lib\" // handlers stay behind on purpose ws-ignore-line:WSP001,WS014\nvar n: int = 0\non ReadBrickGrid() { helper(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 0, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn ws_ignore_with_an_empty_code_list_is_inert() {
+        // `ws-ignore-line:` reads as a typo, not as "ignore everything here".
+        let loader = lib_with_handler();
+        let r = resolve(
+            "import { helper } from \"lib\" // ws-ignore-line:\nvar n: int = 0\non ReadBrickGrid() { helper(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 1, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn an_imported_file_carries_its_own_directives() {
+        // The directive lives in the imported module and the diagnostic is
+        // reported against that module's file, so the entry file's own
+        // suppressions have nothing to do with it.
+        let loader = mem(&[
+            ("mid.ws", "// ws-ignore-file:WS014\nimport { leaf } from \"leaf\"\nmod mid_helper(x: *int) { leaf(x) }"),
+            ("leaf.ws", "mod leaf(x: *int) { x = x + 1 }\non ReadBrickGrid() { }"),
+        ]);
+        let r = resolve(
+            "import { mid_helper } from \"mid\"\nvar n: int = 0\non ReadBrickGrid() { mid_helper(n) }",
+            "main.ws",
+            &loader,
+        );
+        assert_eq!(ws014_count(&r), 0, "diagnostics: {:?}", r.diagnostics);
+    }
