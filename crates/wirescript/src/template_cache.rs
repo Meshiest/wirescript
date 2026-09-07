@@ -17,14 +17,13 @@ use std::sync::{Arc, RwLock};
 use crate::ast::{
     Block, CallArg, ChipDecl, Expr, If, IfLet, InterpPart, RecordLitField, Script, Stmt, TopDecl,
 };
-use crate::template::{CompiledTemplate, InlineModEntry};
+use crate::template::CompiledTemplate;
 
 /// Thread-safe store of compiled templates with a dependency graph.
 pub struct TemplateCache {
     /// Compiled templates keyed by module name (standalone chips).
     templates: RwLock<HashMap<String, Arc<CompiledTemplate>>>,
     /// Cached inline mod expansions (first-call delta + metadata).
-    inline_mods: RwLock<HashMap<String, Arc<InlineModEntry>>>,
     /// Adjacency map: `name → set of names that *name* depends on`.
     /// Every node that has ever been mentioned (as a dependent or a dependency)
     /// appears as a key so that `topo_order` and `parallel_tiers` see the full
@@ -37,7 +36,6 @@ impl TemplateCache {
     pub fn new() -> Self {
         Self {
             templates: RwLock::new(HashMap::default()),
-            inline_mods: RwLock::new(HashMap::default()),
             deps: RwLock::new(HashMap::default()),
         }
     }
@@ -68,24 +66,9 @@ impl TemplateCache {
             .insert(name.to_string(), Arc::new(template));
     }
 
-    /// Number of compiled standalone chip templates.
-    pub fn template_count(&self) -> usize {
-        self.templates.read().unwrap().len()
-    }
-
     /// Retrieve a compiled template by name, or `None` if not yet compiled.
     pub fn get(&self, name: &str) -> Option<Arc<CompiledTemplate>> {
         self.templates.read().unwrap().get(name).cloned()
-    }
-
-    /// Store a cached inline mod expansion.
-    pub fn insert_inline(&self, name: &str, entry: InlineModEntry) {
-        self.inline_mods.write().unwrap().insert(name.to_string(), Arc::new(entry));
-    }
-
-    /// Retrieve a cached inline mod expansion.
-    pub fn get_inline(&self, name: &str) -> Option<Arc<InlineModEntry>> {
-        self.inline_mods.read().unwrap().get(name).cloned()
     }
 
     /// Return all module names in topological order (leaves — modules with no

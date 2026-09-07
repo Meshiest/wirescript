@@ -382,29 +382,5 @@ pub fn widening_join_all(types: impl IntoIterator<Item = Type>) -> Option<Type> 
     iter.try_fold(first, |acc, t| widening_join(&acc, &t))
 }
 
-/// Return the list of primitives from which `to` is reachable via at
-/// most one coercion rule. Used by the typechecker for "did you mean"
-/// hints.
-pub fn reachable_from(to: &Type) -> Vec<Type> {
-    let candidates = [
-        Type::Bool,
-        Type::Int,
-        Type::Float,
-        Type::String,
-        Type::Vector,
-        Type::Rotator,
-        Type::Quat,
-        Type::Color,
-        Type::Entity,
-        Type::Character,
-        Type::Controller,
-        Type::Exec,
-    ];
-    candidates
-        .into_iter()
-        .filter(|k| coerce(k, to) != CoerceRule::Mismatch)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests;

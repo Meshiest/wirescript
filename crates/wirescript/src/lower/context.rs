@@ -338,9 +338,11 @@ pub(super) struct LowerCtx<'a> {
     /// same node, and a name-keyed check would see only the innocent-looking
     /// `ys` and let the mutation through.
     ///
-    /// Not shared with a child context: a microchip body gets a fresh
-    /// `IdAllocator` and a fresh `Scope`, so its node ids and its own
-    /// materializations are entirely its own.
+    /// Not shared with a child context: a microchip body gets a fresh `Scope`,
+    /// so its materializations are its own. (Node ids are unique because they
+    /// come from `NodeId`'s per-compile counter, not from the `IdAllocator`
+    /// threaded alongside them, which is a unit struct that forwards to
+    /// `NodeId::fresh`.)
     pub(super) immutable_containers: crate::collections::HashSet<NodeId>,
     /// True only for the compiled entry file's root LowerCtx. `@side` port
     /// annotations are legal only there (WS023 elsewhere).

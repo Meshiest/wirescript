@@ -258,24 +258,6 @@ fn stamp_module(
     (module, full_map)
 }
 
-/// Cached result of an inline mod's first expansion.
-///
-/// Stores the delta (nodes + wires + chips created during expansion) as a
-/// `CompiledTemplate`, plus the exec chain entry/exit and output port so the
-/// caller can splice the instantiated copy into its own exec chain.
-#[derive(Clone, Debug)]
-pub struct InlineModEntry {
-    pub template: CompiledTemplate,
-    /// PortRef for the first exec-consuming node in the template.
-    /// The caller wires its `current_exec` here.
-    pub exec_entry: Option<PortRef>,
-    /// PortRef for the last exec-producing node in the template.
-    /// Becomes the caller's new `current_exec` after merging.
-    pub exec_exit: Option<PortRef>,
-    /// The PortRef that carries the return value (for single-output mods).
-    pub output_port: Option<PortRef>,
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────

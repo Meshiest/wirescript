@@ -1101,11 +1101,6 @@ impl ArrayElem {
             ArrayElem::Item(e) | ArrayElem::Spread(e) => e,
         }
     }
-    pub fn expr_mut(&mut self) -> &mut Expr {
-        match self {
-            ArrayElem::Item(e) | ArrayElem::Spread(e) => e,
-        }
-    }
     pub fn range(&self) -> &SourceRange {
         self.expr().range()
     }
@@ -1165,39 +1160,6 @@ impl Expr {
         }
     }
 
-    pub fn range_mut(&mut self) -> &mut SourceRange {
-        match self {
-            Expr::IntLit { range, .. }
-            | Expr::AtomLit { range, .. }
-            | Expr::FloatLit { range, .. }
-            | Expr::StringLit { range, .. }
-            | Expr::InterpLit { range, .. }
-            | Expr::BoolLit { range, .. }
-            | Expr::NullLit { range, .. }
-            | Expr::CurrentExec { range, .. }
-            | Expr::Ident { range, .. }
-            | Expr::FieldAccess { range, .. }
-            | Expr::IndexAccess { range, .. }
-            | Expr::TuplePick { range, .. }
-            | Expr::UnOp { range, .. }
-            | Expr::BinOp { range, .. }
-            | Expr::Call { range, .. }
-            | Expr::Deref { range, .. }
-            | Expr::RefOf { range, .. }
-            | Expr::IfExpr { range, .. }
-            | Expr::BlockExpr { range, .. }
-            | Expr::MatchExpr { range, .. }
-            | Expr::RecordLit { range, .. }
-            | Expr::Array { range, .. }
-            | Expr::AssetRef { range, .. }
-            | Expr::PrefabRef { range, .. }
-            | Expr::NestedPrefab { range, .. }
-            | Expr::MapLit { range, .. }
-            | Expr::VariantCtor { range, .. }
-            | Expr::Unsafe { range, .. }
-            | Expr::Is { range, .. } => range,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

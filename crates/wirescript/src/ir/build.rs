@@ -19,26 +19,6 @@ impl IdAllocator {
     }
 }
 
-/// Build a `/`-joined path id from segments. Each segment is sanitised
-/// to `[A-Za-z0-9_.-]`; any other character becomes `_`.
-pub fn path_id(segments: &[&str]) -> String {
-    segments
-        .iter()
-        .map(|s| {
-            s.chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 pub struct ModuleBuilder {
     pub module: Module,
     pub current_chain_id: Option<u32>,

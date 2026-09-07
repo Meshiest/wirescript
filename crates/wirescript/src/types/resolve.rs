@@ -15,7 +15,13 @@ use crate::ast::TypeExpr;
 use crate::diagnostic::Diagnostic;
 use crate::ir::Type;
 
-/// The one primitive-name → Type table (single source of truth).
+/// Maps a primitive type's source spelling to its [`Type`].
+///
+/// This is the table typecheck resolves annotations through, and it is
+/// authoritative for what the language accepts. It is NOT the only such list:
+/// the LSP and the playground each hand-write their own for completion, and
+/// both are short of this one, so a type that resolves here may still not be
+/// offered in the editor. Adding a primitive means editing those too.
 pub fn primitive(name: &str) -> Option<Type> {
     Some(match name {
         "bool" => Type::Bool,
