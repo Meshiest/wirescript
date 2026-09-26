@@ -4,8 +4,8 @@ use super::*;
 
 /// Build the gate's `LiteralComponent`. For wire-input ports that have an
 /// inlined literal (from a `_Literal` source node), we embed the value into
-/// the component data struct using the wire_graph_variant field so the game
-/// reads it on load without needing a separate constant source gate.
+/// the component data struct's `WireValue` field so the game reads it on load
+/// without needing a separate constant source gate.
 pub(super) fn build_gate_component(
     gate_class: &'static str,
     ports: &crate::ir::GateIO,
@@ -46,29 +46,24 @@ fn build_gate_data_map(
     prefab_resolver: Option<&PrefabResolver>,
     nested_compiler: Option<&NestedCompiler>,
 ) -> Result<Option<StdMap<BString, Box<dyn AsBrdbValue>>>, EmitError> {
-    // For gates whose component data struct carries wire_graph_variant fields,
+    // For gates whose component data struct carries `WireValue` fields,
     // look up the struct schema and build the component with embedded values.
-    // Non-inlined fields get a default (Int(0)) so the struct is always complete.
+    // Non-inlined fields get a typed default so the struct is always complete.
     // Always write the data struct when the gate type has one — even if no
     // fields are inlined. This ensures ALL instances of the same component
     // type have matching data, preventing reader misalignment.
     let Some(fields) = gate_field_meta(gate_class) else {
         return Ok(None);
     };
+    let bool_as_int = bool_input_bakes_as_int(gate_class);
     let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
     for fm in fields {
             let field = fm.name;
-            let is_variant = matches!(fm.kind, FieldKind::WireVariant | FieldKind::PrimMathVariant);
+            let is_wire_value = fm.kind == FieldKind::WireValue;
             let val: Box<dyn AsBrdbValue> = match inlined.get(&fm.sym) {
-                Some(lit) if is_variant => {
-                    // prim_math_variant doesn't support Bool — coerce to Int
-                    if fm.kind == FieldKind::PrimMathVariant
-                        && let Literal::Bool(b) = lit
-                    {
-                        Box::new(WireVariant::Int(if *b { 1 } else { 0 }))
-                    } else {
-                        literal_to_boxed_wire_variant(lit, ports, field)
-                    }
+                Some(lit) if is_wire_value => {
+                    let wv = literal_to_wire_value_or_default(lit, ports, field);
+                    Box::new(if bool_as_int { coerce_bool_to_int(wv) } else { wv })
                 }
                 Some(lit) => match fm.kind {
                     FieldKind::AssetRef => {
@@ -91,45 +86,10 @@ fn build_gate_data_map(
                         };
                         Box::new(BrdbValue::Asset(idx))
                     }
-                    FieldKind::BundlePathRef => {
-                        // Prefab file reference (`$./file.brz`): resolve to raw
-                        // bytes, embed content-addressed via add_prefab, and
-                        // store the resulting `Prefabs/Uploads/…` path.
-                        match lit {
-                            Literal::PrefabRef { path } => {
-                                let resolver = prefab_resolver.ok_or_else(|| {
-                                    EmitError::PrefabResolve(
-                                        path.clone(),
-                                        "no prefab resolver configured for this compile".into(),
-                                    )
-                                })?;
-                                let bytes = resolver
-                                    .resolve(path)
-                                    .map_err(|e| EmitError::PrefabResolve(path.clone(), e))?;
-                                let embedded = world.add_prefab(bytes);
-                                Box::new(embedded)
-                            }
-                            // Inline nested-prefab block (`$``` ... ``` `):
-                            // compile the inner source to `.brz` bytes and
-                            // embed it the same way a resolved on-disk prefab
-                            // is embedded above.
-                            Literal::NestedPrefab { source } => {
-                                let compiler = nested_compiler.ok_or_else(|| {
-                                    EmitError::PrefabResolve(
-                                        "<nested>".into(),
-                                        "no nested compiler configured for this compile".into(),
-                                    )
-                                })?;
-                                let bytes = compiler
-                                    .compile(source, 1)
-                                    .map_err(|e| EmitError::PrefabResolve("<nested>".into(), e))?;
-                                let embedded = world.add_prefab(bytes);
-                                Box::new(embedded)
-                            }
-                            // A non-prefab literal here can't happen via the
-                            // front end (the port only accepts `$…` refs).
-                            _ => Box::new(String::new()),
-                        }
+                    FieldKind::Str
+                        if matches!(lit, Literal::PrefabRef { .. } | Literal::NestedPrefab { .. }) =>
+                    {
+                        Box::new(embed_prefab(lit, world, prefab_resolver, nested_compiler)?)
                     }
                     FieldKind::Enum(type_name) => match resolve_enum_value(type_name, lit) {
                         Some(ev) => Box::new(ev),
@@ -165,35 +125,67 @@ fn build_gate_data_map(
                         literal: (**lit).clone(),
                     })?,
                 },
-                // No inlined value. Wire-typed ports still need a typed variant
-                // default so the variant member matches the port type (the
-                // component_db defaults don't carry wire variants). Every other
+                // No inlined value. Wire-typed ports still need a typed default
+                // so the `WireValue` alternative matches the port type (the
+                // component_db defaults don't carry wire values). Every other
                 // (native) field is omitted from the data map entirely: the brdb
                 // writer fills missing struct fields from component_db's
                 // STRUCT_DEFAULTS — the single source of truth for gate defaults
                 // (e.g. DisplayText FontSize=16, Lifetime=5) — falling back to a
                 // type-zero when no default is registered.
-                None if is_variant => {
+                None if is_wire_value => {
                     let port_ty = ports
                         .inputs
                         .iter()
                         .chain(ports.outputs.iter())
                         .find(|p| p.name == fm.sym)
                         .map(|p| &p.ty);
-                    let wv = var_type_to_wire_variant(port_ty);
-                    // prim_math_variant doesn't support Bool — coerce to Int
-                    let wv = if fm.kind == FieldKind::PrimMathVariant {
-                        coerce_for_prim_math(wv)
-                    } else {
-                        wv
-                    };
-                    Box::new(wv)
+                    let wv = var_type_to_wire_value(port_ty);
+                    Box::new(if bool_as_int { coerce_bool_to_int(wv) } else { wv })
                 }
                 None => continue,
             };
             data.insert(BString::Static(field), val);
         }
     Ok(Some(data))
+}
+
+/// Embed a prefab literal into `world`, content-addressed via `add_prefab`,
+/// and return the `Prefabs/Uploads/…` path a spawner's `Prefab` string holds.
+/// A file reference (`$./file.brz`) is resolved to its raw bytes; an inline
+/// nested-prefab block (`$``` ... ``` `) is compiled to `.brz` bytes first.
+fn embed_prefab(
+    lit: &Literal,
+    world: &mut World,
+    prefab_resolver: Option<&PrefabResolver>,
+    nested_compiler: Option<&NestedCompiler>,
+) -> Result<String, EmitError> {
+    let bytes = match lit {
+        Literal::PrefabRef { path } => {
+            let resolver = prefab_resolver.ok_or_else(|| {
+                EmitError::PrefabResolve(
+                    path.clone(),
+                    "no prefab resolver configured for this compile".into(),
+                )
+            })?;
+            resolver
+                .resolve(path)
+                .map_err(|e| EmitError::PrefabResolve(path.clone(), e))?
+        }
+        Literal::NestedPrefab { source } => {
+            let compiler = nested_compiler.ok_or_else(|| {
+                EmitError::PrefabResolve(
+                    "<nested>".into(),
+                    "no nested compiler configured for this compile".into(),
+                )
+            })?;
+            compiler
+                .compile(source, 1)
+                .map_err(|e| EmitError::PrefabResolve("<nested>".into(), e))?
+        }
+        _ => return Ok(String::new()),
+    };
+    Ok(world.add_prefab(bytes))
 }
 
 // --- Advanced-inventory composite config (MeshColors, WeaponAmmoOverride) ---

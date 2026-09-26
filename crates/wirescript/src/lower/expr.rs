@@ -708,17 +708,17 @@ pub(super) fn lower_enum_ctor(
 /// outputs `Value: entity`.
 fn asset_reference_gate(asset_type: &str) -> &'static str {
     match asset_type {
-        "BRItemBase" => "BrickComponentType_WireGraph_ItemReference",
-        "BRPickupBase" => "BrickComponentType_WireGraph_PickupReference",
-        "BRWeaponProjectile" => "BrickComponentType_WireGraph_ProjectileReference",
-        "BrickAudioDescriptor" => "BrickComponentType_WireGraph_AudioReference",
-        "BrickFontDescriptor" => "BrickComponentType_WireGraph_FontReference",
-        "BrickOneShotAudioDescriptor" => "BrickComponentType_WireGraph_OneShotAudioReference",
+        "BRItemBase" => "BrickComponentType_ItemReference",
+        "BRPickupBase" => "BrickComponentType_PickupReference",
+        "BRWeaponProjectile" => "BrickComponentType_ProjectileReference",
+        "BrickAudioDescriptor" => "BrickComponentType_AudioReference",
+        "BrickFontDescriptor" => "BrickComponentType_FontReference",
+        "BrickOneShotAudioDescriptor" => "BrickComponentType_OneShotAudioReference",
         "BrickWheelEngineAudioDescriptor" => {
-            "BrickComponentType_WireGraph_WheelEngineAudioReference"
+            "BrickComponentType_WheelEngineAudioReference"
         }
         // Unknown/other categories → the generic entity-type reference.
-        _ => "BrickComponentType_WireGraph_EntityTypeReference",
+        _ => "BrickComponentType_EntityTypeReference",
     }
 }
 

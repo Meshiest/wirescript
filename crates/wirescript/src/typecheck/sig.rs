@@ -19,8 +19,8 @@ use crate::types::coerce::{CoerceRule, coerce};
 use crate::types::mono::unwrap_ref;
 
 use super::{
-    SymbolKind, TypeCheckCtx, validate_composite_config_arg, validate_data_driven_config,
-    validate_enum_config_arg, validate_scalar_config_arg,
+    SymbolKind, TypeCheckCtx, is_enum_constant_arg, validate_composite_config_arg,
+    validate_data_driven_config, validate_enum_config_arg, validate_scalar_config_arg,
 };
 
 /// What a `Param` binds to, and how `check_args` should validate an argument
@@ -37,6 +37,11 @@ pub enum ParamKind {
     /// `&'static str` is the enum type name (`crate::catalog::enum_*`
     /// lookups).
     ConfigEnum(&'static str),
+    /// A wire-input param whose gate data field is also a schema enum
+    /// (DisplayText's `justify`/`easing`). A constant enum form validates like
+    /// [`ParamKind::ConfigEnum`] and bakes into the field; any other value is
+    /// checked like [`ParamKind::Wire`]. The payload is the enum type name.
+    WireEnum(&'static str),
     /// A composite constant-only config param (`meshColors: Color[]`,
     /// `ammoOverride`'s nested struct) that must fold to a constant of the
     /// expected shape. The `&'static str` is the gate PORT name the composite
@@ -229,7 +234,7 @@ pub fn check_args(
                 // A spread element has only a type; coerce it against the wire
                 // param directly (config params can't be spread-filled).
                 let param = &sig.params[idx];
-                if matches!(param.kind, ParamKind::Wire | ParamKind::Const)
+                if matches!(param.kind, ParamKind::Wire | ParamKind::WireEnum(_) | ParamKind::Const)
                     && !crate::typecheck::type_has_param(&param.ty)
                     && coerce(&unwrap_ref(ty), &unwrap_ref(&param.ty)) == CoerceRule::Mismatch
                 {
@@ -304,6 +309,13 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
     match param.kind {
         ParamKind::ConfigEnum(enum_type) => {
             validate_enum_config_arg(ctx, enum_type, arg_expr);
+        }
+        ParamKind::WireEnum(enum_type) => {
+            if is_enum_constant_arg(ctx, enum_type, arg_expr) {
+                validate_enum_config_arg(ctx, enum_type, arg_expr);
+            } else if !wire_arg_is_game_enum(ctx, enum_type, arg_expr) {
+                check_wire_arg(ctx, arg_expr, param);
+            }
         }
         ParamKind::ConfigComposite(port) => {
             validate_composite_config_arg(
@@ -393,6 +405,25 @@ fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: 
             );
         }
     }
+}
+
+/// A wire-enum argument that is a value of the built-in game enum backing the
+/// field (`justify = DisplayTextJustification.Center`, or a variable of that
+/// enum). Reads the type the Call-arm preamble recorded, like
+/// [`check_wire_arg`].
+fn wire_arg_is_game_enum(ctx: &mut TypeCheckCtx, enum_type: &str, arg_expr: &Expr) -> bool {
+    let key = {
+        let r = arg_expr.range();
+        (r.file.clone(), r.start.offset, r.end.offset)
+    };
+    let ty = match ctx.type_of_expr.get(&key).cloned() {
+        Some(t) => t,
+        None => crate::typecheck::infer::infer(ctx, arg_expr),
+    };
+    matches!(
+        unwrap_ref(&ty),
+        Type::Enum { name, .. } if crate::catalog::game_enum_schema_type(&name) == Some(enum_type)
+    )
 }
 
 fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {

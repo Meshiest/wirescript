@@ -99,7 +99,7 @@ fn wrap_object_for_math(
         operand_ty,
         Type::Entity | Type::Controller | Type::Character
     );
-    let is_math = gate_class.starts_with("BrickComponentType_WireGraph_Expr_Math");
+    let is_math = gate_class.starts_with("BrickComponentType_Expr_Math");
     if !(is_object && is_math) {
         return (port, operand_ty.clone());
     }
@@ -117,7 +117,7 @@ fn wrap_object_for_math(
 
     // (obj || false) → LogicalOR coerces the object to an int/bool the gate takes.
     let or_id = ctx.add_gate(AddNodeOpts {
-        gate_class: "BrickComponentType_WireGraph_Expr_LogicalOR",
+        gate_class: "BrickComponentType_Expr_LogicalOR",
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
@@ -155,25 +155,25 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     {
         let fused = match (op.as_str(), inner_op.as_str()) {
             ("!", "&&") => Some((
-                "BrickComponentType_WireGraph_Expr_LogicalNAND",
+                "BrickComponentType_Expr_LogicalNAND",
                 WirePort::BInputA,
                 WirePort::BInputB,
                 WirePort::BOutput,
             )),
             ("!", "||") => Some((
-                "BrickComponentType_WireGraph_Expr_LogicalNOR",
+                "BrickComponentType_Expr_LogicalNOR",
                 WirePort::BInputA,
                 WirePort::BInputB,
                 WirePort::BOutput,
             )),
             ("~", "&") => Some((
-                "BrickComponentType_WireGraph_Expr_BitwiseNAND",
+                "BrickComponentType_Expr_BitwiseNAND",
                 WirePort::InputA,
                 WirePort::InputB,
                 WirePort::Output,
             )),
             ("~", "|") => Some((
-                "BrickComponentType_WireGraph_Expr_BitwiseNOR",
+                "BrickComponentType_Expr_BitwiseNOR",
                 WirePort::InputA,
                 WirePort::InputB,
                 WirePort::Output,

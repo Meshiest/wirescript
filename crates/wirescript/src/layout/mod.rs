@@ -8,8 +8,7 @@
 //! Pin rules applied on top of the topo layout:
 //! - `NodeKind::Input` → leftmost column.
 //! - `NodeKind::Output` → rightmost column.
-//! - Pseudo-storage nodes (`BrickComponentType_WireGraphPseudo_*`) →
-//!   bottom row.
+//! - Storage nodes (Var, ArrayVar, BufferTicks) → bottom row.
 //!
 //! The region/compose machinery (`region.rs`, `compose.rs`) is retained
 //! for future block-aware layouts but currently unused.
@@ -48,10 +47,9 @@ pub const Z_PLANE: i32 = 2;
 fn is_pseudo_storage(node: &Node) -> bool {
     matches!(
         node.gate_class,
-        "BrickComponentType_WireGraphPseudo_Var"
-            | "BrickComponentType_WireGraphPseudo_Buffer"
-            | "BrickComponentType_WireGraphPseudo_BufferTicks"
-            | "BrickComponentType_WireGraphPseudo_ArrayVar"
+        "BrickComponentType_Var"
+            | "BrickComponentType_BufferTicks"
+            | "BrickComponentType_ArrayVar"
     )
 }
 

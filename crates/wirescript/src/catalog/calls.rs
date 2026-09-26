@@ -211,7 +211,7 @@ fn vec_recv(
 }
 
 /// The value types a math-variant port accepts, matching the game's
-/// `WireGraphPrimMathVariant` (`f64, i64, Vector, Rotator, Quat, LinearColor`).
+/// numeric operand set (`f64, i64, Vector, Rotator, Quat, LinearColor`).
 /// `Blend`/`lerp`/`Tween` interpolate any of these, not just floats.
 fn blend_variant() -> Type {
     Type::Union(vec![

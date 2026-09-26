@@ -22,7 +22,7 @@ on player {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
         .count();
     assert!(
         set_count >= 2,
@@ -32,7 +32,7 @@ on player {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Union");
+        .any(|n| n.gate_class == "BrickComponentType_Exec_Union");
     assert!(
         has_union,
         "mod with return should create a return union gate"
@@ -60,7 +60,7 @@ on player {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Union")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_Union")
         .count();
     assert!(
         union_count >= 1,
@@ -95,7 +95,7 @@ on player {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Union")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_Union")
         .count();
     assert!(
         union_count >= 2,
@@ -103,7 +103,7 @@ on player {
     );
     // No union input port should have more than one wire
     for node in r.module.nodes.values() {
-        if node.gate_class == "BrickComponentType_WireGraph_Exec_Union" {
+        if node.gate_class == "BrickComponentType_Exec_Union" {
             for port in &node.ports.inputs {
                 let incoming = r
                     .module
@@ -154,7 +154,7 @@ on player {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
         .count();
     assert!(
         push_count >= 2,
@@ -188,11 +188,11 @@ on player {
     // not the mod's `x` (v & 0xFF). Check that the `y` local
     // resolves to the MathAdd output, not the BitwiseAND output.
     let add_nodes: Vec<_> = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .collect();
     assert!(!add_nodes.is_empty(), "should have a MathAdd gate for v + 1");
     let and_nodes: Vec<_> = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_BitwiseAND")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_BitwiseAND")
         .collect();
     assert!(!and_nodes.is_empty(), "should have a BitwiseAND gate for v & 0xFF");
     let and_id = &and_nodes[0].id;
@@ -216,7 +216,7 @@ on player {
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     // Inline mods don't create MicrochipOutput — value wires directly to caller
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should have MathAdd for x + x");
     let ret_vars: Vec<_> = r.module.nodes.values()
         .filter(|n| n.note == Some("ret_val"))
@@ -391,8 +391,8 @@ on z {
         r.diagnostics
     );
     assert!(!has_gate(&r, "_Unsupported"), "no unsupported placeholder expected");
-    let select = find_gate(&r, "BrickComponentType_WireGraph_Expr_Select");
-    let set = find_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let select = find_gate(&r, "BrickComponentType_Expr_Select");
+    let set = find_gate(&r, "BrickComponentType_Exec_Var_Set");
     assert!(
         wired_reachable(&r, select, set),
         "the returned SELECT value must reach the `result` Var_Set"
@@ -459,7 +459,7 @@ on player {
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let add_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .count();
     assert!(add_count >= 1, "f + 10 should produce a MathAdd gate");
 }
@@ -519,12 +519,12 @@ on player {
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let has_pseudo_var = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var");
+        .any(|n| n.gate_class == "BrickComponentType_Var");
     assert!(has_pseudo_var, "static var should create a PseudoVar");
     let has_incr = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Increment");
+        .any(|n| n.gate_class == "BrickComponentType_Exec_Var_Increment");
     let has_set = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set");
+        .any(|n| n.gate_class == "BrickComponentType_Exec_Var_Set");
     assert!(has_incr || has_set,
         "should have Var_Increment or Var_Set for n = n + 1");
 }
@@ -541,7 +541,7 @@ on player {
 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "return block expr should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should produce MathAdd for x + 1 inside returned block");
 }
 
@@ -592,9 +592,9 @@ on player {
 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "nested mod return value should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathMultiply"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathMultiply"),
         "should have MathMultiply for x * 2 in inner mod");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should have MathAdd for inner(x) + 1 in outer mod");
 }
 
@@ -613,7 +613,7 @@ on player {
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "return value with array read should compile: {:?}", r.diagnostics);
     let has_arr_get = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Get");
+        .any(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Get");
     assert!(has_arr_get, "should have ArrayVar_Get gate for arr[0]");
 }
 
@@ -627,9 +627,9 @@ on RoundStart() {
 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "return in handler should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Branch"),
         "should produce Branch gate for exec if in handler");
-    let set_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let set_count = gate_count(&r, "BrickComponentType_Exec_Var_Set");
     assert!(set_count >= 1,
         "should have at least 1 Var_Set for x = 1, found {set_count}");
 }
@@ -648,12 +648,12 @@ on player {
 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "mod with ref params and output should compile: {:?}", r.diagnostics);
-    let has_incr = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Increment");
-    let has_set = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let has_incr = has_gate(&r, "BrickComponentType_Exec_Var_Increment");
+    let has_set = has_gate(&r, "BrickComponentType_Exec_Var_Set");
     assert!(has_incr || has_set,
         "mod with ref param should produce Exec_Var_Set or Exec_Var_Increment");
     // Inline mod output is removed — value flows directly via Var_Get
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
         "mod with return x should produce Var_Get for the return value");
 }
 
@@ -676,9 +676,9 @@ on player {
 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "two mods with same local names should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should have MathAdd for v + 1 in mod a");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathMultiply"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathMultiply"),
         "should have MathMultiply for v * 2 in mod b");
 }
 
@@ -703,7 +703,7 @@ on player {
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "nested mods with same var names should compile: {:?}", r.diagnostics);
     let pseudo_var_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|n| n.gate_class == "BrickComponentType_Var")
         .count();
     assert!(pseudo_var_count >= 2,
         "should have at least 2 PseudoVar nodes for separate var x in each mod, found {pseudo_var_count}");
@@ -725,7 +725,7 @@ on player {
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "static var across multiple calls should compile: {:?}", r.diagnostics);
     let pseudo_vars: Vec<_> = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|n| n.gate_class == "BrickComponentType_Var")
         .collect();
     assert_eq!(pseudo_vars.len(), 2,
         "two inlined calls should each get a PseudoVar, found {}",
@@ -746,7 +746,7 @@ on player {
 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "mod result in if condition should compile: {:?}", r.diagnostics);
-    let select_count = gate_count(&r, "BrickComponentType_WireGraph_Expr_Select");
+    let select_count = gate_count(&r, "BrickComponentType_Expr_Select");
     assert!(select_count >= 2,
         "should have at least 2 Select gates (inner and outer if), found {select_count}");
 }

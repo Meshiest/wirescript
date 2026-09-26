@@ -8,7 +8,7 @@ fn count_class(m: &crate::ir::Module, class: &str) -> usize {
     n
 }
 
-const VAR_GET: &str = "BrickComponentType_WireGraph_Exec_Var_Get";
+const VAR_GET: &str = "BrickComponentType_Exec_Var_Get";
 
 // In each program `v` is read for `w = v`, `w` once for the condition, and `v`
 // again for `u = v`. When the branch does NOT write `v`, the two reads of `v`

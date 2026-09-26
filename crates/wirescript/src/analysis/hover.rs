@@ -773,11 +773,9 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
     let display = port_doc.map(|pd| pd.display_name.as_str()).unwrap_or(p.name);
     let tooltip = port_doc.map(|pd| pd.tooltip.as_str()).unwrap_or("");
 
-    // A config param surfaced as a plain int but backed by a schema enum shows
-    // the enum's name (and its members below) instead of `int`.
-    let config_enum = (!crate::catalog::is_wire_input(spec.gate_class, p.port.as_str()))
-        .then(|| crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str()))
-        .flatten();
+    // A param surfaced as a plain int but backed by a schema enum shows the
+    // enum's name (and its members below) instead of `int`, wireable or not.
+    let config_enum = crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str());
     let ty_label = config_enum
         .map(str::to_string)
         .unwrap_or_else(|| type_str(&p.ty));

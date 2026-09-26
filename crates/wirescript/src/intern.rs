@@ -98,36 +98,32 @@ pub mod sym {
     def!(LITERAL, "_Literal");
     def!(UNSUPPORTED, "_Unsupported");
     def!(LAYOUT, "_layout");
-    def!(UNION, "BrickComponentType_WireGraph_Exec_Union");
-    def!(BRANCH, "BrickComponentType_WireGraph_Exec_Branch");
-    def!(PSEUDO_VAR, "BrickComponentType_WireGraphPseudo_Var");
-    def!(VAR_GET, "BrickComponentType_WireGraph_Exec_Var_Get");
-    def!(VAR_SET, "BrickComponentType_WireGraph_Exec_Var_Set");
+    def!(UNION, "BrickComponentType_Exec_Union");
+    def!(BRANCH, "BrickComponentType_Exec_Branch");
+    def!(VAR, "BrickComponentType_Var");
+    def!(VAR_GET, "BrickComponentType_Exec_Var_Get");
+    def!(VAR_SET, "BrickComponentType_Exec_Var_Set");
     def!(
         VAR_INCREMENT,
-        "BrickComponentType_WireGraph_Exec_Var_Increment"
+        "BrickComponentType_Exec_Var_Increment"
     );
     def!(
         ARRAY_SET_AT_INDEX,
-        "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex"
-    );
-    def!(
-        ARRAY_GET_AT_INDEX,
-        "BrickComponentType_WireGraph_Exec_ArrayVar_GetAtIndex"
+        "BrickComponentType_Exec_ArrayVar_SetAtIndex"
     );
     def!(
         ARRAY_PUSH,
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Push"
+        "BrickComponentType_Exec_ArrayVar_Push"
     );
-    def!(ARRAY_POP, "BrickComponentType_WireGraph_Exec_ArrayVar_Pop");
+    def!(ARRAY_POP, "BrickComponentType_Exec_ArrayVar_Pop");
     def!(
         ARRAY_GET_LENGTH,
-        "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength"
+        "BrickComponentType_Exec_ArrayVar_GetLength"
     );
-    def!(LOGICAL_NOT, "BrickComponentType_WireGraph_Expr_LogicalNOT");
+    def!(LOGICAL_NOT, "BrickComponentType_Expr_LogicalNOT");
     def!(
         STRING_LENGTH,
-        "BrickComponentType_WireGraph_Expr_String_Length"
+        "BrickComponentType_Expr_String_Length"
     );
     def!(MICROCHIP, "Component_Internal_Microchip");
 }

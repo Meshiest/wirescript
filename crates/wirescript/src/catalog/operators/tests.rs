@@ -4,7 +4,7 @@
     fn add_int_int_returns_int() {
         let r = resolve_op("+", &[Type::Int, Type::Int]).unwrap();
         assert!(matches!(r.result, Type::Int));
-        assert_eq!(r.gate_class, "BrickComponentType_WireGraph_Expr_MathAdd");
+        assert_eq!(r.gate_class, "BrickComponentType_Expr_MathAdd");
     }
 
     #[test]
@@ -45,11 +45,11 @@
     #[test]
     fn vector_arithmetic_resolves_to_math_gates() {
         for (op, gate) in [
-            ("+", "BrickComponentType_WireGraph_Expr_MathAdd"),
-            ("-", "BrickComponentType_WireGraph_Expr_MathSubtract"),
-            ("*", "BrickComponentType_WireGraph_Expr_MathMultiply"),
-            ("/", "BrickComponentType_WireGraph_Expr_MathDivide"),
-            ("%", "BrickComponentType_WireGraph_Expr_MathModulo"),
+            ("+", "BrickComponentType_Expr_MathAdd"),
+            ("-", "BrickComponentType_Expr_MathSubtract"),
+            ("*", "BrickComponentType_Expr_MathMultiply"),
+            ("/", "BrickComponentType_Expr_MathDivide"),
+            ("%", "BrickComponentType_Expr_MathModulo"),
         ] {
             // vec⊗vec and vec⊗scalar (both directions) all lower to the same
             // math gate and produce a vector.
@@ -74,11 +74,11 @@
     #[test]
     fn color_arithmetic_resolves_to_math_gates() {
         for (op, gate) in [
-            ("+", "BrickComponentType_WireGraph_Expr_MathAdd"),
-            ("-", "BrickComponentType_WireGraph_Expr_MathSubtract"),
-            ("*", "BrickComponentType_WireGraph_Expr_MathMultiply"),
-            ("/", "BrickComponentType_WireGraph_Expr_MathDivide"),
-            ("%", "BrickComponentType_WireGraph_Expr_MathModulo"),
+            ("+", "BrickComponentType_Expr_MathAdd"),
+            ("-", "BrickComponentType_Expr_MathSubtract"),
+            ("*", "BrickComponentType_Expr_MathMultiply"),
+            ("/", "BrickComponentType_Expr_MathDivide"),
+            ("%", "BrickComponentType_Expr_MathModulo"),
         ] {
             // color*color and color*scalar (both directions) lower to the same
             // math gate and produce a color (RGBA channel-wise).
@@ -105,8 +105,8 @@
         // quat / rotator operands ride the same PrimMath gates (e.g. `q1 * q2`
         // composes two rotations). Same-type keeps its type; a mix yields a quat.
         for (op, gate) in [
-            ("+", "BrickComponentType_WireGraph_Expr_MathAdd"),
-            ("*", "BrickComponentType_WireGraph_Expr_MathMultiply"),
+            ("+", "BrickComponentType_Expr_MathAdd"),
+            ("*", "BrickComponentType_Expr_MathMultiply"),
         ] {
             let qq = resolve_op(op, &[Type::Quat, Type::Quat]).unwrap();
             assert!(matches!(qq.result, Type::Quat));
@@ -145,12 +145,12 @@
         // `-x` in a generic mod otherwise fell through to a stale fallback type).
         let ri = resolve_op("-", &[Type::Int]).expect("unary - on int");
         assert!(matches!(ri.result, Type::Int));
-        assert_eq!(ri.gate_class, "BrickComponentType_WireGraph_Expr_MathNegate");
+        assert_eq!(ri.gate_class, "BrickComponentType_Expr_MathNegate");
         let rf = resolve_op("-", &[Type::Float]).expect("unary - on float");
         assert!(matches!(rf.result, Type::Float));
         // Binary "-" (arity 2) stays subtract; the remap is arity-gated.
         let sub = resolve_op("-", &[Type::Int, Type::Int]).expect("binary -");
-        assert_eq!(sub.gate_class, "BrickComponentType_WireGraph_Expr_MathSubtract");
+        assert_eq!(sub.gate_class, "BrickComponentType_Expr_MathSubtract");
     }
 
     #[test]

@@ -13,13 +13,14 @@
 //! receives its value: exactly one incoming wire, from a real gate whose
 //! embedded data evaluates to the expected constant.
 
-use brdb::schema::WireVariant;
+use brdb::AsBrdbValue;
+use brdb::schema::WireValue;
 use wirescript::emit::EmitOptions;
 use wirescript::{CompileInput, FoldMode, compile_to_world};
 
 const CHIP_IN: &str = "BrickComponentType_Internal_MicrochipInput";
-const MATH_ADD: &str = "BrickComponentType_WireGraph_Expr_MathAdd";
-const STRING_CONCAT: &str = "BrickComponentType_WireGraph_Expr_String_Concatenate";
+const MATH_ADD: &str = "BrickComponentType_Expr_MathAdd";
+const STRING_CONCAT: &str = "BrickComponentType_Expr_String_Concatenate";
 const REROUTER: &str = "Component_Internal_Rerouter";
 
 fn world(src: &str, fold_mode: FoldMode) -> brdb::World {
@@ -47,6 +48,32 @@ fn component_is(c: &Box<dyn brdb::BrdbComponent>, ty: &str) -> bool {
     c.component_type()
         .map(|t| t.to_string() == ty)
         .unwrap_or(false)
+}
+
+/// The `WireValue` an emitted component field holds, read back through the
+/// accessors the brdb writer itself uses. `None` when the field is not a
+/// wire value (e.g. a native struct).
+fn as_wire_value(v: &dyn AsBrdbValue) -> Option<WireValue> {
+    let schema = brdb::schemas::bricks_components_schema_max();
+    let f = |name: &str| -> f64 {
+        let id = schema
+            .intern
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} interned in max schema"));
+        v.as_brdb_struct_prop_value(schema, id, id)
+            .and_then(|p| p.as_brdb_f64())
+            .unwrap_or_else(|e| panic!("wire value component {name}: {e:?}"))
+    };
+    Some(match v.as_brdb_variant_member()? {
+        "i64" => WireValue::Int(v.as_brdb_i64().ok()?),
+        "f64" => WireValue::Number(v.as_brdb_f64().ok()?),
+        "Bool" => WireValue::Bool(v.as_brdb_bool().ok()?),
+        "Str" => WireValue::Str(v.as_brdb_str().ok()?.to_string()),
+        "Vector" => WireValue::Vector { x: f("X"), y: f("Y"), z: f("Z") },
+        "Rotator" => WireValue::Rotator { pitch: f("Pitch"), yaw: f("Yaw"), roll: f("Roll") },
+        "Quat" => WireValue::Quat { x: f("X"), y: f("Y"), z: f("Z"), w: f("W") },
+        _ => return None,
+    })
 }
 
 /// The chip child grid's `MicrochipInput` brick id (the repro has exactly
@@ -89,10 +116,10 @@ fn math_add_input_sum(b: &brdb::Brick) -> i64 {
         let v = comp
             .as_brdb_struct_prop_value(schema, fid, fid)
             .unwrap_or_else(|e| panic!("{field} present in component data: {e:?}"));
-        match v.as_brdb_wire_variant().expect("wire variant operand") {
-            WireVariant::Int(n) => n,
-            WireVariant::Number(f) => f as i64,
-            other => panic!("unexpected {field} variant: {other:?}"),
+        match as_wire_value(v).expect("wire value operand") {
+            WireValue::Int(n) => n,
+            WireValue::Number(f) => f as i64,
+            other => panic!("unexpected {field} value: {other:?}"),
         }
     };
     read("InputA") + read("InputB")
@@ -199,7 +226,7 @@ fn operand_source_brick<'w>(w: &'w brdb::World, consumer: &brdb::Brick, port_nam
 /// bakes a folded operand into when it lands directly on an ordinary math
 /// gate's own generic operand field, rather than a dedicated `MakeVector`/
 /// `MakeQuaternion` carrier's separate X/Y/Z(/W) fields.
-fn read_wire_variant(b: &brdb::Brick, component_type: &str, field: &str) -> WireVariant {
+fn read_wire_value(b: &brdb::Brick, component_type: &str, field: &str) -> WireValue {
     let schema = brdb::schemas::bricks_components_schema_max();
     let comp = b
         .components
@@ -210,36 +237,35 @@ fn read_wire_variant(b: &brdb::Brick, component_type: &str, field: &str) -> Wire
         .intern
         .get(field)
         .unwrap_or_else(|| panic!("{field} interned in max schema"));
-    comp.as_brdb_struct_prop_value(schema, fid, fid)
-        .unwrap_or_else(|e| panic!("{field} present in component data: {e:?}"))
-        .as_brdb_wire_variant()
-        .expect("wire variant operand")
+    as_wire_value(
+        comp.as_brdb_struct_prop_value(schema, fid, fid)
+            .unwrap_or_else(|e| panic!("{field} present in component data: {e:?}")),
+    )
+    .expect("wire value operand")
 }
 
-fn read_wire_variant_int(b: &brdb::Brick, component_type: &str, field: &str) -> i64 {
-    match read_wire_variant(b, component_type, field) {
-        WireVariant::Int(n) => n,
-        WireVariant::Number(f) => f as i64,
-        other => panic!("unexpected {field} variant: {other:?}"),
+fn read_wire_value_int(b: &brdb::Brick, component_type: &str, field: &str) -> i64 {
+    match read_wire_value(b, component_type, field) {
+        WireValue::Int(n) => n,
+        WireValue::Number(f) => f as i64,
+        other => panic!("unexpected {field} value: {other:?}"),
     }
 }
 
-fn read_wire_variant_vector(b: &brdb::Brick, component_type: &str, field: &str) -> (f64, f64, f64) {
-    match read_wire_variant(b, component_type, field) {
-        WireVariant::Vector(v) => (v.x as f64, v.y as f64, v.z as f64),
-        other => panic!("unexpected {field} variant: {other:?}"),
+fn read_wire_value_vector(b: &brdb::Brick, component_type: &str, field: &str) -> (f64, f64, f64) {
+    match read_wire_value(b, component_type, field) {
+        WireValue::Vector { x, y, z } => (x, y, z),
+        other => panic!("unexpected {field} value: {other:?}"),
     }
 }
 
 /// Some fields (e.g. `QuatSlerp`'s `InputA`/receiver) embed a baked
 /// composite as a NESTED struct (X/Y/Z/W sub-fields) rather than a tagged
-/// `WireVariant::Quat` union member — reading it as a normal wire variant
-/// produces `UnimplementedCast("wire variant", ...)` — unlike a generic
-/// math gate's operand slot (`read_wire_variant`'s own callers), which
-/// reads back as a normal wire variant. Try the wire-variant reading first
-/// (cheaper, and correct for the fields that DO use it), falling back to
-/// the nested-struct shape.
-fn read_wire_variant_quat(b: &brdb::Brick, component_type: &str, field: &str) -> (f64, f64, f64, f64) {
+/// `WireValue::Quat` alternative — unlike a generic math gate's operand slot
+/// (`read_wire_value`'s own callers), which reads back as a wire value. Try
+/// the wire-value reading first (cheaper, and correct for the fields that DO
+/// use it), falling back to the nested-struct shape.
+fn read_wire_value_quat(b: &brdb::Brick, component_type: &str, field: &str) -> (f64, f64, f64, f64) {
     let schema = brdb::schemas::bricks_components_schema_max();
     let comp = b
         .components
@@ -253,7 +279,7 @@ fn read_wire_variant_quat(b: &brdb::Brick, component_type: &str, field: &str) ->
     let value = comp
         .as_brdb_struct_prop_value(schema, fid, fid)
         .unwrap_or_else(|e| panic!("{field} present in component data: {e:?}"));
-    if let Ok(WireVariant::Quat { x, y, z, w }) = value.as_brdb_wire_variant() {
+    if let Some(WireValue::Quat { x, y, z, w }) = as_wire_value(value) {
         return (x, y, z, w);
     }
     let read_sub = |sub: &str| -> f64 {
@@ -272,7 +298,8 @@ fn read_wire_variant_quat(b: &brdb::Brick, component_type: &str, field: &str) ->
     (read_sub("X"), read_sub("Y"), read_sub("Z"), read_sub("W"))
 }
 
-/// Read a `String_Concatenate` component's baked `InputA` text.
+/// Read a `String_Concatenate` component's baked `InputA` text (a native `str`
+/// field).
 fn string_concat_input_a(b: &brdb::Brick) -> String {
     let schema = brdb::schemas::bricks_components_schema_max();
     let comp = b
@@ -287,10 +314,9 @@ fn string_concat_input_a(b: &brdb::Brick) -> String {
     let v = comp
         .as_brdb_struct_prop_value(schema, fid, fid)
         .unwrap_or_else(|e| panic!("InputA present in component data: {e:?}"));
-    match v.as_brdb_wire_variant().expect("wire variant operand") {
-        WireVariant::Str(s) => s,
-        other => panic!("unexpected InputA variant: {other:?}"),
-    }
+    v.as_brdb_str()
+        .unwrap_or_else(|e| panic!("InputA is a string: {e:?}"))
+        .to_string()
 }
 
 /// `chip P(v: string) -> (r: string)`: the argument is a constant-folded
@@ -359,7 +385,7 @@ fn folded_const_vector_arg_reaches_named_chip_input() {
         source.id, consumer.id,
         "a Vector must inline as baked data directly on the consumer, not via a separate carrier"
     );
-    let (x, y, z) = read_wire_variant_vector(source, MATH_ADD, "InputA");
+    let (x, y, z) = read_wire_value_vector(source, MATH_ADD, "InputA");
     assert_eq!((x, y, z), (1.5, 2.5, 3.5), "delivered constant vector");
     println!("P(Vec+Vec) folded: delivered ({x}, {y}, {z}) directly to the live consumer (pin {pin} wire-free)");
 }
@@ -397,7 +423,7 @@ fn assert_direct_delivery(what: &str, src: &str, expected: i64) {
         "{what}: an int must inline as baked data directly on the consumer, not via a separate \
          carrier"
     );
-    let value = read_wire_variant_int(source, MATH_ADD, "InputA");
+    let value = read_wire_value_int(source, MATH_ADD, "InputA");
     assert_eq!(value, expected, "{what}: delivered constant value");
     println!("{what}: delivered {value} directly to the live consumer (pin {pin} wire-free)");
 }
@@ -445,7 +471,7 @@ const FOLDED_QUAT_EXPR: &str =
     "chip P(v: quat) -> (r: quat) { out r = v.Slerp(Opaque(Quat(0.0, 0.0, 0.0, 1.0)), 0.0) }\n\
      out y = P(Quat(0.0 + 0.0, 0.0 + 0.0, 0.38 + 0.0, 0.92 + 0.0))\n";
 
-const QUAT_SLERP: &str = "BrickComponentType_WireGraph_Expr_QuatSlerp";
+const QUAT_SLERP: &str = "BrickComponentType_Expr_QuatSlerp";
 
 #[test]
 fn folded_const_quat_arg_reaches_named_chip_input() {
@@ -469,7 +495,7 @@ fn folded_const_quat_arg_reaches_named_chip_input() {
         source.id, consumer.id,
         "a Quat must inline as baked data directly on the consumer, not via a separate carrier"
     );
-    let (x, y, z, wq) = read_wire_variant_quat(source, QUAT_SLERP, "InputA");
+    let (x, y, z, wq) = read_wire_value_quat(source, QUAT_SLERP, "InputA");
     assert_eq!((x, y, z, wq), (0.0, 0.0, 0.38, 0.92), "delivered constant quat");
     println!(
         "P(Quat(arith)) folded: delivered ({x}, {y}, {z}, {wq}) directly to the live consumer \

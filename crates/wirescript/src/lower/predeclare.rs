@@ -839,10 +839,10 @@ fn expr_to_literal_lit(e: &Expr, env: Option<&ConstEnv>) -> Option<Literal> {
             asset_name: asset_name.clone(),
         }),
         // Prefab file reference `$./file.brz` — inlined; resolved + embedded
-        // at emit into the gate's `bundle_path_ref` property.
+        // at emit into the gate's `Prefab` path string.
         Expr::PrefabRef { path, .. } => Some(Literal::PrefabRef { path: path.clone() }),
         // Inline nested-prefab block `$``` ... ``` ` — inlined; compiled +
-        // embedded at emit into the gate's `bundle_path_ref` property.
+        // embedded at emit into the gate's `Prefab` path string.
         Expr::NestedPrefab { source, .. } => Some(Literal::NestedPrefab {
             source: source.clone(),
         }),
@@ -1262,7 +1262,7 @@ fn make_array_var_gate(
     range: &SourceRange,
 ) -> NodeId {
     ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_ARRAY_VAR,
+        gate_class: gc::ARRAY_VAR,
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![],
@@ -1311,7 +1311,7 @@ fn make_map_var_gate(
     range: &SourceRange,
 ) -> NodeId {
     ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_MAP_VAR,
+        gate_class: gc::MAP_VAR,
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![],
@@ -1333,7 +1333,7 @@ fn make_scalar_var_gate(
     range: &SourceRange,
 ) -> NodeId {
     ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_VAR,
+        gate_class: gc::VAR,
         source_range: range.clone(),
         ports: GateIO::var_storage(inner_type.clone()),
         properties,
@@ -2529,7 +2529,7 @@ pub(super) fn pre_declare_var(ctx: &mut LowerCtx, d: &VarDecl) {
     }
 
     let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_VAR,
+        gate_class: gc::VAR,
         source_range: d.range.clone(),
         ports: GateIO::var_storage(inner_type.clone()),
         properties,

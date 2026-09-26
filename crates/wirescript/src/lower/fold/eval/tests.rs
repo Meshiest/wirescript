@@ -1,9 +1,9 @@
     use super::*;
     use crate::lower::fold::table::{CaseValue, CertifiedTable, InVariant};
 
-    const SELECT: &str = "BrickComponentType_WireGraph_Expr_Select";
-    const BRANCH: &str = "BrickComponentType_WireGraph_Exec_Branch";
-    const FORMAT_TEXT: &str = "BrickComponentType_WireGraph_Expr_String_FormatText";
+    const SELECT: &str = "BrickComponentType_Expr_Select";
+    const BRANCH: &str = "BrickComponentType_Exec_Branch";
+    const FORMAT_TEXT: &str = "BrickComponentType_Expr_String_FormatText";
 
     // The extended-math / bitwise / rounding laws are gated out of `eval` by
     // `covers()` until re-probed, so test the pure laws directly here.
@@ -308,7 +308,7 @@
         // render_for_format's — "true"/"false", not "1"/"0".
         assert_eq!(
             eval(
-                "BrickComponentType_WireGraph_Expr_String_Concatenate",
+                "BrickComponentType_Expr_String_Concatenate",
                 &[Some(Value::Bool(true)), Some(Value::Str("!".into()))]
             ),
             Some(Value::Str("true!".into()))
@@ -317,13 +317,13 @@
 
     #[test]
     fn multibyte_string_operands_refuse() {
-        let len = "BrickComponentType_WireGraph_Expr_String_Length";
+        let len = "BrickComponentType_Expr_String_Length";
         assert!(eval(len, &[Some(Value::Str("π≈3".into()))]).is_none());
     }
 
     #[test]
     fn oversized_float_refuses_string_fold() {
-        let concat = "BrickComponentType_WireGraph_Expr_String_Concatenate";
+        let concat = "BrickComponentType_Expr_String_Concatenate";
         // Signature coverage only cares about variant shape, so this is
         // reachable even though no case probed this exact magnitude.
         assert!(string_operands_foldable(&[
@@ -335,7 +335,7 @@
 
     #[test]
     fn oversized_string_result_refuses_fold() {
-        let concat = "BrickComponentType_WireGraph_Expr_String_Concatenate";
+        let concat = "BrickComponentType_Expr_String_Concatenate";
         // Concatenating two 5000-char strings would produce 10000 chars, exceeding
         // MAX_FOLDED_STRING_LEN (8192), so it must refuse.
         let s5000 = Some(Value::Str("a".repeat(5000)));
@@ -352,7 +352,7 @@
     #[test]
     fn deferred_ops_always_refuse() {
         for short in DEFERRED {
-            let gate = format!("BrickComponentType_WireGraph_Expr_{short}");
+            let gate = format!("BrickComponentType_Expr_{short}");
             let t = CertifiedTable::certified();
             for case in t.cases(&gate) {
                 let inputs: Vec<Option<Value>> = case.inputs.iter().map(case_value).collect();
@@ -371,7 +371,7 @@
     #[test]
     fn blank_render_gates_always_refuse() {
         for short in BLANK_RENDER_REFUSED {
-            let gate = format!("BrickComponentType_WireGraph_Expr_{short}");
+            let gate = format!("BrickComponentType_Expr_{short}");
             let t = CertifiedTable::certified();
             let cases = t.cases(&gate);
             assert!(!cases.is_empty(), "{gate}: expected at least one certified case");
@@ -384,7 +384,7 @@
 
     #[test]
     fn rotate_vector_replays_the_45_degree_case_exactly() {
-        let gate = "BrickComponentType_WireGraph_Expr_RotateVector";
+        let gate = "BrickComponentType_Expr_RotateVector";
         let v = Some(Value::Vector { x: 1.0, y: 0.0, z: 0.0 });
         let q = Some(Value::Quat {
             x: 0.0, y: 0.0, z: 0.3826834323650898, w: 0.9238795325112867,
@@ -395,9 +395,9 @@
 
     #[test]
     fn refusal_overflow_and_mixed_sign_div() {
-        let add = "BrickComponentType_WireGraph_Expr_MathAdd";
-        let div = "BrickComponentType_WireGraph_Expr_MathDivide";
-        let md = "BrickComponentType_WireGraph_Expr_MathModulo";
+        let add = "BrickComponentType_Expr_MathAdd";
+        let div = "BrickComponentType_Expr_MathDivide";
+        let md = "BrickComponentType_Expr_MathModulo";
         let i = |n: i64| Some(Value::Int(n));
         assert!(eval(add, &[i(i64::MAX), i(1)]).is_none(), "overflow refuses");
         assert!(eval(div, &[i(-7), i(2)]).is_none(), "trunc-vs-floor unprobed");
@@ -408,8 +408,8 @@
 
     #[test]
     fn overflow_min_div_neg_one_refuses_no_panic() {
-        let div = "BrickComponentType_WireGraph_Expr_MathDivide";
-        let md = "BrickComponentType_WireGraph_Expr_MathModulo";
+        let div = "BrickComponentType_Expr_MathDivide";
+        let md = "BrickComponentType_Expr_MathModulo";
         let i = |n: i64| Some(Value::Int(n));
         // i64::MIN / -1 (and MIN % -1) overflow i64 unconditionally in Rust;
         // must refuse via checked ops rather than panic.
@@ -419,7 +419,7 @@
 
     #[test]
     fn float_modulo_mixed_sign_refuses() {
-        let md = "BrickComponentType_WireGraph_Expr_MathModulo";
+        let md = "BrickComponentType_Expr_MathModulo";
         let f = |n: f64| Some(Value::Float(n));
         assert!(eval(md, &[f(-3.5), f(2.0)]).is_none());
     }
@@ -429,7 +429,7 @@
         // Certified deviation from the scalar path: compositeMath's Modulo
         // computes unconditionally (Rust `%`, truncated remainder), even
         // mixed-sign — `Vec(0.5,0.25,-0.75) % Vec(0.25,0.5,0.75) -> Z=-0.000`.
-        let md = "BrickComponentType_WireGraph_Expr_MathModulo";
+        let md = "BrickComponentType_Expr_MathModulo";
         let v1 = Some(Value::Vector { x: 0.5, y: 0.25, z: -0.75 });
         let v2 = Some(Value::Vector { x: 0.25, y: 0.5, z: 0.75 });
         let got = eval(md, &[v1, v2]).expect("composite modulo must not refuse on mixed sign");
@@ -438,10 +438,10 @@
 
     #[test]
     fn uncovered_signatures_refuse() {
-        let ne = "BrickComponentType_WireGraph_Expr_CompareNotEqual";
-        let eq_gate = "BrickComponentType_WireGraph_Expr_CompareEqual";
-        let lt = "BrickComponentType_WireGraph_Expr_CompareLess";
-        let not = "BrickComponentType_WireGraph_Expr_LogicalNOT";
+        let ne = "BrickComponentType_Expr_CompareNotEqual";
+        let eq_gate = "BrickComponentType_Expr_CompareEqual";
+        let lt = "BrickComponentType_Expr_CompareLess";
+        let not = "BrickComponentType_Expr_LogicalNOT";
         // (Str, Unwired): CompareNotEqual was only probed at (int,int)/(int,str).
         assert!(eval(ne, &[Some(Value::Str("x".into())), None]).is_none());
         // Reverse of the probed (int,str) direction — (str,int) unprobed.
@@ -455,7 +455,7 @@
 
     #[test]
     fn covered_signature_still_folds() {
-        let eq_gate = "BrickComponentType_WireGraph_Expr_CompareEqual";
+        let eq_gate = "BrickComponentType_Expr_CompareEqual";
         assert_eq!(
             eval(eq_gate, &[Some(Value::Int(1)), Some(Value::Str("1".into()))]),
             Some(Value::Bool(true))

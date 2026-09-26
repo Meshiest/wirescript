@@ -67,7 +67,7 @@ pub(crate) fn nodes_of<'a>(m: &'a crate::ir::Module, class: &str) -> Vec<&'a cra
 /// `intern.rs`/`port_registry.rs`'s `WirePort::EventName`), so it's interned
 /// on the fly exactly like `lower/call/builtin.rs` does when baking it.
 fn event_name_properties(m: &crate::ir::Module) -> Vec<String> {
-    nodes_of(m, crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT)
+    nodes_of(m, crate::ir::gate_class::SEND_CUSTOM_EVENT)
         .iter()
         .filter_map(
             |n| match n.properties.get(&crate::intern::intern("EventName")) {
@@ -83,7 +83,7 @@ fn event_name_properties(m: &crate::ir::Module) -> Vec<String> {
 /// gate class, not the sender's — the two must agree on `EventName` for a
 /// computed channel to actually connect a sender to its receiver.
 fn receiver_event_names(m: &crate::ir::Module) -> Vec<String> {
-    nodes_of(m, crate::ir::gate_class::PSEUDO_CUSTOM_EVENT)
+    nodes_of(m, crate::ir::gate_class::CUSTOM_EVENT)
         .iter()
         .filter_map(
             |n| match n.properties.get(&crate::intern::intern("EventName")) {
@@ -318,7 +318,7 @@ fn a_const_param_read_in_a_wire_position_inlines_as_a_literal() {
         "a const param in a wire position must not lower to _Unsupported: {:?}",
         m.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
     );
-    let adds = nodes_of(&m, "BrickComponentType_WireGraph_Expr_MathAdd");
+    let adds = nodes_of(&m, "BrickComponentType_Expr_MathAdd");
     assert_eq!(adds.len(), 1, "expected exactly one MathAdd");
     assert!(
         adds[0]

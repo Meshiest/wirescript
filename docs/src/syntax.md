@@ -75,7 +75,7 @@ To confirm the receivers survived, count them in the lowered graph -- this is
 the only check that sees the problem:
 
 ```
-just ir main.ws | grep -c WireGraphPseudo_CustomEvent
+just ir main.ws | grep -c Event_Custom
 ```
 
 Paths are resolved relative to the importing file. Circular imports are an error.

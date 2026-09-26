@@ -101,7 +101,7 @@ impl Value {
 
 // ============================================================================
 // Gate short-name constants. Every string here is the suffix after the last
-// `_` in a gate's full `BrickComponentType_WireGraph_...` class name (what
+// `_` in a gate's full `BrickComponentType_Expr_...` class name (what
 // `eval()` matches on via `gate_class.rsplit('_').next()`). Defined ONCE and
 // referenced everywhere a short name would otherwise be repeated as a raw
 // string literal — the `eval()` match arms below, the `DEFERRED`/

@@ -15,7 +15,7 @@ fn on_local_exec_signal_fires_from_emit_in_another_handler() {
     let r = compile(src);
     assert_no_errors(&r);
     let trig = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
-    let body = find_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Increment");
+    let body = find_gate(&r, "BrickComponentType_Exec_Var_Increment");
     assert!(
         wired_reachable(&r, trig, body),
         "emit sig in `on trig` must drive the `on sig` body; wires: {:?}",
@@ -53,7 +53,7 @@ fn body_local_exec_signal_emit_await_connects() {
     // through a Var_Set(armed = true) *before* the (spliced) hub so the
     // awaiting Var_Get can't race the arm.
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"),
+        !has_gate(&r, "BrickComponentType_Exec_Union"),
         "a single-emitter signal must not keep a pass-through Union; gates: {:?}",
         r.module
             .nodes
@@ -62,7 +62,7 @@ fn body_local_exec_signal_emit_await_connects() {
             .collect::<Vec<_>>()
     );
     let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
-    let cont = find_gate(&r, "BrickComponentType_WireGraph_Exec_PrintToConsole");
+    let cont = find_gate(&r, "BrickComponentType_Exec_PrintToConsole");
     assert!(
         wired_reachable(&r, run, cont),
         "emit->await continuation must be exec-wired from the handler input; wires: {:?}",
@@ -97,7 +97,7 @@ fn await_continuation_reads_a_fresh_var_get() {
         .nodes
         .iter()
         .find(|(_, node)| {
-            node.gate_class == crate::ir::gate_class::PSEUDO_VAR
+            node.gate_class == crate::ir::gate_class::VAR
                 && node.properties.get(&*crate::intern::sym::NAME_LABEL)
                     == Some(&crate::ir::Literal::String("n".to_string()))
         })
@@ -148,7 +148,7 @@ fn buffered_emit_inserts_buffer_and_breaks_cycle() {
     let r = compile(src);
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_BufferTicks"),
+        has_gate(&r, "BrickComponentType_BufferTicks"),
         "buffered emit should insert a BufferTicks; gates: {:?}",
         r.module
             .nodes
@@ -184,19 +184,19 @@ fn scalar_payload_ferries_through_local_signal() {
     assert_no_errors(&r);
     // Stores: payload var + armed flag. The payload must be written on the
     // emit path and read on the resumed path.
-    let vars = gate_count(&r, "BrickComponentType_WireGraphPseudo_Var");
+    let vars = gate_count(&r, "BrickComponentType_Var");
     assert!(
         vars >= 2,
         "expected payload store + armed flag, got {vars} PseudoVars"
     );
-    let gets = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
+    let gets = gate_count(&r, "BrickComponentType_Exec_Var_Get");
     assert!(
         gets >= 2,
         "expected armed read + payload read, got {gets} Var_Gets"
     );
     // And the continuation must still be reachable from the handler input.
     let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
-    let cont = find_gate(&r, "BrickComponentType_WireGraph_Exec_PrintToConsole");
+    let cont = find_gate(&r, "BrickComponentType_Exec_PrintToConsole");
     assert!(
         wired_reachable(&r, run, cont),
         "continuation must be exec-wired"
@@ -215,7 +215,7 @@ fn bare_buffer_emit_defaults_to_one_tick() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    let buf = find_gate(&r, "BrickComponentType_WireGraphPseudo_BufferTicks");
+    let buf = find_gate(&r, "BrickComponentType_BufferTicks");
     let node = &r.module.nodes[&buf];
     assert_eq!(
         node.properties.get(&*crate::intern::sym::TICKS_TO_WAIT),
@@ -238,7 +238,7 @@ fn buffered_emit_seconds_uses_buffer_seconds() {
     let r = compile(src);
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_BufferSeconds"),
+        has_gate(&r, "BrickComponentType_BufferSeconds"),
         "`0.5s` should select BufferSeconds; gates: {:?}",
         r.module
             .nodes
@@ -265,7 +265,7 @@ fn buffered_emit_variable_delay_wires_port() {
     use crate::ir::port_registry::WirePort;
     assert!(
         r.module.nodes.iter().any(|(id, n)| {
-            n.gate_class == "BrickComponentType_WireGraphPseudo_BufferTicks"
+            n.gate_class == "BrickComponentType_BufferTicks"
                 && r.module
                     .wires
                     .iter()
@@ -300,7 +300,7 @@ fn array_pop_value_and_isempty_use_distinct_ports() {
         .module
         .nodes
         .iter()
-        .find(|(_, n)| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Pop")
+        .find(|(_, n)| n.gate_class == "BrickComponentType_Exec_ArrayVar_Pop")
         .map(|(id, _)| id)
         .expect("a pop gate should exist");
     let out_ports: Vec<WirePort> = r
@@ -350,7 +350,7 @@ fn sum_loop_compiles_with_buffered_payload() {
             .collect::<Vec<_>>()
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_BufferTicks"),
+        has_gate(&r, "BrickComponentType_BufferTicks"),
         "back-edge must buffer"
     );
     let cyc = crate::analyze::analyze_cycles(&r.module);
@@ -415,7 +415,7 @@ fn same_signal_name_in_two_mods_stays_separate() {
     );
     // Each mod keeps its own buffered back-edge.
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_BufferTicks"),
+        gate_count(&r, "BrickComponentType_BufferTicks"),
         2,
         "each mod's loop needs its own buffer"
     );
@@ -423,7 +423,7 @@ fn same_signal_name_in_two_mods_stays_separate() {
     let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
     let chat = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
+        "BrickComponentType_Exec_Gamemode_BroadcastChatMessage",
     );
     assert!(
         wired_reachable(&r, run, chat),
@@ -469,7 +469,7 @@ fn handler_local_array_var_rebuilds_without_bogus_var_set() {
         .module
         .nodes
         .iter()
-        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_ArrayVar")
         .map(|(id, _)| *id)
         .collect();
     for w in &r.module.wires {
@@ -484,7 +484,7 @@ fn handler_local_array_var_rebuilds_without_bogus_var_set() {
     }
     // The runtime re-init rebuilds via clear + pushes.
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_Clear"),
         "array re-init should clear then push"
     );
 }
@@ -519,7 +519,7 @@ fn loop_mod_continuation_waits_for_return() {
     // (then ends in emit, else in return) and the mod-end union collapsed to
     // the single return path.
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_Union"),
+        gate_count(&r, "BrickComponentType_Exec_Union"),
         1,
         "only the armed-emit union should remain; gates: {:?}",
         r.module
@@ -532,7 +532,7 @@ fn loop_mod_continuation_waits_for_return() {
     use crate::ir::port_registry::WirePort;
     let chat = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
+        "BrickComponentType_Exec_Gamemode_BroadcastChatMessage",
     );
     let exec_ins: Vec<_> = r
         .module
@@ -547,7 +547,7 @@ fn loop_mod_continuation_waits_for_return() {
     );
     let src_node = &r.module.nodes[&exec_ins[0].source.node_id];
     assert_ne!(
-        src_node.gate_class, "BrickComponentType_WireGraph_Exec_Union",
+        src_node.gate_class, "BrickComponentType_Exec_Union",
         "continuation should come straight from the return path, not a join union"
     );
 }
@@ -567,7 +567,7 @@ fn var_creates_node() {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var");
+        .any(|n| n.gate_class == "BrickComponentType_Var");
     assert!(has_var, "expected a Pseudo_Var node");
 }
 
@@ -579,11 +579,11 @@ fn vector_arithmetic_lowers_to_math_gates() {
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "vec + vec should lower to MathAdd"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathSubtract"),
+        has_gate(&r, "BrickComponentType_Expr_MathSubtract"),
         "vec - vec should lower to MathSubtract"
     );
 }
@@ -598,20 +598,20 @@ fn array_methods_lower_to_their_gates() {
     let r = compile(src);
     assert_no_errors(&r);
     for class in [
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Insert",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Sort",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Reverse",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Swap",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Fill",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Resize",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Sum",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Min",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Max",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Average",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Find",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Append",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_CopyFrom",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Slice",
+        "BrickComponentType_Exec_ArrayVar_Insert",
+        "BrickComponentType_Exec_ArrayVar_Sort",
+        "BrickComponentType_Exec_ArrayVar_Reverse",
+        "BrickComponentType_Exec_ArrayVar_Swap",
+        "BrickComponentType_Exec_ArrayVar_Fill",
+        "BrickComponentType_Exec_ArrayVar_Resize",
+        "BrickComponentType_Exec_ArrayVar_Sum",
+        "BrickComponentType_Exec_ArrayVar_Min",
+        "BrickComponentType_Exec_ArrayVar_Max",
+        "BrickComponentType_Exec_ArrayVar_Average",
+        "BrickComponentType_Exec_ArrayVar_Find",
+        "BrickComponentType_Exec_ArrayVar_Append",
+        "BrickComponentType_Exec_ArrayVar_CopyFrom",
+        "BrickComponentType_Exec_ArrayVar_Slice",
     ] {
         assert!(has_gate(&r, class), "missing gate {class}");
     }
@@ -627,7 +627,7 @@ fn array_constant_initializer_populates_node() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .find(|n| n.gate_class == "BrickComponentType_ArrayVar")
         .expect("expected an ArrayVar node");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Array(lits)) => {
@@ -651,7 +651,7 @@ fn var_array_desugars_to_array_var() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .find(|n| n.gate_class == "BrickComponentType_ArrayVar")
         .expect("a var array should be an ArrayVar gate");
     assert!(
         node.properties
@@ -659,7 +659,7 @@ fn var_array_desugars_to_array_var() {
         "var array initializer should populate the gate"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_Push"),
         "var array push should lower to the ArrayVar push gate"
     );
 }
@@ -674,7 +674,7 @@ fn find_returns_record_unwrapping_to_index() {
     let r = compile(src);
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Find"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_Find"),
         "expected a Find gate"
     );
 }
@@ -691,7 +691,7 @@ fn find_result_field_access_inline_without_binding() {
     let r = compile(src);
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Find"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_Find"),
         "inline find().Found must still emit the Find gate"
     );
     assert!(
@@ -710,7 +710,7 @@ fn array_var_type_inferred_without_annotation() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .find(|n| n.gate_class == "BrickComponentType_ArrayVar")
         .expect("an inferred-type array var should be an ArrayVar gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Array(lits)) => assert_eq!(lits.len(), 3),
@@ -728,14 +728,14 @@ fn scalar_var_type_inferred_without_annotation() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("inferred string var should be a Var gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::String(s)) => assert_eq!(s, ""),
         other => panic!("expected string InitialValue, got {other:?}"),
     }
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        has_gate(&r, "BrickComponentType_Expr_CompareEqual"),
         "string == on an inferred var should lower to CompareEqual"
     );
 }
@@ -750,7 +750,7 @@ fn vector_var_init_folds_to_constant() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("vector var should be a Var gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Vector { x, y, z }) => {
@@ -759,7 +759,7 @@ fn vector_var_init_folds_to_constant() {
         other => panic!("expected vector InitialValue, got {other:?}"),
     }
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        !has_gate(&r, "BrickComponentType_Expr_MakeVector"),
         "constant Vec initializer should not spawn a MakeVector gate"
     );
 }
@@ -772,7 +772,7 @@ fn rotator_var_init_folds_to_constant() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("rotator var should be a Var gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Rotator { pitch, yaw, roll }) => {
@@ -791,7 +791,7 @@ fn color_var_init_folds_to_constant() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("color var should be a Var gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::LinearColor { r, g, b, a }) => {
@@ -815,7 +815,7 @@ out o = hello_world
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("float var should be a Var gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Float(f)) => assert_eq!(*f, 0.0),
@@ -837,7 +837,7 @@ out o = p.x
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("record field should be a Var gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Float(f)) => assert_eq!(*f, 3.0),
@@ -871,7 +871,7 @@ out o = v
             .module
             .nodes
             .values()
-            .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+            .find(|n| n.gate_class == "BrickComponentType_Var")
             .unwrap_or_else(|| panic!("`{src}` should be a Var gate"));
         let got = node.properties.get(&crate::intern::intern("InitialValue"));
         assert_eq!(got, Some(want), "`{src}` baked the wrong InitialValue");
@@ -895,7 +895,7 @@ on start {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("var-backed output should have a Var gate");
     assert_eq!(
         node.properties.get(&crate::intern::intern("InitialValue")),
@@ -912,7 +912,7 @@ fn quat_var_defaults_to_identity() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("quat var should be a Var gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Quat { x, y, z, w }) => {
@@ -932,7 +932,7 @@ fn vector_array_init_folds_elements() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .find(|n| n.gate_class == "BrickComponentType_ArrayVar")
         .expect("vector array should be an ArrayVar gate");
     match node.properties.get(&crate::intern::intern("InitialValue")) {
         Some(crate::ir::Literal::Array(lits)) => {
@@ -950,7 +950,7 @@ fn constant_vec_inlines_into_var_set() {
     let r = compile("var v: vector\nin t: exec\non t { v = Vec(1.0, 2.0, 3.0) }");
     assert_no_errors(&r);
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        !has_gate(&r, "BrickComponentType_Expr_MakeVector"),
         "constant Vec assigned to a var should inline, not spawn MakeVector"
     );
 }
@@ -960,9 +960,9 @@ fn constant_vec_inlines_into_math() {
     // Math gates take prim-math variant data, which carries Vector members.
     let r = compile("in v: vector\nout o = v + Vec(0.0, 0.0, 1.0)");
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"));
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        !has_gate(&r, "BrickComponentType_Expr_MakeVector"),
         "constant Vec math operand should inline, not spawn MakeVector"
     );
 }
@@ -974,14 +974,14 @@ fn constant_vec_embeds_for_entity_gates() {
     let r = compile("in e: entity\nin t: exec\non t { e.SetLocation(Vec(0.0, 0.0, 100.0)) }");
     assert_no_errors(&r);
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        !has_gate(&r, "BrickComponentType_Expr_MakeVector"),
         "SetLocation literal should embed as gate data, not spawn a MakeVector"
     );
     let set_loc = r
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Entity_SetLocation")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_Entity_SetLocation")
         .expect("SetLocation gate should exist");
     assert_eq!(
         set_loc.properties.get(&crate::intern::intern("Vector")),
@@ -998,10 +998,10 @@ fn constant_vec_materializes_for_split_vector() {
     assert_no_errors(&r);
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_SplitVector"
+        "BrickComponentType_Expr_SplitVector"
     ));
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MakeVector"),
+        has_gate(&r, "BrickComponentType_Expr_MakeVector"),
         "component access on a folded constant needs a materialized MakeVector"
     );
 }
@@ -1015,18 +1015,18 @@ fn array_literal_assignment_desugars_to_clear_push_append() {
     let r = compile(src);
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_Clear"),
         "assignment should clear the array first"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Append"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_Append"),
         "a `...spread` element should lower to an Append gate"
     );
     let pushes = r
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
         .count();
     assert_eq!(
         pushes, 3,
@@ -1049,7 +1049,7 @@ fn multi_line_array_literals_parse() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
         .count();
     assert_eq!(pushes, 2, "multi-line rebuild should still lower each item");
 }
@@ -1134,11 +1134,11 @@ fn var_declared_map_lowers_to_mapvar() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "var-map methods must lower, not drop");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        has_gate(&r, "BrickComponentType_MapVar"),
         "a var-declared map must create a Pseudo_MapVar"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        has_gate(&r, "BrickComponentType_Exec_MapVar_Set"),
         "m.set must lower to MapVar_Set"
     );
 }
@@ -1151,11 +1151,11 @@ fn constant_map_literal_bakes_no_set_gates() {
     let r = compile("var scores: Map<int, int> = { :red => 10, :blue => 20 }\n");
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        has_gate(&r, "BrickComponentType_MapVar"),
         "must create a Pseudo_MapVar"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        !has_gate(&r, "BrickComponentType_Exec_MapVar_Set"),
         "a constant map literal must bake, not emit MapVar_Set gates"
     );
     // The entries are baked as a Literal::Map on the gate.
@@ -1192,11 +1192,11 @@ fn empty_map_literal_initializes_an_empty_map() {
     // no baked entries (same as a map var with no initializer).
     let r = compile("var m: Map<string, int> = {}\n");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        has_gate(&r, "BrickComponentType_MapVar"),
         "must create a Pseudo_MapVar"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        !has_gate(&r, "BrickComponentType_Exec_MapVar_Set"),
         "an empty map init must not emit MapVar_Set gates"
     );
     let baked_len = r.module.nodes.values().find_map(|n| {
@@ -1334,11 +1334,11 @@ fn runtime_map_literal_desugars_to_clear_and_sets() {
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Clear"),
+        has_gate(&r, "BrickComponentType_Exec_MapVar_Clear"),
         "a runtime map-literal assign clears first"
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        gate_count(&r, "BrickComponentType_Exec_MapVar_Set"),
         2,
         "one Set per entry"
     );
@@ -1355,11 +1355,11 @@ fn in_handler_var_map_literal_init_desugars_to_clear_and_sets() {
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Clear"),
+        has_gate(&r, "BrickComponentType_Exec_MapVar_Clear"),
         "in-handler map-literal var init clears first"
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        gate_count(&r, "BrickComponentType_Exec_MapVar_Set"),
         2,
         "one Set per entry"
     );
@@ -1395,7 +1395,7 @@ fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
     // No MapVar_Set/Clear gate should appear (the guard returns before any
     // lowering of the RHS or reset gate).
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        !has_gate(&r, "BrickComponentType_Exec_MapVar_Set"),
         "a rejected non-literal map assign must not emit a Set gate"
     );
     // The real regression check: no wire may claim to originate from a
@@ -1406,7 +1406,7 @@ fn non_literal_map_assign_is_rejected_not_silently_miscompiled() {
         .module
         .nodes
         .iter()
-        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraphPseudo_MapVar")
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_MapVar")
         .map(|(id, _)| *id)
         .collect();
     assert!(
@@ -1429,7 +1429,7 @@ fn map_subscript_read_lowers_to_map_get() {
         "map[k] read must not lower to _Unsupported"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Get"),
+        has_gate(&r, "BrickComponentType_Exec_MapVar_Get"),
         "m[k] must lower to MapVar_Get"
     );
 }
@@ -1441,7 +1441,7 @@ fn map_subscript_write_lowers_to_map_set() {
     let r = compile("var m: Map<int, int>\nin t: exec\non t {\n  m[1] = 5\n}\n");
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_MapVar_Set"),
+        has_gate(&r, "BrickComponentType_Exec_MapVar_Set"),
         "m[k] = v must lower to MapVar_Set"
     );
 }
@@ -1460,8 +1460,8 @@ fn map_subscript_key_value_ports_carry_concrete_types() {
     let value_sym = crate::intern::intern("Value");
     let mut checked = 0;
     for n in r.module.nodes.values() {
-        let is_get = n.gate_class == "BrickComponentType_WireGraph_Exec_MapVar_Get";
-        let is_set = n.gate_class == "BrickComponentType_WireGraph_Exec_MapVar_Set";
+        let is_get = n.gate_class == "BrickComponentType_Exec_MapVar_Get";
+        let is_set = n.gate_class == "BrickComponentType_Exec_MapVar_Set";
         if !is_get && !is_set {
             continue;
         }
@@ -1499,7 +1499,7 @@ fn timer_call_lowers_with_exec_controls_and_outputs() {
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_Timer"),
+        has_gate(&r, "BrickComponentType_Stopwatch"),
         "Timer() should lower to a Pseudo_Timer gate"
     );
 }
@@ -1576,8 +1576,8 @@ fn data_carrying_event_exec_composes_into_union() {
         "GlobalCustomEvent(...).exec must resolve to the event's exec output, not _Unsupported"
     );
     // The event gate's exec output must drive the Union trigger.
-    let evt = find_gate(&r, "BrickComponentType_WireGraphPseudo_CustomEvent_Global");
-    let union = find_gate(&r, "BrickComponentType_WireGraph_Exec_Union");
+    let evt = find_gate(&r, "BrickComponentType_Event_CustomGlobal");
+    let union = find_gate(&r, "BrickComponentType_Exec_Union");
     assert!(
         r.module
             .wires
@@ -1594,7 +1594,7 @@ fn union_exec_receiver_desugars_to_union_call() {
     let r = compile("var v: int = 0\nin a: exec\nin b: exec\non a.Union(b) { v = v + 1 }");
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
-    let union = find_gate(&r, "BrickComponentType_WireGraph_Exec_Union");
+    let union = find_gate(&r, "BrickComponentType_Exec_Union");
     // Both exec inputs must reach the single Union.
     let inputs: Vec<crate::ir::NodeId> = r
         .module
@@ -1621,7 +1621,7 @@ fn union_exec_receiver_chains_left_associatively() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_Union"),
+        gate_count(&r, "BrickComponentType_Exec_Union"),
         2,
         "a two-link .Union chain must emit two Union gates"
     );
@@ -1673,11 +1673,11 @@ fn single_conditional_emit_is_branch_gated() {
         .map(|w| w.source.node_id)
         .and_then(|id| r.module.nodes.get(&id));
     assert!(
-        feed.is_some_and(|n| n.gate_class.contains("Pseudo_Var")),
+        feed.is_some_and(|n| n.gate_class == gc::VAR),
         "the conditional output must be fed by a backing var, not wired unconditionally"
     );
     // The gated write exists: a Var_Set driven from the branch's taken exec.
-    let branch = find_gate(&r, "BrickComponentType_WireGraph_Exec_Branch");
+    let branch = find_gate(&r, "BrickComponentType_Exec_Branch");
     let set_ids: std::collections::HashSet<crate::ir::NodeId> = r
         .module
         .nodes
@@ -1751,7 +1751,7 @@ fn get_aim_is_one_gate_with_both_ports() {
         .module
         .nodes
         .iter()
-        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraph_Exec_Character_GetAim")
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_Exec_Character_GetAim")
         .map(|(id, _)| *id)
         .collect();
     assert_eq!(aim_nodes.len(), 1, "expected exactly one GetAim gate");
@@ -1785,7 +1785,7 @@ fn chat_command_config_args_set_gate_data() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ChatCommand")
+        .find(|n| n.gate_class == "BrickComponentType_Event_ChatCommand")
         .expect("expected a ChatCommand event node");
     let prop = |field: &str| match evt.properties.get(&intern(field)) {
         Some(Literal::String(s)) => Some(s.clone()),
@@ -1804,7 +1804,7 @@ fn chat_command_named_description_sets_help_text() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ChatCommand")
+        .find(|n| n.gate_class == "BrickComponentType_Event_ChatCommand")
         .expect("expected a ChatCommand event node");
     let prop = |field: &str| match evt.properties.get(&intern(field)) {
         Some(Literal::String(s)) => Some(s.clone()),
@@ -1833,7 +1833,7 @@ fn counter_program_end_to_end() {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Increment");
+        .any(|n| n.gate_class == "BrickComponentType_Exec_Var_Increment");
     assert!(has_incr, "counter should lower to Var_Increment");
     // All wires should reference valid node ids.
     for w in &r.module.wires {
@@ -1858,7 +1858,7 @@ fn if_expr_creates_select_gate() {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select");
+        .any(|n| n.gate_class == "BrickComponentType_Expr_Select");
     assert!(has_select, "expected a Select gate for if-expr");
 }
 
@@ -1872,7 +1872,7 @@ fn give_weapon_lowers_to_set_inventory_entry_with_asset() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_Character_SetInventoryEntry")
         .expect("expected a SetInventoryEntry gate");
     match node
         .properties
@@ -1897,10 +1897,10 @@ fn messaging_builtins_lower_to_their_gates() {
     );
     assert_no_errors(&r);
     for class in [
-        "BrickComponentType_WireGraph_Exec_PlayerState_ShowChatMessage",
-        "BrickComponentType_WireGraph_Exec_PlayerState_ShowMessageBox",
-        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage",
-        "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage",
+        "BrickComponentType_Exec_PlayerState_ShowChatMessage",
+        "BrickComponentType_Exec_PlayerState_ShowMessageBox",
+        "BrickComponentType_Exec_Gamemode_BroadcastChatMessage",
+        "BrickComponentType_Exec_Gamemode_BroadcastStatusMessage",
     ] {
         assert!(has_gate(&r, class), "expected a {class} gate");
     }
@@ -1934,7 +1934,7 @@ fn play_audio_builtins_carry_audio_asset() {
         other => panic!("expected an asset property, got {other:?}"),
     }
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_PlayGlobalAudio"),
+        has_gate(&r, "BrickComponentType_Exec_PlayGlobalAudio"),
         "expected a PlayGlobalAudio gate"
     );
     // PlayClientAudio: same asset inlining, plus a wired Player input.
@@ -1942,7 +1942,7 @@ fn play_audio_builtins_carry_audio_asset() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_PlayClientAudio")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_PlayClientAudio")
         .expect("expected a PlayClientAudio gate");
     match client.properties.get(&crate::intern::intern("AudioDescriptor")) {
         Some(crate::ir::Literal::Asset { asset_type, asset_name }) => {
@@ -1955,7 +1955,7 @@ fn play_audio_builtins_carry_audio_asset() {
         .module
         .nodes
         .iter()
-        .find(|(_, n)| n.gate_class == "BrickComponentType_WireGraph_Exec_PlayClientAudio")
+        .find(|(_, n)| n.gate_class == "BrickComponentType_Exec_PlayClientAudio")
         .map(|(id, _)| *id)
         .unwrap();
     assert!(
@@ -1975,11 +1975,11 @@ fn entity_tags_lower_to_tag_gates() {
     assert_no_errors(&r);
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_Entity_SetTag"
+        "BrickComponentType_Exec_Entity_SetTag"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_Entity_GetTag"
+        "BrickComponentType_Exec_Entity_GetTag"
     ));
 }
 
@@ -1996,10 +1996,10 @@ fn find_player_is_exec_and_change_detector() {
          out changed = Change(name)",
     );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_FindPlayer"));
+    assert!(has_gate(&r, "BrickComponentType_Exec_FindPlayer"));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"
+        "BrickComponentType_Expr_ChangeDetectorExec"
     ));
 }
 
@@ -2011,15 +2011,15 @@ fn quat_make_split_dot_lower_to_their_gates() {
     assert_no_errors(&r);
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_MakeQuaternion"
+        "BrickComponentType_Expr_MakeQuaternion"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_SplitQuaternion"
+        "BrickComponentType_Expr_SplitQuaternion"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_QuatDotProduct"
+        "BrickComponentType_Expr_QuatDotProduct"
     ));
 }
 
@@ -2033,7 +2033,7 @@ fn inventory_family_carries_asset_properties() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_Character_AddInventoryItem")
         .expect("expected an AddInventoryItem gate");
     match item.properties.get(&crate::intern::intern("Item")) {
         Some(crate::ir::Literal::Asset { asset_name, .. }) => {
@@ -2043,11 +2043,11 @@ fn inventory_family_carries_asset_properties() {
     }
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_Character_SetInventoryItem"
+        "BrickComponentType_Exec_Character_SetInventoryItem"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv"
+        "BrickComponentType_Exec_Character_AddInventoryItemAdv"
     ));
 }
 
@@ -2058,7 +2058,7 @@ fn damage_and_zone_events_lower_to_event_gates() {
     );
     assert_no_errors(&r);
     for class in [
-        "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDamagedEvent",
+        "BrickComponentType_Event_Gamemode_CharacterDamaged",
         "BrickComponentType_Internal_EntityZoneEvent_Entered",
         "BrickComponentType_Internal_ProjectileZoneEvent_Entered",
     ] {
@@ -2075,7 +2075,7 @@ fn has_role_lowers_with_config_role_name() {
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_PlayerState_HasRole"),
+        has_gate(&r, "BrickComponentType_Exec_PlayerState_HasRole"),
         "expected a HasRole gate"
     );
 }
@@ -2096,12 +2096,12 @@ fn inline_multi_output_call_reads_its_own_port() {
     use crate::ir::port_registry::WirePort;
     for (class, port, expr) in [
         (
-            "BrickComponentType_WireGraph_Expr_SplitRotation",
+            "BrickComponentType_Expr_SplitRotation",
             WirePort::Yaw,
             "d.ToRotation().ToEuler().Yaw",
         ),
         (
-            "BrickComponentType_WireGraph_Expr_SplitVector",
+            "BrickComponentType_Expr_SplitVector",
             WirePort::Y,
             "d.SplitVec().y",
         ),
@@ -2146,26 +2146,26 @@ fn rotation_quat_color_receivers_lower_to_their_gates() {
     let r = compile(src);
     assert_no_errors(&r);
     for class in [
-        "BrickComponentType_WireGraph_Expr_DirectionToRotation",
-        "BrickComponentType_WireGraph_Expr_RotationToDirection",
-        "BrickComponentType_WireGraph_Expr_RotateVector",
-        "BrickComponentType_WireGraph_Expr_InvertRotation",
-        "BrickComponentType_WireGraph_Expr_QuatBetween",
-        "BrickComponentType_WireGraph_Expr_QuatAngleBetween",
-        "BrickComponentType_WireGraph_Expr_QuatSlerp",
-        "BrickComponentType_WireGraph_Expr_QuatToAxisAngle",
-        "BrickComponentType_WireGraph_Expr_QuatFromAxisAngle",
-        "BrickComponentType_WireGraph_Expr_MakeRotation",
-        "BrickComponentType_WireGraph_Expr_SplitRotation",
-        "BrickComponentType_WireGraph_Expr_MakeColorSRGB",
-        "BrickComponentType_WireGraph_Expr_MakeColorHex",
-        "BrickComponentType_WireGraph_Expr_SplitColorSRGB",
-        "BrickComponentType_WireGraph_Expr_ColorToHex",
+        "BrickComponentType_Expr_DirectionToRotation",
+        "BrickComponentType_Expr_RotationToDirection",
+        "BrickComponentType_Expr_RotateVector",
+        "BrickComponentType_Expr_InvertRotation",
+        "BrickComponentType_Expr_QuatBetween",
+        "BrickComponentType_Expr_QuatAngleBetween",
+        "BrickComponentType_Expr_QuatSlerp",
+        "BrickComponentType_Expr_QuatToAxisAngle",
+        "BrickComponentType_Expr_QuatFromAxisAngle",
+        "BrickComponentType_Expr_MakeRotation",
+        "BrickComponentType_Expr_SplitRotation",
+        "BrickComponentType_Expr_MakeColorSRGB",
+        "BrickComponentType_Expr_MakeColorHex",
+        "BrickComponentType_Expr_SplitColorSRGB",
+        "BrickComponentType_Expr_ColorToHex",
         // `ColorBlend` is the colour-space blend gate; `Blend` is the math
         // blend gate (an alias for `lerp`), which takes colours as one of its
         // variants. Both are reachable and lower to different gates.
-        "BrickComponentType_WireGraph_Expr_ColorBlend",
-        "BrickComponentType_WireGraph_Expr_MathBlend",
+        "BrickComponentType_Expr_ColorBlend",
+        "BrickComponentType_Expr_MathBlend",
     ] {
         assert!(has_gate(&r, class), "missing gate {class}");
     }
@@ -2182,11 +2182,11 @@ fn rotator_constant_bakes_into_a_quat_port() {
     let r = compile("in v: vector\nout o = v.Rotate(Rotation(0.0, -90.0, 0.0))");
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_MakeRotation"),
+        gate_count(&r, "BrickComponentType_Expr_MakeRotation"),
         0,
         "a compile-time rotation into a quaternion port should bake, not wire"
     );
-    let rotate = find_gate(&r, "BrickComponentType_WireGraph_Expr_RotateVector");
+    let rotate = find_gate(&r, "BrickComponentType_Expr_RotateVector");
     assert_eq!(
         r.module.nodes[&rotate]
             .properties
@@ -2224,22 +2224,22 @@ fn rotator_and_quat_components_split_like_a_vector_does() {
     );
     // One gate per split value, shared across that value's components.
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_SplitVector"),
+        gate_count(&r, "BrickComponentType_Expr_SplitVector"),
         1
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_SplitRotation"),
+        gate_count(&r, "BrickComponentType_Expr_SplitRotation"),
         1,
         "r.pitch and r.roll should share one SplitRotation"
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_SplitQuaternion"),
+        gate_count(&r, "BrickComponentType_Expr_SplitQuaternion"),
         1,
         "q.x and q.w should share one SplitQuaternion"
     );
     // `.x` is the one component name a vector and a quaternion share, so the
     // gate has to be chosen by the object's type, not by the field name.
-    let quat_split = find_gate(&r, "BrickComponentType_WireGraph_Expr_SplitQuaternion");
+    let quat_split = find_gate(&r, "BrickComponentType_Expr_SplitQuaternion");
     for port in ["X", "W"] {
         assert!(
             r.module.wires.iter().any(|w| {
@@ -2258,7 +2258,7 @@ fn field_access_vector_creates_split() {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_SplitVector");
+        .any(|n| n.gate_class == "BrickComponentType_Expr_SplitVector");
     assert!(has_split, "expected a SplitVector gate for .x access");
 }
 
@@ -2274,7 +2274,7 @@ fn field_access_vector_component_on_local_creates_split() {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_SplitVector");
+        .any(|n| n.gate_class == "BrickComponentType_Expr_SplitVector");
     assert!(has_split, "expected a SplitVector gate for `.x` on a local");
 }
 
@@ -2291,7 +2291,7 @@ fn splitvec_record_fields_reuse_single_split() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_SplitVector")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_SplitVector")
         .count();
     assert_eq!(
         splits, 1,
@@ -2306,7 +2306,7 @@ fn array_decl_creates_pseudo_node() {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar");
+        .any(|n| n.gate_class == "BrickComponentType_ArrayVar");
     assert!(has_arr, "expected an ArrayVar pseudo-node");
 }
 
@@ -2322,7 +2322,7 @@ out result = x",
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "let inside on var.value handler should produce MathAdd gate"
     );
 }
@@ -2349,15 +2349,15 @@ out result = dir",
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        has_gate(&r, "BrickComponentType_Expr_CompareEqual"),
         "nested let inside on var.value + if should produce CompareEqual"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareLess"),
+        has_gate(&r, "BrickComponentType_Expr_CompareLess"),
         "nested let inside on var.value + if should produce CompareLess"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalAND"),
+        has_gate(&r, "BrickComponentType_Expr_LogicalAND"),
         "nested let inside on var.value + if should produce LogicalAND"
     );
 }
@@ -2376,19 +2376,19 @@ fn detector_builtins_map_to_split_gate_classes() {
     assert_no_errors(&r);
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_ChangeDetectorExec"
+        "BrickComponentType_Expr_ChangeDetectorExec"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_ChangeDetector"
+        "BrickComponentType_Expr_ChangeDetector"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_EdgeDetector"
+        "BrickComponentType_Expr_EdgeDetector"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Expr_EdgeDetectorExec"
+        "BrickComponentType_Expr_EdgeDetectorExec"
     ));
 }
 
@@ -2415,7 +2415,7 @@ on ControllerLeft() -> { controller: controller, userId: userId } {
         .nodes
         .values()
         .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent"
+            n.gate_class == "BrickComponentType_Event_Gamemode_ControllerLeft"
         })
         .expect("expected a ControllerLeft event gate");
     assert!(
@@ -2499,7 +2499,7 @@ fn out_binding_same_name_as_array_wires_array_ref() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .find(|n| n.gate_class == "BrickComponentType_ArrayVar")
         .expect("array var node")
         .id;
     assert!(
@@ -2531,7 +2531,7 @@ fn out_binding_same_name_as_var_wires_var_value() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("var node")
         .id;
     assert!(
@@ -2645,7 +2645,7 @@ fn on_input_splitter_field_trigger_selects_named_port() {
     let splitter = find_gate(&r, "Component_Internal_InputSplitter");
     let show = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Exec_PlayerState_ShowStatusMessage",
+        "BrickComponentType_Exec_PlayerState_ShowStatusMessage",
     );
     let trig = r
         .module
@@ -2674,7 +2674,7 @@ fn get_inputs_chains_exec_and_wires_the_player_operand() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    let gate = find_gate(&r, "BrickComponentType_WireGraph_Exec_GetInputs");
+    let gate = find_gate(&r, "BrickComponentType_Exec_GetInputs");
     assert!(
         r.module
             .wires
@@ -2716,7 +2716,7 @@ fn get_inputs_fields_resolve_to_their_game_ports() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    let gate = find_gate(&r, "BrickComponentType_WireGraph_Exec_GetInputs");
+    let gate = find_gate(&r, "BrickComponentType_Exec_GetInputs");
     let ports: Vec<&str> = r
         .module
         .wires
@@ -2776,7 +2776,7 @@ fn null_literal_bakes_the_type_default() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|n| n.gate_class == "BrickComponentType_Var")
         .filter_map(|n| n.properties.get(&iv).cloned())
         .collect();
     assert!(vals.iter().any(|l| matches!(l, crate::ir::Literal::Object)), "entity null -> Object: {vals:?}");
@@ -2795,7 +2795,7 @@ fn spread_tuple_into_call_args() {
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
-    let send = find_gate(&r, "BrickComponentType_WireGraphPseudo_SendCustomEvent_Global");
+    let send = find_gate(&r, "BrickComponentType_Exec_SendCustomEventGlobal");
     let ports: Vec<_> = r
         .module
         .wires
@@ -2830,7 +2830,7 @@ fn variadic_mod_captures_and_splats() {
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
-    let send = find_gate(&r, "BrickComponentType_WireGraphPseudo_SendCustomEvent_Global");
+    let send = find_gate(&r, "BrickComponentType_Exec_SendCustomEventGlobal");
     let ports: Vec<_> = r
         .module
         .wires

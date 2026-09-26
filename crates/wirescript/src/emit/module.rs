@@ -279,8 +279,8 @@ pub(super) fn emit_module(
             )?)
         } else {
             Box::new(match effective_class_str {
-            // Pseudo_Var: WireGraphVariant typed by the Value port.
-            "BrickComponentType_WireGraphPseudo_Var" => {
+            // Var: a `WireValue` typed by the Value port.
+            "BrickComponentType_Var" => {
                 let value_ty = node
                     .ports
                     .inputs
@@ -288,22 +288,22 @@ pub(super) fn emit_module(
                     .chain(node.ports.outputs.iter())
                     .find(|p| resolve(p.name) == "Value")
                     .map(|p| &p.ty);
-                let wv: WireVariant = match node
+                let wv: WireValue = match node
                     .properties
                     .get(&*sym::INITIAL_VALUE)
                     .or_else(|| node.properties.get(&value_sym))
                 {
-                    Some(lit) => literal_to_wire_variant(lit).unwrap_or(WireVariant::Number(0.0)),
-                    None => var_type_to_wire_variant(value_ty),
+                    Some(lit) => literal_to_wire_value(lit).unwrap_or(WireValue::Number(0.0)),
+                    None => var_type_to_wire_value(value_ty),
                 };
                 let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
                 data.insert("Value".into(), Box::new(wv));
                 LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
             }
-            // Pseudo_ArrayVar: WireGraphArrayVariant, member chosen by the
-            // declared element type so the array stores the right scalar kind
+            // ArrayVar: a `dynamic_array` whose element type follows the
+            // declared element type, so the array stores the right scalar kind
             // (int/bool/string/vector/object) instead of defaulting to doubles.
-            "BrickComponentType_WireGraphPseudo_ArrayVar" => {
+            "BrickComponentType_ArrayVar" => {
                 let elem_ty = node
                     .ports
                     .outputs
@@ -313,33 +313,29 @@ pub(super) fn emit_module(
                 // A constant initializer is carried as an `InitialValue` list
                 // literal; otherwise the array starts empty.
                 let av = match node.properties.get(&intern_static("InitialValue")) {
-                    Some(Literal::Array(lits)) => wire_array_variant_from_literals(elem_ty, lits),
-                    _ => empty_wire_array_variant(elem_ty),
+                    Some(Literal::Array(lits)) => array_from_literals(elem_ty, lits),
+                    _ => array_from_literals(elem_ty, &[]),
                 };
                 let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
                 data.insert("Value".into(), Box::new(av));
                 LiteralComponent::new_from_data(effective_class_str, std::sync::Arc::new(data))
             }
-            // Pseudo_MapVar: WireGraphMapVariant, key/value kinds chosen from the
-            // declared `Map<K, V>` on the MapVarRef port. A constant initializer
-            // is carried as an `InitialValue` map literal and populates the
-            // variant's `entries`; otherwise the map starts empty (runtime
+            // MapVar: a `dynamic_map` whose key/value types follow the
+            // declared `Map<K, V>` on the MapVarRef port. A constant
+            // initializer is carried as an `InitialValue` map literal and
+            // populates the entries; otherwise the map starts empty (runtime
             // `set`s populate it).
-            "BrickComponentType_WireGraphPseudo_MapVar" => {
-                let kinds = node
+            "BrickComponentType_MapVar" => {
+                let empty = node
                     .ports
                     .outputs
                     .iter()
                     .find(|p| resolve(p.name) == "MapVarRef")
-                    .map(|p| map_variant_from_type(&p.ty))
-                    .unwrap_or(WireMapVariant {
-                        key: WireMapKey::Int64,
-                        value: WireMapValue::Number,
-                        entries: vec![],
-                    });
+                    .map(|p| map_from_type(&p.ty))
+                    .unwrap_or_else(|| map_from_type(&crate::ir::Type::Any));
                 let mv = match node.properties.get(&intern_static("InitialValue")) {
-                    Some(Literal::Map(entries)) => wire_map_variant_from_literals(kinds, entries),
-                    _ => kinds,
+                    Some(Literal::Map(entries)) => map_from_literals(empty, entries),
+                    _ => empty,
                 };
                 let mut data: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
                 data.insert("Value".into(), Box::new(mv));
@@ -383,7 +379,7 @@ pub(super) fn emit_module(
             // external-asset table and build the EntryPlan struct (Type=Item).
             // NOTE: the exact binary encoding (enum repr, asset-in-class field,
             // nested defaults) needs in-game verification.
-            "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry" => {
+            "BrickComponentType_Exec_Character_SetInventoryEntry" => {
                 use brdb::schema::BrdbValue;
                 let slot = match node.properties.get(&intern_static("Slot")) {
                     Some(Literal::Int(n)) => *n as i32,
@@ -480,9 +476,9 @@ pub(super) fn emit_module(
                 }
                 label.map(|s| (s, LABEL_LINE_HEIGHT))
             }
-            "BrickComponentType_WireGraphPseudo_Var"
-            | "BrickComponentType_WireGraphPseudo_ArrayVar"
-            | "BrickComponentType_WireGraphPseudo_MapVar" => {
+            "BrickComponentType_Var"
+            | "BrickComponentType_ArrayVar"
+            | "BrickComponentType_MapVar" => {
                 let label = node.properties.get(&*sym::NAME_LABEL).and_then(named);
                 // The var's own name still drives the small tags on its
                 // Var_Get/Set gates (via var_labels), even when its own big
@@ -507,9 +503,9 @@ pub(super) fn emit_module(
             // Var/ArrayVar exec gates: a smaller tag naming the variable
             // they access, traced through the gate's (Array)VarRef wire.
             // The var node is always emitted first, so its label is known.
-            c if c.starts_with("BrickComponentType_WireGraph_Exec_Var_")
-                || c.starts_with("BrickComponentType_WireGraph_Exec_ArrayVar_")
-                || c.starts_with("BrickComponentType_WireGraph_Exec_MapVar_") =>
+            c if c.starts_with("BrickComponentType_Exec_Var_")
+                || c.starts_with("BrickComponentType_Exec_ArrayVar_")
+                || c.starts_with("BrickComponentType_Exec_MapVar_") =>
             {
                 node.ports
                     .inputs

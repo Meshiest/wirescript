@@ -575,6 +575,8 @@ pub(super) fn sig_of_callspec(spec: &crate::catalog::calls::CallSpec) -> CallSig
         .map(|p| {
             let kind = if let Some(et) = call_param_config_enum(spec, p) {
                 ParamKind::ConfigEnum(et)
+            } else if let Some(et) = call_param_wire_enum(spec, p) {
+                ParamKind::WireEnum(et)
             } else if is_composite_config_param(spec, p) {
                 ParamKind::ConfigComposite(p.port.as_str())
             } else if is_scalar_config_param(spec, p) {

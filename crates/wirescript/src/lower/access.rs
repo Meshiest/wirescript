@@ -2216,7 +2216,7 @@ fn record_array_set_walk(
 /// port is wired.
 fn make_scratch_array(ctx: &mut LowerCtx, elem: &Type, range: &SourceRange) -> PortRef {
     let node = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_ARRAY_VAR,
+        gate_class: gc::ARRAY_VAR,
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![],

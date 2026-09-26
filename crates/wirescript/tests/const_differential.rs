@@ -74,7 +74,7 @@ fn event_names(m: &Module) -> Vec<String> {
     let mut out: Vec<String> = m
         .nodes
         .values()
-        .filter(|n| n.gate_class == gate_class::PSEUDO_SEND_CUSTOM_EVENT)
+        .filter(|n| n.gate_class == gate_class::SEND_CUSTOM_EVENT)
         .filter_map(|n| match n.properties.get(&intern("EventName")) {
             Some(Literal::String(s)) => Some(s.clone()),
             _ => None,

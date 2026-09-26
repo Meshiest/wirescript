@@ -28,8 +28,8 @@ fn folds_arithmetic_chain_to_fixpoint() {
     // (2 + 3) * 4 == 20 -> single literal true; no Math/Compare gates left.
     let r = compile_folded("out y = (2 + 3) * 4 == 20");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 0);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathMultiply"), 0);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 0);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathMultiply"), 0);
     assert_eq!(count_class(&r.module, gc::COMPARE_EQUAL), 0);
 }
 
@@ -38,7 +38,7 @@ fn unfolded_helper_keeps_real_gates() {
     // The structural helper must NOT fold (guards the whole existing suite).
     let r = compile("out y = 2 + 3");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn opaque_blocks_folding() {
     // `+ 3` must not fold.
     let r = compile_folded("var x: int = 2\nout y = Opaque(x) + 3");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
     assert_eq!(count_class(&r.module, gc::REROUTER), 1);
 }
 
@@ -65,7 +65,7 @@ fn any_annotation_blocks_folding() {
     // instead of folding away.
     let r = compile_folded("in t: any\nlet v = t + 1\nout y = v");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
 #[test]
@@ -74,8 +74,8 @@ fn nofold_subtree_is_not_folded_or_seen_through() {
     // not fold either (its input is Unknown, not the constant 5).
     let r = compile_folded("@nofold let a = 2 + 3\nout y = a * 2");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathMultiply"), 1);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathMultiply"), 1);
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn annihilator_folds_with_unknown_side() {
     // Opaque cond is Unknown, but AND false is a certified annihilator.
     let r = compile_folded("var b: bool = true\nout y = Opaque(b) && false");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_LogicalAND"), 0);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_LogicalAND"), 0);
     // The folded `Bool(false)` feeds `out y` directly — a dataless boundary
     // port (MicrochipOutput has no data struct) — so
     // `materialize_unfoldable_constants` re-wraps it in a fresh, fully-baked
@@ -95,7 +95,7 @@ fn annihilator_folds_with_unknown_side() {
     // and the cross-chip tests). Check the carrier's baked operand instead of
     // scanning for a bare literal that the pipeline no longer leaves behind.
     let folded_to_false = r.module.nodes.values().any(|n| {
-        n.gate_class == "BrickComponentType_WireGraph_Expr_LogicalOR"
+        n.gate_class == "BrickComponentType_Expr_LogicalOR"
             && n.properties.get(&*crate::intern::sym::B_INPUT_A)
                 == Some(&crate::ir::Literal::Bool(false))
     });
@@ -109,10 +109,10 @@ fn annihilator_folds_with_unknown_side() {
     // `|| false` isn't annihilated.
     let r2 = compile_folded("var b: bool = true\nout y = Opaque(b) || false");
     no_errors(&r2);
-    assert_eq!(count_class(&r2.module, "BrickComponentType_WireGraph_Expr_LogicalOR"), 1);
+    assert_eq!(count_class(&r2.module, "BrickComponentType_Expr_LogicalOR"), 1);
     assert!(
         r2.module.nodes.values().any(|n| n.gate_class
-            == "BrickComponentType_WireGraph_Expr_LogicalOR"
+            == "BrickComponentType_Expr_LogicalOR"
             && n.properties.get(&crate::intern::intern("bInputB"))
                 == Some(&crate::ir::Literal::Bool(false))),
         "the outer OR bakes its false operand into bInputB (no carrier)"
@@ -127,17 +127,17 @@ fn constant_bitwise_operand_inlines_not_carrier() {
     let r = compile_folded("var x: int = 3\nout y = x | 0");
     no_errors(&r);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_BitwiseOR"),
+        count_class(&r.module, "BrickComponentType_Expr_BitwiseOR"),
         1
     );
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        count_class(&r.module, "BrickComponentType_Expr_MathAdd"),
         0,
         "the constant 0 must inline, not spawn a MathAdd(0, 0) carrier"
     );
     assert!(
         r.module.nodes.values().any(|n| n.gate_class
-            == "BrickComponentType_WireGraph_Expr_BitwiseOR"
+            == "BrickComponentType_Expr_BitwiseOR"
             && n.properties.get(&crate::intern::intern("InputB"))
                 == Some(&crate::ir::Literal::Int(0))),
         "the OR bakes its 0 operand into InputB"
@@ -153,13 +153,13 @@ fn constant_string_operand_inlines_not_carrier() {
     let r = compile_folded("var x: string = \"\"\nout z = x.Contains(\"foo\")");
     no_errors(&r);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_String_Concatenate"),
+        count_class(&r.module, "BrickComponentType_Expr_String_Concatenate"),
         0,
         "the constant search string must inline, not spawn a String_Concatenate carrier"
     );
     assert!(
         r.module.nodes.values().any(|n| n.gate_class
-            == "BrickComponentType_WireGraph_Expr_String_Contains"
+            == "BrickComponentType_Expr_String_Contains"
             && n.properties.get(&crate::intern::intern("Search"))
                 == Some(&crate::ir::Literal::String("foo".to_string()))),
         "Contains bakes its search string into the Search field"
@@ -170,10 +170,10 @@ fn constant_string_operand_inlines_not_carrier() {
 fn overflow_and_nonfinite_results_stay_unfolded() {
     let r = compile_folded("out y = 9223372036854775807 + 1");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
     let r2 = compile_folded("out y = 1.0 / 0.0");
     no_errors(&r2);
-    assert_eq!(count_class(&r2.module, "BrickComponentType_WireGraph_Expr_MathDivide"), 1);
+    assert_eq!(count_class(&r2.module, "BrickComponentType_Expr_MathDivide"), 1);
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn cross_chip_constant_folds_inside_named_chip() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .collect();
     assert_eq!(
         adds.len(),
@@ -296,9 +296,9 @@ fn chip_output_read_only_via_interpolation_leaves_no_boundary_carrier() {
         r.module.chips.keys().collect::<Vec<_>>()
     );
     for class in [
-        "BrickComponentType_WireGraph_Expr_MathAdd",
-        "BrickComponentType_WireGraph_Expr_MathMultiply",
-        "BrickComponentType_WireGraph_Expr_MathModulo",
+        "BrickComponentType_Expr_MathAdd",
+        "BrickComponentType_Expr_MathMultiply",
+        "BrickComponentType_Expr_MathModulo",
     ] {
         assert_eq!(
             count_class(&r.module, class),
@@ -342,7 +342,7 @@ fn no_fold_flag_matches_unfolded_compile() {
     // lower() with fold_mode: ForceOff must equal the pre-pass structure.
     let folded_off = compile("out y = 2 + 3"); // helper passes fold_mode: ForceOff
     assert_eq!(count_class(&folded_off.module,
-        "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
+        "BrickComponentType_Expr_MathAdd"), 1);
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn module_level_nofold_disables_pass() {
     // `compile_folded` is ForceOn — @nofold must still win over it.
     let r = compile_folded("@nofold\n\nout y = 2 + 3");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
 #[test]
@@ -516,7 +516,7 @@ fn select_with_unwired_chosen_input_stays() {
     // operand instead of scanning for a bare literal the pipeline no longer
     // leaves behind.
     let folded_to_two = r.module.nodes.values().any(|n| {
-        n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd"
+        n.gate_class == "BrickComponentType_Expr_MathAdd"
             && n.properties.get(&*crate::intern::sym::INPUT_A)
                 == Some(&crate::ir::Literal::Int(2))
             && !r.module.wires.iter().any(|w| w.target.node_id == n.id)
@@ -654,7 +654,7 @@ fn demand_sweep_removes_orphaned_feeders() {
     // loses its only consumer and sweeps away; the Opaque rerouter STAYS.
     let r = compile_folded("out y = !Opaque(true) && false");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_LogicalAND"), 0);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_LogicalAND"), 0);
     assert_eq!(count_class(&r.module, gc::LOGICAL_NOT), 0, "orphaned NOT swept");
     assert_eq!(count_class(&r.module, gc::REROUTER), 1, "Opaque never elided");
 }
@@ -743,7 +743,7 @@ fn cross_module_literal_inline_skips_orphan_deletion() {
         .nodes
         .values()
         .find(|n| {
-            n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd"
+            n.gate_class == "BrickComponentType_Expr_MathAdd"
                 && child.wires.iter().any(|w| w.target.node_id == n.id)
         })
         .expect("the real v + Opaque(0) gate must survive (Opaque blocks it from folding)");
@@ -851,7 +851,7 @@ fn vector_math_folds() {
     // `Vec(...)` literal.
     let r = compile_folded("out v = Vec(1.0, 2.0, 3.0) + Vec(0.5, 0.5, 0.5)");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 0);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 0);
     assert_eq!(count_class(&r.module, gc::MAKE_VECTOR), 1);
     let carrier = r.module.nodes.values().find(|n| n.gate_class == gc::MAKE_VECTOR)
         .expect("materialized MakeVector carrier for the folded vector sum");
@@ -890,7 +890,7 @@ fn call_argument_baked_vector_literals_fold_through_dot() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .find(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .expect("materialized MathAdd carrier for the folded dot product");
     assert_eq!(float_prop(carrier, "InputA"), Some(32.0)); // 1*4 + 2*5 + 3*6
     assert_eq!(float_prop(carrier, "InputB"), Some(0.0));
@@ -939,7 +939,7 @@ fn call_argument_baked_vector_literals_fold_through_cross() {
 fn mixed_literal_and_computed_vector_components_fold() {
     let r = compile_folded("out v = Vec(0.5, -1.25, 1.0 / 3.0)");
     no_errors(&r);
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathDivide"), 0);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathDivide"), 0);
     assert_eq!(count_class(&r.module, gc::MAKE_VECTOR), 1);
     let carrier = r
         .module
@@ -1007,9 +1007,9 @@ fn make_rotation_does_not_fold() {
     // `cross_chip_constant_folds_inside_named_chip`, and what keeps folding a
     // structural no-op (an unfolded `X.0 + 0.0` is likewise a MathAdd gate).
     // What matters here is MakeRotation itself: it must never become a `_Literal`.
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 3);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 3);
     let all_baked = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .all(|n| !r.module.wires.iter().any(|w| w.target.node_id == n.id));
     assert!(all_baked, "each operand's carrier must be fully baked (no wired operand)");
 }
@@ -1040,7 +1040,7 @@ fn nofold_blocks_format_text_and_vector_math() {
 
     let r2 = compile_folded("@nofold\n\nout v = Vec(1.0, 2.0, 3.0) + Vec(0.5, 0.5, 0.5)");
     no_errors(&r2);
-    assert_eq!(count_class(&r2.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 1);
+    assert_eq!(count_class(&r2.module, "BrickComponentType_Expr_MathAdd"), 1);
 }
 
 #[test]
@@ -1069,7 +1069,7 @@ fn quat_literal_constant_folds_to_carrier() {
     // All four MathAdd gates folded away — proves the fold pass actually
     // ran (not just that some MakeQuaternion happens to carry the right
     // data via the pre-existing bare-literal inline path).
-    assert_eq!(count_class(&r.module, "BrickComponentType_WireGraph_Expr_MathAdd"), 0);
+    assert_eq!(count_class(&r.module, "BrickComponentType_Expr_MathAdd"), 0);
     // SplitQuaternion's input can't take inline data (`_Expr_Split` gates
     // are excluded in `emit::port_accepts_inline_variant`), so the folded
     // `Literal::Quat` must be materialized to a real MakeQuaternion carrier:
@@ -1326,7 +1326,7 @@ fn folding_keeps_a_self_firing_gate_and_its_handler() {
     let src = "let t = Timer(10.0)\nvar n: int\non t.Expired {\n  n = 1 + 1\n}\n";
     let folded = compile_folded(src);
     assert!(
-        has_gate(&folded, crate::ir::gate_class::PSEUDO_TIMER),
+        has_gate(&folded, crate::ir::gate_class::STOPWATCH),
         "the Timer must survive folding: {:?}",
         folded.module.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
     );
@@ -1336,7 +1336,7 @@ fn folding_keeps_a_self_firing_gate_and_its_handler() {
         folded.module.nodes.values().map(|n| n.gate_class).collect::<Vec<_>>()
     );
     // The exec edge from the Timer into the handler is intact.
-    let timer = find_gate(&folded, crate::ir::gate_class::PSEUDO_TIMER);
+    let timer = find_gate(&folded, crate::ir::gate_class::STOPWATCH);
     assert!(
         folded.module.wires.iter().any(|w| w.source.node_id == timer
             && w.target.port == crate::ir::port_registry::WirePort::Exec),

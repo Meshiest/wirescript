@@ -158,7 +158,7 @@ fn clock_event_config_lands_as_data() {
     );
     assert!(matches!(prop(&r, c, "bEnabled"), Some(Literal::Bool(true))));
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        !has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "a constant interval must bake, not materialize a carrier"
     );
 }
@@ -615,17 +615,36 @@ fn data_driven_enum_config_lands_by_raw_name() {
 
 #[test]
 fn data_driven_int_config_lands_by_raw_name() {
-    let src = "in go: exec\nin p: controller\non go {\n  p.DisplayText(\"hi\", FontSize = 40)\n}\n";
+    // `Value` is a settings-only int on Cycle that no declared param covers.
+    let src = "in go: exec\non go {\n  let n = Cycle(4, Value = 2)\n  PrintToConsole(n)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
     assert!(matches!(
-        prop(
-            &r,
-            crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT,
-            "FontSize"
-        ),
-        Some(Literal::Int(40))
+        prop(&r, crate::ir::gate_class::EXEC_CYCLE, "Value"),
+        Some(Literal::Int(2))
     ));
+}
+
+#[test]
+fn display_text_wireable_enum_bakes_constants_and_wires_runtime_values() {
+    // `justify`/`easing` are wire inputs whose data field is a schema enum: a
+    // member name still bakes into the field, and a runtime int wires in.
+    let src = "in go: exec\nin p: controller\nin j: int\non go {\n  \
+               p.DisplayText(\"hi\", justify = Right, easing = j)\n}\n";
+    let r = compile(src);
+    assert_no_errors(&r);
+    let c = crate::ir::gate_class::PLAYERSTATE_DISPLAY_TEXT;
+    // EBRDisplayTextJustification::Right == 2.
+    assert!(matches!(prop(&r, c, "Justification"), Some(Literal::Int(2))));
+    assert!(prop(&r, c, "Easing").is_none(), "a runtime easing must wire, not bake");
+    let gate = find_gate(&r, c);
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.target.node_id == gate && w.target.port.as_str() == "Easing"),
+        "the runtime easing value must wire into the Easing port"
+    );
 }
 
 #[test]
@@ -639,7 +658,7 @@ fn event_called_as_expression_emits_event_gate() {
     // `find_gate` asserts exactly one node of this class exists.
     let _ = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent",
+        "BrickComponentType_Event_Gamemode_RoundStart",
     );
 }
 
@@ -652,7 +671,7 @@ fn event_expression_callable_in_pure_context() {
     assert_no_errors(&r);
     let _ = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent",
+        "BrickComponentType_Event_Gamemode_RoundStart",
     );
 }
 
@@ -679,7 +698,7 @@ fn event_expression_exposes_data_output() {
     assert_no_errors(&r);
     let _ = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Fake_Gamemode_CharacterSpawnedEvent",
+        "BrickComponentType_Event_Gamemode_CharacterSpawned",
     );
 }
 
@@ -780,9 +799,9 @@ fn send_custom_event_inlines_name_and_data() {
     let src = "in go: exec\non go {\n  SendCustomEvent(\"spawn\", 42, 99)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
-    let c = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT;
+    let c = crate::ir::gate_class::SEND_CUSTOM_EVENT;
     assert!(has_gate(&r, c));
-    // Constant data args inline as typed data (a WireGraphVariant at emit); the
+    // Constant data args inline as typed data (a `WireValue` at emit); the
     // name bakes into the EventName str field.
     assert!(matches!(prop(&r, c, "DataIn1"), Some(Literal::Int(42))));
     assert!(matches!(prop(&r, c, "DataIn2"), Some(Literal::Int(99))));
@@ -798,7 +817,7 @@ fn custom_event_typed_params_type_the_data_ports() {
     let src = "static var last: int = 0\non CustomEvent(\"dmg\", isObject = true) -> (amount: int, source: character) {\n  last = amount\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
-    let c = crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
+    let c = crate::ir::gate_class::CUSTOM_EVENT;
     let node = find_gate(&r, c);
     let outs = &r.module.nodes[&node].ports.outputs;
     let port_ty = |name: &str| {
@@ -824,7 +843,7 @@ fn inferred_custom_event_ports_take_sender_types() {
                on CharacterSpawned() -> { character: ch } {\n  SendCustomEvent(\"dmg\", 42, ch)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
-    let c = crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
+    let c = crate::ir::gate_class::CUSTOM_EVENT;
     let node = find_gate(&r, c);
     let outs = &r.module.nodes[&node].ports.outputs;
     let port_ty = |name: &str| {
@@ -849,7 +868,7 @@ fn non_custom_event_unannotated_param_keeps_catalog_type() {
     assert_no_errors(&r);
     let node = find_gate(
         &r,
-        "BrickComponentType_WireGraph_Fake_Gamemode_CharacterSpawnedEvent",
+        "BrickComponentType_Event_Gamemode_CharacterSpawned",
     );
     let outs = &r.module.nodes[&node].ports.outputs;
     let port_ty = |name: &str| {
@@ -872,8 +891,8 @@ fn custom_event_object_config_and_send_target() {
                on go {\n  SendCustomEvent(\"dmg\", 7, target = obj)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
-    let recv = crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
-    let send = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT;
+    let recv = crate::ir::gate_class::CUSTOM_EVENT;
+    let send = crate::ir::gate_class::SEND_CUSTOM_EVENT;
     assert!(
         matches!(prop(&r, recv, "bIsObjectEvent"), Some(Literal::Bool(true))),
         "isObject = true should bake bIsObjectEvent, got {:?}",
@@ -899,11 +918,11 @@ fn custom_event_isobject_config_is_case_insensitive() {
     assert_no_errors(&r);
     assert!(
         matches!(
-            prop(&r, crate::ir::gate_class::PSEUDO_CUSTOM_EVENT, "bIsObjectEvent"),
+            prop(&r, crate::ir::gate_class::CUSTOM_EVENT, "bIsObjectEvent"),
             Some(Literal::Bool(true))
         ),
         "lowercase `isobject = true` should still bake bIsObjectEvent, got {:?}",
-        prop(&r, crate::ir::gate_class::PSEUDO_CUSTOM_EVENT, "bIsObjectEvent")
+        prop(&r, crate::ir::gate_class::CUSTOM_EVENT, "bIsObjectEvent")
     );
 }
 
@@ -957,7 +976,7 @@ fn map_param_double_call_shares_one_map_gate() {
         .module
         .nodes
         .iter()
-        .filter(|(_, n)| n.gate_class == crate::ir::gate_class::PSEUDO_MAP_VAR)
+        .filter(|(_, n)| n.gate_class == crate::ir::gate_class::MAP_VAR)
         .collect();
     assert_eq!(map_gates.len(), 1, "one MapVar gate for the single `var m`");
     let map_id = *map_gates[0].0;
@@ -1029,7 +1048,7 @@ fn on_arrow_tuple_custom_event_matches_inline() {
     let arrow = "static var last: int = 0\non CustomEvent(\"dmg\") -> (amount: int, source: character) {\n  last = amount\n}\n";
     let r = compile(arrow);
     assert_no_errors(&r);
-    let c = crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
+    let c = crate::ir::gate_class::CUSTOM_EVENT;
     let node = find_gate(&r, c);
     let outs = &r.module.nodes[&node].ports.outputs;
     let port_ty =
@@ -1055,7 +1074,7 @@ fn on_arrow_tuple_infers_from_sender() {
     let src = "static var last: int = 0\nin go: exec\non CustomEvent(\"dmg\") -> (amount) {\n  last = last + 1\n}\non go {\n  SendCustomEvent(\"dmg\", 7)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
-    let c = crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
+    let c = crate::ir::gate_class::CUSTOM_EVENT;
     let node = find_gate(&r, c);
     let outs = &r.module.nodes[&node].ports.outputs;
     assert_eq!(
@@ -1201,7 +1220,7 @@ fn on_general_inline_mod_exec_no_arrow_is_ws043() {
         !r.module
             .nodes
             .values()
-            .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set"),
+            .any(|n| n.gate_class == "BrickComponentType_Exec_Var_Set"),
         "no handler exec chain should be produced (found an Exec_Var_Set from the dropped body)"
     );
 }
@@ -1217,7 +1236,7 @@ fn send_custom_event_receiver_form_binds_target() {
                on go {\n  obj.SendCustomEvent(\"dmg\", 7)\n}\n";
     let r = compile(src);
     assert_no_errors(&r);
-    let send = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT;
+    let send = crate::ir::gate_class::SEND_CUSTOM_EVENT;
     let send_node = find_gate(&r, send);
     assert!(
         r.module.wires.iter().any(|w| w.target.node_id == send_node
@@ -1237,7 +1256,7 @@ fn send_custom_event_receiver_form_binds_target() {
                 on go {\n  obj.SendGlobalCustomEvent(\"dmg\", 7)\n}\n";
     let gr = compile(gsrc);
     assert_no_errors(&gr);
-    let gsend = crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL;
+    let gsend = crate::ir::gate_class::SEND_CUSTOM_EVENT_GLOBAL;
     let gsend_node = find_gate(&gr, gsend);
     assert!(
         gr.module
@@ -1259,11 +1278,11 @@ fn send_custom_event_exec_wires_to_execin_not_exec() {
     for (src, class) in [
         (
             "in go: exec\nin obj: entity\non go {\n  obj.SendCustomEvent(\"x\", 1)\n}\n",
-            crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT,
+            crate::ir::gate_class::SEND_CUSTOM_EVENT,
         ),
         (
             "in go: exec\non go {\n  SendGlobalCustomEvent(\"x\", 1)\n}\n",
-            crate::ir::gate_class::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL,
+            crate::ir::gate_class::SEND_CUSTOM_EVENT_GLOBAL,
         ),
     ] {
         let r = compile(src);
@@ -1407,11 +1426,11 @@ fn team_join_leave_events_expose_team_and_playerstate() {
     assert_no_errors(&r);
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedTeamEvent"
+        "BrickComponentType_Event_Gamemode_ControllerJoinedTeam"
     ));
     assert!(has_gate(
         &r,
-        "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftTeamEvent"
+        "BrickComponentType_Event_Gamemode_ControllerLeftTeam"
     ));
 }
 
@@ -2078,7 +2097,7 @@ fn generic_alias_record_port_lowers_to_real_gates() {
         "generic-alias port field access must not lower to a SplitColor swizzle"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "p.a + p.b on a Pair<int> port must lower to a real MathAdd gate"
     );
     // The port must have dissolved into one sub-port per field (2), not stayed
@@ -2102,7 +2121,7 @@ fn generic_alias_record_port_lowers_to_real_gates() {
     let child_has_add = rg.module.chips.values().any(|c| {
         c.nodes
             .values()
-            .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+            .any(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
     });
     let child_has_unsupported = rg
         .module

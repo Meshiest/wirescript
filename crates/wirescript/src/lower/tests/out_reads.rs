@@ -9,7 +9,7 @@ fn reading_an_output_port_wires_from_its_rerouter() {
                out z: int = y * 2";
     let r = compile(src);
     assert_no_errors(&r);
-    let mul = find_gate(&r, "BrickComponentType_WireGraph_Expr_MathMultiply");
+    let mul = find_gate(&r, "BrickComponentType_Expr_MathMultiply");
     assert!(
         r.module.wires.iter().any(|w| {
             w.target.node_id == mul
@@ -29,7 +29,7 @@ fn a_same_named_var_still_wins_over_the_output_port() {
                out count: int = count";
     let r = compile(src);
     assert_no_errors(&r);
-    let var = find_gate(&r, "BrickComponentType_WireGraphPseudo_Var");
+    let var = find_gate(&r, "BrickComponentType_Var");
     let port = find_gate(&r, "BrickComponentType_Internal_MicrochipOutput");
     assert!(
         r.module
@@ -85,7 +85,7 @@ fn a_top_level_handler_may_declare_its_own_output_port() {
         "exactly one boundary port; nodes: {:?}",
         r.module.nodes
     );
-    let toggle = find_gate(&r, "BrickComponentType_WireGraph_Exec_Toggle");
+    let toggle = find_gate(&r, "BrickComponentType_Exec_Toggle");
     let port = find_gate(&r, "BrickComponentType_Internal_MicrochipOutput");
     assert!(
         r.module
@@ -186,7 +186,7 @@ fn a_captured_event_bodys_out_binding_is_hoisted() {
         "exactly one boundary port; nodes: {:?}",
         r.module.nodes
     );
-    let toggle = find_gate(&r, "BrickComponentType_WireGraph_Exec_Toggle");
+    let toggle = find_gate(&r, "BrickComponentType_Exec_Toggle");
     let port = find_gate(&r, "BrickComponentType_Internal_MicrochipOutput");
     assert!(
         r.module
@@ -213,13 +213,13 @@ fn two_handler_sites_share_one_backing_var() {
     let r = compile(src);
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_Var"),
+        gate_count(&r, "BrickComponentType_Var"),
         1,
         "one backing var; nodes: {:?}",
         r.module.nodes
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        gate_count(&r, "BrickComponentType_Exec_Var_Set"),
         2,
         "one Var_Set per site; nodes: {:?}",
         r.module.nodes
@@ -239,7 +239,7 @@ fn a_conditional_handler_site_gets_a_backing_var() {
     let r = compile(src);
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_Var"),
+        gate_count(&r, "BrickComponentType_Var"),
         1,
         "a branched site must be backed; nodes: {:?}",
         r.module.nodes
@@ -252,7 +252,7 @@ fn a_single_unconditional_site_stays_a_direct_wire() {
     let r = compile("on Clock(interval = 0.2) {\n@top out flash: bool = Toggle()\n}");
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_Var"),
+        gate_count(&r, "BrickComponentType_Var"),
         0,
         "a single unconditional site needs no backing var; nodes: {:?}",
         r.module.nodes

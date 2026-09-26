@@ -27,19 +27,19 @@ fn record_payload_ferries_and_destructures() {
             .collect::<Vec<_>>()
     );
     // 3 PseudoVars: sum store, index store, armed flag.
-    let vars = gate_count(&r, "BrickComponentType_WireGraphPseudo_Var");
+    let vars = gate_count(&r, "BrickComponentType_Var");
     assert!(
         vars >= 3,
         "expected 2 payload stores + armed flag, got {vars}"
     );
     // 2 payload writes on the emit chain (+ arm/reset sets).
-    let sets = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let sets = gate_count(&r, "BrickComponentType_Exec_Var_Set");
     assert!(
         sets >= 4,
         "expected per-field Var_Set + arm/reset, got {sets}"
     );
     let run = find_gate(&r, "BrickComponentType_Internal_MicrochipInput");
-    let cont = find_gate(&r, "BrickComponentType_WireGraph_Exec_PrintToConsole");
+    let cont = find_gate(&r, "BrickComponentType_Exec_PrintToConsole");
     assert!(
         wired_reachable(&r, run, cont),
         "continuation must be exec-wired"
@@ -105,7 +105,7 @@ on RoundStart() { s.val = 42 }",
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        has_gate(&r, "BrickComponentType_Exec_Var_Set"),
         "writing through a record ref field should produce a Var_Set gate"
     );
 
@@ -113,14 +113,14 @@ on RoundStart() { s.val = 42 }",
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("expected a PseudoVar node for `var n`");
 
     let var_set = r
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
         .expect("expected a Var_Set node");
 
     let ref_wire = r
@@ -156,8 +156,8 @@ on RoundStart() { bump(s) }",
 
     // The mod inlines, so we should see either an IncVar or a Var_Set for
     // the `s.counter = s.counter + 1` increment.
-    let has_incr = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Increment");
-    let has_set = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let has_incr = has_gate(&r, "BrickComponentType_Exec_Var_Increment");
+    let has_set = has_gate(&r, "BrickComponentType_Exec_Var_Set");
     assert!(
         has_incr || has_set,
         "record ref field increment inside mod should produce IncVar or Var_Set"
@@ -167,7 +167,7 @@ on RoundStart() { bump(s) }",
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("expected a PseudoVar for `var n`");
 
     let has_ref_wire = r.module.wires.iter().any(|w| {
@@ -194,7 +194,7 @@ on RoundStart() { m.data.push(42) }",
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_Push"),
         "pushing through a record array field should produce an ArrayVar_Push gate"
     );
 
@@ -202,14 +202,14 @@ on RoundStart() { m.data.push(42) }",
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .find(|n| n.gate_class == "BrickComponentType_ArrayVar")
         .expect("expected an ArrayVar pseudo-node for `array arr`");
 
     let push_node = r
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
         .unwrap();
 
     let ref_wire = r
@@ -244,13 +244,13 @@ out result = sum",
     assert_no_errors(&r);
 
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "b.x + b.y should produce a MathAdd gate"
     );
 
     // Spread must not generate extra addition gates.
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        gate_count(&r, "BrickComponentType_Expr_MathAdd"),
         1,
         "should have exactly one addition gate"
     );
@@ -272,12 +272,12 @@ out result = sum",
     assert_no_errors(&r);
 
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "destructured x + y should produce a MathAdd gate"
     );
 
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        gate_count(&r, "BrickComponentType_Expr_MathAdd"),
         1,
         "should have exactly one addition gate"
     );
@@ -314,7 +314,7 @@ out result = f({ a: x, b: 1 })",
     // `a` binds to `x` (non-constant) so `a + b` can't be folded away; the add
     // surviving proves the destructured field value actually flowed in.
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "destructured field `a` (= x) + b should produce a MathAdd"
     );
 }
@@ -343,7 +343,7 @@ out result = g({ a: x, b: 1 })",
         "record literal arg to a whole-record param must not produce _Unsupported"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "p.a (= x) + p.b should produce a MathAdd"
     );
 }
@@ -521,7 +521,7 @@ on RoundStart() { o.inner.x = 42 }",
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        has_gate(&r, "BrickComponentType_Exec_Var_Set"),
         "nested record field write should produce a Var_Set gate"
     );
 
@@ -529,14 +529,14 @@ on RoundStart() { o.inner.x = 42 }",
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("expected a PseudoVar for `var x`");
 
     let var_set = r
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
         .expect("expected a Var_Set node");
 
     let ref_wire = r
@@ -570,7 +570,7 @@ out result = sum",
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "pair.0 + pair.1 should produce a MathAdd gate"
     );
     let unsupported_count = r
@@ -609,7 +609,7 @@ out result = add2(pair)",
             .map(|n| n.gate_class)
             .collect::<Vec<_>>()
     );
-    let add = find_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd");
+    let add = find_gate(&r, "BrickComponentType_Expr_MathAdd");
     let out = find_gate(&r, "BrickComponentType_Internal_MicrochipOutput");
     assert!(wired_reachable(&r, add, out), "sum must reach the output");
     // The elements must reach the gate as its actual operands, not as the
@@ -659,7 +659,7 @@ out result = a + b",
         "let tuple destructure must bind both names"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "a + b should produce a MathAdd gate"
     );
 }
@@ -676,7 +676,7 @@ on tick {
 }",
     );
     assert_no_errors(&r);
-    let get_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
+    let get_count = gate_count(&r, "BrickComponentType_Exec_Var_Get");
     assert!(
         get_count >= 1,
         "let x = var should emit a Var_Get to capture the value"
@@ -701,7 +701,7 @@ on tick {
 }",
     );
     assert_no_errors(&r);
-    let set_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let set_count = gate_count(&r, "BrickComponentType_Exec_Var_Set");
     assert!(
         set_count >= 1,
         "record field |= inside if inside mod should produce Var_Set, got {}",
@@ -711,7 +711,7 @@ on tick {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
         .expect("must have a Var_Set node");
     let has_exec_in = r.module.wires.iter().any(|w| {
         w.target.node_id == set_node.id && w.target.port == crate::ir::port_registry::WirePort::Exec
@@ -758,8 +758,8 @@ on tick {
     assert_no_errors(&r_direct);
     assert_no_errors(&r_record);
 
-    let direct_sets = gate_count(&r_direct, "BrickComponentType_WireGraph_Exec_Var_Set");
-    let record_sets = gate_count(&r_record, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let direct_sets = gate_count(&r_direct, "BrickComponentType_Exec_Var_Set");
+    let record_sets = gate_count(&r_record, "BrickComponentType_Exec_Var_Set");
     eprintln!(
         "Direct Var_Sets: {}, Record Var_Sets: {}",
         direct_sets, record_sets
@@ -770,7 +770,7 @@ on tick {
         "record version should have same number of Var_Sets as direct"
     );
 
-    let branch_count = gate_count(&r_direct, "BrickComponentType_WireGraph_Exec_Branch");
+    let branch_count = gate_count(&r_direct, "BrickComponentType_Exec_Branch");
     assert_eq!(
         branch_count, 0,
         "literal bool condition should be constant-folded, no Branch gate"
@@ -796,7 +796,7 @@ on tick {
         .module
         .nodes
         .values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex");
+        .any(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_SetAtIndex");
     assert!(
         has_arr_set,
         "io[1] = 8 should produce ArrayVar_SetAtIndex after record capture"
@@ -824,7 +824,7 @@ on tick {
     );
     assert_no_errors(&r);
     // Should have at least 2 Var_Gets: one for the += read, one for the return read
-    let get_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
+    let get_count = gate_count(&r, "BrickComponentType_Exec_Var_Get");
     assert!(
         get_count >= 2,
         "read after record field write should produce fresh Var_Get (got {})",
@@ -856,7 +856,7 @@ on tick {
     // `s.val` after the write produces a second Var_Get.
     // The `+= 10` produces a third Var_Get (read before write).
     // Total: at least 3 Var_Gets for `s.val`.
-    let get_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
+    let get_count = gate_count(&r, "BrickComponentType_Exec_Var_Get");
     assert!(
         get_count >= 3,
         "snapshot + write + re-read should produce at least 3 Var_Gets (got {})",
@@ -1024,7 +1024,7 @@ fn record_var_decomposes_into_per_field_vars() {
         "{PT}var p: Point = {{ x: 1, y: 2 }}\nout ox = p.x\nin s: exec\non s {{ p.x = 5 }}"
     ));
     assert_no_errors(&r);
-    assert_eq!(gate_count(&r, gc::PSEUDO_VAR), 2, "one Pseudo_Var per field");
+    assert_eq!(gate_count(&r, gc::VAR), 2, "one Pseudo_Var per field");
     assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0, "no swizzle on a record");
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(gate_count(&r, gc::VAR_SET), 1, "p.x = 5 is one Var_Set");
@@ -1039,7 +1039,7 @@ fn nested_record_var_decomposes_per_leaf() {
          in s: exec\non s { o.p.a = 9 }",
     );
     assert_no_errors(&r);
-    assert_eq!(gate_count(&r, gc::PSEUDO_VAR), 3, "a, b, q each a Pseudo_Var");
+    assert_eq!(gate_count(&r, gc::VAR), 3, "a, b, q each a Pseudo_Var");
     assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
     assert!(!has_gate(&r, "_Unsupported"));
 }
@@ -1079,7 +1079,7 @@ fn record_array_push_fans_out_per_field() {
     ));
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
-    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 2, "one array per field");
+    assert_eq!(gate_count(&r, gc::ARRAY_VAR), 2, "one array per field");
     assert_eq!(gate_count(&r, gc::ARRAY_PUSH), 2, "push fans out per field");
 }
 
@@ -1151,7 +1151,7 @@ fn nested_record_array_field_path() {
     assert_eq!(gate_count(&r, gc::SPLIT_COLOR), 0, "a genuine `.a`/`.b` field must not swizzle");
     assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
     // n, inner.a, inner.b -> 3 parallel arrays.
-    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 3, "one array per leaf field");
+    assert_eq!(gate_count(&r, gc::ARRAY_VAR), 3, "one array per leaf field");
     assert_eq!(gate_count(&r, gc::ARRAY_PUSH), 3, "push fans to every leaf");
     // arr[0].inner.a (1) + arr[0].inner (2) + arr[0] (3) = 6 reads.
     assert_eq!(gate_count(&r, gc::ARRAY_GET), 6);
@@ -1203,7 +1203,7 @@ fn record_map_fans_out_per_field() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
-    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 2, "one map per field");
+    assert_eq!(gate_count(&r, gc::MAP_VAR), 2, "one map per field");
     // set(1) + m[1]=(1) = 2 sets, each fanned to 2 fields = 4
     assert_eq!(gate_count(&r, gc::MAP_SET), 4);
     // get(0).x (1) + m[1].x (1) + p=m.get(0) (2) = 4
@@ -1243,7 +1243,7 @@ fn nested_record_map_field_path() {
     assert_eq!(gate_count(&r, gc::SPLIT_COLOR), 0, "a genuine `.a`/`.b` field must not swizzle");
     assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0);
     // n, inner.a, inner.b -> 3 parallel maps.
-    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 3, "one map per leaf field");
+    assert_eq!(gate_count(&r, gc::MAP_VAR), 3, "one map per leaf field");
     // set (3, fans to every leaf) + inner.a=9 (1) + inner={..} (2) = 6.
     assert_eq!(gate_count(&r, gc::MAP_SET), 6);
     // m[0].inner.a (1) + m[0].inner (2) + m[0] (3) = 6 reads.
@@ -1291,7 +1291,7 @@ fn record_container_constructor_bakes_per_field() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == gc::PSEUDO_ARRAY_VAR)
+        .filter(|n| n.gate_class == gc::ARRAY_VAR)
         .filter_map(|n| match n.properties.get(&iv) {
             Some(crate::ir::Literal::Array(items)) => Some(
                 items
@@ -1316,7 +1316,7 @@ fn record_container_constructor_bakes_per_field() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == gc::PSEUDO_MAP_VAR && n.properties.contains_key(&iv))
+        .filter(|n| n.gate_class == gc::MAP_VAR && n.properties.contains_key(&iv))
         .count();
     assert_eq!(maps, 2, "both field maps must bake an InitialValue");
 }
@@ -1335,9 +1335,9 @@ fn imported_record_storage_lowers() {
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
-    assert_eq!(gate_count(&r, gc::PSEUDO_VAR), 3, "p.x, p.y + local a");
-    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 2, "pts.x, pts.y");
-    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 2, "m.x, m.y");
+    assert_eq!(gate_count(&r, gc::VAR), 3, "p.x, p.y + local a");
+    assert_eq!(gate_count(&r, gc::ARRAY_VAR), 2, "pts.x, pts.y");
+    assert_eq!(gate_count(&r, gc::MAP_VAR), 2, "m.x, m.y");
 }
 
 /// Record storage imported via a namespace (`import * as L`) lowers its field/
@@ -1355,8 +1355,8 @@ fn namespaced_record_storage_lowers() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(gate_count(&r, gc::SPLIT_VECTOR), 0, "no swizzle across the import");
-    assert_eq!(gate_count(&r, gc::PSEUDO_ARRAY_VAR), 2);
-    assert_eq!(gate_count(&r, gc::PSEUDO_MAP_VAR), 2);
+    assert_eq!(gate_count(&r, gc::ARRAY_VAR), 2);
+    assert_eq!(gate_count(&r, gc::MAP_VAR), 2);
 }
 
 /// SoA field access resolves array methods on `pts.field` (the parallel array) -
@@ -1473,8 +1473,8 @@ fn record_array_whole_assign_from_literal_fans_clear_push() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     // 2 field arrays cleared; each of 2 elements pushed to each field (2 clears, 4 pushes).
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"), 2);
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"), 4);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_ArrayVar_Clear"), 2);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_ArrayVar_Push"), 4);
 }
 
 /// A field access on an aggregate-typed if-expression distributes over the
@@ -1488,7 +1488,7 @@ fn if_expr_field_access_distributes_over_branches() {
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "record if-expr field must not degrade");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"));
 }
 
 /// An index on an aggregate-typed if-expression distributes over the branches
@@ -1501,7 +1501,7 @@ fn if_expr_index_access_distributes_over_branches() {
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "array if-expr index must not degrade");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"));
 }
 
 /// A NESTED record passed as a chip param explodes recursively into per-leaf
@@ -1521,8 +1521,8 @@ fn nested_record_chip_param_explodes_recursively() {
     }
     assert!(!any_gate(&r.module, "_Unsupported"), "nested record chip param must bind");
     assert!(
-        !any_gate(&r.module, "BrickComponentType_WireGraph_Expr_SplitColor")
-            && !any_gate(&r.module, "BrickComponentType_WireGraph_Expr_SplitVector"),
+        !any_gate(&r.module, "BrickComponentType_Expr_SplitColor")
+            && !any_gate(&r.module, "BrickComponentType_Expr_SplitVector"),
         "o.inr.a must read its own leaf pin, not SplitColor the first input"
     );
     // The caller's `n` arg must wire into the chip (before the fix the nested
@@ -1538,7 +1538,7 @@ fn nested_record_chip_param_explodes_recursively() {
         .chips
         .values()
         .flat_map(|c| c.nodes.values())
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .find(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .expect("chip body must contain the o.inr.a + o.c add");
     assert_eq!(add.ports.inputs.len(), 2, "both record leaves must feed the add");
 }
@@ -1562,7 +1562,7 @@ fn chip_tuple_param_pattern_binds() {
         .chips
         .values()
         .flat_map(|c| c.nodes.values())
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .find(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .expect("chip body must contain a + b");
     assert_eq!(add.ports.inputs.len(), 2, "both tuple elements must feed the add");
 }
@@ -1728,7 +1728,7 @@ fn record_returning_call_in_a_nested_literal_field_pushes_every_column() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        gate_count(&r, "BrickComponentType_Exec_ArrayVar_Push"),
         3,
         "one push per parallel column, or the columns desync"
     );
@@ -1758,7 +1758,7 @@ fn record_valued_ternary_selects_each_leaf() {
         vec!["z.a".to_string(), "z.b".to_string()],
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        gate_count(&r, "BrickComponentType_Expr_Select"),
         2,
         "one Select per leaf field"
     );
@@ -1779,12 +1779,12 @@ fn record_valued_ternary_shares_one_condition_gate() {
 ",
     );
     assert_no_errors(&r);
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_Select"), 3);
+    assert_eq!(gate_count(&r, "BrickComponentType_Expr_Select"), 3);
     let selects: Vec<_> = r
         .module
         .nodes
         .iter()
-        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_Expr_Select")
         .map(|(id, _)| *id)
         .collect();
     let cond_sources: crate::collections::HashSet<_> = r
@@ -1817,7 +1817,7 @@ fn nested_record_valued_ternary_selects_every_leaf() {
         written_var_labels(&r),
         vec!["z.i.m".to_string(), "z.i.n".to_string(), "z.k".to_string()],
     );
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_Select"), 3);
+    assert_eq!(gate_count(&r, "BrickComponentType_Expr_Select"), 3);
 }
 
 #[test]
@@ -1938,7 +1938,7 @@ fn enum_typed_record_field_gets_its_own_disc_and_slots() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_Var"),
+        gate_count(&r, "BrickComponentType_Var"),
         4,
         "h.s.__disc + h.s.__A_0 + h.s.__B_0 + h.k"
     );
@@ -1988,8 +1988,8 @@ fn whole_record_copy_carries_an_array_field() {
     );
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_CopyFrom")
-            || has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Clear"),
+        has_gate(&r, "BrickComponentType_Exec_ArrayVar_CopyFrom")
+            || has_gate(&r, "BrickComponentType_Exec_ArrayVar_Clear"),
         "the array field must be rebuilt, not skipped; gates: {:?}",
         r.module
             .nodes
@@ -2150,7 +2150,7 @@ fn a_record_ref_chip_param_writes_through_to_the_callers_fields() {
             r.module
                 .nodes
                 .get(&w.source.node_id)
-                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+                .is_some_and(|n| n.gate_class == "BrickComponentType_Var")
         })
         // Only the refs that cross INTO the chip; a plain var also drives its
         // own `Var_Get` through a VarRef wire inside the caller.
@@ -2167,7 +2167,7 @@ fn a_record_ref_chip_param_writes_through_to_the_callers_fields() {
     fn set_count(m: &crate::ir::Module) -> usize {
         m.nodes
             .values()
-            .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+            .filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
             .count()
             + m.chips.values().map(set_count).sum::<usize>()
     }
@@ -2244,7 +2244,7 @@ fn a_tuple_ref_chip_param_writes_through_to_the_caller() {
                 && r.module
                     .nodes
                     .get(&w.source.node_id)
-                    .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+                    .is_some_and(|n| n.gate_class == "BrickComponentType_Var")
         });
         assert!(crossing, "`*{ty}` must pass an element ref into the chip");
     }
@@ -2274,7 +2274,7 @@ fn an_enum_ref_chip_param_writes_every_slot_of_the_caller() {
             r.module
                 .nodes
                 .get(&w.source.node_id)
-                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+                .is_some_and(|n| n.gate_class == "BrickComponentType_Var")
         })
         .map(|w| w.source.node_id)
         .collect();
@@ -2305,7 +2305,7 @@ fn dot_value_on_a_ref_record_field_reads_the_backing_var() {
         let sel: Vec<_> = m
             .nodes
             .values()
-            .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+            .filter(|n| n.gate_class == "BrickComponentType_Expr_Select")
             .map(|n| n.id)
             .collect();
         m.wires
@@ -2439,7 +2439,7 @@ fn wire_borne_array_through_record_field_resolves() {
     );
     assert_eq!(gate_count(&r, gc::ARRAY_GET), 1);
     // The ref comes off the Select, so the bank choice reaches the read.
-    let sel = find_gate(&r, "BrickComponentType_WireGraph_Expr_Select");
+    let sel = find_gate(&r, "BrickComponentType_Expr_Select");
     let get = find_gate(&r, gc::ARRAY_GET);
     assert!(
         r.module.wires.iter().any(|w| w.source.node_id == sel

@@ -1,52 +1,179 @@
-//! IR `Literal`/`Type` to brdb wire-variant conversion.
+//! IR `Literal`/`Type` to brdb `WireValue` conversion, plus the dynamic
+//! array/map containers that `ArrayVar`/`MapVar` store.
 
 use super::*;
 
-/// Bool → Int for the prim-math wire variant, which has no `bool` member: an
-/// uncoerced `WireVariant::Bool` is rejected by the brdb schema writer.
-pub(super) fn coerce_for_prim_math(wv: WireVariant) -> WireVariant {
+use brdb::schema::as_brdb::{BrdbArrayIter, BrdbMapIter};
+
+/// Gates whose wire-value inputs were numeric-only in the previous save
+/// format: the `Expr_Math*` family, the ordered compares, `NearlyEqual` and
+/// `Exec_Random`. A constant `bool` baked into one of their inputs is written
+/// as an int, the form these gates have always been given.
+pub(super) fn bool_input_bakes_as_int(gate_class: &str) -> bool {
+    gate_class.starts_with("BrickComponentType_Expr_Math")
+        || matches!(
+            gate_class,
+            "BrickComponentType_Expr_CompareGreater"
+                | "BrickComponentType_Expr_CompareGreaterOrEqual"
+                | "BrickComponentType_Expr_CompareLess"
+                | "BrickComponentType_Expr_CompareLessOrEqual"
+                | gc::NEARLY_EQUAL
+                | gc::RANDOM
+        )
+}
+
+/// Bool → Int, for [`bool_input_bakes_as_int`] gates.
+pub(super) fn coerce_bool_to_int(wv: WireValue) -> WireValue {
     match wv {
-        WireVariant::Bool(b) => WireVariant::Int(if b { 1 } else { 0 }),
+        WireValue::Bool(b) => WireValue::Int(if b { 1 } else { 0 }),
         other => other,
     }
 }
 
-pub(super) fn var_type_to_wire_variant(ty: Option<&crate::ir::Type>) -> WireVariant {
+pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue {
     use crate::ir::Type;
     debug_assert!(
         !matches!(ty, Some(Type::Param(_))),
         "Type::Param reached emit — monomorphization must substitute it first"
     );
     match ty {
-        Some(Type::Bool) => WireVariant::Bool(false),
-        Some(Type::Int) => WireVariant::Int(0),
-        Some(Type::Controller | Type::Character | Type::Entity) => {
-            WireVariant::Object(None)
-        }
-        Some(Type::String) => WireVariant::Str(String::new()),
-        Some(Type::Vector) => WireVariant::Vector(Vector3f {
+        Some(Type::Bool) => WireValue::Bool(false),
+        Some(Type::Int) => WireValue::Int(0),
+        Some(Type::Controller | Type::Character | Type::Entity) => WireValue::Object,
+        Some(Type::String) => WireValue::Str(String::new()),
+        Some(Type::Vector) => WireValue::Vector {
             x: 0.0,
             y: 0.0,
             z: 0.0,
-        }),
-        Some(Type::Rotator) => WireVariant::Rotator {
+        },
+        Some(Type::Rotator) => WireValue::Rotator {
             pitch: 0.0,
             yaw: 0.0,
             roll: 0.0,
         },
-        Some(Type::Quat) => WireVariant::Quat {
+        Some(Type::Quat) => WireValue::Quat {
             x: 0.0,
             y: 0.0,
             z: 0.0,
             w: 1.0,
         },
-        Some(Type::Color) => WireVariant::LinearColor {
+        Some(Type::Color) => WireValue::LinearColor {
             r: 1.0,
             g: 1.0,
             b: 1.0,
             a: 1.0,
         },
-        _ => WireVariant::Number(0.0),
+        _ => WireValue::Number(0.0),
+    }
+}
+
+/// The schema `types` entry a dynamic array/map stores values of `ty` as.
+/// Unknown and float types store as `f64`, the game's own default for a new
+/// array or map variable.
+pub(super) fn dynamic_type_name(ty: Option<&crate::ir::Type>) -> &'static str {
+    use crate::ir::Type;
+    match ty {
+        Some(Type::Int) => "i64",
+        Some(Type::Bool) => "Bool",
+        Some(Type::String) => "Str",
+        Some(Type::Vector) => "Vector",
+        Some(Type::Rotator) => "Rotator",
+        Some(Type::Quat) => "Quat",
+        Some(Type::Color) => "LinearColor",
+        Some(Type::Controller | Type::Character | Type::Entity) => "weak_object",
+        _ => "f64",
+    }
+}
+
+/// A `dynamic_array` field value: an element type (a schema `types` entry)
+/// and the elements, each already in that type's `WireValue` form.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct DynArray {
+    pub(super) element_type: &'static str,
+    pub(super) values: Vec<WireValue>,
+}
+
+impl AsBrdbValue for DynArray {
+    fn as_brdb_dynamic_array(&self) -> Result<(&str, BrdbArrayIter<'_>), brdb::BrdbSchemaError> {
+        Ok((
+            self.element_type,
+            Box::new(self.values.iter().map(|v| v as &dyn AsBrdbValue)),
+        ))
+    }
+}
+
+/// A `dynamic_map` field value: key and value types (schema `types` entries)
+/// and the entries, each already in its type's `WireValue` form.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct DynMap {
+    pub(super) key_type: &'static str,
+    pub(super) value_type: &'static str,
+    pub(super) entries: Vec<(WireValue, WireValue)>,
+}
+
+impl AsBrdbValue for DynMap {
+    fn as_brdb_dynamic_map(&self) -> Result<(&str, &str, BrdbMapIter<'_>), brdb::BrdbSchemaError> {
+        Ok((
+            self.key_type,
+            self.value_type,
+            Box::new(
+                self.entries
+                    .iter()
+                    .map(|(k, v)| (k as &dyn AsBrdbValue, v as &dyn AsBrdbValue)),
+            ),
+        ))
+    }
+}
+
+/// `lit` read as a value of dynamic type `ty` (a [`dynamic_type_name`]).
+/// Numeric types read across literal kinds so a raw literal that reaches emit
+/// still bakes correctly instead of hitting the type's zero; anything that
+/// cannot convert (and every object reference, which a save cannot hold)
+/// becomes the type's default.
+fn wire_value_as(ty: &str, lit: &Literal) -> WireValue {
+    match (ty, lit) {
+        ("i64", Literal::Int(n)) => WireValue::Int(*n),
+        ("i64", Literal::Float(f)) => WireValue::Int(*f as i64),
+        ("i64", Literal::Bool(b)) => WireValue::Int(*b as i64),
+        ("f64", Literal::Float(f)) => WireValue::Number(*f),
+        ("f64", Literal::Int(n)) => WireValue::Number(*n as f64),
+        ("f64", Literal::Bool(b)) => WireValue::Number(*b as i64 as f64),
+        ("Bool", Literal::Bool(b)) => WireValue::Bool(*b),
+        ("Bool", Literal::Int(n)) => WireValue::Bool(*n != 0),
+        ("Str", Literal::String(s)) => WireValue::Str(s.clone()),
+        ("Vector", Literal::Vector { .. })
+        | ("Rotator", Literal::Rotator { .. })
+        | ("Quat", Literal::Quat { .. })
+        | ("LinearColor", Literal::LinearColor { .. } | Literal::Color { .. }) => {
+            literal_to_wire_value(lit).expect("composite literal has a wire value")
+        }
+        ("i64", _) => WireValue::Int(0),
+        ("Bool", _) => WireValue::Bool(false),
+        ("Str", _) => WireValue::Str(String::new()),
+        ("Vector", _) => WireValue::Vector {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        ("Rotator", _) => WireValue::Rotator {
+            pitch: 0.0,
+            yaw: 0.0,
+            roll: 0.0,
+        },
+        ("Quat", _) => WireValue::Quat {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+        ("LinearColor", _) => WireValue::LinearColor {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        ("weak_object", _) => WireValue::Object,
+        _ => WireValue::Number(0.0),
     }
 }
 
@@ -64,228 +191,65 @@ pub(super) fn array_element_type(ty: &crate::ir::Type) -> Option<&crate::ir::Typ
     }
 }
 
-/// The `WireMapVariant` (empty map) an empty `MapVar` brick serializes, chosen
-/// from the declared `Map<K, V>` type on its `MapVarRef` output port. Keys are
-/// int/string/object; values cover the wire-storable scalars. Defaults to
-/// `int -> float` for an unknown/degenerate type.
-pub(super) fn map_variant_from_type(ty: &crate::ir::Type) -> WireMapVariant {
+/// The empty `dynamic_map` a `MapVar` brick serializes, typed from the
+/// declared `Map<K, V>` on its `MapVarRef` output port. Keys are
+/// int/string/object (a bool key stores as an int); values cover the
+/// wire-storable scalars. Defaults to `int -> float` for an unknown or
+/// degenerate type.
+pub(super) fn map_from_type(ty: &crate::ir::Type) -> DynMap {
     use crate::ir::Type;
     let inner = match ty {
         Type::Ref(inner) => inner.as_ref(),
         other => other,
     };
-    let (k, v) = match inner {
-        Type::Map(k, v) => (k.as_ref(), v.as_ref()),
-        _ => return WireMapVariant { key: WireMapKey::Int64, value: WireMapValue::Number, entries: vec![] },
-    };
-    let key = match k {
-        Type::Int | Type::Bool => WireMapKey::Int64,
-        Type::String => WireMapKey::Str,
-        // Entity-family references are weak-object keys.
-        _ => WireMapKey::Object,
-    };
-    let value = match v {
-        Type::Int => WireMapValue::Int64,
-        Type::Float => WireMapValue::Number,
-        Type::Bool => WireMapValue::Bool,
-        Type::String => WireMapValue::Str,
-        Type::Vector => WireMapValue::Vector,
-        Type::Rotator => WireMapValue::Rotator,
-        Type::Quat => WireMapValue::Quat,
-        Type::Color => WireMapValue::LinearColor,
-        Type::Entity | Type::Character | Type::Controller => {
-            WireMapValue::Object
+    let (key_type, value_type) = match inner {
+        Type::Map(k, v) => {
+            let key_type = match k.as_ref() {
+                Type::Int | Type::Bool => "i64",
+                Type::String => "Str",
+                _ => "weak_object",
+            };
+            (key_type, dynamic_type_name(Some(v.as_ref())))
         }
-        _ => WireMapValue::Number,
+        _ => ("i64", "f64"),
     };
-    WireMapVariant { key, value, entries: vec![] }
-}
-
-/// Build a populated `WireMapVariant` from a map's constant entries. `kinds`
-/// gives the key/value member kinds (from [`map_variant_from_type`] on the
-/// declared `Map<K, V>` port type); each literal is read in that kind.
-pub(super) fn wire_map_variant_from_literals(
-    kinds: WireMapVariant,
-    entries: &[(Literal, Literal)],
-) -> WireMapVariant {
-    // Numeric key/value arms read across literal kinds (like arrays'
-    // `as_i64`/`as_f64`) so a raw literal that ever reaches emit still bakes
-    // correctly instead of hitting the zero fallback — defense in depth
-    // behind the fold-time coercion in `bake_map_init`/`coerce_literal_to_type`.
-    let key_of = |l: &Literal| match (kinds.key, l) {
-        (WireMapKey::Int64, Literal::Int(n)) => WireMapKeyData::Int64(*n),
-        (WireMapKey::Int64, Literal::Float(f)) => WireMapKeyData::Int64(*f as i64),
-        (WireMapKey::Int64, Literal::Bool(b)) => WireMapKeyData::Int64(*b as i64),
-        (WireMapKey::Str, Literal::String(s)) => WireMapKeyData::Str(s.clone()),
-        (WireMapKey::Object, _) => WireMapKeyData::Object(None),
-        (WireMapKey::Int64, _) => WireMapKeyData::Int64(0),
-        (WireMapKey::Str, _) => WireMapKeyData::Str(String::new()),
-    };
-    let val_of = |l: &Literal| match (kinds.value, l) {
-        (WireMapValue::Number, Literal::Float(f)) => WireMapValueData::Number(*f),
-        (WireMapValue::Number, Literal::Int(n)) => WireMapValueData::Number(*n as f64),
-        (WireMapValue::Number, Literal::Bool(b)) => WireMapValueData::Number(*b as i64 as f64),
-        (WireMapValue::Int64, Literal::Int(n)) => WireMapValueData::Int64(*n),
-        (WireMapValue::Int64, Literal::Float(f)) => WireMapValueData::Int64(*f as i64),
-        (WireMapValue::Int64, Literal::Bool(b)) => WireMapValueData::Int64(*b as i64),
-        (WireMapValue::Bool, Literal::Bool(b)) => WireMapValueData::Bool(*b),
-        (WireMapValue::Bool, Literal::Int(n)) => WireMapValueData::Bool(*n != 0),
-        (WireMapValue::Str, Literal::String(s)) => WireMapValueData::Str(s.clone()),
-        (WireMapValue::Vector, Literal::Vector { x, y, z }) => WireMapValueData::Vector(Vector3f {
-            x: *x as f32,
-            y: *y as f32,
-            z: *z as f32,
-        }),
-        (WireMapValue::Rotator, Literal::Rotator { pitch, yaw, roll }) => {
-            WireMapValueData::Rotator(*pitch, *yaw, *roll)
-        }
-        (WireMapValue::Quat, Literal::Quat { x, y, z, w }) => {
-            WireMapValueData::Quat(*x, *y, *z, *w)
-        }
-        (WireMapValue::LinearColor, Literal::LinearColor { r, g, b, a }) => {
-            WireMapValueData::LinearColor(*r as f32, *g as f32, *b as f32, *a as f32)
-        }
-        (WireMapValue::Object, _) => WireMapValueData::Object(None),
-        (WireMapValue::Number, _) => WireMapValueData::Number(0.0),
-        (WireMapValue::Int64, _) => WireMapValueData::Int64(0),
-        (WireMapValue::Bool, _) => WireMapValueData::Bool(false),
-        (WireMapValue::Str, _) => WireMapValueData::Str(String::new()),
-        (WireMapValue::Vector, _) => WireMapValueData::Vector(Vector3f {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }),
-        (WireMapValue::Rotator, _) => WireMapValueData::Rotator(0.0, 0.0, 0.0),
-        (WireMapValue::Quat, _) => WireMapValueData::Quat(0.0, 0.0, 0.0, 1.0),
-        (WireMapValue::LinearColor, _) => WireMapValueData::LinearColor(0.0, 0.0, 0.0, 1.0),
-    };
-    WireMapVariant {
-        key: kinds.key,
-        value: kinds.value,
-        entries: entries.iter().map(|(k, v)| (key_of(k), val_of(v))).collect(),
+    DynMap {
+        key_type,
+        value_type,
+        entries: Vec::new(),
     }
 }
 
-/// Empty `WireGraphArrayVariant` member matching the array's element type, so
-/// the ArrayVar gate is created as the correct array kind.
-pub(super) fn empty_wire_array_variant(elem: Option<&crate::ir::Type>) -> WireArrayVariant {
-    use crate::ir::Type;
-    match elem {
-        Some(Type::Int) => WireArrayVariant::Int64Array(Vec::new()),
-        Some(Type::Bool) => WireArrayVariant::BoolArray(Vec::new()),
-        Some(Type::String) => WireArrayVariant::StringArray(Vec::new()),
-        Some(Type::Vector) => WireArrayVariant::VectorArray(Vec::new()),
-        Some(Type::Rotator) => WireArrayVariant::RotatorArray(Vec::new()),
-        Some(Type::Quat) => WireArrayVariant::QuatArray(Vec::new()),
-        Some(Type::Color) => WireArrayVariant::LinearColorArray(Vec::new()),
-        Some(Type::Controller | Type::Character | Type::Entity) => {
-            WireArrayVariant::ObjectArray(Vec::new())
-        }
-        _ => WireArrayVariant::DoubleArray(Vec::new()), // float + default
+/// `map` populated from a map's constant entries, each literal read in the
+/// map's key/value type.
+pub(super) fn map_from_literals(map: DynMap, entries: &[(Literal, Literal)]) -> DynMap {
+    let entries = entries
+        .iter()
+        .map(|(k, v)| (wire_value_as(map.key_type, k), wire_value_as(map.value_type, v)))
+        .collect();
+    DynMap { entries, ..map }
+}
+
+/// The `dynamic_array` an `ArrayVar` brick serializes, typed by the array's
+/// element type and holding its constant initial elements (none for an array
+/// that starts empty). Object references start null: a save cannot hold one.
+pub(super) fn array_from_literals(elem: Option<&crate::ir::Type>, lits: &[Literal]) -> DynArray {
+    let element_type = dynamic_type_name(elem);
+    DynArray {
+        element_type,
+        values: lits.iter().map(|l| wire_value_as(element_type, l)).collect(),
     }
 }
 
-/// Build a populated array variant from an array's constant initial elements.
-/// The backing variant is chosen by the element type (matching
-/// [`empty_wire_array_variant`]); each literal is read in that type.
-pub(super) fn wire_array_variant_from_literals(
-    elem: Option<&crate::ir::Type>,
-    lits: &[Literal],
-) -> WireArrayVariant {
-    use crate::ir::Type;
-    let as_i64 = |l: &Literal| match l {
-        Literal::Int(n) => *n,
-        Literal::Float(f) => *f as i64,
-        Literal::Bool(b) => *b as i64,
-        _ => 0,
-    };
-    let as_f64 = |l: &Literal| match l {
-        Literal::Float(f) => *f,
-        Literal::Int(n) => *n as f64,
-        Literal::Bool(b) => *b as i64 as f64,
-        _ => 0.0,
-    };
-    match elem {
-        Some(Type::Int) => WireArrayVariant::Int64Array(lits.iter().map(as_i64).collect()),
-        Some(Type::Bool) => WireArrayVariant::BoolArray(
-            lits.iter()
-                .map(|l| {
-                    matches!(l, Literal::Bool(true)) || matches!(l, Literal::Int(n) if *n != 0)
-                })
-                .collect(),
-        ),
-        Some(Type::String) => WireArrayVariant::StringArray(
-            lits.iter()
-                .map(|l| match l {
-                    Literal::String(s) => s.clone(),
-                    _ => String::new(),
-                })
-                .collect(),
-        ),
-        Some(Type::Vector) => WireArrayVariant::VectorArray(
-            lits.iter()
-                .map(|l| match l {
-                    Literal::Vector { x, y, z } => Vector3f {
-                        x: *x as f32,
-                        y: *y as f32,
-                        z: *z as f32,
-                    },
-                    _ => Vector3f {
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    },
-                })
-                .collect(),
-        ),
-        Some(Type::Rotator) => WireArrayVariant::RotatorArray(
-            lits.iter()
-                .map(|l| match l {
-                    Literal::Rotator { pitch, yaw, roll } => (*pitch, *yaw, *roll),
-                    _ => (0.0, 0.0, 0.0),
-                })
-                .collect(),
-        ),
-        Some(Type::Quat) => WireArrayVariant::QuatArray(
-            lits.iter()
-                .map(|l| match l {
-                    Literal::Quat { x, y, z, w } => (*x, *y, *z, *w),
-                    _ => (0.0, 0.0, 0.0, 1.0),
-                })
-                .collect(),
-        ),
-        Some(Type::Color) => WireArrayVariant::LinearColorArray(
-            lits.iter()
-                .map(|l| match l {
-                    Literal::LinearColor { r, g, b, a } => {
-                        (*r as f32, *g as f32, *b as f32, *a as f32)
-                    }
-                    Literal::Color { r, g, b, a } => (
-                        *r as f32 / 255.0,
-                        *g as f32 / 255.0,
-                        *b as f32 / 255.0,
-                        *a as f32 / 255.0,
-                    ),
-                    _ => (1.0, 1.0, 1.0, 1.0),
-                })
-                .collect(),
-        ),
-        // Object arrays can't be initialised from literals.
-        Some(Type::Controller | Type::Character | Type::Entity) => {
-            WireArrayVariant::ObjectArray(vec![None; lits.len()])
-        }
-        _ => WireArrayVariant::DoubleArray(lits.iter().map(as_f64).collect()), // float + default
-    }
-}
-
-/// Convert a Literal to a Box<dyn AsBrdbValue> as a WireVariant.
-pub(super) fn literal_to_boxed_wire_variant(
+/// Convert a Literal to a `WireValue`, falling back to the port type's
+/// default for a literal with no wire form.
+pub(super) fn literal_to_wire_value_or_default(
     lit: &Literal,
     ports: &crate::ir::GateIO,
     field: &str,
-) -> Box<dyn AsBrdbValue> {
-    if let Some(wv) = literal_to_wire_variant(lit) {
-        return Box::new(wv);
+) -> WireValue {
+    if let Some(wv) = literal_to_wire_value(lit) {
+        return wv;
     }
     let port_ty = ports
         .inputs
@@ -293,7 +257,7 @@ pub(super) fn literal_to_boxed_wire_variant(
         .chain(ports.outputs.iter())
         .find(|p| resolve(p.name) == field)
         .map(|p| &p.ty);
-    Box::new(var_type_to_wire_variant(port_ty))
+    var_type_to_wire_value(port_ty)
 }
 
 /// Convert a Literal to its native string representation (str/i32/f64/bool as text).
@@ -469,44 +433,44 @@ impl AsBrdbValue for QuatValue {
     }
 }
 
-pub(super) fn literal_to_wire_variant(lit: &Literal) -> Option<WireVariant> {
+pub(super) fn literal_to_wire_value(lit: &Literal) -> Option<WireValue> {
     match lit {
-        Literal::Int(n) => Some(WireVariant::Int(*n)),
-        Literal::Float(f) => Some(WireVariant::Number(*f)),
-        Literal::Bool(b) => Some(WireVariant::Bool(*b)),
-        Literal::Object => Some(WireVariant::Object(None)),
-        Literal::String(s) => Some(WireVariant::Str(s.clone())),
-        Literal::Vector { x, y, z } => Some(WireVariant::Vector(Vector3f {
-            x: *x as f32,
-            y: *y as f32,
-            z: *z as f32,
-        })),
-        Literal::Rotator { pitch, yaw, roll } => Some(WireVariant::Rotator {
+        Literal::Int(n) => Some(WireValue::Int(*n)),
+        Literal::Float(f) => Some(WireValue::Number(*f)),
+        Literal::Bool(b) => Some(WireValue::Bool(*b)),
+        Literal::Object => Some(WireValue::Object),
+        Literal::String(s) => Some(WireValue::Str(s.clone())),
+        Literal::Vector { x, y, z } => Some(WireValue::Vector {
+            x: *x,
+            y: *y,
+            z: *z,
+        }),
+        Literal::Rotator { pitch, yaw, roll } => Some(WireValue::Rotator {
             pitch: *pitch,
             yaw: *yaw,
             roll: *roll,
         }),
-        Literal::Quat { x, y, z, w } => Some(WireVariant::Quat {
+        Literal::Quat { x, y, z, w } => Some(WireValue::Quat {
             x: *x,
             y: *y,
             z: *z,
             w: *w,
         }),
-        Literal::LinearColor { r, g, b, a } => Some(WireVariant::LinearColor {
+        Literal::LinearColor { r, g, b, a } => Some(WireValue::LinearColor {
             r: *r as f32,
             g: *g as f32,
             b: *b as f32,
             a: *a as f32,
         }),
         // sRGB byte color (brick paint) → linear-ish 0–1. Only reached if a
-        // paint literal ends up on a wire-variant port.
-        Literal::Color { r, g, b, a } => Some(WireVariant::LinearColor {
+        // paint literal ends up on a wire-value port.
+        Literal::Color { r, g, b, a } => Some(WireValue::LinearColor {
             r: *r as f32 / 255.0,
             g: *g as f32 / 255.0,
             b: *b as f32 / 255.0,
             a: *a as f32 / 255.0,
         }),
-        // No wire-variant form. `Record` belongs here with its siblings:
+        // No wire-value form. `Record` belongs here with its siblings:
         // this function's contract IS "None when there is no wire
         // representation", so panicking for one such variant would
         // contradict what every caller is told to expect. The `unreachable!`s

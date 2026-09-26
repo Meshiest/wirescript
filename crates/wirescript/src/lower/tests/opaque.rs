@@ -291,7 +291,7 @@ on t { x = 1 }
 out y: int = x");
     no_errors(&r);
     let var_marked = r.module.nodes.values().any(|n| {
-        n.gate_class.contains("Pseudo_Var")
+        n.gate_class == gc::VAR
             && n.properties.contains_key(&*crate::intern::sym::NO_FOLD)
     });
     assert!(var_marked, "@nofold var's Variable gate must carry _nofold");
@@ -304,7 +304,7 @@ fn nofold_var_nested_in_chip_and_mod_marks_gate() {
     let marked_var = |r: &LowerResult| {
         fn walk(m: &crate::ir::Module) -> bool {
             m.nodes.values().any(|n| {
-                n.gate_class.contains("Pseudo_Var")
+                n.gate_class == gc::VAR
                     && n.properties.contains_key(&*crate::intern::sym::NO_FOLD)
             }) || m.chips.values().any(walk)
         }
@@ -379,7 +379,7 @@ fn opaque_scalar_inputs_materialize_as_constant_gates() {
                 "{src}: rerouter fed by {feeder} constant gate, got {feeder_class}"
             );
             assert!(
-                !feeder_class.contains("Pseudo_Var"),
+                feeder_class != gc::VAR,
                 "{src}: must not use a Variable (null until written in-game)"
             );
         }

@@ -1977,7 +1977,7 @@ on go { PrintToConsole(\"${table[0]}\") }
         let var_id = m
             .nodes
             .values()
-            .find(|n| n.gate_class == crate::ir::gate_class::PSEUDO_VAR)
+            .find(|n| n.gate_class == crate::ir::gate_class::VAR)
             .unwrap()
             .id;
         for w in m.wires.iter().filter(|w| w.source.node_id == var_id) {

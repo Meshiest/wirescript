@@ -146,7 +146,7 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
     ];
     if vec {
         // Vector math runs on the same gate: MathAdd/Subtract/Multiply/Divide/
-        // Modulo take WireGraphPrimMathVariant inputs, whose member set includes
+        // Modulo take numeric wire-value inputs, whose member set includes
         // Vector, f64 and i64. So vec⊕vec lowers component-wise, and mixing a
         // vector with a scalar broadcasts the scalar across the components
         // (e.g. `v * 2.0` scales) — all on the same `class_math` gate. The
@@ -450,8 +450,8 @@ fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
 fn build_operators() -> Vec<OpSpec> {
     vec![
         // Logical
-        logical_binary("&&", "BrickComponentType_WireGraph_Expr_LogicalAND"),
-        logical_binary("||", "BrickComponentType_WireGraph_Expr_LogicalOR"),
+        logical_binary("&&", "BrickComponentType_Expr_LogicalAND"),
+        logical_binary("||", "BrickComponentType_Expr_LogicalOR"),
         {
             use Type::*;
             const NOT_TYPES: &[Type] = &[
@@ -471,13 +471,13 @@ fn build_operators() -> Vec<OpSpec> {
                     .collect(),
             }
         },
-        logical_binary("^^", "BrickComponentType_WireGraph_Expr_LogicalXOR"),
+        logical_binary("^^", "BrickComponentType_Expr_LogicalXOR"),
         // Bitwise
-        bitwise_binary("&", "BrickComponentType_WireGraph_Expr_BitwiseAND"),
-        bitwise_binary("|", "BrickComponentType_WireGraph_Expr_BitwiseOR"),
-        bitwise_binary("^", "BrickComponentType_WireGraph_Expr_BitwiseXOR"),
-        bitwise_binary("<<", "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft"),
-        bitwise_binary(">>", "BrickComponentType_WireGraph_Expr_BitwiseShiftRight"),
+        bitwise_binary("&", "BrickComponentType_Expr_BitwiseAND"),
+        bitwise_binary("|", "BrickComponentType_Expr_BitwiseOR"),
+        bitwise_binary("^", "BrickComponentType_Expr_BitwiseXOR"),
+        bitwise_binary("<<", "BrickComponentType_Expr_BitwiseShiftLeft"),
+        bitwise_binary(">>", "BrickComponentType_Expr_BitwiseShiftRight"),
         OpSpec {
             op: "~",
             arity: 1,
@@ -503,11 +503,11 @@ fn build_operators() -> Vec<OpSpec> {
             ],
         },
         // Arithmetic
-        math_binary("+", "BrickComponentType_WireGraph_Expr_MathAdd", true),
-        math_binary("-", "BrickComponentType_WireGraph_Expr_MathSubtract", true),
-        math_binary("*", "BrickComponentType_WireGraph_Expr_MathMultiply", true),
-        math_binary("/", "BrickComponentType_WireGraph_Expr_MathDivide", true),
-        math_binary("%", "BrickComponentType_WireGraph_Expr_MathModulo", true),
+        math_binary("+", "BrickComponentType_Expr_MathAdd", true),
+        math_binary("-", "BrickComponentType_Expr_MathSubtract", true),
+        math_binary("*", "BrickComponentType_Expr_MathMultiply", true),
+        math_binary("/", "BrickComponentType_Expr_MathDivide", true),
+        math_binary("%", "BrickComponentType_Expr_MathModulo", true),
         {
             const POW_PORTS: OpPorts = OpPorts {
                 inputs: &[WirePort::Input, WirePort::Exponent],
@@ -545,16 +545,16 @@ fn build_operators() -> Vec<OpSpec> {
                 ],
             }
         },
-        math_unary_op("-u", "BrickComponentType_WireGraph_Expr_MathNegate"),
+        math_unary_op("-u", "BrickComponentType_Expr_MathNegate"),
         // Comparison
-        compare_binary("==", "BrickComponentType_WireGraph_Expr_CompareEqual"),
-        compare_binary("!=", "BrickComponentType_WireGraph_Expr_CompareNotEqual"),
-        compare_binary("<", "BrickComponentType_WireGraph_Expr_CompareLess"),
-        compare_binary("<=", "BrickComponentType_WireGraph_Expr_CompareLessOrEqual"),
-        compare_binary(">", "BrickComponentType_WireGraph_Expr_CompareGreater"),
+        compare_binary("==", "BrickComponentType_Expr_CompareEqual"),
+        compare_binary("!=", "BrickComponentType_Expr_CompareNotEqual"),
+        compare_binary("<", "BrickComponentType_Expr_CompareLess"),
+        compare_binary("<=", "BrickComponentType_Expr_CompareLessOrEqual"),
+        compare_binary(">", "BrickComponentType_Expr_CompareGreater"),
         compare_binary(
             ">=",
-            "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual",
+            "BrickComponentType_Expr_CompareGreaterOrEqual",
         ),
         // String concat. The game's String_Concatenate gate auto-converts any
         // wire-variant input (numbers, bools, vectors, entities, characters,

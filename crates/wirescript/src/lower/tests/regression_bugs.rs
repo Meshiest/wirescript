@@ -29,7 +29,7 @@ fn let_alias_of_array_var_resolves_index() {
         r.diagnostics
     );
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+        count_class(&r.module, "BrickComponentType_Exec_ArrayVar_Get"),
         1,
         "ar[0] must lower to an ArrayVar_Get on the aliased array"
     );
@@ -71,7 +71,7 @@ fn imported_on_handler_generates() {
     assert_eq!(
         count_class(
             &r.module,
-            "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage"
+            "BrickComponentType_Exec_Gamemode_BroadcastChatMessage"
         ),
         2,
         "both the local and the imported handler bodies must generate"
@@ -94,7 +94,7 @@ fn let_alias_of_input_array_resolves_index() {
         r.diagnostics
     );
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+        count_class(&r.module, "BrickComponentType_Exec_ArrayVar_Get"),
         1,
         "x[0] must lower to an ArrayVar_Get on the aliased input"
     );
@@ -115,7 +115,7 @@ fn var_ids_named(m: &crate::ir::Module, name: &str) -> Vec<crate::ir::NodeId> {
     let mut ids: Vec<crate::ir::NodeId> = m
         .nodes
         .iter()
-        .filter(|(_, n)| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|(_, n)| n.gate_class == "BrickComponentType_Var")
         .filter(|(_, n)| {
             matches!(
                 n.properties.get(&*sym::NAME_LABEL),
@@ -193,13 +193,13 @@ fn match_expr_with_record_arms_writes_target_fields() {
     assert_no_errors(&r);
     assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        count_class(&r.module, "BrickComponentType_Expr_Select"),
         2,
         "one Select per record leaf field (x, y)"
     );
     // Two leaves written into `r`, plus the source reads.
     assert!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set") >= 2,
+        count_class(&r.module, "BrickComponentType_Exec_Var_Set") >= 2,
         "each of `r`'s fields must be written"
     );
 }
@@ -221,12 +221,12 @@ fn match_expr_with_enum_arms_writes_target_slots() {
     assert_no_errors(&r);
     assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        count_class(&r.module, "BrickComponentType_Expr_Select"),
         1,
         "one Select for the `__disc` leaf"
     );
     assert!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set") >= 1,
+        count_class(&r.module, "BrickComponentType_Exec_Var_Set") >= 1,
         "the target's `__disc` must be written"
     );
 }
@@ -246,7 +246,7 @@ fn match_expr_record_bound_to_let_reads_field() {
     assert_no_errors(&r);
     assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
     assert!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select") >= 1,
+        count_class(&r.module, "BrickComponentType_Expr_Select") >= 1,
         "the read field must come through a Select"
     );
 }
@@ -325,7 +325,7 @@ fn record_valued_if_expr_binds_to_a_let() {
     assert_no_errors(&r);
     assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
     assert!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select") >= 1,
+        count_class(&r.module, "BrickComponentType_Expr_Select") >= 1,
         "the read field must come through a Select"
     );
 }
@@ -351,7 +351,7 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
     assert_no_errors(&r);
     assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        count_class(&r.module, "BrickComponentType_Expr_Select"),
         2,
         "one Select per output port (Value, Found)"
     );
@@ -361,7 +361,7 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_Select")
         .map(|n| n.id)
         .collect();
     for sel in &selects {
@@ -406,7 +406,7 @@ fn single_record_output_mod_unwraps_to_its_fields() {
     assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
     // Both of `r`'s fields, plus `a`.
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
         3,
         "`r.x`, `r.y` and `a` must each be written"
     );
@@ -429,13 +429,13 @@ fn record_returning_mod_in_both_conditional_arms_selects_per_field() {
     assert_no_errors(&r);
     assert!(!has_unsupported(&r), "diags: {:?}", r.diagnostics);
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Expr_Select"),
+        count_class(&r.module, "BrickComponentType_Expr_Select"),
         2,
         "one Select per record field"
     );
     // `r.x`, `r.y`, plus the `c = Opaque(true)` probe write.
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
         3,
         "both of `r`'s fields must be written"
     );
@@ -564,16 +564,16 @@ fn array_index_capital_value_reads_the_array_get() {
             r.diagnostics
         );
         assert_eq!(
-            count_class(&r.module, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+            count_class(&r.module, "BrickComponentType_Exec_ArrayVar_Get"),
             1,
             "regs[15].{field} must lower to one ArrayVar_Get"
         );
         assert!(
             wired_between(
                 &r,
-                "BrickComponentType_WireGraph_Exec_ArrayVar_Get",
+                "BrickComponentType_Exec_ArrayVar_Get",
                 WirePort::Value,
-                "BrickComponentType_WireGraph_Exec_Var_Set",
+                "BrickComponentType_Exec_Var_Set",
                 WirePort::Value,
             ),
             "regs[15].{field} must drive `g`'s Value pin, not be left dangling"
@@ -602,9 +602,9 @@ fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
         assert!(
             wired_between(
                 &r,
-                "BrickComponentType_WireGraph_Exec_ArrayVar_Get",
+                "BrickComponentType_Exec_ArrayVar_Get",
                 WirePort::BOutOfBounds,
-                "BrickComponentType_WireGraph_Exec_Var_Set",
+                "BrickComponentType_Exec_Var_Set",
                 WirePort::Value,
             ),
             "regs[15].{field} must read the gate's bOutOfBounds port"
@@ -626,7 +626,7 @@ fn a_var_field_trigger_accepts_every_capitalisation() {
         let r = compile(&src);
         assert_no_errors(&r);
         assert_eq!(
-            count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+            count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
             1,
             "on v.{field} produced no handler body at all: {:?}",
             r.diagnostics
@@ -656,9 +656,9 @@ fn map_index_found_flag_accepts_every_capitalisation() {
         assert!(
             wired_between(
                 &r,
-                "BrickComponentType_WireGraph_Exec_MapVar_Get",
+                "BrickComponentType_Exec_MapVar_Get",
                 WirePort::BFound,
-                "BrickComponentType_WireGraph_Exec_Var_Set",
+                "BrickComponentType_Exec_Var_Set",
                 WirePort::Value,
             ),
             "m[1].{field} must read the gate's bFound port"
@@ -767,9 +767,9 @@ fn let_of_a_ref_binds_the_variable() {
         assert!(
             wired_between(
                 &r,
-                "BrickComponentType_WireGraphPseudo_Var",
+                "BrickComponentType_Var",
                 WirePort::Value,
-                "BrickComponentType_WireGraph_Exec_Var_Set",
+                "BrickComponentType_Exec_Var_Set",
                 WirePort::Value,
             ),
             "`v = *r` must read someVar's value, not a placeholder"
@@ -798,7 +798,7 @@ fn an_unresolvable_trigger_does_not_orphan_the_next_statement() {
     );
     // `g = 1` and `g = 3`; `g = 2` belongs to the dead handler.
     assert_eq!(
-        count_class(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        count_class(&r.module, "BrickComponentType_Exec_Var_Set"),
         2,
         "the surviving handler and the trailing assignment must both lower"
     );

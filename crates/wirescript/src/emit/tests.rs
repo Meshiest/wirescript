@@ -1,6 +1,6 @@
     use super::*;
 
-    const DISPLAY_TEXT: &str = "BrickComponentData_WireGraph_Exec_PlayerState_DisplayText";
+    const DISPLAY_TEXT: &str = "BCSComponentVertex_Exec_PlayerState_DisplayText";
 
     fn empty_ctx() -> EmitContext {
         EmitContext {
@@ -45,96 +45,86 @@
     }
 
     #[test]
-    fn var_values_cover_all_variant_members() {
+    fn var_values_cover_all_wire_value_alternatives() {
         use crate::ir::Type;
-        // A var can hold any WireGraphVariant member, defaulted by its type.
+        // A var can hold any WireValue alternative, defaulted by its type.
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Bool)),
-            WireVariant::Bool(false)
+            var_type_to_wire_value(Some(&Type::Bool)),
+            WireValue::Bool(false)
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Int)),
-            WireVariant::Int(0)
+            var_type_to_wire_value(Some(&Type::Int)),
+            WireValue::Int(0)
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Float)),
-            WireVariant::Number(_)
+            var_type_to_wire_value(Some(&Type::Float)),
+            WireValue::Number(_)
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::String)),
-            WireVariant::Str(_)
+            var_type_to_wire_value(Some(&Type::String)),
+            WireValue::Str(_)
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Vector)),
-            WireVariant::Vector(_)
+            var_type_to_wire_value(Some(&Type::Vector)),
+            WireValue::Vector { .. }
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Rotator)),
-            WireVariant::Rotator { .. }
+            var_type_to_wire_value(Some(&Type::Rotator)),
+            WireValue::Rotator { .. }
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Quat)),
-            WireVariant::Quat { w, .. } if w == 1.0
+            var_type_to_wire_value(Some(&Type::Quat)),
+            WireValue::Quat { w, .. } if w == 1.0
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Color)),
-            WireVariant::LinearColor { .. }
+            var_type_to_wire_value(Some(&Type::Color)),
+            WireValue::LinearColor { .. }
         ));
         assert!(matches!(
-            var_type_to_wire_variant(Some(&Type::Entity)),
-            WireVariant::Object(None)
+            var_type_to_wire_value(Some(&Type::Entity)),
+            WireValue::Object
         ));
-        // Literal initializers convert to the matching variant member.
+        // Literal initializers convert to the matching alternative.
         assert!(matches!(
-            literal_to_wire_variant(&Literal::String("x".into())),
-            Some(WireVariant::Str(_))
+            literal_to_wire_value(&Literal::String("x".into())),
+            Some(WireValue::Str(_))
         ));
-        assert!(matches!(
-            literal_to_wire_variant(&Literal::Vector {
+        assert_eq!(
+            literal_to_wire_value(&Literal::Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0
             }),
-            Some(WireVariant::Vector(_))
-        ));
+            Some(WireValue::Vector {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0
+            })
+        );
     }
 
     #[test]
-    fn array_element_type_maps_to_array_variant() {
+    fn array_element_type_selects_the_dynamic_array_type() {
         use crate::ir::Type;
         let r = |t: Type| Type::Ref(Box::new(Type::Array(Box::new(t))));
         // element type is unwrapped through `ref array<T>`
         assert!(matches!(array_element_type(&r(Type::Int)), Some(Type::Int)));
-        // each scalar element type selects the matching array variant member
-        assert!(matches!(
-            empty_wire_array_variant(Some(&Type::Int)),
-            WireArrayVariant::Int64Array(_)
-        ));
-        assert!(matches!(
-            empty_wire_array_variant(Some(&Type::Float)),
-            WireArrayVariant::DoubleArray(_)
-        ));
-        assert!(matches!(
-            empty_wire_array_variant(Some(&Type::Bool)),
-            WireArrayVariant::BoolArray(_)
-        ));
-        assert!(matches!(
-            empty_wire_array_variant(Some(&Type::String)),
-            WireArrayVariant::StringArray(_)
-        ));
-        assert!(matches!(
-            empty_wire_array_variant(Some(&Type::Vector)),
-            WireArrayVariant::VectorArray(_)
-        ));
-        assert!(matches!(
-            empty_wire_array_variant(Some(&Type::Entity)),
-            WireArrayVariant::ObjectArray(_)
-        ));
-        // unknown / missing element type falls back to a double array
-        assert!(matches!(
-            empty_wire_array_variant(None),
-            WireArrayVariant::DoubleArray(_)
-        ));
+        // each element type selects the matching schema `types` entry
+        let elem = |t: Option<Type>| array_from_literals(t.as_ref(), &[]).element_type;
+        assert_eq!(elem(Some(Type::Int)), "i64");
+        assert_eq!(elem(Some(Type::Float)), "f64");
+        assert_eq!(elem(Some(Type::Bool)), "Bool");
+        assert_eq!(elem(Some(Type::String)), "Str");
+        assert_eq!(elem(Some(Type::Vector)), "Vector");
+        assert_eq!(elem(Some(Type::Color)), "LinearColor");
+        assert_eq!(elem(Some(Type::Entity)), "weak_object");
+        // unknown / missing element type falls back to the game's f64 default
+        assert_eq!(elem(None), "f64");
+        // initial elements are read in the element type
+        assert_eq!(
+            array_from_literals(Some(&Type::Float), &[Literal::Int(1), Literal::Float(2.5)]).values,
+            vec![WireValue::Number(1.0), WireValue::Number(2.5)]
+        );
     }
 
     #[test]
@@ -145,7 +135,7 @@
         assert_eq!(
             entry,
             Some((
-                "BrickComponentData_WireGraph_Expr_MakeVector",
+                "BCSComponentVertex_Expr_MakeVector",
                 ["X", "Y", "Z"].as_slice(),
                 false,
             )),
@@ -161,7 +151,7 @@
         assert_eq!(
             entry,
             Some((
-                "BrickComponentData_WireGraph_Expr_NearlyEqual",
+                "BCSComponentVertex_Expr_NearlyEqual",
                 ["InputA", "InputB", "Tolerance"].as_slice(),
                 false,
             )),
@@ -195,11 +185,11 @@
             // Special-cased emit branches with their own property contracts.
             if matches!(
                 *class,
-                "BrickComponentType_WireGraphPseudo_Var"
-                    | "BrickComponentType_WireGraphPseudo_ArrayVar"
+                "BrickComponentType_Var"
+                    | "BrickComponentType_ArrayVar"
                     | "BrickComponentType_Internal_MicrochipInput"
                     | "BrickComponentType_Internal_MicrochipOutput"
-                    | "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry"
+                    | "BrickComponentType_Exec_Character_SetInventoryEntry"
             ) {
                 continue;
             }
@@ -219,9 +209,7 @@
                             Some(Literal::Int(1))
                         }
                         "f32" | "f64" => Some(Literal::Float(1.5)),
-                        "WireGraphVariant" | "WireGraphPrimMathVariant" => {
-                            Some(Literal::Float(2.5))
-                        }
+                        "WireValue" => Some(Literal::Float(2.5)),
                         "Vector" => Some(Literal::Vector {
                             x: 1.0,
                             y: 2.0,
@@ -242,7 +230,7 @@
                             asset_type: "BRItemBase".into(),
                             asset_name: "Weapon_Pickaxe".into(),
                         }),
-                        // arrays, composite structs, bundle_path_ref: not
+                        // arrays, composite structs, dynamic containers: not
                         // literal-representable — writer fills defaults.
                         _ => None,
                     }
@@ -350,9 +338,9 @@
                 // unmapped (wire-only — a scalar literal can't fill them).
                 if matches!(
                     spec.gate_class,
-                    "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry"
-                        | "BrickComponentType_WireGraph_Exec_Entity_Teleport"
-                        | "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport"
+                    "BrickComponentType_Exec_Character_SetInventoryEntry"
+                        | "BrickComponentType_Exec_Entity_Teleport"
+                        | "BrickComponentType_Exec_Entity_RelativeTeleport"
                 ) {
                     continue;
                 }
@@ -386,7 +374,7 @@
         assert_eq!(
             entry,
             Some((
-                "BrickComponentData_WireGraph_Exec_PlayerState_ShowStatusMessage",
+                "BCSComponentVertex_Exec_PlayerState_ShowStatusMessage",
                 ["Message"].as_slice(),
                 false,
             )),
@@ -396,7 +384,7 @@
     #[test]
     fn field_enum_values_lists_justification() {
         let vals = field_enum_values(
-            "BrickComponentType_WireGraph_Exec_PlayerState_DisplayText",
+            "BrickComponentType_Exec_PlayerState_DisplayText",
             "Justification",
         )
         .expect("justify maps to an enum field");
@@ -448,7 +436,7 @@
 
     #[test]
     fn enum_resolve_easing_function_and_direction() {
-        const EASING: &str = "BrickComponentData_WireGraph_Expr_MathEasing";
+        const EASING: &str = "BCSComponentVertex_Expr_MathEasing";
         // Named easing functions/directions resolve to their engine enum ints.
         assert_eq!(
             try_resolve_enum(EASING, "Function", &Literal::String("Quad".into())),
@@ -604,77 +592,59 @@
     }
 
     #[test]
-    fn non_empty_map_variant_bakes_key_and_value_kinds() {
+    fn non_empty_map_bakes_key_and_value_types() {
         // The non-empty MapVar byte layout is otherwise only exercisable in-game
-        // (a .ws test can't run one), so pin the key/value member kinds and the
-        // baked entry data for the three key flavors that reach emit.
+        // (a .ws test can't run one), so pin the key/value types and the baked
+        // entry data for the three key flavors that reach emit.
         use crate::ir::{Literal, Type};
 
-        // Int-keyed `Map<int, int>`: an `int64` key wrapper + `int64` value. The
-        // type-derived kinds start empty (a fresh MapVar's at-rest state).
-        let int_kinds =
-            map_variant_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Int)));
-        assert_eq!(int_kinds.key, WireMapKey::Int64);
-        assert_eq!(int_kinds.value, WireMapValue::Int64);
-        assert!(int_kinds.entries.is_empty(), "type-derived kinds carry no entries");
-        let int_map = wire_map_variant_from_literals(
-            int_kinds,
+        // Int-keyed `Map<int, int>`: `i64` keys and values. The type-derived
+        // map starts empty (a fresh MapVar's at-rest state).
+        let int_empty = map_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Int)));
+        assert_eq!((int_empty.key_type, int_empty.value_type), ("i64", "i64"));
+        assert!(int_empty.entries.is_empty(), "type-derived map carries no entries");
+        let int_map = map_from_literals(
+            int_empty,
             &[
                 (Literal::Int(1), Literal::Int(10)),
                 (Literal::Int(2), Literal::Int(20)),
             ],
         );
-        assert_eq!(int_map.key, WireMapKey::Int64);
-        assert_eq!(int_map.value, WireMapValue::Int64);
-        assert_eq!(int_map.entries.len(), 2);
+        assert_eq!((int_map.key_type, int_map.value_type), ("i64", "i64"));
         assert_eq!(
-            int_map.entries[0],
-            (WireMapKeyData::Int64(1), WireMapValueData::Int64(10))
-        );
-        assert_eq!(
-            int_map.entries[1],
-            (WireMapKeyData::Int64(2), WireMapValueData::Int64(20))
+            int_map.entries,
+            vec![
+                (WireValue::Int(1), WireValue::Int(10)),
+                (WireValue::Int(2), WireValue::Int(20)),
+            ]
         );
 
-        // String-keyed `Map<string, float>`: the string key wrapper + a `double`
-        // value. The literal key/value bake through unchanged.
-        let str_kinds =
-            map_variant_from_type(&Type::Map(Box::new(Type::String), Box::new(Type::Float)));
-        assert_eq!(str_kinds.key, WireMapKey::Str);
-        assert_eq!(str_kinds.value, WireMapValue::Number);
-        let str_map = wire_map_variant_from_literals(
-            str_kinds,
+        // String-keyed `Map<string, float>`: `Str` keys and `f64` values. The
+        // literal key/value bake through unchanged.
+        let str_empty = map_from_type(&Type::Map(Box::new(Type::String), Box::new(Type::Float)));
+        assert_eq!((str_empty.key_type, str_empty.value_type), ("Str", "f64"));
+        let str_map = map_from_literals(
+            str_empty,
             &[(Literal::String("hp".into()), Literal::Float(2.5))],
         );
-        assert_eq!(str_map.key, WireMapKey::Str);
-        assert_eq!(str_map.value, WireMapValue::Number);
-        assert_eq!(str_map.entries.len(), 1);
         assert_eq!(
-            str_map.entries[0],
-            (
-                WireMapKeyData::Str("hp".to_string()),
-                WireMapValueData::Number(2.5)
-            )
+            str_map.entries,
+            vec![(WireValue::Str("hp".to_string()), WireValue::Number(2.5))]
         );
 
         // Atom keys hash (xxHash64) to an int64, so at emit they are just an int
-        // literal over a `Map<int, V>` — they share the int-keyed `Int64` wrapper
-        // rather than getting a distinct key kind.
-        let atom_kinds =
-            map_variant_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Bool)));
-        assert_eq!(atom_kinds.key, WireMapKey::Int64);
-        assert_eq!(atom_kinds.value, WireMapValue::Bool);
+        // literal over a `Map<int, V>`: they share the int-keyed `i64` key type
+        // rather than getting a distinct one.
+        let atom_empty = map_from_type(&Type::Map(Box::new(Type::Int), Box::new(Type::Bool)));
+        assert_eq!((atom_empty.key_type, atom_empty.value_type), ("i64", "Bool"));
         let atom_hash = 0x1234_5678_9abc_def0_i64;
-        let atom_map = wire_map_variant_from_literals(
-            atom_kinds,
+        let atom_map = map_from_literals(
+            atom_empty,
             &[(Literal::Int(atom_hash), Literal::Bool(true))],
         );
-        assert_eq!(atom_map.key, WireMapKey::Int64);
-        assert_eq!(atom_map.value, WireMapValue::Bool);
-        assert_eq!(atom_map.entries.len(), 1);
         assert_eq!(
-            atom_map.entries[0],
-            (WireMapKeyData::Int64(atom_hash), WireMapValueData::Bool(true))
+            atom_map.entries,
+            vec![(WireValue::Int(atom_hash), WireValue::Bool(true))]
         );
     }
 
@@ -705,7 +675,7 @@
         properties.insert(*sym::NAME_LABEL, Literal::String("counter".into()));
         builder.add_gate(
             AddNodeOpts {
-                gate_class: "BrickComponentType_WireGraphPseudo_Var",
+                gate_class: "BrickComponentType_Var",
                 properties,
                 ..Default::default()
             },
@@ -756,7 +726,7 @@
         // One real gate so the build proceeds normally up to the wire pass.
         builder.add_gate(
             AddNodeOpts {
-                gate_class: "BrickComponentType_WireGraph_Expr_MathAdd",
+                gate_class: "BrickComponentType_Expr_MathAdd",
                 ..Default::default()
             },
         );
@@ -890,7 +860,7 @@
         // `RER_Other` fixture named a port the catalog does not have.
         let math = |brick: usize, name: &'static str| brdb::WirePort {
             brick_id: brick,
-            component_type: BString::Static("BrickComponentType_WireGraph_Expr_MathAdd"),
+            component_type: BString::Static("BrickComponentType_Expr_MathAdd"),
             port_name: BString::Static(name),
         };
         assert!(

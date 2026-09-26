@@ -21,28 +21,28 @@
         // unknown fields resolve to None. Enum member values/names come from the
         // schema (verified against exact values in the gate-config lowering tests).
         assert!(
-            config_field_enum_type("BrickComponentType_WireGraph_Expr_MathEasing", "Function")
+            config_field_enum_type("BrickComponentType_Expr_MathEasing", "Function")
                 .is_some(),
             "MathEasing.Function is an enum config field"
         );
         assert!(
-            config_field_enum_type("BrickComponentType_WireGraph_Exec_SweepSimple", "Direction")
+            config_field_enum_type("BrickComponentType_Exec_SweepSimple", "Direction")
                 .is_some(),
             "SweepSimple.Direction is an enum config field"
         );
         // A bool data field is not an enum.
         assert!(
-            config_field_enum_type("BrickComponentType_WireGraph_Expr_MathBlend", "bClampAlpha")
+            config_field_enum_type("BrickComponentType_Expr_MathBlend", "bClampAlpha")
                 .is_none()
         );
         // A field the struct does not have.
         assert!(
-            config_field_enum_type("BrickComponentType_WireGraph_Expr_MathBlend", "Nonexistent")
+            config_field_enum_type("BrickComponentType_Expr_MathBlend", "Nonexistent")
                 .is_none()
         );
         // Enum member lookups are schema-backed and consistent both ways.
         if let Some(et) =
-            config_field_enum_type("BrickComponentType_WireGraph_Expr_MathEasing", "Function")
+            config_field_enum_type("BrickComponentType_Expr_MathEasing", "Function")
         {
             assert!(!enum_member_names(et).is_empty());
             if let Some(v) = enum_member_value(et, "Bounce") {

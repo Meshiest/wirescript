@@ -262,10 +262,10 @@ pub(super) fn written_var_labels(r: &LowerResult) -> Vec<String> {
             r.module
                 .nodes
                 .get(&w.target.node_id)
-                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+                .is_some_and(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
         })
         .filter_map(|w| r.module.nodes.get(&w.source.node_id))
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|n| n.gate_class == "BrickComponentType_Var")
         .filter_map(|n| match n.properties.get(&crate::intern::sym::NAME_LABEL) {
             Some(crate::ir::Literal::String(s)) => Some(s.clone()),
             _ => None,
@@ -281,7 +281,7 @@ pub(super) fn written_var_labels(r: &LowerResult) -> Vec<String> {
 /// the VALUE a slot actually receives, which `written_var_labels` cannot see.
 pub(super) fn written_value(r: &LowerResult, label: &str) -> Option<crate::ir::Literal> {
     let var = r.module.nodes.iter().find(|(_, n)| {
-        n.gate_class == "BrickComponentType_WireGraphPseudo_Var"
+        n.gate_class == "BrickComponentType_Var"
             && matches!(
                 n.properties.get(&crate::intern::sym::NAME_LABEL),
                 Some(crate::ir::Literal::String(s)) if s == label
@@ -293,7 +293,7 @@ pub(super) fn written_value(r: &LowerResult, label: &str) -> Option<crate::ir::L
             && r.module
                 .nodes
                 .get(&w.target.node_id)
-                .is_some_and(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+                .is_some_and(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
     })?;
     r.module.nodes[&set.target.node_id]
         .properties

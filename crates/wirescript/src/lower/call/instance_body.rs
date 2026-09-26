@@ -392,7 +392,7 @@ pub(super) fn build_chip_module(
             type_of_type_expr(&chip_decl.outputs[0].typ)
         };
         let var_id = child_ctx.add_gate(AddNodeOpts {
-            gate_class: gc::PSEUDO_VAR,
+            gate_class: gc::VAR,
             source_range: chip_decl.body.range.clone(),
             ports: GateIO::var_storage(out_type.clone()),
             note: Some("ret_val"),

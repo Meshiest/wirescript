@@ -498,7 +498,7 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     // param takes the inferred type (typecheck's `CeSlotMap`, resolved from
     // an in-unit sender), falling back to float when nothing was inferred.
     // Other events keep their fixed declared data types.
-    let is_custom_event = evt.gate_class == crate::ir::gate_class::PSEUDO_CUSTOM_EVENT;
+    let is_custom_event = evt.gate_class == crate::ir::gate_class::CUSTOM_EVENT;
     // Resolved inferred slot types for this handler, if it's a custom-event
     // receiver — see `crate::typecheck::infer_custom_event_slots`.
     let inferred = CeNamespace::from_event_name(evt.surface_name)

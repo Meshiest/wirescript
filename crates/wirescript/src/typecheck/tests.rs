@@ -1080,7 +1080,7 @@
 
     #[test]
     fn var_string_annotation_ok() {
-        // Strings can now be stored in vars (WireGraphVariant supports `str`).
+        // Strings can now be stored in vars (`WireValue` supports `Str`).
         assert_no_diags(&tc("var x: string = \"hi\""));
     }
 

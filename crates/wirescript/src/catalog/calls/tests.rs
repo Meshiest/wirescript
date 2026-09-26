@@ -55,10 +55,7 @@
         "ColorBlend.clampAlpha -> bClampAlpha",
         "ConvertColor.fromSpace -> FromSpace",
         "ConvertColor.toSpace -> ToSpace",
-        "DisplayText.easing -> Easing",
         "DisplayText.font -> Font",
-        "DisplayText.fontSize -> FontSize",
-        "DisplayText.justify -> Justification",
         "DisplayText.typeface -> Typeface",
         "Easing.direction -> Direction",
         "Easing.function -> Function",
@@ -66,9 +63,6 @@
         "GiveWeapon.weapon -> ItemTypeIfItem",
         "HasPermission.permission -> PermissionName",
         "HasRole.role -> RoleName",
-        "PlayAudioAt.audio -> AudioDescriptor",
-        "PlayClientAudio.audio -> AudioDescriptor",
-        "PlayGlobalAudio.audio -> AudioDescriptor",
         "SendCustomEvent.eventName -> EventName",
         "SendGlobalCustomEvent.eventName -> EventName",
         "SetInventoryItemAdv.ammoOverride -> WeaponAmmoOverride",
@@ -250,7 +244,7 @@
         assert!(crate::catalog::is_wire_input(g, "PlayerState"));
         assert!(crate::catalog::is_wire_input(g, "Text"));
         assert!(!crate::catalog::is_wire_input(g, "PositionX"));
-        assert!(!crate::catalog::is_wire_input(g, "FontSize"));
+        assert!(!crate::catalog::is_wire_input(g, "Typeface"));
         // Layout ports are Vector2D composites whose float X/Y sub-ports are
         // individually wireable (resolved via composite.sub_ports).
         assert!(crate::catalog::is_wire_input(g, "Position.X"));

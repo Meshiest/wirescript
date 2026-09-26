@@ -225,11 +225,8 @@ fn walk_modules<'a>(m: &'a Module, f: &mut impl FnMut(&'a Module)) {
 }
 
 fn short_class(c: &str) -> &str {
-    let c = c
-        .trim_start_matches("BrickComponentType_")
-        .trim_start_matches("Component_");
-    c.trim_start_matches("WireGraph_")
-        .trim_start_matches("WireGraphPseudo_")
+    c.trim_start_matches("BrickComponentType_")
+        .trim_start_matches("Component_")
 }
 
 /// IR-level wire validity: dangling endpoints, duplicate wires, fan-in
@@ -1041,9 +1038,9 @@ fn check_storage(root: &Module, expect: &StorageExpect, out: &mut Outcome) {
             continue;
         }
         let kind = match n.gate_class {
-            c if c == gc::PSEUDO_VAR => StoreKind::Var,
-            c if c == gc::PSEUDO_ARRAY_VAR => StoreKind::Array,
-            c if c == gc::PSEUDO_MAP_VAR => StoreKind::Map,
+            c if c == gc::VAR => StoreKind::Var,
+            c if c == gc::ARRAY_VAR => StoreKind::Array,
+            c if c == gc::MAP_VAR => StoreKind::Map,
             c if c == gc::BUFFER_TICKS || c == gc::BUFFER_SECONDS => {
                 buffer_actual += 1;
                 continue;
@@ -4204,7 +4201,7 @@ fn selftest() -> bool {
         let mk = |id: u32| Node {
             id: NodeId(1_000_000 + id),
             kind: NodeKind::Gate,
-            gate_class: "BrickComponentType_WireGraph_Expr_MathAdd",
+            gate_class: "BrickComponentType_Expr_MathAdd",
             properties: Arc::new(Default::default()),
             ports: Arc::new(GateIO::default()),
             source_range: Default::default(),

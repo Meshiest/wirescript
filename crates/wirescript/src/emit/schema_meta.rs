@@ -48,15 +48,11 @@ pub(super) fn derived_gate_data() -> &'static HashMap<&'static str, (&'static st
 /// `String` allocation per predicate) for every field of every brick.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum FieldKind {
-    /// `WireGraphVariant`
-    WireVariant,
-    /// `WireGraphPrimMathVariant` (no bool member — bools coerce to int)
-    PrimMathVariant,
+    /// `WireValue`
+    WireValue,
     /// Asset reference (`class` / `object`)
     AssetRef,
-    /// `bundle_path_ref` (embedded prefab path)
-    BundlePathRef,
-    /// `str`
+    /// `str` (also the embedded-prefab path on prefab spawners)
     Str,
     /// Schema enum type (payload = the enum's type name in the schema)
     Enum(&'static str),
@@ -96,10 +92,8 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
                     let name = schema.intern.lookup_ref(*k)?;
                     let kind = match prop {
                         BrdbSchemaStructProperty::Type(t) => match schema.intern.lookup_ref(*t) {
-                            Some("WireGraphVariant") => FieldKind::WireVariant,
-                            Some("WireGraphPrimMathVariant") => FieldKind::PrimMathVariant,
+                            Some("WireValue") => FieldKind::WireValue,
                             Some("class") | Some("object") => FieldKind::AssetRef,
-                            Some("bundle_path_ref") => FieldKind::BundlePathRef,
                             Some("str") => FieldKind::Str,
                             Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
                             Some(n @ ("Vector" | "Rotator" | "Quat")) => {
@@ -153,18 +147,14 @@ pub fn field_enum_type(gate_class: &str, field: &str) -> Option<&'static str> {
     crate::catalog::config_field_enum_type(gate_class, field)
 }
 
-/// True if the field's schema type is any wire-graph variant — plain
-/// (`WireGraphVariant`) or prim-math (`WireGraphPrimMathVariant`).
-fn schema_field_is_wire_variant(struct_name: &str, field: &str) -> bool {
-    matches!(
-        schema_field_type_str(struct_name, field).as_deref(),
-        Some("WireGraphVariant" | "WireGraphPrimMathVariant")
-    )
+/// True if the field's schema type is the `WireValue` variant.
+fn schema_field_is_wire_value(struct_name: &str, field: &str) -> bool {
+    schema_field_type_str(struct_name, field).as_deref() == Some("WireValue")
 }
 
 /// Can a folded constant (`Vec/Rotation/Color` on literal args, lowered to a
 /// `_Literal` node) be delivered to this (gate, port) sink as inlined
-/// component data? True for wire-variant fields and for a native
+/// component data? True for `WireValue` fields and for a native
 /// `Vector`/`Rotator`/`Quat` struct field whose shape MATCHES `lit` (the
 /// gate stores an unwired input's value in its data — entity `Set*` gates,
 /// Sweep, …). Everything else — `LinearColor` fields, `Split*` inputs, chip
@@ -190,7 +180,7 @@ pub(crate) fn port_accepts_inline_variant(gate_class: &str, port: WirePort, lit:
     if !fields.contains(&field) {
         return false;
     }
-    if use_wire_variant || schema_field_is_wire_variant(struct_name, field) {
+    if use_wire_variant || schema_field_is_wire_value(struct_name, field) {
         return true;
     }
     // Split* gates keep materialized Make* inputs — not yet verified that

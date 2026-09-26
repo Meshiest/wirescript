@@ -176,7 +176,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
     let entries = vec![
         mk(
             "RoundStart",
-            "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent",
+            "BrickComponentType_Event_Gamemode_RoundStart",
             vec![EventDataBinding {
                 name: "roundNumber",
                 port: "RoundNumber",
@@ -185,7 +185,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk(
             "RoundEnd",
-            "BrickComponentType_WireGraph_Fake_Gamemode_RoundEndEvent",
+            "BrickComponentType_Event_Gamemode_RoundEnd",
             vec![EventDataBinding {
                 name: "roundNumber",
                 port: "RoundNumber",
@@ -194,12 +194,12 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk(
             "CharacterSpawned",
-            "BrickComponentType_WireGraph_Fake_Gamemode_CharacterSpawnedEvent",
+            "BrickComponentType_Event_Gamemode_CharacterSpawned",
             vec![character("character", "Character")],
         ),
         mk(
             "CharacterDied",
-            "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDiedEvent",
+            "BrickComponentType_Event_Gamemode_CharacterDied",
             vec![
                 character("character", "Character"),
                 // The killer is a player character; the weapon is an item entity.
@@ -214,7 +214,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk(
             "ControllerJoined",
-            "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent",
+            "BrickComponentType_Event_Gamemode_ControllerJoined",
             vec![
                 controller("controller", "PlayerState"),
                 string("userId", "UserId"),
@@ -223,7 +223,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk(
             "ControllerLeft",
-            "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent",
+            "BrickComponentType_Event_Gamemode_ControllerLeft",
             vec![
                 controller("controller", "PlayerState"),
                 string("userId", "UserId"),
@@ -236,7 +236,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         // above.
         mk(
             "ControllerJoinedTeam",
-            "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedTeamEvent",
+            "BrickComponentType_Event_Gamemode_ControllerJoinedTeam",
             vec![
                 entity("controller", "PlayerState"),
                 entity("team", "Team"),
@@ -246,7 +246,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk(
             "ControllerLeftTeam",
-            "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftTeamEvent",
+            "BrickComponentType_Event_Gamemode_ControllerLeftTeam",
             vec![
                 entity("controller", "PlayerState"),
                 entity("team", "Team"),
@@ -278,7 +278,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk(
             "CharacterDamaged",
-            "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDamagedEvent",
+            "BrickComponentType_Event_Gamemode_CharacterDamaged",
             vec![
                 character("character", "Character"),
                 EventDataBinding {
@@ -299,7 +299,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk(
             "CharacterFiredWeapon",
-            "BrickComponentType_WireGraph_Fake_Gamemode_CharacterFiredWeaponEvent",
+            "BrickComponentType_Event_Gamemode_CharacterFiredWeapon",
             vec![
                 character("character", "Character"),
                 EventDataBinding {
@@ -360,7 +360,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ),
         mk_cfg(
             "ChatCommand",
-            "BrickComponentType_WireGraph_Exec_ChatCommand",
+            "BrickComponentType_Event_ChatCommand",
             vec![
                 controller("controller", "PlayerState"),
                 EventDataBinding {
@@ -374,7 +374,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             // `on ChatCommand("greet", Description = "Greets you")`
             vec![("description", "HelpText"), ("helptext", "HelpText")],
         ),
-        // Whole-grid interaction/targeting events. These `WireGraph_Exec_*` gates
+        // Whole-grid interaction/targeting events. These `Event_WholeGrid*` gates
         // have NO `ExecOut`; their trigger is a differently-named output that acts
         // as the exec (like Clock's `Pulse`): `WholeGridInteracted` fires from
         // `Character` (the interacting character) — which is ALSO bound as the
@@ -386,7 +386,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "WholeGridInteracted",
             EventSpec {
                 surface_name: "WholeGridInteracted",
-                gate_class: "BrickComponentType_WireGraph_Exec_WholeGridInteracted",
+                gate_class: "BrickComponentType_Event_WholeGridInteracted",
                 data: vec![
                     character("character", "Character"),
                     EventDataBinding {
@@ -405,7 +405,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "WholeGridTargeted",
             EventSpec {
                 surface_name: "WholeGridTargeted",
-                gate_class: "BrickComponentType_WireGraph_Exec_WholeGridTargeted",
+                gate_class: "BrickComponentType_Event_WholeGridTargeted",
                 data: vec![
                     character("character", "CharacterThatJustHit"),
                     EventDataBinding {
@@ -451,7 +451,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         // `SendCustomEvent` fires, exposing the up-to-8 data values it carried.
         // The leading positional is the channel name (baked into `EventName` when
         // constant); the remaining params are the TYPED data outputs, whose
-        // annotations type the gate's WireGraphVariant ports (the game can't store
+        // annotations type the gate's `WireValue` ports (the game can't store
         // them as `any`). Unused slots default to float. `isObject` is constant
         // config that scopes the event to a specific grid/object instead of firing
         // grid-wide. Delivery is same-owner only — the ownership-agnostic
@@ -461,7 +461,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "CustomEvent",
             EventSpec {
                 surface_name: "CustomEvent",
-                gate_class: "BrickComponentType_WireGraphPseudo_CustomEvent",
+                gate_class: "BrickComponentType_Event_Custom",
                 data: vec![
                     EventDataBinding { name: "data1", port: "DataOut1", ty: Type::Any },
                     EventDataBinding { name: "data2", port: "DataOut2", ty: Type::Any },
@@ -486,7 +486,7 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             "GlobalCustomEvent",
             EventSpec {
                 surface_name: "GlobalCustomEvent",
-                gate_class: "BrickComponentType_WireGraphPseudo_CustomEvent_Global",
+                gate_class: "BrickComponentType_Event_CustomGlobal",
                 data: vec![
                     EventDataBinding { name: "data1", port: "DataOut1", ty: Type::Any },
                     EventDataBinding { name: "data2", port: "DataOut2", ty: Type::Any },

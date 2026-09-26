@@ -34,7 +34,7 @@ fn pseudo_var_value_types(module: &Module) -> Vec<Type> {
     let mut out = Vec::new();
     fn walk(module: &Module, out: &mut Vec<Type>) {
         for n in module.nodes.values() {
-            if n.gate_class.contains("Pseudo_Var") {
+            if n.gate_class == gc::VAR {
                 if let Some(p) = n
                     .ports
                     .inputs
@@ -168,7 +168,7 @@ fn generic_mod_buffer_and_array_annotations_monomorphize() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::PSEUDO_ARRAY_VAR)
+        .find(|n| n.gate_class == crate::ir::gate_class::ARRAY_VAR)
         .expect("an array gate");
     let elem = arr
         .ports
@@ -766,7 +766,7 @@ fn generic_container_self_receiver_monomorphizes() {
         "a generic container self-mod must not lower to _Unsupported"
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength"),
+        gate_count(&r, "BrickComponentType_Exec_ArrayVar_GetLength"),
         2,
         "each monomorph must inline its own GetLength gate"
     );
@@ -1010,5 +1010,5 @@ fn generic_negate_monomorphizes() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "negate must resolve, not placeholder");
     // int and float monomorphs each emit one negate.
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_MathNegate"), 2);
+    assert_eq!(gate_count(&r, "BrickComponentType_Expr_MathNegate"), 2);
 }

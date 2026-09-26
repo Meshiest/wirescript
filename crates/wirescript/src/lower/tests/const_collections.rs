@@ -20,7 +20,7 @@ fn a_const_mod_call_in_an_array_initializer_bakes_with_no_push_gates() {
         nodes_of(&m, crate::ir::gate_class::ARRAY_PUSH).is_empty(),
         "a fully const initializer must bake, not push"
     );
-    let arrays = nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR);
+    let arrays = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR);
     let baked = arrays[0].properties.get(&crate::intern::sym::INITIAL_VALUE);
     assert_eq!(
         baked,
@@ -44,7 +44,7 @@ fn a_const_mod_call_in_a_map_initializer_bakes_with_no_set_gates() {
         nodes_of(&m, crate::ir::gate_class::MAP_SET).is_empty(),
         "a fully const map initializer must bake, not set"
     );
-    let maps = nodes_of(&m, crate::ir::gate_class::PSEUDO_MAP_VAR);
+    let maps = nodes_of(&m, crate::ir::gate_class::MAP_VAR);
     let baked = maps[0].properties.get(&crate::intern::sym::INITIAL_VALUE);
     assert_eq!(
         baked,
@@ -70,7 +70,7 @@ fn a_local_array_with_a_non_constant_element_still_starts_empty_and_warns() {
     let src = "mod f(v: int) {\n  static var t: int[] = [1, v, 3]\n}\n\
                in go: exec\non go { f(1) }";
     let r = compile(src);
-    let arrays = nodes_of(&r.module, crate::ir::gate_class::PSEUDO_ARRAY_VAR);
+    let arrays = nodes_of(&r.module, crate::ir::gate_class::ARRAY_VAR);
     assert!(
         arrays[0]
             .properties
@@ -114,7 +114,7 @@ fn a_chip_local_const_mod_shadows_the_top_level_one_in_the_bake_path() {
          in go: exec\n\
          on go { c() }",
     );
-    let arrays = nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR);
+    let arrays = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR);
     let baked = arrays[0].properties.get(&crate::intern::sym::INITIAL_VALUE);
     assert_eq!(
         baked,
@@ -137,7 +137,7 @@ fn a_chip_local_const_mod_shadows_the_top_level_one_in_the_map_bake_path() {
          in go: exec\n\
          on go { c() }",
     );
-    let maps = nodes_of(&m, crate::ir::gate_class::PSEUDO_MAP_VAR);
+    let maps = nodes_of(&m, crate::ir::gate_class::MAP_VAR);
     let baked = maps[0].properties.get(&crate::intern::sym::INITIAL_VALUE);
     assert_eq!(
         baked,
@@ -176,7 +176,7 @@ fn a_mod_local_const_mod_shadows_inside_the_body_and_does_not_leak_out() {
          in go: exec\n\
          on go { f()\n static var afterh: int[] = [size(1)]\n c() }",
     );
-    let baked: Vec<_> = nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR)
+    let baked: Vec<_> = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR)
         .iter()
         .map(|n| {
             (
@@ -221,7 +221,7 @@ fn a_mod_local_const_mod_shadows_inside_the_body_and_does_not_leak_out() {
 #[test]
 fn a_plain_literal_array_still_bakes_exactly_as_before() {
     let m = lower_ok("const N = 4\nvar t: int[] = [1, N, N * 2]");
-    let arrays = nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR);
+    let arrays = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR);
     let baked = arrays[0].properties.get(&crate::intern::sym::INITIAL_VALUE);
     assert_eq!(
         baked,
@@ -282,7 +282,7 @@ fn typecheck_never_accepts_an_initializer_that_lowering_silently_drops() {
         fold_mode: crate::lower::FoldMode::ForceOff,
         ce_slots: &crate::typecheck::CeSlotMap::default(),
     });
-    let baked = nodes_of(&out.module, crate::ir::gate_class::PSEUDO_ARRAY_VAR)
+    let baked = nodes_of(&out.module, crate::ir::gate_class::ARRAY_VAR)
         .first()
         .and_then(|n| n.properties.get(&crate::intern::sym::INITIAL_VALUE).cloned());
 
@@ -373,7 +373,7 @@ fn a_mod_local_const_mod_is_visible_everywhere_inside_the_body_and_nowhere_outsi
          on go { f()\n static var sibling: int[] = [size(1)] }",
     );
     let baked: Vec<(String, Option<crate::ir::Literal>)> =
-        nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR)
+        nodes_of(&m, crate::ir::gate_class::ARRAY_VAR)
             .iter()
             .map(|n| {
                 (
@@ -461,12 +461,12 @@ fn a_record_let_with_a_const_mod_field_keeps_its_record_binding() {
         // The const mod's body really was inlined (its `n * 2` gate exists),
         // proving the field kept a real lowering rather than vanishing.
         assert_eq!(
-            nodes_of(&m, "BrickComponentType_WireGraph_Expr_MathMultiply").len(),
+            nodes_of(&m, "BrickComponentType_Expr_MathMultiply").len(),
             1,
             "the const mod body must still lower: {src}"
         );
         assert_eq!(
-            nodes_of(&m, "BrickComponentType_WireGraph_Expr_MathAdd").len(),
+            nodes_of(&m, "BrickComponentType_Expr_MathAdd").len(),
             2,
             "both field reads must still lower: {src}"
         );
@@ -496,7 +496,7 @@ fn a_const_index_reaches_emit_as_a_literal_in_both_the_bake_and_wire_channels() 
          const z = t[1]\n\
          var counts: int[] = [z, 12345]",
     );
-    let arrays = nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR);
+    let arrays = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR);
     assert_eq!(
         arrays[0].properties.get(&crate::intern::sym::INITIAL_VALUE),
         Some(&crate::ir::Literal::Array(vec![
@@ -554,7 +554,7 @@ fn a_const_container_used_only_at_compile_time_emits_no_gate() {
     );
     // Exactly one array gate: `counts`. `t` is answered entirely at compile
     // time, so it has no runtime form here.
-    let arrays = nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR);
+    let arrays = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR);
     assert_eq!(
         arrays.len(),
         1,
@@ -575,7 +575,7 @@ fn a_const_container_used_only_at_compile_time_emits_no_gate() {
         "a const map declaration must not synthesise a placeholder"
     );
     assert!(
-        nodes_of(&m, crate::ir::gate_class::PSEUDO_MAP_VAR).is_empty(),
+        nodes_of(&m, crate::ir::gate_class::MAP_VAR).is_empty(),
         "a compile-time-only const map must have no runtime container gate"
     );
 }
@@ -602,7 +602,7 @@ fn a_const_container_read_at_a_runtime_index_materializes_one_baked_gate() {
         nodes_of(&m, crate::ir::gate_class::UNSUPPORTED).is_empty(),
         "a runtime read of a const table must not lower to a placeholder"
     );
-    let arrays = nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR);
+    let arrays = nodes_of(&m, crate::ir::gate_class::ARRAY_VAR);
     assert_eq!(
         arrays.len(),
         1,
@@ -630,7 +630,7 @@ fn a_const_container_read_at_a_runtime_index_materializes_one_baked_gate() {
          in go: exec\n\
          on go { BroadcastChatMessage(\"${t[k]}\") }",
     );
-    let maps = nodes_of(&m, crate::ir::gate_class::PSEUDO_MAP_VAR);
+    let maps = nodes_of(&m, crate::ir::gate_class::MAP_VAR);
     assert_eq!(maps.len(), 1, "the const map gets exactly one container gate");
     assert_eq!(
         maps[0].properties.get(&crate::intern::sym::INITIAL_VALUE),
@@ -668,7 +668,7 @@ fn many_runtime_uses_of_one_const_table_share_a_single_container_gate() {
          }",
     );
     assert_eq!(
-        nodes_of(&m, crate::ir::gate_class::PSEUDO_ARRAY_VAR).len(),
+        nodes_of(&m, crate::ir::gate_class::ARRAY_VAR).len(),
         1,
         "every runtime use of one const table must share a single container gate"
     );

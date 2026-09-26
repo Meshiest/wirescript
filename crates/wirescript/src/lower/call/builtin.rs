@@ -125,9 +125,12 @@ pub(in crate::lower) fn lower_builtin_call(
         // through the constant environment (`function = EASE` for `const EASE =
         // "Bounce"`) instead. Member-name interpretation stays first, so no
         // program that relies on it changes meaning.
-        if !crate::catalog::is_wire_input(spec.gate_class, p.port.as_str())
-            && let Some(enum_type) =
-                crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
+        //
+        // A wireable enum port (DisplayText's `justify`/`easing`) takes the
+        // same constant forms; a value that resolves to none of them is a
+        // runtime value and falls through to the wire path below.
+        if let Some(enum_type) =
+            crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
         {
             if let Expr::Ident { name, .. } = arg_expr
                 && let Some(v) = crate::catalog::enum_member_value(enum_type, name)
@@ -378,8 +381,8 @@ pub(in crate::lower) fn lower_builtin_call(
     // `Opaque(...)` that erased it) there is nothing to propagate. Warn rather
     // than guess: inventing a type here would silently pick a variant the
     // receiver may not declare, which is the same class of bug in a new coat.
-    let is_event_send = spec.gate_class == gc::PSEUDO_SEND_CUSTOM_EVENT
-        || spec.gate_class == gc::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL;
+    let is_event_send = spec.gate_class == gc::SEND_CUSTOM_EVENT
+        || spec.gate_class == gc::SEND_CUSTOM_EVENT_GLOBAL;
     for p in spec.params.iter() {
         let mut ty = p.ty.clone();
         if is_event_send

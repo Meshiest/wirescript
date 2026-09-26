@@ -44,8 +44,8 @@ fn is_bus_worthy_source(n: &Node) -> bool {
         || n.note == Some("boundary_pin")
         || matches!(
             n.gate_class,
-            gate_class::PSEUDO_VAR
-                | gate_class::PSEUDO_ARRAY_VAR
+            gate_class::VAR
+                | gate_class::ARRAY_VAR
                 | gate_class::BUFFER
                 | gate_class::BUFFER_TICKS
         )

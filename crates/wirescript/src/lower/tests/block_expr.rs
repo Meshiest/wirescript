@@ -9,11 +9,11 @@ out y = result");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let select_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_Select")
         .count();
     assert!(select_count >= 1, "pure block if should produce Select gate");
     let branch_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Branch")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_Branch")
         .count();
     assert_eq!(branch_count, 0, "pure block if should NOT produce Branch gate");
 }
@@ -27,7 +27,7 @@ out y = result");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let mul_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathMultiply")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathMultiply")
         .count();
     assert!(mul_count >= 1, "should have a MathMultiply for x * 2 inside block");
 }
@@ -41,7 +41,7 @@ out y = doubled");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let add_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .count();
     assert!(add_count >= 1, "should have MathAdd for x + x in block");
 }
@@ -67,7 +67,7 @@ out y = result");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let add_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         .count();
     assert!(add_count >= 2, "nested block should produce at least 2 MathAdd gates, found {add_count}");
 }
@@ -80,7 +80,7 @@ out y = result");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let has_add = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd");
+        .any(|n| n.gate_class == "BrickComponentType_Expr_MathAdd");
     assert!(has_add, "block with multiple lets should produce a MathAdd gate");
 }
 
@@ -93,7 +93,7 @@ out y = result");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
     let has_select = r.module.nodes.values()
-        .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select");
+        .any(|n| n.gate_class == "BrickComponentType_Expr_Select");
     assert!(has_select, "pure if with block in else should produce a Select gate");
 }
 
@@ -122,7 +122,7 @@ let y = sin({ let a = 3.14; a })
 out z = y");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "block expr as function arg should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathSin"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathSin"),
         "should produce a MathSin gate for sin()");
 }
 
@@ -133,7 +133,7 @@ let y = { let a = 1; a } + { let b = 2; b }
 out z = y");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "two block exprs in binop should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should produce a MathAdd gate for +");
 }
 
@@ -145,9 +145,9 @@ let y = if { let a = x + 1; a } > 10 then 1 else 0
 out z = y");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "block expr as if condition should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"),
         "should produce a Select gate for pure if-then-else");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should produce MathAdd for x + 1 inside block condition");
 }
 
@@ -171,7 +171,7 @@ let s = \"val=${v}\"
 out z = s");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "block expr with string interpolation should compile: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_String_FormatText"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_String_FormatText"),
         "should produce a FormatText gate for string interpolation");
 }
 
@@ -210,7 +210,7 @@ out y = result");
         r.diagnostics
     );
     let select_count = r.module.nodes.values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_Select")
         .count();
     assert!(select_count >= 1, "multi-line if/then/else should lower to a Select gate");
 }

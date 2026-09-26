@@ -8,7 +8,7 @@ const dumpV3 = readFileSync(new URL('./fixtures/probe_dump_v3.txt', import.meta.
 
 test('parses cases with full gate class names', () => {
   const t = parseDump(dump, 2);
-  const eq = t.gates['BrickComponentType_WireGraph_Expr_CompareEqual'];
+  const eq = t.gates['BrickComponentType_Expr_CompareEqual'];
   assert.equal(eq.cases.length, 4);
   assert.deepEqual(eq.cases[1].inputs[1], { variant: 'str', value: '1' });
   // Comma-separated FormatText int rendering is normalized away.
@@ -27,7 +27,7 @@ test('rejects chapter count mismatch', () => {
 
 test('derives annihilator entailed by cases', () => {
   const t = parseDump(dump, 2);
-  const rules = deriveRules(t.gates['BrickComponentType_WireGraph_Expr_LogicalAND'], 'BrickComponentType_WireGraph_Expr_LogicalAND');
+  const rules = deriveRules(t.gates['BrickComponentType_Expr_LogicalAND'], 'BrickComponentType_Expr_LogicalAND');
   assert.ok(rules.some(r =>
     r.kind === 'annihilator' &&
     r.when.variant === 'bool' && r.when.value === 'false' &&
@@ -67,27 +67,27 @@ PROBE done
 test('accepts a hand-built mini-dump spanning every probe family', () => {
   const t = parseDump(probeShapedDump, 1);
 
-  const eq = t.gates['BrickComponentType_WireGraph_Expr_CompareEqual'];
+  const eq = t.gates['BrickComponentType_Expr_CompareEqual'];
   assert.equal(eq.cases.length, 2);
   assert.equal(eq.cases[1].inputs[1], 'unwired');
 
-  const and = t.gates['BrickComponentType_WireGraph_Expr_LogicalAND'];
+  const and = t.gates['BrickComponentType_Expr_LogicalAND'];
   assert.deepEqual(and.cases[0].output, { variant: 'bool', value: 'false' });
 
   // The corrected mappings (...CompareLessOrEqual / ...CompareGreaterOrEqual).
-  assert.ok(t.gates['BrickComponentType_WireGraph_Expr_CompareLessOrEqual']);
-  assert.ok(t.gates['BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual']);
+  assert.ok(t.gates['BrickComponentType_Expr_CompareLessOrEqual']);
+  assert.ok(t.gates['BrickComponentType_Expr_CompareGreaterOrEqual']);
 
-  const select = t.gates['BrickComponentType_WireGraph_Expr_Select'];
+  const select = t.gates['BrickComponentType_Expr_Select'];
   assert.equal(select.cases[0].inputs.length, 1);
   assert.deepEqual(select.cases[0].inputs[0], { variant: 'int', value: '0' });
   assert.deepEqual(select.cases[0].output, { variant: 'int', value: '222' });
 
-  const branch = t.gates['BrickComponentType_WireGraph_Exec_Branch'];
+  const branch = t.gates['BrickComponentType_Exec_Branch'];
   assert.equal(branch.cases[0].inputs.length, 1);
   assert.deepEqual(branch.cases[0].output, { variant: 'str', value: 'A' });
 
-  const mathAdd = t.gates['BrickComponentType_WireGraph_Expr_MathAdd'];
+  const mathAdd = t.gates['BrickComponentType_Expr_MathAdd'];
   assert.deepEqual(mathAdd.cases[0].output, { variant: 'int', value: '3' });
 });
 
@@ -98,14 +98,14 @@ test('whitelist: no false annihilators from coincidental case pools', () => {
     { inputs: [{variant:'str',value:'a'},{variant:'int',value:'1'}], output: {variant:'bool',value:'false'} },
     { inputs: [{variant:'str',value:'a'},{variant:'str',value:''}], output: {variant:'bool',value:'false'} },
   ], rules: [] };
-  assert.deepEqual(deriveRules(entry, 'BrickComponentType_WireGraph_Expr_CompareGreater'), []);
+  assert.deepEqual(deriveRules(entry, 'BrickComponentType_Expr_CompareGreater'), []);
 });
 
 test('whitelist: contradicting observation is a hard error', () => {
   const entry = { cases: [
     { inputs: [{variant:'bool',value:'false'},{variant:'bool',value:'true'}], output: {variant:'bool',value:'true'} },
   ], rules: [] };
-  assert.throws(() => deriveRules(entry, 'BrickComponentType_WireGraph_Expr_LogicalAND'), /contradicted/);
+  assert.throws(() => deriveRules(entry, 'BrickComponentType_Expr_LogicalAND'), /contradicted/);
 });
 
 test('raw game-log prefixes and interleaved noise are tolerated', () => {
@@ -118,7 +118,7 @@ test('raw game-log prefixes and interleaved noise are tolerated', () => {
     '[2026.07.18-01.00.00:040][ 66]LogBrickadia: PROBE done',
   ].join('\n');
   const t = parseDump(noisy, 2);
-  assert.equal(t.gates['BrickComponentType_WireGraph_Expr_CompareEqual'].cases.length, 1);
+  assert.equal(t.gates['BrickComponentType_Expr_CompareEqual'].cases.length, 1);
 });
 
 // ============================================================================
@@ -144,7 +144,7 @@ test('v3: render chapter lands in a dedicated top-level table, not under gates',
 
 test('v3: quoted string operands with internal spaces tokenize as one operand', () => {
   const t = parseDump(dumpV3, 3);
-  const contains = t.gates['BrickComponentType_WireGraph_Expr_String_Contains'];
+  const contains = t.gates['BrickComponentType_Expr_String_Contains'];
   assert.deepEqual(contains.cases[0].inputs[0], { variant: 'str', value: 'hello world' });
   assert.deepEqual(contains.cases[0].inputs[1], { variant: 'str', value: 'world' });
   // Contains is a bool-output gate (v3 BOOL_OUTPUT extension), not int/str.
@@ -160,19 +160,19 @@ test('v3: quoted string operands with internal spaces tokenize as one operand', 
 // spaces included.
 test('v3: a quoted string RESULT with trailing spaces round-trips exactly', () => {
   const t = parseDump(dumpV3, 3);
-  const lower = t.gates['BrickComponentType_WireGraph_Expr_String_ToLower'];
+  const lower = t.gates['BrickComponentType_Expr_String_ToLower'];
   assert.deepEqual(lower.cases[0].output, { variant: 'str', value: '  x  ' });
 });
 
 test('v3: string-RESULT gates (Concatenate/Substring/Replace/FormatText) dequote to the plain value', () => {
   const t = parseDump(dumpV3, 3);
-  const concat = t.gates['BrickComponentType_WireGraph_Expr_String_Concatenate'];
+  const concat = t.gates['BrickComponentType_Expr_String_Concatenate'];
   assert.deepEqual(concat.cases[0].output, { variant: 'str', value: 'ab' });
-  const sub = t.gates['BrickComponentType_WireGraph_Expr_String_Substring'];
+  const sub = t.gates['BrickComponentType_Expr_String_Substring'];
   assert.deepEqual(sub.cases[0].output, { variant: 'str', value: 'ell' });
-  const repl = t.gates['BrickComponentType_WireGraph_Expr_String_Replace'];
+  const repl = t.gates['BrickComponentType_Expr_String_Replace'];
   assert.deepEqual(repl.cases[0].output, { variant: 'str', value: 'hello there' });
-  const fmt = t.gates['BrickComponentType_WireGraph_Expr_String_FormatText'];
+  const fmt = t.gates['BrickComponentType_Expr_String_FormatText'];
   assert.deepEqual(fmt.cases[0].output, { variant: 'str', value: 'hi' });
 });
 
@@ -210,19 +210,19 @@ test('v3: double-quote-delimited outputs/operands are a hard error (stale prior-
 
 test('v3: variable operand arity — 3-operand Substring, 3-operand MakeVector', () => {
   const t = parseDump(dumpV3, 3);
-  const sub = t.gates['BrickComponentType_WireGraph_Expr_String_Substring'];
+  const sub = t.gates['BrickComponentType_Expr_String_Substring'];
   assert.equal(sub.cases[0].inputs.length, 3);
   assert.deepEqual(sub.cases[0].inputs[1], { variant: 'int', value: '1' });
   assert.deepEqual(sub.cases[0].inputs[2], { variant: 'int', value: '3' });
 
-  const mkVec = t.gates['BrickComponentType_WireGraph_Expr_MakeVector'];
+  const mkVec = t.gates['BrickComponentType_Expr_MakeVector'];
   assert.equal(mkVec.cases[0].inputs.length, 3);
   assert.deepEqual(mkVec.cases[0].output, { variant: 'vector', value: '(X=1.500, Y=-2.500, Z=0.750)' });
 });
 
 test('v3: compositeMath — vector operand labels transcribed verbatim, output tagged vector', () => {
   const t = parseDump(dumpV3, 3);
-  const add = t.gates['BrickComponentType_WireGraph_Expr_MathAdd'];
+  const add = t.gates['BrickComponentType_Expr_MathAdd'];
   const vecCase = add.cases.find(c => c.inputs[0] !== 'unwired' && c.inputs[0].variant === 'vector');
   assert.deepEqual(vecCase.inputs[0], { variant: 'vector', value: 'Vec(0.5,0.25,-0.75)' });
   assert.deepEqual(vecCase.output, { variant: 'vector', value: '(X=0.750, Y=0.750, Z=0.000)' });
@@ -235,21 +235,21 @@ test('v3: composite operands do NOT hijack a bool-output gate\'s classification'
   // forced CompareEqual/VecDotProduct/VecMagnitude results to a composite
   // variant too; it must be scoped to the shared Math gates only.
   const t = parseDump(dumpV3, 3);
-  const eq = t.gates['BrickComponentType_WireGraph_Expr_CompareEqual'];
+  const eq = t.gates['BrickComponentType_Expr_CompareEqual'];
   const colorCase = eq.cases.find(c => c.inputs[0] !== 'unwired' && c.inputs[0].variant === 'color');
   assert.deepEqual(colorCase.output, { variant: 'bool', value: 'true' });
 
-  const dot = t.gates['BrickComponentType_WireGraph_Expr_VecDotProduct'];
+  const dot = t.gates['BrickComponentType_Expr_VecDotProduct'];
   assert.equal(dot.cases[0].output.variant, 'float');
 
-  const mag = t.gates['BrickComponentType_WireGraph_Expr_VecMagnitude'];
+  const mag = t.gates['BrickComponentType_Expr_VecMagnitude'];
   assert.equal(mag.cases[0].output.variant, 'float');
 });
 
 test('v3: deferredOps is parsed/collected like any other chapter', () => {
   const t = parseDump(dumpV3, 3);
-  assert.ok(t.gates['BrickComponentType_WireGraph_Expr_QuatSlerp']);
-  assert.equal(t.gates['BrickComponentType_WireGraph_Expr_QuatSlerp'].cases.length, 1);
+  assert.ok(t.gates['BrickComponentType_Expr_QuatSlerp']);
+  assert.equal(t.gates['BrickComponentType_Expr_QuatSlerp'].cases.length, 1);
 });
 
 test('v3: hard-errors on a quoted string operand with an embedded quote/backslash', () => {
@@ -309,21 +309,21 @@ test('v3 contract: probe-shaped lines for every new chapter parse correctly', ()
   assert.equal(t.render['int:7'], '7');
   assert.equal(t.render['vector:Vec(0.5,-1.25,1.0/3.0)'], '(X=0.500, Y=-1.250, Z=0.333)');
 
-  const len = t.gates['BrickComponentType_WireGraph_Expr_String_Length'];
+  const len = t.gates['BrickComponentType_Expr_String_Length'];
   assert.deepEqual(len.cases[0].inputs[0], { variant: 'str', value: '  x  ' });
 
-  const fmt = t.gates['BrickComponentType_WireGraph_Expr_String_FormatText'];
+  const fmt = t.gates['BrickComponentType_Expr_String_FormatText'];
   assert.deepEqual(fmt.cases[0].inputs[0], { variant: 'tmpl', value: '0str' });
   // Quotes are transport armor, not value content — dequoted to plain "hi".
   assert.deepEqual(fmt.cases[0].output, { variant: 'str', value: 'hi' });
 
-  const mod = t.gates['BrickComponentType_WireGraph_Expr_MathModulo'];
+  const mod = t.gates['BrickComponentType_Expr_MathModulo'];
   assert.deepEqual(mod.cases[0].output, { variant: 'vector', value: '(X=0.500, Y=0.250, Z=-0.750)' });
 
-  const srgb = t.gates['BrickComponentType_WireGraph_Expr_MakeColorSRGB'];
+  const srgb = t.gates['BrickComponentType_Expr_MakeColorSRGB'];
   assert.equal(srgb.cases[0].inputs.length, 4);
   assert.deepEqual(srgb.cases[0].output, { variant: 'color', value: '(R=255, G=128, B=0, A=255)' });
 
-  const dist = t.gates['BrickComponentType_WireGraph_Expr_VecDistance'];
+  const dist = t.gates['BrickComponentType_Expr_VecDistance'];
   assert.equal(dist.cases[0].output.variant, 'float');
 });

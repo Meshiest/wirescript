@@ -15,12 +15,12 @@ pub const MICROCHIP_COUNT_FOR: &str = "Component_Internal_Microchip_CountFor";
 pub const MICROCHIP_FOR_EACH_ARRAY: &str = "Component_Internal_Microchip_ForEachArray";
 pub const MICROCHIP_FOR_EACH_MAP: &str = "Component_Internal_Microchip_ForEachMap";
 pub const CALLABLE_ENTRY_COUNT_FOR: &str =
-    "BrickComponentType_WireGraph_CallableEntry_CountFor";
+    "BrickComponentType_CallableEntry_CountFor";
 pub const CALLABLE_ENTRY_FOR_EACH_ARRAY: &str =
-    "BrickComponentType_WireGraph_CallableEntry_ForEachArray";
+    "BrickComponentType_CallableEntry_ForEachArray";
 pub const CALLABLE_ENTRY_FOR_EACH_MAP: &str =
-    "BrickComponentType_WireGraph_CallableEntry_ForEachMap";
-pub const CALLABLE_BREAK: &str = "BrickComponentType_WireGraph_Exec_CallableBreak";
+    "BrickComponentType_CallableEntry_ForEachMap";
+pub const CALLABLE_BREAK: &str = "BrickComponentType_Exec_CallableBreak";
 
 /// True for a gate class that hosts an isolated plane (a callable loop shell).
 /// Distinct from `MICROCHIP`/`MICROCHIP_ALT`, whose wall is visual only.
@@ -33,351 +33,350 @@ pub fn is_plane_shell(class: &str) -> bool {
 }
 
 // Variables
-pub const PSEUDO_VAR: &str = "BrickComponentType_WireGraphPseudo_Var";
-pub const PSEUDO_ARRAY_VAR: &str = "BrickComponentType_WireGraphPseudo_ArrayVar";
-pub const PSEUDO_MAP_VAR: &str = "BrickComponentType_WireGraphPseudo_MapVar";
-pub const MAP_GET: &str = "BrickComponentType_WireGraph_Exec_MapVar_Get";
-pub const MAP_SET: &str = "BrickComponentType_WireGraph_Exec_MapVar_Set";
-pub const MAP_HAS: &str = "BrickComponentType_WireGraph_Exec_MapVar_Has";
-pub const MAP_REMOVE: &str = "BrickComponentType_WireGraph_Exec_MapVar_Remove";
-pub const MAP_CLEAR: &str = "BrickComponentType_WireGraph_Exec_MapVar_Clear";
-pub const MAP_COPY_FROM: &str = "BrickComponentType_WireGraph_Exec_MapVar_CopyFrom";
-pub const MAP_GET_LENGTH: &str = "BrickComponentType_WireGraph_Exec_MapVar_GetLength";
-pub const MAP_GET_KEYS: &str = "BrickComponentType_WireGraph_Exec_MapVar_GetKeys";
-pub const MAP_GET_VALUES: &str = "BrickComponentType_WireGraph_Exec_MapVar_GetValues";
-pub const BUFFER_TICKS: &str = "BrickComponentType_WireGraphPseudo_BufferTicks";
-pub const BUFFER_SECONDS: &str = "BrickComponentType_WireGraphPseudo_BufferSeconds";
+pub const VAR: &str = "BrickComponentType_Var";
+pub const ARRAY_VAR: &str = "BrickComponentType_ArrayVar";
+pub const MAP_VAR: &str = "BrickComponentType_MapVar";
+pub const MAP_GET: &str = "BrickComponentType_Exec_MapVar_Get";
+pub const MAP_SET: &str = "BrickComponentType_Exec_MapVar_Set";
+pub const MAP_HAS: &str = "BrickComponentType_Exec_MapVar_Has";
+pub const MAP_REMOVE: &str = "BrickComponentType_Exec_MapVar_Remove";
+pub const MAP_CLEAR: &str = "BrickComponentType_Exec_MapVar_Clear";
+pub const MAP_COPY_FROM: &str = "BrickComponentType_Exec_MapVar_CopyFrom";
+pub const MAP_GET_LENGTH: &str = "BrickComponentType_Exec_MapVar_GetLength";
+pub const MAP_GET_KEYS: &str = "BrickComponentType_Exec_MapVar_GetKeys";
+pub const MAP_GET_VALUES: &str = "BrickComponentType_Exec_MapVar_GetValues";
+pub const BUFFER_TICKS: &str = "BrickComponentType_BufferTicks";
+pub const BUFFER_SECONDS: &str = "BrickComponentType_BufferSeconds";
+pub const QUEUE_TICKS: &str = "BrickComponentType_QueueTicks";
+pub const QUEUE_SECONDS: &str = "BrickComponentType_QueueSeconds";
 pub const VARIABLE: &str = "BrickComponentType_Internal_Variable";
 pub const BUFFER: &str = "BrickComponentType_Wires_Buffer";
-pub const VAR_GET: &str = "BrickComponentType_WireGraph_Exec_Var_Get";
-pub const VAR_SET: &str = "BrickComponentType_WireGraph_Exec_Var_Set";
-pub const VAR_INCREMENT: &str = "BrickComponentType_WireGraph_Exec_Var_Increment";
+pub const VAR_GET: &str = "BrickComponentType_Exec_Var_Get";
+pub const VAR_SET: &str = "BrickComponentType_Exec_Var_Set";
+pub const VAR_INCREMENT: &str = "BrickComponentType_Exec_Var_Increment";
 
 // Array variables
-pub const ARRAY_SET_AT_INDEX: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex";
-pub const ARRAY_GET: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Get";
-pub const ARRAY_PUSH: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Push";
-pub const ARRAY_POP: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Pop";
-pub const ARRAY_GET_LENGTH: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength";
-pub const ARRAY_REMOVE_AT_INDEX: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_RemoveAtIndex";
-pub const ARRAY_CLEAR: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Clear";
-pub const ARRAY_SHUFFLE: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Shuffle";
-pub const ARRAY_INSERT: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Insert";
-pub const ARRAY_FIND: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Find";
-pub const ARRAY_SORT: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Sort";
-pub const ARRAY_REVERSE: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Reverse";
-pub const ARRAY_SUM: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Sum";
-pub const ARRAY_MIN: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Min";
-pub const ARRAY_MAX: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Max";
-pub const ARRAY_AVERAGE: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Average";
-pub const ARRAY_SWAP: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Swap";
-pub const ARRAY_FILL: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Fill";
-pub const ARRAY_RESIZE: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Resize";
-pub const ARRAY_SLICE: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Slice";
-pub const ARRAY_APPEND: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_Append";
-pub const ARRAY_COPY_FROM: &str = "BrickComponentType_WireGraph_Exec_ArrayVar_CopyFrom";
+pub const ARRAY_SET_AT_INDEX: &str = "BrickComponentType_Exec_ArrayVar_SetAtIndex";
+pub const ARRAY_GET: &str = "BrickComponentType_Exec_ArrayVar_Get";
+pub const ARRAY_PUSH: &str = "BrickComponentType_Exec_ArrayVar_Push";
+pub const ARRAY_POP: &str = "BrickComponentType_Exec_ArrayVar_Pop";
+pub const ARRAY_GET_LENGTH: &str = "BrickComponentType_Exec_ArrayVar_GetLength";
+pub const ARRAY_REMOVE_AT_INDEX: &str = "BrickComponentType_Exec_ArrayVar_RemoveAtIndex";
+pub const ARRAY_CLEAR: &str = "BrickComponentType_Exec_ArrayVar_Clear";
+pub const ARRAY_SHUFFLE: &str = "BrickComponentType_Exec_ArrayVar_Shuffle";
+pub const ARRAY_INSERT: &str = "BrickComponentType_Exec_ArrayVar_Insert";
+pub const ARRAY_FIND: &str = "BrickComponentType_Exec_ArrayVar_Find";
+pub const ARRAY_SORT: &str = "BrickComponentType_Exec_ArrayVar_Sort";
+pub const ARRAY_REVERSE: &str = "BrickComponentType_Exec_ArrayVar_Reverse";
+pub const ARRAY_SUM: &str = "BrickComponentType_Exec_ArrayVar_Sum";
+pub const ARRAY_MIN: &str = "BrickComponentType_Exec_ArrayVar_Min";
+pub const ARRAY_MAX: &str = "BrickComponentType_Exec_ArrayVar_Max";
+pub const ARRAY_AVERAGE: &str = "BrickComponentType_Exec_ArrayVar_Average";
+pub const ARRAY_SWAP: &str = "BrickComponentType_Exec_ArrayVar_Swap";
+pub const ARRAY_FILL: &str = "BrickComponentType_Exec_ArrayVar_Fill";
+pub const ARRAY_RESIZE: &str = "BrickComponentType_Exec_ArrayVar_Resize";
+pub const ARRAY_SLICE: &str = "BrickComponentType_Exec_ArrayVar_Slice";
+pub const ARRAY_APPEND: &str = "BrickComponentType_Exec_ArrayVar_Append";
+pub const ARRAY_COPY_FROM: &str = "BrickComponentType_Exec_ArrayVar_CopyFrom";
 
 // Exec flow
-pub const UNION: &str = "BrickComponentType_WireGraph_Exec_Union";
-pub const BRANCH: &str = "BrickComponentType_WireGraph_Exec_Branch";
-pub const RANDOM: &str = "BrickComponentType_WireGraph_Exec_Random";
+pub const UNION: &str = "BrickComponentType_Exec_Union";
+pub const BRANCH: &str = "BrickComponentType_Exec_Branch";
+pub const RANDOM: &str = "BrickComponentType_Exec_Random";
 
 // Select / Swap
-pub const SELECT: &str = "BrickComponentType_WireGraph_Expr_Select";
-pub const SWAP: &str = "BrickComponentType_WireGraph_Expr_Swap";
+pub const SELECT: &str = "BrickComponentType_Expr_Select";
+pub const SWAP: &str = "BrickComponentType_Expr_Swap";
 
 // Logic
-pub const LOGICAL_NOT: &str = "BrickComponentType_WireGraph_Expr_LogicalNOT";
-pub const BITWISE_NOT: &str = "BrickComponentType_WireGraph_Expr_BitwiseNOT";
-pub const BITWISE_NAND: &str = "BrickComponentType_WireGraph_Expr_BitwiseNAND";
-pub const BITWISE_NOR: &str = "BrickComponentType_WireGraph_Expr_BitwiseNOR";
-pub const BITWISE_BIT_COUNT: &str = "BrickComponentType_WireGraph_Expr_BitwiseBitCount";
+pub const LOGICAL_NOT: &str = "BrickComponentType_Expr_LogicalNOT";
+pub const BITWISE_NOT: &str = "BrickComponentType_Expr_BitwiseNOT";
+pub const BITWISE_NAND: &str = "BrickComponentType_Expr_BitwiseNAND";
+pub const BITWISE_NOR: &str = "BrickComponentType_Expr_BitwiseNOR";
+pub const BITWISE_BIT_COUNT: &str = "BrickComponentType_Expr_BitwiseBitCount";
 
 // Compare
-pub const COMPARE_EQUAL: &str = "BrickComponentType_WireGraph_Expr_CompareEqual";
-pub const COMPARE_NOT_EQUAL: &str = "BrickComponentType_WireGraph_Expr_CompareNotEqual";
+pub const COMPARE_EQUAL: &str = "BrickComponentType_Expr_CompareEqual";
+pub const COMPARE_NOT_EQUAL: &str = "BrickComponentType_Expr_CompareNotEqual";
 
 // Math (unary)
-pub const MATH_SIN: &str = "BrickComponentType_WireGraph_Expr_MathSin";
-pub const MATH_COS: &str = "BrickComponentType_WireGraph_Expr_MathCos";
-pub const MATH_TAN: &str = "BrickComponentType_WireGraph_Expr_MathTan";
-pub const MATH_ASIN: &str = "BrickComponentType_WireGraph_Expr_MathAsin";
-pub const MATH_ACOS: &str = "BrickComponentType_WireGraph_Expr_MathAcos";
-pub const MATH_ATAN: &str = "BrickComponentType_WireGraph_Expr_MathAtan";
-pub const MATH_SINH: &str = "BrickComponentType_WireGraph_Expr_MathSinh";
-pub const MATH_COSH: &str = "BrickComponentType_WireGraph_Expr_MathCosh";
-pub const MATH_TANH: &str = "BrickComponentType_WireGraph_Expr_MathTanh";
-pub const MATH_ASINH: &str = "BrickComponentType_WireGraph_Expr_MathAsinh";
-pub const MATH_ACOSH: &str = "BrickComponentType_WireGraph_Expr_MathAcosh";
-pub const MATH_ATANH: &str = "BrickComponentType_WireGraph_Expr_MathAtanh";
-pub const MATH_EXP: &str = "BrickComponentType_WireGraph_Expr_MathExp";
-pub const MATH_LN: &str = "BrickComponentType_WireGraph_Expr_MathLn";
-pub const MATH_SIGN: &str = "BrickComponentType_WireGraph_Expr_MathSign";
-pub const MATH_ABS: &str = "BrickComponentType_WireGraph_Expr_MathAbs";
-pub const MATH_SQRT: &str = "BrickComponentType_WireGraph_Expr_MathSqrt";
-pub const MATH_NEGATE: &str = "BrickComponentType_WireGraph_Expr_MathNegate";
-pub const ROUND: &str = "BrickComponentType_WireGraph_Expr_Round";
-pub const FLOOR: &str = "BrickComponentType_WireGraph_Expr_Floor";
-pub const CEIL: &str = "BrickComponentType_WireGraph_Expr_Ceil";
-pub const DEG2RAD: &str = "BrickComponentType_WireGraph_Expr_MathDegreesToRadians";
-pub const RAD2DEG: &str = "BrickComponentType_WireGraph_Expr_MathRadiansToDegrees";
+pub const MATH_SIN: &str = "BrickComponentType_Expr_MathSin";
+pub const MATH_COS: &str = "BrickComponentType_Expr_MathCos";
+pub const MATH_TAN: &str = "BrickComponentType_Expr_MathTan";
+pub const MATH_ASIN: &str = "BrickComponentType_Expr_MathAsin";
+pub const MATH_ACOS: &str = "BrickComponentType_Expr_MathAcos";
+pub const MATH_ATAN: &str = "BrickComponentType_Expr_MathAtan";
+pub const MATH_SINH: &str = "BrickComponentType_Expr_MathSinh";
+pub const MATH_COSH: &str = "BrickComponentType_Expr_MathCosh";
+pub const MATH_TANH: &str = "BrickComponentType_Expr_MathTanh";
+pub const MATH_ASINH: &str = "BrickComponentType_Expr_MathAsinh";
+pub const MATH_ACOSH: &str = "BrickComponentType_Expr_MathAcosh";
+pub const MATH_ATANH: &str = "BrickComponentType_Expr_MathAtanh";
+pub const MATH_EXP: &str = "BrickComponentType_Expr_MathExp";
+pub const MATH_LN: &str = "BrickComponentType_Expr_MathLn";
+pub const MATH_SIGN: &str = "BrickComponentType_Expr_MathSign";
+pub const MATH_ABS: &str = "BrickComponentType_Expr_MathAbs";
+pub const MATH_SQRT: &str = "BrickComponentType_Expr_MathSqrt";
+pub const MATH_NEGATE: &str = "BrickComponentType_Expr_MathNegate";
+pub const ROUND: &str = "BrickComponentType_Expr_Round";
+pub const FLOOR: &str = "BrickComponentType_Expr_Floor";
+pub const CEIL: &str = "BrickComponentType_Expr_Ceil";
+pub const DEG2RAD: &str = "BrickComponentType_Expr_MathDegreesToRadians";
+pub const RAD2DEG: &str = "BrickComponentType_Expr_MathRadiansToDegrees";
 
 // Math (binary+)
-pub const MATH_MIN: &str = "BrickComponentType_WireGraph_Expr_MathMin";
-pub const MATH_MAX: &str = "BrickComponentType_WireGraph_Expr_MathMax";
-pub const MATH_POW: &str = "BrickComponentType_WireGraph_Expr_MathPow";
-pub const MATH_CLAMP: &str = "BrickComponentType_WireGraph_Expr_MathClamp";
-pub const MATH_ATAN2: &str = "BrickComponentType_WireGraph_Expr_MathAtan2";
-pub const MATH_LOG_BASE: &str = "BrickComponentType_WireGraph_Expr_MathLogBase";
-pub const MATH_BLEND: &str = "BrickComponentType_WireGraph_Expr_MathBlend";
-pub const MATH_MOD_FLOORED: &str = "BrickComponentType_WireGraph_Expr_MathModuloFloored";
-pub const EDGE_DETECTOR: &str = "BrickComponentType_WireGraph_Expr_EdgeDetector";
-pub const EDGE_DETECTOR_EXEC: &str = "BrickComponentType_WireGraph_Expr_EdgeDetectorExec";
+pub const MATH_MIN: &str = "BrickComponentType_Expr_MathMin";
+pub const MATH_MAX: &str = "BrickComponentType_Expr_MathMax";
+pub const MATH_POW: &str = "BrickComponentType_Expr_MathPow";
+pub const MATH_CLAMP: &str = "BrickComponentType_Expr_MathClamp";
+pub const MATH_ATAN2: &str = "BrickComponentType_Expr_MathAtan2";
+pub const MATH_LOG_BASE: &str = "BrickComponentType_Expr_MathLogBase";
+pub const MATH_BLEND: &str = "BrickComponentType_Expr_MathBlend";
+pub const MATH_MOD_FLOORED: &str = "BrickComponentType_Expr_MathModuloFloored";
+pub const EDGE_DETECTOR: &str = "BrickComponentType_Expr_EdgeDetector";
+pub const EDGE_DETECTOR_EXEC: &str = "BrickComponentType_Expr_EdgeDetectorExec";
 
 // String ops
-pub const STRING_LENGTH: &str = "BrickComponentType_WireGraph_Expr_String_Length";
-pub const STRING_CONTAINS: &str = "BrickComponentType_WireGraph_Expr_String_Contains";
-pub const STRING_CONCATENATE: &str = "BrickComponentType_WireGraph_Expr_String_Concatenate";
-pub const STRING_FORMAT_TEXT: &str = "BrickComponentType_WireGraph_Expr_String_FormatText";
-pub const STRING_STARTS_WITH: &str = "BrickComponentType_WireGraph_Expr_String_StartsWith";
-pub const STRING_ENDS_WITH: &str = "BrickComponentType_WireGraph_Expr_String_EndsWith";
-pub const STRING_SUBSTRING: &str = "BrickComponentType_WireGraph_Expr_String_Substring";
-pub const STRING_REPLACE: &str = "BrickComponentType_WireGraph_Expr_String_Replace";
-pub const STRING_FIND: &str = "BrickComponentType_WireGraph_Expr_String_Find";
-pub const STRING_SPLIT: &str = "BrickComponentType_WireGraph_Expr_String_Split";
-pub const STRING_TO_LOWER: &str = "BrickComponentType_WireGraph_Expr_String_ToLower";
-pub const STRING_TO_UPPER: &str = "BrickComponentType_WireGraph_Expr_String_ToUpper";
-pub const STRING_TRIM: &str = "BrickComponentType_WireGraph_Expr_String_Trim";
-pub const STRING_PARSE_INT: &str = "BrickComponentType_WireGraph_Expr_String_ParseInt";
-pub const STRING_PARSE_NUMBER: &str = "BrickComponentType_WireGraph_Expr_String_ParseNumber";
+pub const STRING_LENGTH: &str = "BrickComponentType_Expr_String_Length";
+pub const STRING_CONTAINS: &str = "BrickComponentType_Expr_String_Contains";
+pub const STRING_CONCATENATE: &str = "BrickComponentType_Expr_String_Concatenate";
+pub const STRING_FORMAT_TEXT: &str = "BrickComponentType_Expr_String_FormatText";
+pub const STRING_STARTS_WITH: &str = "BrickComponentType_Expr_String_StartsWith";
+pub const STRING_ENDS_WITH: &str = "BrickComponentType_Expr_String_EndsWith";
+pub const STRING_SUBSTRING: &str = "BrickComponentType_Expr_String_Substring";
+pub const STRING_REPLACE: &str = "BrickComponentType_Expr_String_Replace";
+pub const STRING_FIND: &str = "BrickComponentType_Expr_String_Find";
+pub const STRING_SPLIT: &str = "BrickComponentType_Expr_String_Split";
+pub const STRING_TO_LOWER: &str = "BrickComponentType_Expr_String_ToLower";
+pub const STRING_TO_UPPER: &str = "BrickComponentType_Expr_String_ToUpper";
+pub const STRING_TRIM: &str = "BrickComponentType_Expr_String_Trim";
+pub const STRING_PARSE_INT: &str = "BrickComponentType_Expr_String_ParseInt";
+pub const STRING_PARSE_NUMBER: &str = "BrickComponentType_Expr_String_ParseNumber";
 
 // Color / Vector
-pub const MAKE_COLOR: &str = "BrickComponentType_WireGraph_Expr_MakeColor";
-pub const SPLIT_COLOR: &str = "BrickComponentType_WireGraph_Expr_SplitColor";
-pub const MAKE_VECTOR: &str = "BrickComponentType_WireGraph_Expr_MakeVector";
-pub const SPLIT_VECTOR: &str = "BrickComponentType_WireGraph_Expr_SplitVector";
-pub const VEC_DOT: &str = "BrickComponentType_WireGraph_Expr_VecDotProduct";
-pub const VEC_CROSS: &str = "BrickComponentType_WireGraph_Expr_VecCrossProduct";
-pub const VEC_NORMALIZE: &str = "BrickComponentType_WireGraph_Expr_VecNormalize";
-pub const VEC_MAGNITUDE: &str = "BrickComponentType_WireGraph_Expr_VecMagnitude";
-pub const VEC_MAGNITUDE_SQ: &str = "BrickComponentType_WireGraph_Expr_VecMagnitudeSquared";
-pub const VEC_DISTANCE: &str = "BrickComponentType_WireGraph_Expr_VecDistance";
-pub const VEC_DISTANCE_SQ: &str = "BrickComponentType_WireGraph_Expr_VecDistanceSquared";
-pub const VEC_SCALE: &str = "BrickComponentType_WireGraph_Expr_VecScale";
-pub const VEC_ROT_TO_DIR: &str = "BrickComponentType_WireGraph_Expr_VecRotationToDirection";
+pub const MAKE_COLOR: &str = "BrickComponentType_Expr_MakeColor";
+pub const SPLIT_COLOR: &str = "BrickComponentType_Expr_SplitColor";
+pub const MAKE_VECTOR: &str = "BrickComponentType_Expr_MakeVector";
+pub const SPLIT_VECTOR: &str = "BrickComponentType_Expr_SplitVector";
+pub const VEC_DOT: &str = "BrickComponentType_Expr_VecDotProduct";
+pub const VEC_CROSS: &str = "BrickComponentType_Expr_VecCrossProduct";
+pub const VEC_NORMALIZE: &str = "BrickComponentType_Expr_VecNormalize";
+pub const VEC_MAGNITUDE: &str = "BrickComponentType_Expr_VecMagnitude";
+pub const VEC_MAGNITUDE_SQ: &str = "BrickComponentType_Expr_VecMagnitudeSquared";
+pub const VEC_DISTANCE: &str = "BrickComponentType_Expr_VecDistance";
+pub const VEC_DISTANCE_SQ: &str = "BrickComponentType_Expr_VecDistanceSquared";
+pub const VEC_SCALE: &str = "BrickComponentType_Expr_VecScale";
 
 // Rotation / quaternion
-pub const MAKE_ROTATION: &str = "BrickComponentType_WireGraph_Expr_MakeRotation";
-pub const SPLIT_ROTATION: &str = "BrickComponentType_WireGraph_Expr_SplitRotation";
-pub const ROTATE_VECTOR: &str = "BrickComponentType_WireGraph_Expr_RotateVector";
-pub const INVERT_ROTATION: &str = "BrickComponentType_WireGraph_Expr_InvertRotation";
-pub const DIRECTION_TO_ROTATION: &str = "BrickComponentType_WireGraph_Expr_DirectionToRotation";
-pub const ROTATION_TO_DIRECTION: &str = "BrickComponentType_WireGraph_Expr_RotationToDirection";
-pub const QUAT_BETWEEN: &str = "BrickComponentType_WireGraph_Expr_QuatBetween";
-pub const QUAT_ANGLE_BETWEEN: &str = "BrickComponentType_WireGraph_Expr_QuatAngleBetween";
-pub const QUAT_FROM_AXIS_ANGLE: &str = "BrickComponentType_WireGraph_Expr_QuatFromAxisAngle";
-pub const QUAT_TO_AXIS_ANGLE: &str = "BrickComponentType_WireGraph_Expr_QuatToAxisAngle";
-pub const QUAT_SLERP: &str = "BrickComponentType_WireGraph_Expr_QuatSlerp";
+pub const MAKE_ROTATION: &str = "BrickComponentType_Expr_MakeRotation";
+pub const SPLIT_ROTATION: &str = "BrickComponentType_Expr_SplitRotation";
+pub const ROTATE_VECTOR: &str = "BrickComponentType_Expr_RotateVector";
+pub const INVERT_ROTATION: &str = "BrickComponentType_Expr_InvertRotation";
+pub const DIRECTION_TO_ROTATION: &str = "BrickComponentType_Expr_DirectionToRotation";
+pub const ROTATION_TO_DIRECTION: &str = "BrickComponentType_Expr_RotationToDirection";
+pub const QUAT_BETWEEN: &str = "BrickComponentType_Expr_QuatBetween";
+pub const QUAT_ANGLE_BETWEEN: &str = "BrickComponentType_Expr_QuatAngleBetween";
+pub const QUAT_FROM_AXIS_ANGLE: &str = "BrickComponentType_Expr_QuatFromAxisAngle";
+pub const QUAT_TO_AXIS_ANGLE: &str = "BrickComponentType_Expr_QuatToAxisAngle";
+pub const QUAT_SLERP: &str = "BrickComponentType_Expr_QuatSlerp";
 
 // sRGB / hex color
-pub const MAKE_COLOR_SRGB: &str = "BrickComponentType_WireGraph_Expr_MakeColorSRGB";
-pub const SPLIT_COLOR_SRGB: &str = "BrickComponentType_WireGraph_Expr_SplitColorSRGB";
-pub const MAKE_COLOR_HEX: &str = "BrickComponentType_WireGraph_Expr_MakeColorHex";
-pub const COLOR_TO_HEX: &str = "BrickComponentType_WireGraph_Expr_ColorToHex";
-pub const COLOR_BLEND: &str = "BrickComponentType_WireGraph_Expr_ColorBlend";
+pub const MAKE_COLOR_SRGB: &str = "BrickComponentType_Expr_MakeColorSRGB";
+pub const SPLIT_COLOR_SRGB: &str = "BrickComponentType_Expr_SplitColorSRGB";
+pub const MAKE_COLOR_HEX: &str = "BrickComponentType_Expr_MakeColorHex";
+pub const COLOR_TO_HEX: &str = "BrickComponentType_Expr_ColorToHex";
+pub const COLOR_BLEND: &str = "BrickComponentType_Expr_ColorBlend";
 
 // PlayerState role check. The game replaced the old `Exec_Controller_*` gate
 // family with `Exec_PlayerState_*` (the player is now referenced by its
 // persistent PlayerState). The Wirescript `controller` type still wires
 // straight into these gates' entity-typed `PlayerState` ports.
-pub const PLAYERSTATE_HAS_ROLE: &str = "BrickComponentType_WireGraph_Exec_PlayerState_HasRole";
+pub const PLAYERSTATE_HAS_ROLE: &str = "BrickComponentType_Exec_PlayerState_HasRole";
 
 // Character inventory
 pub const CHARACTER_SET_INVENTORY_ENTRY: &str =
-    "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry";
+    "BrickComponentType_Exec_Character_SetInventoryEntry";
 
 // Stateful exec value gates
-pub const EXEC_CYCLE: &str = "BrickComponentType_WireGraph_Exec_Cycle";
-pub const EXEC_TOGGLE: &str = "BrickComponentType_WireGraph_Exec_Toggle";
+pub const EXEC_CYCLE: &str = "BrickComponentType_Exec_Cycle";
+pub const EXEC_TOGGLE: &str = "BrickComponentType_Exec_Toggle";
 
 // Misc value / exec gates
-pub const PRINT_TO_CONSOLE: &str = "BrickComponentType_WireGraph_Exec_PrintToConsole";
-pub const DELTA_TIME: &str = "BrickComponentType_WireGraph_DeltaTime";
-pub const SERVER_UPTIME: &str = "BrickComponentType_WireGraph_ServerUptime";
+pub const PRINT_TO_CONSOLE: &str = "BrickComponentType_Exec_PrintToConsole";
+pub const DELTA_TIME: &str = "BrickComponentType_Expr_DeltaTime";
+pub const SERVER_UPTIME: &str = "BrickComponentType_Expr_ServerUptime";
 pub const READ_BRICK_GRID: &str = "BrickComponentType_Internal_ReadBrickGrid";
-pub const NEARLY_EQUAL: &str = "BrickComponentType_WireGraph_Expr_NearlyEqual";
-pub const PSEUDO_DAMPEN: &str = "BrickComponentType_WireGraphPseudo_Dampen";
-pub const PSEUDO_TWEEN: &str = "BrickComponentType_WireGraphPseudo_Tween";
-pub const PSEUDO_TIMER: &str = "BrickComponentType_WireGraphPseudo_Timer";
-pub const PSEUDO_SEND_CUSTOM_EVENT: &str = "BrickComponentType_WireGraphPseudo_SendCustomEvent";
-pub const PSEUDO_CUSTOM_EVENT: &str = "BrickComponentType_WireGraphPseudo_CustomEvent";
-pub const PSEUDO_SEND_CUSTOM_EVENT_GLOBAL: &str =
-    "BrickComponentType_WireGraphPseudo_SendCustomEvent_Global";
-pub const PSEUDO_CUSTOM_EVENT_GLOBAL: &str =
-    "BrickComponentType_WireGraphPseudo_CustomEvent_Global";
-pub const MATH_EASING: &str = "BrickComponentType_WireGraph_Expr_MathEasing";
-pub const GAMEMODE_FILL_FROM_PLAYERS: &str = "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromPlayers";
-pub const GAMEMODE_FILL_FROM_TEAM: &str = "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers";
-pub const GAMEMODE_INC_TEAM_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_IncrementTeamLeaderboardValue";
+pub const NEARLY_EQUAL: &str = "BrickComponentType_Expr_NearlyEqual";
+pub const DAMPEN: &str = "BrickComponentType_Dampen";
+pub const TWEEN: &str = "BrickComponentType_Tween";
+pub const STOPWATCH: &str = "BrickComponentType_Stopwatch";
+pub const SEND_CUSTOM_EVENT: &str = "BrickComponentType_Exec_SendCustomEvent";
+pub const CUSTOM_EVENT: &str = "BrickComponentType_Event_Custom";
+pub const SEND_CUSTOM_EVENT_GLOBAL: &str = "BrickComponentType_Exec_SendCustomEventGlobal";
+pub const CUSTOM_EVENT_GLOBAL: &str = "BrickComponentType_Event_CustomGlobal";
+pub const MATH_EASING: &str = "BrickComponentType_Expr_MathEasing";
+pub const GAMEMODE_FILL_FROM_PLAYERS: &str = "BrickComponentType_Exec_Gamemode_FillArrayFromPlayers";
+pub const GAMEMODE_FILL_FROM_TEAM: &str = "BrickComponentType_Exec_Gamemode_FillArrayFromTeamMembers";
+pub const GAMEMODE_INC_TEAM_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_IncrementTeamLeaderboardValue";
 
 // PlayerState / Character / Entity. The old `Exec_Controller_*` family was
 // replaced 1:1 by `Exec_PlayerState_*`; each gate's player port is now the
 // entity-typed `PlayerState` (a `controller` value wires straight in).
-pub const PLAYERSTATE_DISPLAY_TEXT: &str = "BrickComponentType_WireGraph_Exec_PlayerState_DisplayText";
-pub const PLAYERSTATE_SHOW_STATUS: &str = "BrickComponentType_WireGraph_Exec_PlayerState_ShowStatusMessage";
-pub const PLAYERSTATE_GET_FROM_ENTITY: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetFromEntity";
-pub const PLAYERSTATE_GET_USER_NAME: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetUserName";
-pub const PLAYERSTATE_GET_USER_ID: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetUserId";
-pub const PLAYERSTATE_GET_DISPLAY_NAME: &str = "BrickComponentType_WireGraph_Exec_PlayerState_GetDisplayName";
-pub const PLAYERSTATE_HAS_PERMISSION: &str = "BrickComponentType_WireGraph_Exec_PlayerState_HasPermission";
-pub const PLAYERSTATE_IS_TRUSTED: &str = "BrickComponentType_WireGraph_Exec_PlayerState_IsTrustedByBrickOwner";
-pub const PLAYERSTATE_SET_CAN_RESPAWN: &str = "BrickComponentType_WireGraph_Exec_PlayerState_SetCanRespawn";
-pub const PLAYERSTATE_FORCE_RESPAWN: &str = "BrickComponentType_WireGraph_Exec_PlayerState_ForceRespawn";
-pub const CHARACTER_GET_FROM_CONTROLLER: &str = "BrickComponentType_WireGraph_Exec_Character_GetFromController";
-pub const CHARACTER_GET_AIM: &str = "BrickComponentType_WireGraph_Exec_Character_GetAim";
+pub const PLAYERSTATE_DISPLAY_TEXT: &str = "BrickComponentType_Exec_PlayerState_DisplayText";
+pub const PLAYERSTATE_SHOW_STATUS: &str = "BrickComponentType_Exec_PlayerState_ShowStatusMessage";
+pub const PLAYERSTATE_GET_FROM_ENTITY: &str = "BrickComponentType_Exec_PlayerState_GetFromEntity";
+pub const PLAYERSTATE_GET_USER_NAME: &str = "BrickComponentType_Exec_PlayerState_GetUserName";
+pub const PLAYERSTATE_GET_USER_ID: &str = "BrickComponentType_Exec_PlayerState_GetUserId";
+pub const PLAYERSTATE_GET_DISPLAY_NAME: &str = "BrickComponentType_Exec_PlayerState_GetDisplayName";
+pub const PLAYERSTATE_HAS_PERMISSION: &str = "BrickComponentType_Exec_PlayerState_HasPermission";
+pub const PLAYERSTATE_IS_TRUSTED: &str = "BrickComponentType_Exec_PlayerState_IsTrustedByBrickOwner";
+pub const PLAYERSTATE_SET_CAN_RESPAWN: &str = "BrickComponentType_Exec_PlayerState_SetCanRespawn";
+pub const PLAYERSTATE_FORCE_RESPAWN: &str = "BrickComponentType_Exec_PlayerState_ForceRespawn";
+pub const CHARACTER_GET_FROM_CONTROLLER: &str = "BrickComponentType_Exec_Character_GetFromController";
+pub const CHARACTER_GET_AIM: &str = "BrickComponentType_Exec_Character_GetAim";
 /// Exec-form sample of the same control set the seat splitter
 /// ([`INPUT_SPLITTER`]) reads continuously. Not `Character_`-prefixed in the
 /// game: its operand port is `Player`, which takes a character or a
 /// persistent player.
-pub const EXEC_GET_INPUTS: &str = "BrickComponentType_WireGraph_Exec_GetInputs";
-pub const CHARACTER_SHOW_HINT: &str = "BrickComponentType_WireGraph_Exec_Character_ShowHint";
-pub const CHARACTER_GET_DAMAGE: &str = "BrickComponentType_WireGraph_Exec_Character_GetDamage";
-pub const CHARACTER_SET_DAMAGE: &str = "BrickComponentType_WireGraph_Exec_Character_SetDamage";
-pub const CHARACTER_INC_DAMAGE: &str = "BrickComponentType_WireGraph_Exec_Character_IncDamage";
-pub const CHARACTER_SET_TEMP_PERMISSION: &str = "BrickComponentType_WireGraph_Exec_Character_SetTempPermission";
-pub const ENTITY_GET_LOCATION: &str = "BrickComponentType_WireGraph_Exec_Entity_GetLocation";
-pub const ENTITY_GET_ROTATION: &str = "BrickComponentType_WireGraph_Exec_Entity_GetRotation";
-pub const ENTITY_GET_LOCATION_ROTATION: &str = "BrickComponentType_WireGraph_Exec_Entity_GetLocationRotation";
-pub const ENTITY_GET_LINEAR_VELOCITY: &str = "BrickComponentType_WireGraph_Exec_Entity_GetLinearVelocity";
-pub const ENTITY_GET_ANGULAR_VELOCITY: &str = "BrickComponentType_WireGraph_Exec_Entity_GetAngularVelocity";
-pub const ENTITY_GET_VELOCITY: &str = "BrickComponentType_WireGraph_Exec_Entity_GetVelocity";
-pub const ENTITY_SET_LOCATION: &str = "BrickComponentType_WireGraph_Exec_Entity_SetLocation";
-pub const ENTITY_SET_ROTATION: &str = "BrickComponentType_WireGraph_Exec_Entity_SetRotation";
-pub const ENTITY_SET_LOCATION_ROTATION: &str = "BrickComponentType_WireGraph_Exec_Entity_SetLocationRotation";
-pub const ENTITY_ADD_LOCATION_ROTATION: &str = "BrickComponentType_WireGraph_Exec_Entity_AddLocationRotation";
-pub const ENTITY_TELEPORT: &str = "BrickComponentType_WireGraph_Exec_Entity_Teleport";
-pub const ENTITY_RELATIVE_TELEPORT: &str = "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport";
-pub const ENTITY_SET_VELOCITY: &str = "BrickComponentType_WireGraph_Exec_Entity_SetVelocity";
-pub const ENTITY_ADD_VELOCITY: &str = "BrickComponentType_WireGraph_Exec_Entity_AddVelocity";
-pub const ENTITY_SET_LINEAR_VELOCITY: &str = "BrickComponentType_WireGraph_Exec_Entity_SetLinearVelocity";
-pub const ENTITY_SET_ANGULAR_VELOCITY: &str = "BrickComponentType_WireGraph_Exec_Entity_SetAngularVelocity";
-pub const ENTITY_SET_GRAVITY_DIRECTION: &str = "BrickComponentType_WireGraph_Exec_Entity_SetGravityDirection";
-pub const ENTITY_SET_FROZEN: &str = "BrickComponentType_WireGraph_Exec_Entity_SetFrozen";
+pub const EXEC_GET_INPUTS: &str = "BrickComponentType_Exec_GetInputs";
+pub const CHARACTER_SHOW_HINT: &str = "BrickComponentType_Exec_Character_ShowHint";
+pub const CHARACTER_GET_DAMAGE: &str = "BrickComponentType_Exec_Character_GetDamage";
+pub const CHARACTER_SET_DAMAGE: &str = "BrickComponentType_Exec_Character_SetDamage";
+pub const CHARACTER_INC_DAMAGE: &str = "BrickComponentType_Exec_Character_IncDamage";
+pub const CHARACTER_SET_TEMP_PERMISSION: &str = "BrickComponentType_Exec_Character_SetTempPermission";
+pub const ENTITY_GET_LOCATION: &str = "BrickComponentType_Exec_Entity_GetLocation";
+pub const ENTITY_GET_ROTATION: &str = "BrickComponentType_Exec_Entity_GetRotation";
+pub const ENTITY_GET_LOCATION_ROTATION: &str = "BrickComponentType_Exec_Entity_GetLocationRotation";
+pub const ENTITY_GET_LINEAR_VELOCITY: &str = "BrickComponentType_Exec_Entity_GetLinearVelocity";
+pub const ENTITY_GET_ANGULAR_VELOCITY: &str = "BrickComponentType_Exec_Entity_GetAngularVelocity";
+pub const ENTITY_GET_VELOCITY: &str = "BrickComponentType_Exec_Entity_GetVelocity";
+pub const ENTITY_SET_LOCATION: &str = "BrickComponentType_Exec_Entity_SetLocation";
+pub const ENTITY_SET_ROTATION: &str = "BrickComponentType_Exec_Entity_SetRotation";
+pub const ENTITY_SET_LOCATION_ROTATION: &str = "BrickComponentType_Exec_Entity_SetLocationRotation";
+pub const ENTITY_ADD_LOCATION_ROTATION: &str = "BrickComponentType_Exec_Entity_AddLocationRotation";
+pub const ENTITY_TELEPORT: &str = "BrickComponentType_Exec_Entity_Teleport";
+pub const ENTITY_RELATIVE_TELEPORT: &str = "BrickComponentType_Exec_Entity_RelativeTeleport";
+pub const ENTITY_SET_VELOCITY: &str = "BrickComponentType_Exec_Entity_SetVelocity";
+pub const ENTITY_ADD_VELOCITY: &str = "BrickComponentType_Exec_Entity_AddVelocity";
+pub const ENTITY_SET_LINEAR_VELOCITY: &str = "BrickComponentType_Exec_Entity_SetLinearVelocity";
+pub const ENTITY_SET_ANGULAR_VELOCITY: &str = "BrickComponentType_Exec_Entity_SetAngularVelocity";
+pub const ENTITY_SET_GRAVITY_DIRECTION: &str = "BrickComponentType_Exec_Entity_SetGravityDirection";
+pub const ENTITY_SET_FROZEN: &str = "BrickComponentType_Exec_Entity_SetFrozen";
 
 // Gamemode
-pub const GAMEMODE_GET_TEAM_BY_NAME: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamByName";
-pub const GAMEMODE_SET_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_SetLeaderboardValue";
-pub const GAMEMODE_INC_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_IncrementLeaderboardValue";
-pub const GAMEMODE_GET_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetLeaderboardValue";
-pub const GAMEMODE_GET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetTeam";
+pub const GAMEMODE_GET_TEAM_BY_NAME: &str = "BrickComponentType_Exec_Gamemode_GetTeamByName";
+pub const GAMEMODE_SET_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_SetLeaderboardValue";
+pub const GAMEMODE_INC_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_IncrementLeaderboardValue";
+pub const GAMEMODE_GET_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_GetLeaderboardValue";
+pub const GAMEMODE_GET_TEAM: &str = "BrickComponentType_Exec_Gamemode_GetTeam";
 pub const GAMEMODE_IS_BUILDER_TEAM: &str =
-    "BrickComponentType_WireGraph_Expr_Gamemode_IsBuilderTeam";
+    "BrickComponentType_Expr_Gamemode_IsBuilderTeam";
 pub const GAMEMODE_IS_UNAFFILIATED_TEAM: &str =
-    "BrickComponentType_WireGraph_Expr_Gamemode_IsUnaffiliatedTeam";
-pub const GAMEMODE_GET_CURRENT_ROUND: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetCurrentRound";
-pub const GAMEMODE_GET_TEAM_NAME: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamName";
-pub const GAMEMODE_SET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Gamemode_SetTeam";
-pub const GAMEMODE_SET_TEAM_PINNED: &str = "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamPinned";
-pub const GAMEMODE_PLAYER_WINS: &str = "BrickComponentType_WireGraph_Exec_Gamemode_PlayerWins";
-pub const GAMEMODE_TEAM_WINS: &str = "BrickComponentType_WireGraph_Exec_Gamemode_TeamWins";
-pub const GAMEMODE_GET_TEAM_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamLeaderboardValue";
-pub const GAMEMODE_SET_TEAM_LEADERBOARD: &str = "BrickComponentType_WireGraph_Exec_Gamemode_SetTeamLeaderboardValue";
+    "BrickComponentType_Expr_Gamemode_IsUnaffiliatedTeam";
+pub const GAMEMODE_GET_CURRENT_ROUND: &str = "BrickComponentType_Exec_Gamemode_GetCurrentRound";
+pub const GAMEMODE_GET_TEAM_NAME: &str = "BrickComponentType_Exec_Gamemode_GetTeamName";
+pub const GAMEMODE_SET_TEAM: &str = "BrickComponentType_Exec_Gamemode_SetTeam";
+pub const GAMEMODE_SET_TEAM_PINNED: &str = "BrickComponentType_Exec_Gamemode_SetTeamPinned";
+pub const GAMEMODE_PLAYER_WINS: &str = "BrickComponentType_Exec_Gamemode_PlayerWins";
+pub const GAMEMODE_TEAM_WINS: &str = "BrickComponentType_Exec_Gamemode_TeamWins";
+pub const GAMEMODE_GET_TEAM_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_GetTeamLeaderboardValue";
+pub const GAMEMODE_SET_TEAM_LEADERBOARD: &str = "BrickComponentType_Exec_Gamemode_SetTeamLeaderboardValue";
 
 // Prefab / Sweep
-pub const PREFAB_SPAWNER: &str = "BrickComponentType_WireGraph_Exec_PrefabSpawner";
-pub const EXEC_SPAWN_EXPLOSION: &str = "BrickComponentType_WireGraph_Exec_SpawnExplosion";
-pub const EXEC_SPAWN_EXPLOSION_AT: &str = "BrickComponentType_WireGraph_Exec_SpawnExplosionAt";
-pub const SWEEP: &str = "BrickComponentType_WireGraph_Exec_Sweep";
+pub const PREFAB_SPAWNER: &str = "BrickComponentType_Exec_PrefabSpawner";
+pub const EXEC_SPAWN_EXPLOSION: &str = "BrickComponentType_Exec_SpawnExplosion";
+pub const EXEC_SPAWN_EXPLOSION_AT: &str = "BrickComponentType_Exec_SpawnExplosionAt";
+pub const SWEEP: &str = "BrickComponentType_Exec_Sweep";
 
 // Messaging
 pub const PLAYERSTATE_SHOW_CHAT: &str =
-    "BrickComponentType_WireGraph_Exec_PlayerState_ShowChatMessage";
+    "BrickComponentType_Exec_PlayerState_ShowChatMessage";
 pub const PLAYERSTATE_SHOW_MESSAGE_BOX: &str =
-    "BrickComponentType_WireGraph_Exec_PlayerState_ShowMessageBox";
+    "BrickComponentType_Exec_PlayerState_ShowMessageBox";
 pub const GAMEMODE_BROADCAST_CHAT: &str =
-    "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastChatMessage";
+    "BrickComponentType_Exec_Gamemode_BroadcastChatMessage";
 pub const GAMEMODE_BROADCAST_STATUS: &str =
-    "BrickComponentType_WireGraph_Exec_Gamemode_BroadcastStatusMessage";
+    "BrickComponentType_Exec_Gamemode_BroadcastStatusMessage";
 
 // Audio
 pub const PLAY_AUDIO_AT: &str = "Component_WireGraph_PlayAudioAt";
-pub const PLAY_GLOBAL_AUDIO: &str = "BrickComponentType_WireGraph_Exec_PlayGlobalAudio";
-pub const PLAY_CLIENT_AUDIO: &str = "BrickComponentType_WireGraph_Exec_PlayClientAudio";
+pub const PLAY_GLOBAL_AUDIO: &str = "BrickComponentType_Exec_PlayGlobalAudio";
+pub const PLAY_CLIENT_AUDIO: &str = "BrickComponentType_Exec_PlayClientAudio";
 
 // Entity tags
-pub const ENTITY_GET_TAG: &str = "BrickComponentType_WireGraph_Exec_Entity_GetTag";
-pub const ENTITY_SET_TAG: &str = "BrickComponentType_WireGraph_Exec_Entity_SetTag";
+pub const ENTITY_GET_TAG: &str = "BrickComponentType_Exec_Entity_GetTag";
+pub const ENTITY_SET_TAG: &str = "BrickComponentType_Exec_Entity_SetTag";
 
-// Player lookup (pure value gate)
-pub const FIND_PLAYER: &str = "BrickComponentType_WireGraph_FindPlayer";
+// Player lookup
+pub const FIND_PLAYER: &str = "BrickComponentType_Exec_FindPlayer";
 
 // Change detector
-pub const CHANGE_DETECTOR: &str = "BrickComponentType_WireGraph_Expr_ChangeDetector";
-pub const CHANGE_DETECTOR_EXEC: &str = "BrickComponentType_WireGraph_Expr_ChangeDetectorExec";
+pub const CHANGE_DETECTOR: &str = "BrickComponentType_Expr_ChangeDetector";
+pub const CHANGE_DETECTOR_EXEC: &str = "BrickComponentType_Expr_ChangeDetectorExec";
 
 // Quaternion make/split/dot
-pub const MAKE_QUATERNION: &str = "BrickComponentType_WireGraph_Expr_MakeQuaternion";
-pub const SPLIT_QUATERNION: &str = "BrickComponentType_WireGraph_Expr_SplitQuaternion";
-pub const QUAT_DOT_PRODUCT: &str = "BrickComponentType_WireGraph_Expr_QuatDotProduct";
+pub const MAKE_QUATERNION: &str = "BrickComponentType_Expr_MakeQuaternion";
+pub const SPLIT_QUATERNION: &str = "BrickComponentType_Expr_SplitQuaternion";
+pub const QUAT_DOT_PRODUCT: &str = "BrickComponentType_Expr_QuatDotProduct";
 
 // Character inventory family
 pub const CHARACTER_ADD_INVENTORY_ITEM: &str =
-    "BrickComponentType_WireGraph_Exec_Character_AddInventoryItem";
+    "BrickComponentType_Exec_Character_AddInventoryItem";
 pub const CHARACTER_SET_INVENTORY_ITEM: &str =
-    "BrickComponentType_WireGraph_Exec_Character_SetInventoryItem";
+    "BrickComponentType_Exec_Character_SetInventoryItem";
 pub const CHARACTER_ADD_INVENTORY_BRICK: &str =
-    "BrickComponentType_WireGraph_Exec_Character_AddInventoryBrick";
+    "BrickComponentType_Exec_Character_AddInventoryBrick";
 pub const CHARACTER_SET_INVENTORY_BRICK: &str =
-    "BrickComponentType_WireGraph_Exec_Character_SetInventoryBrick";
+    "BrickComponentType_Exec_Character_SetInventoryBrick";
 pub const CHARACTER_ADD_INVENTORY_ENTITY: &str =
-    "BrickComponentType_WireGraph_Exec_Character_AddInventoryEntity";
+    "BrickComponentType_Exec_Character_AddInventoryEntity";
 pub const CHARACTER_SET_INVENTORY_ENTITY: &str =
-    "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntity";
+    "BrickComponentType_Exec_Character_SetInventoryEntity";
 pub const CHARACTER_ADD_INVENTORY_ITEM_ADV: &str =
-    "BrickComponentType_WireGraph_Exec_Character_AddInventoryItemAdv";
+    "BrickComponentType_Exec_Character_AddInventoryItemAdv";
 pub const CHARACTER_SET_INVENTORY_ITEM_ADV: &str =
-    "BrickComponentType_WireGraph_Exec_Character_SetInventoryItemAdv";
+    "BrickComponentType_Exec_Character_SetInventoryItemAdv";
 
 // Newer entity / character / zone / expr gates.
 pub const ENTITY_DESTROY_SPAWNED: &str =
-    "BrickComponentType_WireGraph_Exec_Entity_DestroySpawned";
+    "BrickComponentType_Exec_Entity_DestroySpawned";
 pub const ENTITY_DESTROY_SPAWNED_PREFAB: &str =
-    "BrickComponentType_WireGraph_Exec_Entity_DestroySpawnedPrefab";
+    "BrickComponentType_Exec_Entity_DestroySpawnedPrefab";
 pub const ENTITY_GET_VELOCITY_AT_POINT: &str =
-    "BrickComponentType_WireGraph_Exec_Entity_GetVelocityAtPoint";
-pub const ENTITY_GET_SPEED: &str = "BrickComponentType_WireGraph_Exec_Entity_GetSpeed";
-pub const ENTITY_GET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Entity_GetTeam";
-pub const ENTITY_SET_TEAM: &str = "BrickComponentType_WireGraph_Exec_Entity_SetTeam";
-pub const ENTITY_IS_FROZEN: &str = "BrickComponentType_WireGraph_Exec_Entity_IsFrozen";
-pub const CHARACTER_GET_AMMO: &str = "BrickComponentType_WireGraph_Exec_Character_GetAmmo";
-pub const CHARACTER_GRANT_AMMO: &str = "BrickComponentType_WireGraph_Exec_Character_GrantAmmo";
-pub const CHARACTER_SET_AMMO: &str = "BrickComponentType_WireGraph_Exec_Character_SetAmmo";
+    "BrickComponentType_Exec_Entity_GetVelocityAtPoint";
+pub const ENTITY_GET_SPEED: &str = "BrickComponentType_Exec_Entity_GetSpeed";
+pub const ENTITY_GET_TEAM: &str = "BrickComponentType_Exec_Entity_GetTeam";
+pub const ENTITY_SET_TEAM: &str = "BrickComponentType_Exec_Entity_SetTeam";
+pub const ENTITY_IS_FROZEN: &str = "BrickComponentType_Exec_Entity_IsFrozen";
+pub const CHARACTER_GET_AMMO: &str = "BrickComponentType_Exec_Character_GetAmmo";
+pub const CHARACTER_GRANT_AMMO: &str = "BrickComponentType_Exec_Character_GrantAmmo";
+pub const CHARACTER_SET_AMMO: &str = "BrickComponentType_Exec_Character_SetAmmo";
 pub const CHARACTER_GET_INVENTORY_ENTRY: &str =
-    "BrickComponentType_WireGraph_Exec_Character_GetInventoryEntry";
-pub const EXPR_ENUM_TO_INTEGER: &str = "BrickComponentType_WireGraph_Expr_EnumToInteger";
-pub const EXPR_INTEGER_TO_ENUM: &str = "BrickComponentType_WireGraph_Expr_IntegerToEnum";
+    "BrickComponentType_Exec_Character_GetInventoryEntry";
+pub const EXPR_ENUM_TO_INTEGER: &str = "BrickComponentType_Expr_EnumToInteger";
+pub const EXPR_INTEGER_TO_ENUM: &str = "BrickComponentType_Expr_IntegerToEnum";
 pub const EXPR_BITWISE_SHR_LOGICAL: &str =
-    "BrickComponentType_WireGraph_Expr_BitwiseShiftRightLogical";
-pub const EXPR_REMAP: &str = "BrickComponentType_WireGraph_Expr_Remap";
-pub const EXPR_ITEM_TO_PICKUP: &str = "BrickComponentType_WireGraph_Expr_ItemToPickup";
+    "BrickComponentType_Expr_BitwiseShiftRightLogical";
+pub const EXPR_REMAP: &str = "BrickComponentType_Expr_Remap";
+pub const EXPR_ITEM_TO_PICKUP: &str = "BrickComponentType_Expr_ItemToPickup";
 pub const STRING_CHAR_TO_CODEPOINT: &str =
-    "BrickComponentType_WireGraph_Expr_String_CharacterToCodepoint";
+    "BrickComponentType_Expr_String_CharacterToCodepoint";
 pub const STRING_CODEPOINT_TO_CHAR: &str =
-    "BrickComponentType_WireGraph_Expr_String_CodepointToCharacter";
-pub const GET_UNIX_EPOCH: &str = "BrickComponentType_WireGraph_GetUnixEpoch";
-pub const FORMAT_DATE: &str = "BrickComponentType_WireGraph_FormatDate";
-pub const GET_OWN_TRANSFORM: &str = "BrickComponentType_WireGraph_Exec_GetOwnTransform";
-pub const SWEEP_SIMPLE: &str = "BrickComponentType_WireGraph_Exec_SweepSimple";
-pub const ZONE_GET_ENTITIES: &str = "BrickComponentType_WireGraph_Exec_Zone_GetEntities";
-pub const ZONE_GET_PLAYERS: &str = "BrickComponentType_WireGraph_Exec_Zone_GetPlayers";
+    "BrickComponentType_Expr_String_CodepointToCharacter";
+pub const GET_UNIX_EPOCH: &str = "BrickComponentType_Expr_GetUnixEpoch";
+pub const FORMAT_DATE: &str = "BrickComponentType_Expr_FormatDate";
+pub const GET_OWN_TRANSFORM: &str = "BrickComponentType_Exec_GetOwnTransform";
+pub const SWEEP_SIMPLE: &str = "BrickComponentType_Exec_SweepSimple";
+pub const ZONE_GET_ENTITIES: &str = "BrickComponentType_Exec_Zone_GetEntities";
+pub const ZONE_GET_PLAYERS: &str = "BrickComponentType_Exec_Zone_GetPlayers";
 pub const ARRAY_SORT_MULTIPLE: &str =
-    "BrickComponentType_WireGraph_Exec_ArrayVar_SortMultiple";
-pub const EXPR_COLOR_CONVERT: &str = "BrickComponentType_WireGraph_Expr_ColorConvert";
+    "BrickComponentType_Exec_ArrayVar_SortMultiple";
+pub const EXPR_COLOR_CONVERT: &str = "BrickComponentType_Expr_ColorConvert";
 pub const CHARACTER_GET_CURRENT_INVENTORY_SLOT: &str =
-    "BrickComponentType_WireGraph_Exec_Character_GetCurrentInventorySlot";
+    "BrickComponentType_Exec_Character_GetCurrentInventorySlot";
 pub const CHARACTER_GET_WEAPON_CHAMBER_AMMO: &str =
-    "BrickComponentType_WireGraph_Exec_Character_GetWeaponChamberAmmo";
+    "BrickComponentType_Exec_Character_GetWeaponChamberAmmo";
 pub const CHARACTER_INC_WEAPON_CHAMBER_AMMO: &str =
-    "BrickComponentType_WireGraph_Exec_Character_IncWeaponChamberAmmo";
+    "BrickComponentType_Exec_Character_IncWeaponChamberAmmo";
 pub const CHARACTER_SET_WEAPON_CHAMBER_AMMO: &str =
-    "BrickComponentType_WireGraph_Exec_Character_SetWeaponChamberAmmo";
+    "BrickComponentType_Exec_Character_SetWeaponChamberAmmo";

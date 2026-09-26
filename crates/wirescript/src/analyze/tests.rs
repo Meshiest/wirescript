@@ -123,7 +123,7 @@
     fn buffer_breaks_cycle() {
         let mut m = Module::new("buffered");
         let a = gate("X");
-        let buf = gate("BrickComponentType_WireGraphPseudo_BufferTicks");
+        let buf = gate("BrickComponentType_BufferTicks");
         let a_id = a.id;
         let buf_id = buf.id;
         m.add_node(a);

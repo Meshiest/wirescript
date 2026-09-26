@@ -32,10 +32,7 @@ use brdb::{
     AsBrdbValue, BString, BrickType, Collision, Color, IntVector, Position, Vector3f,
     WireConnection, WirePort as BrdbWirePort, World,
     assets::LiteralComponent,
-    schema::{
-        WireArrayVariant, WireMapKey, WireMapKeyData, WireMapValue, WireMapValueData,
-        WireMapVariant, WireVariant,
-    },
+    schema::WireValue,
 };
 
 use crate::intern::{Sym, intern_static, resolve, sym};

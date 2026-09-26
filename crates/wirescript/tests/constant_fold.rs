@@ -2,7 +2,7 @@ use wirescript::{compile, CompileInput, FoldMode};
 
 /// Constant constructor folding must survive full emit: vector/rotator/quat/
 /// color vars carry their folded InitialValue through brz serialization
-/// (WireGraphVariant members Vector/Rotator/Quat/LinearColor).
+/// (`WireValue` alternatives Vector/Rotator/Quat/LinearColor).
 #[test]
 fn folded_constructor_vars_emit_to_brz() {
     let src = "\
@@ -33,7 +33,7 @@ on start { pts.push(Vec(7.0, 8.0, 9.0)) }";
 #[test]
 fn rotator_and_color_arrays_emit_to_brz() {
     // rotator[]/quat[]/color[] arrays back onto the game's typed array
-    // variants (WireGraphRotatorArray / QuatArray / LinearColorArray).
+    // elements (`Rotator` / `Quat` / `LinearColor` dynamic arrays).
     let src = "\
 var rots: rotator[] = [Rotation(0.0, 90.0, 0.0)]
 var tints: color[] = [Color(1.0, 0.0, 0.0), Color(0.0, 0.0, 1.0, 0.5)]

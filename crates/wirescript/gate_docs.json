@@ -647,7 +647,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_Var": {
+  "BrickComponentType_Var": {
     "displayName": "Variable",
     "description": "Allows defining a variable, which can be modified and read via other Variable gates.",
     "category": "Variables",
@@ -663,7 +663,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_ArrayVar": {
+  "BrickComponentType_ArrayVar": {
     "displayName": "Array Variable",
     "description": "Allows defining an array variable, which can be modified and read via other Array Variable gates.",
     "category": "Variables - Array",
@@ -675,7 +675,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_Clear": {
+  "BrickComponentType_Exec_ArrayVar_Clear": {
     "displayName": "Clear Array",
     "description": "",
     "category": "Variables - Array",
@@ -696,7 +696,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_Get": {
+  "BrickComponentType_Exec_ArrayVar_Get": {
     "displayName": "Get Array Element",
     "description": "",
     "category": "Variables - Array",
@@ -729,7 +729,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_GetLength": {
+  "BrickComponentType_Exec_ArrayVar_GetLength": {
     "displayName": "Get Array Length",
     "description": "",
     "category": "Variables - Array",
@@ -754,7 +754,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_Pop": {
+  "BrickComponentType_Exec_ArrayVar_Pop": {
     "displayName": "Pop From Array",
     "description": "",
     "category": "Variables - Array",
@@ -783,7 +783,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_Push": {
+  "BrickComponentType_Exec_ArrayVar_Push": {
     "displayName": "Push To Array",
     "description": "",
     "category": "Variables - Array",
@@ -808,7 +808,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_RemoveAtIndex": {
+  "BrickComponentType_Exec_ArrayVar_RemoveAtIndex": {
     "displayName": "Remove Array Element",
     "description": "",
     "category": "Variables - Array",
@@ -837,7 +837,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex": {
+  "BrickComponentType_Exec_ArrayVar_SetAtIndex": {
     "displayName": "Set Array Element",
     "description": "",
     "category": "Variables - Array",
@@ -866,7 +866,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ArrayVar_Shuffle": {
+  "BrickComponentType_Exec_ArrayVar_Shuffle": {
     "displayName": "Shuffle Array",
     "description": "",
     "category": "Variables - Array",
@@ -887,7 +887,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Branch": {
+  "BrickComponentType_Exec_Branch": {
     "displayName": "Branch",
     "description": "",
     "category": "Control Flow",
@@ -912,7 +912,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Character_GetAim": {
+  "BrickComponentType_Exec_Character_GetAim": {
     "displayName": "Get Aim",
     "description": "",
     "category": "Characters",
@@ -941,7 +941,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Character_GetFromController": {
+  "BrickComponentType_Exec_Character_GetFromController": {
     "displayName": "Get Player (Temporary)",
     "description": "",
     "category": "Characters",
@@ -966,32 +966,7 @@
       }
     }
   },
-  "Component_WireGraph_SetInventoryEntry": {
-    "displayName": "Set Character Inventory Entry",
-    "description": "",
-    "category": "Characters",
-    "inputs": {
-      "Exec": {
-        "displayName": "Exec",
-        "tooltip": ""
-      },
-      "Character": {
-        "displayName": "Character",
-        "tooltip": ""
-      },
-      "Slot": {
-        "displayName": "Slot",
-        "tooltip": ""
-      }
-    },
-    "outputs": {
-      "ExecOut": {
-        "displayName": "Exec Out",
-        "tooltip": ""
-      }
-    }
-  },
-  "BrickComponentType_WireGraph_Exec_Character_SetTempPermission": {
+  "BrickComponentType_Exec_Character_SetTempPermission": {
     "displayName": "Set Character Temp Permission",
     "description": "",
     "category": "Characters",
@@ -1016,7 +991,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Character_ShowHint": {
+  "BrickComponentType_Exec_Character_ShowHint": {
     "displayName": "Show Hint",
     "description": "",
     "category": "Characters",
@@ -1045,7 +1020,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_ChatCommand": {
+  "BrickComponentType_Event_ChatCommand": {
     "displayName": "Chat Command Event",
     "description": "",
     "category": "Default Minigame Events",
@@ -1065,174 +1040,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Controller_DisplayText": {
-    "displayName": "Display Text",
-    "description": "",
-    "category": "Messages",
-    "inputs": {
-      "ScaleY": {
-        "displayName": "Scale Y",
-        "tooltip": "Vertical scale factor."
-      },
-      "FontSize": {
-        "displayName": "Font Size",
-        "tooltip": "Base font size in points."
-      },
-      "FontColor": {
-        "displayName": "Font Color",
-        "tooltip": "Text color."
-      },
-      "OutlineSize": {
-        "displayName": "Outline Size",
-        "tooltip": "Font outline thickness in pixels. 0 disables the outline."
-      },
-      "OutlineColor.B": {
-        "displayName": "Outline Color.B",
-        "tooltip": "The blue component of the color."
-      },
-      "FontColor.G": {
-        "displayName": "Font Color.G",
-        "tooltip": "The green component of the color."
-      },
-      "Transition": {
-        "displayName": "Transition",
-        "tooltip": "Duration in seconds to interpolate from the previous state to the new state. 0 for instant."
-      },
-      "OutlineColor.G": {
-        "displayName": "Outline Color.G",
-        "tooltip": "The green component of the color."
-      },
-      "Lifetime": {
-        "displayName": "Lifetime",
-        "tooltip": "How long the text remains visible in seconds. 0 for infinite."
-      },
-      "OutlineColor.A": {
-        "displayName": "Outline Color.A",
-        "tooltip": "The alpha component of the color."
-      },
-      "TextId": {
-        "displayName": "Text ID",
-        "tooltip": "Override the display text identity. When non-zero, multiple gates sharing the same ID control one piece of text. 0 uses the brick's persistent handle. Connect the Text ID output of another Display Text gate to chain updates to the same text."
-      },
-      "Angle": {
-        "displayName": "Angle",
-        "tooltip": "Rotation angle in degrees."
-      },
-      "ScaleX": {
-        "displayName": "Scale X",
-        "tooltip": "Horizontal scale factor."
-      },
-      "Controller": {
-        "displayName": "Player (Persistent)",
-        "tooltip": ""
-      },
-      "Text": {
-        "displayName": "Text",
-        "tooltip": "Rich text content to display. Supports markup like <b>, <i>, <size=\"24\">, <color=\"FF0000\">, <emoji>, and <icon>."
-      },
-      "AnchorX": {
-        "displayName": "Anchor X",
-        "tooltip": "Horizontal screen anchor as a percentage (0 = left, 0.5 = center, 1 = right)."
-      },
-      "OutlineColor.R": {
-        "displayName": "Outline Color.R",
-        "tooltip": "The red component of the color."
-      },
-      "FontColor.R": {
-        "displayName": "Font Color.R",
-        "tooltip": "The red component of the color."
-      },
-      "FontColor.B": {
-        "displayName": "Font Color.B",
-        "tooltip": "The blue component of the color."
-      },
-      "FontColor.A": {
-        "displayName": "Font Color.A",
-        "tooltip": "The alpha component of the color."
-      },
-      "PositionX": {
-        "displayName": "Position X",
-        "tooltip": "Horizontal offset from the anchor in slate units."
-      },
-      "OutlineColor": {
-        "displayName": "Outline Color",
-        "tooltip": "Font outline color."
-      },
-      "Exec": {
-        "displayName": "Exec",
-        "tooltip": ""
-      },
-      "PositionY": {
-        "displayName": "Position Y",
-        "tooltip": "Vertical offset from the anchor in slate units."
-      },
-      "AnchorY": {
-        "displayName": "Anchor Y",
-        "tooltip": "Vertical screen anchor as a percentage (0 = top, 0.5 = center, 1 = bottom)."
-      }
-    },
-    "outputs": {
-      "ExecOut": {
-        "displayName": "Exec Out",
-        "tooltip": ""
-      },
-      "TextIdOut": {
-        "displayName": "Output Text ID",
-        "tooltip": ""
-      }
-    }
-  },
-  "BrickComponentType_WireGraph_Exec_Controller_GetFromEntity": {
-    "displayName": "Get Player (Persistent)",
-    "description": "",
-    "category": "Controllers",
-    "inputs": {
-      "Entity": {
-        "displayName": "Player",
-        "tooltip": ""
-      },
-      "Exec": {
-        "displayName": "Exec",
-        "tooltip": ""
-      }
-    },
-    "outputs": {
-      "Controller": {
-        "displayName": "Player (Persistent)",
-        "tooltip": ""
-      },
-      "ExecOut": {
-        "displayName": "Exec Out",
-        "tooltip": ""
-      }
-    }
-  },
-  "BrickComponentType_WireGraph_Exec_Controller_ShowStatusMessage": {
-    "displayName": "Show Status Message",
-    "description": "",
-    "category": "Messages",
-    "inputs": {
-      "Controller": {
-        "displayName": "Player (Persistent)",
-        "tooltip": ""
-      },
-      "Exec": {
-        "displayName": "Exec",
-        "tooltip": ""
-      },
-      "Message": {
-        "displayName": "Message",
-        "tooltip": ""
-      }
-    },
-    "outputs": {
-      "ExecOut": {
-        "displayName": "Exec Out",
-        "tooltip": ""
-      }
-    }
-  },
-  "BrickComponentType_WireGraph_Exec_Entity_AddLocationRotation": {
+  "BrickComponentType_Exec_Entity_AddLocationRotation": {
     "displayName": "Add Location and Rotation to Entity",
     "description": "",
     "category": "Transformation",
@@ -1285,7 +1093,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_AddVelocity": {
+  "BrickComponentType_Exec_Entity_AddVelocity": {
     "displayName": "Add Velocity to Entity",
     "description": "",
     "category": "Transformation",
@@ -1338,7 +1146,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_GetAngularVelocity": {
+  "BrickComponentType_Exec_Entity_GetAngularVelocity": {
     "displayName": "Get Angular Velocity of Entity",
     "description": "",
     "category": "Transformation",
@@ -1363,7 +1171,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_GetLinearVelocity": {
+  "BrickComponentType_Exec_Entity_GetLinearVelocity": {
     "displayName": "Get Linear Velocity of Entity",
     "description": "",
     "category": "Transformation",
@@ -1388,7 +1196,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_GetLocation": {
+  "BrickComponentType_Exec_Entity_GetLocation": {
     "displayName": "Get Location of Entity",
     "description": "",
     "category": "Transformation",
@@ -1413,7 +1221,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_GetLocationRotation": {
+  "BrickComponentType_Exec_Entity_GetLocationRotation": {
     "displayName": "Get Location and Rotation of Entity",
     "description": "",
     "category": "Transformation",
@@ -1442,7 +1250,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_GetRotation": {
+  "BrickComponentType_Exec_Entity_GetRotation": {
     "displayName": "Get Rotation of Entity",
     "description": "",
     "category": "Transformation",
@@ -1467,7 +1275,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_GetVelocity": {
+  "BrickComponentType_Exec_Entity_GetVelocity": {
     "displayName": "Get Velocity of Entity",
     "description": "",
     "category": "Transformation",
@@ -1537,7 +1345,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_RelativeTeleport": {
+  "BrickComponentType_Exec_Entity_RelativeTeleport": {
     "displayName": "Relative Teleport Entity",
     "description": "",
     "category": "Teleportation",
@@ -1566,7 +1374,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_SetAngularVelocity": {
+  "BrickComponentType_Exec_Entity_SetAngularVelocity": {
     "displayName": "Set Angular Velocity of Entity",
     "description": "",
     "category": "Transformation",
@@ -1603,7 +1411,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_SetGravityDirection": {
+  "BrickComponentType_Exec_Entity_SetGravityDirection": {
     "displayName": "Set Gravity Direction of Entity",
     "description": "",
     "category": "Gravity",
@@ -1640,7 +1448,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_SetLinearVelocity": {
+  "BrickComponentType_Exec_Entity_SetLinearVelocity": {
     "displayName": "Set Linear Velocity of Entity",
     "description": "",
     "category": "Transformation",
@@ -1677,7 +1485,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_SetLocation": {
+  "BrickComponentType_Exec_Entity_SetLocation": {
     "displayName": "Set Location of Entity",
     "description": "",
     "category": "Transformation",
@@ -1714,7 +1522,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_SetLocationRotation": {
+  "BrickComponentType_Exec_Entity_SetLocationRotation": {
     "displayName": "Set Location and Rotation of Entity",
     "description": "",
     "category": "Transformation",
@@ -1767,7 +1575,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_SetRotation": {
+  "BrickComponentType_Exec_Entity_SetRotation": {
     "displayName": "Set Rotation of Entity",
     "description": "",
     "category": "Transformation",
@@ -1804,7 +1612,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_SetVelocity": {
+  "BrickComponentType_Exec_Entity_SetVelocity": {
     "displayName": "Set Velocity of Entity",
     "description": "",
     "category": "Transformation",
@@ -1857,7 +1665,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_Teleport": {
+  "BrickComponentType_Exec_Entity_Teleport": {
     "displayName": "Teleport Entity",
     "description": "",
     "category": "Teleportation",
@@ -1882,28 +1690,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Gamemode_EndRound": {
-    "displayName": "End Round",
-    "description": "",
-    "category": "Default Minigame Events",
-    "inputs": {
-      "Exec": {
-        "displayName": "Exec",
-        "tooltip": ""
-      },
-      "Winner": {
-        "displayName": "Winner",
-        "tooltip": ""
-      }
-    },
-    "outputs": {
-      "ExecOut": {
-        "displayName": "Exec Out",
-        "tooltip": ""
-      }
-    }
-  },
-  "BrickComponentType_WireGraph_Exec_Gamemode_GetLeaderboardValue": {
+  "BrickComponentType_Exec_Gamemode_GetLeaderboardValue": {
     "displayName": "Get Leaderboard Value",
     "description": "",
     "category": "Default Minigame",
@@ -1932,7 +1719,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Gamemode_GetTeam": {
+  "BrickComponentType_Exec_Gamemode_GetTeam": {
     "displayName": "Get Player Team",
     "description": "",
     "category": "Default Minigame",
@@ -1957,7 +1744,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Gamemode_GetTeamByName": {
+  "BrickComponentType_Exec_Gamemode_GetTeamByName": {
     "displayName": "Get Team By Name",
     "description": "",
     "category": "Default Minigame",
@@ -1982,7 +1769,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Gamemode_IncrementLeaderboardValue": {
+  "BrickComponentType_Exec_Gamemode_IncrementLeaderboardValue": {
     "displayName": "Increment Leaderboard Value",
     "description": "",
     "category": "Default Minigame",
@@ -2011,7 +1798,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Gamemode_SetLeaderboardValue": {
+  "BrickComponentType_Exec_Gamemode_SetLeaderboardValue": {
     "displayName": "Set Leaderboard Value",
     "description": "",
     "category": "Default Minigame",
@@ -2040,7 +1827,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_PrefabSpawner": {
+  "BrickComponentType_Exec_PrefabSpawner": {
     "displayName": "Spawn Prefab",
     "description": "",
     "category": "Gameplay",
@@ -2101,7 +1888,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Random": {
+  "BrickComponentType_Exec_Random": {
     "displayName": "Random",
     "description": "",
     "category": "Control Flow",
@@ -2138,7 +1925,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Sweep": {
+  "BrickComponentType_Exec_Sweep": {
     "displayName": "Sweep/Raycast (Advanced)",
     "description": "Traces a ray or sphere from a configurable world or local origin, with collision and ignore filters; use it for advanced targeting and sensors.",
     "category": "Gameplay",
@@ -2247,7 +2034,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Union": {
+  "BrickComponentType_Exec_Union": {
     "displayName": "Union",
     "description": "",
     "category": "Control Flow",
@@ -2268,7 +2055,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Var_Get": {
+  "BrickComponentType_Exec_Var_Get": {
     "displayName": "Get Variable",
     "description": "",
     "category": "Variables",
@@ -2293,7 +2080,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Var_Increment": {
+  "BrickComponentType_Exec_Var_Increment": {
     "displayName": "Increment Variable",
     "description": "",
     "category": "Variables",
@@ -2318,7 +2105,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Var_Set": {
+  "BrickComponentType_Exec_Var_Set": {
     "displayName": "Set Variable",
     "description": "",
     "category": "Variables",
@@ -2343,7 +2130,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseAND": {
+  "BrickComponentType_Expr_BitwiseAND": {
     "displayName": "AND (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2364,7 +2151,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseBitCount": {
+  "BrickComponentType_Expr_BitwiseBitCount": {
     "displayName": "Bit Count",
     "description": "",
     "category": "Bitwise",
@@ -2381,7 +2168,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseNAND": {
+  "BrickComponentType_Expr_BitwiseNAND": {
     "displayName": "NAND (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2402,7 +2189,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseNOR": {
+  "BrickComponentType_Expr_BitwiseNOR": {
     "displayName": "NOR (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2423,7 +2210,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseNOT": {
+  "BrickComponentType_Expr_BitwiseNOT": {
     "displayName": "NOT (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2440,7 +2227,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseOR": {
+  "BrickComponentType_Expr_BitwiseOR": {
     "displayName": "OR (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2461,7 +2248,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft": {
+  "BrickComponentType_Expr_BitwiseShiftLeft": {
     "displayName": "Shift Left (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2482,7 +2269,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseShiftRight": {
+  "BrickComponentType_Expr_BitwiseShiftRight": {
     "displayName": "Shift Right (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2503,7 +2290,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_BitwiseXOR": {
+  "BrickComponentType_Expr_BitwiseXOR": {
     "displayName": "XOR (Bitwise)",
     "description": "",
     "category": "Bitwise",
@@ -2524,7 +2311,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_Ceil": {
+  "BrickComponentType_Expr_Ceil": {
     "displayName": "Ceil",
     "description": "",
     "category": "Floor/Ceil",
@@ -2541,7 +2328,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_CompareEqual": {
+  "BrickComponentType_Expr_CompareEqual": {
     "displayName": "Equal",
     "description": "",
     "category": "Comparison",
@@ -2562,7 +2349,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_CompareGreater": {
+  "BrickComponentType_Expr_CompareGreater": {
     "displayName": "Greater",
     "description": "",
     "category": "Comparison",
@@ -2583,7 +2370,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual": {
+  "BrickComponentType_Expr_CompareGreaterOrEqual": {
     "displayName": "Greater/Equal",
     "description": "",
     "category": "Comparison",
@@ -2604,7 +2391,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_CompareLess": {
+  "BrickComponentType_Expr_CompareLess": {
     "displayName": "Less",
     "description": "",
     "category": "Comparison",
@@ -2625,7 +2412,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_CompareLessOrEqual": {
+  "BrickComponentType_Expr_CompareLessOrEqual": {
     "displayName": "Less/Equal",
     "description": "",
     "category": "Comparison",
@@ -2646,7 +2433,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_CompareNotEqual": {
+  "BrickComponentType_Expr_CompareNotEqual": {
     "displayName": "Not Equal",
     "description": "",
     "category": "Comparison",
@@ -2667,7 +2454,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_EdgeDetector": {
+  "BrickComponentType_Expr_EdgeDetector": {
     "displayName": "Edge Detector",
     "description": "",
     "category": "Logic",
@@ -2688,7 +2475,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_Floor": {
+  "BrickComponentType_Expr_Floor": {
     "displayName": "Floor",
     "description": "",
     "category": "Floor/Ceil",
@@ -2705,7 +2492,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_LogicalAND": {
+  "BrickComponentType_Expr_LogicalAND": {
     "displayName": "AND",
     "description": "",
     "category": "Logic",
@@ -2726,7 +2513,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_LogicalNAND": {
+  "BrickComponentType_Expr_LogicalNAND": {
     "displayName": "NAND",
     "description": "",
     "category": "Logic",
@@ -2747,7 +2534,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_LogicalNOR": {
+  "BrickComponentType_Expr_LogicalNOR": {
     "displayName": "NOR",
     "description": "",
     "category": "Logic",
@@ -2768,7 +2555,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_LogicalNOT": {
+  "BrickComponentType_Expr_LogicalNOT": {
     "displayName": "NOT",
     "description": "",
     "category": "Logic",
@@ -2785,7 +2572,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_LogicalOR": {
+  "BrickComponentType_Expr_LogicalOR": {
     "displayName": "OR",
     "description": "",
     "category": "Logic",
@@ -2806,7 +2593,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_LogicalXOR": {
+  "BrickComponentType_Expr_LogicalXOR": {
     "displayName": "XOR",
     "description": "",
     "category": "Logic",
@@ -2827,7 +2614,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MakeColor": {
+  "BrickComponentType_Expr_MakeColor": {
     "displayName": "Make Color",
     "description": "",
     "category": "Math - Colors",
@@ -2856,7 +2643,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MakeVector": {
+  "BrickComponentType_Expr_MakeVector": {
     "displayName": "Make Vector",
     "description": "",
     "category": "Math - Vectors",
@@ -2881,7 +2668,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAbs": {
+  "BrickComponentType_Expr_MathAbs": {
     "displayName": "Abs",
     "description": "",
     "category": "Math - Advanced",
@@ -2898,7 +2685,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAcos": {
+  "BrickComponentType_Expr_MathAcos": {
     "displayName": "Acos",
     "description": "",
     "category": "Math - Trigonometry",
@@ -2915,7 +2702,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAcosh": {
+  "BrickComponentType_Expr_MathAcosh": {
     "displayName": "Acosh",
     "description": "",
     "category": "Math - Trigonometry",
@@ -2932,7 +2719,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAdd": {
+  "BrickComponentType_Expr_MathAdd": {
     "displayName": "Add",
     "description": "",
     "category": "Math",
@@ -2953,7 +2740,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAsin": {
+  "BrickComponentType_Expr_MathAsin": {
     "displayName": "Asin",
     "description": "",
     "category": "Math - Trigonometry",
@@ -2970,7 +2757,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAsinh": {
+  "BrickComponentType_Expr_MathAsinh": {
     "displayName": "Asinh",
     "description": "",
     "category": "Math - Trigonometry",
@@ -2987,7 +2774,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAtan": {
+  "BrickComponentType_Expr_MathAtan": {
     "displayName": "Atan",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3004,7 +2791,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAtan2": {
+  "BrickComponentType_Expr_MathAtan2": {
     "displayName": "Atan2",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3025,7 +2812,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathAtanh": {
+  "BrickComponentType_Expr_MathAtanh": {
     "displayName": "Atanh",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3042,7 +2829,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathBlend": {
+  "BrickComponentType_Expr_MathBlend": {
     "displayName": "Blend",
     "description": "",
     "category": "Math",
@@ -3067,7 +2854,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathClamp": {
+  "BrickComponentType_Expr_MathClamp": {
     "displayName": "Clamp",
     "description": "",
     "category": "Math - Advanced",
@@ -3092,7 +2879,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathCos": {
+  "BrickComponentType_Expr_MathCos": {
     "displayName": "Cos",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3109,7 +2896,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathCosh": {
+  "BrickComponentType_Expr_MathCosh": {
     "displayName": "Cosh",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3126,7 +2913,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathDegreesToRadians": {
+  "BrickComponentType_Expr_MathDegreesToRadians": {
     "displayName": "Degrees To Radians",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3143,7 +2930,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathDivide": {
+  "BrickComponentType_Expr_MathDivide": {
     "displayName": "Divide",
     "description": "",
     "category": "Math",
@@ -3164,7 +2951,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathExp": {
+  "BrickComponentType_Expr_MathExp": {
     "displayName": "e^x",
     "description": "",
     "category": "Math - Advanced",
@@ -3181,7 +2968,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathLn": {
+  "BrickComponentType_Expr_MathLn": {
     "displayName": "Ln",
     "description": "",
     "category": "Math - Advanced",
@@ -3198,7 +2985,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathLogBase": {
+  "BrickComponentType_Expr_MathLogBase": {
     "displayName": "Log",
     "description": "",
     "category": "Math - Advanced",
@@ -3219,7 +3006,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathMax": {
+  "BrickComponentType_Expr_MathMax": {
     "displayName": "Max",
     "description": "",
     "category": "Math - Advanced",
@@ -3240,7 +3027,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathMin": {
+  "BrickComponentType_Expr_MathMin": {
     "displayName": "Min",
     "description": "",
     "category": "Math - Advanced",
@@ -3261,7 +3048,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathModulo": {
+  "BrickComponentType_Expr_MathModulo": {
     "displayName": "Modulo",
     "description": "",
     "category": "Math",
@@ -3282,7 +3069,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathModuloFloored": {
+  "BrickComponentType_Expr_MathModuloFloored": {
     "displayName": "Modulo Floored",
     "description": "",
     "category": "Math",
@@ -3303,7 +3090,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathMultiply": {
+  "BrickComponentType_Expr_MathMultiply": {
     "displayName": "Multiply",
     "description": "",
     "category": "Math",
@@ -3324,7 +3111,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathNegate": {
+  "BrickComponentType_Expr_MathNegate": {
     "displayName": "Negate",
     "description": "",
     "category": "Math",
@@ -3341,7 +3128,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathPow": {
+  "BrickComponentType_Expr_MathPow": {
     "displayName": "Pow",
     "description": "",
     "category": "Math - Advanced",
@@ -3362,7 +3149,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathRadiansToDegrees": {
+  "BrickComponentType_Expr_MathRadiansToDegrees": {
     "displayName": "Radians To Degrees",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3379,7 +3166,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathSign": {
+  "BrickComponentType_Expr_MathSign": {
     "displayName": "Sign",
     "description": "",
     "category": "Math - Advanced",
@@ -3396,7 +3183,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathSin": {
+  "BrickComponentType_Expr_MathSin": {
     "displayName": "Sin",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3413,7 +3200,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathSinh": {
+  "BrickComponentType_Expr_MathSinh": {
     "displayName": "Sinh",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3430,7 +3217,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathSqrt": {
+  "BrickComponentType_Expr_MathSqrt": {
     "displayName": "Sqrt",
     "description": "",
     "category": "Math - Advanced",
@@ -3447,7 +3234,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathSubtract": {
+  "BrickComponentType_Expr_MathSubtract": {
     "displayName": "Subtract",
     "description": "",
     "category": "Math",
@@ -3468,7 +3255,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathTan": {
+  "BrickComponentType_Expr_MathTan": {
     "displayName": "Tan",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3485,7 +3272,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_MathTanh": {
+  "BrickComponentType_Expr_MathTanh": {
     "displayName": "Tanh",
     "description": "",
     "category": "Math - Trigonometry",
@@ -3502,7 +3289,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_Round": {
+  "BrickComponentType_Expr_Round": {
     "displayName": "Round",
     "description": "",
     "category": "Floor/Ceil",
@@ -3519,7 +3306,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_Select": {
+  "BrickComponentType_Expr_Select": {
     "displayName": "Select",
     "description": "",
     "category": "Control Flow",
@@ -3544,7 +3331,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_SplitColor": {
+  "BrickComponentType_Expr_SplitColor": {
     "displayName": "Split Color",
     "description": "",
     "category": "Math - Colors",
@@ -3589,7 +3376,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_SplitVector": {
+  "BrickComponentType_Expr_SplitVector": {
     "displayName": "Split Vector",
     "description": "",
     "category": "Math - Vectors",
@@ -3626,7 +3413,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Concatenate": {
+  "BrickComponentType_Expr_String_Concatenate": {
     "displayName": "Concatenate",
     "description": "",
     "category": "Variables - String",
@@ -3651,7 +3438,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Contains": {
+  "BrickComponentType_Expr_String_Contains": {
     "displayName": "Contains",
     "description": "",
     "category": "Variables - String",
@@ -3672,7 +3459,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_EndsWith": {
+  "BrickComponentType_Expr_String_EndsWith": {
     "displayName": "Ends With",
     "description": "",
     "category": "Variables - String",
@@ -3693,7 +3480,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Find": {
+  "BrickComponentType_Expr_String_Find": {
     "displayName": "Find",
     "description": "",
     "category": "Variables - String",
@@ -3718,7 +3505,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_FormatText": {
+  "BrickComponentType_Expr_String_FormatText": {
     "displayName": "Format Text",
     "description": "",
     "category": "Variables - String",
@@ -3763,7 +3550,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Length": {
+  "BrickComponentType_Expr_String_Length": {
     "displayName": "Length",
     "description": "",
     "category": "Variables - String",
@@ -3780,7 +3567,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Replace": {
+  "BrickComponentType_Expr_String_Replace": {
     "displayName": "Replace",
     "description": "",
     "category": "Variables - String",
@@ -3805,7 +3592,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Split": {
+  "BrickComponentType_Expr_String_Split": {
     "displayName": "Split",
     "description": "",
     "category": "Variables - String",
@@ -3830,7 +3617,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_StartsWith": {
+  "BrickComponentType_Expr_String_StartsWith": {
     "displayName": "Starts With",
     "description": "",
     "category": "Variables - String",
@@ -3851,7 +3638,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Substring": {
+  "BrickComponentType_Expr_String_Substring": {
     "displayName": "Substring",
     "description": "",
     "category": "Variables - String",
@@ -3876,7 +3663,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_ToLower": {
+  "BrickComponentType_Expr_String_ToLower": {
     "displayName": "To Lower",
     "description": "",
     "category": "Variables - String",
@@ -3893,7 +3680,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_ToUpper": {
+  "BrickComponentType_Expr_String_ToUpper": {
     "displayName": "To Upper",
     "description": "",
     "category": "Variables - String",
@@ -3910,7 +3697,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_String_Trim": {
+  "BrickComponentType_Expr_String_Trim": {
     "displayName": "Trim",
     "description": "",
     "category": "Variables - String",
@@ -3927,7 +3714,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_Swap": {
+  "BrickComponentType_Expr_Swap": {
     "displayName": "Swap",
     "description": "",
     "category": "Control Flow",
@@ -3956,7 +3743,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecCrossProduct": {
+  "BrickComponentType_Expr_VecCrossProduct": {
     "displayName": "Cross Product",
     "description": "",
     "category": "Math - Vectors",
@@ -4001,7 +3788,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecDistance": {
+  "BrickComponentType_Expr_VecDistance": {
     "displayName": "Distance",
     "description": "",
     "category": "Math - Vectors",
@@ -4046,7 +3833,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecDistanceSquared": {
+  "BrickComponentType_Expr_VecDistanceSquared": {
     "displayName": "Distance Squared",
     "description": "",
     "category": "Math - Vectors",
@@ -4091,7 +3878,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecDotProduct": {
+  "BrickComponentType_Expr_VecDotProduct": {
     "displayName": "Dot Product",
     "description": "",
     "category": "Math - Vectors",
@@ -4136,7 +3923,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecMagnitude": {
+  "BrickComponentType_Expr_VecMagnitude": {
     "displayName": "Magnitude",
     "description": "",
     "category": "Math - Vectors",
@@ -4165,7 +3952,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecMagnitudeSquared": {
+  "BrickComponentType_Expr_VecMagnitudeSquared": {
     "displayName": "Magnitude Squared",
     "description": "",
     "category": "Math - Vectors",
@@ -4194,7 +3981,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecNormalize": {
+  "BrickComponentType_Expr_VecNormalize": {
     "displayName": "Normalize",
     "description": "",
     "category": "Math - Vectors",
@@ -4223,36 +4010,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Expr_VecRotationToDirection": {
-    "displayName": "Rotation to Direction",
-    "description": "",
-    "category": "Math - Vectors",
-    "inputs": {
-      "Input": {
-        "displayName": "Input",
-        "tooltip": ""
-      },
-      "Input.Y": {
-        "displayName": "Input.Y",
-        "tooltip": "The Y axis position."
-      },
-      "Input.Z": {
-        "displayName": "Input.Z",
-        "tooltip": "The Z axis position."
-      },
-      "Input.X": {
-        "displayName": "Input.X",
-        "tooltip": "The X axis position."
-      }
-    },
-    "outputs": {
-      "Output": {
-        "displayName": "Output",
-        "tooltip": ""
-      }
-    }
-  },
-  "BrickComponentType_WireGraph_Expr_VecScale": {
+  "BrickComponentType_Expr_VecScale": {
     "displayName": "Scale",
     "description": "",
     "category": "Math - Vectors",
@@ -4285,7 +4043,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Fake_Gamemode_CharacterDiedEvent": {
+  "BrickComponentType_Event_Gamemode_CharacterDied": {
     "displayName": "Player Died Event",
     "description": "",
     "category": "Default Minigame Events",
@@ -4301,7 +4059,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Fake_Gamemode_CharacterSpawnedEvent": {
+  "BrickComponentType_Event_Gamemode_CharacterSpawned": {
     "displayName": "Player Spawned Event",
     "description": "",
     "category": "Default Minigame Events",
@@ -4317,7 +4075,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Fake_Gamemode_ControllerJoinedEvent": {
+  "BrickComponentType_Event_Gamemode_ControllerJoined": {
     "displayName": "Player Joined Event",
     "description": "Pulses when a user joins and outputs their persistent player reference, user ID, and user name; use it to initialize player data or greet them.",
     "category": "Default Minigame Events",
@@ -4341,7 +4099,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Fake_Gamemode_ControllerLeftEvent": {
+  "BrickComponentType_Event_Gamemode_ControllerLeft": {
     "displayName": "Player Left Event",
     "description": "Pulses when a user leaves and outputs their captured user ID and user name; use it for cleanup or logging.",
     "category": "Default Minigame Events",
@@ -4365,7 +4123,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Fake_Gamemode_RoundEndEvent": {
+  "BrickComponentType_Event_Gamemode_RoundEnd": {
     "displayName": "Round End Event",
     "description": "",
     "category": "Default Minigame Events",
@@ -4381,7 +4139,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Fake_Gamemode_RoundStartEvent": {
+  "BrickComponentType_Event_Gamemode_RoundStart": {
     "displayName": "Round Start Event",
     "description": "",
     "category": "Default Minigame Events",
@@ -4517,7 +4275,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_BufferSeconds": {
+  "BrickComponentType_BufferSeconds": {
     "displayName": "Buffer (Seconds)",
     "description": "",
     "category": "Buffers",
@@ -4542,7 +4300,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_BufferTicks": {
+  "BrickComponentType_BufferTicks": {
     "displayName": "Buffer (Ticks)",
     "description": "",
     "category": "Buffers",
@@ -4567,7 +4325,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_QueueSeconds": {
+  "BrickComponentType_QueueSeconds": {
     "displayName": "Queue (Seconds)",
     "description": "",
     "category": "Buffers",
@@ -4652,7 +4410,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_QueueTicks": {
+  "BrickComponentType_QueueTicks": {
     "displayName": "Queue (Ticks)",
     "description": "",
     "category": "Buffers",
@@ -4806,7 +4564,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Entity_IsFrozen": {
+  "BrickComponentType_Exec_Entity_IsFrozen": {
     "displayName": "Is Frozen",
     "description": "Returns whether an entity or brick grid is frozen. Non-physics and global grids return true, while rigid-jointed children use their outermost welded or kinematic parent's state.",
     "inputs": {
@@ -4830,7 +4588,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_SweepSimple": {
+  "BrickComponentType_Exec_SweepSimple": {
     "displayName": "Sweep/Raycast",
     "description": "Traces a ray or sphere outward from this brick in a chosen local direction, with optional spread; use it for simple buttons, weapons, or sensors.",
     "inputs": {
@@ -4890,7 +4648,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_SpawnExplosion": {
+  "BrickComponentType_Exec_SpawnExplosion": {
     "displayName": "Spawn Explosion",
     "description": "Spawns the selected projectile type's normal impact explosion at this gate with an optional local offset, scale, damage multiplier, and character instigator.",
     "inputs": {
@@ -4926,7 +4684,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_SendCustomEvent": {
+  "BrickComponentType_Exec_SendCustomEvent": {
     "displayName": "Send Custom Event",
     "description": "Triggers every Custom Event gate with the same name and passes through up to eight data values.",
     "inputs": {
@@ -4978,7 +4736,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraphPseudo_CustomEvent": {
+  "BrickComponentType_Event_Custom": {
     "displayName": "Custom Event",
     "description": "Pulses when a Send Custom Event gate uses the same name, preserving each event and its data in order.",
     "inputs": {
@@ -5046,7 +4804,7 @@
       }
     }
   },
-  "BrickComponentType_WireGraph_Exec_Character_SetInventoryEntry": {
+  "BrickComponentType_Exec_Character_SetInventoryEntry": {
     "displayName": "Set Character Inventory Entry",
     "description": "Replaces a specific inventory slot with a configured item, brick, or entity entry; use it to build fixed loadouts.",
     "inputs": {

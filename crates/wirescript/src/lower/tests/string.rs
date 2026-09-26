@@ -6,7 +6,7 @@ fn string_literal_emits_concatenate_gate() {
     assert_no_errors(&r);
     let has_concat = r.module.nodes.values().any(|n| {
         n.gate_class
-            == "BrickComponentType_WireGraph_Expr_String_Concatenate"
+            == "BrickComponentType_Expr_String_Concatenate"
     });
     assert!(
         has_concat,
@@ -33,13 +33,13 @@ fn string_in_select_inlines_as_variant() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .find(|n| n.gate_class == "BrickComponentType_Expr_Select")
         .expect("if-expr should create a Select gate");
     let concat_count = r
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_String_Concatenate")
+        .filter(|n| n.gate_class == "BrickComponentType_Expr_String_Concatenate")
         .count();
     assert_eq!(
         concat_count, 0,
@@ -88,7 +88,7 @@ fn string_concat_op_works() {
         .values()
         .filter(|n| {
             n.gate_class
-                == "BrickComponentType_WireGraph_Expr_String_Concatenate"
+                == "BrickComponentType_Expr_String_Concatenate"
         })
         .count();
     // 3 string literals become 3 Concatenate gates, plus 2 concat ops = 5 total
@@ -116,7 +116,7 @@ fn constant_string_inlines_into_consumers() {
             .module
             .nodes
             .values()
-            .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_String_Concatenate")
+            .filter(|n| n.gate_class == "BrickComponentType_Expr_String_Concatenate")
             .count();
         assert_eq!(
             concat, 0,
@@ -135,7 +135,7 @@ fn empty_string_in_select_not_lost() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_Select")
+        .find(|n| n.gate_class == "BrickComponentType_Expr_Select")
         .expect("if-expr should create a Select gate");
     let has_empty = ["InputA", "InputB"].iter().any(|p| {
         matches!(
@@ -149,38 +149,38 @@ fn empty_string_in_select_not_lost() {
 #[test]
 fn string_equality_lowers_to_native_compare() {
     // String == / != now lower directly to the native Compare gates (which
-    // accept the `str` WireGraphVariant member), not the old
+    // accept the `Str` `WireValue` alternative), not the old
     // contains(a,b) && length(a)==length(b) workaround.
     let r = compile("let a = \"x\"\nlet b = \"y\"\nout eq = a == b\nout ne = a != b");
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        has_gate(&r, "BrickComponentType_Expr_CompareEqual"),
         "string == should lower to CompareEqual"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareNotEqual"),
+        has_gate(&r, "BrickComponentType_Expr_CompareNotEqual"),
         "string != should lower to CompareNotEqual"
     );
     // The old workaround is gone: no String_Length / String_Contains gates,
     // and no LogicalAND/NAND stitched in for the comparison.
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_String_Length"),
+        gate_count(&r, "BrickComponentType_Expr_String_Length"),
         0,
         "string compare should not synthesize String_Length gates"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_String_Contains"),
+        !has_gate(&r, "BrickComponentType_Expr_String_Contains"),
         "string compare should not synthesize String_Contains gates"
     );
 }
 
 #[test]
 fn string_var_stores_and_assigns() {
-    // Strings can be stored in vars (WireGraphVariant `str`).
+    // Strings can be stored in vars (`WireValue` `Str`).
     let r = compile("static var s: string = \"init\"\non RoundStart() { s = \"hello\" }");
     assert_no_errors(&r);
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraphPseudo_Var"),
+        has_gate(&r, "BrickComponentType_Var"),
         "string var should lower to a Var gate"
     );
 }
@@ -197,7 +197,7 @@ fn long_interpolation_splits_across_format_text_gates() {
     let r = compile(src);
     assert_no_errors(&r);
 
-    const FT: &str = "BrickComponentType_WireGraph_Expr_String_FormatText";
+    const FT: &str = "BrickComponentType_Expr_String_FormatText";
     let ft_ids: std::collections::HashSet<_> = r
         .module
         .nodes
@@ -242,7 +242,7 @@ fn numeric_literal_still_uses_literal_node() {
     // _Literal may be inlined away, but if present it should not be a Concatenate
     let has_str_concat = r.module.nodes.values().any(|n| {
         n.gate_class
-            == "BrickComponentType_WireGraph_Expr_String_Concatenate"
+            == "BrickComponentType_Expr_String_Concatenate"
     });
     assert!(
         !has_str_concat,
@@ -266,7 +266,7 @@ fn constant_string_operand_bakes_into_each_concat() {
                }";
     let r = compile(src);
     assert_no_errors(&r);
-    let concat = "BrickComponentType_WireGraph_Expr_String_Concatenate";
+    let concat = "BrickComponentType_Expr_String_Concatenate";
     assert_eq!(
         gate_count(&r, concat),
         3,
@@ -427,7 +427,7 @@ fn var_bool_string_literal_init_bakes_bool() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::PSEUDO_VAR)
+        .find(|n| n.gate_class == crate::ir::gate_class::VAR)
         .expect("var gate");
     assert_eq!(
         var.properties.get(&*crate::intern::sym::INITIAL_VALUE),
@@ -444,7 +444,7 @@ fn array_bool_string_literal_inits_bake_elementwise() {
         .module
         .nodes
         .values()
-        .find(|n| n.gate_class == crate::ir::gate_class::PSEUDO_ARRAY_VAR)
+        .find(|n| n.gate_class == crate::ir::gate_class::ARRAY_VAR)
         .expect("array var gate");
     assert_eq!(
         arr.properties.get(&crate::intern::intern_static("InitialValue")),
@@ -726,7 +726,7 @@ fn string_index_lowers_to_a_substring_gate() {
         "must not lower to a placeholder: {:?}",
         r.diagnostics
     );
-    let sub = "BrickComponentType_WireGraph_Expr_String_Substring";
+    let sub = "BrickComponentType_Expr_String_Substring";
     assert_eq!(gate_count(&r, sub), 1, "one Substring gate");
     let node = r
         .module
@@ -750,7 +750,7 @@ fn constant_string_index_folds_to_a_literal() {
     let r = compile("in go: bool\nout c: string = \"foo\"[2]");
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_String_Substring"),
+        gate_count(&r, "BrickComponentType_Expr_String_Substring"),
         0,
         "a constant index emits no gate"
     );
@@ -782,7 +782,7 @@ fn string_index_counts_code_points_and_declines_out_of_range() {
     let oob = compile("in go: bool\nout c: string = \"foo\"[9]");
     assert_no_errors(&oob);
     assert_eq!(
-        gate_count(&oob, "BrickComponentType_WireGraph_Expr_String_Substring"),
+        gate_count(&oob, "BrickComponentType_Expr_String_Substring"),
         1,
         "an out-of-range constant index keeps the gate"
     );

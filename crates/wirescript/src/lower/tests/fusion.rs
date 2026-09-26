@@ -4,15 +4,15 @@ use super::*;
 fn fuse_logical_nand() {
     let r = compile("var a: bool = false\nvar b: bool = false\nout r = !(a && b)");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalNAND"),
+        has_gate(&r, "BrickComponentType_Expr_LogicalNAND"),
         "!(&&) should fuse to LogicalNAND"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalAND"),
+        !has_gate(&r, "BrickComponentType_Expr_LogicalAND"),
         "should not have separate AND"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalNOT"),
+        !has_gate(&r, "BrickComponentType_Expr_LogicalNOT"),
         "should not have separate NOT"
     );
 }
@@ -21,15 +21,15 @@ fn fuse_logical_nand() {
 fn fuse_logical_nor() {
     let r = compile("var a: bool = false\nvar b: bool = false\nout r = !(a || b)");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalNOR"),
+        has_gate(&r, "BrickComponentType_Expr_LogicalNOR"),
         "!(||) should fuse to LogicalNOR"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalOR"),
+        !has_gate(&r, "BrickComponentType_Expr_LogicalOR"),
         "should not have separate OR"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalNOT"),
+        !has_gate(&r, "BrickComponentType_Expr_LogicalNOT"),
         "should not have separate NOT"
     );
 }
@@ -38,15 +38,15 @@ fn fuse_logical_nor() {
 fn fuse_bitwise_nand() {
     let r = compile("var a: int = 0\nvar b: int = 0\nout r = ~(a & b)");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseNAND"),
+        has_gate(&r, "BrickComponentType_Expr_BitwiseNAND"),
         "~(&) should fuse to BitwiseNAND"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseAND"),
+        !has_gate(&r, "BrickComponentType_Expr_BitwiseAND"),
         "should not have separate AND"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseNOT"),
+        !has_gate(&r, "BrickComponentType_Expr_BitwiseNOT"),
         "should not have separate NOT"
     );
 }
@@ -55,15 +55,15 @@ fn fuse_bitwise_nand() {
 fn fuse_bitwise_nor() {
     let r = compile("var a: int = 0\nvar b: int = 0\nout r = ~(a | b)");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseNOR"),
+        has_gate(&r, "BrickComponentType_Expr_BitwiseNOR"),
         "~(|) should fuse to BitwiseNOR"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseOR"),
+        !has_gate(&r, "BrickComponentType_Expr_BitwiseOR"),
         "should not have separate OR"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_BitwiseNOT"),
+        !has_gate(&r, "BrickComponentType_Expr_BitwiseNOT"),
         "should not have separate NOT"
     );
 }
@@ -72,11 +72,11 @@ fn fuse_bitwise_nor() {
 fn logical_xor_operator() {
     let r = compile("var a: bool = false\nvar b: bool = false\nout r = a ^^ b");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalXOR"),
+        has_gate(&r, "BrickComponentType_Expr_LogicalXOR"),
         "^^ should produce LogicalXOR"
     );
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_LogicalXOR"),
+        gate_count(&r, "BrickComponentType_Expr_LogicalXOR"),
         1
     );
 }
@@ -85,7 +85,7 @@ fn logical_xor_operator() {
 fn fuse_nand_self_referential_buffer() {
     let r = compile("var e: bool = true\nbuffer t: bool = !(t && e)\nout r = t");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalNAND"),
+        has_gate(&r, "BrickComponentType_Expr_LogicalNAND"),
         "buffer t = !(t && e) should fuse to LogicalNAND; gates: {:?}",
         r.module
             .nodes
@@ -94,7 +94,7 @@ fn fuse_nand_self_referential_buffer() {
             .collect::<Vec<_>>()
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalAND"),
+        !has_gate(&r, "BrickComponentType_Expr_LogicalAND"),
         "should not have separate AND"
     );
 }
@@ -115,7 +115,7 @@ fn fuse_nand_buffer_in_chip_with_param() {
         child
             .nodes
             .values()
-            .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_LogicalNAND"),
+            .any(|n| n.gate_class == "BrickComponentType_Expr_LogicalNAND"),
         "buffer initializer inside chip should fuse to LogicalNAND; gates: {child_gates:?}"
     );
     assert!(
@@ -161,7 +161,7 @@ fn namespace_import_buffer_initializer_is_wired() {
         .find(|n| n.gate_class.contains("Buffer"))
         .unwrap_or_else(|| panic!("ns buffer gate should exist; gates: {gates:?}"));
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalNAND"),
+        has_gate(&r, "BrickComponentType_Expr_LogicalNAND"),
         "ns buffer initializer should lower (and fuse to NAND); gates: {gates:?}"
     );
     assert!(
@@ -174,7 +174,7 @@ fn namespace_import_buffer_initializer_is_wired() {
 fn unfused_not_still_works() {
     let r = compile("var a: bool = false\nout r = !a");
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_LogicalNOT"),
+        has_gate(&r, "BrickComponentType_Expr_LogicalNOT"),
         "plain !a should still produce NOT"
     );
 }

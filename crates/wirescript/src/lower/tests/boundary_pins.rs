@@ -459,7 +459,7 @@ fn literal_source_crossings_are_left_alone() {
         Node {
             id: consumer_id,
             kind: NodeKind::Gate,
-            gate_class: "BrickComponentType_WireGraph_Expr_MathAdd",
+            gate_class: "BrickComponentType_Expr_MathAdd",
             properties: Arc::new(consumer_props),
             ports: Arc::new(GateIO {
                 inputs: vec![PortSpec::new(crate::intern::intern("InputA"), Type::Int)],

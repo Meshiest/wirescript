@@ -522,7 +522,7 @@ pub(in crate::lower) fn lower_chip_call_inline(
             ctx.mod_return_record = Some(fields);
         } else {
             let var_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::PSEUDO_VAR,
+                gate_class: gc::VAR,
                 source_range: chip_decl.body.range.clone(),
                 ports: GateIO::var_storage(out_type.clone()),
                 note: Some("ret_val"),

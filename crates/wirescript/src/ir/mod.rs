@@ -353,7 +353,7 @@ pub enum Literal {
     /// Prefab file reference `$./file.brz` / `$/abs/file.brz`. The emitter
     /// resolves `path` to `.brz` bytes, embeds them via `World::add_prefab`,
     /// and writes the resulting `Prefabs/Uploads/…` path into the gate's
-    /// `bundle_path_ref` property.
+    /// `Prefab` path string.
     PrefabRef { path: String },
     /// Inline nested-prefab source (the `$``` ... ``` ` form). The emitter
     /// will compile `source` and embed it the same way `PrefabRef` embeds a

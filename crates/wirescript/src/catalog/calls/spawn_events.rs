@@ -12,7 +12,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             params: vec![
                 // The prefab to spawn: a `$./file.brz` / `$/abs/file.brz`
                 // reference (or nested `$``` … ``` `). Embedded into the bundle at
-                // emit; the gate's `Prefab` bundle_path_ref property gets the
+                // emit; the gate's `Prefab` path string gets the
                 // resulting path. Compile-time reference-only, hence `PrefabRef`.
                 CallParam::opt("prefab", WirePort::Prefab, Type::PrefabRef),
                 CallParam::opt("offset", WirePort::SpawnOffset, Type::Vector),
@@ -59,7 +59,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         "SendCustomEvent",
         CallSpec {
             name: "SendCustomEvent",
-            gate_class: gc::PSEUDO_SEND_CUSTOM_EVENT,
+            gate_class: gc::SEND_CUSTOM_EVENT,
             params: vec![
                 CallParam::req("eventName", WirePort::EventName, Type::String),
                 CallParam::opt("data1", WirePort::DataIn1, Type::Any),
@@ -89,7 +89,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         "SendGlobalCustomEvent",
         CallSpec {
             name: "SendGlobalCustomEvent",
-            gate_class: gc::PSEUDO_SEND_CUSTOM_EVENT_GLOBAL,
+            gate_class: gc::SEND_CUSTOM_EVENT_GLOBAL,
             params: vec![
                 CallParam::req("eventName", WirePort::EventName, Type::String),
                 CallParam::opt("data1", WirePort::DataIn1, Type::Any),

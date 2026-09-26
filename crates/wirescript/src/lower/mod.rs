@@ -270,7 +270,7 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
     };
     let inner = out.ty.clone();
     let var_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_VAR,
+        gate_class: gc::VAR,
         source_range: SourceRange::default(),
         ports: GateIO::var_storage(inner.clone()),
         note: Some("out_backing"),
@@ -855,7 +855,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                 Type,
             ) = match &lit {
                 Literal::Int(n) => (
-                    "BrickComponentType_WireGraph_Expr_MathAdd",
+                    "BrickComponentType_Expr_MathAdd",
                     vec![
                         (*sym::INPUT_A, Literal::Int(*n)),
                         (*sym::INPUT_B, Literal::Int(0)),
@@ -865,7 +865,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                     Type::Int,
                 ),
                 Literal::Float(f) => (
-                    "BrickComponentType_WireGraph_Expr_MathAdd",
+                    "BrickComponentType_Expr_MathAdd",
                     vec![
                         (*sym::INPUT_A, Literal::Float(*f)),
                         (*sym::INPUT_B, Literal::Float(0.0)),
@@ -875,7 +875,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
                     Type::Float,
                 ),
                 Literal::Bool(b) => (
-                    "BrickComponentType_WireGraph_Expr_LogicalOR",
+                    "BrickComponentType_Expr_LogicalOR",
                     vec![
                         (*sym::B_INPUT_A, Literal::Bool(*b)),
                         (*sym::B_INPUT_B, Literal::Bool(false)),
@@ -1258,7 +1258,7 @@ fn dedup_constant_gates(root: &mut Module) {
         for (id, n) in &module.nodes {
             let is_pure = n.gate_class == gc::LITERAL
                 || n.gate_class
-                    .starts_with("BrickComponentType_WireGraph_Expr_");
+                    .starts_with("BrickComponentType_Expr_");
             if n.kind == NodeKind::Gate && is_pure && !has_incoming.contains(id) {
                 groups
                     .entry((n.chip_id, const_key(n)))
@@ -1347,7 +1347,7 @@ fn cse_pure_gates(root: &mut Module) {
     fn eligible(n: &crate::ir::Node) -> bool {
         n.kind == NodeKind::Gate
             && n.gate_class
-                .starts_with("BrickComponentType_WireGraph_Expr_")
+                .starts_with("BrickComponentType_Expr_")
             && !n.gate_class.contains("ChangeDetector")
             && !n.gate_class.contains("EdgeDetector")
             && !n.properties.contains_key(&*sym::NO_FOLD)
@@ -1502,7 +1502,7 @@ fn cse_pure_gates(root: &mut Module) {
 fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
     let is_pure = |gate_class: &str| -> bool {
         gate_class == gc::LITERAL
-            || (!literals_only && gate_class.starts_with("BrickComponentType_WireGraph_Expr_"))
+            || (!literals_only && gate_class.starts_with("BrickComponentType_Expr_"))
     };
     // Node ids touched by a real (non-Layout) data wire, as source OR target.
     fn collect_connected(module: &Module, connected: &mut HashSet<NodeId>) {

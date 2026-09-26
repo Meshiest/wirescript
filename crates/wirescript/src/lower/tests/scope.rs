@@ -127,10 +127,10 @@ fn if_branches_own_their_body_nodes() {
 // wrote the outer's storage (type-divergent writes, a `static var` reset every
 // call, a load-breaking buffer fan-in).
 
-const PVAR: &str = "BrickComponentType_WireGraphPseudo_Var";
-const BUF: &str = "BrickComponentType_WireGraphPseudo_BufferTicks";
-const AVAR: &str = "BrickComponentType_WireGraphPseudo_ArrayVar";
-const MVAR: &str = "BrickComponentType_WireGraphPseudo_MapVar";
+const PVAR: &str = "BrickComponentType_Var";
+const BUF: &str = "BrickComponentType_BufferTicks";
+const AVAR: &str = "BrickComponentType_ArrayVar";
+const MVAR: &str = "BrickComponentType_MapVar";
 
 /// How many wires leave `node`'s `VarRef` output (its write consumers).
 fn varref_consumers(r: &LowerResult, node: crate::ir::NodeId) -> usize {

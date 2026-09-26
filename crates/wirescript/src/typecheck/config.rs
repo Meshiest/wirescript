@@ -44,6 +44,45 @@ pub(super) fn call_param_config_enum(
     crate::catalog::config_field_enum_type(spec.gate_class, port)
 }
 
+/// The schema enum type of a WIRE param whose gate data field is also a schema
+/// enum (DisplayText's `justify`/`easing`). A constant enum form bakes into the
+/// data field exactly like enum config; any other value wires like an ordinary
+/// input.
+pub(super) fn call_param_wire_enum(
+    spec: &crate::catalog::calls::CallSpec,
+    param: &crate::catalog::calls::CallParam,
+) -> Option<&'static str> {
+    let port = param.port.as_str();
+    if !crate::catalog::is_wire_input(spec.gate_class, port) {
+        return None;
+    }
+    crate::catalog::config_field_enum_type(spec.gate_class, port)
+}
+
+/// A bare identifier naming a member of `enum_type`: an enum member name, not
+/// a variable, so it is never type-inferred as one.
+pub(super) fn is_bare_enum_member(enum_type: &str, e: &Expr) -> bool {
+    matches!(e, Expr::Ident { name, .. } if crate::catalog::enum_member_value(enum_type, name).is_some())
+}
+
+/// Whether a wire-enum argument is written as an enum constant, so it bakes
+/// into the gate's data field instead of wiring: a member name (bare or
+/// quoted), an int literal, or a constant naming a member.
+pub(super) fn is_enum_constant_arg(ctx: &TypeCheckCtx, enum_type: &str, e: &Expr) -> bool {
+    match e {
+        Expr::StringLit { .. } | Expr::IntLit { .. } => true,
+        Expr::Ident { .. } => {
+            is_bare_enum_member(enum_type, e)
+                || matches!(
+                    crate::lower::expr_to_literal_in(e, &ctx.const_lookup()),
+                    Some(crate::ir::Literal::String(s))
+                        if crate::catalog::enum_member_value(enum_type, &s).is_some()
+                )
+        }
+        _ => false,
+    }
+}
+
 /// Validate an argument bound to an enum-typed config param against the
 /// schema's member list. A bare identifier is an enum member (not a variable);
 /// an int is range-checked; anything else is rejected (config is constant-only).

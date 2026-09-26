@@ -262,7 +262,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         "Dampen",
         CallSpec {
             name: "Dampen",
-            gate_class: gc::PSEUDO_DAMPEN,
+            gate_class: gc::DAMPEN,
             params: vec![
                 CallParam::req("target", WirePort::Target, Type::Float),
                 CallParam::req("smoothTime", WirePort::SmoothTime, Type::Float),
@@ -297,7 +297,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         "Tween",
         CallSpec {
             name: "Tween",
-            gate_class: gc::PSEUDO_TWEEN,
+            gate_class: gc::TWEEN,
             params: vec![
                 CallParam::req("target", WirePort::Target, blend_variant()),
                 CallParam::req("duration", WirePort::Duration, Type::Float),
@@ -323,7 +323,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         "Timer",
         CallSpec {
             name: "Timer",
-            gate_class: gc::PSEUDO_TIMER,
+            gate_class: gc::STOPWATCH,
             params: vec![
                 CallParam::req("limit", WirePort::Limit, Type::Float),
                 CallParam::opt("restart", WirePort::Restart, Type::Exec),

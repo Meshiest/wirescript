@@ -72,7 +72,7 @@ fn emit_materializes_a_hand_built_bus() {
     let var_id = module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("a var node")
         .id;
     let w = module
@@ -170,7 +170,7 @@ fn an_unresolvable_bus_wire_fails_the_build() {
     let var_id = module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("a var node")
         .id;
     let w = module
@@ -253,7 +253,7 @@ fn suppression_leaves_var_tag_lookup_intact() {
     let var_id = module
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("a var node")
         .id;
     let w = module

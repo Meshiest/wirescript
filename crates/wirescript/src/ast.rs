@@ -1101,7 +1101,7 @@ pub enum Expr {
     /// Prefab file reference `$./rel/path.brz` (relative to the current source
     /// file) or `$/abs/path.brz` (filesystem-absolute). At emit the `.brz` is
     /// read, embedded via `World::add_prefab`, and the gate's `Prefab`
-    /// bundle_path_ref property is set to the resulting `Prefabs/Uploads/…`
+    /// path string is set to the resulting `Prefabs/Uploads/…`
     /// path. `path` is the source-level string after `$` (e.g. `./turret.brz`).
     PrefabRef {
         path: String,

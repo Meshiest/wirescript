@@ -17,7 +17,8 @@ use crate::types::coerce::{coerce, widening_join, CoerceRule};
 use crate::types::mono::unwrap_ref;
 
 use super::{
-    call_param_config_enum, check_args, check_stmt, coerces_at_a_baked_literal,
+    call_param_config_enum, call_param_wire_enum, check_args, check_stmt,
+    coerces_at_a_baked_literal, is_bare_enum_member,
     is_reference_type, op_operand_type, out_scope_key, output_record_type, resolve_op,
     resolve_type_expr, sig_of_callspec, target_name, type_param_mask, type_user_symbol_call,
     CallSignature, ExecMode, Param, ParamKind, SymbolInfo, SymbolKind, TypeCheckCtx,
@@ -1812,7 +1813,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
             Type::Entity
         }
         Expr::PrefabRef { path, range } => {
-            // A prefab file reference flows into a `bundle_path_ref` gate
+            // A prefab file reference flows into a gate's `Prefab` path
             // property; typed `Type::PrefabRef` (a compile-time-constant
             // reference — reaches the `any`-typed `prefab=` param via the
             // universal `Any` coercion rule). `.brz` is a prebuilt archive
@@ -1838,7 +1839,7 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
         }
         Expr::NestedPrefab { source, range } => {
             // Inline nested-prefab block `$``` ... ``` ` — like `PrefabRef`, it
-            // flows into a `bundle_path_ref` gate property; typed
+            // flows into a gate's `Prefab` path; typed
             // `Type::PrefabRef`, and (unlike `PrefabRef`) there's no `.brz`/WS019
             // path check. Additionally, type-check the enclosed source as its own
             // isolated program and surface its diagnostics shifted into this
@@ -2910,25 +2911,32 @@ fn infer_node(ctx: &mut TypeCheckCtx, e: &Expr) -> Type {
                     && arg_spec
                         .is_some_and(|c| c.receiver.is_some() && c.receiver_target_param().is_none()),
             );
-            // Side-effect: typecheck every arg, except enum-typed config args.
-            // `positional_arg_types` mirrors the positional args in order —
-            // used below to infer a generic user mod/chip call's type params
-            // from its arguments (builtin `find_call`s ignore it).
+            // Side-effect: typecheck every arg, except enum-typed config args
+            // and bare enum member names bound to a wire-enum param (neither is
+            // a variable). `positional_arg_types` mirrors the positional args
+            // in order — used below to infer a generic user mod/chip call's
+            // type params from its arguments (builtin `find_call`s ignore it).
             let mut pos = 0usize;
             let mut positional_arg_types: Vec<Type> = Vec::new();
+            let is_enum_name_arg = |c: &crate::catalog::calls::CallSpec,
+                                    p: &crate::catalog::calls::CallParam,
+                                    value: &Expr| {
+                call_param_config_enum(c, p).is_some()
+                    || call_param_wire_enum(c, p).is_some_and(|et| is_bare_enum_member(et, value))
+            };
             for a in args {
                 let is_config_enum = arg_spec.is_some_and(|c| match a {
-                    CallArg::Named { name, .. } => match c.params.iter().find(|p| p.name == name) {
-                        Some(p) => call_param_config_enum(c, p).is_some(),
+                    CallArg::Named { name, value, .. } => match c.params.iter().find(|p| p.name == name) {
+                        Some(p) => is_enum_name_arg(c, p, value),
                         // Not a declared param: a data-driven config attribute.
                         // Skip inference when it names an enum config field (the
                         // value is a bare member name, not a variable).
                         None => crate::catalog::config_field_enum_type(c.gate_class, name).is_some(),
                     },
-                    CallArg::Positional(_) => c
+                    CallArg::Positional(v) => c
                         .params
                         .get(pos_base + pos)
-                        .is_some_and(|p| call_param_config_enum(c, p).is_some()),
+                        .is_some_and(|p| is_enum_name_arg(c, p, v)),
                     CallArg::Spread(_) => false,
                 });
                 if matches!(a, CallArg::Positional(_)) {

@@ -1999,7 +1999,7 @@ fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId
         props.insert(*sym::INITIAL_VALUE, lit);
     }
     let store = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_VAR,
+        gate_class: gc::VAR,
         source_range: SourceRange::default(),
         ports: GateIO::var_storage(ty.clone()),
         properties: props,
@@ -2085,7 +2085,7 @@ fn write_signal_payload(ctx: &mut LowerCtx, sig: &str, value_expr: &Expr) {
 /// that expose `DataOut1..8` for an `await CustomEvent(...)` data capture.
 fn is_event_data_gate(ctx: &LowerCtx, node: NodeId) -> bool {
     ctx.builder.module.nodes.get(&node).is_some_and(|n| {
-        n.gate_class == gc::PSEUDO_CUSTOM_EVENT || n.gate_class == gc::PSEUDO_CUSTOM_EVENT_GLOBAL
+        n.gate_class == gc::CUSTOM_EVENT || n.gate_class == gc::CUSTOM_EVENT_GLOBAL
     })
 }
 
@@ -2125,7 +2125,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
 
     // 1. Create a static bool var for the armed flag (initially false)
     let armed_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::PSEUDO_VAR,
+        gate_class: gc::VAR,
         source_range: a.range.clone(),
         ports: GateIO::var_storage(Type::Bool),
         properties: {

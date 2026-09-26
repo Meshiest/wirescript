@@ -1,6 +1,6 @@
 use super::*;
 
-// NOTE: `has_gate(&r, "BrickComponentType_WireGraphPseudo_Unsupported")` never
+// NOTE: `has_gate(&r, "BrickComponentType_Unsupported")` never
 // matches any gate; the real gate-class constant (`gc::UNSUPPORTED`) is
 // `"_Unsupported"`, the exact string every other test in this suite checks
 // (see e.g. `lower::tests::basic`). A test using the prefixed spelling would
@@ -19,7 +19,7 @@ fn baked_init(r: &LowerResult, label: &str) -> Option<crate::ir::Literal> {
     r.module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|n| n.gate_class == "BrickComponentType_Var")
         .find(|n| {
             matches!(
                 n.properties.get(&crate::intern::sym::NAME_LABEL),
@@ -59,11 +59,11 @@ fn match_expression_lowers_to_select_tree_no_branch() {
          out area = match s { Circle(r) => r, Rect(w, h) => w, Empty => 0.0 }\n",
     );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"));
     // Expression form is pure: no exec Branch (that is the statement form).
-    assert!(!has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"));
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Branch"));
     // The real placeholder gate-class constant is `_Unsupported` (see this
-    // module's top note); a wrong string like `WireGraphPseudo_Unsupported`
+    // module's top note); a wrong string like `BrickComponentType_Unsupported`
     // would never match, so asserting against the real one keeps the check
     // load-bearing.
     assert!(!has_gate(&r, "_Unsupported"));
@@ -94,8 +94,8 @@ fn match_statement_lowers_to_branch_union() {
          }\n",
     );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"));
+    assert!(has_gate(&r, "BrickComponentType_Exec_Branch"));
+    assert!(has_gate(&r, "BrickComponentType_Exec_Union"));
     assert!(!has_gate(&r, "_Unsupported"));
 }
 
@@ -118,7 +118,7 @@ fn let_bound_construction_match_reads_full_superset() {
          }\n",
     );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"));
     assert!(!has_gate(&r, "_Unsupported"));
 }
 
@@ -166,7 +166,7 @@ fn multi_return_enum_mod_forwards_record() {
     // the scrutinee's tag was a fixed literal and the whole match folded to that
     // one branch's value - a silent miscompile with NO `_Unsupported` to catch it.
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        has_gate(&r, "BrickComponentType_Expr_Select"),
         "match on a multi-return enum must select at runtime, not fold to a fixed branch"
     );
 }
@@ -194,7 +194,7 @@ fn multi_return_record_mod_forwards_runtime_branch() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert!(
-        gate_count_labelled(&r, "BrickComponentType_WireGraphPseudo_Var", "__ret.x") >= 1,
+        gate_count_labelled(&r, "BrickComponentType_Var", "__ret.x") >= 1,
         "a multi-return record mod must allocate per-field return storage, not leak a literal"
     );
 }
@@ -206,7 +206,7 @@ fn if_let_lowers_to_branch_and_binds() {
     // `Binding::Input`, not the `__disc` + payload-slot `Binding::Record` a
     // pattern match reads (see `match_statement_lowers_to_branch_union`).
     // The negative assertion checks `_Unsupported`, not
-    // `WireGraphPseudo_Unsupported` (a string no gate ever carries, see this
+    // `BrickComponentType_Unsupported` (a string no gate ever carries, see this
     // module's top note); a failed capture bind would fall back to the real
     // placeholder constant, so this keeps the check load-bearing.
     let r = compile(
@@ -220,7 +220,7 @@ fn if_let_lowers_to_branch_and_binds() {
     assert_no_errors(&r);
     // The refutable head lowers through the shared match-statement path: a
     // `disc == Some` Branch, the then-arm on ExecOutA, the else on ExecOutB.
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"));
+    assert!(has_gate(&r, "BrickComponentType_Exec_Branch"));
     // No placeholder: `x` bound to `o`'s `__Some_0` payload slot, `emit r = x`
     // wired it. A failed bind would emit `_Unsupported` here.
     assert!(!has_gate(&r, "_Unsupported"));
@@ -241,9 +241,9 @@ fn single_level_let_else_binds_and_continues() {
          }\n",
     );
     assert_no_errors(&r);
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch"), 1);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_Branch"), 1);
     // No `Union`: the paths never rejoin (the `else` diverges).
-    assert!(!has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"));
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Union"));
     assert!(!has_gate(&r, "_Unsupported"));
 }
 
@@ -270,8 +270,8 @@ fn nested_let_else_tests_every_disc() {
     // Both discs tested: outer `oo.__disc == Some` AND inner
     // `oo.__Some_0.__disc == Some`. A one-Branch result is the silent-miscompile
     // regression (only the outer disc gated).
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch"), 2);
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"), 2);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_Branch"), 2);
+    assert_eq!(gate_count(&r, "BrickComponentType_Expr_CompareEqual"), 2);
     assert!(!has_gate(&r, "_Unsupported"));
 }
 
@@ -303,12 +303,12 @@ fn nested_match_statement_reads_inner_disc() {
     );
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"));
+    assert!(has_gate(&r, "BrickComponentType_Exec_Union"));
     // Outer switch (Leaf/Node) + inner switch (Some/None): two Branches each.
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch"), 4);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_Branch"), 4);
     // One `disc == k` compare per case, at both levels - the inner two only
     // exist because `__Node_0`'s nested `__disc` was reached and read.
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"), 4);
+    assert_eq!(gate_count(&r, "BrickComponentType_Expr_CompareEqual"), 4);
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn unit_variant_construction_bakes_a_literal_discriminant() {
     let r = compile("enum Dir { N, E, S, W }\nstatic var d: Dir = Dir.E\nout t = d.Discriminant\n");
     assert_no_errors(&r);
     // __disc backed by exactly one Pseudo_Var (the enum var), initialized to 1 (E).
-    assert!(gate_count(&r, "BrickComponentType_WireGraphPseudo_Var") >= 1);
+    assert!(gate_count(&r, "BrickComponentType_Var") >= 1);
     assert!(!has_gate(&r, "_Unsupported"));
     // Lock in the BAKED tag value: `Dir.E` is discriminant 1 (N=0, E=1, S=2,
     // W=3). A regression baking 0 (or any other variant's tag) fails here even
@@ -337,7 +337,7 @@ fn payload_variant_stores_disc_and_slot() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     // superset storage: __disc + __Circle_0 => at least 2 Pseudo_Var gates.
-    assert!(gate_count(&r, "BrickComponentType_WireGraphPseudo_Var") >= 2);
+    assert!(gate_count(&r, "BrickComponentType_Var") >= 2);
     // Lock in BOTH baked values: the tag (`Circle` is discriminant 1) and the
     // payload slot (the literal `5.0`). Count-only assertions can't catch a
     // tag/payload miscompile; these can.
@@ -381,7 +381,7 @@ fn mod_named_after_prelude_variant_lowers_to_the_mod_call() {
     assert_no_errors(&r);
     // The mod body ran: it reads `counter` at runtime.
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+        has_gate(&r, "BrickComponentType_Exec_Var_Get"),
         "`Ok()` must lower to the user mod call (reads `counter`), not a bare Result.Ok construction"
     );
     // And no Result enum record was built: an enum construction would allocate
@@ -460,7 +460,7 @@ fn from_int_wires_runtime_disc_and_matches() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        has_gate(&r, "BrickComponentType_Expr_Select"),
         "a match on a FromInt value must build a real Select tree keyed on __disc"
     );
     // `__disc` is a runtime wire, NOT a baked Pseudo_Var tag: no `Shape.__disc`
@@ -487,7 +487,7 @@ fn const_from_int_match_elides_to_taken_arm() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        !has_gate(&r, "BrickComponentType_Expr_Select"),
         "a const FromInt scrutinee must const-elide, not build a Select tree"
     );
 }
@@ -504,7 +504,7 @@ fn enum_to_integer_folds_constant_variant_no_gate() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_EnumToInteger"),
+        !has_gate(&r, "BrickComponentType_Expr_EnumToInteger"),
         "a constant EnumToInt must fold, not emit the gate"
     );
 }
@@ -520,7 +520,7 @@ fn enum_to_integer_runtime_emits_the_gate() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_EnumToInteger"),
+        gate_count(&r, "BrickComponentType_Expr_EnumToInteger"),
         1,
         "a runtime EnumToInt must emit exactly one gate"
     );
@@ -540,11 +540,11 @@ fn integer_to_enum_const_folds_to_a_record_no_gate() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_IntegerToEnum"),
+        !has_gate(&r, "BrickComponentType_Expr_IntegerToEnum"),
         "a constant IntToEnum must fold to a record, not emit the gate"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        !has_gate(&r, "BrickComponentType_Expr_Select"),
         "a const IntToEnum scrutinee must const-elide, not build a Select tree"
     );
 }
@@ -563,12 +563,12 @@ fn integer_to_enum_runtime_emits_gate_and_matches_on_the_tag() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Expr_IntegerToEnum"),
+        gate_count(&r, "BrickComponentType_Expr_IntegerToEnum"),
         1,
         "a runtime IntToEnum must emit exactly one gate"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        has_gate(&r, "BrickComponentType_Expr_Select"),
         "a match on a runtime IntToEnum value must build a Select tree keyed on __disc"
     );
 }
@@ -587,11 +587,11 @@ fn const_scrutinee_match_folds_to_taken_arm() {
     );
     assert_no_errors(&r);
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+        !has_gate(&r, "BrickComponentType_Expr_Select"),
         "a const-scrutinee match must not build a Select tree"
     );
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"),
+        !has_gate(&r, "BrickComponentType_Exec_Branch"),
         "a const-scrutinee match must not build a Branch"
     );
     assert!(!has_gate(&r, "_Unsupported"));
@@ -610,7 +610,7 @@ fn nofold_scrutinee_match_still_builds_the_tree() {
          out area = match s { Circle(r) => r, Empty => 0.0 }\n",
     );
     assert_no_errors(&r);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"));
 }
 
 #[test]
@@ -632,8 +632,8 @@ fn const_scrutinee_match_statement_folds_to_taken_arm() {
          }\n",
     );
     assert_no_errors(&r);
-    assert!(!has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"));
-    assert!(!has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"));
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Branch"));
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Union"));
     assert!(!has_gate(&r, "_Unsupported"));
 }
 
@@ -769,13 +769,13 @@ fn enum_merged_across_branches_reads_back_by_tag() {
     // One Pseudo_Var carries `s.__disc` - both branches write that same gate,
     // not a per-branch copy (a per-branch disc would defeat the join).
     assert_eq!(
-        gate_count_labelled(&r, "BrickComponentType_WireGraphPseudo_Var", "s.__disc"),
+        gate_count_labelled(&r, "BrickComponentType_Var", "s.__disc"),
         1,
         "s.__disc must be exactly one shared Pseudo_Var"
     );
     // Both arms Var_Set the shared disc (plus the payload-slot sets) - so a
     // read at the join sees the branch that ran.
-    let disc_writes = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
+    let disc_writes = gate_count(&r, "BrickComponentType_Exec_Var_Set");
     assert!(
         disc_writes >= 2,
         "expected both branches to Var_Set the shared __disc, got {disc_writes}"
@@ -815,10 +815,10 @@ fn enum_returned_from_mod_through_storage_carries_the_tag() {
     // tag (a real Branch tree), proving the returned value carries the disc that
     // the mod's branch-merge wrote - not a scalar fall-through of one variant.
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"),
+        has_gate(&r, "BrickComponentType_Exec_Branch"),
         "match on a mod-returned enum must build a real Branch tree on its tag"
     );
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"));
+    assert!(has_gate(&r, "BrickComponentType_Exec_Union"));
 }
 
 #[test]
@@ -851,8 +851,8 @@ fn generic_enum_with_enum_arg_lowers_nested_match_to_real_gates() {
     // Outer switch (W / Empty) + inner switch (Red / Green / Blue): the three
     // inner `disc == k` compares only exist because `__W_0`'s nested Color
     // `__disc` record was reached and read through the generic instantiation.
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"), 5);
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch"), 5);
+    assert_eq!(gate_count(&r, "BrickComponentType_Expr_CompareEqual"), 5);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_Branch"), 5);
     // The outer tag bakes W (discriminant 0), and the nested Color record exists
     // as its own backing gate (a `Pseudo_Var` labelled through the `__W_0` slot).
     assert_eq!(
@@ -861,7 +861,7 @@ fn generic_enum_with_enum_arg_lowers_nested_match_to_real_gates() {
         "b.__disc must bake W's discriminant (0)"
     );
     assert!(
-        gate_count_labelled(&r, "BrickComponentType_WireGraphPseudo_Var", "b.__W_0.__disc") == 1,
+        gate_count_labelled(&r, "BrickComponentType_Var", "b.__W_0.__disc") == 1,
         "the W payload must lay out as a nested Color record with its own __disc gate"
     );
     // The nested Color initializer must bake THROUGH to the inner `__disc`:
@@ -898,10 +898,10 @@ fn generic_enum_enum_arg_layout_matches_nongeneric() {
     let g = program("enum Wrap<T> { W(T), Empty }", "Wrap<Color>");
     let n = program("enum Outer { W(Color), Empty }", "Outer");
     for class in [
-        "BrickComponentType_WireGraph_Expr_CompareEqual",
-        "BrickComponentType_WireGraph_Exec_Branch",
-        "BrickComponentType_WireGraphPseudo_Var",
-        "BrickComponentType_WireGraph_Exec_Union",
+        "BrickComponentType_Expr_CompareEqual",
+        "BrickComponentType_Exec_Branch",
+        "BrickComponentType_Var",
+        "BrickComponentType_Exec_Union",
     ] {
         assert_eq!(
             gate_count(&g, class),
@@ -933,7 +933,7 @@ fn scalar_payload_generic_enum_still_lowers_clean() {
     assert!(!has_gate(&r, "_Unsupported"));
     // The Some(int) payload is a scalar slot, so only the outer Some/None disc
     // is switched - no nested disc read.
-    assert_eq!(gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch"), 2);
+    assert_eq!(gate_count(&r, "BrickComponentType_Exec_Branch"), 2);
     assert_eq!(
         baked_init(&r, "b.__disc"),
         Some(crate::ir::Literal::Int(0)),
@@ -1084,7 +1084,7 @@ fn builtin_game_enum_stored_var_discriminant_reads_disc_no_placeholder() {
         Some(crate::ir::Literal::Int(linear)),
         "e.__disc must bake Linear's real schema discriminant ({linear}), not an auto-numbered index"
     );
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_CompareEqual"));
     assert!(
         int_operands(&r).contains(&bounce),
         "the comparison's other side must bake Bounce's real schema discriminant ({bounce}), got {:?}",
@@ -1138,15 +1138,15 @@ fn builtin_game_enum_exhaustive_match_lowers_like_a_user_enum() {
     for r in [&builtin, &user] {
         assert_no_errors(r);
         assert!(!has_gate(r, "_Unsupported"));
-        assert!(has_gate(r, "BrickComponentType_WireGraph_Exec_Branch"));
-        assert!(has_gate(r, "BrickComponentType_WireGraph_Exec_Union"));
+        assert!(has_gate(r, "BrickComponentType_Exec_Branch"));
+        assert!(has_gate(r, "BrickComponentType_Exec_Union"));
     }
     for class in [
-        "BrickComponentType_WireGraph_Expr_CompareEqual",
-        "BrickComponentType_WireGraph_Exec_Branch",
-        "BrickComponentType_WireGraphPseudo_Var",
-        "BrickComponentType_WireGraph_Exec_Union",
-        "BrickComponentType_WireGraph_Exec_Var_Set",
+        "BrickComponentType_Expr_CompareEqual",
+        "BrickComponentType_Exec_Branch",
+        "BrickComponentType_Var",
+        "BrickComponentType_Exec_Union",
+        "BrickComponentType_Exec_Var_Set",
     ] {
         assert_eq!(
             gate_count(&builtin, class),
@@ -1519,7 +1519,7 @@ fn enum_element_array_decomposes_into_parallel_columns() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_ArrayVar"),
+        gate_count(&r, "BrickComponentType_ArrayVar"),
         3,
         "__disc + __A_0 + __B_0"
     );
@@ -1539,12 +1539,12 @@ fn pushing_an_enum_onto_an_array_carries_its_value() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        gate_count(&r, "BrickComponentType_Exec_ArrayVar_Push"),
         3,
         "one push per parallel column"
     );
     for (id, n) in &r.module.nodes {
-        if n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push" {
+        if n.gate_class == "BrickComponentType_Exec_ArrayVar_Push" {
             let wired = r
                 .module
                 .wires
@@ -1568,7 +1568,7 @@ fn enum_element_map_decomposes_into_parallel_columns() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        gate_count(&r, "BrickComponentType_MapVar"),
         3,
         "__disc + __A_0 + __B_0"
     );
@@ -1595,7 +1595,7 @@ fn reading_an_enum_array_element_projects_its_tag() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "diagnostics: {:?}", r.diagnostics);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+        gate_count(&r, "BrickComponentType_Exec_ArrayVar_Get"),
         3,
         "one read per parallel column"
     );
@@ -1617,7 +1617,7 @@ fn enum_field_of_a_record_array_gets_parallel_columns() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_ArrayVar"),
+        gate_count(&r, "BrickComponentType_ArrayVar"),
         4,
         "s.__disc + s.__A_0 + s.__B_0 + k"
     );
@@ -1636,7 +1636,7 @@ fn pushing_a_record_with_an_enum_field_writes_every_column() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Push"),
+        gate_count(&r, "BrickComponentType_Exec_ArrayVar_Push"),
         4,
         "one push per parallel column"
     );
@@ -1652,7 +1652,7 @@ fn enum_field_of_a_record_map_gets_parallel_columns() {
     );
     assert_no_errors(&r);
     assert_eq!(
-        gate_count(&r, "BrickComponentType_WireGraphPseudo_MapVar"),
+        gate_count(&r, "BrickComponentType_MapVar"),
         4,
         "s.__disc + s.__A_0 + s.__B_0 + k"
     );
@@ -1848,7 +1848,7 @@ fn unsafe_payload_write_sets_only_the_named_slot() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(written_var_labels(&r), vec!["e.__B_s".to_string()]);
-    assert!(!has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"));
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Branch"));
 }
 
 #[test]
@@ -1864,7 +1864,7 @@ fn unsafe_payload_read_gets_the_named_slot() {
     assert!(!has_gate(&r, "_Unsupported"));
     assert_eq!(written_var_labels(&r), vec!["got".to_string()]);
     // The value read comes from the payload slot's own gate.
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"));
+    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"));
 }
 
 #[test]
@@ -1884,7 +1884,7 @@ fn is_lowers_like_a_discriminant_comparison() {
     assert!(!has_gate(&with_is, "_Unsupported"));
     assert!(has_gate(
         &with_is,
-        "BrickComponentType_WireGraph_Expr_CompareEqual"
+        "BrickComponentType_Expr_CompareEqual"
     ));
     assert_eq!(
         gate_class_counts(&with_is),
@@ -1903,7 +1903,7 @@ fn is_on_a_constant_enum_folds_away() {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"));
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Expr_CompareEqual"),
+        !has_gate(&r, "BrickComponentType_Expr_CompareEqual"),
         "a constant `is` must fold, not emit a compare"
     );
 }

@@ -2,7 +2,7 @@
   "generatedAt": "2026-08-23T00:39:39.329Z",
   "probeVersion": 5,
   "gates": {
-    "BrickComponentType_WireGraph_Expr_CompareEqual": {
+    "BrickComponentType_Expr_CompareEqual": {
       "cases": [
         {
           "inputs": [
@@ -612,7 +612,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_CompareNotEqual": {
+    "BrickComponentType_Expr_CompareNotEqual": {
       "cases": [
         {
           "inputs": [
@@ -905,7 +905,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_LogicalAND": {
+    "BrickComponentType_Expr_LogicalAND": {
       "cases": [
         {
           "inputs": [
@@ -1159,7 +1159,7 @@
         }
       ]
     },
-    "BrickComponentType_WireGraph_Expr_LogicalOR": {
+    "BrickComponentType_Expr_LogicalOR": {
       "cases": [
         {
           "inputs": [
@@ -1304,7 +1304,7 @@
         }
       ]
     },
-    "BrickComponentType_WireGraph_Expr_LogicalXOR": {
+    "BrickComponentType_Expr_LogicalXOR": {
       "cases": [
         {
           "inputs": [
@@ -1373,7 +1373,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_LogicalNOT": {
+    "BrickComponentType_Expr_LogicalNOT": {
       "cases": [
         {
           "inputs": [
@@ -1402,7 +1402,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_CompareLess": {
+    "BrickComponentType_Expr_CompareLess": {
       "cases": [
         {
           "inputs": [
@@ -1676,7 +1676,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_CompareLessOrEqual": {
+    "BrickComponentType_Expr_CompareLessOrEqual": {
       "cases": [
         {
           "inputs": [
@@ -1937,7 +1937,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_CompareGreater": {
+    "BrickComponentType_Expr_CompareGreater": {
       "cases": [
         {
           "inputs": [
@@ -2198,7 +2198,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual": {
+    "BrickComponentType_Expr_CompareGreaterOrEqual": {
       "cases": [
         {
           "inputs": [
@@ -2459,7 +2459,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_Select": {
+    "BrickComponentType_Expr_Select": {
       "cases": [
         {
           "inputs": [
@@ -2641,7 +2641,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Exec_Branch": {
+    "BrickComponentType_Exec_Branch": {
       "cases": [
         {
           "inputs": [
@@ -2823,7 +2823,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAdd": {
+    "BrickComponentType_Expr_MathAdd": {
       "cases": [
         {
           "inputs": [
@@ -3145,7 +3145,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathSubtract": {
+    "BrickComponentType_Expr_MathSubtract": {
       "cases": [
         {
           "inputs": [
@@ -3374,7 +3374,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathMultiply": {
+    "BrickComponentType_Expr_MathMultiply": {
       "cases": [
         {
           "inputs": [
@@ -3603,7 +3603,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathDivide": {
+    "BrickComponentType_Expr_MathDivide": {
       "cases": [
         {
           "inputs": [
@@ -3848,7 +3848,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathModulo": {
+    "BrickComponentType_Expr_MathModulo": {
       "cases": [
         {
           "inputs": [
@@ -4109,7 +4109,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_Concatenate": {
+    "BrickComponentType_Expr_String_Concatenate": {
       "cases": [
         {
           "inputs": [
@@ -4210,7 +4210,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_FormatText": {
+    "BrickComponentType_Expr_String_FormatText": {
       "cases": [
         {
           "inputs": [
@@ -4347,7 +4347,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_Length": {
+    "BrickComponentType_Expr_String_Length": {
       "cases": [
         {
           "inputs": [
@@ -4412,7 +4412,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_ToLower": {
+    "BrickComponentType_Expr_String_ToLower": {
       "cases": [
         {
           "inputs": [
@@ -4477,7 +4477,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_ToUpper": {
+    "BrickComponentType_Expr_String_ToUpper": {
       "cases": [
         {
           "inputs": [
@@ -4542,7 +4542,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_Trim": {
+    "BrickComponentType_Expr_String_Trim": {
       "cases": [
         {
           "inputs": [
@@ -4607,7 +4607,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_Contains": {
+    "BrickComponentType_Expr_String_Contains": {
       "cases": [
         {
           "inputs": [
@@ -4676,7 +4676,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_StartsWith": {
+    "BrickComponentType_Expr_String_StartsWith": {
       "cases": [
         {
           "inputs": [
@@ -4745,7 +4745,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_EndsWith": {
+    "BrickComponentType_Expr_String_EndsWith": {
       "cases": [
         {
           "inputs": [
@@ -4814,7 +4814,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_Substring": {
+    "BrickComponentType_Expr_String_Substring": {
       "cases": [
         {
           "inputs": [
@@ -4899,7 +4899,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_Find": {
+    "BrickComponentType_Expr_String_Find": {
       "cases": [
         {
           "inputs": [
@@ -4952,7 +4952,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_Replace": {
+    "BrickComponentType_Expr_String_Replace": {
       "cases": [
         {
           "inputs": [
@@ -5017,7 +5017,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_ParseInt": {
+    "BrickComponentType_Expr_String_ParseInt": {
       "cases": [
         {
           "inputs": [
@@ -5106,7 +5106,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_String_ParseNumber": {
+    "BrickComponentType_Expr_String_ParseNumber": {
       "cases": [
         {
           "inputs": [
@@ -5195,7 +5195,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MakeVector": {
+    "BrickComponentType_Expr_MakeVector": {
       "cases": [
         {
           "inputs": [
@@ -5220,7 +5220,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MakeRotation": {
+    "BrickComponentType_Expr_MakeRotation": {
       "cases": [
         {
           "inputs": [
@@ -5245,7 +5245,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MakeQuaternion": {
+    "BrickComponentType_Expr_MakeQuaternion": {
       "cases": [
         {
           "inputs": [
@@ -5274,7 +5274,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MakeColor": {
+    "BrickComponentType_Expr_MakeColor": {
       "cases": [
         {
           "inputs": [
@@ -5303,7 +5303,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MakeColorSRGB": {
+    "BrickComponentType_Expr_MakeColorSRGB": {
       "cases": [
         {
           "inputs": [
@@ -5332,7 +5332,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MakeColorHex": {
+    "BrickComponentType_Expr_MakeColorHex": {
       "cases": [
         {
           "inputs": [
@@ -5349,7 +5349,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_ColorToHex": {
+    "BrickComponentType_Expr_ColorToHex": {
       "cases": [
         {
           "inputs": [
@@ -5366,7 +5366,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecScale": {
+    "BrickComponentType_Expr_VecScale": {
       "cases": [
         {
           "inputs": [
@@ -5403,7 +5403,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecDotProduct": {
+    "BrickComponentType_Expr_VecDotProduct": {
       "cases": [
         {
           "inputs": [
@@ -5424,7 +5424,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecCrossProduct": {
+    "BrickComponentType_Expr_VecCrossProduct": {
       "cases": [
         {
           "inputs": [
@@ -5445,7 +5445,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecMagnitudeSquared": {
+    "BrickComponentType_Expr_VecMagnitudeSquared": {
       "cases": [
         {
           "inputs": [
@@ -5462,7 +5462,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecDistanceSquared": {
+    "BrickComponentType_Expr_VecDistanceSquared": {
       "cases": [
         {
           "inputs": [
@@ -5483,7 +5483,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_RotateVector": {
+    "BrickComponentType_Expr_RotateVector": {
       "cases": [
         {
           "inputs": [
@@ -5536,7 +5536,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_InvertRotation": {
+    "BrickComponentType_Expr_InvertRotation": {
       "cases": [
         {
           "inputs": [
@@ -5553,7 +5553,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_QuatDotProduct": {
+    "BrickComponentType_Expr_QuatDotProduct": {
       "cases": [
         {
           "inputs": [
@@ -5574,7 +5574,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecMagnitude": {
+    "BrickComponentType_Expr_VecMagnitude": {
       "cases": [
         {
           "inputs": [
@@ -5591,7 +5591,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecNormalize": {
+    "BrickComponentType_Expr_VecNormalize": {
       "cases": [
         {
           "inputs": [
@@ -5608,7 +5608,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_VecDistance": {
+    "BrickComponentType_Expr_VecDistance": {
       "cases": [
         {
           "inputs": [
@@ -5629,7 +5629,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_QuatSlerp": {
+    "BrickComponentType_Expr_QuatSlerp": {
       "cases": [
         {
           "inputs": [
@@ -5654,7 +5654,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_QuatFromAxisAngle": {
+    "BrickComponentType_Expr_QuatFromAxisAngle": {
       "cases": [
         {
           "inputs": [
@@ -5675,7 +5675,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_QuatAngleBetween": {
+    "BrickComponentType_Expr_QuatAngleBetween": {
       "cases": [
         {
           "inputs": [
@@ -5696,7 +5696,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_QuatBetween": {
+    "BrickComponentType_Expr_QuatBetween": {
       "cases": [
         {
           "inputs": [
@@ -5717,7 +5717,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_DirectionToRotation": {
+    "BrickComponentType_Expr_DirectionToRotation": {
       "cases": [
         {
           "inputs": [
@@ -5734,7 +5734,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_RotationToDirection": {
+    "BrickComponentType_Expr_RotationToDirection": {
       "cases": [
         {
           "inputs": [
@@ -5751,7 +5751,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_ColorBlend": {
+    "BrickComponentType_Expr_ColorBlend": {
       "cases": [
         {
           "inputs": [
@@ -5776,7 +5776,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathSin": {
+    "BrickComponentType_Expr_MathSin": {
       "cases": [
         {
           "inputs": [
@@ -5793,7 +5793,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathCos": {
+    "BrickComponentType_Expr_MathCos": {
       "cases": [
         {
           "inputs": [
@@ -5810,7 +5810,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathTan": {
+    "BrickComponentType_Expr_MathTan": {
       "cases": [
         {
           "inputs": [
@@ -5827,7 +5827,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAsin": {
+    "BrickComponentType_Expr_MathAsin": {
       "cases": [
         {
           "inputs": [
@@ -5844,7 +5844,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAcos": {
+    "BrickComponentType_Expr_MathAcos": {
       "cases": [
         {
           "inputs": [
@@ -5861,7 +5861,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAtan": {
+    "BrickComponentType_Expr_MathAtan": {
       "cases": [
         {
           "inputs": [
@@ -5878,7 +5878,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathSinh": {
+    "BrickComponentType_Expr_MathSinh": {
       "cases": [
         {
           "inputs": [
@@ -5895,7 +5895,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathCosh": {
+    "BrickComponentType_Expr_MathCosh": {
       "cases": [
         {
           "inputs": [
@@ -5912,7 +5912,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathTanh": {
+    "BrickComponentType_Expr_MathTanh": {
       "cases": [
         {
           "inputs": [
@@ -5929,7 +5929,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAsinh": {
+    "BrickComponentType_Expr_MathAsinh": {
       "cases": [
         {
           "inputs": [
@@ -5946,7 +5946,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAcosh": {
+    "BrickComponentType_Expr_MathAcosh": {
       "cases": [
         {
           "inputs": [
@@ -5963,7 +5963,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAtanh": {
+    "BrickComponentType_Expr_MathAtanh": {
       "cases": [
         {
           "inputs": [
@@ -5980,7 +5980,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathExp": {
+    "BrickComponentType_Expr_MathExp": {
       "cases": [
         {
           "inputs": [
@@ -5997,7 +5997,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathLn": {
+    "BrickComponentType_Expr_MathLn": {
       "cases": [
         {
           "inputs": [
@@ -6014,7 +6014,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathSqrt": {
+    "BrickComponentType_Expr_MathSqrt": {
       "cases": [
         {
           "inputs": [
@@ -6031,7 +6031,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAbs": {
+    "BrickComponentType_Expr_MathAbs": {
       "cases": [
         {
           "inputs": [
@@ -6060,7 +6060,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathSign": {
+    "BrickComponentType_Expr_MathSign": {
       "cases": [
         {
           "inputs": [
@@ -6137,7 +6137,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathNegate": {
+    "BrickComponentType_Expr_MathNegate": {
       "cases": [
         {
           "inputs": [
@@ -6166,7 +6166,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathDegreesToRadians": {
+    "BrickComponentType_Expr_MathDegreesToRadians": {
       "cases": [
         {
           "inputs": [
@@ -6183,7 +6183,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathRadiansToDegrees": {
+    "BrickComponentType_Expr_MathRadiansToDegrees": {
       "cases": [
         {
           "inputs": [
@@ -6200,7 +6200,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathAtan2": {
+    "BrickComponentType_Expr_MathAtan2": {
       "cases": [
         {
           "inputs": [
@@ -6221,7 +6221,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathPow": {
+    "BrickComponentType_Expr_MathPow": {
       "cases": [
         {
           "inputs": [
@@ -6242,7 +6242,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathMin": {
+    "BrickComponentType_Expr_MathMin": {
       "cases": [
         {
           "inputs": [
@@ -6279,7 +6279,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathMax": {
+    "BrickComponentType_Expr_MathMax": {
       "cases": [
         {
           "inputs": [
@@ -6316,7 +6316,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathLogBase": {
+    "BrickComponentType_Expr_MathLogBase": {
       "cases": [
         {
           "inputs": [
@@ -6337,7 +6337,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathClamp": {
+    "BrickComponentType_Expr_MathClamp": {
       "cases": [
         {
           "inputs": [
@@ -6382,7 +6382,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_MathModuloFloored": {
+    "BrickComponentType_Expr_MathModuloFloored": {
       "cases": [
         {
           "inputs": [
@@ -6419,7 +6419,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseAND": {
+    "BrickComponentType_Expr_BitwiseAND": {
       "cases": [
         {
           "inputs": [
@@ -6440,7 +6440,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseOR": {
+    "BrickComponentType_Expr_BitwiseOR": {
       "cases": [
         {
           "inputs": [
@@ -6461,7 +6461,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseXOR": {
+    "BrickComponentType_Expr_BitwiseXOR": {
       "cases": [
         {
           "inputs": [
@@ -6482,7 +6482,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseNOT": {
+    "BrickComponentType_Expr_BitwiseNOT": {
       "cases": [
         {
           "inputs": [
@@ -6499,7 +6499,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseNAND": {
+    "BrickComponentType_Expr_BitwiseNAND": {
       "cases": [
         {
           "inputs": [
@@ -6520,7 +6520,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseNOR": {
+    "BrickComponentType_Expr_BitwiseNOR": {
       "cases": [
         {
           "inputs": [
@@ -6541,7 +6541,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseShiftLeft": {
+    "BrickComponentType_Expr_BitwiseShiftLeft": {
       "cases": [
         {
           "inputs": [
@@ -6562,7 +6562,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseShiftRight": {
+    "BrickComponentType_Expr_BitwiseShiftRight": {
       "cases": [
         {
           "inputs": [
@@ -6583,7 +6583,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_BitwiseBitCount": {
+    "BrickComponentType_Expr_BitwiseBitCount": {
       "cases": [
         {
           "inputs": [
@@ -6600,7 +6600,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_Round": {
+    "BrickComponentType_Expr_Round": {
       "cases": [
         {
           "inputs": [
@@ -6629,7 +6629,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_Floor": {
+    "BrickComponentType_Expr_Floor": {
       "cases": [
         {
           "inputs": [
@@ -6658,7 +6658,7 @@
       ],
       "rules": []
     },
-    "BrickComponentType_WireGraph_Expr_Ceil": {
+    "BrickComponentType_Expr_Ceil": {
       "cases": [
         {
           "inputs": [

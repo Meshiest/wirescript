@@ -59,7 +59,7 @@ on start {
     assert_eq!(bytes, &inner, "embedded bytes must equal the referenced .brz");
 
     // Round-trip through .brz: the reader enumerates the same embedded path
-    // (the spawner component's `Prefab` bundle_path_ref points at it).
+    // (the spawner component's `Prefab` path string points at it).
     let expected_path = path.clone();
     let out = world.to_brz_vec().unwrap();
     let reader = brdb::Brz::read_slice(&out).unwrap().into_reader();

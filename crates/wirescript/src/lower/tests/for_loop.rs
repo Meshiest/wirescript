@@ -165,7 +165,7 @@ fn the_collection_source_drives_the_shells_ref_pin() {
         .expect("the shell's ArrayVarRef is unwired");
     assert_eq!(
         r.module.nodes[&wire.source.node_id].gate_class,
-        gc::PSEUDO_ARRAY_VAR,
+        gc::ARRAY_VAR,
         "the shell must take the array VARIABLE's ref, not a computed value"
     );
 }
@@ -272,7 +272,7 @@ fn a_var_declared_in_the_body_lives_inside_the_plane() {
         child
             .nodes
             .values()
-            .any(|n| n.gate_class == gc::PSEUDO_VAR),
+            .any(|n| n.gate_class == gc::VAR),
         "the body-local `var` must be a gate inside the plane"
     );
 }
@@ -738,7 +738,7 @@ fn a_runtime_step_divides_in_float_before_the_ceiling() {
         .expect("nothing drives the Ceil's Input");
     let divide = &r.module.nodes[&feed.source.node_id];
     assert_eq!(
-        divide.gate_class, "BrickComponentType_WireGraph_Expr_MathDivide",
+        divide.gate_class, "BrickComponentType_Expr_MathDivide",
         "the Ceil must be fed by the ceil-divide itself"
     );
     assert_eq!(

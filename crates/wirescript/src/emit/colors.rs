@@ -53,10 +53,29 @@ const C_STRUCT: Color = Color {
     b: 28,
 }; // vector/struct/entity — orange
 
+/// Storage-style gates (vars, buffers, queues, smoothing, stopwatch, custom
+/// events), coloured by the type of their `Value`/`Output` port.
+const TYPE_COLORED_STORAGE: &[&str] = &[
+    crate::ir::gate_class::VAR,
+    crate::ir::gate_class::ARRAY_VAR,
+    crate::ir::gate_class::MAP_VAR,
+    crate::ir::gate_class::BUFFER_TICKS,
+    crate::ir::gate_class::BUFFER_SECONDS,
+    crate::ir::gate_class::QUEUE_TICKS,
+    crate::ir::gate_class::QUEUE_SECONDS,
+    crate::ir::gate_class::DAMPEN,
+    crate::ir::gate_class::TWEEN,
+    crate::ir::gate_class::STOPWATCH,
+    crate::ir::gate_class::CUSTOM_EVENT,
+    crate::ir::gate_class::CUSTOM_EVENT_GLOBAL,
+    crate::ir::gate_class::SEND_CUSTOM_EVENT,
+    crate::ir::gate_class::SEND_CUSTOM_EVENT_GLOBAL,
+];
+
 /// Choose a brick colour for `node` following the scheme:
 /// - Events + chip I/O → yellow
 /// - Branch / union / select → white
-/// - Pseudo-storage vars → coloured by inner type
+/// - Storage gates ([`TYPE_COLORED_STORAGE`]) → coloured by inner type
 /// - Var_Get / Var_Set / Var_Increment → coloured by the var they touch
 /// - Other exec-taking statement gates → grey
 /// - Pure expressions → coloured by their output type
@@ -79,10 +98,7 @@ pub(super) fn color_for_node(
     {
         return C_WHITE;
     }
-    let is_pseudo = node
-        .gate_class
-        .starts_with("BrickComponentType_WireGraphPseudo");
-    if is_pseudo {
+    if TYPE_COLORED_STORAGE.contains(&node.gate_class) {
         if let Some(t) = node
             .ports
             .outputs
@@ -207,7 +223,7 @@ mod tests {
         Node {
             id: NodeId::fresh(),
             kind: NodeKind::Gate,
-            gate_class: "BrickComponentType_WireGraph_Exec_MapVar_Get",
+            gate_class: "BrickComponentType_Exec_MapVar_Get",
             properties: std::sync::Arc::new(crate::collections::HashMap::default()),
             ports: std::sync::Arc::new(GateIO {
                 inputs: vec![

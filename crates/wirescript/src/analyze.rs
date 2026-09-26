@@ -16,10 +16,10 @@ use crate::ir::port_registry::WirePort;
 use crate::ir::{Module, Node, NodeId, NodeKind};
 
 const BARRIER_CLASSES: &[&str] = &[
-    "BrickComponentType_WireGraphPseudo_BufferTicks",
-    "BrickComponentType_WireGraphPseudo_BufferSeconds",
-    "BrickComponentType_WireGraphPseudo_QueueTicks",
-    "BrickComponentType_WireGraphPseudo_QueueSeconds",
+    "BrickComponentType_BufferTicks",
+    "BrickComponentType_BufferSeconds",
+    "BrickComponentType_QueueTicks",
+    "BrickComponentType_QueueSeconds",
 ];
 
 #[derive(Debug, Default)]
@@ -233,12 +233,10 @@ fn edge_label(m: &Module, src: NodeId, dst: NodeId) -> String {
     }
 }
 
-/// Strip the noisy `BrickComponentType_*` prefix so the trace reads `Math_Add`
-/// instead of `BrickComponentType_WireGraph_Math_Add`.
+/// Strip the noisy `BrickComponentType_*` prefix so the trace reads
+/// `Expr_MathAdd` instead of `BrickComponentType_Expr_MathAdd`.
 fn short_class(class: &str) -> &str {
     for prefix in [
-        "BrickComponentType_WireGraphPseudo_",
-        "BrickComponentType_WireGraph_",
         "BrickComponentType_Internal_",
         "BrickComponentType_",
     ] {

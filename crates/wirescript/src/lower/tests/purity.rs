@@ -25,7 +25,7 @@ let y = x + 1
 out z = y");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    let var_get_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Var_Get");
+    let var_get_count = gate_count(&r, "BrickComponentType_Exec_Var_Get");
     assert_eq!(var_get_count, 0,
         "pure context should have zero Exec_Var_Get gates, found {var_get_count}");
 }
@@ -38,9 +38,9 @@ let r = if x > 0 then 1 else 0
 out y = r");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"),
         "pure if expression should produce Expr_Select gate");
-    assert!(!has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"),
+    assert!(!has_gate(&r, "BrickComponentType_Exec_Branch"),
         "pure if expression should not produce Exec_Branch gate");
 }
 
@@ -52,7 +52,7 @@ in player: character
 on player { let y = x + 1 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
         "exec context should use Exec_Var_Get to read a var");
 }
 
@@ -64,7 +64,7 @@ in player: character
 on player { x = 42 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Set"),
         "exec context should use Exec_Var_Set to write a var");
 }
 
@@ -76,7 +76,7 @@ in player: character
 on player { if x > 0 { x = 1 } }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Branch"),
         "exec if statement should produce Exec_Branch gate");
 }
 
@@ -88,7 +88,7 @@ in player: character
 on player { arr.push(42); let v = arr[0] }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_ArrayVar_Get"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_ArrayVar_Get"),
         "exec array indexing should produce Exec_ArrayVar_Get gate");
 }
 
@@ -100,11 +100,11 @@ in player: character
 on player { let y = x * 2 + 1 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathMultiply"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathMultiply"),
         "should have Expr_MathMultiply for x * 2");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should have Expr_MathAdd for ... + 1");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
         "reading var in exec context should produce Exec_Var_Get");
 }
 
@@ -116,9 +116,9 @@ in player: character
 on player { let r = if x > 0 then 1 else 0 }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_Select"),
+    assert!(has_gate(&r, "BrickComponentType_Expr_Select"),
         "if expression should produce Expr_Select even in exec context");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
         "reading var x in exec context should produce Exec_Var_Get");
 }
 
@@ -147,8 +147,8 @@ in player: character
 on player { inc(v) }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    let has_set = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set");
-    let has_incr = has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Increment");
+    let has_set = has_gate(&r, "BrickComponentType_Exec_Var_Set");
+    let has_incr = has_gate(&r, "BrickComponentType_Exec_Var_Increment");
     assert!(has_set || has_incr,
         "mod with ref param should produce Exec_Var_Set or Exec_Var_Increment");
 }
@@ -177,7 +177,7 @@ in player: character
 on player { let r = { let a = x + 1; a } }");
     assert!(r.diagnostics.iter().all(|d| d.severity != crate::diagnostic::Severity::Error),
         "unexpected errors: {:?}", r.diagnostics);
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+    assert!(has_gate(&r, "BrickComponentType_Exec_Var_Get"),
         "block expression in exec context should use Exec_Var_Get for var reads");
 }
 
@@ -194,7 +194,7 @@ on RoundStart() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
         .count();
     assert!(
         set_count >= 1,
@@ -215,7 +215,7 @@ on RoundStart() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Set")
+        .filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Set")
         .count();
     assert_eq!(
         set_count, 0,
@@ -239,7 +239,7 @@ fn pure_top_level_let_after_handler_reads_purely() {
         !r.module
             .nodes
             .values()
-            .any(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_Var_Get"),
+            .any(|n| n.gate_class == "BrickComponentType_Exec_Var_Get"),
         "a pure top-level `let` after a handler must read its var purely, not via an Exec_Var_Get"
     );
 }

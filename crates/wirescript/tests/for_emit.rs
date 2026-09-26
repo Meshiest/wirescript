@@ -60,7 +60,7 @@ fn a_range_loop_emits_the_count_for_brick() {
     );
     assert!(
         pairs.iter().any(|(a, c)| a == "B_1x1_Gate_CallableEntry_CountFor"
-            && c == "BrickComponentType_WireGraph_CallableEntry_CountFor"),
+            && c == "BrickComponentType_CallableEntry_CountFor"),
         "expected the entry brick to carry the entry component, got: {pairs:?}"
     );
 }
@@ -89,7 +89,7 @@ fn an_array_loop_emits_the_for_each_array_brick() {
         pairs
             .iter()
             .any(|(a, c)| a == "B_1x1_Gate_CallableEntry_ForEachArray"
-                && c == "BrickComponentType_WireGraph_CallableEntry_ForEachArray"),
+                && c == "BrickComponentType_CallableEntry_ForEachArray"),
         "expected the entry brick to carry the entry component, got: {pairs:?}"
     );
 }
@@ -120,7 +120,7 @@ fn a_map_loop_emits_the_for_each_map_brick() {
         pairs
             .iter()
             .any(|(a, c)| a == "B_1x1_Gate_CallableEntry_ForEachMap"
-                && c == "BrickComponentType_WireGraph_CallableEntry_ForEachMap"),
+                && c == "BrickComponentType_CallableEntry_ForEachMap"),
         "expected the entry brick to carry the entry component, got: {pairs:?}"
     );
 }

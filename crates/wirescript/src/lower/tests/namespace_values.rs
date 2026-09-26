@@ -246,8 +246,8 @@ fn namespaced_chip_calls_still_work() {
     );
 }
 
-const PSEUDO_VAR: &str = "BrickComponentType_WireGraphPseudo_Var";
-const VAR_SET: &str = "BrickComponentType_WireGraph_Exec_Var_Set";
+const VAR: &str = "BrickComponentType_Var";
+const VAR_SET: &str = "BrickComponentType_Exec_Var_Set";
 const OUTPUT: &str = "BrickComponentType_Internal_MicrochipOutput";
 
 fn count_gate(m: &crate::ir::Module, class: &str) -> usize {
@@ -286,7 +286,7 @@ fn two_namespaces_same_var_name_get_distinct_gates() {
     assert_clean(&tc, &lr);
     assert!(!has_unsupported(&lr.module));
     assert_eq!(
-        count_gate(&lr.module, PSEUDO_VAR),
+        count_gate(&lr.module, VAR),
         2,
         "A.g and B.g must be two distinct storage gates, not one collapsed gate"
     );
@@ -339,7 +339,7 @@ fn local_var_and_namespaced_var_same_name_stay_distinct() {
     assert_clean(&tc, &lr);
     assert!(!has_unsupported(&lr.module));
     assert_eq!(
-        count_gate(&lr.module, PSEUDO_VAR),
+        count_gate(&lr.module, VAR),
         2,
         "the local `g` and the imported `A.g` must be two distinct gates"
     );
@@ -450,12 +450,12 @@ fn namespaced_sibling_mod_resolves_its_own_module() {
     );
     assert_clean(&tc, &lr);
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        count_class_ns(&lr.module, "BrickComponentType_Expr_MathAdd"),
         1,
         "A.f must run m's `helper` (x + 1)"
     );
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathMultiply"),
+        count_class_ns(&lr.module, "BrickComponentType_Expr_MathMultiply"),
         1,
         "B.g must run n's `helper` (x * 100), not m's"
     );
@@ -493,7 +493,7 @@ fn namespaced_mod_mutates_its_own_module_var() {
     );
     assert_clean(&tc, &lr);
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_WireGraphPseudo_Var"),
+        count_class_ns(&lr.module, "BrickComponentType_Var"),
         2,
         "A.g and B.g are distinct storage gates"
     );
@@ -595,7 +595,7 @@ fn same_file_state_via_plain_and_namespace_shares_one_gate() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class.contains("Pseudo_Var"))
+        .filter(|n| n.gate_class == gc::VAR)
         .count();
     assert_eq!(vars, 1, "g and S.g must share ONE storage gate, got {vars}");
     let incs = lr
@@ -621,7 +621,7 @@ fn same_file_var_via_named_and_aliased_shares_one_gate() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class.contains("Pseudo_Var"))
+        .filter(|n| n.gate_class == gc::VAR)
         .count();
     assert_eq!(vars, 1, "g and its alias h must share ONE storage gate, got {vars}");
 }
@@ -831,13 +831,13 @@ fn transitive_namespace_resolves_in_a_namespaced_body() {
     );
     // Every one of the three reads drives its own store, so none was dropped.
     assert_eq!(
-        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        count_class_ns(&lr.module, "BrickComponentType_Exec_Var_Set"),
         3,
         "each of `a`/`b`/`c` must be written"
     );
     // The two `n + L.value` bodies and `bump`'s own add are real gates, so the
     // transitive read reached arithmetic rather than folding to a placeholder.
-    let adds = count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathAdd");
+    let adds = count_class_ns(&lr.module, "BrickComponentType_Expr_MathAdd");
     assert!(adds >= 2, "expected the inlined `n + …` adds, got {adds}");
 }
 
@@ -880,7 +880,7 @@ mod bump(n: int) -> (r: int) { return n + value }"),
     // `leaf`'s `n + value` really inlined, so the call went through the INNER
     // alias rather than resolving back to the importer's same-named one.
     assert!(
-        count_class_ns(&lr.module, "BrickComponentType_WireGraph_Expr_MathAdd") >= 1,
+        count_class_ns(&lr.module, "BrickComponentType_Expr_MathAdd") >= 1,
         "the inlined body's arithmetic must be present"
     );
 }
@@ -948,7 +948,7 @@ fn namespaced_record_type_decomposes_like_a_named_import() {
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_ArrayVar")
+        .filter(|n| n.gate_class == "BrickComponentType_ArrayVar")
         .collect();
     assert_eq!(arrays.len(), 1, "one array per leaf field: {arrays:?}");
     let a = arrays[0];

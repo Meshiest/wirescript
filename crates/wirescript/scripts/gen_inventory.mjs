@@ -6,13 +6,9 @@
 //   1. data/inventory_dump.ndjson  — the rich Lua dump (lua/inventory_dump.lua
 //      in brickadia-zoo): brick/component metadata, display names, categories, and
 //      per-port UE property types + display names. This is the primary source.
-//   2. data/inventory_brdb.json    — authoritative wire-port lists + component
-//      schemas extracted from a placed-components .brdb save (brdb example
-//      `dump_inventory`). Used to VALIDATE that the ndjson port discovery is
-//      complete; not required to run.
-//   3. the existing simple.json    — preserves hand-curated wire-port types
+//   2. the existing simple.json    — preserves hand-curated wire-port types
 //      (int/float/exec/varRef/...) that the dump can't express, since every
-//      wire-graph variant port reports merely as `StructProperty`.
+//      wire-value port reports merely as `StructProperty`.
 //
 // Merge policy per port:
 //   * curated non-`any` type from the existing simple.json always wins (keeps
@@ -34,7 +30,6 @@ import { dirname, join } from "node:path";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA = join(HERE, "..", "data");
 const NDJSON = join(DATA, "inventory_dump.ndjson");
-const BRDB = join(DATA, "inventory_brdb.json");
 const OUT = join(DATA, "logic_gate_inventory.simple.json");
 
 const checkOnly = process.argv.includes("--check");
@@ -102,20 +97,22 @@ const COMPOSITE_TYPE = { vector: "vector", rotator: "rotator", color: "color", s
 // kind / family derivation
 // ---------------------------------------------------------------------------
 
+// null = the class name doesn't say; callers fall back to the curated kind.
 function deriveKind(cls) {
   if (/Pseudo/.test(cls)) return "pseudo";
   if (/_Expr_/.test(cls)) return "expr";
   if (/_Exec_/.test(cls)) return "exec";
+  if (/_Event_/.test(cls)) return "event";
   if (/_Fake_/.test(cls)) return "fake";
   if (/_Internal_|^Component_Internal/.test(cls)) return "internal";
-  return "?";
+  return null;
 }
 
 function deriveFamily(cls) {
   // Exec gates: family is the subsystem segment, e.g. _Exec_Entity_* -> Entity.
   let m = cls.match(/_Exec_([A-Za-z0-9]+)_/);
   if (m) return m[1];
-  m = cls.match(/WireGraphPseudo_([A-Za-z0-9]+)$/);
+  m = cls.match(/_Event_([A-Za-z0-9]+)/);
   if (m) return m[1];
   m = cls.match(/_Expr_([A-Za-z0-9]+)/);
   if (m) {
@@ -134,6 +131,9 @@ function deriveFamily(cls) {
   m = cls.match(/_(CharacterZoneEvent|ZoneEvent)_/);
   if (m) return m[1];
   m = cls.match(/_Internal_([A-Za-z0-9]+)/);
+  if (m) return m[1];
+  // Plain gate names (the former pseudo gates), e.g. BrickComponentType_Tween -> Tween.
+  m = cls.match(/^BrickComponentType_([A-Za-z0-9]+)$/);
   if (m) return m[1];
   return "";
 }
@@ -267,7 +267,7 @@ for (const r of records) {
       displayName: comp.componentDisplayName ?? "",
       description: comp.componentDescription ?? "",
       searchTags: comp.componentSearchTags ?? "",
-      kind: deriveKind(cls),
+      kind: deriveKind(cls) ?? cur?.component.kind ?? "?",
       // Reuse curated family for known classes; derive for new ones.
       family: cur ? cur.component.family : deriveFamily(cls),
       inputs: buildPorts(comp.wireInputPorts ?? {}, curIn),
@@ -282,10 +282,10 @@ for (const r of records) {
 const dumpedClasses = new Set(entries.map((e) => e.component.class));
 const carried = [];
 for (const e of existing.entries) {
-  if (!dumpedClasses.has(e.component.class)) {
-    entries.push(e);
-    carried.push(e.component.class);
-  }
+  const cls = e.component.class;
+  if (dumpedClasses.has(cls)) continue;
+  entries.push(e);
+  carried.push(cls);
 }
 
 // Total, locale-independent ordering. Sorting on brickAsset alone leaves ties
@@ -297,33 +297,6 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 entries.sort(
   (a, b) => cmp(a.brickAsset, b.brickAsset) || cmp(a.component.class, b.component.class),
 );
-
-// --- validation against brdb (authoritative port lists), if present ----------
-let brdbWarnings = 0;
-try {
-  const brdb = JSON.parse(readFileSync(BRDB, "utf8"));
-  const bByClass = new Map(brdb.components.map((c) => [c.class, c]));
-  const strip = (p) => p.split(".")[0];
-  for (const e of entries) {
-    const b = bByClass.get(e.component.class);
-    if (!b) continue;
-    const want = (arr) => new Set(arr.map(strip));
-    const got = (ports) => new Set(ports.map((p) => p.name));
-    for (const [dir, bports, eports] of [
-      ["in", b.inputs, e.component.inputs],
-      ["out", b.outputs, e.component.outputs],
-    ]) {
-      const w = want(bports), g = got(eports);
-      const missing = [...w].filter((p) => !g.has(p));
-      if (missing.length) {
-        brdbWarnings++;
-        console.warn(`  ! ${e.component.class} ${dir}: ndjson missing brdb ports ${missing.join(", ")}`);
-      }
-    }
-  }
-} catch (err) {
-  if (err.code !== "ENOENT") throw err;
-}
 
 const out = { entries, typeGlossary: existing.typeGlossary ?? {} };
 
@@ -343,9 +316,9 @@ for (const [cls, e] of newByClass) {
 
 console.log(`entries: ${existing.entries.length} -> ${entries.length}`);
 console.log(`new classes: ${added.length}, removed: ${removed.length}, port type changes: ${typeChanges}`);
+if (added.length) console.log(`  new: ${added.map((c) => c.replace("BrickComponentType_", "")).join(", ")}`);
 if (removed.length) console.log(`  removed: ${removed.map((c) => c.replace("BrickComponentType_", "")).join(", ")}`);
 if (carried.length) console.log(`  carried over (absent from dump, kept from curated): ${carried.map((c) => c.replace("BrickComponentType_", "")).join(", ")}`);
-if (brdbWarnings) console.log(`  ${brdbWarnings} brdb port-coverage warnings (see above)`);
 
 if (checkOnly) {
   console.log("--check: not writing");

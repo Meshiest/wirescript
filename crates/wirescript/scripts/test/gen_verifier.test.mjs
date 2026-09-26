@@ -5,13 +5,13 @@ import { generateVerifier } from '../gen_verifier.mjs';
 const table = {
   build: 'testbuild', probeVersion: 1,
   gates: {
-    'BrickComponentType_WireGraph_Expr_CompareEqual': {
+    'BrickComponentType_Expr_CompareEqual': {
       cases: [
         { inputs: [{ variant: 'int', value: '1' }, { variant: 'str', value: '1' }],
           output: { variant: 'bool', value: 'false' } },
       ], rules: [],
     },
-    'BrickComponentType_WireGraph_Exec_Branch': {
+    'BrickComponentType_Exec_Branch': {
       cases: [
         { inputs: [{ variant: 'int', value: '0' }], output: { variant: 'str', value: 'B' } },
       ], rules: [],
@@ -31,7 +31,7 @@ test('emits header, opaque leaves, eq assertion, branch if-pattern', () => {
 
 test('unwired cases are skipped with a comment', () => {
   const t2 = structuredClone(table);
-  t2.gates['BrickComponentType_WireGraph_Expr_CompareEqual'].cases.push(
+  t2.gates['BrickComponentType_Expr_CompareEqual'].cases.push(
     { inputs: [{ variant: 'int', value: '1' }, 'unwired'], output: { variant: 'bool', value: 'false' } });
   const ws = generateVerifier(t2);
   assert.match(ws, /skipped 1 unwired/);
@@ -41,7 +41,7 @@ test('LogicalXOR lowers to the ^^ operator, not !=', () => {
   const t3 = {
     build: 'testbuild', probeVersion: 1,
     gates: {
-      'BrickComponentType_WireGraph_Expr_LogicalXOR': {
+      'BrickComponentType_Expr_LogicalXOR': {
         cases: [
           { inputs: [{ variant: 'bool', value: 'true' }, { variant: 'bool', value: 'false' }],
             output: { variant: 'bool', value: 'true' } },
@@ -57,13 +57,13 @@ test('CompareLessOrEqual / CompareGreaterOrEqual classes map to <= / >=', () => 
   const t4 = {
     build: 'testbuild', probeVersion: 1,
     gates: {
-      'BrickComponentType_WireGraph_Expr_CompareLessOrEqual': {
+      'BrickComponentType_Expr_CompareLessOrEqual': {
         cases: [
           { inputs: [{ variant: 'int', value: '1' }, { variant: 'int', value: '2' }],
             output: { variant: 'bool', value: 'true' } },
         ], rules: [],
       },
-      'BrickComponentType_WireGraph_Expr_CompareGreaterOrEqual': {
+      'BrickComponentType_Expr_CompareGreaterOrEqual': {
         cases: [
           { inputs: [{ variant: 'int', value: '2' }, { variant: 'int', value: '1' }],
             output: { variant: 'bool', value: 'true' } },
@@ -80,7 +80,7 @@ test('hostile string content is escaped, never breaks generation', () => {
   const t = {
     build: 'esc', probeVersion: 1,
     gates: {
-      'BrickComponentType_WireGraph_Expr_CompareEqual': {
+      'BrickComponentType_Expr_CompareEqual': {
         cases: [
           { inputs: [{ variant: 'str', value: 'a"b' }, { variant: 'str', value: '${x}' }],
             output: { variant: 'bool', value: 'false' } },
@@ -99,7 +99,7 @@ test('NaN-expected cases are skipped with a tally', () => {
   const t = {
     build: 'nan', probeVersion: 1,
     gates: {
-      'BrickComponentType_WireGraph_Expr_MathAdd': {
+      'BrickComponentType_Expr_MathAdd': {
         cases: [
           { inputs: [{ variant: 'float', value: 'nan' }, { variant: 'float', value: '1.0' }],
             output: { variant: 'float', value: 'nan' } },
@@ -122,7 +122,7 @@ test('v3: a unary CALL_FN gate (String_Length) generates a named call, not an op
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_String_Length': {
+      'BrickComponentType_Expr_String_Length': {
         cases: [
           { inputs: [{ variant: 'str', value: 'hello' }], output: { variant: 'int', value: '5' } },
         ], rules: [],
@@ -138,7 +138,7 @@ test('v3: String_Concatenate uses the `..` infix operator', () => {
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_String_Concatenate': {
+      'BrickComponentType_Expr_String_Concatenate': {
         cases: [
           { inputs: [{ variant: 'str', value: 'a' }, { variant: 'str', value: 'b' }],
             output: { variant: 'str', value: 'ab' } },
@@ -154,7 +154,7 @@ test('v3: deferredOps gates are skipped with a tally, regardless of value', () =
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_VecMagnitude': {
+      'BrickComponentType_Expr_VecMagnitude': {
         cases: [
           { inputs: [{ variant: 'vector', value: 'Vec(1.0,0.0,0.0)' }], output: { variant: 'float', value: '1.0' } },
         ], rules: [],
@@ -170,7 +170,7 @@ test('v3: String_FormatText is skipped — its template is a synthetic label, no
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_String_FormatText': {
+      'BrickComponentType_Expr_String_FormatText': {
         cases: [
           { inputs: [{ variant: 'tmpl', value: '0str' }], output: { variant: 'str', value: 'hi' } },
         ], rules: [],
@@ -188,7 +188,7 @@ test('v3: a composite operand whose label is not a constructor call is skipped w
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_RotateVector': {
+      'BrickComponentType_Expr_RotateVector': {
         cases: [
           { inputs: [{ variant: 'vector', value: 'Vec(1,0,0)' }, { variant: 'quat', value: '90Z' }],
             output: { variant: 'vector', value: '(X=0.000, Y=1.000, Z=0.000)' } },
@@ -211,7 +211,7 @@ test('v3: a composite output is assertable via rendered-text equality even when 
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_MakeRotation': {
+      'BrickComponentType_Expr_MakeRotation': {
         cases: [
           { inputs: [{ variant: 'float', value: '30.0' }, { variant: 'float', value: '60.0' }, { variant: 'float', value: '90.0' }],
             output: { variant: 'rotator', value: 'garbled' } },
@@ -236,7 +236,7 @@ test('v3: a composite output whose recorded text is EXACTLY "" is skipped as a v
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_MakeRotation': {
+      'BrickComponentType_Expr_MakeRotation': {
         cases: [
           { inputs: [{ variant: 'float', value: '30.0' }, { variant: 'float', value: '60.0' }, { variant: 'float', value: '90.0' }],
             output: { variant: 'rotator', value: '' } },
@@ -253,7 +253,7 @@ test('v3: NaN skip generalizes to a composite operand (not just a float output)'
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_MathAdd': {
+      'BrickComponentType_Expr_MathAdd': {
         cases: [
           { inputs: [{ variant: 'vector', value: 'Vec(NaN,1,2)' }, { variant: 'vector', value: 'Vec(1,1,1)' }],
             output: { variant: 'vector', value: '(X=NaN, Y=2.000, Z=3.000)' } },
@@ -284,7 +284,7 @@ test('v3: composite-output cases wrap the GOT expression in Opaque(...) and asse
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_MathAdd': {
+      'BrickComponentType_Expr_MathAdd': {
         cases: [
           { inputs: [{ variant: 'vector', value: 'Vec(0.5,0.25,-0.75)' }, { variant: 'vector', value: 'Vec(0.25,0.5,0.75)' }],
             output: { variant: 'vector', value: '(X=0.750, Y=0.750, Z=0.000)' } },
@@ -309,7 +309,7 @@ test('v3: a compositeOps float-output gate (VecDotProduct) also asserts via rend
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_VecDotProduct': {
+      'BrickComponentType_Expr_VecDotProduct': {
         cases: [
           { inputs: [{ variant: 'vector', value: 'Vec(0.5,0.25,-0.75)' }, { variant: 'vector', value: 'Vec(0.25,0.5,0.75)' }],
             output: { variant: 'float', value: '-0.312' } },
@@ -329,7 +329,7 @@ test('v3: composite operand labels widen bare integer components to float litera
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_VecScale': {
+      'BrickComponentType_Expr_VecScale': {
         cases: [
           { inputs: [{ variant: 'vector', value: 'Vec(1,0,0)' }, { variant: 'float', value: '2.0' }],
             output: { variant: 'vector', value: '(X=2.000, Y=0.000, Z=0.000)' } },
@@ -345,7 +345,7 @@ test('v3: a bool-output gate with composite operands (composite EQ bootstrap) is
   const t = {
     build: 'b', probeVersion: 3,
     gates: {
-      'BrickComponentType_WireGraph_Expr_CompareEqual': {
+      'BrickComponentType_Expr_CompareEqual': {
         cases: [
           { inputs: [{ variant: 'color', value: 'Color(1.0,0.5,0.25)' }, { variant: 'color', value: 'Color(1.0,0.5,0.25)' }],
             output: { variant: 'bool', value: 'true' } },

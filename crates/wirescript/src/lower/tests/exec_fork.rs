@@ -25,7 +25,7 @@ fn var_set_writing(r: &LowerResult, label: &str) -> crate::ir::NodeId {
         .nodes
         .iter()
         .find(|(_, n)| {
-            n.gate_class == gc::PSEUDO_VAR
+            n.gate_class == gc::VAR
                 && matches!(
                     n.properties.get(&crate::intern::sym::NAME_LABEL),
                     Some(Literal::String(s)) if s == label

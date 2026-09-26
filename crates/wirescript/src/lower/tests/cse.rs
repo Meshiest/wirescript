@@ -26,15 +26,15 @@ fn find_one(m: &crate::ir::Module, class: &str) -> Option<crate::ir::NodeId> {
         .or_else(|| m.chips.values().find_map(|c| find_one(c, class)))
 }
 
-const ADD: &str = "BrickComponentType_WireGraph_Expr_MathAdd";
-const MUL: &str = "BrickComponentType_WireGraph_Expr_MathMultiply";
-const SUB: &str = "BrickComponentType_WireGraph_Expr_MathSubtract";
-const GT: &str = "BrickComponentType_WireGraph_Expr_CompareGreater";
-const EQ: &str = "BrickComponentType_WireGraph_Expr_CompareEqual";
-const AND: &str = "BrickComponentType_WireGraph_Expr_LogicalAND";
-const FMT: &str = "BrickComponentType_WireGraph_Expr_String_FormatText";
-const CHANGE: &str = "BrickComponentType_WireGraph_Expr_ChangeDetector";
-const EDGE: &str = "BrickComponentType_WireGraph_Expr_EdgeDetector";
+const ADD: &str = "BrickComponentType_Expr_MathAdd";
+const MUL: &str = "BrickComponentType_Expr_MathMultiply";
+const SUB: &str = "BrickComponentType_Expr_MathSubtract";
+const GT: &str = "BrickComponentType_Expr_CompareGreater";
+const EQ: &str = "BrickComponentType_Expr_CompareEqual";
+const AND: &str = "BrickComponentType_Expr_LogicalAND";
+const FMT: &str = "BrickComponentType_Expr_String_FormatText";
+const CHANGE: &str = "BrickComponentType_Expr_ChangeDetector";
+const EDGE: &str = "BrickComponentType_Expr_EdgeDetector";
 
 // A handler wrapper for exec-context programs.
 fn go(body: &str) -> String {
@@ -69,8 +69,8 @@ fn deep_expression_merges_at_every_layer() {
         (ADD, "add"),
         (MUL, "multiply"),
         (SUB, "subtract"),
-        ("BrickComponentType_WireGraph_Expr_MathModulo", "modulo"),
-        ("BrickComponentType_WireGraph_Expr_MathDivide", "divide"),
+        ("BrickComponentType_Expr_MathModulo", "modulo"),
+        ("BrickComponentType_Expr_MathDivide", "divide"),
     ] {
         assert_eq!(count_class(&r.module, class), 1, "the {name} layer merges");
     }

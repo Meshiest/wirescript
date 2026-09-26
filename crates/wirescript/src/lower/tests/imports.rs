@@ -5,7 +5,7 @@ use crate::ir::NodeKind;
 use std::collections::HashSet;
 
 fn is_pure(gate_class: &str) -> bool {
-    gate_class == "_Literal" || gate_class.starts_with("BrickComponentType_WireGraph_Expr_")
+    gate_class == "_Literal" || gate_class.starts_with("BrickComponentType_Expr_")
 }
 
 /// Node ids that appear in any wire, as source or target.
@@ -71,7 +71,7 @@ on start { hit = hit + 1 }";
     let r = compile_multi(main, &[("lib", lib)]);
     assert_no_errors(&r);
     assert!(
-        has_gate_class(&r, "BrickComponentType_WireGraph_Exec_Var_Increment"),
+        has_gate_class(&r, "BrickComponentType_Exec_Var_Increment"),
         "the `on start` handler body was dropped: an imported `let start` clobbered \
          the local `in start: exec`, so the trigger resolved to the imported value"
     );
@@ -119,7 +119,7 @@ on player { let y = x * 2 + 1 }",
     assert_no_errors(&r);
     let has = |cls: &str| r.module.nodes.values().any(|n| n.gate_class == cls);
     assert!(
-        has("BrickComponentType_WireGraph_Expr_MathMultiply"),
+        has("BrickComponentType_Expr_MathMultiply"),
         "unused `let y = x * 2 + 1` should keep its MathMultiply (not DCE'd)"
     );
 }
@@ -160,11 +160,11 @@ fn namespace_import_travels_two_modules_deep() {
     // `n * 2` from the third module and the `+ 1` from the second must both
     // survive — a dropped namespace loses the multiply entirely.
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathMultiply"),
+        has_gate(&r, "BrickComponentType_Expr_MathMultiply"),
         "the third module's body must be inlined"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "the second module's arithmetic must survive"
     );
 }
@@ -183,7 +183,7 @@ fn namespaced_mod_call_keeps_its_return_type() {
         !has_gate(&r, "_Unsupported"),
         "a namespaced mod's return type must resolve the '+' overload"
     );
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"));
+    assert!(has_gate(&r, "BrickComponentType_Expr_MathAdd"));
 }
 
 // ---------- `const` across files ----------

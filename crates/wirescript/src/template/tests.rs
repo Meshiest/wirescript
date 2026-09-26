@@ -38,7 +38,7 @@
 
         let mc_input = "BrickComponentType_Internal_MicrochipInput";
         let mc_output = "BrickComponentType_Internal_MicrochipOutput";
-        let add_gate = "BrickComponentType_WireGraph_Expr_Add";
+        let add_gate = "BrickComponentType_Expr_MathAdd";
 
         use crate::intern::sym;
         use crate::ir::port_registry::WirePort;
@@ -310,7 +310,7 @@
 
         let mc_chip = "Component_Internal_Microchip";
         let mid_gate_id = NodeId::fresh();
-        let add_gate = "BrickComponentType_WireGraph_Expr_Add";
+        let add_gate = "BrickComponentType_Expr_MathAdd";
 
         // mid: 1 gate + 1 chip containing leaf
         let mut mid = Module::new("mid");
@@ -374,7 +374,7 @@
     #[test]
     fn instantiate_no_captures_no_params() {
         let gate_id = NodeId::fresh();
-        let add_gate = "BrickComponentType_WireGraph_Expr_Add";
+        let add_gate = "BrickComponentType_Expr_MathAdd";
 
         let mut m = Module::new("solo");
         m.nodes.insert(
@@ -398,7 +398,7 @@
     fn instantiate_multiple_captures_same_call() {
         use crate::intern::sym;
         use crate::ir::port_registry::WirePort;
-        let add_gate_class = "BrickComponentType_WireGraph_Expr_Add";
+        let add_gate_class = "BrickComponentType_Expr_MathAdd";
         let input_a_sym = *sym::INPUT_A;
         let input_b_sym = *sym::INPUT_B;
         let output_sym = *sym::OUTPUT;
@@ -572,7 +572,7 @@
 
         let mc_input = "BrickComponentType_Internal_MicrochipInput";
         let mc_chip = "Component_Internal_Microchip";
-        let add_gate = "BrickComponentType_WireGraph_Expr_Add";
+        let add_gate = "BrickComponentType_Expr_MathAdd";
 
         // Child module: one MicrochipInput node.
         let mut child = Module::new("child");

@@ -12,7 +12,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TABLE = join(SCRIPT_DIR, '..', 'data', 'gate_semantics.json');
 const DEFAULT_VERIFIER_OUT = join(SCRIPT_DIR, '..', 'probes', 'verify_semantics.ws');
 
-const SHORT = cls => cls.replace(/^BrickComponentType_WireGraph_(Expr|Exec)_/, '');
+const SHORT = cls => cls.replace(/^BrickComponentType_(Expr|Exec)_/, '');
 
 // Escape arbitrary text for INSIDE a wirescript double-quoted interpolated
 // string: backslash, quote, and the interpolation opener (lexer supports

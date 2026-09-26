@@ -70,7 +70,7 @@ pub enum ComponentKind {
     Exec,
     Pseudo,
     Internal,
-    Fake,
+    Event,
     Auto,
     Wiregraph,
     /// JSON sometimes uses `?` for unclassified components.
@@ -272,18 +272,17 @@ pub fn config_field_enum_type(gate_class: &str, field: &str) -> Option<&'static 
     schema.get_enum(ty).is_some().then_some(ty)
 }
 
-/// The schema enum backing a config named-arg `arg` on a builtin call OR event
-/// `callee` — if `arg` is a non-wire config param whose field is a schema enum.
-/// Unifies the call path (`CallSpec` params → `config_field_enum_type`) with the
-/// event path (`EventSpec.config_named` → its gate field), so hover and
-/// completion resolve `SweepSimple(direction = …)` and `on Clock(…)` the same
-/// way. `None` for wire inputs, unknown args, or non-enum config.
+/// The schema enum backing a named-arg `arg` on a builtin call OR event
+/// `callee` — if `arg` is a param whose gate data field is a schema enum.
+/// That includes a wireable param such as DisplayText's `justify`, whose
+/// constant member names bake into the same field. Unifies the call path
+/// (`CallSpec` params → `config_field_enum_type`) with the event path
+/// (`EventSpec.config_named` → its gate field), so hover and completion
+/// resolve `SweepSimple(direction = …)` and `on Clock(…)` the same way.
+/// `None` for unknown args or non-enum fields.
 pub fn config_enum_for_named_arg(callee: &str, arg: &str) -> Option<&'static str> {
     if let Some(spec) = crate::catalog::calls::calls().get(callee) {
         if let Some(p) = spec.params.iter().find(|p| p.name == arg) {
-            if is_wire_input(spec.gate_class, p.port.as_str()) {
-                return None;
-            }
             return config_field_enum_type(spec.gate_class, p.port.as_str());
         }
         // Not a declared param: a data-driven config field set by its raw name.
@@ -368,7 +367,7 @@ pub fn enum_has_value(enum_type: &str, value: i64) -> bool {
 }
 
 /// Every schema enum type reachable from a gate or event's config surface
-/// (call-spec non-wire params, every gate's `scalar_config_fields`, and event
+/// (call-spec params backed by an enum field, every gate's `scalar_config_fields`, and event
 /// `config_positional`/`config_named` fields), resolved through
 /// [`config_field_enum_type`] the same way [`config_enum_for_named_arg`]
 /// resolves a single named arg. This is the single source of truth for which
@@ -380,13 +379,10 @@ pub fn config_referenced_enum_types() -> Vec<&'static str> {
 
     let mut types: BTreeSet<&'static str> = BTreeSet::new();
 
-    // Call specs: non-wire (config) params, same resolution rule as
-    // `config_enum_for_named_arg`'s call path.
+    // Call specs: params backed by an enum data field, wireable or not, same
+    // resolution rule as `config_enum_for_named_arg`'s call path.
     for spec in calls::calls().values() {
         for p in &spec.params {
-            if is_wire_input(spec.gate_class, p.port.as_str()) {
-                continue;
-            }
             if let Some(ty) = config_field_enum_type(spec.gate_class, p.port.as_str()) {
                 types.insert(ty);
             }

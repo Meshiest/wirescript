@@ -696,7 +696,7 @@ out z = y",
         "should create 2 chip instances for Sq(3) and Sq(4)"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Expr_MathAdd"),
+        has_gate(&r, "BrickComponentType_Expr_MathAdd"),
         "should produce MathAdd for auto-unwrapped chip results"
     );
 }
@@ -787,13 +787,13 @@ in tick: exec
 on tick { if true { x = 1 } }",
     );
     assert_no_errors(&r);
-    let branch_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch");
+    let branch_count = gate_count(&r, "BrickComponentType_Exec_Branch");
     assert_eq!(
         branch_count, 0,
         "if true should be constant-folded, no Branch gate"
     );
     assert!(
-        has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        has_gate(&r, "BrickComponentType_Exec_Var_Set"),
         "body should still produce Var_Set"
     );
 }
@@ -808,7 +808,7 @@ in tick: exec
 on tick { if false { x = 1 } else { x = 2 } }",
     );
     assert_no_errors(&r);
-    let branch_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch");
+    let branch_count = gate_count(&r, "BrickComponentType_Exec_Branch");
     assert_eq!(
         branch_count, 0,
         "if false should be constant-folded, no Branch gate"
@@ -827,7 +827,7 @@ in tick: exec
 on tick { foo(v, true) }",
     );
     assert_no_errors(&r);
-    let branch_count = gate_count(&r, "BrickComponentType_WireGraph_Exec_Branch");
+    let branch_count = gate_count(&r, "BrickComponentType_Exec_Branch");
     assert_eq!(
         branch_count, 0,
         "if <literal-param> should be constant-folded"
@@ -934,7 +934,7 @@ on go { inc(&x) }",
         "the ref param must bind, not fall to an _Unsupported read"
     );
     // The `v = v + 1` write must be wired to x's storage gate (its VarRef).
-    let x_var = find_gate(&r, "BrickComponentType_WireGraphPseudo_Var");
+    let x_var = find_gate(&r, "BrickComponentType_Var");
     let writes = r
         .module
         .wires
@@ -965,7 +965,7 @@ on go {{ inc({arg}) }}"
         );
         let r = compile(&src);
         assert_no_errors(&r);
-        let x_var = find_gate(&r, "BrickComponentType_WireGraphPseudo_Var");
+        let x_var = find_gate(&r, "BrickComponentType_Var");
         assert!(
             r.module.wires.iter().any(|w| w.source.node_id == x_var
                 && w.source.port == crate::ir::port_registry::WirePort::VarRef),
@@ -985,7 +985,7 @@ in go: exec
 on go { push1(&a) }",
     );
     assert_no_errors(&arr);
-    let a_var = find_gate(&arr, "BrickComponentType_WireGraphPseudo_ArrayVar");
+    let a_var = find_gate(&arr, "BrickComponentType_ArrayVar");
     assert!(
         arr.module.wires.iter().any(|w| w.source.node_id == a_var),
         "`push1(&a)` left the array ref pin unfed"
@@ -1003,7 +1003,7 @@ on go { setx(&p, 1) }",
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_WireGraphPseudo_Var")
+        .filter(|n| n.gate_class == "BrickComponentType_Var")
         .filter(|n| rec.module.wires.iter().any(|w| w.source.node_id == n.id))
         .count();
     assert!(
@@ -1076,7 +1076,7 @@ on start {
                 && child
                     .nodes
                     .values()
-                    .any(|n| n.gate_class == "BrickComponentType_WireGraph_Expr_MathAdd")
+                    .any(|n| n.gate_class == "BrickComponentType_Expr_MathAdd")
         })
         .expect("should find Add chip");
 
@@ -1139,7 +1139,7 @@ on player {
 
 #[test]
 fn map_var_emits_brz() {
-    // The Pseudo_MapVar brick serializes a (nested) WireGraphMapVariant; this
+    // The MapVar brick serializes a `dynamic_map`; this
     // exercises the full map pipeline through emit for several key/value kinds.
     let src = r#"
 in t: exec
@@ -1237,7 +1237,7 @@ fn exec_param_handler_drives_chip_body() {
     let push = child
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
         .expect("child module should contain the push gate");
     let push_exec_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
     assert!(
@@ -1400,7 +1400,7 @@ fn exec_named_arg_drives_chip_body_outside_exec_context() {
     let push = child
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
         .expect("child module should contain the push gate");
     let push_exec_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
     assert!(
@@ -1447,7 +1447,7 @@ fn named_chip_body_captures_top_level_state() {
     let push = child
         .nodes
         .values()
-        .find(|n| n.gate_class == "BrickComponentType_WireGraph_Exec_ArrayVar_Push")
+        .find(|n| n.gate_class == "BrickComponentType_Exec_ArrayVar_Push")
         .expect("child module should contain the push gate");
     let push_wired = child.wires.iter().any(|w| w.target.node_id == push.id);
     assert!(push_wired, "free-array push should be exec-wired");
@@ -1582,7 +1582,7 @@ on t { Bump(1) Bump(2) }";
         .module
         .nodes
         .values()
-        .filter(|n| n.gate_class == gc::PSEUDO_VAR)
+        .filter(|n| n.gate_class == gc::VAR)
         .count();
     assert_eq!(
         parent_vars, 1,
@@ -1638,13 +1638,13 @@ out o = v";
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "gate builtins must not lower to _Unsupported");
     for cls in [
-        "BrickComponentType_WireGraph_Exec_Var_Set",
-        "BrickComponentType_WireGraph_Exec_Var_Increment",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_Push",
-        "BrickComponentType_WireGraph_Exec_ArrayVar_SetAtIndex",
-        "BrickComponentType_WireGraph_Exec_MapVar_Set",
-        "BrickComponentType_WireGraph_Exec_MapVar_Get",
-        "BrickComponentType_WireGraph_Exec_MapVar_Has",
+        "BrickComponentType_Exec_Var_Set",
+        "BrickComponentType_Exec_Var_Increment",
+        "BrickComponentType_Exec_ArrayVar_Push",
+        "BrickComponentType_Exec_ArrayVar_SetAtIndex",
+        "BrickComponentType_Exec_MapVar_Set",
+        "BrickComponentType_Exec_MapVar_Get",
+        "BrickComponentType_Exec_MapVar_Has",
     ] {
         assert!(has_gate(&r, cls), "expected gate {cls} from a builtin");
     }
@@ -1668,8 +1668,8 @@ out o = x";
     let r = compile(src);
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "Union/Branch must not lower to _Unsupported");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Union"), "expected an Exec_Union gate");
-    assert!(has_gate(&r, "BrickComponentType_WireGraph_Exec_Branch"), "expected an Exec_Branch gate");
+    assert!(has_gate(&r, "BrickComponentType_Exec_Union"), "expected an Exec_Union gate");
+    assert!(has_gate(&r, "BrickComponentType_Exec_Branch"), "expected an Exec_Branch gate");
 }
 
 #[test]
@@ -1692,10 +1692,10 @@ on t {
     assert_no_errors(&r);
     assert!(!has_gate(&r, "_Unsupported"), "fill builtins must not lower to _Unsupported");
     for cls in [
-        "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromPlayers",
-        "BrickComponentType_WireGraph_Exec_Gamemode_FillArrayFromTeamMembers",
-        "BrickComponentType_WireGraph_Exec_Zone_GetPlayers",
-        "BrickComponentType_WireGraph_Exec_Zone_GetEntities",
+        "BrickComponentType_Exec_Gamemode_FillArrayFromPlayers",
+        "BrickComponentType_Exec_Gamemode_FillArrayFromTeamMembers",
+        "BrickComponentType_Exec_Zone_GetPlayers",
+        "BrickComponentType_Exec_Zone_GetEntities",
     ] {
         assert!(has_gate(&r, cls), "expected gate {cls} from a fill builtin");
     }
@@ -2033,7 +2033,7 @@ fn exec_call_initializer_in_a_handler_nested_chip_runs_on_the_chain() {
             + m.chips.values().map(|c| count(c, class)).sum::<usize>()
     }
     assert_eq!(
-        count(&r.module, "BrickComponentType_WireGraph_Exec_Var_Set"),
+        count(&r.module, "BrickComponentType_Exec_Var_Set"),
         1,
         "the initializer must write the var"
     );
@@ -2057,7 +2057,7 @@ fn a_top_level_chip_after_a_handler_keeps_pure_declarations() {
     assert_no_errors(&r);
     // A pure read, not an `Exec_Var_Get` latched onto the handler's chain.
     assert!(
-        !has_gate(&r, "BrickComponentType_WireGraph_Exec_Var_Get"),
+        !has_gate(&r, "BrickComponentType_Exec_Var_Get"),
         "chip-level `let` must read the var continuously, not once on the chain"
     );
 }
@@ -2250,7 +2250,7 @@ fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
     assert_no_errors(&r);
     let outer = only_chip(&r, "the Outer instance module");
     assert!(
-        gate_count_deep(outer, crate::ir::gate_class::PSEUDO_VAR) > 0,
+        gate_count_deep(outer, crate::ir::gate_class::VAR) > 0,
         "the nested anon chip's `var counter` must exist in Outer's module tree"
     );
     // `doubled` reaches the declared `rr` pin: unfolded that is a real

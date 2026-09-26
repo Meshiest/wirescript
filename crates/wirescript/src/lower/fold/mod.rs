@@ -1344,7 +1344,7 @@ fn sweep_dead_pure(root: &mut Module, protected: &HashSet<NodeId>) {
         for (id, n) in &module.nodes {
             let is_pure_class = n.gate_class == gc::LITERAL
                 || n.gate_class
-                    .starts_with("BrickComponentType_WireGraph_Expr_");
+                    .starts_with("BrickComponentType_Expr_");
             if n.kind == NodeKind::Gate
                 && !n.properties.contains_key(&*sym::NO_FOLD)
                 && !protected.contains(id)
